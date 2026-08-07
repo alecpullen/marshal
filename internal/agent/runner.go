@@ -480,7 +480,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}(goal)
 	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
-	r.State.ClearTurnToolCache()
 	r.State.IncrementTurnIndex()
 	if r.Snapshotter != nil {
 		if _, err := r.Snapshotter.Track(ctx); err != nil {

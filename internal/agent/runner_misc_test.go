@@ -1354,3 +1354,94 @@ func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
 		t.Fatalf("task.Summary = %q, want final content", task.Summary)
 	}
 }
+
+// A file read in one turn must not be re-executed when the next turn
+// asks for the same thing: the cached content goes back on the wire
+// instead. The cache was cleared at the top of every RunTask, so the
+// agent paid a tool call to re-read what it had already read.
+func TestToolCacheSurvivesAcrossTurns(t *testing.T) {
+	calls := 0
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read", Description: "reads", Risk: registry.RiskReadOnly, Cacheable: true,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			calls++
+			return registry.ToolResult{Summary: "read ok", Content: "demo content"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{"key":"v"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"turn one"}}`,
+		`{"rationale":"read again","action":{"type":"tool_call","tool":"demo.read","args":{"key":"v"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"turn two"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "read it"); err != nil {
+		t.Fatalf("turn one: %v", err)
+	}
+	if err := runner.Run(context.Background(), "read it again"); err != nil {
+		t.Fatalf("turn two: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("tool handler ran %d times, want 1 (second turn must hit the cache)", calls)
+	}
+
+	last := p.Requests[len(p.Requests)-1]
+	found := false
+	for _, m := range last.Messages {
+		if strings.Contains(m.Content, "demo content") && strings.Contains(m.Content, "(cached)") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("cached content did not reach the wire on the second turn")
+	}
+}
+
+// A write between two identical reads must invalidate: serving the
+// pre-write content as current is a correctness bug.
+func TestWriteInvalidatesToolCache(t *testing.T) {
+	reads := 0
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read", Description: "reads", Risk: registry.RiskReadOnly, Cacheable: true,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			reads++
+			return registry.ToolResult{Summary: "read ok", Content: "demo content"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register read: %v", err)
+	}
+	if err := reg.Register(registry.Tool{
+		Name: "demo.write", Description: "writes", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "wrote"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register write: %v", err)
+	}
+
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{"key":"v"}}}`,
+		`{"rationale":"write","action":{"type":"tool_call","tool":"demo.write","args":{}}}`,
+		`{"rationale":"read again","action":{"type":"tool_call","tool":"demo.read","args":{"key":"v"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
+	}}
+	state := newTestState(t)
+	pol := policy.NewEngine(&config.Config{}, nil)
+	pol.SetApprovalMode(policy.ModeAuto)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "read, write, read"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reads != 2 {
+		t.Fatalf("read handler ran %d times, want 2 (the write must invalidate the cache)", reads)
+	}
+}

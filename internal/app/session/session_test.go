@@ -504,7 +504,7 @@ func TestTurnToolCacheCachesAndClears(t *testing.T) {
 		t.Fatalf("cached content = %q, want %q", got.Content, want.Content)
 	}
 
-	state.ClearTurnToolCache()
+	state.ClearToolCache()
 	if _, ok := state.GetTurnToolResult("file.read", args); ok {
 		t.Fatal("expected cache miss after clear")
 	}
@@ -2159,5 +2159,53 @@ func TestClearSDDGateClearsContextToo(t *testing.T) {
 	s.ClearSDDGate()
 	if g := s.SDDGate(); g.TaskTitle != "" || g.Report != "" || g.Question != "" {
 		t.Errorf("ClearSDDGate left residue: %#v", g)
+	}
+}
+
+func TestToolCacheEvictsOldestByCount(t *testing.T) {
+	s := newTestState()
+	for i := 0; i < maxToolCacheEntries+1; i++ {
+		s.SetTurnToolResult("file.read", []byte(fmt.Sprintf(`{"n":%d}`, i)),
+			registry.ToolResult{Content: "x"})
+	}
+	if _, ok := s.GetTurnToolResult("file.read", []byte(`{"n":0}`)); ok {
+		t.Fatal("oldest entry survived eviction")
+	}
+	if _, ok := s.GetTurnToolResult("file.read", []byte(fmt.Sprintf(`{"n":%d}`, maxToolCacheEntries))); !ok {
+		t.Fatal("newest entry was evicted")
+	}
+}
+
+func TestToolCacheEvictsByBytes(t *testing.T) {
+	s := newTestState()
+	big := strings.Repeat("x", maxToolCacheBytes/2+1)
+	s.SetTurnToolResult("file.read", []byte(`{"n":1}`), registry.ToolResult{Content: big})
+	s.SetTurnToolResult("file.read", []byte(`{"n":2}`), registry.ToolResult{Content: big})
+	s.SetTurnToolResult("file.read", []byte(`{"n":3}`), registry.ToolResult{Content: big})
+	if _, ok := s.GetTurnToolResult("file.read", []byte(`{"n":1}`)); ok {
+		t.Fatal("entry 1 should have been evicted by the byte bound")
+	}
+	if _, ok := s.GetTurnToolResult("file.read", []byte(`{"n":3}`)); !ok {
+		t.Fatal("newest entry was evicted")
+	}
+}
+
+func TestToolCacheOverwriteDoesNotDoubleCount(t *testing.T) {
+	s := newTestState()
+	body := strings.Repeat("x", 1000)
+	for i := 0; i < 10; i++ {
+		s.SetTurnToolResult("file.read", []byte(`{"p":"a"}`), registry.ToolResult{Content: body})
+	}
+	if _, ok := s.GetTurnToolResult("file.read", []byte(`{"p":"a"}`)); !ok {
+		t.Fatal("repeatedly overwritten entry was evicted")
+	}
+}
+
+func TestClearToolCache(t *testing.T) {
+	s := newTestState()
+	s.SetTurnToolResult("file.read", []byte(`{}`), registry.ToolResult{Content: "x"})
+	s.ClearToolCache()
+	if _, ok := s.GetTurnToolResult("file.read", []byte(`{}`)); ok {
+		t.Fatal("entry survived ClearToolCache")
 	}
 }

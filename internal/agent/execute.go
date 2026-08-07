@@ -377,6 +377,12 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 
 	summarized := SummarizeToolResult(toolName, result, 0) // per-tool line limits only; 0 keeps the default char cap out of play here
 	summarized = spillToolResult(r.State.WorkingDir, toolName, summarized, r.toolResultChars())
+	// A tool that mutated anything invalidates every cached read: serving
+	// pre-write content as current is worse than paying for the re-read.
+	// Deliberately blunt — path-scoped invalidation can come later.
+	if tool.Risk != registry.RiskReadOnly {
+		r.State.ClearToolCache()
+	}
 	if tool.Cacheable {
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}

@@ -104,6 +104,15 @@ const (
 	ActivityReconnecting ActivityKind = "reconnecting"
 )
 
+// The tool-result cache spans the session, not one turn: a file the
+// agent read two turns ago is answered from memory instead of being
+// re-executed, and the cached content goes back on the wire. Bounded so
+// a long session cannot grow it without limit.
+const (
+	maxToolCacheEntries = 64
+	maxToolCacheBytes   = 2 << 20 // 2 MiB of cached content
+)
+
 type Activity struct {
 	Kind      ActivityKind
 	Label     string
@@ -182,6 +191,8 @@ type State struct {
 	contextPack     contextpack.Pack
 	activeRoute     RouteInfo
 	turnToolCache   map[string]registry.ToolResult
+	toolCacheOrder  []string
+	toolCacheBytes  int
 	activity        Activity
 	plan            []string
 	todos           []db.TodoItem
@@ -1208,10 +1219,15 @@ func (s *State) Transcript() []TranscriptItem {
 	return items
 }
 
-func (s *State) ClearTurnToolCache() {
+// ClearToolCache drops every cached tool result. Called when a tool
+// mutates the workspace: a stale read presented as current is worse
+// than re-running the read.
+func (s *State) ClearToolCache() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.turnToolCache = make(map[string]registry.ToolResult)
+	s.toolCacheOrder = nil
+	s.toolCacheBytes = 0
 }
 
 func (s *State) GetTurnToolResult(toolName string, normalizedArgs []byte) (registry.ToolResult, bool) {
@@ -1226,7 +1242,29 @@ func (s *State) SetTurnToolResult(toolName string, normalizedArgs []byte, result
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := toolName + "|" + string(normalizedArgs)
+	if old, ok := s.turnToolCache[key]; ok {
+		s.toolCacheBytes -= len(old.Content)
+		s.toolCacheOrder = slices.DeleteFunc(s.toolCacheOrder, func(k string) bool { return k == key })
+	}
 	s.turnToolCache[key] = result
+	s.toolCacheOrder = append(s.toolCacheOrder, key)
+	s.toolCacheBytes += len(result.Content)
+	s.evictToolCacheLocked()
+}
+
+// evictToolCacheLocked drops oldest-first until both bounds hold. The
+// newest entry is never evicted, even when it alone exceeds the byte
+// bound — the caller just produced it.
+func (s *State) evictToolCacheLocked() {
+	for len(s.toolCacheOrder) > maxToolCacheEntries ||
+		(s.toolCacheBytes > maxToolCacheBytes && len(s.toolCacheOrder) > 1) {
+		oldest := s.toolCacheOrder[0]
+		s.toolCacheOrder = s.toolCacheOrder[1:]
+		if e, ok := s.turnToolCache[oldest]; ok {
+			s.toolCacheBytes -= len(e.Content)
+			delete(s.turnToolCache, oldest)
+		}
+	}
 }
 
 func (s *State) ActivateSkill(name string) {

@@ -47,6 +47,17 @@ type chatResult struct {
 	FinishReason string
 }
 
+// turnRequestOptions carries the resolved per-turn request limits derived from
+// the active route. Nil pointers mean "unknown — leave the field unset on the
+// wire request". Populated by RunTask after resolveRoute and reset before the
+// turn returns; never shared across turns.
+type turnRequestOptions struct {
+	maxTokens     *int
+	contextWindow *int
+}
+
+func intPtr(v int) *int { return &v }
+
 // chatWithRetry calls chatOnce up to MaxRetries+1 times, returning the first
 // success. This is the loop's only retry point: transport-level failures
 // (connection errors, malformed HTTP responses) are retried; malformed
@@ -276,6 +287,8 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		Model:          model,
 		Messages:       messages,
 		Stream:         true,
+		MaxTokens:      r.turnRequestOptions.maxTokens,
+		ContextWindow:  r.turnRequestOptions.contextWindow,
 		ResponseFormat: responseFormat,
 		Tools:          tools,
 	})

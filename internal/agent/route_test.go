@@ -51,3 +51,40 @@ func TestResolveModelLimitsNilTableDoesNotPanic(t *testing.T) {
 		t.Fatalf("got (%d, %d), want (0, 0) for an unknown model", window, maxOut)
 	}
 }
+
+func TestResolveModelLimitsFillsUnsetFieldsIndependently(t *testing.T) {
+	tests := []struct {
+		name                   string
+		preset                 routing.ModelPreset
+		wantWindow, wantOutput int
+	}{
+		{
+			name: "explicit context keeps automatic output resolvable",
+			preset: routing.ModelPreset{
+				Provider:      "ollama",
+				Model:         "qwen2.5-coder:7b",
+				ContextWindow: 64000,
+			},
+			wantWindow: 64000,
+			wantOutput: 8192,
+		},
+		{
+			name: "explicit output keeps automatic context resolvable",
+			preset: routing.ModelPreset{
+				Provider:        "ollama",
+				Model:           "qwen2.5-coder:7b",
+				MaxOutputTokens: 4096,
+			},
+			wantWindow: 32768,
+			wantOutput: 4096,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			window, output := (&Runner{}).resolveModelLimits(tt.preset)
+			if window != tt.wantWindow || output != tt.wantOutput {
+				t.Fatalf("resolveModelLimits() = (%d, %d), want (%d, %d)", window, output, tt.wantWindow, tt.wantOutput)
+			}
+		})
+	}
+}

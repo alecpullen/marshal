@@ -44,6 +44,7 @@ func TestOllamaChatRequestBody(t *testing.T) {
 
 	temp := 0.2
 	maxTok := 128
+	numCtx := 32768
 	p := newTestOllama(t, server.URL)
 	events, err := p.Chat(t.Context(), schema.ChatRequest{
 		Model: "qwen2.5-coder:7b",
@@ -51,8 +52,9 @@ func TestOllamaChatRequestBody(t *testing.T) {
 			{Role: schema.RoleSystem, Content: "be terse"},
 			{Role: schema.RoleUser, Content: "hi"},
 		},
-		Temperature: &temp,
-		MaxTokens:   &maxTok,
+		Temperature:   &temp,
+		MaxTokens:     &maxTok,
+		ContextWindow: &numCtx,
 		Tools: []schema.ToolDefinition{{
 			Name:        "read_file",
 			Description: "read a file",
@@ -80,6 +82,9 @@ func TestOllamaChatRequestBody(t *testing.T) {
 	}
 	if opts["num_predict"] != float64(128) {
 		t.Fatalf("options.num_predict = %v, want 128", opts["num_predict"])
+	}
+	if opts["num_ctx"] != float64(32768) {
+		t.Fatalf("options.num_ctx = %v, want 32768", opts["num_ctx"])
 	}
 	msgs, ok := got["messages"].([]any)
 	if !ok || len(msgs) != 2 {

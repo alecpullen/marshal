@@ -496,6 +496,29 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("includes max_tokens when set", func(t *testing.T) {
+		maxTok := 2048
+		body, err := buildChatRequestBody(schema.ChatRequest{
+			Model:     "test-model",
+			Messages:  []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+			MaxTokens: &maxTok,
+		})
+		if err != nil {
+			t.Fatalf("buildChatRequestBody returned error: %v", err)
+		}
+		var parsed map[string]json.RawMessage
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+		raw, ok := parsed["max_tokens"]
+		if !ok {
+			t.Fatal("request body missing max_tokens")
+		}
+		if string(raw) != "2048" {
+			t.Fatalf("max_tokens = %s, want 2048", string(raw))
+		}
+	})
+
 	t.Run("serializes tool definitions", func(t *testing.T) {
 		body, err := buildChatRequestBody(schema.ChatRequest{
 			Model:    "test-model",

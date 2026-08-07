@@ -325,6 +325,11 @@ type Runner struct {
 	// because the tool executor is several frames below where the reason is
 	// known.
 	turnFinishReason string
+	// turnRequestOptions carries the resolved max-token and context-window
+	// limits for the current turn, derived from the resolved route. Per-turn
+	// state: populated after resolveRoute in RunTask, reset before the turn
+	// returns, never shared across calls. Not part of CopyFrom.
+	turnRequestOptions turnRequestOptions
 	// contextPackMsgIndex tracks the position of the single context-pack
 	// message in the current turn's wire transcript. -1 means no context-pack
 	// message is currently tracked. Reset at the start of each RunTask.
@@ -529,6 +534,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		task.Class = Classify(goal)
 	}
 	turnProvider, turnModel, route := r.resolveRoute(task)
+	if route.MaxOutput > 0 {
+		r.turnRequestOptions.maxTokens = intPtr(route.MaxOutput)
+	} else {
+		r.turnRequestOptions.maxTokens = nil
+	}
+	if route.Window > 0 {
+		r.turnRequestOptions.contextWindow = intPtr(route.Window)
+	} else {
+		r.turnRequestOptions.contextWindow = nil
+	}
+	defer func() {
+		r.turnRequestOptions = turnRequestOptions{}
+	}()
 	r.withStats(func(s *turnStats) {
 		s.m.Provider = turnProvider.Name()
 		s.m.Model = turnModel

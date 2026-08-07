@@ -744,3 +744,69 @@ func TestHistoryAfterRewindExcludesAbandonedBranch(t *testing.T) {
 		}
 	}
 }
+
+func TestRunPropagatesResolvedLimitsToRequests(t *testing.T) {
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.RouteResolver = &staticResolver{
+		route: routing.Route{
+			Role:    routing.RoleImplementer,
+			Profile: "p",
+			Preset:  routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 32768, MaxOutputTokens: 2048},
+		},
+		provider: p,
+	}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.Requests) == 0 {
+		t.Fatal("no requests captured")
+	}
+	req := p.Requests[0]
+	if got := req.MaxTokens; got == nil || *got != 2048 {
+		t.Fatalf("MaxTokens = %v, want 2048", got)
+	}
+	if got := req.ContextWindow; got == nil || *got != 32768 {
+		t.Fatalf("ContextWindow = %v, want 32768", got)
+	}
+}
+
+func TestRunLeavesLimitsUnsetWhenUnknown(t *testing.T) {
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.RouteResolver = &staticResolver{
+		route: routing.Route{
+			Role:    routing.RoleImplementer,
+			Profile: "p",
+			Preset:  routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "totally-made-up-xyz"},
+		},
+		provider: p,
+	}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.Requests) == 0 {
+		t.Fatal("no requests captured")
+	}
+	req := p.Requests[0]
+	if req.MaxTokens != nil {
+		t.Fatalf("MaxTokens = %v, want nil", req.MaxTokens)
+	}
+	if req.ContextWindow != nil {
+		t.Fatalf("ContextWindow = %v, want nil", req.ContextWindow)
+	}
+}

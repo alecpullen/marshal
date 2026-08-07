@@ -48,9 +48,10 @@ type JSONSchemaSpec struct {
 }
 
 // ChatRequest is the provider-agnostic chat request shape. Pointer fields
-// (Temperature, TopP, MaxTokens, ResponseFormat) distinguish "unset" from
-// "zero" so the provider can omit them from the wire request rather than
-// sending temperature=0 unintentionally.
+// (Temperature, TopP, MaxTokens, ContextWindow, ResponseFormat) distinguish
+// "unset" from "zero" so the provider can omit them from the wire request
+// rather than sending temperature=0 unintentionally. ContextWindow is omitted
+// when the resolved context window is unknown.
 type ChatRequest struct {
 	Model          string
 	Messages       []ChatMessage
@@ -58,6 +59,7 @@ type ChatRequest struct {
 	Temperature    *float64
 	TopP           *float64
 	MaxTokens      *int
+	ContextWindow  *int
 	Stop           []string
 	ResponseFormat *ResponseFormat
 	Tools          []ToolDefinition

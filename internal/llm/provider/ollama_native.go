@@ -117,6 +117,7 @@ type ollamaOptions struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
 	NumPredict  *int     `json:"num_predict,omitempty"`
+	NumCtx      *int     `json:"num_ctx,omitempty"`
 	Stop        []string `json:"stop,omitempty"`
 }
 
@@ -199,11 +200,12 @@ func (p *OllamaNative) buildChatRequestBody(req schema.ChatRequest) ([]byte, err
 		})
 	}
 	var opts *ollamaOptions
-	if req.Temperature != nil || req.TopP != nil || req.MaxTokens != nil || len(req.Stop) > 0 {
+	if req.Temperature != nil || req.TopP != nil || req.MaxTokens != nil || req.ContextWindow != nil || len(req.Stop) > 0 {
 		opts = &ollamaOptions{
 			Temperature: req.Temperature,
 			TopP:        req.TopP,
 			NumPredict:  req.MaxTokens,
+			NumCtx:      req.ContextWindow,
 			Stop:        req.Stop,
 		}
 	}

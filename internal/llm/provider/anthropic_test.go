@@ -64,6 +64,9 @@ func TestAnthropicChatHeadersAndBody(t *testing.T) {
 	if got["max_tokens"] != float64(8192) {
 		t.Fatalf("max_tokens = %v, want default 8192", got["max_tokens"])
 	}
+	if _, ok := got["num_ctx"]; ok {
+		t.Fatal("anthropic request should not include num_ctx")
+	}
 	system, ok := got["system"].([]any)
 	if !ok || len(system) != 1 {
 		t.Fatalf("system = %v, want 1 block", got["system"])

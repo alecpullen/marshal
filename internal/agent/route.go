@@ -39,12 +39,19 @@ const minDerivedTurnTokens = 4000
 //
 // usedFallback reports whether the window-unknown fallback fired (window
 // was <=0 with no configured override).
-func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured int) (threshold int, usedFallback bool) {
+//
+// derivedCollapsed reports whether the model-derived branch collapsed to
+// the DefaultMaxTurnContextTokens safety net because 0.85*window - reserve
+// fell below minDerivedTurnTokens (a very small window). It is distinct
+// from usedFallback: the window is known, but the derived value is too
+// small to be usable, so the caller must label the result as a fallback
+// rather than a genuine derivation.
+func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured int) (threshold int, usedFallback bool, derivedCollapsed bool) {
 	if configured > 0 {
-		return configured, false
+		return configured, false, false
 	}
 	if window <= 0 {
-		return DefaultMaxTurnContextTokens, true
+		return DefaultMaxTurnContextTokens, true, false
 	}
 	// Reserve room for the answer, but never more than an eighth of the
 	// window. Modern models advertise a max output that is a large
@@ -57,21 +64,26 @@ func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured in
 	}
 	effective := int(float64(window)*0.85) - reserve
 	if effective < minDerivedTurnTokens {
-		effective = DefaultMaxTurnContextTokens
+		return DefaultMaxTurnContextTokens, false, true
 	}
-	return effective, false
+	return effective, false, false
 }
 
 // thresholdSource labels where a turn's threshold came from, for the
-// per-turn budget log line and the /context panel.
-func thresholdSource(window, configured int) string {
+// per-turn budget log line and the /context panel. derivedCollapsed is the
+// flag reported by effectiveTurnThreshold when the model-derived branch
+// collapsed to the DefaultMaxTurnContextTokens safety net; such a value is
+// a fallback, not a genuine derivation, so it is labeled "fallback".
+func thresholdSource(window, configured int, derivedCollapsed bool) string {
 	switch {
 	case configured > 0:
 		return "configured"
-	case window > 0:
-		return "derived"
-	default:
+	case window <= 0:
 		return "fallback"
+	case derivedCollapsed:
+		return "fallback"
+	default:
+		return "derived"
 	}
 }
 

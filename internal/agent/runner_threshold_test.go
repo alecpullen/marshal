@@ -9,9 +9,12 @@ import (
 func TestEffectiveTurnThreshold_TracksWindowWhenUnset(t *testing.T) {
 	r := NewRunner(nil, nil, nil, newTestState(t), "m")
 	// 0.85 * 128000 - 4096 = 104704
-	got, fb := r.effectiveTurnThreshold(128000, 4096, 0)
+	got, fb, collapsed := r.effectiveTurnThreshold(128000, 4096, 0)
 	if fb {
 		t.Fatalf("expected non-fallback path")
+	}
+	if collapsed {
+		t.Fatalf("expected non-collapsed path")
 	}
 	if got != 104704 {
 		t.Fatalf("got %d, want 104704", got)
@@ -20,7 +23,7 @@ func TestEffectiveTurnThreshold_TracksWindowWhenUnset(t *testing.T) {
 
 func TestEffectiveTurnThreshold_ExplicitConfigIsHardCeiling(t *testing.T) {
 	r := NewRunner(nil, nil, nil, newTestState(t), "m")
-	got, fb := r.effectiveTurnThreshold(200000, 8192, 50000)
+	got, fb, _ := r.effectiveTurnThreshold(200000, 8192, 50000)
 	if fb {
 		t.Fatalf("configured should not trigger fallback")
 	}
@@ -31,7 +34,7 @@ func TestEffectiveTurnThreshold_ExplicitConfigIsHardCeiling(t *testing.T) {
 
 func TestEffectiveTurnThreshold_UnknownWindowFallsBack(t *testing.T) {
 	r := NewRunner(nil, nil, nil, newTestState(t), "m")
-	got, fb := r.effectiveTurnThreshold(0, 0, 0)
+	got, fb, _ := r.effectiveTurnThreshold(0, 0, 0)
 	if !fb {
 		t.Fatalf("expected fallback flag")
 	}
@@ -53,13 +56,12 @@ func TestThresholdNotStickyAcrossTurns(t *testing.T) {
 		Preset: routing.ModelPreset{Name: "small", Model: "small-32k", ContextWindow: 32000, MaxOutputTokens: 2048},
 	}}
 	_, _, routeSmall := r.resolveRoute(&Task{Class: ClassQuestion})
-	small, _ := r.effectiveTurnThreshold(routeSmall.Window, routeSmall.MaxOutput, r.MaxTurnContextTokens)
-
+	small, _, _ := r.effectiveTurnThreshold(routeSmall.Window, routeSmall.MaxOutput, r.MaxTurnContextTokens)
 	r.RouteResolver = &staticResolver{route: routing.Route{
 		Preset: routing.ModelPreset{Name: "large", Model: "large-200k", ContextWindow: 200000, MaxOutputTokens: 4096},
 	}}
 	_, _, routeLarge := r.resolveRoute(&Task{Class: ClassQuestion})
-	large, _ := r.effectiveTurnThreshold(routeLarge.Window, routeLarge.MaxOutput, r.MaxTurnContextTokens)
+	large, _, _ := r.effectiveTurnThreshold(routeLarge.Window, routeLarge.MaxOutput, r.MaxTurnContextTokens)
 
 	if small <= 0 {
 		t.Fatalf("small model threshold = %d, want > 0", small)
@@ -77,7 +79,7 @@ func TestEffectiveTurnThreshold_CapsOutputReserve(t *testing.T) {
 	r := NewRunner(nil, nil, nil, newTestState(t), "m")
 	// reserve = min(262144, 256000/8=32000) = 32000
 	// 0.85 * 256000 = 217600; 217600 - 32000 = 185600
-	got, fb := r.effectiveTurnThreshold(256000, 262144, 0)
+	got, fb, _ := r.effectiveTurnThreshold(256000, 262144, 0)
 	if fb {
 		t.Fatalf("expected non-fallback path, got fallback")
 	}
@@ -99,15 +101,19 @@ func TestNewRunnerLeavesTurnCeilingUnset(t *testing.T) {
 func TestThresholdSource(t *testing.T) {
 	cases := []struct {
 		window, configured int
+		collapsed          bool
 		want               string
 	}{
-		{256000, 50000, "configured"},
-		{256000, 0, "derived"},
-		{0, 0, "fallback"},
+		{256000, 50000, false, "configured"},
+		{256000, 0, false, "derived"},
+		{0, 0, false, "fallback"},
+		// A small window whose derived value collapses to the 60k safety
+		// net must be labeled a fallback, not a derivation.
+		{2000, 0, true, "fallback"},
 	}
 	for _, tc := range cases {
-		if got := thresholdSource(tc.window, tc.configured); got != tc.want {
-			t.Fatalf("thresholdSource(%d, %d) = %q, want %q", tc.window, tc.configured, got, tc.want)
+		if got := thresholdSource(tc.window, tc.configured, tc.collapsed); got != tc.want {
+			t.Fatalf("thresholdSource(%d, %d, %v) = %q, want %q", tc.window, tc.configured, tc.collapsed, got, tc.want)
 		}
 	}
 }

@@ -1199,7 +1199,7 @@ func TestMaxTurnContextTokensUsesSmallerOfConfiguredAndDerived(t *testing.T) {
 	}}
 
 	_, _, route := r.resolveRoute(&Task{Class: ClassQuestion})
-	got, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
+	got, _, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
 	// 0.85 * 32000 - 4096 = 23104; the configured ceiling (100000) wins
 	// because configured > 0 is a hard ceiling that never exceeds user config.
 	if got != 100_000 {
@@ -1216,7 +1216,7 @@ func TestMaxTurnContextTokensUsesConfiguredWhenLarger(t *testing.T) {
 	}}
 
 	_, _, route := r.resolveRoute(&Task{Class: ClassQuestion})
-	got, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
+	got, _, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
 	// 0.85 * 200000 - 8192 = 161808; ceiling keeps the user's 100000.
 	if got != 100_000 {
 		t.Fatalf("effectiveTurnThreshold = %d, want 100000 (configured ceiling)", got)

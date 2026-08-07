@@ -215,3 +215,65 @@ func (rs *RunStore) scanLines() ([][]byte, error) {
 func isPartialLine(line []byte) bool {
 	return !bytes.Contains(line, []byte("}"))
 }
+
+// RunLock records the process that currently owns a run. Only one live
+// owner is permitted; a stale lock requires explicit takeover.
+type RunLock struct {
+	RunID      string `json:"run_id"`
+	PID        int    `json:"pid"`
+	Host       string `json:"host"`
+	AcquiredAt string `json:"acquired_at"`
+}
+
+func (rs *RunStore) lockPath() string {
+	return filepath.Join(rs.paths.Dir, "run.lock")
+}
+
+// AcquireLock creates the lock file. If one already exists, it returns an
+// error — the caller must inspect the existing lock and decide whether to
+// take over.
+func (rs *RunStore) AcquireLock(lock RunLock) error {
+	p := rs.lockPath()
+	if _, err := os.Stat(p); err == nil {
+		return fmt.Errorf("runstore: run is already locked")
+	}
+	data, err := json.MarshalIndent(lock, "", "  ")
+	if err != nil {
+		return fmt.Errorf("runstore: marshal lock: %w", err)
+	}
+	return atomicWriteSync(p, data)
+}
+
+// Lock returns the current lock, or ok=false when none exists.
+func (rs *RunStore) Lock() (RunLock, bool, error) {
+	data, err := os.ReadFile(rs.lockPath())
+	if os.IsNotExist(err) {
+		return RunLock{}, false, nil
+	}
+	if err != nil {
+		return RunLock{}, false, fmt.Errorf("runstore: read lock: %w", err)
+	}
+	var l RunLock
+	if err := json.Unmarshal(data, &l); err != nil {
+		return RunLock{}, false, fmt.Errorf("runstore: parse lock: %w", err)
+	}
+	return l, true, nil
+}
+
+// ReleaseLock removes the lock file. It is a no-op when no lock exists.
+func (rs *RunStore) ReleaseLock() error {
+	err := os.Remove(rs.lockPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// TakeoverLock forcibly removes the existing lock and acquires a new one.
+// The caller must have already reported the stale owner to the user.
+func (rs *RunStore) TakeoverLock(lock RunLock) error {
+	if err := os.Remove(rs.lockPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("runstore: remove stale lock: %w", err)
+	}
+	return rs.AcquireLock(lock)
+}

@@ -155,3 +155,52 @@ func TestRunStoreNoCheckpoints(t *testing.T) {
 		t.Fatalf("Replay on empty store returned %d, want 0", len(all))
 	}
 }
+
+func TestRunStoreLockAcquireAndConcurrentRefusal(t *testing.T) {
+	dir := t.TempDir()
+	paths, err := NewPaths(dir, "test-plan")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	rs := NewRunStore(paths)
+
+	lock := RunLock{RunID: "r1", PID: 12345, Host: "test-host", AcquiredAt: "2026-08-08T12:00:00Z"}
+	if err := rs.AcquireLock(lock); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+
+	got, ok, err := rs.Lock()
+	if err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if !ok || got.RunID != "r1" {
+		t.Errorf("lock = %+v ok=%v, want r1", got, ok)
+	}
+
+	// Second acquire must fail.
+	if err := rs.AcquireLock(RunLock{RunID: "r2", PID: 99999}); err == nil {
+		t.Fatal("second AcquireLock should fail, got nil")
+	}
+}
+
+func TestRunStoreLockRelease(t *testing.T) {
+	dir := t.TempDir()
+	paths, err := NewPaths(dir, "test-plan")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	rs := NewRunStore(paths)
+	if err := rs.AcquireLock(RunLock{RunID: "r1", PID: 1}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if err := rs.ReleaseLock(); err != nil {
+		t.Fatalf("ReleaseLock: %v", err)
+	}
+	if _, ok, _ := rs.Lock(); ok {
+		t.Fatal("lock should be gone after release")
+	}
+	// Re-acquire after release should work.
+	if err := rs.AcquireLock(RunLock{RunID: "r2", PID: 2}); err != nil {
+		t.Fatalf("re-acquire after release: %v", err)
+	}
+}

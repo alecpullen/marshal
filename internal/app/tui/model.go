@@ -2641,15 +2641,35 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	}
 	if kind == "sdd" {
 		roles = routing.SDDCastRoles
-		title = "Start SDD run?"
+		title = "Start plan run?"
+
+		// Lead with what the run will do to the repository. The model
+		// roster matters less than the fact that this is an autonomous,
+		// multi-commit run against a branch the user has not seen.
+		tasks := "unknown task count"
+		for _, c := range sddplans.Discover(m.state.WorkingDir, m.state.Config.SDD.PlansDir) {
+			if c.Path != goal {
+				continue
+			}
+			if c.Err == nil {
+				tasks = fmt.Sprintf("%d tasks", c.Tasks)
+				if c.Done > 0 {
+					tasks += fmt.Sprintf(" · resuming at %d", c.Done+1)
+				}
+			}
+		}
 		worktree := "off"
 		if m.state.Config.SDD.AutoWorktree {
 			worktree = "on"
 		}
 		meta = []string{
-			"plan: " + strutil.Truncate(goal, 56, true),
-			fmt.Sprintf("fix rounds: %d · worktree: %s", m.state.Config.SDD.MaxFixRounds, worktree),
-			fmt.Sprintf("verify timeout: %dms", m.state.Config.SDD.VerifyTimeoutMS),
+			fmt.Sprintf("%s · %s", strutil.Truncate(filepath.Base(goal), 40, true), tasks),
+			"one commit per task, on a branch — review and merge it yourself",
+			fmt.Sprintf("worktree: %s · fix rounds: %d · verify timeout: %dms",
+				worktree, m.state.Config.SDD.MaxFixRounds, m.state.Config.SDD.VerifyTimeoutMS),
+		}
+		if v := m.state.Config.SDD.Verify; v.Build != "" || v.Test != "" {
+			meta = append(meta, "verify: "+strutil.Truncate(strings.TrimSpace(v.Build+" · "+v.Test), 48, true))
 		}
 	}
 	rows := make([]castlist.Row, 0, len(roles))
@@ -2660,6 +2680,17 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		} else {
 			row.Detail = entry.Route.Preset.Provider + "/" + entry.Route.Preset.Model
 			row.Badge = entry.Route.Preset.Name
+		}
+		rows = append(rows, row)
+	}
+	if kind == "sdd" {
+		v := m.state.Config.SDD.Verify
+		row := castlist.Row{Title: "verify gate"}
+		switch {
+		case v.Build == "" && v.Test == "":
+			row.Warn = "no build or test command configured — every task's gate will be skipped"
+		default:
+			row.Detail = strutil.Truncate(strings.TrimSpace(v.Build+" · "+v.Test), 44, true)
 		}
 		rows = append(rows, row)
 	}

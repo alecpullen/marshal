@@ -6595,3 +6595,59 @@ func TestSDDPlanPickerEmptyStateOffersNoBrokenAction(t *testing.T) {
 		t.Error("the custom-path escape hatch must survive the empty state")
 	}
 }
+
+func TestSDDPreflightStatesRunConsequences(t *testing.T) {
+	m := newTestModelInRepo(t)
+	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "add-retries.md")
+	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 5)
+	m.state.Config.SDD.Verify.Build = "go build ./..."
+	m.state.Config.SDD.Verify.Test = "go test ./..."
+
+	m.openRunPreflight("sdd", &testAgentRunner{}, path)
+
+	got := stripANSI(m.dock.Panel().View(100, 30))
+	for _, want := range []string{"5 tasks", "go build ./...", "go test ./...", "commit"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preflight must state %q before the user commits to the run:\n%s", want, got)
+		}
+	}
+}
+
+func TestSDDPreflightWarnsWhenVerifyIsUnconfigured(t *testing.T) {
+	m := newTestModelInRepo(t)
+	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "add-retries.md")
+	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 2)
+	m.state.Config.SDD.Verify.Build = ""
+	m.state.Config.SDD.Verify.Test = ""
+
+	m.openRunPreflight("sdd", &testAgentRunner{}, path)
+
+	got := stripANSI(m.dock.Panel().View(100, 30))
+	if !strings.Contains(got, "no build or test command") {
+		t.Errorf("an unconfigured verify gate must be visible at preflight — it makes every "+
+			"task's verification a silent no-op:\n%s", got)
+	}
+}
+
+func TestSDDPreflightStillListsTheCast(t *testing.T) {
+	m := newTestModelInRepo(t)
+	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "p.md")
+	writeTestPlan(t, m.state.WorkingDir, "p.md", 1)
+
+	m.openRunPreflight("sdd", &testAgentRunner{}, path)
+
+	got := stripANSI(m.dock.Panel().View(100, 30))
+	if !strings.Contains(got, "implementer") {
+		t.Errorf("the role cast must survive the rewrite:\n%s", got)
+	}
+}
+
+func TestSwarmPreflightUnchanged(t *testing.T) {
+	m := newTestModelInRepo(t)
+	m.openRunPreflight("swarm", &testAgentRunner{}, "make the thing faster")
+
+	got := stripANSI(m.dock.Panel().View(100, 30))
+	if !strings.Contains(got, "goal:") {
+		t.Errorf("the swarm preflight must be untouched by the SDD rewrite:\n%s", got)
+	}
+}

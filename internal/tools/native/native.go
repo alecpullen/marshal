@@ -52,6 +52,13 @@ type Options struct {
 	// rejected. May be nil when no extra directories are configured.
 	AdditionalRoots []string
 
+	// NamedRoots maps alias prefixes (e.g. "@run") to approved artifact
+	// directories. Paths starting with an alias are resolved against the
+	// mapped root instead of the workspace root. Used by pipeline
+	// dispatches to give workers access to briefs and reports outside the
+	// worktree without exposing absolute paths.
+	NamedRoots map[string]string
+
 	// Guardrail is invoked by shell.run / test.run after policy
 	// evaluation, as a final pre-flight check. Returning a non-nil
 	// error aborts the command with a tool error. Typically wired to
@@ -111,6 +118,7 @@ type CommandResult struct {
 type toolSet struct {
 	root            string
 	additionalRoots []string
+	namedRoots      map[string]string
 	runner          CommandRunner
 	testCommand     string
 	maxOutputBytes  int
@@ -302,6 +310,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 	return &toolSet{
 		root:            root,
 		additionalRoots: additionalRoots,
+		namedRoots:      opts.NamedRoots,
 		runner:          runner,
 		testCommand:     testCommand,
 		maxOutputBytes:  maxOutputBytes,

@@ -65,7 +65,7 @@ func (t *toolSet) csvInspectTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 
-		path, err := resolveWorkspacePathMulti(t.activeRoot(), t.additionalRoots, args.Path)
+		path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.additionalRoots, args.Path)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}

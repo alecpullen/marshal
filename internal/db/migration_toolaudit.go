@@ -30,7 +30,7 @@ func migrationToolAudit(tx *sql.Tx) error {
 // init is registered from migrations.go via direct append.
 func init() {
 	migrations = append(migrations, migrationToolAudit)
-}// ToolAuditEntry is the compact summary of a single tool call inside a
+} // ToolAuditEntry is the compact summary of a single tool call inside a
 // turn, persisted into the turn_tool_audit table. The Summary field
 // holds a tool-specific one-line description (e.g. "a.go:1-80 (412t)"
 // for a file.read, "go test ./..." for a shell.run). Ok is false for
@@ -157,4 +157,3 @@ func (db *DB) LoadAllTurnToolAudit(sessionID string) (map[int64][]ToolAuditEntry
 // agent package and tests in db/, both of which import db via the
 // regular path. The agenttest / registry imports belong in those
 // files, not here.
-

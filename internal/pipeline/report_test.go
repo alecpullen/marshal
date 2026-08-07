@@ -78,3 +78,31 @@ func TestParseReviewReportCleanRequiresBothVerdicts(t *testing.T) {
 		t.Fatal("missing QUALITY verdict: want error, got nil")
 	}
 }
+
+func TestParseReviewReportInputsAccessible(t *testing.T) {
+	text := "INPUTS: ACCESSIBLE\nSPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n"
+	r, err := ParseReviewReport(text)
+	if err != nil {
+		t.Fatalf("ParseReviewReport: %v", err)
+	}
+	if !r.InputsAccessible {
+		t.Error("InputsAccessible = false, want true")
+	}
+	if !r.Clean() {
+		t.Error("should be clean with accessible inputs and passing verdicts")
+	}
+}
+
+func TestParseReviewReportInputsBlocked(t *testing.T) {
+	text := "INPUTS: BLOCKED\nINPUT_ERROR: could not read @run/task-1-brief.md\nSPEC: FAIL\nQUALITY: CHANGES_REQUESTED\nFINDINGS:\n- [Critical] inputs not accessible\n"
+	r, err := ParseReviewReport(text)
+	if err != nil {
+		t.Fatalf("ParseReviewReport: %v", err)
+	}
+	if r.InputsAccessible {
+		t.Error("InputsAccessible = true, want false")
+	}
+	if r.InputError == "" {
+		t.Error("InputError should be set when BLOCKED")
+	}
+}

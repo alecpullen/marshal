@@ -11,7 +11,7 @@ import (
 const reportContract = `
 ## Report
 
-Write your full report to {{.ReportPath}} — what you changed, why, the
+Write your full report to {{if .ReportBasename}}@run/{{.ReportBasename}}{{else}}{{.ReportPath}}{{end}} — what you changed, why, the
 commands you ran, and their output. Then return only these lines:
 
     STATUS: DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED
@@ -43,7 +43,7 @@ var implementerTmpl = template.Must(template.New("implementer").Parse(
 
 ## Requirements
 
-Read {{.BriefPath}} first — it is your requirements, with the exact values
+Read {{if .BriefBasename}}@run/{{.BriefBasename}}{{else}}{{.BriefPath}}{{end}} first — it is your requirements, with the exact values
 to use verbatim. It is the full text of your task from the plan. Implement
 exactly what it specifies: nothing missing, nothing extra.
 {{if .Interfaces}}
@@ -77,11 +77,11 @@ var fixTmpl = template.Must(template.New("fix").Parse(
 
 ## Original requirements
 
-Read {{.BriefPath}} — the task's requirements are unchanged.
+Read {{if .BriefBasename}}@run/{{.BriefBasename}}{{else}}{{.BriefPath}}{{end}} — the task's requirements are unchanged.
 
 ## What was reported before
 
-Read {{.ReportPath}} for what the previous pass claims it built.
+Read {{if .ReportBasename}}@run/{{.ReportBasename}}{{else}}{{.ReportPath}}{{end}} for what the previous pass claims it built.
 
 ## What must change
 
@@ -103,7 +103,7 @@ tasks are complete.
 
 ## What was requested
 
-Read the task brief: {{.BriefPath}}
+Read the task brief: {{if .BriefBasename}}@run/{{.BriefBasename}}{{else}}{{.BriefPath}}{{end}}
 
 Task {{.TaskN}}: {{.Title}}
 
@@ -113,11 +113,11 @@ Global constraints from the plan that bind this task:
 
 ## What the implementer claims they built
 
-Read the implementer's report: {{.ReportPath}}
+Read the implementer's report: {{if .ReportBasename}}@run/{{.ReportBasename}}{{else}}{{.ReportPath}}{{end}}
 
 ## The change under review
 
-Read {{.PackagePath}} once — it contains the commit list, the stat summary,
+Read {{if .PackageBasename}}@run/{{.PackageBasename}}{{else}}{{.PackagePath}}{{end}} once — it contains the commit list, the stat summary,
 and the full diff with surrounding context, and it is your view of the
 change. The diff's context lines ARE the changed files: do not read a
 changed file separately unless a hunk you must judge is cut off
@@ -137,8 +137,10 @@ Your review is read-only. Do not modify the working tree.
 
 ## Report
 
-Write your reasoning to {{.ReviewPath}}, then return only these lines:
+Write your reasoning to {{if .VerdictBasename}}@run/{{.VerdictBasename}}{{else}}{{.ReviewPath}}{{end}}, then return only these lines:
 
+    INPUTS: ACCESSIBLE | BLOCKED
+    INPUT_ERROR: <one line when INPUTS is BLOCKED>
     SPEC: PASS | FAIL
     QUALITY: APPROVED | CHANGES_REQUESTED
     FINDINGS:
@@ -163,7 +165,7 @@ Read {{.PlanPath}} — the full plan this branch implements.
 
 ## The change
 
-Read {{.PackagePath}} — the commit list, stat summary, and full diff for
+Read {{if .PackageBasename}}@run/{{.PackageBasename}}{{else}}{{.PackagePath}}{{end}} — the commit list, stat summary, and full diff for
 {{.Range}}.
 {{if .Minors}}
 ## Minor findings recorded during the run
@@ -185,8 +187,10 @@ Your review is read-only. Do not modify the working tree.
 
 ## Report
 
-Write your reasoning to {{.ReviewPath}}, then return only these lines:
+Write your reasoning to {{if .VerdictBasename}}@run/{{.VerdictBasename}}{{else}}{{.ReviewPath}}{{end}}, then return only these lines:
 
+    INPUTS: ACCESSIBLE | BLOCKED
+    INPUT_ERROR: <one line when INPUTS is BLOCKED>
     SPEC: PASS | FAIL
     QUALITY: APPROVED | CHANGES_REQUESTED
     FINDINGS:
@@ -201,26 +205,30 @@ Both verdicts are required. If you have no findings, write
 // ImplementerPrompt is the input to RenderImplementer. Answer is set only
 // when re-dispatching after a human resolved the implementer's question.
 type ImplementerPrompt struct {
-	TaskN      int
-	Title      string
-	Placement  string
-	BriefPath  string
-	ReportPath string
-	WorkDir    string
-	Interfaces string
-	Answer     string
+	TaskN          int
+	Title          string
+	Placement      string
+	BriefPath      string // kept for backward compat
+	BriefBasename  string // e.g. "task-1-brief.md"
+	ReportPath     string
+	ReportBasename string
+	WorkDir        string
+	Interfaces     string
+	Answer         string
 }
 
 // FixPrompt is the input to RenderFix. Findings carries every item to fix
 // in one dispatch; the controller never dispatches one fixer per finding.
 type FixPrompt struct {
-	TaskN         int
-	BriefPath     string
-	ReportPath    string
-	WorkDir       string
-	Reason        string
-	Findings      []Finding
-	CoveringTests string
+	TaskN          int
+	BriefPath      string
+	BriefBasename  string
+	ReportPath     string
+	ReportBasename string
+	WorkDir        string
+	Reason         string
+	Findings       []Finding
+	CoveringTests  string
 }
 
 // ReviewPrompt is the input to RenderReview.
@@ -228,19 +236,25 @@ type ReviewPrompt struct {
 	TaskN             int
 	Title             string
 	BriefPath         string
+	BriefBasename     string
 	ReportPath        string
+	ReportBasename    string
 	PackagePath       string
+	PackageBasename   string
 	ReviewPath        string
+	VerdictBasename   string
 	GlobalConstraints string
 }
 
 // BranchReviewPrompt is the input to RenderBranchReview.
 type BranchReviewPrompt struct {
-	PlanPath    string
-	PackagePath string
-	ReviewPath  string
-	Range       string
-	Minors      []string
+	PlanPath        string
+	PackagePath     string
+	PackageBasename string
+	ReviewPath      string
+	VerdictBasename string
+	Range           string
+	Minors          []string
 }
 
 func render(t *template.Template, data any) (string, error) {

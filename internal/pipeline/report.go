@@ -89,10 +89,12 @@ type Finding struct {
 
 // ReviewReport is a parsed reviewer verdict pair plus its findings.
 type ReviewReport struct {
-	SpecPass        bool
-	QualityApproved bool
-	Findings        []Finding
-	Raw             string
+	SpecPass         bool
+	QualityApproved  bool
+	InputsAccessible bool
+	InputError       string
+	Findings         []Finding
+	Raw              string
 }
 
 // Clean reports whether the task may advance: both verdicts positive and
@@ -129,7 +131,7 @@ var findingRe = regexp.MustCompile(`^-\s*\[(Critical|Important|Minor)\]\s*(.+)$`
 // required: a report carrying only one is a failed review, not a pass.
 func ParseReviewReport(text string) (ReviewReport, error) {
 	r := ReviewReport{Raw: text}
-	var sawSpec, sawQuality bool
+	var sawSpec, sawQuality, sawInputs bool
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if m := findingRe.FindStringSubmatch(trimmed); m != nil {
@@ -147,10 +149,21 @@ func ParseReviewReport(text string) (ReviewReport, error) {
 		case "QUALITY":
 			sawQuality = true
 			r.QualityApproved = strings.EqualFold(value, "APPROVED")
+		case "INPUTS":
+			sawInputs = true
+			r.InputsAccessible = strings.EqualFold(value, "ACCESSIBLE")
+		case "INPUT_ERROR":
+			r.InputError = value
 		}
 	}
 	if !sawSpec || !sawQuality {
 		return r, fmt.Errorf("%w: report must carry both SPEC and QUALITY verdicts", ErrReportParse)
+	}
+	if !sawInputs {
+		// Legacy reviewers that omit INPUTS are treated as accessible for
+		// backward compatibility; the controller preflight catches actual
+		// missing files.
+		r.InputsAccessible = true
 	}
 	return r, nil
 }

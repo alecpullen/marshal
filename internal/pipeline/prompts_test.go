@@ -102,3 +102,40 @@ func TestRenderBranchReviewIncludesMinors(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderImplementerUsesRunAlias(t *testing.T) {
+	prompt, err := RenderImplementer(ImplementerPrompt{
+		TaskN:          1,
+		Title:          "First",
+		Placement:      "Task 1 of 2",
+		BriefBasename:  "task-1-brief.md",
+		ReportBasename: "task-1-report.md",
+		WorkDir:        "/tmp/worktree",
+	})
+	if err != nil {
+		t.Fatalf("RenderImplementer: %v", err)
+	}
+	if !strings.Contains(prompt, "@run/task-1-brief.md") {
+		t.Errorf("implementer prompt should reference @run/task-1-brief.md:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "@run/task-1-report.md") {
+		t.Errorf("implementer prompt should reference @run/task-1-report.md:\n%s", prompt)
+	}
+}
+
+func TestRenderReviewIncludesInputsField(t *testing.T) {
+	prompt, err := RenderReview(ReviewPrompt{
+		TaskN:           1,
+		Title:           "First",
+		BriefBasename:   "task-1-brief.md",
+		ReportBasename:  "task-1-report.md",
+		PackageBasename: "task-1-review.md",
+		VerdictBasename: "task-1-review-verdict.md",
+	})
+	if err != nil {
+		t.Fatalf("RenderReview: %v", err)
+	}
+	if !strings.Contains(prompt, "INPUTS:") {
+		t.Errorf("review prompt should include INPUTS field:\n%s", prompt)
+	}
+}

@@ -2,6 +2,8 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -69,4 +71,38 @@ func testerTestRunTool(tool Tool) Tool {
 		return original(ctx, call)
 	}
 	return testerTool
+}
+
+// ArtifactWriterView returns a new Registry containing src's read-only
+// tools plus file.write_patch restricted to paths under the named artifact
+// root. Reviewers need to write their verdict under @run but must not
+// modify source or run shell commands.
+func ArtifactWriterView(src *Registry, artifactAlias string) *Registry {
+	view := New()
+	for _, tool := range src.List() {
+		switch {
+		case tool.Risk == RiskReadOnly:
+			_ = view.Register(tool)
+		case tool.Name == "file.write_patch":
+			_ = view.Register(artifactWriterPatchTool(tool, artifactAlias))
+		}
+	}
+	return view
+}
+
+func artifactWriterPatchTool(tool Tool, alias string) Tool {
+	original := tool.Handler
+	filtered := tool
+	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
+		var args struct {
+			Patch string `json:"patch"`
+		}
+		_ = json.Unmarshal(call.Args, &args)
+		// Only allow patches whose paths start with the alias prefix.
+		if !strings.HasPrefix(args.Patch, alias+"/") && !strings.Contains(args.Patch, alias+"/") {
+			return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/", alias)
+		}
+		return original(ctx, call)
+	}
+	return filtered
 }

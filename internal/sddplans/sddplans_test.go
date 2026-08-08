@@ -197,3 +197,23 @@ func TestDiscoverSurfacesUnreadableLedger(t *testing.T) {
 		t.Error("a plan with an unreadable ledger must not be resumable")
 	}
 }
+
+func TestDiscoverRecognizesNonTerminalRun(t *testing.T) {
+	root := t.TempDir()
+	writePlan(t, filepath.Join(root, ".marshal/plans"), "my-plan.md", twoTaskPlan)
+	paths, err := pipeline.NewPaths(root, "my-plan")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	rs := pipeline.NewRunStore(paths)
+	_ = rs.CreateManifest(pipeline.Manifest{RunID: "r1", PlanPath: filepath.Join(root, ".marshal/plans/my-plan.md")})
+	_ = rs.AppendCheckpoint(pipeline.Checkpoint{Seq: 1, RunID: "r1", Phase: pipeline.PhaseImplementing, TaskN: 1})
+
+	got := Discover(root, ".marshal/plans")
+	if len(got) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(got))
+	}
+	if !got[0].Resumable() {
+		t.Error("a run with an in-flight checkpoint should be resumable even with 0 done")
+	}
+}

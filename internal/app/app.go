@@ -932,12 +932,14 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		MaxDispatchRetries: cfg.SDD.DispatchRetries,
 		AutoEscalate:       parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
 		TargetBranch:       "main",
+		MaxTokensCfg:       cfg.SDD.MaxTotalTokens,
 	})
 	if err != nil {
 		state.Logger().Warn("pipeline: controller construction failed", "error", err)
 		state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start plan run: %v", err), session.ContentTypePlain)
 		return nil
 	}
+	c.RunStore = pipeline.NewRunStore(c.Paths)
 	adapter = pipeline.NewControllerAdapter(c, state)
 	return adapter
 }

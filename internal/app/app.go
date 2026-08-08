@@ -838,11 +838,11 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		r.PlanFirst = s.cfg.Agent.PlanFirst
 	}
 	r.Pricing = pricing.Lookup(route.Preset) // closes role-runner pricing gap
+	repoInstructions, _ := loadRepoInstructions(s.state.WorkingDir)
+	var customAddendum string
 	if route.CustomAgent != nil {
 		ca := route.CustomAgent
-		if ca.SystemPrompt != "" {
-			r.SystemPromptAddendum = ca.SystemPrompt
-		}
+		customAddendum = ca.SystemPrompt
 		if len(ca.ToolDenylist) > 0 {
 			r.Registry = agent.DenylistView(r.Registry, ca.ToolDenylist)
 		}
@@ -853,6 +853,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 			r.MaxToolIterations = ca.MaxIterations
 		}
 	}
+	r.SystemPromptAddendum = composeAddendum(repoInstructions, customAddendum)
 	return r, nil
 }
 
@@ -1020,6 +1021,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		subtaskIters = defaultSubtaskIterations
 	}
 	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
+	repoInstructionsForSubagent, _ := loadRepoInstructions(parentState.WorkingDir)
 	return func(agentName string) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
@@ -1050,7 +1052,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		child.Role = role
 		child.MaxToolIterations = iters
 		child.NativeTools = true
-		child.SystemPromptAddendum = addendum
+		child.SystemPromptAddendum = composeAddendum(repoInstructionsForSubagent, addendum)
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
 		// Fold the child's token usage into the parent session's running

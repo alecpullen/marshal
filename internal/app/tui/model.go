@@ -50,6 +50,7 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
@@ -112,9 +113,12 @@ type Model struct {
 	runner          AgentRunner
 	swarmRunner     AgentRunner
 	pipelineFactory func(planPath string) AgentRunner
-	ctx             context.Context
-	busy            bool
-	configReloader  ConfigReloader
+	// planAuthorFactory builds a scoped SDD plan-authoring runner for one
+	// request. Nil when the runtime has no provider.
+	planAuthorFactory PlanAuthorFactory
+	ctx               context.Context
+	busy              bool
+	configReloader    ConfigReloader
 	// runnerSource exposes the runtime's current runner after a config
 	// reload. Used to recover from a startup provider-build failure, where
 	// the TUI was constructed without a runner: the first successful reload
@@ -485,6 +489,20 @@ func WithPipelineFactory(ctx context.Context, factory func(planPath string) Agen
 	return func(m *Model) {
 		m.ctx = ctx
 		m.pipelineFactory = factory
+	}
+}
+
+// PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
+// request. It is an alias for sddauthor.Factory so the TUI does not depend
+// on the authoring package's construction details.
+type PlanAuthorFactory = sddauthor.Factory
+
+// WithPlanAuthorFactory configures the TUI to build a scoped SDD
+// plan-authoring runner on demand when /sdd new is submitted.
+func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.planAuthorFactory = factory
 	}
 }
 

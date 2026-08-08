@@ -120,10 +120,12 @@ func artifactWriterPatchTool(tool Tool, alias string) Tool {
 }
 
 // PlanWriterView returns a new Registry for the SDD plan-authoring child. It
-// retains read-only tools (except nested-agent, question, and mode tools),
-// plus file.write_patch restricted to exactly the allowed plan artifact
-// paths. The child may inspect the repository and write one plan artifact,
-// but must not modify source, run commands, or reach the network.
+// retains read-only tools (except nested-agent, question, mode, and
+// side-effectful native tools that could mutate state outside the
+// candidate), plus file.write_patch restricted to exactly the allowed plan
+// artifact paths. The child may inspect the repository and write one plan
+// artifact, but must not modify source, run commands, or reach the
+// network.
 func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
 	allowedSet := make(map[string]bool, len(allowed))
 	for _, p := range allowed {
@@ -139,6 +141,12 @@ func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
 			case "agent.run", "question.ask", "ask_user", "mode.request":
 				// Nested-agent, question, and mode tools are excluded: the
 				// orphaned child must not spawn agents or ask the user.
+			case "diagnostics.check", "recall_history":
+				// Side-effectful despite the RiskReadOnly label:
+				// diagnostics.check runs configured per-language shell
+				// commands and recall_history dereferences the session DB
+				// (panics when nil). Stripped so the orphan cannot run
+				// arbitrary checkers or touch archived-turn storage.
 			default:
 				_ = view.Register(tool)
 			}

@@ -187,8 +187,8 @@ func TestArtifactWriterPatchGuardEnforcesAliasPrefix(t *testing.T) {
 	}
 
 	allowed := []string{
-		`{"patch":"diff --git a/@run/task-1.md b/@run/task-1.md"}`,
-		`{"patch":"diff --git a/@run/task-1.md b/@run/task-1.md\n--- a/@run/task-1.md\n+++ b/@run/task-1.md\n@@ -1 +1 @@\n-old\n+new\n"}`,
+		`{"patch":"File: @run/task-1.md\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: @run/task-1.md\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
 	}
 	for _, args := range allowed {
 		if _, err := tool.Handler(context.Background(), ToolCall{Name: "file.write_patch", Args: []byte(args)}); err != nil {
@@ -198,11 +198,11 @@ func TestArtifactWriterPatchGuardEnforcesAliasPrefix(t *testing.T) {
 
 	rejected := []string{
 		`{"patch":"internal/foo.go"}`,
-		`{"patch":"diff --git a/internal/foo.go b/internal/foo.go"}`,
+		`{"patch":"File: internal/foo.go\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE"}`,
 		// A source patch that merely contains the alias substring anywhere
 		// (here in a comment) must still be rejected: the guard parses the
 		// target paths, not the blob text.
-		`{"patch":"diff --git a/internal/foo.go b/internal/foo.go\n--- a/internal/foo.go\n+++ b/internal/foo.go\n@@ -1 +1 @@\n-// @run/ is not a target\n+// changed\n"}`,
+		`{"patch":"File: internal/foo.go\n<<<<<<< SEARCH\n// @run/ is not a target\n=======\n// changed\n>>>>>>> REPLACE"}`,
 	}
 	for _, args := range rejected {
 		if _, err := tool.Handler(context.Background(), ToolCall{Name: "file.write_patch", Args: []byte(args)}); err == nil {

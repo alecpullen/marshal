@@ -17,7 +17,7 @@ func init() {
 }
 
 func TestNewPanelImplementsDockPanel(t *testing.T) {
-	p := New("test", nil, nil)
+	p := New("test", nil, nil, "agent")
 	if p == nil {
 		t.Fatal("New returned nil")
 	}
@@ -32,7 +32,7 @@ func TestEnterEmitsStartMsgWhenUnblocked(t *testing.T) {
 	p := New("test", []Row{
 		{Title: "Alice", Detail: "planner", Badge: "ready"},
 		{Title: "Bob", Detail: "implementer", Badge: "ready"},
-	}, nil)
+	}, nil, "agent")
 
 	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
@@ -48,7 +48,7 @@ func TestEnterBlockedWhenRowHasError(t *testing.T) {
 	p := New("test", []Row{
 		{Title: "Alice", Detail: "planner", Badge: "ready"},
 		{Title: "Bob", Detail: "implementer", Badge: "error", Err: "model unavailable"},
-	}, nil)
+	}, nil, "agent")
 
 	if !p.blocked() {
 		t.Fatal("expected blocked() to be true when a row has Err")
@@ -63,7 +63,7 @@ func TestEnterBlockedWhenRowHasError(t *testing.T) {
 func TestEscEmitsCancelMsg(t *testing.T) {
 	p := New("test", []Row{
 		{Title: "Alice", Detail: "planner"},
-	}, nil)
+	}, nil, "agent")
 
 	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
@@ -79,7 +79,7 @@ func TestViewRendersRowsAndMetadata(t *testing.T) {
 	p := New("Cast", []Row{
 		{Title: "Alice", Detail: "planner", Badge: "ready"},
 		{Title: "Bob", Detail: "implementer", Badge: "ready", Err: "model unavailable"},
-	}, []string{"mode: sdd2", "model: minimax-m3"})
+	}, []string{"mode: sdd2", "model: minimax-m3"}, "agent")
 
 	out := ansi.Strip(p.View(80, 20))
 	lines := strings.Split(out, "\n")
@@ -136,7 +136,7 @@ func TestViewHintsChangeWhenBlocked(t *testing.T) {
 	// Unblocked: hints should say "↵ start"
 	p := New("Cast", []Row{
 		{Title: "Alice"},
-	}, nil)
+	}, nil, "agent")
 	out := ansi.Strip(p.View(80, 20))
 	if !strings.Contains(out, "start") {
 		t.Errorf("unblocked view should contain 'start' hint, got:\n%s", out)
@@ -145,7 +145,7 @@ func TestViewHintsChangeWhenBlocked(t *testing.T) {
 	// Blocked: hints should say "↵ blocked"
 	p2 := New("Cast", []Row{
 		{Title: "Alice", Err: "error"},
-	}, nil)
+	}, nil, "agent")
 	out2 := ansi.Strip(p2.View(80, 20))
 	if !strings.Contains(out2, "blocked") {
 		t.Errorf("blocked view should contain 'blocked' hint, got:\n%s", out2)
@@ -157,7 +157,7 @@ func TestViewTruncatesToHeightBudget(t *testing.T) {
 	for i := range rows {
 		rows[i] = Row{Title: "row"}
 	}
-	p := New("Cast", rows, nil)
+	p := New("Cast", rows, nil, "agent")
 	out := ansi.Strip(p.View(80, 5))
 	got := len(strings.Split(out, "\n"))
 	if got > 5 {
@@ -169,7 +169,7 @@ func TestWarnRowRendersButDoesNotBlock(t *testing.T) {
 	p := New("Start run?", []Row{
 		{Title: "implementer", Detail: "ollama/qwen"},
 		{Title: "verify", Warn: "no build or test command configured"},
-	}, nil)
+	}, nil, "agent")
 
 	got := ansi.Strip(p.View(80, 20))
 	if !strings.Contains(got, "no build or test command configured") {
@@ -184,8 +184,51 @@ func TestWarnRowRendersButDoesNotBlock(t *testing.T) {
 }
 
 func TestErrRowStillBlocks(t *testing.T) {
-	p := New("Start run?", []Row{{Title: "implementer", Err: "no model configured"}}, nil)
+	p := New("Start run?", []Row{{Title: "implementer", Err: "no model configured"}}, nil, "agent")
 	if !p.blocked() {
 		t.Error("an error row must still block")
+	}
+}
+
+func TestStrategyCyclesOnLeftRight(t *testing.T) {
+	panel := New("Start plan run?", nil, nil, "agent")
+	// Right arrow should cycle agent -> adaptive.
+	panel.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if panel.strategy != "adaptive" {
+		t.Errorf("after right: strategy = %q, want %q", panel.strategy, "adaptive")
+	}
+	// Right again: adaptive -> strict.
+	panel.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if panel.strategy != "strict" {
+		t.Errorf("after right 2: strategy = %q, want %q", panel.strategy, "strict")
+	}
+	// Right again: strict -> agent (wraps).
+	panel.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if panel.strategy != "agent" {
+		t.Errorf("after right 3: strategy = %q, want %q", panel.strategy, "agent")
+	}
+}
+
+func TestStrategyLeftCyclesBackward(t *testing.T) {
+	panel := New("Start plan run?", nil, nil, "agent")
+	panel.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if panel.strategy != "strict" {
+		t.Errorf("after left: strategy = %q, want %q", panel.strategy, "strict")
+	}
+}
+
+func TestStartMsgCarriesStrategy(t *testing.T) {
+	panel := New("Start plan run?", nil, nil, "adaptive")
+	cmd := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter should produce a command")
+	}
+	msg := cmd()
+	start, ok := msg.(StartMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want StartMsg", msg)
+	}
+	if start.Strategy != "adaptive" {
+		t.Errorf("StartMsg.Strategy = %q, want %q", start.Strategy, "adaptive")
 	}
 }

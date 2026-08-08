@@ -29,24 +29,27 @@ type Row struct {
 }
 
 // StartMsg is emitted when the user presses Enter and no row has an error.
-type StartMsg struct{}
+type StartMsg struct {
+	Strategy string
+}
 
 // CancelMsg is emitted when the user presses Esc.
 type CancelMsg struct{}
 
 // Panel is a dock.Panel that renders a pre-flight cast list.
 type Panel struct {
-	title string
-	rows  []Row
-	meta  []string
+	title    string
+	rows     []Row
+	meta     []string
+	strategy string
 }
 
 var _ dock.Panel = (*Panel)(nil)
 
-// New creates a cast list panel with the given title, cast rows, and
-// optional metadata lines (e.g. run mode, model info).
-func New(title string, rows []Row, meta []string) *Panel {
-	return &Panel{title: title, rows: rows, meta: meta}
+// New creates a cast list panel with the given title, cast rows, optional
+// metadata lines, and initial execution strategy.
+func New(title string, rows []Row, meta []string, strategy string) *Panel {
+	return &Panel{title: title, rows: rows, meta: meta, strategy: strategy}
 }
 
 // blocked reports whether any row has a non-empty Err.
@@ -60,7 +63,7 @@ func (p *Panel) blocked() bool {
 }
 
 // Update handles key events. Enter emits StartMsg when unblocked; Esc emits
-// CancelMsg.
+// CancelMsg. Left/Right cycles the execution strategy.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch k := msg.(type) {
 	case tea.KeyPressMsg:
@@ -69,12 +72,32 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			if p.blocked() {
 				return nil
 			}
-			return func() tea.Msg { return StartMsg{} }
+			return func() tea.Msg { return StartMsg{Strategy: p.strategy} }
 		case "esc":
 			return func() tea.Msg { return CancelMsg{} }
+		case "right":
+			p.cycleStrategy(1)
+			return nil
+		case "left":
+			p.cycleStrategy(-1)
+			return nil
 		}
 	}
 	return nil
+}
+
+var strategies = []string{"agent", "adaptive", "strict"}
+
+func (p *Panel) cycleStrategy(dir int) {
+	idx := 0
+	for i, s := range strategies {
+		if s == p.strategy {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + dir + len(strategies)) % len(strategies)
+	p.strategy = strategies[idx]
 }
 
 // Sizing keeps the cast list docked under the default height cap.
@@ -101,41 +124,16 @@ func (p *Panel) View(width, maxHeight int) string {
 		rows = append(rows, "")
 	}
 
+	// Strategy row.
+	stratRow := Row{
+		Title:  "execution strategy",
+		Detail: p.strategy,
+	}
+	rows = append(rows, renderRow(stratRow, inner))
+
 	// Cast rows.
 	for _, r := range p.rows {
-		right := ""
-		if r.Detail != "" {
-			right = detailStyle().Render(r.Detail)
-		}
-		if r.Badge != "" {
-			right += " " + badgeStyle().Render(r.Badge)
-		}
-		rightWidth := lipgloss.Width(right)
-
-		titleBudget := inner - rightWidth - 1
-		if titleBudget < 1 {
-			titleBudget = 1
-		}
-		label := r.Title
-		if ansi.StringWidth(label) > titleBudget {
-			label = ansi.Truncate(label, titleBudget, "…")
-		}
-
-		gap := inner - lipgloss.Width(label) - rightWidth
-		if gap < 1 {
-			gap = 1
-		}
-
-		line := "  " + label + strings.Repeat(" ", gap) + right
-
-		if r.Err != "" {
-			line += "\n" + errorStyle().Render("    "+r.Err)
-		}
-		if r.Warn != "" {
-			line += "\n" + warnStyle().Render("    "+glyph.Warning+" "+r.Warn)
-		}
-
-		rows = append(rows, line)
+		rows = append(rows, renderRow(r, inner))
 	}
 
 	// Blocked indicator.
@@ -158,6 +156,43 @@ func (p *Panel) View(width, maxHeight int) string {
 
 	ph := min(lipgloss.Height(body)+1, maxHeight)
 	return chrome.PanelWithHints(p.title, hints, body, pw, ph, true, th)
+}
+
+// renderRow renders a single cast row (or the strategy row) into a string,
+// including any Err/Warn continuation lines.
+func renderRow(r Row, inner int) string {
+	right := ""
+	if r.Detail != "" {
+		right = detailStyle().Render(r.Detail)
+	}
+	if r.Badge != "" {
+		right += " " + badgeStyle().Render(r.Badge)
+	}
+	rightWidth := lipgloss.Width(right)
+
+	titleBudget := inner - rightWidth - 1
+	if titleBudget < 1 {
+		titleBudget = 1
+	}
+	label := r.Title
+	if ansi.StringWidth(label) > titleBudget {
+		label = ansi.Truncate(label, titleBudget, "…")
+	}
+
+	gap := inner - lipgloss.Width(label) - rightWidth
+	if gap < 1 {
+		gap = 1
+	}
+
+	line := "  " + label + strings.Repeat(" ", gap) + right
+
+	if r.Err != "" {
+		line += "\n" + errorStyle().Render("    "+r.Err)
+	}
+	if r.Warn != "" {
+		line += "\n" + warnStyle().Render("    "+glyph.Warning+" "+r.Warn)
+	}
+	return line
 }
 
 func isMono() bool {

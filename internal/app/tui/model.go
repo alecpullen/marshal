@@ -1570,6 +1570,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
+		// Pass the selected strategy to the runner.
+		if start, ok := msg.(castlist.StartMsg); ok {
+			if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
+				adapter.Controller().Strategy = pipeline.Strategy(start.Strategy)
+			}
+		}
 		return m.startAgentRun(run.runner, run.goal)
 	case castlist.CancelMsg:
 		m.dock.CloseNow()
@@ -2730,7 +2736,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		rows = append(rows, row)
 	}
 	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
-	m.dock.Open(castlist.New(title, rows, meta))
+	m.dock.Open(castlist.New(title, rows, meta, "agent"))
 }
 
 // startAgentRun begins a turn on runner with goal, wiring cancellation and

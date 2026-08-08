@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
+	"marshal/internal/pipeline"
 	"marshal/internal/worktree"
 )
 
@@ -143,7 +144,19 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
-			planPath := strings.TrimSpace(strings.Join(args, " "))
+			// Parse --strategy from args.
+			strategy := "agent"
+			var planArgs []string
+			for _, a := range args {
+				if strings.HasPrefix(a, "--strategy=") {
+					strategy = strings.TrimPrefix(a, "--strategy=")
+				} else if a == "--strategy" {
+					// Handled by next arg if present; for now skip.
+				} else {
+					planArgs = append(planArgs, a)
+				}
+			}
+			planPath := strings.TrimSpace(strings.Join(planArgs, " "))
 			if planPath == "" {
 				m.openSDDPlanPicker()
 				m.refreshViewport()
@@ -156,6 +169,10 @@ func init() {
 			if runner == nil {
 				m.refreshViewport()
 				return m, nil
+			}
+			// Set the strategy on the controller.
+			if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
+				adapter.Controller().Strategy = pipeline.Strategy(strategy)
 			}
 			m.pipelineRunner = runner
 			m.openRunPreflight("sdd", runner, planPath)

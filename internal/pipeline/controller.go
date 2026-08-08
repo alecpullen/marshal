@@ -152,6 +152,13 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 	}, nil
 }
 
+// overBudget reports whether the run has consumed its total-token budget.
+// maxTokens is the runtime budget (set from MaxTokensCfg or the manifest on
+// resume); 0 means unlimited.
+func (c *Controller) overBudget() bool {
+	return c.maxTokens > 0 && c.UsageTokens >= c.maxTokens
+}
+
 // CompletedCount returns the number of tasks the ledger marks complete.
 func (c *Controller) CompletedCount() (int, error) {
 	done, err := c.Ledger.CompletedTasks()
@@ -748,6 +755,9 @@ func (c *Controller) Run(ctx context.Context) error {
 		if done[t.N] {
 			continue
 		}
+		if c.overBudget() {
+			return fmt.Errorf("pipeline: token budget exhausted (%d/%d) — resumable", c.UsageTokens, c.maxTokens)
+		}
 		res, err := c.runTask(ctx, t)
 		if err != nil {
 			if errors.Is(err, ErrHumanGateRequired) && c.AutoEscalate && !c.escalated {
@@ -762,6 +772,9 @@ func (c *Controller) Run(ctx context.Context) error {
 			}
 		}
 		c.escalated = false
+		if c.overBudget() {
+			return fmt.Errorf("pipeline: token budget exhausted (%d/%d) — resumable", c.UsageTokens, c.maxTokens)
+		}
 		res, err = c.reviewTask(ctx, t, res)
 		if err != nil {
 			return err
@@ -774,6 +787,9 @@ func (c *Controller) Run(ctx context.Context) error {
 			cp.HeadSHA = res.Head
 		})
 		c.emit(t.N, 0, PhaseDone, "")
+	}
+	if c.overBudget() {
+		return fmt.Errorf("pipeline: token budget exhausted (%d/%d) — resumable", c.UsageTokens, c.maxTokens)
 	}
 	if err := c.branchReview(ctx); err != nil {
 		return err

@@ -18,6 +18,19 @@ func TestResolveModelLimitsPrefersPreset(t *testing.T) {
 	}
 }
 
+func TestResolveModelLimitsUsesProvidedTable(t *testing.T) {
+	tbl := limits.NewTable(map[string]limits.Limit{
+		"test-provider/model-with-cache-limits": {ContextWindow: 128000, MaxOutputTokens: 8192},
+	})
+	window, maxOutput := ResolveModelLimits(routing.ModelPreset{
+		Provider: "test-provider",
+		Model:    "model-with-cache-limits",
+	}, &tbl)
+	if window != 128000 || maxOutput != 8192 {
+		t.Fatalf("ResolveModelLimits() = (%d, %d), want (128000, 8192)", window, maxOutput)
+	}
+}
+
 func TestResolveModelLimitsUsesTable(t *testing.T) {
 	tbl := limits.NewTable(map[string]limits.Limit{
 		"anthropic/claude-sonnet-4.5": {ContextWindow: 200000, MaxOutputTokens: 64000},
@@ -86,5 +99,22 @@ func TestResolveModelLimitsFillsUnsetFieldsIndependently(t *testing.T) {
 				t.Fatalf("resolveModelLimits() = (%d, %d), want (%d, %d)", window, output, tt.wantWindow, tt.wantOutput)
 			}
 		})
+	}
+}
+
+func TestCopyFromPreservesModelLimitResolution(t *testing.T) {
+	tbl := limits.NewTable(map[string]limits.Limit{
+		"test-provider/model-with-cache-limits": {ContextWindow: 128000, MaxOutputTokens: 8192},
+	})
+	source := &Runner{LimitsTable: &tbl}
+	target := &Runner{}
+	target.CopyFrom(source)
+
+	window, maxOutput := target.resolveModelLimits(routing.ModelPreset{
+		Provider: "test-provider",
+		Model:    "model-with-cache-limits",
+	})
+	if window != 128000 || maxOutput != 8192 {
+		t.Fatalf("resolveModelLimits after CopyFrom = (%d, %d), want (128000, 8192)", window, maxOutput)
 	}
 }

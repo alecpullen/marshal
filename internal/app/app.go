@@ -237,6 +237,7 @@ func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProvide
 	return &routedProviderResolver{
 		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
 		cfg:       cfg,
+		dataDir:   dataDir,
 		providers: make(map[string]provider.Provider),
 	}
 }
@@ -657,7 +658,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// Use LLMSummaryProvider as the primary digest provider, falling back to
 	// minimalDigestProvider only when the runner's provider is not available
 	// (branch review finding #1).
-	modelCtxWindow := route.Preset.ContextWindow
+	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable)
 	var digestProvider rollover.DigestProvider
 	switch cfg.Session.Rollover.DigestProvider {
 	case "files":

@@ -285,3 +285,40 @@ func TestNewFromConfigReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T) {
 			models[0].ContextWindow, models[0].MaxOutputTokens)
 	}
 }
+
+func TestNewFromConfigOllamaReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := limits.Save(dataDir, limits.Cache{
+		Table: map[string]limits.Limit{
+			"qwen2.5-coder:7b": {ContextWindow: 32768, MaxOutputTokens: 8192},
+		},
+		FetchedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed limits cache: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:7b"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := NewFromConfig("ollama", config.ProviderConfig{
+		Type:    "ollama",
+		BaseURL: server.URL,
+	}, dataDir, false)
+	if err != nil {
+		t.Fatalf("NewFromConfig returned error: %v", err)
+	}
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if models[0].ContextWindow != 32768 || models[0].MaxOutputTokens != 8192 {
+		t.Fatalf("limits = %d/%d, want 32768/8192 from the on-disk cache",
+			models[0].ContextWindow, models[0].MaxOutputTokens)
+	}
+}

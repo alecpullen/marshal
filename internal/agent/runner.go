@@ -448,6 +448,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MaxToolResultChars = other.MaxToolResultChars
 	r.ForceClass = other.ForceClass
 	r.SkillIndex = other.SkillIndex
+	r.LimitsTable = other.LimitsTable
 	r.Role = other.Role
 	r.WriteGate = other.WriteGate
 	r.UsageObserver = other.UsageObserver

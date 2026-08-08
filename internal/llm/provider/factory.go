@@ -37,17 +37,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		caps := DefaultCapabilities()
 		caps.ToolCalling = pc.ToolCalling
 
-		var table *limits.Table
-		if dataDir != "" {
-			if remoteLimitDiscovery {
-				if t, err := limits.LoadTable(context.Background(), dataDir, limits.DefaultTTL); err == nil {
-					table = &t
-				}
-			} else if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
-				t := limits.NewTable(c.Table)
-				table = &t
-			}
-		}
+		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
 
 		return NewOpenAICompatible(Options{
 			Name:         name,
@@ -67,12 +57,14 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		if keepAlive == "" {
 			keepAlive = defaultOllamaKeepAlive
 		}
+		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
 		return NewOllamaNative(Options{
 			Name:         name,
 			BaseURL:      pc.BaseURL,
 			APIKey:       apiKey,
 			Capabilities: &caps,
 			KeepAlive:    keepAlive,
+			LimitsTable:  table,
 		})
 	case "anthropic":
 		apiKey, err := resolveAPIKey(pc)
@@ -93,6 +85,24 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)
 	}
+}
+
+func loadLimitsTable(dataDir string, remoteLimitDiscovery bool) *limits.Table {
+	if dataDir == "" {
+		return nil
+	}
+	if remoteLimitDiscovery {
+		if table, err := limits.LoadTable(context.Background(), dataDir, limits.DefaultTTL); err == nil {
+			return &table
+		}
+		return nil
+	}
+	cache, err := limits.Load(dataDir)
+	if err != nil || len(cache.Table) == 0 {
+		return nil
+	}
+	table := limits.NewTable(cache.Table)
+	return &table
 }
 
 func resolveAPIKey(pc config.ProviderConfig) (string, error) {

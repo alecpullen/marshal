@@ -29,6 +29,7 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/desktop"
@@ -878,6 +879,45 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath)
 	if adapter == nil {
 		t.Fatal("buildPipelineController returned nil")
+	}
+}
+
+func TestRoutedProviderResolverPassesLimitCacheDir(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := limits.Save(dataDir, limits.Cache{
+		Table: map[string]limits.Limit{
+			"cached-model": {ContextWindow: 128000, MaxOutputTokens: 8192},
+		},
+		FetchedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("save limits cache: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"cached-model"}]}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Config{
+		Providers: map[string]config.ProviderConfig{
+			"test": {Type: "openai_compatible", BaseURL: server.URL},
+		},
+	}
+	resolver := newRoutedProviderResolver(cfg, dataDir)
+	p, err := resolver.providerFor(routing.Route{Preset: routing.ModelPreset{Provider: "test"}})
+	if err != nil {
+		t.Fatalf("providerFor: %v", err)
+	}
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if models[0].ContextWindow != 128000 || models[0].MaxOutputTokens != 8192 {
+		t.Fatalf("model limits = %d/%d, want 128000/8192", models[0].ContextWindow, models[0].MaxOutputTokens)
 	}
 }
 

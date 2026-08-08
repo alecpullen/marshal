@@ -139,17 +139,17 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 	return turnProvider, turnModel, route
 }
 
-// resolveModelLimits resolves a preset's context window and max output
-// tokens. Each field falls back independently: explicit config always wins;
-// then the fetched limits table, which matches across provider naming
-// variance; then the curated local catalog. A zero field means unknown — the
-// caller keeps its configured budget rather than guessing.
-func (r *Runner) resolveModelLimits(preset routing.ModelPreset) (window, maxOutput int) {
+// ResolveModelLimits resolves a preset's context window and max output tokens.
+// Each field falls back independently: explicit config always wins; then the
+// fetched limits table, which matches across provider naming variance; then
+// the curated local catalog. A zero field means unknown — the caller keeps
+// its configured budget rather than guessing.
+func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table) (window, maxOutput int) {
 	window = preset.ContextWindow
 	maxOutput = preset.MaxOutputTokens
 
-	if r.LimitsTable != nil {
-		if lim, kind := r.LimitsTable.Lookup(preset.Provider, preset.Model); kind != limits.MatchNone {
+	if table != nil {
+		if lim, kind := table.Lookup(preset.Provider, preset.Model); kind != limits.MatchNone {
 			if window == 0 {
 				window = lim.ContextWindow
 			}
@@ -169,6 +169,10 @@ func (r *Runner) resolveModelLimits(preset routing.ModelPreset) (window, maxOutp
 		}
 	}
 	return window, maxOutput
+}
+
+func (r *Runner) resolveModelLimits(preset routing.ModelPreset) (window, maxOutput int) {
+	return ResolveModelLimits(preset, r.LimitsTable)
 }
 
 // mergeMemories injects the project's current durable memories into the

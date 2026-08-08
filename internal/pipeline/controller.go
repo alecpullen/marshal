@@ -765,14 +765,37 @@ func (c *Controller) interfacesBefore(n int) string {
 // before dispatching it. When any input is missing (e.g. a crash lost the
 // report), the run stops instead of sending a reviewer that cannot see its
 // materials.
+//
+// Existence alone is not enough. A reviewer addresses its inputs only
+// through the artifact alias (@run/<basename>), which resolves under the
+// execution context's artifact root — so an input that exists but sits
+// outside that root is unreachable no matter what os.Stat says. Both
+// conditions are checked here, against the same root the dispatch binds
+// the reviewer's registry to.
 func (c *Controller) preflightReviewInputs(t TaskSpec, pkgPath, verdictPath string) error {
 	briefPath := c.Paths.Brief(t.N)
 	reportPath := c.Paths.Report(t.N)
+	artifactRoot := c.Dispatch.ExecCtx.ArtifactRoot
 	for _, p := range []string{briefPath, reportPath, pkgPath} {
 		info, err := os.Stat(p)
 		if err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("pipeline: task %d review input %s is inaccessible", t.N, p)
 		}
+		if artifactRoot == "" {
+			continue
+		}
+		if filepath.Dir(p) != filepath.Clean(artifactRoot) {
+			return fmt.Errorf("pipeline: task %d review input %s is outside the artifact root %s, "+
+				"so the reviewer cannot address it as %s/%s",
+				t.N, p, artifactRoot, c.Dispatch.ExecCtx.ArtifactAlias, filepath.Base(p))
+		}
+	}
+	// The reviewer must also be able to write its verdict back through the
+	// alias; a verdict path outside the root fails only after the review
+	// has already been paid for.
+	if artifactRoot != "" && filepath.Dir(verdictPath) != filepath.Clean(artifactRoot) {
+		return fmt.Errorf("pipeline: task %d review verdict path %s is outside the artifact root %s",
+			t.N, verdictPath, artifactRoot)
 	}
 	return nil
 }

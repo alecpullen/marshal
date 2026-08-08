@@ -37,8 +37,10 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.search",
 		Description: "Search workspace files for matching lines. Default is a case-sensitive substring match; set mode=regex for an RE2 regular expression. Optional include glob filters files (e.g. *.go), context adds 0-3 surrounding lines per match.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["substring","regex"]},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
-		Risk:        registry.RiskReadOnly,
+		Schema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","description":` +
+			t.pathDescription("directory or file to search, relative to the workspace") +
+			`},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["substring","regex"]},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
+		Risk: registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[repoSearchArgs](tool, call.Args)

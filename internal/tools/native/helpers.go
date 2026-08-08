@@ -5,12 +5,47 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"marshal/internal/tools/registry"
 )
 
 const truncationMarker = "\n[output truncated]"
+
+// pathDescription returns a JSON-encoded string literal for a path
+// parameter's schema description, with a sentence about this toolset's
+// alias prefixes appended when any are configured.
+//
+// Without this, a worker handed "@run/task-1-brief.md" reads a schema that
+// says paths are workspace-relative, concludes the prefix is a placeholder,
+// and goes hunting the filesystem for a directory named "run" instead of
+// passing the path through verbatim.
+func (t *toolSet) pathDescription(base string) string {
+	encoded, err := json.Marshal(base + t.namedRootHint())
+	if err != nil {
+		return `"` + base + `"`
+	}
+	return string(encoded)
+}
+
+// namedRootHint describes the alias prefixes this toolset resolves, or ""
+// when none are configured.
+func (t *toolSet) namedRootHint() string {
+	if len(t.namedRoots) == 0 {
+		return ""
+	}
+	aliases := make([]string, 0, len(t.namedRoots))
+	for alias := range t.namedRoots {
+		aliases = append(aliases, `"`+alias+`/"`)
+	}
+	sort.Strings(aliases)
+	return fmt.Sprintf(" A path starting with %s is a real, resolvable path"+
+		" pointing at a provided directory outside the workspace: pass it"+
+		" through verbatim, and do not strip the prefix or search the"+
+		" workspace for a directory of that name.",
+		strings.Join(aliases, " or "))
+}
 
 func decodeArgs[T any](tool registry.Tool, raw json.RawMessage) (T, error) {
 	var zero T

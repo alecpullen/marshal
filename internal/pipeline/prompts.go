@@ -6,6 +6,21 @@ import (
 	"text/template"
 )
 
+// artifactAliasRule is prepended to every prompt that names an @run/ path.
+// The alias is resolved by the file tools, but nothing else in a worker's
+// context says so: without this, workers read "@run/task-1-brief.md",
+// assume the prefix is a placeholder, and burn the task hunting the
+// filesystem for a directory named "run".
+const artifactAliasRule = `
+## Artifact paths
+
+Paths in this prompt that begin with ` + "`@run/`" + ` are real, resolvable paths.
+Pass them to the file tools exactly as written. Do NOT strip the prefix,
+rewrite it to an absolute path, or search the workspace or the repository
+for a directory named ` + "`run`" + ` — there is no such directory, and every
+such search is wasted work.
+`
+
 // reportContract is appended to every implementer and fixer prompt. Its
 // format is what ParseImplementerReport accepts; the two must not drift.
 const reportContract = `
@@ -69,7 +84,7 @@ Work from: {{.WorkDir}}
 
 If a file you are creating grows well beyond the brief's intent, stop and
 report DONE_WITH_CONCERNS rather than restructuring on your own.
-` + noCommitRule + reportContract))
+` + artifactAliasRule + noCommitRule + reportContract))
 
 var fixTmpl = template.Must(template.New("fix").Parse(
 	`You are fixing Task {{.TaskN}}. The work is already in the working tree at
@@ -93,7 +108,7 @@ Fix every item above. Do not make unrelated changes.
 
 Re-run the tests covering your change ({{.CoveringTests}}) and report the
 command and its output.
-{{end}}` + noCommitRule + reportContract))
+{{end}}` + artifactAliasRule + noCommitRule + reportContract))
 
 var reviewTmpl = template.Must(template.New("review").Parse(
 	`You are reviewing one task's implementation: first whether it matches its
@@ -134,6 +149,9 @@ Your review is read-only. Do not modify the working tree.
    extra that the brief did not ask for?
 2. Quality: is it correct, tested, and maintainable? Are the tests real
    tests — do they assert behaviour that would fail if the code were wrong?
+` + artifactAliasRule + `
+Report INPUTS: BLOCKED only after a file tool has actually failed on a
+path above. Do not assume a path is unreachable without trying it.
 
 ## Report
 
@@ -182,6 +200,9 @@ say which must be fixed before merge and which can stand.
    duplicated or contradictory logic across tasks, no dead code left by an
    earlier task that a later one replaced?
 3. Architecture: is this a sound shape for the codebase it lives in?
+` + artifactAliasRule + `
+Report INPUTS: BLOCKED only after a file tool has actually failed on a
+path above. Do not assume a path is unreachable without trying it.
 
 Your review is read-only. Do not modify the working tree.
 

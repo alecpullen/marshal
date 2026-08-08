@@ -30,8 +30,10 @@ func (t *toolSet) fileReadTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.read",
 		Description: "Read a workspace file. For large files, use start_line and end_line (1-based, inclusive) to page through content instead of reading the whole file at once.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"file path relative to the workspace"},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
-		Risk:        registry.RiskReadOnly,
+		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
+			t.pathDescription("file path relative to the workspace") +
+			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
+		Risk: registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileReadArgs](tool, call.Args)
@@ -70,8 +72,10 @@ func (t *toolSet) filePageTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.page",
 		Description: "Read a page of a workspace file by 1-based page number. Useful for iterating through large files without spilling tool output.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"file path relative to the workspace"},"page":{"type":"integer","description":"1-based page number"},"page_size":{"type":"integer","description":"lines per page (default 200, max 1000)"}},"required":["path","page"],"additionalProperties":false}`),
-		Risk:        registry.RiskReadOnly,
+		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
+			t.pathDescription("file path relative to the workspace") +
+			`},"page":{"type":"integer","description":"1-based page number"},"page_size":{"type":"integer","description":"lines per page (default 200, max 1000)"}},"required":["path","page"],"additionalProperties":false}`),
+		Risk: registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[filePageArgs](tool, call.Args)
@@ -246,8 +250,10 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.write_patch",
 		Description: "Apply a search/replace patch block format to files in the workspace.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"],"additionalProperties":false}`),
-		Risk:        registry.RiskWorkspaceWrite,
+		Schema: json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string","description":` +
+			t.pathDescription("search/replace patch blocks; each block's `File:` header is a file path relative to the workspace") +
+			`}},"required":["patch"],"additionalProperties":false}`),
+		Risk: registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileWritePatchArgs](tool, call.Args)

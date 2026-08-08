@@ -139,3 +139,29 @@ func TestRenderReviewIncludesInputsField(t *testing.T) {
 		t.Errorf("review prompt should include INPUTS field:\n%s", prompt)
 	}
 }
+
+func TestPromptsExplainTheArtifactAlias(t *testing.T) {
+	impl, err := RenderImplementer(ImplementerPrompt{
+		TaskN: 1, Title: "T", BriefBasename: "task-1-brief.md",
+		ReportBasename: "task-1-report.md", WorkDir: "/wt",
+	})
+	if err != nil {
+		t.Fatalf("RenderImplementer: %v", err)
+	}
+	review, err := RenderReview(ReviewPrompt{
+		TaskN: 1, Title: "T", BriefBasename: "task-1-brief.md",
+		ReportBasename: "task-1-report.md", PackageBasename: "task-1-review.md",
+		VerdictBasename: "task-1-review-verdict.md",
+	})
+	if err != nil {
+		t.Fatalf("RenderReview: %v", err)
+	}
+	for name, prompt := range map[string]string{"implementer": impl, "review": review} {
+		if !strings.Contains(prompt, "real, resolvable paths") {
+			t.Errorf("%s prompt uses @run/ without explaining it:\n%s", name, prompt)
+		}
+	}
+	if !strings.Contains(review, "only after a file tool has actually failed") {
+		t.Errorf("review prompt lets INPUTS: BLOCKED be reported without trying:\n%s", review)
+	}
+}

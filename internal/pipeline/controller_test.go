@@ -1182,3 +1182,41 @@ func TestReviewRunsForAgentFallbackTaskInAdaptive(t *testing.T) {
 		t.Fatalf("dispatches = %d, want 1 (review runs for agent fallback task)", len(*prompts))
 	}
 }
+
+// A brief that exists but sits outside the artifact root is unreachable:
+// the reviewer addresses its inputs only as @run/<basename>. os.Stat alone
+// cannot see this, which is how a run reached the reviewer and paid for a
+// dispatch that could only answer INPUTS: BLOCKED.
+func TestPreflightReviewInputsRejectsInputsOutsideArtifactRoot(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	spec, _ := c.Plan.Task(1)
+	if _, err := c.runTask(context.Background(), spec); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	pkg := c.Paths.Package(1, 0)
+	verdict := pkg + "-verdict.md"
+	if err := os.WriteFile(pkg, []byte("# review package\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// With the artifact root matching the run directory, preflight passes.
+	c.Dispatch.ExecCtx = ExecutionContext{ArtifactRoot: c.Paths.Dir, ArtifactAlias: "@run"}
+	if err := c.preflightReviewInputs(spec, pkg, verdict); err != nil {
+		t.Fatalf("preflight with matching artifact root: %v", err)
+	}
+
+	// Point the artifact root somewhere else: the files still exist, but
+	// the reviewer can no longer address them.
+	c.Dispatch.ExecCtx = ExecutionContext{ArtifactRoot: t.TempDir(), ArtifactAlias: "@run"}
+	err := c.preflightReviewInputs(spec, pkg, verdict)
+	if err == nil {
+		t.Fatal("preflight should reject inputs outside the artifact root")
+	}
+	if !strings.Contains(err.Error(), "outside the artifact root") {
+		t.Fatalf("error = %v, want it to name the artifact root", err)
+	}
+}

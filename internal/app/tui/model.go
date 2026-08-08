@@ -2622,7 +2622,7 @@ func (m *Model) refreshViewport() {
 		} else {
 			key := itemKeyFor(entry.Item)
 			expanded := m.isExpanded(key)
-			s := renderTranscriptItem(*entry.Item, expanded, m.viewport.Width())
+			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, m.viewport.Width())
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:

@@ -1,9 +1,8 @@
 package connect
 
 import (
-	"fmt"
+	"context"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,10 +15,12 @@ import (
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
@@ -28,6 +29,11 @@ import (
 // appear in either half, unlike "/" which is common in model IDs
 // ("anthropic/claude-sonnet-4").
 const modelValueSep = "\x00"
+
+// probeOnlyLimits is passed to provider.NewFromConfig for capability
+// probing; limit-table discovery already happened during model-list probe
+// and must not block the TUI while the confirmation screen is opening.
+const probeOnlyLimits = false
 
 func encodeModelValue(provider, model string) string {
 	return provider + modelValueSep + model
@@ -47,15 +53,6 @@ func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.
 func hintStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
 func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 func footerStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
-
-// editingLimit tracks which limit field is being edited at the confirm step.
-type editingLimit int
-
-const (
-	editingNone editingLimit = iota
-	editingContext
-	editingOutput
-)
 
 type step int
 
@@ -111,8 +108,10 @@ type Model struct {
 	allProviders   bool
 	probeErrs      map[string]error
 	dataDir        string
-	limits         ModelLimits
-	editingLimit   editingLimit
+	confirm        *presetflow.ConfirmState
+	detectingCaps  bool
+	capProbeID     uint64
+	cancelCapProbe context.CancelFunc
 }
 
 func New(opts Opts) *Model {
@@ -153,6 +152,14 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 		return m.handleProbeResult(msg)
 	case picker.PickedMsg:
 		return m.handlePickerPicked(msg.Value)
+	case presetflow.CapabilityProbedMsg:
+		if !m.detectingCaps || msg.RequestID != m.capProbeID ||
+			m.step != stepConfirmLimits || msg.Provider != m.providerName || msg.Model != m.modelChosen {
+			return m, nil // stale result from a since-abandoned selection
+		}
+		m.finishCapabilityProbe()
+		m.confirm.Limits = m.confirm.Limits.WithProbed(msg.Caps.ToolCalling, msg.Caps.ContextWindow)
+		return m, nil
 	case picker.CancelledMsg:
 		if m.step == stepPickTemplate || m.step == stepPickModel {
 			return m, m.cancel()
@@ -168,6 +175,12 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	case tea.PasteMsg:
+		if m.step == stepConfirmLimits {
+			if m.detectingCaps || m.confirm == nil || !m.confirm.Editing() {
+				return m, nil
+			}
+			return m, m.confirm.UpdateInput(msg)
+		}
 		switch m.step {
 		case stepBaseURL, stepAPIKey:
 			var cmd tea.Cmd
@@ -226,15 +239,23 @@ func (m *Model) View(maxW, maxH int) string {
 	case stepRename:
 		b.WriteString(m.renderRenameInput(pw))
 	case stepConfirmLimits:
-		b.WriteString(m.renderConfirmLimits(pw))
+		if m.detectingCaps {
+			b.WriteString(hintStyle().Render("detecting model capabilities…"))
+		} else {
+			b.WriteString(m.confirm.Render(pw))
+		}
 	}
 	if m.err != "" {
 		b.WriteString("\n")
 		b.WriteString(errStyle().Render(m.err))
 	}
-	if m.footer != "" {
+	footer := m.footer
+	if m.step == stepConfirmLimits && m.detectingCaps {
+		footer = "please wait…"
+	}
+	if footer != "" {
 		b.WriteString("\n")
-		b.WriteString(footerStyle().Render(m.footer))
+		b.WriteString(footerStyle().Render(footer))
 	}
 	return chrome.Panel("connect", b.String(), pw, min(lipgloss.Height(b.String())+2, maxH), true, theme.Current())
 }
@@ -274,6 +295,7 @@ type DoneMsg struct {
 	EnabledRemote   bool
 	ContextWindow   int
 	MaxOutputTokens int
+	ToolCalling     *bool
 }
 
 // RefreshMsg is emitted when the user presses ctrl+r in the model
@@ -367,88 +389,73 @@ func (m *Model) enterRemoteGate() {
 	m.picker = nil
 }
 
-func (m *Model) enterConfirmLimits() {
+func (m *Model) enterConfirmLimits() (*Model, tea.Cmd) {
+	m.cancelCapabilityProbe()
 	m.step = stepConfirmLimits
 	m.title = "Confirm model limits"
 	m.subtitle = m.providerName + " · " + m.modelChosen
 	m.footer = "[↵] confirm  [c] edit context  [o] edit max output  [Esc] back"
 	m.err = ""
 	m.picker = nil
-	m.limits = resolveLimits(m.discovered[m.providerName], m.modelChosen)
-	// A preset saved earlier for this provider+model holds figures the user
-	// already confirmed (possibly hand-edited); prefer them over fresh
-	// lookup zeros so re-picking a model doesn't show "unknown".
+
+	lim := presetflow.Resolve(m.discovered[m.providerName], m.modelChosen)
+	if preset, ok := m.presetFor(m.providerName, m.modelChosen); ok {
+		lim = lim.WithPreset(preset.ContextWindow, preset.MaxOutputTokens)
+	}
+	m.confirm = presetflow.NewConfirmState(lim)
+
+	cmd, cancel := m.probeCapabilities(m.capProbeID)
+	m.cancelCapProbe = cancel
+	m.detectingCaps = cmd != nil
+	return m, cmd
+}
+
+// presetFor returns the preset already saved for providerName+modelID, if
+// any — re-picking a model whose limits came back unknown must not erase
+// figures confirmed earlier.
+func (m *Model) presetFor(providerName, modelID string) (routing.ModelPreset, bool) {
 	for _, p := range m.cfg.Models.Presets {
-		if p.Provider == m.providerName && p.Model == m.modelChosen {
-			if m.limits.ContextWindow == 0 && p.ContextWindow != 0 {
-				m.limits.ContextWindow, m.limits.ContextSource = p.ContextWindow, SourcePreset
-			}
-			if m.limits.MaxOutputTokens == 0 && p.MaxOutputTokens != 0 {
-				m.limits.MaxOutputTokens, m.limits.OutputSource = p.MaxOutputTokens, SourcePreset
-			}
-			break
+		if p.Provider == providerName && p.Model == modelID {
+			return p, true
 		}
 	}
+	return routing.ModelPreset{}, false
 }
 
-func (m *Model) startEditingContext() {
-	m.editingLimit = editingContext
-	m.err = ""
-	ti := textfield.New()
-	ti.SetVirtualCursor(true)
-	ti.Focus()
-	if m.limits.ContextWindow > 0 {
-		ti.SetValue(fmt.Sprintf("%d", m.limits.ContextWindow))
-	}
-	m.input = ti
-}
-
-func (m *Model) startEditingOutput() {
-	m.editingLimit = editingOutput
-	m.err = ""
-	ti := textfield.New()
-	ti.SetVirtualCursor(true)
-	ti.Focus()
-	if m.limits.MaxOutputTokens > 0 {
-		ti.SetValue(fmt.Sprintf("%d", m.limits.MaxOutputTokens))
-	}
-	m.input = ti
-}
-
-func (m *Model) confirmLimitEdit() (*Model, tea.Cmd) {
-	v := strings.TrimSpace(m.input.Value())
-	n, err := strconv.Atoi(v)
+// probeCapabilities returns a cmd that probes the chosen model's
+// capabilities if the constructed provider supports it (currently: Ollama
+// only), or nil if there is nothing to probe — callers must not set
+// detectingCaps=true unless this returns non-nil, or the "detecting…" state
+// would never clear.
+func (m *Model) probeCapabilities(requestID uint64) (tea.Cmd, context.CancelFunc) {
+	// Capability probing only needs the provider client. Limit-table discovery
+	// already happened during model-list discovery and must not block the TUI
+	// while this confirmation screen is opening.
+	prov, err := provider.NewFromConfig(m.providerName, m.providerCfg, m.dataDir, probeOnlyLimits)
 	if err != nil {
-		m.err = "must be a number"
-		return m, nil
+		return nil, nil
 	}
-	if n < 0 {
-		m.err = "must not be negative"
-		return m, nil
+	if _, ok := prov.(provider.CapabilityProber); !ok {
+		return nil, nil
 	}
-	if n == 0 {
-		// Zero means "unknown" — clear the field back to SourceUnknown.
-		switch m.editingLimit {
-		case editingContext:
-			m.limits.ContextWindow = 0
-			m.limits.ContextSource = SourceUnknown
-		case editingOutput:
-			m.limits.MaxOutputTokens = 0
-			m.limits.OutputSource = SourceUnknown
-		}
-	} else {
-		switch m.editingLimit {
-		case editingContext:
-			m.limits.ContextWindow = n
-			m.limits.ContextSource = SourceEdited
-		case editingOutput:
-			m.limits.MaxOutputTokens = n
-			m.limits.OutputSource = SourceEdited
-		}
+	return presetflow.ProbeCapabilitiesCmdWithCancel(prov, m.providerName, m.modelChosen, requestID)
+}
+
+func (m *Model) cancelCapabilityProbe() {
+	if m.cancelCapProbe != nil {
+		m.cancelCapProbe()
+		m.cancelCapProbe = nil
 	}
-	m.editingLimit = editingNone
-	m.err = ""
-	return m, nil
+	m.capProbeID++
+	m.detectingCaps = false
+}
+
+func (m *Model) finishCapabilityProbe() {
+	if m.cancelCapProbe != nil {
+		m.cancelCapProbe()
+		m.cancelCapProbe = nil
+	}
+	m.detectingCaps = false
 }
 
 func (m *Model) enterSummary() {
@@ -492,33 +499,6 @@ func (m *Model) renderSummary(pw int) string {
 	b.WriteString(mutedStyle().Render("model:    ") + titleStyle().Render(m.modelChosen) + "\n")
 	if m.cfgPath != "" {
 		b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(strutil.Truncate(m.cfgPath, pw-12, true)) + "\n")
-	}
-	return b.String()
-}
-
-func (m *Model) renderConfirmLimits(pw int) string {
-	var b strings.Builder
-	ctxVal, ctxSrc := m.limits.ContextWindow, m.limits.ContextSource
-	outVal, outSrc := m.limits.MaxOutputTokens, m.limits.OutputSource
-
-	ctxStr := fmt.Sprintf("%d", ctxVal)
-	if ctxVal == 0 {
-		ctxStr = hintStyle().Render("unknown — set a budget")
-	}
-	outStr := fmt.Sprintf("%d", outVal)
-	if outVal == 0 {
-		outStr = hintStyle().Render("unknown — set a budget")
-	}
-
-	if m.editingLimit == editingContext {
-		b.WriteString(mutedStyle().Render("context window    ") + m.renderInput(pw) + "\n")
-		b.WriteString(mutedStyle().Render("max output        ") + titleStyle().Render(outStr) + mutedStyle().Render("   "+string(outSrc)) + "\n")
-	} else if m.editingLimit == editingOutput {
-		b.WriteString(mutedStyle().Render("context window    ") + titleStyle().Render(ctxStr) + mutedStyle().Render("   "+string(ctxSrc)) + "\n")
-		b.WriteString(mutedStyle().Render("max output        ") + m.renderInput(pw) + "\n")
-	} else {
-		b.WriteString(mutedStyle().Render("context window    ") + titleStyle().Render(ctxStr) + mutedStyle().Render("   "+string(ctxSrc)) + "\n")
-		b.WriteString(mutedStyle().Render("max output        ") + titleStyle().Render(outStr) + mutedStyle().Render("   "+string(outSrc)) + "\n")
 	}
 	return b.String()
 }
@@ -680,8 +660,7 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		}
 		// Both flows confirm limits before completing: /models skipped the
 		// summary, but it must not skip this.
-		m.enterConfirmLimits()
-		return m, nil
+		return m.enterConfirmLimits()
 	}
 	tpl, ok := provider.Lookup(value)
 	if !ok {
@@ -847,41 +826,30 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 		}
 		return m, nil
 	case stepConfirmLimits:
-		switch {
-		case m.editingLimit != editingNone:
-			switch ks {
-			case "enter":
-				return m.confirmLimitEdit()
-			case "esc":
-				m.editingLimit = editingNone
-				m.err = ""
-				return m, nil
-			default:
-				var cmd tea.Cmd
-				m.input, cmd = m.input.Update(k)
-				return m, cmd
-			}
-		default:
-			switch ks {
-			case "c":
-				m.startEditingContext()
-				return m, nil
-			case "o":
-				m.startEditingOutput()
-				return m, nil
-			case "enter":
-				if m.scopedProvider != "" {
-					m.step = stepDone
-					return m, m.done()
-				}
-				m.enterSummary()
-				return m, nil
-			case "esc":
+		if m.detectingCaps {
+			if ks == "esc" {
+				m.cancelCapabilityProbe()
+				m.confirm = nil
 				enterPickModelStep(m, m.providerName)
-				return m, nil
 			}
+			return m, nil // ignore keys while the capability probe is in flight
+		}
+		result, cmd := m.confirm.HandleKey(k)
+		switch result {
+		case presetflow.ConfirmDone:
+			if m.scopedProvider != "" {
+				m.step = stepDone
+				return m, m.done()
+			}
+			m.enterSummary()
+			return m, nil
+		case presetflow.ConfirmCancelled:
+			m.cancelCapabilityProbe()
+			m.confirm = nil
+			enterPickModelStep(m, m.providerName)
 			return m, nil
 		}
+		return m, cmd
 	case stepRename:
 		switch ks {
 		case "enter":
@@ -1014,8 +982,9 @@ func (m *Model) done() tea.Cmd {
 			Model:           m.modelChosen,
 			ProviderCfg:     m.providerCfg,
 			EnabledRemote:   m.remoteEnabled,
-			ContextWindow:   m.limits.ContextWindow,
-			MaxOutputTokens: m.limits.MaxOutputTokens,
+			ContextWindow:   m.confirm.Limits.ContextWindow,
+			MaxOutputTokens: m.confirm.Limits.MaxOutputTokens,
+			ToolCalling:     m.confirm.Limits.ToolCalling,
 		}
 	}
 }

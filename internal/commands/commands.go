@@ -335,6 +335,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "profiles",
+			Description: "Manage agent profiles (which model handles which role)",
+			Group:       groupModels,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "config",
 			Description: "Show current configuration summary",
 			Group:       groupSettings,

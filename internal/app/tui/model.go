@@ -38,6 +38,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/settings"
@@ -1491,6 +1492,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.discovered[pm.Provider] = pm.Models
 			m.persistDiscovered(pm.Provider, pm.Models)
 		}
+		if _, ok := m.dock.Panel().(connect.Panel); ok {
+			return m, m.dock.Update(pm)
+		}
+		return m, nil
+	case presetflow.CapabilityProbedMsg:
 		if _, ok := m.dock.Panel().(connect.Panel); ok {
 			return m, m.dock.Update(pm)
 		}
@@ -3692,7 +3698,7 @@ func (m *Model) cycleModel(forward bool) {
 	names := m.sortedPresetNames()
 	if len(names) == 0 {
 		m.state.AddMessage(session.RoleSystem,
-			"No model presets configured. Add one in /settings → Model Presets.",
+			"No model presets configured. Use /connect to add a provider or /profiles to assign a discovered model.",
 			session.ContentTypePlain)
 		m.refreshViewport()
 		return
@@ -3810,34 +3816,22 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// Selecting a model synthesizes a preset plus a profile binding every
 	// role to it. The router resolves through profiles only; there is no
 	// legacy pair and no implicit "empty default means fall through".
-	presetName := msg.Provider + "/" + msg.Model
-	if newCfg.Models.Presets == nil {
-		newCfg.Models.Presets = map[string]routing.ModelPreset{}
-	} else {
+	if newCfg.Models.Presets != nil {
 		presets := make(map[string]routing.ModelPreset, len(newCfg.Models.Presets)+1)
 		for k, v := range newCfg.Models.Presets {
 			presets[k] = v
 		}
 		newCfg.Models.Presets = presets
 	}
-	preset := routing.ModelPreset{
-		Name:            presetName,
-		Provider:        msg.Provider,
-		Model:           msg.Model,
+	presetName, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
 		ContextWindow:   msg.ContextWindow,
 		MaxOutputTokens: msg.MaxOutputTokens,
+		ToolCalling:     msg.ToolCalling,
+	})
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to materialize model preset: %v", err), session.ContentTypePlain)
+		return
 	}
-	// Re-picking a model whose limits came back unknown (zero) must not
-	// erase figures saved earlier — zero means "unknown", not "reset".
-	if existing, ok := newCfg.Models.Presets[presetName]; ok {
-		if preset.ContextWindow == 0 {
-			preset.ContextWindow = existing.ContextWindow
-		}
-		if preset.MaxOutputTokens == 0 {
-			preset.MaxOutputTokens = existing.MaxOutputTokens
-		}
-	}
-	newCfg.Models.Presets[presetName] = preset
 
 	if newCfg.AgentProfiles == nil {
 		newCfg.AgentProfiles = map[string]routing.AgentProfile{}

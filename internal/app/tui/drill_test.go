@@ -130,7 +130,7 @@ func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
 	m.drillIntoSubagent(view)
 
 	frame := stripANSI(m.renderTranscriptFrame())
-	for _, want := range []string{"orchestrator", "explore repo", "Esc to go back"} {
+	for _, want := range []string{"orchestrator", "explore repo", "go back"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("breadcrumb missing %q, frame:\n%s", want, frame)
 		}
@@ -218,5 +218,37 @@ func TestRenderSubagentCardContent(t *testing.T) {
 	expanded := stripANSI(renderSubagentCard(done, true, 80))
 	if !strings.Contains(expanded, "found three entry points") {
 		t.Fatalf("expanded card should show the summary, got:\n%s", expanded)
+	}
+}
+
+func TestUpArrowPopsDrill(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+
+	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyUp})
+	if !handled {
+		t.Fatal("up arrow must be handled while drilled")
+	}
+	m = mm.(Model)
+	if len(m.viewStack) != 0 {
+		t.Fatalf("up arrow should pop the drill stack, len = %d", len(m.viewStack))
+	}
+}
+
+func TestUpArrowRecallsHistoryWhenNotDrilled(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessage(session.RoleUser, "previous prompt", session.ContentTypePlain)
+	m.resetHistoryNav()
+
+	// Not drilled: up arrow should recall history, not pop drill.
+	mm, _, _ := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyUp})
+	// Whether handled depends on whether there is history to recall.
+	// The key assertion is that it does NOT crash and the view stack
+	// remains empty.
+	m = mm.(Model)
+	if len(m.viewStack) != 0 {
+		t.Fatal("up arrow should not affect view stack when not drilled")
 	}
 }

@@ -164,7 +164,7 @@ func (m Model) renderTranscriptFrame() string {
 		crumb := lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand+" orchestrator") +
 			mutedStyle().Render(" "+glyph.Running+" ") +
 			lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(glyph.Agent+" "+v.Label) +
-			mutedStyle().Render("  (Esc to go back)")
+			mutedStyle().Render("  (↑/Esc to go back)")
 		content = lipgloss.JoinVertical(lipgloss.Left, crumb, content)
 	}
 	return content

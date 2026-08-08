@@ -2707,6 +2707,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	router := routing.NewStaticRouter(m.state.Config.RoutingConfig())
 	roles := routing.SwarmCastRoles
 	title := "Start swarm run?"
+	var inspection *pipeline.Inspection
 	meta := []string{
 		"goal: " + strutil.Truncate(goal, 56, true),
 		fmt.Sprintf("fix rounds: %d · token budget: %d",
@@ -2731,6 +2732,12 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 				}
 			}
 		}
+		// Use the shared inspection for strategy selection and metadata.
+		if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
+			if insp, ierr := adapter.Controller().Inspect(); ierr == nil {
+				inspection = insp
+			}
+		}
 		worktree := "off"
 		if m.state.Config.SDD.AutoWorktree {
 			worktree = "on"
@@ -2740,6 +2747,14 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 			"one commit per task, on a branch — review and merge it yourself",
 			fmt.Sprintf("worktree: %s · fix rounds: %d · verify timeout: %dms",
 				worktree, m.state.Config.SDD.MaxFixRounds, m.state.Config.SDD.VerifyTimeoutMS),
+		}
+		if inspection != nil {
+			meta = append(meta, fmt.Sprintf("deterministic ops: %d · fallback ops: %d · est. model calls: %d",
+				inspection.Report.Total.DetOps, inspection.Report.Total.AgentOps, inspection.Report.Total.EstCalls))
+			for _, tr := range inspection.Report.Tasks {
+				meta = append(meta, fmt.Sprintf("task %d: %s · %d det · %d agent · %d call(s)",
+					tr.TaskN, tr.Title, tr.DetOps, tr.AgentOps, tr.EstCalls))
+			}
 		}
 		if v := m.state.Config.SDD.Verify; v.Build != "" || v.Test != "" {
 			meta = append(meta, "verify: "+strutil.Truncate(strings.TrimSpace(v.Build+" · "+v.Test), 48, true))
@@ -2768,7 +2783,39 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		rows = append(rows, row)
 	}
 	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
-	m.dock.Open(castlist.New(title, rows, meta, "agent"))
+	panel := castlist.New(title, rows, meta, "agent")
+	if kind == "sdd" {
+		// Strategy-aware preflight: select adaptive by default when the plan
+		// has executable blocks, and disable adaptive/strict when there are
+		// none. Strict is disabled when the inspection is blocked.
+		initial := "agent"
+		var options []castlist.StrategyOption
+		if inspection != nil {
+			if inspection.HasMarshalBlocks {
+				initial = "adaptive"
+			}
+			options = []castlist.StrategyOption{
+				{Value: "agent"},
+				{Value: "adaptive"},
+				{Value: "strict"},
+			}
+			if !inspection.HasMarshalBlocks {
+				options[1].DisabledReason = "no executable blocks found"
+				options[2].DisabledReason = "no executable blocks found"
+			} else if inspection.StrictBlocked {
+				options[2].DisabledReason = "fallback or unresolved work remains"
+			}
+			// An explicit strategy override wins over the automatic default.
+			if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
+				if s := adapter.Controller().Strategy; s != pipeline.StrategyAuto && s != "" {
+					initial = string(s)
+				}
+			}
+		}
+		panel.SetStrategyOptions(options)
+		panel.SetStrategy(initial)
+	}
+	m.dock.Open(panel)
 }
 
 // startAgentRun begins a turn on runner with goal, wiring cancellation and

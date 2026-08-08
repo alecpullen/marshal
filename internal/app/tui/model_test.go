@@ -42,6 +42,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/worktree"
 )
 
 // drainCmds executes the returned command tree (up to a small bound) and
@@ -6807,5 +6808,77 @@ func TestRunCommandWithNoRunSaysSo(t *testing.T) {
 	mm := asModel(t, m2)
 	if !mm.dock.IsOpen() {
 		t.Error("/run must still open a panel with no run recorded, explaining there is none")
+	}
+}
+
+// newSDDPreflightModel builds a model with a real ControllerAdapter over a
+// plan file so openRunPreflight can run the shared inspection.
+func newSDDPreflightModel(t *testing.T, planBody string) (Model, string) {
+	t.Helper()
+	m := newTestModelInRepo(t)
+	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "p.md")
+	writeRawTestPlan(t, m.state.WorkingDir, "p.md", planBody)
+	c, err := pipeline.NewController(pipeline.ControllerOpts{
+		PlanPath: path,
+		RepoRoot: m.state.WorkingDir,
+		Git:      worktree.NewFakeGitOps(),
+		Strategy: pipeline.StrategyAuto,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+	adapter := pipeline.NewControllerAdapter(c, m.state)
+	m.pipelineRunner = adapter
+	return m, path
+}
+
+func TestSDDPreflightSelectsAdaptiveForExecutablePlan(t *testing.T) {
+	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Add file\n\n"+
+		"```marshal.file path=\"created.txt\"\nhello\n```\n")
+	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	panel := m.dock.Panel().(*castlist.Panel)
+	if panel.SelectedStrategy() != "adaptive" {
+		t.Fatalf("selected strategy = %q, want adaptive", panel.SelectedStrategy())
+	}
+	got := stripANSI(panel.View(100, 30))
+	if !strings.Contains(got, "deterministic ops") {
+		t.Errorf("preflight must render the compile report:\n%s", got)
+	}
+}
+
+func TestSDDPreflightSelectsAgentForProseOnlyPlan(t *testing.T) {
+	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Explain\n\nProse only.\n")
+	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	panel := m.dock.Panel().(*castlist.Panel)
+	if panel.SelectedStrategy() != "agent" {
+		t.Fatalf("selected strategy = %q, want agent", panel.SelectedStrategy())
+	}
+	got := stripANSI(panel.View(100, 30))
+	if !strings.Contains(got, "no executable blocks found") {
+		t.Errorf("prose-only preflight must explain adaptive/strict are unavailable:\n%s", got)
+	}
+}
+
+func TestSDDPreflightBlocksStrictForMixedPlan(t *testing.T) {
+	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Resolve\n\n"+
+		"```marshal.agent\nscope = [\"internal/app\"]\nreason = \"needs design judgment\"\n```\n")
+	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	panel := m.dock.Panel().(*castlist.Panel)
+	// Strict must be disabled for a plan with fallback work.
+	panel.SetStrategy("strict")
+	if cmd := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatal("strict must be blocked for a mixed/fallback plan")
+	}
+}
+
+func TestSDDPreflightExplicitStrategyOverridesAdaptive(t *testing.T) {
+	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Add file\n\n"+
+		"```marshal.file path=\"created.txt\"\nhello\n```\n")
+	adapter := m.pipelineRunner.(*pipeline.ControllerAdapter)
+	adapter.Controller().Strategy = pipeline.StrategyAgent
+	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	panel := m.dock.Panel().(*castlist.Panel)
+	if panel.SelectedStrategy() != "agent" {
+		t.Fatalf("explicit --strategy agent must override the adaptive default, got %q", panel.SelectedStrategy())
 	}
 }

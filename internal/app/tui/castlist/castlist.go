@@ -42,6 +42,17 @@ type Panel struct {
 	rows     []Row
 	meta     []string
 	strategy string
+	// strategyOptions, when non-empty, replaces the default three-strategy
+	// cycle. Options with a non-empty DisabledReason are skipped when cycling
+	// and block the run if selected.
+	strategyOptions []StrategyOption
+}
+
+// StrategyOption is one selectable execution strategy with an optional
+// disabled reason. A non-empty DisabledReason marks the option unavailable.
+type StrategyOption struct {
+	Value          string
+	DisabledReason string
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -52,14 +63,55 @@ func New(title string, rows []Row, meta []string, strategy string) *Panel {
 	return &Panel{title: title, rows: rows, meta: meta, strategy: strategy}
 }
 
-// blocked reports whether any row has a non-empty Err.
+// SetStrategyOptions replaces the default strategy cycle with the given
+// options. A panel with no options retains the current three-strategy cycle.
+func (p *Panel) SetStrategyOptions(options []StrategyOption) {
+	p.strategyOptions = options
+}
+
+// SetStrategy sets the selected strategy directly.
+func (p *Panel) SetStrategy(strategy string) {
+	p.strategy = strategy
+}
+
+// SelectedStrategy returns the currently selected strategy.
+func (p *Panel) SelectedStrategy() string {
+	return p.strategy
+}
+
+// strategyList returns the effective strategy list: the configured options
+// when present, otherwise the default three-strategy cycle.
+func (p *Panel) strategyList() []string {
+	if len(p.strategyOptions) > 0 {
+		out := make([]string, 0, len(p.strategyOptions))
+		for _, o := range p.strategyOptions {
+			out = append(out, o.Value)
+		}
+		return out
+	}
+	return strategies
+}
+
+// disabledReason returns the disabled reason for the selected strategy, or
+// "" when it is selectable.
+func (p *Panel) disabledReason() string {
+	for _, o := range p.strategyOptions {
+		if o.Value == p.strategy && o.DisabledReason != "" {
+			return o.DisabledReason
+		}
+	}
+	return ""
+}
+
+// blocked reports whether any row has a non-empty Err, or the selected
+// strategy is disabled.
 func (p *Panel) blocked() bool {
 	for _, r := range p.rows {
 		if r.Err != "" {
 			return true
 		}
 	}
-	return false
+	return p.disabledReason() != ""
 }
 
 // Update handles key events. Enter emits StartMsg when unblocked; Esc emits
@@ -89,15 +141,36 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 var strategies = []string{"agent", "adaptive", "strict"}
 
 func (p *Panel) cycleStrategy(dir int) {
+	list := p.strategyList()
+	if len(list) == 0 {
+		return
+	}
 	idx := 0
-	for i, s := range strategies {
+	for i, s := range list {
 		if s == p.strategy {
 			idx = i
 			break
 		}
 	}
-	idx = (idx + dir + len(strategies)) % len(strategies)
-	p.strategy = strategies[idx]
+	// Skip disabled options when cycling.
+	for n := 0; n < len(list); n++ {
+		idx = (idx + dir + len(list)) % len(list)
+		if p.optionDisabled(list[idx]) {
+			continue
+		}
+		p.strategy = list[idx]
+		return
+	}
+}
+
+// optionDisabled reports whether the strategy value is disabled.
+func (p *Panel) optionDisabled(value string) bool {
+	for _, o := range p.strategyOptions {
+		if o.Value == value && o.DisabledReason != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Sizing keeps the cast list docked under the default height cap.
@@ -129,7 +202,17 @@ func (p *Panel) View(width, maxHeight int) string {
 		Title:  "execution strategy",
 		Detail: p.strategy,
 	}
+	if reason := p.disabledReason(); reason != "" {
+		stratRow.Err = reason
+	}
 	rows = append(rows, renderRow(stratRow, inner))
+	// Explain disabled options that are not currently selected.
+	for _, o := range p.strategyOptions {
+		if o.Value == p.strategy || o.DisabledReason == "" {
+			continue
+		}
+		rows = append(rows, mutedStyle().Render("  "+o.Value+": "+o.DisabledReason))
+	}
 
 	// Cast rows.
 	for _, r := range p.rows {

@@ -93,12 +93,14 @@ func (p *OllamaNative) connHint(err error) error {
 // the server did not report capabilities (old Ollama) or the probe failed;
 // callers then fall back to the provider-level config value.
 type ollamaModelCaps struct {
-	tools bool
-	known bool
+	tools         bool
+	contextWindow int
+	known         bool
 }
 
 type ollamaShowResponse struct {
-	Capabilities []string `json:"capabilities"`
+	Capabilities []string                   `json:"capabilities"`
+	ModelInfo    map[string]json.RawMessage `json:"model_info"`
 }
 
 // --- wire types ---
@@ -372,9 +374,10 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema
 	}
 }
 
-// modelSupportsTools resolves tool-calling support for one model, probing
-// /api/show once per model and caching the result (including failures).
-func (p *OllamaNative) modelSupportsTools(ctx context.Context, model string) bool {
+// cachedCaps returns model's probed capabilities, probing /api/show once
+// per model and caching the result (including failures, so a server
+// lacking the endpoint is not re-probed on every call).
+func (p *OllamaNative) cachedCaps(ctx context.Context, model string) ollamaModelCaps {
 	p.capsMu.Lock()
 	caps, ok := p.capsCache[model]
 	p.capsMu.Unlock()
@@ -384,10 +387,32 @@ func (p *OllamaNative) modelSupportsTools(ctx context.Context, model string) boo
 		p.capsCache[model] = caps
 		p.capsMu.Unlock()
 	}
+	return caps
+}
+
+// modelSupportsTools resolves tool-calling support for one model, probing
+// /api/show once per model and caching the result (including failures).
+func (p *OllamaNative) modelSupportsTools(ctx context.Context, model string) bool {
+	caps := p.cachedCaps(ctx, model)
 	if !caps.known {
 		return p.capabilities.ToolCalling
 	}
 	return caps.tools
+}
+
+// ProbeCapabilities reports model's tool-calling support and context
+// window, probed via /api/show and cached per model. ToolCalling is nil
+// when the server's response omitted the capabilities field entirely (old
+// servers). ContextWindow is 0 when model_info reported no
+// *.context_length key.
+func (p *OllamaNative) ProbeCapabilities(ctx context.Context, model string) ModelCapabilities {
+	caps := p.cachedCaps(ctx, model)
+	var toolCalling *bool
+	if caps.known {
+		t := caps.tools
+		toolCalling = &t
+	}
+	return ModelCapabilities{ToolCalling: toolCalling, ContextWindow: caps.contextWindow}
 }
 
 func (p *OllamaNative) probeModelCaps(ctx context.Context, model string) ollamaModelCaps {
@@ -416,13 +441,31 @@ func (p *OllamaNative) probeModelCaps(ctx context.Context, model string) ollamaM
 	if parsed.Capabilities == nil {
 		return ollamaModelCaps{} // old server: field absent entirely
 	}
-	caps := ollamaModelCaps{known: true}
+	caps := ollamaModelCaps{known: true, contextWindow: contextLengthFromModelInfo(parsed.ModelInfo)}
 	for _, c := range parsed.Capabilities {
 		if c == "tools" {
 			caps.tools = true
 		}
 	}
 	return caps
+}
+
+// contextLengthFromModelInfo scans /api/show's model_info block for a
+// "<architecture>.context_length" key. The architecture name varies per
+// model family (e.g. "qwen3.context_length", "llama.context_length"), so
+// this looks the key up by suffix rather than requiring the caller to know
+// the family name in advance.
+func contextLengthFromModelInfo(info map[string]json.RawMessage) int {
+	for key, raw := range info {
+		if !strings.HasSuffix(key, ".context_length") {
+			continue
+		}
+		var n int
+		if err := json.Unmarshal(raw, &n); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // --- model listing ---

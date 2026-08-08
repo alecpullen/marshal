@@ -415,3 +415,58 @@ func TestOllamaModelsPropagatesToolCallingFromLimitsTable(t *testing.T) {
 		t.Errorf("ToolCalling = %v, want true", got.ToolCalling)
 	}
 }
+
+func TestOllamaProbeCapabilitiesParsesToolsAndContextLength(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/show" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"capabilities":["completion","tools"],"model_info":{"general.architecture":"qwen3","qwen3.context_length":40960}}`))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	got := p.ProbeCapabilities(t.Context(), "qwen3-coder:30b")
+	if got.ToolCalling == nil || !*got.ToolCalling {
+		t.Errorf("ToolCalling = %v, want true", got.ToolCalling)
+	}
+	if got.ContextWindow != 40960 {
+		t.Errorf("ContextWindow = %d, want 40960", got.ContextWindow)
+	}
+}
+
+func TestOllamaProbeCapabilitiesCachesPerModel(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"capabilities":["tools"],"model_info":{"llama.context_length":128000}}`))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	p.ProbeCapabilities(t.Context(), "llama3.1:8b")
+	p.ProbeCapabilities(t.Context(), "llama3.1:8b")
+	if calls != 1 {
+		t.Errorf("/api/show called %d times, want 1 (cached)", calls)
+	}
+}
+
+func TestOllamaProbeCapabilitiesOldServerReportsUnknown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"modelfile":"FROM llama3.1"}`))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	got := p.ProbeCapabilities(t.Context(), "llama3.1:8b")
+	if got.ToolCalling != nil {
+		t.Errorf("ToolCalling = %v, want nil for old server with no capabilities field", got.ToolCalling)
+	}
+	if got.ContextWindow != 0 {
+		t.Errorf("ContextWindow = %d, want 0", got.ContextWindow)
+	}
+}
+
+func TestOllamaImplementsCapabilityProber(t *testing.T) {
+	var _ CapabilityProber = (*OllamaNative)(nil)
+}

@@ -1105,3 +1105,47 @@ func TestRunAdaptiveLegacyPlanBehavesLikeAgent(t *testing.T) {
 		t.Fatal("expected dispatches for legacy plan under adaptive")
 	}
 }
+
+func TestReviewSkippedForDeterministicTaskInAdaptive(t *testing.T) {
+	d, prompts := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Strategy = StrategyAdaptive
+	writeBrief(t, c, 1)
+
+	spec, _ := c.Plan.Task(1)
+	res := taskResult{
+		Base:     "base123",
+		Head:     "head456",
+		ExecType: ExecDeterministic,
+	}
+	_, err := c.reviewTask(context.Background(), spec, res)
+	if err != nil {
+		t.Fatalf("reviewTask: %v", err)
+	}
+	// No reviewer should have been dispatched.
+	if len(*prompts) != 0 {
+		t.Fatalf("dispatches = %d, want 0 (review skipped for deterministic task)", len(*prompts))
+	}
+}
+
+func TestReviewRunsForAgentFallbackTaskInAdaptive(t *testing.T) {
+	d, prompts := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Strategy = StrategyAdaptive
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
+
+	spec, _ := c.Plan.Task(1)
+	res := taskResult{
+		Base:     "base123",
+		Head:     "head456",
+		ExecType: ExecMixed,
+	}
+	_, err := c.reviewTask(context.Background(), spec, res)
+	if err != nil {
+		t.Fatalf("reviewTask: %v", err)
+	}
+	if len(*prompts) != 1 {
+		t.Fatalf("dispatches = %d, want 1 (review runs for agent fallback task)", len(*prompts))
+	}
+}

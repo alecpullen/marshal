@@ -782,6 +782,17 @@ func (c *Controller) preflightReviewInputs(t TaskSpec, pkgPath, verdictPath stri
 // from one review goes to a single fix dispatch: per-finding fixers each
 // rebuild context and re-run suites, and cost more than the task itself.
 func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult) (taskResult, error) {
+	// Skip per-task review for deterministic tasks under adaptive.
+	if c.Strategy == StrategyAdaptive && res.ExecType == ExecDeterministic {
+		_ = c.Ledger.Note("Task %d: review skipped (deterministic execution)", t.N)
+		return res, nil
+	}
+	// Skip per-task review entirely under strict.
+	if c.Strategy == StrategyStrict {
+		_ = c.Ledger.Note("Task %d: review skipped (strict strategy)", t.N)
+		return res, nil
+	}
+
 	dir := c.workDir()
 	for round := 0; ; round++ {
 		pkgPath := c.Paths.Package(t.N, round)
@@ -1091,6 +1102,11 @@ func (c *Controller) renderBranchReviewPrompt(ctx context.Context, rng string, m
 // branchReview is the merge gate: one review over the whole branch, with
 // at most one fix dispatch carrying every blocking finding.
 func (c *Controller) branchReview(ctx context.Context) error {
+	// Strict strategy promises zero model calls: no branch review.
+	if c.Strategy == StrategyStrict {
+		_ = c.Ledger.Note("Branch review skipped (strict strategy)")
+		return nil
+	}
 	dir := c.workDir()
 	head, err := c.Git.RevParse(dir, "HEAD")
 	if err != nil {

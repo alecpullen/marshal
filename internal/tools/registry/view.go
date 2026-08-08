@@ -98,11 +98,44 @@ func artifactWriterPatchTool(tool Tool, alias string) Tool {
 			Patch string `json:"patch"`
 		}
 		_ = json.Unmarshal(call.Args, &args)
-		// Only allow patches whose paths start with the alias prefix.
-		if !strings.HasPrefix(args.Patch, alias+"/") && !strings.Contains(args.Patch, alias+"/") {
+		// Only allow patches whose target paths all start with the alias
+		// prefix. Parse the unified diff's file headers rather than
+		// substring-matching the whole blob, which a source patch could
+		// trivially satisfy by containing the alias text anywhere.
+		paths := patchTargetPaths(args.Patch)
+		if len(paths) == 0 {
 			return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/", alias)
+		}
+		for _, p := range paths {
+			if !strings.HasPrefix(p, alias+"/") {
+				return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/ (path %q is outside)", alias, p)
+			}
 		}
 		return original(ctx, call)
 	}
 	return filtered
+}
+
+// patchTargetPaths extracts the target (b-side) file paths from a unified
+// diff. It reads `diff --git a/<path> b/<path>` and `+++ b/<path>` headers.
+func patchTargetPaths(patch string) []string {
+	var paths []string
+	for _, line := range strings.Split(patch, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			// diff --git a/<a> b/<b>
+			fields := strings.Fields(line)
+			if len(fields) >= 4 && strings.HasPrefix(fields[3], "b/") {
+				paths = append(paths, strings.TrimPrefix(fields[3], "b/"))
+			}
+		case strings.HasPrefix(line, "+++ "):
+			// +++ b/<path>  (or +++ /dev/null for new files)
+			rest := strings.TrimPrefix(line, "+++ ")
+			if strings.HasPrefix(rest, "b/") {
+				paths = append(paths, strings.TrimPrefix(rest, "b/"))
+			}
+		}
+	}
+	return paths
 }

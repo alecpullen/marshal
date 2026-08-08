@@ -854,3 +854,37 @@ func TestPreflightCatchesMissingReport(t *testing.T) {
 		t.Fatal("preflight should catch missing report file")
 	}
 }
+
+func TestRunStopsOnTokenBudgetExhaustion(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.MaxTokensCfg = 100 // very low budget
+	c.UsageTokens = 0
+
+	// Wire OnTokens to increment UsageTokens.
+	c.Dispatch.OnTokens = func(n int) {
+		c.UsageTokens += n
+	}
+
+	// Simulate the first dispatch consuming all the budget. Mirror the
+	// scripted dispatcher's report-writing so the reviewer's input preflight
+	// sees the file if the run were to proceed past the budget check.
+	c.Dispatch.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		c.UsageTokens += 150 // exceeds budget
+		if m := reportPathRe.FindStringSubmatch(prompt); m != nil {
+			if err := os.WriteFile(m[1], []byte("STATUS: DONE\nTESTS: pass\n"), 0o644); err != nil {
+				return "", err
+			}
+		}
+		return "STATUS: DONE\nTESTS: pass\n", nil
+	}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should stop when budget is exhausted")
+	}
+	if !strings.Contains(err.Error(), "budget") {
+		t.Errorf("error should mention budget: %v", err)
+	}
+}

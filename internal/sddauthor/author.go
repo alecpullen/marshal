@@ -50,6 +50,35 @@ func NewRunner(model ModelRunner) *Runner {
 	return &Runner{Model: model}
 }
 
+// resolveCanonical resolves symlinks in path when the path exists. When
+// path (or any prefix) does not exist, it walks up to the nearest existing
+// ancestor, canonicalizes that, and re-appends the unresolved tail. The
+// result is consistent across both existing and not-yet-existing paths,
+// so a symlinked plans_dir cannot be canonicalized into a different
+// namespace than the repo root.
+func resolveCanonical(path string) string {
+	if path == "" {
+		return ""
+	}
+	tail := ""
+	cur := path
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			abs, aerr := filepath.Abs(path)
+			if aerr != nil {
+				return path
+			}
+			return abs
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+		cur = parent
+	}
+}
+
 // Run validates the request, runs the model with the rendered handoff
 // prompt, and inspects the written candidate. Inspection diagnostics are
 // returned inside Result; only construction, model, filesystem, and hard
@@ -61,7 +90,11 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 	if !filepath.IsAbs(req.PlanPath) {
 		return Result{}, fmt.Errorf("sddauthor: plan path must be absolute: %q", req.PlanPath)
 	}
-	rel, err := filepath.Rel(req.RepoRoot, req.PlanPath)
+	// Symlink-aware containment: a symlinked plans_dir or repo root must
+	// not let the candidate land outside the repository.
+	repoRoot := resolveCanonical(req.RepoRoot)
+	planPath := resolveCanonical(req.PlanPath)
+	rel, err := filepath.Rel(repoRoot, planPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return Result{}, fmt.Errorf("sddauthor: plan path %q is outside the repository root", req.PlanPath)
 	}
@@ -82,17 +115,14 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 // RemoveCandidate removes one generated plan artifact. It resolves the
 // configured plans directory, verifies that path is a regular file directly
 // beneath that directory, and removes only that generated candidate. It
-// rejects source paths and traversal.
+// rejects source paths and traversal, including paths that resolve through
+// symlinks outside the plans directory.
 func RemoveCandidate(path, repoRoot, plansDir string) error {
 	dir := filepath.Join(repoRoot, plansDir)
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
+	// Resolve symlinks for both the plans directory and the candidate so
+	// containment cannot be bypassed by a symlink.
+	absDir := resolveCanonical(dir)
+	abs := resolveCanonical(path)
 	rel, err := filepath.Rel(absDir, abs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("sddauthor: %q is not inside the plans directory", path)
@@ -100,9 +130,9 @@ func RemoveCandidate(path, repoRoot, plansDir string) error {
 	if rel == "." || strings.Contains(rel, string(filepath.Separator)) {
 		return fmt.Errorf("sddauthor: %q is not a direct plan artifact", path)
 	}
-	info, err := os.Stat(abs)
+	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return fmt.Errorf("sddauthor: %q is not a regular file", path)
 	}
-	return os.Remove(abs)
+	return os.Remove(path)
 }

@@ -946,6 +946,34 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 	return adapter
 }
 
+// resolveAuthorPlansDir returns the canonical absolute path of the SDD
+// plans directory under the repository working dir, walking up to the
+// nearest existing ancestor so non-existent plans directories
+// canonicalize into the same namespace as the repository root. A
+// symlinked plans_dir that points outside the repository resolves into a
+// different directory and is rejected by sddplans.DraftPath at authoring
+// time.
+func resolveAuthorPlansDir(workingDir, plansDirRel string) string {
+	full := filepath.Join(workingDir, plansDirRel)
+	tail := ""
+	cur := full
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			abs, aerr := filepath.Abs(full)
+			if aerr != nil {
+				return full
+			}
+			return abs
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+		cur = parent
+	}
+}
+
 // buildPlanAuthorFactory returns a factory that builds a scoped SDD
 // plan-authoring runner for one request. The child may inspect the
 // repository and write exactly one plan artifact; it cannot modify source
@@ -964,16 +992,18 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		childPol.SetApprovalMode(policy.ModeAuto)
 
 		// A fresh native registry rooted at the working directory, with @plan
-		// aliasing the candidate's directory so the child can write the plan
-		// artifact without exposing absolute paths.
+		// aliasing the resolved plans directory so the child can write the
+		// plan artifact without exposing absolute paths and so a symlinked
+		// plans_dir cannot trick the child into writing outside the repo.
 		childReg := registry.New()
+		plansDir := resolveAuthorPlansDir(state.WorkingDir, cfg.SDD.PlansDir)
 		nativeOpts := native.Options{
 			WorkspaceRoot:  state.WorkingDir,
 			CommandRunner:  commandRunner,
 			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 			SessionState:   childState,
 			Config:         cfg,
-			NamedRoots:     map[string]string{"@plan": filepath.Dir(req.PlanPath)},
+			NamedRoots:     map[string]string{"@plan": plansDir},
 		}
 		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 			return nil, fmt.Errorf("plan author registry: register: %w", err)

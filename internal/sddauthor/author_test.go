@@ -88,3 +88,35 @@ func TestRemoveCandidateRemovesOnlyGeneratedPlan(t *testing.T) {
 		t.Error("source file must be untouched")
 	}
 }
+
+// TestRunnerRejectsSymlinkedPlansDir ensures a symlinked plans_dir that
+// resolves outside the repository cannot be used to land a candidate
+// plan. The containment check must canonicalize before comparing so a
+// relative repoRoot that itself points inside /private via /var/tmp
+// cannot be confused by the plans-dir alias.
+func TestRunnerRejectsSymlinkedPlansDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	external := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(repoRoot, ".marshal", "plans")); err != nil {
+		t.Skipf("symlink(2) unavailable on this platform: %v", err)
+	}
+	// Candidate lives inside the symlinked directory; the lexical
+	// repository path is inside repoRoot. Canonical resolution must
+	// detect the escape.
+	planPath := filepath.Join(filepath.Join(repoRoot, ".marshal", "plans"), "feature.md")
+	if err := os.WriteFile(planPath, []byte("plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	author := NewRunner(fakeModelRunner{run: func(context.Context, string) error { return nil }})
+	_, err := author.Run(context.Background(), Request{
+		Goal:     "feature",
+		RepoRoot: repoRoot,
+		PlanPath: planPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "outside the repository root") {
+		t.Fatalf("err = %v, want symlink-escape rejection", err)
+	}
+}

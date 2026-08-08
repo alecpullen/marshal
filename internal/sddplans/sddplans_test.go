@@ -312,3 +312,22 @@ func TestDraftPathAppendsNumericSuffixOnCollision(t *testing.T) {
 		t.Errorf("DraftPath = %q, want -2 suffix on collision", got)
 	}
 }
+
+func TestDraftPathRejectsSymlinkedPlansDirOutsideRepo(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, ".marshal", "plans")); err != nil {
+		t.Skipf("symlink(2) unavailable on this platform: %v", err)
+	}
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	got, err := DraftPath(root, ".marshal/plans", "feature", now)
+	if err == nil {
+		t.Fatalf("DraftPath succeeded with path %q; want symlink-escape rejection", got)
+	}
+	if !strings.Contains(err.Error(), "outside the repository root") {
+		t.Fatalf("err = %v, want outside-the-repository error", err)
+	}
+}

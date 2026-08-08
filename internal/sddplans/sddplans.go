@@ -138,13 +138,68 @@ func completedCount(repoRoot, slug string) (int, error, bool) {
 // hyphens; they are replaced with a hyphen during slugification.
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
+// resolveCanonical resolves symlinks in path when the path exists. When
+// path (or any prefix) does not exist, it walks up to the nearest existing
+// ancestor, canonicalizes that, and re-appends the unresolved tail. The
+// result is consistent across both existing and not-yet-existing paths,
+// so a non-existent plans directory cannot be canonicalized into a
+// different namespace than the repo root that contains it.
+func resolveCanonical(path string) string {
+	if path == "" {
+		return ""
+	}
+	// Walk up to the nearest existing prefix.
+	tail := ""
+	cur := path
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the filesystem root without finding anything
+			// existing. Fall back to the lexical absolute path.
+			abs, aerr := filepath.Abs(path)
+			if aerr != nil {
+				return path
+			}
+			return abs
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+		cur = parent
+	}
+}
+
+// assertPlansInsideRepo confirms the resolved plans directory is contained
+// inside the resolved repository root. Symlinked plans_dir paths that
+// point outside the repo are rejected.
+func assertPlansInsideRepo(repoRoot, plansDir string) error {
+	repoResolved := resolveCanonical(repoRoot)
+	plansResolved := resolveCanonical(plansDir)
+	if repoResolved == "" || plansResolved == "" {
+		return fmt.Errorf("sddplans: empty repository or plans directory")
+	}
+	rel, err := filepath.Rel(repoResolved, plansResolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("sddplans: plans directory %q is outside the repository root", plansDir)
+	}
+	return nil
+}
+
 // DraftPath resolves the path for a new plan candidate under the configured
 // plans directory (relative to repoRoot). It creates no files. The goal is
 // slugified to lowercase ASCII hyphenated text, prefixed with the date as
 // YYYY-MM-DD-, and suffixed with -2, -3, and so on when the candidate path
 // already exists so a draft never overwrites an existing plan.
+//
+// The configured plans directory must resolve inside the repository. A
+// symlinked plans_dir pointing outside the repo is rejected so the child
+// authoring runner cannot be tricked into writing elsewhere.
 func DraftPath(repoRoot, plansDir, goal string, now time.Time) (string, error) {
 	dir := filepath.Join(repoRoot, plansDir)
+	if err := assertPlansInsideRepo(repoRoot, dir); err != nil {
+		return "", err
+	}
 	slug := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(goal), "-"), "-")
 	if slug == "" {
 		slug = "plan"

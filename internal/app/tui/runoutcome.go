@@ -89,6 +89,13 @@ func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, 
 				Text:   fmt.Sprintf("%s %d %s", taskGlyph(i, p), i+1, title),
 				Detail: taskDuration(i, p, now),
 			})
+			if len(p.TaskExecTypes) > i && p.TaskExecTypes[i] != "" {
+				if rows[len(rows)-1].Detail != "" {
+					rows[len(rows)-1].Detail += "   " + p.TaskExecTypes[i]
+				} else {
+					rows[len(rows)-1].Detail = p.TaskExecTypes[i]
+				}
+			}
 		}
 	}
 

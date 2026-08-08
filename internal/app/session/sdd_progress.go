@@ -34,10 +34,14 @@ type SDDProgress struct {
 	BaseRef string
 	// LedgerPath and ArtifactsDir point at the run's durable record. They
 	// outlive the worktree, which is deleted on success.
-	LedgerPath     string
-	ArtifactsDir   string
-	Tasks          []string
-	TaskTimings    []TaskTiming
+	LedgerPath   string
+	ArtifactsDir string
+	Tasks        []string
+	TaskTimings  []TaskTiming
+	// TaskExecTypes records how each task was executed (deterministic,
+	// agent, or mixed), indexed by task position. Populated by the app
+	// layer from controller events.
+	TaskExecTypes  []string
 	TotalTasks     int
 	DoneTasks      int
 	CurrentTask    int

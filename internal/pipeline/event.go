@@ -61,6 +61,12 @@ type GateSkippedPayload struct {
 	Reason string
 }
 
+// ExecPayload carries the execution type of a completed task.
+type ExecPayload struct {
+	TaskN    int
+	ExecType ExecType
+}
+
 // Observer receives progress events. A nil Observer is valid — the
 // controller runs headless.
 type Observer interface {

@@ -312,6 +312,36 @@ func TestFinishedLineUnchanged(t *testing.T) {
 	}
 }
 
+func TestRunPanelShowsApplyingPhase(t *testing.T) {
+	p := session.SDDProgress{
+		Active:      true,
+		PlanName:    "test",
+		TotalTasks:  3,
+		CurrentTask: 2,
+		Phase:       "applying",
+		StartedAt:   time.Now(),
+	}
+	out := stripANSI(renderRunPanel(p, "⠋", time.Now(), 80))
+	if !strings.Contains(out, "applying") {
+		t.Errorf("run panel should show 'applying' phase:\n%s", out)
+	}
+}
+
+func TestRunPanelShowsAgentFallbackPhase(t *testing.T) {
+	p := session.SDDProgress{
+		Active:      true,
+		PlanName:    "test",
+		TotalTasks:  3,
+		CurrentTask: 2,
+		Phase:       "agent fallback",
+		StartedAt:   time.Now(),
+	}
+	out := stripANSI(renderRunPanel(p, "⠋", time.Now(), 80))
+	if !strings.Contains(out, "agent fallback") {
+		t.Errorf("run panel should show 'agent fallback' phase:\n%s", out)
+	}
+}
+
 func TestRunPanelOccupiesOneRow(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.width, m.height = 100, 40

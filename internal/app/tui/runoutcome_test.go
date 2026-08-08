@@ -178,6 +178,22 @@ func TestOutcomeDocFinishedPathUnchanged(t *testing.T) {
 	}
 }
 
+func TestRunOutcomeShowsExecutionType(t *testing.T) {
+	p := succeededRun()
+	p.Tasks = []string{"Add config field", "Wire the resolver", "Add retry helper"}
+	p.TaskExecTypes = []string{"deterministic", "deterministic + agent", "deterministic"}
+	doc := runOutcomeDoc(p, worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
+	found := false
+	for _, row := range doc.Rows {
+		if row.Detail != "" && strings.Contains(row.Detail, "deterministic") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("runOutcomeDoc should show execution type in task detail:\n%s", doc.Title)
+	}
+}
+
 func TestBranchDiffReadsWithoutMutating(t *testing.T) {
 	git := worktree.NewFakeGitOps()
 	// A fake that records every call lets us assert we only ever read.

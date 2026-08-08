@@ -12,6 +12,8 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
 	"marshal/internal/worktree"
 )
@@ -1217,5 +1219,108 @@ func TestReviewRunsForAgentFallbackTaskInAdaptive(t *testing.T) {
 	}
 	if len(*prompts) != 1 {
 		t.Fatalf("dispatches = %d, want 1 (review runs for agent fallback task)", len(*prompts))
+	}
+}
+
+// TestAdaptiveFallbackRejectsEmptyScope asserts that an adaptive task
+// whose only operations are an AgentOp without a declared scope cannot
+// dispatch a fallback that would otherwise rewrite the worktree at
+// large. The task fails with an explicit error before any dispatcher
+// call so the controller never opens a registry factory for an
+// unbounded scope.
+func TestAdaptiveFallbackRejectsEmptyScope(t *testing.T) {
+	dir := t.TempDir()
+	// An AgentOp with no `scope` line compiles to AgentOp whose
+	// AllowedFiles is the empty slice.
+	planContent := "# Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"## Task 1: No scope\n\n" +
+		"```marshal.agent\nallowed = true\nreason = \"no scope declared\"\n```\n"
+	planPath := filepath.Join(dir, "no-scope.md")
+	if err := os.WriteFile(planPath, []byte(planContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, prompts := scriptedDispatch(t)
+	g := worktree.NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	g.Heads[dir] = g.Refs["main"]
+	c, err := NewController(ControllerOpts{
+		PlanPath: planPath,
+		RepoRoot: dir,
+		Git:      g,
+		Dispatch: d,
+		Verifier: Verifier{Runner: NewFakeCommandRunner()},
+		Strategy: StrategyAdaptive,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+
+	err = c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should fail for an adaptive task whose only fallback is unscoped")
+	}
+	if !strings.Contains(err.Error(), "no marshal.agent scope") {
+		t.Errorf("error should mention the missing scope: %v", err)
+	}
+	if len(*prompts) != 0 {
+		t.Errorf("expected zero dispatcher calls; got %d (the controller must not dispatch an unbounded fallback)", len(*prompts))
+	}
+}
+
+// TestAdaptiveFallbackSetsAllowedFilesOnDispatcher asserts that an
+// adaptive task with a declared scope stashes the scope on the
+// dispatcher before the implementer call so the registry factory can
+// narrow file.write_patch. The scripted dispatcher records the value
+// the controller stashed on the session.
+func TestAdaptiveFallbackSetsAllowedFilesOnDispatcher(t *testing.T) {
+	dir := t.TempDir()
+	planContent := "# Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"## Task 1: Scoped fallback\n\n" +
+		"```marshal.agent\nallowed = true\nscope = [\"internal/foo\"]\nreason = \"scoped\"\n```\n"
+	planPath := filepath.Join(dir, "scoped.md")
+	if err := os.WriteFile(planPath, []byte(planContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := session.New(config.Default(), dir, time.Now(), session.Persistence{})
+	var seen []string
+	d := Dispatcher{State: st}
+	d.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		seen = st.SDDFallbackAllowedFiles()
+		return "STATUS: DONE\nTESTS: ok\n", nil
+	}
+	g := worktree.NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	g.Heads[dir] = g.Refs["main"]
+	g.Dirty = true
+	c, err := NewController(ControllerOpts{
+		PlanPath: planPath,
+		RepoRoot: dir,
+		Git:      g,
+		Dispatch: d,
+		Verifier: Verifier{Runner: NewFakeCommandRunner()},
+		Strategy: StrategyAdaptive,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+
+	if _, err := c.Inspect(); err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	spec, _ := c.Plan.Task(1)
+	res, err := c.runTask(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if res.ExecType != ExecMixed {
+		t.Errorf("ExecType = %q, want %q (agent fallback should set Mixed)", res.ExecType, ExecMixed)
+	}
+	if len(seen) != 1 || seen[0] != "internal/foo" {
+		t.Fatalf("FallbackAllowedFiles at dispatch = %v, want [internal/foo]", seen)
+	}
+	if got := st.SDDFallbackAllowedFiles(); got != nil {
+		t.Errorf("SDDFallbackAllowedFiles must be cleared after dispatch; got %v", got)
 	}
 }

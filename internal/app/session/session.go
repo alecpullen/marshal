@@ -209,11 +209,16 @@ type State struct {
 	toolAuditThisTurn []db.ToolAuditEntry
 	swarmProgress     SwarmProgress
 	sddProgress       SDDProgress
-	sandbox           SandboxInfo
-	browser           BrowserInfo
-	trusted           bool
-	turnIndex         int
-	snapshotter       Snapshotter
+	// sddFallbackAllowed is the controller's pending marshal.agent
+	// fallback allowlist, stashed so the pipeline registry factory can
+	// narrow the next ScopeFallback dispatch to the declared paths.
+	// Empty/nil means no scope is declared; the factory must reject.
+	sddFallbackAllowed []string
+	sandbox            SandboxInfo
+	browser            BrowserInfo
+	trusted            bool
+	turnIndex          int
+	snapshotter        Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
@@ -358,6 +363,44 @@ func (s *State) SDDGate() SDDGate {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sddGate
+}
+
+// SetSDDFallbackAllowedFiles stashes the controller's pending marshal.agent
+// fallback allowlist on the session so the pipeline registry factory can
+// apply FallbackWriterView during the next dispatch. The controller must
+// call ClearSDDFallbackAllowedFiles once the dispatch returns; an empty
+// slice is treated as no scope and the factory rejects the dispatch.
+func (s *State) SetSDDFallbackAllowedFiles(allowed []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(allowed) == 0 {
+		s.sddFallbackAllowed = nil
+		return
+	}
+	cp := make([]string, len(allowed))
+	copy(cp, allowed)
+	s.sddFallbackAllowed = cp
+}
+
+// SDDFallbackAllowedFiles returns the controller's pending fallback
+// allowlist, or nil when none is stashed. The pipeline registry factory
+// uses this to narrow ScopeFallback to the declared paths.
+func (s *State) SDDFallbackAllowedFiles() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.sddFallbackAllowed) == 0 {
+		return nil
+	}
+	cp := make([]string, len(s.sddFallbackAllowed))
+	copy(cp, s.sddFallbackAllowed)
+	return cp
+}
+
+// ClearSDDFallbackAllowedFiles drops the stashed fallback allowlist.
+func (s *State) ClearSDDFallbackAllowedFiles() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sddFallbackAllowed = nil
 }
 
 type turnUsage struct {

@@ -561,7 +561,23 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 		if c.Strategy == StrategyStrict {
 			return taskResult{}, fmt.Errorf("pipeline: task %d has unresolved work and strategy is strict", t.N)
 		}
-		// Adaptive: dispatch one agent for the remaining work.
+		// Adaptive: dispatch one agent for the remaining work. The
+		// fallback's file.write_patch is narrowed to the marshal.agent
+		// scope declared by the plan; an empty scope is rejected so the
+		// fallback cannot rewrite the worktree at large.
+		if len(taskIR.AllowedFiles) == 0 {
+			return taskResult{}, fmt.Errorf("pipeline: task %d has unresolved work but no marshal.agent scope declared; rerun with a scope or skip the fallback", t.N)
+		}
+		if c.Dispatch.State != nil {
+			c.Dispatch.State.SetSDDFallbackAllowedFiles(taskIR.AllowedFiles)
+		}
+		c.Dispatch.FallbackAllowedFiles = taskIR.AllowedFiles
+		defer func() {
+			c.Dispatch.FallbackAllowedFiles = nil
+			if c.Dispatch.State != nil {
+				c.Dispatch.State.ClearSDDFallbackAllowedFiles()
+			}
+		}()
 		c.emit(t.N, 0, PhaseAgentFallback, "")
 		c.checkpoint(PhaseAgentFallback, t.N, func(cp *Checkpoint) {
 			cp.BaseSHA = base

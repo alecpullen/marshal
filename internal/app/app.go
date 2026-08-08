@@ -1041,6 +1041,11 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 // creates its own child session and native toolset so handlers close over
 // the correct worktree root and artifact aliases rather than the parent
 // session's project root. The returned registry is then filtered by scope.
+//
+// ScopeFallback narrows file.write_patch to the controller-supplied
+// allowlist (set on Dispatcher.FallbackAllowedFiles immediately before
+// each fallback dispatch) so the marshal.agent fallback cannot modify
+// parts of the worktree outside its declared scope.
 func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry) pipeline.RegistryFactory {
 	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope) (*registry.Registry, error) {
 		childState := session.New(cfg, ctx.WorkspaceRoot, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1))
@@ -1062,10 +1067,29 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 			return registry.ReadOnlyView(childReg), nil
 		case pipeline.ScopeArtifactWriter:
 			return registry.ArtifactWriterView(childReg, ctx.ArtifactAlias), nil
+		case pipeline.ScopeFallback:
+			allowed := currentFallbackAllowedFiles(state)
+			if len(allowed) == 0 {
+				return nil, fmt.Errorf("pipeline registry factory: fallback scope requires a non-empty allowlist")
+			}
+			return registry.FallbackWriterView(childReg, allowed), nil
 		default:
 			return childReg, nil
 		}
 	}
+}
+
+// currentFallbackAllowedFiles returns the controller's pending fallback
+// allowlist, if any. The controller stashes it on the session via
+// session.SetSDDFallbackAllowedFiles immediately before each fallback
+// dispatch and clears it after; the pipeline registry factory reads it
+// back here so FallbackWriterView can narrow file.write_patch to the
+// declared paths.
+func currentFallbackAllowedFiles(state *session.State) []string {
+	if state == nil {
+		return nil
+	}
+	return state.SDDFallbackAllowedFiles()
 }
 
 // roleToolIterations returns the per-role tool-iteration cap, falling back

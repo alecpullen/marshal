@@ -75,6 +75,72 @@ func testerTestRunTool(tool Tool) Tool {
 	return testerTool
 }
 
+// FallbackWriterView returns a new Registry containing src's tools with
+// file.write_patch narrowed to exactly the listed allowed paths (or
+// their descendants). The marshal.agent fallback agent's shell channel
+// remains available because command execution is governed by
+// sandbox/policy at a higher layer; this view protects only the
+// file-write surface. Allowed paths are interpreted as directory
+// prefixes: a patch is permitted when its target path equals an allowed
+// entry or sits beneath one.
+func FallbackWriterView(src *Registry, allowed []string) *Registry {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, p := range allowed {
+		allowedSet[p] = true
+	}
+	view := New()
+	for _, tool := range src.List() {
+		switch {
+		case tool.Deferred:
+			// Deferred tools are never exposed to the fallback child.
+		case tool.Name == "file.write_patch":
+			_ = view.Register(fallbackWriterPatchTool(tool, allowedSet))
+		default:
+			_ = view.Register(tool)
+		}
+	}
+	return view
+}
+
+func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
+	original := tool.Handler
+	filtered := tool
+	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
+		var args struct {
+			Patch string `json:"patch"`
+		}
+		_ = json.Unmarshal(call.Args, &args)
+		res, err := patch.ParseRepairing(args.Patch)
+		if err != nil || len(res.Patches) == 0 {
+			return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope requires a non-empty patch inside the declared allowlist")
+		}
+		for _, fp := range res.Patches {
+			if !pathInAllowlist(fp.Path, allowed) {
+				return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope may only write under the declared scope (path %q is outside)", fp.Path)
+			}
+		}
+		return original(ctx, call)
+	}
+	return filtered
+}
+
+// pathInAllowlist reports whether path equals one of the allowed entries
+// or sits beneath one as a descendant. Empty allowlist denies everything.
+func pathInAllowlist(path string, allowed map[string]bool) bool {
+	if len(allowed) == 0 {
+		return false
+	}
+	if allowed[path] {
+		return true
+	}
+	for root := range allowed {
+		if strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // ArtifactWriterView returns a new Registry containing src's read-only
 // tools plus file.write_patch restricted to paths under the named artifact
 // root. Reviewers need to write their verdict under @run but must not

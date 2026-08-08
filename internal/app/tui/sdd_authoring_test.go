@@ -14,8 +14,10 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/commands"
+	"marshal/internal/pipeline"
 	"marshal/internal/sddauthor"
 	"marshal/internal/tools/registry"
+	"marshal/internal/worktree"
 )
 
 // fakePlanAuthorFactory returns a PlanAuthorFactory whose runner writes a
@@ -51,6 +53,18 @@ func newAuthoringModel(t *testing.T) Model {
 	m := New(state,
 		WithCommandRegistry(cmdReg),
 		WithPlanAuthorFactory(context.Background(), fakePlanAuthorFactory()),
+		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner {
+			c, err := pipeline.NewController(pipeline.ControllerOpts{
+				PlanPath: planPath,
+				RepoRoot: state.WorkingDir,
+				Git:      worktree.NewFakeGitOps(),
+				Strategy: pipeline.StrategyAuto,
+			})
+			if err != nil {
+				return nil
+			}
+			return pipeline.NewControllerAdapter(c, state)
+		}),
 	)
 	m.resize(100, 40)
 	return m

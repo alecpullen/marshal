@@ -11,6 +11,15 @@ Marshal is a terminal-native coding agent built in Go. It wires together a Bubbl
 5. Tools (`internal/tools/`) operate on the working tree under policy and approval.
 6. State and history are persisted in SQLite (`internal/db/`).
 
+## SDD plan workflow
+
+Feature exploration may use the normal brainstorming workflow. An approved
+design can become a Marshal executable plan through `/sdd new <goal>` or
+`/sdd new --from-last-plan`. Marshal writes the candidate under the effective
+`sdd.plans_dir`, inspects it before execution, and requires review before
+`/sdd` starts. Executable blocks use adaptive execution by default; prose-only
+plans retain the legacy agent strategy.
+
 ## Key layers
 
 | Layer | Packages | Responsibility |

@@ -28,6 +28,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
+	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
@@ -6880,5 +6881,59 @@ func TestSDDPreflightExplicitStrategyOverridesAdaptive(t *testing.T) {
 	panel := m.dock.Panel().(*castlist.Panel)
 	if panel.SelectedStrategy() != "agent" {
 		t.Fatalf("explicit --strategy agent must override the adaptive default, got %q", panel.SelectedStrategy())
+	}
+}
+
+// TestSDDAuthoringToPreflight drives the full goal -> author -> review ->
+// /sdd path: author a candidate, accept it, then run /sdd on it and confirm
+// the preflight opens with adaptive selected and the compile report shown.
+func TestSDDAuthoringToPreflight(t *testing.T) {
+	m := newAuthoringModel(t)
+	updated, cmd := m.dispatchCommand("/sdd new add marker file")
+	m = asModel(t, updated)
+	m = runAuthoringCmd(t, m, cmd)
+	panel := m.dock.Panel().(*sddreview.Panel)
+	path := panel.CandidatePath()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("candidate artifact should exist: %v", err)
+	}
+	// Accept closes review; no pipeline runner has run.
+	updated, _ = m.Update(sddreview.AcceptMsg{})
+	m = asModel(t, updated)
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed after accept")
+	}
+	// Now run /sdd on the candidate.
+	updated, cmd = m.dispatchCommand("/sdd " + path)
+	m = asModel(t, updated)
+	if cmd != nil {
+		t.Fatal("preflight is modal; dispatchCommand should return nil cmd")
+	}
+	preflight, ok := m.dock.Panel().(*castlist.Panel)
+	if !ok {
+		t.Fatalf("expected *castlist.Panel, got %T", m.dock.Panel())
+	}
+	if preflight.SelectedStrategy() != "adaptive" {
+		t.Fatalf("preflight selected strategy = %q, want adaptive", preflight.SelectedStrategy())
+	}
+	got := stripANSI(preflight.View(100, 30))
+	if !strings.Contains(got, "deterministic ops") {
+		t.Errorf("preflight must render the compile report:\n%s", got)
+	}
+}
+
+// TestSDDNewFromLastPlanToPreflight drives /plan -> /sdd new --from-last-plan
+// using a seeded final assistant message.
+func TestSDDNewFromLastPlanToPreflight(t *testing.T) {
+	m := newAuthoringModel(t)
+	m.state.AddMessageFinal(session.RoleAssistant, "approved plan content", session.ContentTypePlain)
+	updated, cmd := m.dispatchCommand("/sdd new --from-last-plan")
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd for /sdd new --from-last-plan")
+	}
+	m = runAuthoringCmd(t, m, cmd)
+	if _, ok := m.dock.Panel().(*sddreview.Panel); !ok {
+		t.Fatalf("expected *sddreview.Panel, got %T", m.dock.Panel())
 	}
 }

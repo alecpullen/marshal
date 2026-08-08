@@ -70,6 +70,10 @@ func parseSkillFile(path string) (Skill, error) {
 func LoadSkills(globalDir, projectDir string) (*Index, error) {
 	idx := NewIndex()
 
+	if err := loadBuiltIns(idx); err != nil {
+		return nil, err
+	}
+
 	if err := loadFromDir(idx, globalDir, slog.Default()); err != nil {
 		return nil, fmt.Errorf("load global skills from %s: %w", globalDir, err)
 	}

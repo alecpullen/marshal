@@ -170,6 +170,7 @@ type State struct {
 	// Workspace().ActiveRoot instead; see workspace.go.
 	WorkingDir string
 	StartedAt  time.Time
+	now        func() time.Time
 	db         *db.DB
 	sessionID  string
 	logger     *slog.Logger
@@ -441,6 +442,18 @@ func WithDepth(d int) Option {
 	}
 }
 
+// WithClock overrides the function used to stamp scratchpad entry
+// timestamps. Tests pass a frozen clock so entries written back-to-back
+// share an Updated value and ordering is deterministic; the default is
+// time.Now.
+func WithClock(now func() time.Time) Option {
+	return func(s *State) {
+		if now != nil {
+			s.now = now
+		}
+	}
+}
+
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
 	ctx, cancel := context.WithCancel(context.Background())
 	scratchpadCfg := cfg.Scratchpad
@@ -449,6 +462,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		Config:           cfg,
 		WorkingDir:       workingDir,
 		StartedAt:        now,
+		now:              time.Now,
 		db:               p.DB,
 		sessionID:        p.SessionID,
 		logger:           p.Logger,
@@ -948,7 +962,13 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 		return fmt.Errorf("scratchpad entry %q is ~%d tokens, exceeds max %d", key, tokens, s.scratchpadConfig.MaxEntryTokens)
 	}
 
-	entry := db.NewScratchpadEntry(key, content, format)
+	entry := db.ScratchpadEntry{
+		Key:       key,
+		Content:   content,
+		Format:    format,
+		Updated:   s.now().UnixMilli(),
+		SizeBytes: len(content),
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

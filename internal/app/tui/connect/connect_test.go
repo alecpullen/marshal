@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/llm/provider"
@@ -193,28 +194,84 @@ func TestPickModelEmitsDone(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
-	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Non-scoped flow lands on confirm limits; press Enter to advance to summary.
+	m, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
 	if m.step != stepConfirmLimits {
 		t.Fatalf("after pickModel should be stepConfirmLimits, got %v", m.step)
 	}
-	// Press Enter on confirm limits to advance to summary.
+	if !m.detectingCaps {
+		t.Fatal("expected detectingCaps=true immediately after entering confirm limits for an Ollama-backed provider")
+	}
+	if cmd == nil {
+		t.Fatal("expected a capability-probe cmd")
+	}
+	view := ansi.Strip(m.View(80, 24))
+	if !strings.Contains(view, "please wait") || strings.Contains(view, "[↵] confirm") {
+		t.Fatalf("detecting view should show a wait-only footer, got:\n%s", view)
+	}
+
+	// Enter while still detecting must not advance the step.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	if m.step != stepConfirmLimits {
+		t.Fatalf("Enter while detecting should not advance, got %v", m.step)
+	}
+
+	// Deliver the probe result. This test's "ollama" template points at a
+	// base URL with nothing listening, so the probe itself will fail and
+	// Caps comes back zero-valued — that's fine, this only needs to verify
+	// detectingCaps clears and the flow can proceed.
+	msg := cmd()
+	probed, ok := msg.(presetflow.CapabilityProbedMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want presetflow.CapabilityProbedMsg", msg)
+	}
+	m, _ = m.Update(probed)
+	if m.detectingCaps {
+		t.Fatal("expected detectingCaps=false after CapabilityProbedMsg")
+	}
+
+	// Now Enter on confirm limits advances to summary.
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("after confirm limits Enter should be stepSummary, got %v", m.step)
 	}
+
 	// Press Enter on summary to emit DoneMsg.
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
-	if cmd == nil {
+	_, doneCmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if doneCmd == nil {
 		t.Fatal("Enter on summary should emit a DoneMsg cmd")
 	}
-	msg := cmd()
-	dm, ok := msg.(DoneMsg)
+	doneMsg := doneCmd()
+	dm, ok := doneMsg.(DoneMsg)
 	if !ok {
-		t.Fatalf("cmd produced %T, want DoneMsg", msg)
+		t.Fatalf("cmd produced %T, want DoneMsg", doneMsg)
 	}
 	if dm.Model != "qwen2.5-coder:7b" {
 		t.Fatalf("DoneMsg.Model = %q", dm.Model)
+	}
+}
+
+func TestEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen3"}}})
+	m, _ = m.Update(pickerPicked("qwen3"))
+	oldRequestID := m.capProbeID
+	if !m.detectingCaps {
+		t.Fatal("expected capability detection to be active")
+	}
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.step != stepPickModel || m.detectingCaps {
+		t.Fatalf("Esc should cancel detection and return to model picker: step=%v detecting=%v", m.step, m.detectingCaps)
+	}
+
+	m, _ = m.Update(pickerPicked("qwen3"))
+	if m.capProbeID == oldRequestID || !m.detectingCaps {
+		t.Fatal("re-picking the model should start a new capability request")
+	}
+	m, _ = m.Update(presetflow.CapabilityProbedMsg{Provider: "ollama", Model: "qwen3", RequestID: oldRequestID})
+	if !m.detectingCaps {
+		t.Fatal("late result from the canceled request must not clear the new detection state")
 	}
 }
 
@@ -274,6 +331,22 @@ func TestPasteMsgIntoBaseURLInput(t *testing.T) {
 	updated, _ := m.Update(tea.PasteMsg{Content: "https://example.com/v1"})
 	if got := updated.input.Value(); got != "https://example.com/v1" {
 		t.Fatalf("input.Value() = %q, want %q", got, "https://example.com/v1")
+	}
+}
+
+func TestPasteMsgIntoConfirmLimitInput(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
+
+	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.Update(tea.PasteMsg{Content: "65536"})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.confirm.Limits.ContextWindow != 65536 {
+		t.Fatalf("pasted context window = %d, want 65536", m.confirm.Limits.ContextWindow)
+	}
+	if m.confirm.Limits.ContextSource != presetflow.SourceEdited {
+		t.Fatalf("pasted context source = %q, want %q", m.confirm.Limits.ContextSource, presetflow.SourceEdited)
 	}
 }
 
@@ -401,6 +474,7 @@ func TestSummaryShowsNameModelAndDestination(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -423,6 +497,7 @@ func TestSummaryEnterEmitsDone(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -443,6 +518,7 @@ func TestSummaryRenameChangesProviderName(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -487,7 +563,9 @@ func TestScopedModelSwitchGoesThroughConfirmLimits(t *testing.T) {
 	if m.step != stepConfirmLimits {
 		t.Fatalf("expected stepConfirmLimits, got %v", m.step)
 	}
-	// Press Enter on confirm limits to emit DoneMsg.
+	// Clear the async capability-probe gate, then Enter on confirm limits to
+	// emit DoneMsg.
+	clearCaps(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
 		t.Fatal("Enter on confirm limits should emit a DoneMsg cmd")
@@ -508,6 +586,7 @@ func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -527,6 +606,7 @@ func TestRenameEmptyNameShowsError(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("")
@@ -546,6 +626,7 @@ func TestRenameDuplicateNameShowsError(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("ollama")
@@ -568,6 +649,7 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	// The uniqueName() will produce "ollama-2" or similar, but we set it to "ollama" to test
@@ -590,6 +672,7 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	if m.step != stepRename {
@@ -607,6 +690,7 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Confirm limits then land on summary.
+	clearCaps(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -620,6 +704,15 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 	if got := m.renameInput.Value(); got != "renamed-provider" {
 		t.Fatalf("renameInput.Value() = %q, want %q", got, "renamed-provider")
 	}
+}
+
+// clearCaps delivers a zero-valued capability result for m's current confirm
+// target, clearing the async detectingCaps gate on an Ollama-backed provider
+// without performing a network probe. Callers that pick a model on an
+// Ollama-backed provider (providerCfg.Type == "ollama") must call this after
+// the pick so a subsequent Enter can advance the confirm screen.
+func clearCaps(m *Model) {
+	m.Update(presetflow.CapabilityProbedMsg{Provider: m.providerName, Model: m.modelChosen, RequestID: m.capProbeID})
 }
 
 // newConnectForModelPick builds a Model at stepPickModel with a discovered
@@ -649,8 +742,8 @@ func TestPickingAModelEntersConfirmLimits(t *testing.T) {
 	if m.step != stepConfirmLimits {
 		t.Fatalf("step = %v, want stepConfirmLimits", m.step)
 	}
-	if m.limits.ContextWindow != 128000 {
-		t.Errorf("ContextWindow = %d, want the discovered figure", m.limits.ContextWindow)
+	if m.confirm.Limits.ContextWindow != 128000 {
+		t.Errorf("ContextWindow = %d, want the discovered figure", m.confirm.Limits.ContextWindow)
 	}
 }
 
@@ -669,7 +762,7 @@ func TestConfirmLimitsViewShowsFiguresAndSources(t *testing.T) {
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 
 	view := ansi.Strip(m.View(80, 24))
-	for _, want := range []string{"128000", "context", "max output", string(SourceFetched)} {
+	for _, want := range []string{"128000", "context", "max output", string(presetflow.SourceFetched)} {
 		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
 			t.Errorf("view missing %q:\n%s", want, view)
 		}
@@ -728,12 +821,12 @@ func TestConfirmLimitsPrefersSavedPresetFigures(t *testing.T) {
 	if m.step != stepConfirmLimits {
 		t.Fatalf("step = %v, want stepConfirmLimits", m.step)
 	}
-	if m.limits.ContextWindow != 200000 || m.limits.MaxOutputTokens != 8192 {
+	if m.confirm.Limits.ContextWindow != 200000 || m.confirm.Limits.MaxOutputTokens != 8192 {
 		t.Errorf("limits = %d/%d, want the saved preset's 200000/8192",
-			m.limits.ContextWindow, m.limits.MaxOutputTokens)
+			m.confirm.Limits.ContextWindow, m.confirm.Limits.MaxOutputTokens)
 	}
-	if m.limits.ContextSource != SourcePreset || m.limits.OutputSource != SourcePreset {
-		t.Errorf("sources = %q/%q, want both %q", m.limits.ContextSource, m.limits.OutputSource, SourcePreset)
+	if m.confirm.Limits.ContextSource != presetflow.SourcePreset || m.confirm.Limits.OutputSource != presetflow.SourcePreset {
+		t.Errorf("sources = %q/%q, want both %q", m.confirm.Limits.ContextSource, m.confirm.Limits.OutputSource, presetflow.SourcePreset)
 	}
 }
 
@@ -757,12 +850,12 @@ func TestConfirmLimitsFetchedFiguresBeatSavedPreset(t *testing.T) {
 	})
 	m.handlePickerPicked(encodeModelValue("openai", "acme-ultra-3"))
 
-	if m.limits.ContextWindow != 256000 || m.limits.MaxOutputTokens != 4096 {
+	if m.confirm.Limits.ContextWindow != 256000 || m.confirm.Limits.MaxOutputTokens != 4096 {
 		t.Errorf("limits = %d/%d, want the fetched 256000/4096",
-			m.limits.ContextWindow, m.limits.MaxOutputTokens)
+			m.confirm.Limits.ContextWindow, m.confirm.Limits.MaxOutputTokens)
 	}
-	if m.limits.ContextSource != SourceFetched || m.limits.OutputSource != SourceFetched {
-		t.Errorf("sources = %q/%q, want both %q", m.limits.ContextSource, m.limits.OutputSource, SourceFetched)
+	if m.confirm.Limits.ContextSource != presetflow.SourceFetched || m.confirm.Limits.OutputSource != presetflow.SourceFetched {
+		t.Errorf("sources = %q/%q, want both %q", m.confirm.Limits.ContextSource, m.confirm.Limits.OutputSource, presetflow.SourceFetched)
 	}
 }
 
@@ -1190,16 +1283,19 @@ func TestEditingContextWindowMarksItEdited(t *testing.T) {
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.input.SetValue("200000")
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-filled value
+	for _, r := range "200000" {
+		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
+	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.limits.ContextWindow != 200000 {
-		t.Errorf("ContextWindow = %d, want 200000", m.limits.ContextWindow)
+	if m.confirm.Limits.ContextWindow != 200000 {
+		t.Errorf("ContextWindow = %d, want 200000", m.confirm.Limits.ContextWindow)
 	}
-	if m.limits.ContextSource != SourceEdited {
-		t.Errorf("ContextSource = %q, want %q", m.limits.ContextSource, SourceEdited)
+	if m.confirm.Limits.ContextSource != presetflow.SourceEdited {
+		t.Errorf("ContextSource = %q, want %q", m.confirm.Limits.ContextSource, presetflow.SourceEdited)
 	}
-	if m.limits.OutputSource == SourceEdited {
+	if m.confirm.Limits.OutputSource == presetflow.SourceEdited {
 		t.Error("editing the context window must not relabel the output cap")
 	}
 }
@@ -1209,30 +1305,36 @@ func TestEditingMaxOutputMarksItEdited(t *testing.T) {
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 
 	m.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
-	m.input.SetValue("32768")
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-filled value
+	for _, r := range "32768" {
+		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
+	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.limits.MaxOutputTokens != 32768 {
-		t.Errorf("MaxOutputTokens = %d, want 32768", m.limits.MaxOutputTokens)
+	if m.confirm.Limits.MaxOutputTokens != 32768 {
+		t.Errorf("MaxOutputTokens = %d, want 32768", m.confirm.Limits.MaxOutputTokens)
 	}
-	if m.limits.OutputSource != SourceEdited {
-		t.Errorf("OutputSource = %q, want %q", m.limits.OutputSource, SourceEdited)
+	if m.confirm.Limits.OutputSource != presetflow.SourceEdited {
+		t.Errorf("OutputSource = %q, want %q", m.confirm.Limits.OutputSource, presetflow.SourceEdited)
 	}
 }
 
 func TestRejectsNonNumericEdit(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-	before := m.limits.ContextWindow
+	before := m.confirm.Limits.ContextWindow
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.input.SetValue("not a number")
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	for _, r := range "not a number" {
+		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
+	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.limits.ContextWindow != before {
-		t.Errorf("ContextWindow = %d, want it unchanged at %d", m.limits.ContextWindow, before)
+	if m.confirm.Limits.ContextWindow != before {
+		t.Errorf("ContextWindow = %d, want it unchanged at %d", m.confirm.Limits.ContextWindow, before)
 	}
-	if m.err == "" {
+	if m.confirm.Err == "" {
 		t.Error("want an error message for a non-numeric edit")
 	}
 }
@@ -1240,49 +1342,55 @@ func TestRejectsNonNumericEdit(t *testing.T) {
 func TestRejectsNegativeEdit(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-	before := m.limits.ContextWindow
+	before := m.confirm.Limits.ContextWindow
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.input.SetValue("-1")
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	for _, r := range "-1" {
+		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
+	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.limits.ContextWindow != before {
-		t.Errorf("ContextWindow = %d, want it unchanged", m.limits.ContextWindow)
+	if m.confirm.Limits.ContextWindow != before {
+		t.Errorf("ContextWindow = %d, want it unchanged", m.confirm.Limits.ContextWindow)
 	}
 }
 
 func TestEditingAnUnknownFigureResolvesIt(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
-	if m.limits.ContextSource != SourceUnknown {
-		t.Fatalf("precondition: want unknown, got %q", m.limits.ContextSource)
+	if m.confirm.Limits.ContextSource != presetflow.SourceUnknown {
+		t.Fatalf("precondition: want unknown, got %q", m.confirm.Limits.ContextSource)
 	}
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.input.SetValue("8192")
+	for _, r := range "8192" {
+		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
+	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.limits.ContextWindow != 8192 || m.limits.ContextSource != SourceEdited {
-		t.Errorf("got %d/%q, want 8192/%q", m.limits.ContextWindow, m.limits.ContextSource, SourceEdited)
+	if m.confirm.Limits.ContextWindow != 8192 || m.confirm.Limits.ContextSource != presetflow.SourceEdited {
+		t.Errorf("got %d/%q, want 8192/%q", m.confirm.Limits.ContextWindow, m.confirm.Limits.ContextSource, presetflow.SourceEdited)
 	}
 }
 
 func TestEditingZeroClearsToUnknown(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-	if m.limits.ContextSource != SourceFetched {
-		t.Fatalf("precondition: want fetched, got %q", m.limits.ContextSource)
+	if m.confirm.Limits.ContextSource != presetflow.SourceFetched {
+		t.Fatalf("precondition: want fetched, got %q", m.confirm.Limits.ContextSource)
 	}
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.input.SetValue("0")
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Text: "0", Code: '0'})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.limits.ContextWindow != 0 {
-		t.Errorf("ContextWindow = %d, want 0 (cleared)", m.limits.ContextWindow)
+	if m.confirm.Limits.ContextWindow != 0 {
+		t.Errorf("ContextWindow = %d, want 0 (cleared)", m.confirm.Limits.ContextWindow)
 	}
-	if m.limits.ContextSource != SourceUnknown {
-		t.Errorf("ContextSource = %q, want %q", m.limits.ContextSource, SourceUnknown)
+	if m.confirm.Limits.ContextSource != presetflow.SourceUnknown {
+		t.Errorf("ContextSource = %q, want %q", m.confirm.Limits.ContextSource, presetflow.SourceUnknown)
 	}
 }
 

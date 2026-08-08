@@ -280,16 +280,7 @@ func presetsFrame(s *state) *frame {
 			p := s.cfg.Models.Presets[k]
 			return k + "  (" + p.Provider + "/" + p.Model + ")"
 		},
-		func(k string) error {
-			if k == "" {
-				return fmt.Errorf("name cannot be empty")
-			}
-			if _, ok := s.cfg.Models.Presets[k]; ok {
-				return fmt.Errorf("entry already exists")
-			}
-			s.cfg.Models.Presets[k] = routing.ModelPreset{Name: k}
-			return nil
-		},
+		nil, // presets are materialized automatically; see presetflow.Materialize
 		func(k string) *frame {
 			mut := func(f func(*routing.ModelPreset)) {
 				p := s.cfg.Models.Presets[k]
@@ -310,14 +301,15 @@ func presetsFrame(s *state) *frame {
 					func() string { return s.cfg.Models.Presets[k].ToolCalling },
 					func(v string) { mut(func(p *routing.ModelPreset) { p.ToolCalling = v }) })
 				tcField.Desc = "how this preset handles tool calls"
+				providerField := scalarField("presets."+k+".provider", "Provider",
+					func() string { return s.cfg.Models.Presets[k].Provider }, nil)
+				providerField.Desc = "provider selected during model materialization"
+				modelField := scalarField("presets."+k+".model", "Model",
+					func() string { return s.cfg.Models.Presets[k].Model }, nil)
+				modelField.Desc = "model selected during model materialization"
 				return []*field{
-					providerPickerField(s, "presets."+k+".provider",
-						func() string { return s.cfg.Models.Presets[k].Provider },
-						func(v string) error { mut(func(p *routing.ModelPreset) { p.Provider = v }); return nil }),
-					modelPickerField(s, "presets."+k+".model",
-						func() string { return s.cfg.Models.Presets[k].Provider },
-						func() string { return s.cfg.Models.Presets[k].Model },
-						func(v string) error { mut(func(p *routing.ModelPreset) { p.Model = v }); return nil }),
+					providerField,
+					modelField,
 					ctxField,
 					maxOutField,
 					tcField,
@@ -329,27 +321,8 @@ func presetsFrame(s *state) *frame {
 			})
 		},
 		func(k string) { delete(s.cfg.Models.Presets, k) },
-		entriesOpts{
-			Yank: func(k string) any {
-				return yankedMapEntry{Key: k, Val: s.cfg.Models.Presets[k]}
-			},
-			Paste: func(_ string, data any) error {
-				ye, ok := data.(yankedMapEntry)
-				if !ok {
-					return fmt.Errorf("nothing yanked")
-				}
-				existing := map[string]bool{}
-				for kk := range s.cfg.Models.Presets {
-					existing[kk] = true
-				}
-				name := uniqueCopyName(ye.Key, existing)
-				if s.cfg.Models.Presets == nil {
-					s.cfg.Models.Presets = map[string]routing.ModelPreset{}
-				}
-				s.cfg.Models.Presets[name] = ye.Val.(routing.ModelPreset)
-				return nil
-			},
-		})
+		entriesOpts{},
+	)
 	return rootDrillFrame("Model Presets", drill)
 }
 

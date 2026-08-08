@@ -749,7 +749,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 
 	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID)
 	pipelineFactory := func(planPath string) tui.AgentRunner {
-		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, planPath)
+		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath)
 	}
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, nil
 }
@@ -886,7 +886,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 // buildPipelineController wires a plan-execution controller for one plan.
 // It is built per run, not at startup: the controller is bound to a single
 // plan file.
-func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, planPath string) *pipeline.ControllerAdapter {
+func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string) *pipeline.ControllerAdapter {
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
@@ -920,6 +920,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 				ctl.UsageTokens += n
 				state.UpdateSDDTokens(ctl.UsageTokens, cfg.SDD.MaxTotalTokens)
 			},
+			RegistryFactory: makePipelineRegistryFactory(cfg, state, commandRunner, resolver, database, projectID, skillIndex, reg),
 		},
 		Verifier: pipeline.DefaultVerifier(
 			state.WorkingDir,
@@ -931,14 +932,48 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		MaxDispatchRetries: cfg.SDD.DispatchRetries,
 		AutoEscalate:       parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
 		TargetBranch:       "main",
+		MaxTokensCfg:       cfg.SDD.MaxTotalTokens,
 	})
 	if err != nil {
 		state.Logger().Warn("pipeline: controller construction failed", "error", err)
 		state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start plan run: %v", err), session.ContentTypePlain)
 		return nil
 	}
+	c.RunStore = pipeline.NewRunStore(c.Paths)
 	adapter = pipeline.NewControllerAdapter(c, state)
 	return adapter
+}
+
+// makePipelineRegistryFactory returns a RegistryFactory that builds a fresh
+// tool registry bound to a per-dispatch execution context. Each dispatch
+// creates its own child session and native toolset so handlers close over
+// the correct worktree root and artifact aliases rather than the parent
+// session's project root. The returned registry is then filtered by scope.
+func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry) pipeline.RegistryFactory {
+	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope) (*registry.Registry, error) {
+		childState := session.New(cfg, ctx.WorkspaceRoot, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1))
+		childReg := registry.New()
+		nativeOpts := native.Options{
+			WorkspaceRoot:  ctx.WorkspaceRoot,
+			CommandRunner:  commandRunner,
+			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+			SessionState:   childState,
+			Config:         cfg,
+			NamedRoots:     ctx.NamedRoots(),
+		}
+		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
+			return nil, fmt.Errorf("pipeline registry factory: register: %w", err)
+		}
+		skills.RegisterTool(childReg, skillIndex, childState)
+		switch scope {
+		case pipeline.ScopeReadOnly:
+			return registry.ReadOnlyView(childReg), nil
+		case pipeline.ScopeArtifactWriter:
+			return registry.ArtifactWriterView(childReg, ctx.ArtifactAlias), nil
+		default:
+			return childReg, nil
+		}
+	}
 }
 
 // roleToolIterations returns the per-role tool-iteration cap, falling back

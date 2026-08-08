@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +16,20 @@ import (
 	"marshal/internal/worktree"
 )
 
+// reportPathRe matches the report-contract line in an implementer or fixer
+// prompt, capturing the absolute path the subagent is told to write to.
+var reportPathRe = regexp.MustCompile(`Write your full report to (\S+)`)
+
 // scriptedDispatch returns a Dispatcher whose exec pops one canned output
-// per call, and a pointer to the prompts it received.
+// per call, and a pointer to the prompts it received. A real implementer or
+// fixer writes its report to the path named in the prompt; the scripted
+// dispatcher mirrors that so the reviewer's input preflight sees the file.
+// @run/... artifact paths are resolved against ExecCtx.ArtifactRoot, which
+// the controller sets to the run directory (Critical 1).
+// scriptedDispatch returns a Dispatcher whose exec pops one canned output
+// per call, and a pointer to the prompts it received. A real implementer or
+// fixer writes its report to the path named in the prompt; the scripted
+// dispatcher mirrors that so the reviewer's input preflight sees the file.
 func scriptedDispatch(t *testing.T, outputs ...string) (Dispatcher, *[]string) {
 	t.Helper()
 	prompts := &[]string{}
@@ -29,13 +42,22 @@ func scriptedDispatch(t *testing.T, outputs ...string) (Dispatcher, *[]string) {
 			}
 			out := outputs[i]
 			i++
+			if m := reportPathRe.FindStringSubmatch(prompt); m != nil {
+				if err := os.WriteFile(m[1], []byte(out), 0o644); err != nil {
+					return "", err
+				}
+			}
 			return out, nil
 		},
 	}
 	return d, prompts
 }
 
-// testController builds a Controller over fakes with a two-task plan.
+// testController builds a Controller over fakes with a two-task plan. The
+// controller's Run() sets Dispatcher.ExecCtx (Critical 1) to the run dir,
+// so prompts now reference @run/... artifact paths. This wraps the given
+// dispatcher's exec so @run/ resolves to the run directory, mirroring what
+// the production RegistryFactory does for a real child registry.
 func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Controller {
 	t.Helper()
 	root := t.TempDir()
@@ -62,7 +84,38 @@ func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Con
 	if err != nil {
 		t.Fatalf("NewController: %v", err)
 	}
+	if d.exec != nil {
+		inner := d.exec
+		c.Dispatch.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+			// Resolve @run/... artifact references to the run directory,
+			// as the production @run alias does.
+			if c.Paths.Dir != "" {
+				prompt = strings.Replace(prompt, "@run/", c.Paths.Dir+"/", -1)
+			}
+			return inner(ctx, role, scope, prompt)
+		}
+	}
 	return c
+}
+
+// writeBrief writes task n's brief file, which the reviewer's input
+// preflight requires. runTask normally writes it; tests that call
+// reviewTask directly must create it themselves.
+func writeBrief(t *testing.T, c *Controller, n int) {
+	t.Helper()
+	if err := os.WriteFile(c.Paths.Brief(n), []byte("brief"), 0o644); err != nil {
+		t.Fatalf("write brief: %v", err)
+	}
+}
+
+// writeReport writes task n's report file, which the reviewer's input
+// preflight requires. The implementer normally writes it; tests that call
+// reviewTask directly must create it themselves.
+func writeReport(t *testing.T, c *Controller, n int) {
+	t.Helper()
+	if err := os.WriteFile(c.Paths.Report(n), []byte("report"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
 }
 
 func TestRunTaskHappyPath(t *testing.T) {
@@ -215,6 +268,8 @@ func TestReviewTaskCleanFirstPass(t *testing.T) {
 	d, prompts := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
 	c := testController(t, d, NewFakeCommandRunner())
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	res, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
 	if err != nil {
@@ -244,6 +299,8 @@ func TestReviewTaskOneFixDispatchForAllFindings(t *testing.T) {
 	g := c.Git.(*worktree.FakeGitOps)
 	g.Dirty = true
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	res, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
 	if err != nil {
@@ -277,6 +334,8 @@ func TestReviewTaskRecordsMinorsWithoutBlocking(t *testing.T) {
 	d, _ := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- [Minor] magic number 100\n")
 	c := testController(t, d, NewFakeCommandRunner())
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	if _, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"}); err != nil {
 		t.Fatalf("reviewTask: %v", err)
@@ -297,6 +356,8 @@ func TestReviewTaskExhaustsFixRounds(t *testing.T) {
 	c := testController(t, d, NewFakeCommandRunner())
 	c.Git.(*worktree.FakeGitOps).Dirty = true
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	_, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
 	if err == nil {
@@ -688,5 +749,232 @@ func TestOpenGateContextIsEmptyForBranchLevelGates(t *testing.T) {
 	title, _ := c.QuestionContext()
 	if title != "" {
 		t.Errorf("task 0 is not a plan task; title = %q, want empty", title)
+	}
+}
+
+func TestRunWritesCheckpointOnTaskStart(t *testing.T) {
+	d, _ := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	rs := NewRunStore(c.Paths)
+	last, ok, err := rs.LastCheckpoint()
+	if err != nil {
+		t.Fatalf("LastCheckpoint: %v", err)
+	}
+	if !ok {
+		t.Fatal("no checkpoint written")
+	}
+	if last.Phase != PhaseDone && last.Phase != "run_finished" {
+		t.Errorf("last checkpoint phase = %q, want done or run_finished", last.Phase)
+	}
+}
+
+func TestRunRecoversCommittedTaskWithoutRedispatch(t *testing.T) {
+	d, prompts := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	g := c.Git.(*worktree.FakeGitOps)
+	g.Dirty = true
+
+	// Simulate a prior run that committed task 1 but crashed before
+	// writing the completion ledger line.
+	c.RunStore = NewRunStore(c.Paths)
+	_ = c.RunStore.CreateManifest(Manifest{
+		RunID: "crashed-run", PlanPath: c.Plan.Path,
+		RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan",
+	})
+	// Task 1 was committed: record the checkpoint and the commit.
+	_ = c.RunStore.AppendCheckpoint(Checkpoint{Seq: 1, RunID: "crashed-run", Phase: "task_completed", TaskN: 1, BaseSHA: "111111", HeadSHA: "aaaaaaa"})
+	g.Refs["HEAD"] = "aaaaaaa"
+	g.Heads[c.workDir()] = "aaaaaaa"
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Task 1 should NOT have been redispatched: only task 2 + branch review.
+	if len(*prompts) != 3 {
+		t.Fatalf("dispatches = %d, want 3 (task 2 impl + task 2 review + branch review), got prompts:\n%v", len(*prompts), *prompts)
+	}
+}
+
+func TestRunRestoresGateAfterCrash(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: NEEDS_CONTEXT\nQUESTION: which level?\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.RunStore = NewRunStore(c.Paths)
+	_ = c.RunStore.CreateManifest(Manifest{RunID: "crashed-run", PlanPath: c.Plan.Path, RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan"})
+	_ = c.RunStore.AppendCheckpoint(Checkpoint{Seq: 1, RunID: "crashed-run", Phase: PhaseBlocked, TaskN: 1, GateQuestion: "which level?"})
+
+	err := c.Run(context.Background())
+	if !errors.Is(err, ErrHumanGateRequired) {
+		t.Fatalf("Run = %v, want ErrHumanGateRequired", err)
+	}
+	if c.Question() != "which level?" {
+		t.Errorf("Question() = %q, want %q", c.Question(), "which level?")
+	}
+}
+
+func TestReviewBlockedInputsStopsWithoutFixer(t *testing.T) {
+	// Reviewer reports inputs are blocked.
+	d, prompts := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: pass\n", // task 1 implementer
+		"INPUTS: BLOCKED\nINPUT_ERROR: could not read @run/task-1-brief.md\nSPEC: FAIL\nQUALITY: CHANGES_REQUESTED\nFINDINGS:\n- [Critical] cannot review without inputs\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	// The preflight requires the brief and report to exist as regular files
+	// before the reviewer is dispatched. The scripted implementer returns a
+	// canned string without writing the report, so create both here to let
+	// the reviewer run and report the blocked inputs.
+	if err := os.WriteFile(c.Paths.Brief(1), []byte("brief"), 0o644); err != nil {
+		t.Fatalf("write brief: %v", err)
+	}
+	if err := os.WriteFile(c.Paths.Report(1), []byte("report"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should fail when reviewer inputs are blocked")
+	}
+	if !strings.Contains(err.Error(), "inaccessible") && !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error should mention inaccessible/blocked inputs: %v", err)
+	}
+	// Only 2 dispatches: implementer + reviewer. No fixer.
+	if len(*prompts) != 2 {
+		t.Fatalf("dispatches = %d, want 2 (impl + review, no fixer for blocked inputs)", len(*prompts))
+	}
+}
+
+func TestPreflightCatchesMissingReport(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	// Run task 1 to completion, then delete the report file to simulate
+	// a crash that lost it.
+	spec, _ := c.Plan.Task(1)
+	_, err := c.runTask(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	os.Remove(c.Paths.Report(1))
+
+	err = c.preflightReviewInputs(spec, c.Paths.Package(1, 0), c.Paths.Package(1, 0)+"-verdict.md")
+	if err == nil {
+		t.Fatal("preflight should catch missing report file")
+	}
+}
+
+func TestRunStopsOnTokenBudgetExhaustion(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.MaxTokensCfg = 100 // very low budget
+	c.UsageTokens = 0
+
+	// Wire OnTokens to increment UsageTokens.
+	c.Dispatch.OnTokens = func(n int) {
+		c.UsageTokens += n
+	}
+
+	// Simulate the first dispatch consuming all the budget. Mirror the
+	// scripted dispatcher's report-writing so the reviewer's input preflight
+	// sees the file if the run were to proceed past the budget check.
+	c.Dispatch.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		c.UsageTokens += 150 // exceeds budget
+		if m := reportPathRe.FindStringSubmatch(prompt); m != nil {
+			p := m[1]
+			if c.Paths.Dir != "" {
+				p = strings.Replace(p, "@run/", c.Paths.Dir+"/", 1)
+			}
+			if err := os.WriteFile(p, []byte("STATUS: DONE\nTESTS: pass\n"), 0o644); err != nil {
+				return "", err
+			}
+		}
+		return "STATUS: DONE\nTESTS: pass\n", nil
+	}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should stop when budget is exhausted")
+	}
+	if !strings.Contains(err.Error(), "budget") {
+		t.Errorf("error should mention budget: %v", err)
+	}
+}
+
+// TestRunFailsWhenAnotherRunHoldsTheLock asserts a second Run on the same
+// paths fails when a live lock exists (a different run owns it).
+func TestRunFailsWhenAnotherRunHoldsTheLock(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.RunStore = NewRunStore(c.Paths)
+	// Pre-create a manifest + lock owned by a different run, as a live
+	// concurrent process would.
+	if err := c.RunStore.CreateManifest(Manifest{
+		RunID: "other-run", PlanPath: c.Plan.Path, RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan",
+	}); err != nil {
+		t.Fatalf("CreateManifest: %v", err)
+	}
+	if err := c.RunStore.AcquireLock(RunLock{RunID: "other-run", PID: 99999, Host: "other-host", AcquiredAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should fail when another run holds the lock")
+	}
+	if !strings.Contains(err.Error(), "locked") {
+		t.Errorf("error should mention the lock: %v", err)
+	}
+	// The other run's lock must still be in place.
+	if l, ok, _ := c.RunStore.Lock(); !ok || l.RunID != "other-run" {
+		t.Errorf("lock = %+v (ok=%v), want the other run's lock preserved", l, ok)
+	}
+}
+
+// TestRunTakesOverStaleLockFromDifferentRun asserts a Run takes over a lock
+// that belongs to a different (stale) run and proceeds.
+func TestRunTakesOverStaleLockFromDifferentRun(t *testing.T) {
+	d, prompts := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.RunStore = NewRunStore(c.Paths)
+	// Manifest claims this controller's run; the lock is stale from a
+	// different (older) run, so Run must take it over.
+	if err := c.RunStore.CreateManifest(Manifest{
+		RunID: "current-run", PlanPath: c.Plan.Path, RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan",
+	}); err != nil {
+		t.Fatalf("CreateManifest: %v", err)
+	}
+	if err := c.RunStore.AcquireLock(RunLock{RunID: "stale-run", PID: 11111, Host: "old-host", AcquiredAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The stale lock was taken over and released on completion.
+	if _, ok, _ := c.RunStore.Lock(); ok {
+		t.Error("lock should be released after a successful run")
+	}
+	if len(*prompts) != 5 {
+		t.Fatalf("dispatches = %d, want the full run (2 tasks + branch review)", len(*prompts))
 	}
 }

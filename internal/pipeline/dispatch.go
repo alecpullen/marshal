@@ -23,6 +23,16 @@ type Dispatcher struct {
 	// OnTokens, when non-nil, receives each subagent's total token usage.
 	OnTokens func(int)
 
+	// ExecCtx, when non-zero, carries the worktree and artifact root that
+	// child registries must be bound to. When zero, the dispatcher falls
+	// back to the parent session's workspace (legacy behavior, pre-isolation).
+	ExecCtx ExecutionContext
+
+	// RegistryFactory, when non-nil, builds a fresh registry bound to the
+	// execution context for each dispatch. When nil, the factory-built
+	// runner uses the parent registry (legacy).
+	RegistryFactory RegistryFactory
+
 	// exec is the seam tests replace. When nil, runExec is used.
 	exec func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error)
 }
@@ -42,6 +52,18 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 	runner, err := d.Factory(role, scope)
 	if err != nil {
 		return "", fmt.Errorf("pipeline dispatch: build %s runner: %w", role, err)
+	}
+	// When an execution context and registry factory are wired, bind the
+	// runner to a fresh registry scoped to the worktree and artifact root
+	// rather than the parent session's project root. Otherwise fall back to
+	// the factory-built runner's parent registry (legacy, pre-isolation).
+	if d.RegistryFactory != nil && d.ExecCtx.WorkspaceRoot != "" {
+		regScope := pipelineScope(scope)
+		reg, err := d.RegistryFactory(d.ExecCtx, regScope)
+		if err != nil {
+			return "", fmt.Errorf("pipeline dispatch: build %s registry: %w", role, err)
+		}
+		runner.Registry = reg
 	}
 	if d.OnTokens != nil {
 		runner.UsageObserver = func(u schema.TokenUsage) { d.OnTokens(u.TotalTokens) }
@@ -96,7 +118,7 @@ func (d Dispatcher) Implement(ctx context.Context, role agent.AgentRole, label, 
 // label is used for the parent-session subagent card; when empty the
 // prompt's first 240 characters are used.
 func (d Dispatcher) Review(ctx context.Context, role agent.AgentRole, label, prompt string) (ReviewReport, error) {
-	out, err := d.run(ctx, role, swarm.ScopeReadOnly, label, prompt)
+	out, err := d.run(ctx, role, swarm.ScopeArtifactWriter, label, prompt)
 	if err != nil {
 		return ReviewReport{}, err
 	}
@@ -114,4 +136,18 @@ func truncateForError(s string) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// pipelineScope maps a swarm registry scope to the pipeline's own scope.
+// The pipeline only distinguishes full, read-only, and artifact-writer; the
+// swarm tester scope is treated as full so the child registry keeps its
+// command tools.
+func pipelineScope(scope swarm.RegistryScope) RegistryScope {
+	if scope == swarm.ScopeReadOnly {
+		return ScopeReadOnly
+	}
+	if scope == swarm.ScopeArtifactWriter {
+		return ScopeArtifactWriter
+	}
+	return ScopeFull
 }

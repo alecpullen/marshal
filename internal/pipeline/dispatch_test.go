@@ -38,11 +38,11 @@ func TestDispatcherImplementParsesReport(t *testing.T) {
 	}
 }
 
-func TestDispatcherReviewRunsReadOnly(t *testing.T) {
+func TestDispatcherReviewRunsArtifactWriter(t *testing.T) {
 	d := Dispatcher{
 		exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
-			if scope != swarm.ScopeReadOnly {
-				t.Errorf("scope = %v, want ScopeReadOnly", scope)
+			if scope != swarm.ScopeArtifactWriter {
+				t.Errorf("scope = %v, want ScopeArtifactWriter", scope)
 			}
 			return "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", nil
 		},

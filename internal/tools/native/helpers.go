@@ -104,6 +104,27 @@ func workspaceRel(root string, abs string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
+// resolveNamedRoot resolves paths that may use a named alias prefix (e.g.
+// "@run/task-1-brief.md"). If the path does not start with a known alias,
+// it falls through to resolveWorkspacePathMulti for normal resolution.
+// Unknown aliases are rejected; traversal outside an alias root is rejected.
+func resolveNamedRoot(namedRoots map[string]string, root string, additionalRoots []string, rel string) (string, error) {
+	for alias, aliasRoot := range namedRoots {
+		prefix := alias + "/"
+		if rel == alias {
+			return aliasRoot, nil
+		}
+		if strings.HasPrefix(rel, prefix) {
+			sub := rel[len(prefix):]
+			return resolveWorkspacePathMulti(aliasRoot, nil, sub)
+		}
+	}
+	if strings.HasPrefix(rel, "@") {
+		return "", fmt.Errorf("unknown named alias in path %q", rel)
+	}
+	return resolveWorkspacePathMulti(root, additionalRoots, rel)
+}
+
 func limitOutput(s string, maxBytes int) string {
 	if maxBytes <= 0 || len(s) <= maxBytes {
 		return s

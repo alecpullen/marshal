@@ -30,7 +30,7 @@ func Default() Config {
 			IncludeGitignoredFiles: false,
 		},
 		Skills: SkillsConfig{
-			MaxActive: 3,
+			MaxActive: 8,
 		},
 		Indexing: IndexingConfig{
 			UseTreesitter:          false,

@@ -5,9 +5,13 @@
 package sddplans
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"marshal/internal/pipeline"
 )
@@ -28,6 +32,19 @@ type Candidate struct {
 	// NonTerminal indicates a manifest or checkpoint exists and the run
 	// has not reached a terminal state.
 	NonTerminal bool
+
+	// DetOps is the number of deterministic operations in the compiled plan.
+	DetOps int
+	// AgentOps is the number of fallback/agent operations in the compiled plan.
+	AgentOps int
+	// EstimatedCalls is the estimated number of model calls the plan needs.
+	EstimatedCalls int
+	// HasBlocks reports whether the plan contains any marshal.* blocks.
+	HasBlocks bool
+	// Strategy is the effective execution strategy for the plan.
+	Strategy pipeline.Strategy
+	// Diagnostics carries compile/preflight diagnostics for the plan.
+	Diagnostics []pipeline.Diagnostic
 }
 
 // Resumable reports whether a previous run left this plan partly complete.
@@ -68,6 +85,17 @@ func Discover(repoRoot, plansDir string) []Candidate {
 		}
 		c.Tasks = len(plan.Tasks)
 		c.Done, c.LedgerErr, c.NonTerminal = completedCount(repoRoot, c.Slug)
+
+		// Populate execution metadata from the shared inspection. A plan
+		// with diagnostics is still listed; the picker shows why.
+		if inspection, ierr := pipeline.InspectPlan(path, repoRoot, pipeline.StrategyAuto); ierr == nil {
+			c.DetOps = inspection.Report.Total.DetOps
+			c.AgentOps = inspection.Report.Total.AgentOps
+			c.EstimatedCalls = inspection.Report.Total.EstCalls
+			c.HasBlocks = inspection.HasMarshalBlocks
+			c.Strategy = inspection.EffectiveStrategy
+			c.Diagnostics = inspection.Diagnostics
+		}
 		out = append(out, c)
 	}
 	return out
@@ -104,4 +132,29 @@ func completedCount(repoRoot, slug string) (int, error, bool) {
 		return 0, err, false
 	}
 	return len(done), nil, false
+}
+
+// slugRe matches characters that are not lowercase ASCII letters, digits, or
+// hyphens; they are replaced with a hyphen during slugification.
+var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// DraftPath resolves the path for a new plan candidate under the configured
+// plans directory (relative to repoRoot). It creates no files. The goal is
+// slugified to lowercase ASCII hyphenated text, prefixed with the date as
+// YYYY-MM-DD-, and suffixed with -2, -3, and so on when the candidate path
+// already exists so a draft never overwrites an existing plan.
+func DraftPath(repoRoot, plansDir, goal string, now time.Time) (string, error) {
+	dir := filepath.Join(repoRoot, plansDir)
+	slug := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(goal), "-"), "-")
+	if slug == "" {
+		slug = "plan"
+	}
+	base := fmt.Sprintf("%s-%s", now.Format("2006-01-02"), slug)
+	path := filepath.Join(dir, base+".md")
+	for n := 2; ; n++ {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return path, nil
+		}
+		path = filepath.Join(dir, fmt.Sprintf("%s-%d.md", base, n))
+	}
 }

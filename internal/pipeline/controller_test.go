@@ -1159,6 +1159,43 @@ func TestRunStrictFailsBeforeWorktreeOnBlockedTask(t *testing.T) {
 	if !strings.Contains(err.Error(), "strict") && !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("error should mention strict or blocked: %v", err)
 	}
+	if len(g.Added) != 0 {
+		t.Errorf("strict blocked plan must not create a worktree, got %v", g.Added)
+	}
+}
+
+func TestRunStrictFailsBeforeWorktreeOnProseAndAgentTasks(t *testing.T) {
+	dir := t.TempDir()
+	planContent := "# Strict Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"## Task 1: Resolve\n\n" +
+		"```marshal.agent\nscope = [\"internal/app\"]\nreason = \"needs design judgment\"\n```\n\n" +
+		"## Task 2: Legacy\n\nProse only.\n"
+	planPath := filepath.Join(dir, "strict-prose.md")
+	os.WriteFile(planPath, []byte(planContent), 0o644)
+
+	d, _ := scriptedDispatch(t)
+	g := worktree.NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	g.Heads[dir] = g.Refs["main"]
+	c, err := NewController(ControllerOpts{
+		PlanPath: planPath,
+		RepoRoot: dir,
+		Git:      g,
+		Dispatch: d,
+		Verifier: Verifier{Runner: NewFakeCommandRunner()},
+		Strategy: StrategyStrict,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+
+	err = c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should fail for strict plan with agent and prose-only tasks")
+	}
+	if len(g.Added) != 0 {
+		t.Errorf("strict plan with unresolved work must not create a worktree, got %v", g.Added)
+	}
 }
 
 func TestReviewRunsForAgentFallbackTaskInAdaptive(t *testing.T) {

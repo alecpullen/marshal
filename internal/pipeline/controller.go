@@ -86,6 +86,9 @@ type Controller struct {
 	// PlanIR is the compiled plan, populated when marshal.* blocks are
 	// present. Nil for legacy prose-only plans.
 	PlanIR *PlanIR
+	// Inspection is the shared parse/compile/preflight result, populated by
+	// Inspect() and used by the TUI preflight and the controller's Run.
+	Inspection *Inspection
 
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
@@ -172,6 +175,22 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 // resume); 0 means unlimited.
 func (c *Controller) overBudget() bool {
 	return c.maxTokens > 0 && c.UsageTokens >= c.maxTokens
+}
+
+// Inspect parses, compiles, and preflights the controller's plan against its
+// repository, resolving the effective strategy. It populates the controller's
+// Inspection, PlanIR, and Strategy so Run and the TUI preflight share one
+// source of statuses and diagnostics. It does not touch git or create a
+// worktree.
+func (c *Controller) Inspect() (*Inspection, error) {
+	inspection, err := InspectPlan(c.Plan.Path, c.RepoRoot, c.Strategy)
+	if err != nil {
+		return nil, err
+	}
+	c.Inspection = inspection
+	c.PlanIR = inspection.IR
+	c.Strategy = inspection.EffectiveStrategy
+	return inspection, nil
 }
 
 // CompletedCount returns the number of tasks the ledger marks complete.
@@ -900,51 +919,21 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 // ErrHumanGateRequired when a subagent needs an answer, or an error when a
 // task cannot be completed.
 func (c *Controller) Run(ctx context.Context) error {
-	// Compile and preflight when strategy is adaptive or strict. This runs
-	// before any worktree is created: a strict plan with blocked or agent
-	// operations is rejected without minting a worktree.
-	if c.Strategy == StrategyAdaptive || c.Strategy == StrategyStrict {
-		ir, diags, err := CompilePlan(c.Plan)
-		if err != nil {
-			return fmt.Errorf("pipeline: compile plan: %w", err)
+	// Inspect (parse, compile, preflight) before any worktree is created: a
+	// strict plan with blocked, agent, or prose-only work is rejected without
+	// minting a worktree. The inspection is shared with the TUI preflight.
+	if _, err := c.Inspect(); err != nil {
+		return fmt.Errorf("pipeline: inspect plan: %w", err)
+	}
+	if c.Strategy == StrategyStrict && c.Inspection.StrictBlocked {
+		var msgs []string
+		for _, d := range c.Inspection.Errors() {
+			msgs = append(msgs, fmt.Sprintf("task %d: %s", d.TaskN, d.Message))
 		}
-		c.PlanIR = ir
-
-		// Check for error-severity diagnostics.
-		var errDiags []Diagnostic
-		for _, d := range diags {
-			if d.Severity == DiagError {
-				errDiags = append(errDiags, d)
-			}
+		if len(msgs) == 0 {
+			msgs = append(msgs, "plan contains unresolved or prose-only work")
 		}
-		if len(errDiags) > 0 && c.Strategy == StrategyStrict {
-			var msgs []string
-			for _, d := range errDiags {
-				msgs = append(msgs, fmt.Sprintf("task %d: %s", d.TaskN, d.Message))
-			}
-			return fmt.Errorf("pipeline: strict plan has compile errors:\n%s", strings.Join(msgs, "\n"))
-		}
-
-		// Preflight each task.
-		for i := range ir.Tasks {
-			taskDir := c.workDir()
-			opDiags := preflightOps(taskDir, ir.Tasks[i].Operations)
-			for _, d := range opDiags {
-				_ = c.Ledger.Note("Task %d: preflight: %s", ir.Tasks[i].TaskN, d.Message)
-			}
-			// Under strict, any blocked operation fails the run.
-			if c.Strategy == StrategyStrict && ir.Tasks[i].DerivedStatus() == TaskBlocked {
-				return fmt.Errorf("pipeline: task %d is blocked and strategy is strict", ir.Tasks[i].TaskN)
-			}
-			if c.Strategy == StrategyStrict {
-				for _, op := range ir.Tasks[i].Operations {
-					if op.OpKind() == "agent" {
-						return fmt.Errorf("pipeline: task %d has an agent operation and strategy is strict", ir.Tasks[i].TaskN)
-					}
-				}
-			}
-			ir.Tasks[i].Status = ir.Tasks[i].DerivedStatus()
-		}
+		return fmt.Errorf("pipeline: strict plan is blocked:\n%s", strings.Join(msgs, "\n"))
 	}
 	if c.Worktree.Path == "" {
 		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)

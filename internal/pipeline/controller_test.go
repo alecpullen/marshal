@@ -1128,6 +1128,39 @@ func TestReviewSkippedForDeterministicTaskInAdaptive(t *testing.T) {
 	}
 }
 
+func TestRunStrictFailsBeforeWorktreeOnBlockedTask(t *testing.T) {
+	dir := t.TempDir()
+	planContent := "# Strict Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"## Task 1: Blocked\n\n" +
+		"```marshal.patch file=\"nonexistent.go\"\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n"
+	planPath := filepath.Join(dir, "strict-blocked.md")
+	os.WriteFile(planPath, []byte(planContent), 0o644)
+
+	d, _ := scriptedDispatch(t)
+	g := worktree.NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	g.Heads[dir] = g.Refs["main"]
+	c, err := NewController(ControllerOpts{
+		PlanPath: planPath,
+		RepoRoot: dir,
+		Git:      g,
+		Dispatch: d,
+		Verifier: Verifier{Runner: NewFakeCommandRunner()},
+		Strategy: StrategyStrict,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+
+	err = c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should fail for strict plan with blocked operations")
+	}
+	if !strings.Contains(err.Error(), "strict") && !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error should mention strict or blocked: %v", err)
+	}
+}
+
 func TestReviewRunsForAgentFallbackTaskInAdaptive(t *testing.T) {
 	d, prompts := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
 	c := testController(t, d, NewFakeCommandRunner())

@@ -11,6 +11,15 @@ import (
 	"marshal/internal/llm/schema"
 )
 
+func TestPresetsFrameHasNoManualAddAffordance(t *testing.T) {
+	s := profilesTestState() // reuse the existing helper from frames_profiles_test.go
+	frame := presetsFrame(s)
+	built := frame
+	if built.List.OnAdd != nil {
+		t.Error("presetsFrame's collection must not allow manual add — presets are materialized automatically")
+	}
+}
+
 func TestProviderRowShowsEndpointAndKeySource(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{

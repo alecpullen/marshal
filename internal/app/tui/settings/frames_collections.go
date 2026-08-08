@@ -280,16 +280,7 @@ func presetsFrame(s *state) *frame {
 			p := s.cfg.Models.Presets[k]
 			return k + "  (" + p.Provider + "/" + p.Model + ")"
 		},
-		func(k string) error {
-			if k == "" {
-				return fmt.Errorf("name cannot be empty")
-			}
-			if _, ok := s.cfg.Models.Presets[k]; ok {
-				return fmt.Errorf("entry already exists")
-			}
-			s.cfg.Models.Presets[k] = routing.ModelPreset{Name: k}
-			return nil
-		},
+		nil, // presets are materialized automatically; see presetflow.Materialize
 		func(k string) *frame {
 			mut := func(f func(*routing.ModelPreset)) {
 				p := s.cfg.Models.Presets[k]

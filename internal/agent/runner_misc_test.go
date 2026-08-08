@@ -132,14 +132,14 @@ func TestRunAnswersQuestionWithoutToolCalls(t *testing.T) {
 	}
 
 	messages := state.Messages()
-	if len(messages) != 3 {
-		t.Fatalf("len(messages) = %d, want 3 (user + fallback + assistant): %#v", len(messages), messages)
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2 (user + assistant): %#v", len(messages), messages)
 	}
 	if messages[0].Role != session.RoleUser || messages[0].Content != "What does this project do?" {
 		t.Fatalf("messages[0] = %#v", messages[0])
 	}
-	if messages[2].Role != session.RoleAssistant || messages[2].Content != "Marshal is a TUI coding agent." {
-		t.Fatalf("messages[2] = %#v", messages[2])
+	if messages[1].Role != session.RoleAssistant || messages[1].Content != "Marshal is a TUI coding agent." {
+		t.Fatalf("messages[1] = %#v", messages[1])
 	}
 }
 

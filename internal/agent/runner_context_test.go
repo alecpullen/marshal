@@ -272,7 +272,7 @@ func TestRunSwallowsMemoryProviderErrorsWithoutInjectingMemorySection(t *testing
 			t.Fatalf("unexpected memory section after provider error: %#v", pack.Sections)
 		}
 	}
-	if got := state.Messages(); len(got) != 3 || got[2].Content != "done" {
+	if got := state.Messages(); len(got) != 2 || got[1].Content != "done" {
 		t.Fatalf("turn did not complete successfully: %#v", got)
 	}
 }

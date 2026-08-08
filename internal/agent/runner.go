@@ -555,13 +555,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// D1: derive a per-turn compaction threshold from the resolved route's
 	// window. Carried as a local so the threshold tracks the model actually
 	// in use, never poisoned across turns by a smaller model's window.
-	turnThreshold, turnThresholdFallback, turnThresholdCollapsed := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
-	if turnThresholdFallback {
-		// Unknown window: tell the model so it can warn or react; the
-		// safety-net threshold of DefaultMaxTurnContextTokens still
-		// applies regardless.
-		r.State.AddMessage(session.RoleSystem, "Could not resolve the model context window; using a conservative per-turn budget. Configure models with explicit context_window or add the model to the catalog for accurate thresholds.", session.ContentTypePlain)
-	}
+	turnThreshold, _, turnThresholdCollapsed := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
 	budgetSource := thresholdSource(route.Window, r.MaxTurnContextTokens, turnThresholdCollapsed)
 	r.State.SetTurnBudget(route.Window, turnThreshold, budgetSource)
 	r.State.Logger().Info("turn context budget",

@@ -533,6 +533,22 @@ func (c *Controller) interfacesBefore(n int) string {
 	return strings.Join(out, "\n")
 }
 
+// preflightReviewInputs verifies the inputs a reviewer reads are present
+// before dispatching it. When any input is missing (e.g. a crash lost the
+// report), the run stops instead of sending a reviewer that cannot see its
+// materials.
+func (c *Controller) preflightReviewInputs(t TaskSpec, pkgPath, verdictPath string) error {
+	briefPath := c.Paths.Brief(t.N)
+	reportPath := c.Paths.Report(t.N)
+	for _, p := range []string{briefPath, reportPath, pkgPath} {
+		info, err := os.Stat(p)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("pipeline: task %d review input %s is inaccessible", t.N, p)
+		}
+	}
+	return nil
+}
+
 // reviewTask reviews one task's committed work and loops on fixes until
 // the review is clean or the fix budget runs out. Every blocking finding
 // from one review goes to a single fix dispatch: per-finding fixers each
@@ -543,6 +559,9 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 		pkgPath := c.Paths.Package(t.N, round)
 		rng := res.Base + ".." + res.Head
 		if err := WriteReviewPackage(c.Git, dir, rng, pkgPath); err != nil {
+			return res, err
+		}
+		if err := c.preflightReviewInputs(t, pkgPath, strings.TrimSuffix(pkgPath, ".md")+"-verdict.md"); err != nil {
 			return res, err
 		}
 		prompt, err := RenderReview(ReviewPrompt{
@@ -570,6 +589,9 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 		})
 		for _, f := range review.Minors() {
 			_ = c.Ledger.RecordMinor(t.N, f.Text)
+		}
+		if !review.InputsAccessible {
+			return res, fmt.Errorf("pipeline: task %d review blocked — inputs inaccessible: %s", t.N, review.InputError)
 		}
 		c.emitPayload(t.N, round, PhaseReviewing, "",
 			ReviewPayload{Findings: review.Findings, Clean: review.Clean()})

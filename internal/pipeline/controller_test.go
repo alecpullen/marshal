@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +16,14 @@ import (
 	"marshal/internal/worktree"
 )
 
+// reportPathRe matches the report-contract line in an implementer or fixer
+// prompt, capturing the absolute path the subagent is told to write to.
+var reportPathRe = regexp.MustCompile(`Write your full report to (\S+)`)
+
 // scriptedDispatch returns a Dispatcher whose exec pops one canned output
-// per call, and a pointer to the prompts it received.
+// per call, and a pointer to the prompts it received. A real implementer or
+// fixer writes its report to the path named in the prompt; the scripted
+// dispatcher mirrors that so the reviewer's input preflight sees the file.
 func scriptedDispatch(t *testing.T, outputs ...string) (Dispatcher, *[]string) {
 	t.Helper()
 	prompts := &[]string{}
@@ -29,6 +36,11 @@ func scriptedDispatch(t *testing.T, outputs ...string) (Dispatcher, *[]string) {
 			}
 			out := outputs[i]
 			i++
+			if m := reportPathRe.FindStringSubmatch(prompt); m != nil {
+				if err := os.WriteFile(m[1], []byte(out), 0o644); err != nil {
+					return "", err
+				}
+			}
 			return out, nil
 		},
 	}
@@ -63,6 +75,26 @@ func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Con
 		t.Fatalf("NewController: %v", err)
 	}
 	return c
+}
+
+// writeBrief writes task n's brief file, which the reviewer's input
+// preflight requires. runTask normally writes it; tests that call
+// reviewTask directly must create it themselves.
+func writeBrief(t *testing.T, c *Controller, n int) {
+	t.Helper()
+	if err := os.WriteFile(c.Paths.Brief(n), []byte("brief"), 0o644); err != nil {
+		t.Fatalf("write brief: %v", err)
+	}
+}
+
+// writeReport writes task n's report file, which the reviewer's input
+// preflight requires. The implementer normally writes it; tests that call
+// reviewTask directly must create it themselves.
+func writeReport(t *testing.T, c *Controller, n int) {
+	t.Helper()
+	if err := os.WriteFile(c.Paths.Report(n), []byte("report"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
 }
 
 func TestRunTaskHappyPath(t *testing.T) {
@@ -215,6 +247,8 @@ func TestReviewTaskCleanFirstPass(t *testing.T) {
 	d, prompts := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
 	c := testController(t, d, NewFakeCommandRunner())
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	res, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
 	if err != nil {
@@ -244,6 +278,8 @@ func TestReviewTaskOneFixDispatchForAllFindings(t *testing.T) {
 	g := c.Git.(*worktree.FakeGitOps)
 	g.Dirty = true
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	res, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
 	if err != nil {
@@ -277,6 +313,8 @@ func TestReviewTaskRecordsMinorsWithoutBlocking(t *testing.T) {
 	d, _ := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- [Minor] magic number 100\n")
 	c := testController(t, d, NewFakeCommandRunner())
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	if _, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"}); err != nil {
 		t.Fatalf("reviewTask: %v", err)
@@ -297,6 +335,8 @@ func TestReviewTaskExhaustsFixRounds(t *testing.T) {
 	c := testController(t, d, NewFakeCommandRunner())
 	c.Git.(*worktree.FakeGitOps).Dirty = true
 	spec, _ := c.Plan.Task(1)
+	writeBrief(t, c, 1)
+	writeReport(t, c, 1)
 
 	_, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
 	if err == nil {
@@ -759,5 +799,58 @@ func TestRunRestoresGateAfterCrash(t *testing.T) {
 	}
 	if c.Question() != "which level?" {
 		t.Errorf("Question() = %q, want %q", c.Question(), "which level?")
+	}
+}
+
+func TestReviewBlockedInputsStopsWithoutFixer(t *testing.T) {
+	// Reviewer reports inputs are blocked.
+	d, prompts := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: pass\n", // task 1 implementer
+		"INPUTS: BLOCKED\nINPUT_ERROR: could not read @run/task-1-brief.md\nSPEC: FAIL\nQUALITY: CHANGES_REQUESTED\nFINDINGS:\n- [Critical] cannot review without inputs\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	// The preflight requires the brief and report to exist as regular files
+	// before the reviewer is dispatched. The scripted implementer returns a
+	// canned string without writing the report, so create both here to let
+	// the reviewer run and report the blocked inputs.
+	if err := os.WriteFile(c.Paths.Brief(1), []byte("brief"), 0o644); err != nil {
+		t.Fatalf("write brief: %v", err)
+	}
+	if err := os.WriteFile(c.Paths.Report(1), []byte("report"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should fail when reviewer inputs are blocked")
+	}
+	if !strings.Contains(err.Error(), "inaccessible") && !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error should mention inaccessible/blocked inputs: %v", err)
+	}
+	// Only 2 dispatches: implementer + reviewer. No fixer.
+	if len(*prompts) != 2 {
+		t.Fatalf("dispatches = %d, want 2 (impl + review, no fixer for blocked inputs)", len(*prompts))
+	}
+}
+
+func TestPreflightCatchesMissingReport(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	// Run task 1 to completion, then delete the report file to simulate
+	// a crash that lost it.
+	spec, _ := c.Plan.Task(1)
+	_, err := c.runTask(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	os.Remove(c.Paths.Report(1))
+
+	err = c.preflightReviewInputs(spec, c.Paths.Package(1, 0), c.Paths.Package(1, 0)+"-verdict.md")
+	if err == nil {
+		t.Fatal("preflight should catch missing report file")
 	}
 }

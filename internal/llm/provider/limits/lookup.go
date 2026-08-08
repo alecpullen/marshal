@@ -65,7 +65,8 @@ func (t Table) normalized() map[string]Limit {
 }
 
 // smallest merges two candidate limits field-by-field, preferring the
-// smaller non-zero value.
+// smaller non-zero token-limit value and combining ToolCalling via
+// mergeToolCalling.
 func smallest(a, b Limit) Limit {
 	out := a
 	if a.ContextWindow == 0 || (b.ContextWindow != 0 && b.ContextWindow < a.ContextWindow) {
@@ -74,10 +75,30 @@ func smallest(a, b Limit) Limit {
 	if a.MaxOutputTokens == 0 || (b.MaxOutputTokens != 0 && b.MaxOutputTokens < a.MaxOutputTokens) {
 		out.MaxOutputTokens = b.MaxOutputTokens
 	}
+	out.ToolCalling = mergeToolCalling(a.ToolCalling, b.ToolCalling)
 	return out
 }
 
-func known(lim Limit) bool { return lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 }
+func known(lim Limit) bool {
+	return lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 || lim.ToolCalling != nil
+}
+
+// mergeToolCalling combines two possibly-nil tool-calling signals: any
+// confirmed true wins, false only if every reporting source says false,
+// nil only if neither source reported anything.
+func mergeToolCalling(a, b *bool) *bool {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	trueVal, falseVal := true, false
+	if *a || *b {
+		return &trueVal
+	}
+	return &falseVal
+}
 
 // Lookup returns the best limit for a model and how it was found:
 //  1. exact provider/model key            → MatchExact
@@ -216,6 +237,7 @@ func merge(a, b map[string]Limit) map[string]Limit {
 			// Prefer provider-specific smaller output limit when both exist.
 			existing.MaxOutputTokens = v.MaxOutputTokens
 		}
+		existing.ToolCalling = mergeToolCalling(existing.ToolCalling, v.ToolCalling)
 		out[k] = existing
 	}
 	return out

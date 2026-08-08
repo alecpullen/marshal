@@ -99,3 +99,50 @@ func TestLookupZeroTableDoesNotPanic(t *testing.T) {
 		t.Fatalf("kind = %v, want MatchNone", kind)
 	}
 }
+
+func TestKnownTrueForToolCallingOnly(t *testing.T) {
+	trueVal := true
+	lim := Limit{ToolCalling: &trueVal}
+	if !known(lim) {
+		t.Errorf("known() = false, want true for a limit with only ToolCalling set")
+	}
+}
+
+func TestMergeToolCallingAnyTrueWins(t *testing.T) {
+	trueVal, falseVal := true, false
+	a := map[string]Limit{"openai/gpt-4o": {ContextWindow: 100000, ToolCalling: &falseVal}}
+	b := map[string]Limit{"openai/gpt-4o": {ContextWindow: 128000, ToolCalling: &trueVal}}
+
+	out := merge(a, b)
+	got, ok := out["openai/gpt-4o"]
+	if !ok {
+		t.Fatalf("missing merged entry")
+	}
+	if got.ToolCalling == nil || !*got.ToolCalling {
+		t.Errorf("ToolCalling after merge = %v, want true", got.ToolCalling)
+	}
+}
+
+func TestMergeToolCallingFalseOnlyWhenBothSourcesSayFalse(t *testing.T) {
+	falseVal := false
+	a := map[string]Limit{"openai/gpt-4o": {ContextWindow: 100000, ToolCalling: &falseVal}}
+	b := map[string]Limit{"openai/gpt-4o": {ContextWindow: 128000, ToolCalling: &falseVal}}
+
+	out := merge(a, b)
+	got := out["openai/gpt-4o"]
+	if got.ToolCalling == nil || *got.ToolCalling {
+		t.Errorf("ToolCalling after merge = %v, want false", got.ToolCalling)
+	}
+}
+
+func TestMergeToolCallingUnreportedDoesNotOverrideKnown(t *testing.T) {
+	trueVal := true
+	a := map[string]Limit{"openai/gpt-4o": {ContextWindow: 100000, ToolCalling: &trueVal}}
+	b := map[string]Limit{"openai/gpt-4o": {ContextWindow: 128000, ToolCalling: nil}}
+
+	out := merge(a, b)
+	got := out["openai/gpt-4o"]
+	if got.ToolCalling == nil || !*got.ToolCalling {
+		t.Errorf("ToolCalling after merge = %v, want true (unreported source must not erase it)", got.ToolCalling)
+	}
+}

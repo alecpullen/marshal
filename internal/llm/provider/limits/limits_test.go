@@ -162,3 +162,39 @@ func TestNormalizeOpenRouterParsesToolCalling(t *testing.T) {
 		t.Errorf("some/no-tools-model: want ToolCalling=false, got %v", withoutTools.ToolCalling)
 	}
 }
+
+func TestNormalizeLiteLLMParsesToolCalling(t *testing.T) {
+	data := []byte(`{
+		"gpt-4o": {
+			"max_tokens": 16384,
+			"max_input_tokens": 128000,
+			"max_output_tokens": 16384,
+			"supports_function_calling": true
+		},
+		"text-davinci-003": {
+			"max_tokens": 4096,
+			"supports_function_calling": false
+		}
+	}`)
+
+	out, err := NormalizeLiteLLM(data)
+	if err != nil {
+		t.Fatalf("NormalizeLiteLLM: %v", err)
+	}
+
+	gpt4o, ok := out["gpt-4o"]
+	if !ok {
+		t.Fatalf("missing entry for gpt-4o")
+	}
+	if gpt4o.ToolCalling == nil || !*gpt4o.ToolCalling {
+		t.Errorf("gpt-4o: want ToolCalling=true, got %v", gpt4o.ToolCalling)
+	}
+
+	davinci, ok := out["text-davinci-003"]
+	if !ok {
+		t.Fatalf("missing entry for text-davinci-003")
+	}
+	if davinci.ToolCalling == nil || *davinci.ToolCalling {
+		t.Errorf("text-davinci-003: want ToolCalling=false, got %v", davinci.ToolCalling)
+	}
+}

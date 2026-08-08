@@ -120,9 +120,10 @@ func intFromRaw(raw json.RawMessage) int {
 // into a provider/model-keyed limit table.
 func NormalizeLiteLLM(data []byte) (map[string]Limit, error) {
 	var raw map[string]struct {
-		MaxTokens       json.RawMessage `json:"max_tokens"`
-		MaxInputTokens  json.RawMessage `json:"max_input_tokens"`
-		MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
+		MaxTokens               json.RawMessage `json:"max_tokens"`
+		MaxInputTokens          json.RawMessage `json:"max_input_tokens"`
+		MaxOutputTokens         json.RawMessage `json:"max_output_tokens"`
+		SupportsFunctionCalling *bool           `json:"supports_function_calling"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse litellm response: %w", err)
@@ -143,7 +144,8 @@ func NormalizeLiteLLM(data []byte) (map[string]Limit, error) {
 		} else if mo := intFromRaw(v.MaxTokens); mo > 0 {
 			lim.MaxOutputTokens = mo
 		}
-		if lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 {
+		lim.ToolCalling = v.SupportsFunctionCalling
+		if lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 || lim.ToolCalling != nil {
 			out[id] = lim
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"marshal/internal/tools/patch"
@@ -75,6 +76,85 @@ func testerTestRunTool(tool Tool) Tool {
 	return testerTool
 }
 
+// FallbackWriterView returns a new Registry containing src's tools with
+// file.write_patch narrowed to exactly the listed allowed paths (or
+// their descendants). The marshal.agent fallback agent's shell channel
+// remains available because command execution is governed by
+// sandbox/policy at a higher layer; this view protects only the
+// file-write surface. Allowed paths are interpreted as directory
+// prefixes: a patch is permitted when its target path equals an allowed
+// entry or sits beneath one.
+func FallbackWriterView(src *Registry, allowed []string) *Registry {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, p := range allowed {
+		allowedSet[p] = true
+	}
+	view := New()
+	for _, tool := range src.List() {
+		switch {
+		case tool.Deferred:
+			// Deferred tools are never exposed to the fallback child.
+		case tool.Name == "file.write_patch":
+			_ = view.Register(fallbackWriterPatchTool(tool, allowedSet))
+		default:
+			_ = view.Register(tool)
+		}
+	}
+	return view
+}
+
+func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
+	original := tool.Handler
+	filtered := tool
+	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
+		var args struct {
+			Patch string `json:"patch"`
+		}
+		_ = json.Unmarshal(call.Args, &args)
+		res, err := patch.ParseRepairing(args.Patch)
+		if err != nil || len(res.Patches) == 0 {
+			return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope requires a non-empty patch inside the declared allowlist")
+		}
+		for _, fp := range res.Patches {
+			cleaned := cleanScopePath(fp.Path)
+			if !pathInAllowlist(cleaned, allowed) {
+				return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope may only write under the declared scope (path %q is outside)", fp.Path)
+			}
+		}
+		return original(ctx, call)
+	}
+	return filtered
+}
+
+// pathInAllowlist reports whether path equals one of the allowed entries
+// or sits beneath one as a descendant. Empty allowlist denies everything.
+// Both path and allowed entries are expected to be clean (no ".." segments).
+func pathInAllowlist(path string, allowed map[string]bool) bool {
+	if len(allowed) == 0 {
+		return false
+	}
+	if allowed[path] {
+		return true
+	}
+	for root := range allowed {
+		if strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanScopePath returns a cleaned, slash-separated path suitable for
+// scope checks. It collapses ".." segments and strips leading "./" so
+// that traversal attempts such as "internal/foo/../bar" cannot bypass a
+// prefix check. Paths that escape the repository (e.g. "../outside") are
+// returned as-is and will then fail the allowlist check.
+func cleanScopePath(path string) string {
+	path = filepath.ToSlash(filepath.Clean(path))
+	path = strings.TrimPrefix(path, "./")
+	return path
+}
+
 // ArtifactWriterView returns a new Registry containing src's read-only
 // tools plus file.write_patch restricted to paths under the named artifact
 // root. Reviewers need to write their verdict under @run but must not
@@ -110,8 +190,70 @@ func artifactWriterPatchTool(tool Tool, alias string) Tool {
 			return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/", alias)
 		}
 		for _, fp := range res.Patches {
-			if !strings.HasPrefix(fp.Path, alias+"/") {
+			cleaned := cleanScopePath(fp.Path)
+			if !strings.HasPrefix(cleaned, alias+"/") {
 				return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/ (path %q is outside)", alias, fp.Path)
+			}
+		}
+		return original(ctx, call)
+	}
+	return filtered
+}
+
+// PlanWriterView returns a new Registry for the SDD plan-authoring child. It
+// retains read-only tools (except nested-agent, question, mode, and
+// side-effectful native tools that could mutate state outside the
+// candidate), plus file.write_patch restricted to exactly the allowed plan
+// artifact paths. The child may inspect the repository and write one plan
+// artifact, but must not modify source, run commands, or reach the
+// network.
+func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, p := range allowed {
+		allowedSet[p] = true
+	}
+	view := New()
+	for _, tool := range src.List() {
+		switch {
+		case tool.Deferred:
+			// Deferred tools are never exposed to the authoring child.
+		case tool.Risk == RiskReadOnly:
+			switch tool.Name {
+			case "agent.run", "question.ask", "ask_user", "mode.request":
+				// Nested-agent, question, and mode tools are excluded: the
+				// orphaned child must not spawn agents or ask the user.
+			case "diagnostics.check", "recall_history":
+				// Side-effectful despite the RiskReadOnly label:
+				// diagnostics.check runs configured per-language shell
+				// commands and recall_history dereferences the session DB
+				// (panics when nil). Stripped so the orphan cannot run
+				// arbitrary checkers or touch archived-turn storage.
+			default:
+				_ = view.Register(tool)
+			}
+		case tool.Name == "file.write_patch":
+			_ = view.Register(planWriterPatchTool(tool, alias, allowedSet))
+		}
+	}
+	return view
+}
+
+func planWriterPatchTool(tool Tool, alias string, allowed map[string]bool) Tool {
+	original := tool.Handler
+	filtered := tool
+	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
+		var args struct {
+			Patch string `json:"patch"`
+		}
+		_ = json.Unmarshal(call.Args, &args)
+		res, err := patch.ParseRepairing(args.Patch)
+		if err != nil || len(res.Patches) == 0 {
+			return ToolResult{}, fmt.Errorf("file.write_patch in plan-writer scope may only write the candidate plan under %s/", alias)
+		}
+		for _, fp := range res.Patches {
+			cleaned := cleanScopePath(fp.Path)
+			if !allowed[cleaned] {
+				return ToolResult{}, fmt.Errorf("file.write_patch in plan-writer scope may only write the candidate plan (path %q is not allowed)", fp.Path)
 			}
 		}
 		return original(ctx, call)

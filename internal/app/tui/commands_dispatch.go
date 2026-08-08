@@ -139,24 +139,22 @@ func init() {
 			return m, nil
 		},
 		"sdd": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			parsed, err := parseSDDArgs(args)
+			if err != nil {
+				m.state.AddMessage(session.RoleSystem, err.Error(), session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+			// /sdd new <goal> starts the authoring child.
+			if parsed.New {
+				return m.startSDDAuthoring(parsed)
+			}
 			if m.pipelineFactory == nil {
 				m.state.AddMessage(session.RoleSystem, "Plan execution is not available (agent failed to initialise).", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}
-			// Parse --strategy from args.
-			strategy := "agent"
-			var planArgs []string
-			for _, a := range args {
-				if strings.HasPrefix(a, "--strategy=") {
-					strategy = strings.TrimPrefix(a, "--strategy=")
-				} else if a == "--strategy" {
-					// Handled by next arg if present; for now skip.
-				} else {
-					planArgs = append(planArgs, a)
-				}
-			}
-			planPath := strings.TrimSpace(strings.Join(planArgs, " "))
+			planPath := parsed.PlanPath
 			if planPath == "" {
 				m.openSDDPlanPicker()
 				m.refreshViewport()
@@ -172,7 +170,7 @@ func init() {
 			}
 			// Set the strategy on the controller.
 			if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
-				adapter.Controller().Strategy = pipeline.Strategy(strategy)
+				adapter.Controller().Strategy = parsed.Strategy
 			}
 			m.pipelineRunner = runner
 			m.openRunPreflight("sdd", runner, planPath)

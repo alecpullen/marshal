@@ -44,7 +44,7 @@ func TestMergeMemoriesRemovesExistingMemorySectionWhenProviderReturnsNone(t *tes
 func TestMergeScratchpadPassesConfiguredProjectionBudget(t *testing.T) {
 	cfg := config.Default()
 	cfg.Scratchpad.ProjectionMaxTokens = 30
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{}, session.WithClock(func() time.Time { return time.Unix(100, 0) }))
 	if err := state.SetScratchpadEntry("alpha", "first scratchpad entry content", "text"); err != nil {
 		t.Fatalf("SetScratchpadEntry: %v", err)
 	}

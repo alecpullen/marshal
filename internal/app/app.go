@@ -37,8 +37,10 @@ import (
 	"marshal/internal/lsp"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/repo"
 	"marshal/internal/rollover"
 	"marshal/internal/sandbox"
+	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
 	"marshal/internal/tools/desktop"
@@ -416,11 +418,11 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, sddauthor.Factory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -435,7 +437,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -526,7 +528,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -536,12 +538,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -551,7 +553,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state,
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -682,7 +684,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -691,7 +693,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -743,7 +745,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
@@ -752,7 +754,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	pipelineFactory := func(planPath string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath)
 	}
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, nil
+	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner)
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -946,11 +949,89 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 	return adapter
 }
 
+// resolveAuthorPlansDir returns the canonical absolute path of the SDD
+// plans directory under the repository working dir, walking up to the
+// nearest existing ancestor so non-existent plans directories
+// canonicalize into the same namespace as the repository root. A
+// symlinked plans_dir that points outside the repository resolves into a
+// different directory and is rejected by sddplans.DraftPath at authoring
+// time.
+func resolveAuthorPlansDir(workingDir, plansDirRel string) string {
+	return repo.Canonical(filepath.Join(workingDir, plansDirRel))
+}
+
+// buildPlanAuthorFactory returns a factory that builds a scoped SDD
+// plan-authoring runner for one request. The child may inspect the
+// repository and write exactly one plan artifact; it cannot modify source
+// files, run commands, spawn agents, or ask the user.
+func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner) sddauthor.Factory {
+	return func(req sddauthor.Request) (*sddauthor.Runner, error) {
+		route, p, err := resolver.ResolveRole(routing.RoleSDDPlanAuthor)
+		if err != nil {
+			return nil, err
+		}
+		// A fresh child session keeps the authoring turn's tool noise out of
+		// the parent transcript. Depth is parent+1 so any nested subagent
+		// attempt is rejected by the child's own depth guard.
+		childState := session.New(cfg, state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1))
+		childPol := pol.Clone()
+		childPol.SetApprovalMode(policy.ModeAuto)
+
+		// A fresh native registry rooted at the working directory, with @plan
+		// aliasing the resolved plans directory so the child can write the
+		// plan artifact without exposing absolute paths and so a symlinked
+		// plans_dir cannot trick the child into writing outside the repo.
+		childReg := registry.New()
+		plansDir := resolveAuthorPlansDir(state.WorkingDir, cfg.SDD.PlansDir)
+		nativeOpts := native.Options{
+			WorkspaceRoot:  state.WorkingDir,
+			CommandRunner:  commandRunner,
+			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+			SessionState:   childState,
+			Config:         cfg,
+			NamedRoots:     map[string]string{"@plan": plansDir},
+		}
+		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
+			return nil, fmt.Errorf("plan author registry: register: %w", err)
+		}
+		// Restrict the child to read-only tools plus the exact candidate plan
+		// artifact. No skills.register, question, agent.run, or command tools.
+		allowed := []string{"@plan/" + filepath.Base(req.PlanPath)}
+		childReg = registry.PlanWriterView(childReg, "@plan", allowed)
+
+		// Load the built-in authoring skill quietly into the child context.
+		if err := skills.LoadSkillIntoSessionQuiet(skillIndex, childState, "marshal-sdd-plan-authoring"); err != nil {
+			return nil, fmt.Errorf("plan author skill: %w", err)
+		}
+
+		childRunner := agent.NewRunner(p, childReg, childPol, childState, route.Preset.Model)
+		childRunner.Role = agent.RoleSDDPlanAuthor
+		childRunner.SkillIndex = skillIndex
+		childRunner.MemoryProvider = &dbMemoryProvider{db: database}
+		childRunner.ProjectID = projectID
+		childRunner.ApprovalTimeout = agentApprovalTimeout
+		childRunner.SetForceClass("question")
+		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(context.Background()))
+		childRunner.NativeTools = decoding.Native
+		childRunner.ResponseFormat = decoding.ResponseFormat
+		if cap := roleToolIterations(cfg, agent.RoleSDDPlanAuthor); cap > 0 {
+			childRunner.MaxToolIterations = cap
+		}
+		childRunner.Pricing = pricing.Lookup(route.Preset)
+		return sddauthor.NewRunner(childRunner), nil
+	}
+}
+
 // makePipelineRegistryFactory returns a RegistryFactory that builds a fresh
 // tool registry bound to a per-dispatch execution context. Each dispatch
 // creates its own child session and native toolset so handlers close over
 // the correct worktree root and artifact aliases rather than the parent
 // session's project root. The returned registry is then filtered by scope.
+//
+// ScopeFallback narrows file.write_patch to the controller-supplied
+// allowlist (set on Dispatcher.FallbackAllowedFiles immediately before
+// each fallback dispatch) so the marshal.agent fallback cannot modify
+// parts of the worktree outside its declared scope.
 func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry) pipeline.RegistryFactory {
 	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope) (*registry.Registry, error) {
 		childState := session.New(cfg, ctx.WorkspaceRoot, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1))
@@ -972,10 +1053,29 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 			return registry.ReadOnlyView(childReg), nil
 		case pipeline.ScopeArtifactWriter:
 			return registry.ArtifactWriterView(childReg, ctx.ArtifactAlias), nil
+		case pipeline.ScopeFallback:
+			allowed := currentFallbackAllowedFiles(state)
+			if len(allowed) == 0 {
+				return nil, fmt.Errorf("pipeline registry factory: fallback scope requires a non-empty allowlist")
+			}
+			return registry.FallbackWriterView(childReg, allowed), nil
 		default:
 			return childReg, nil
 		}
 	}
+}
+
+// currentFallbackAllowedFiles returns the controller's pending fallback
+// allowlist, if any. The controller stashes it on the session via
+// session.SetSDDFallbackAllowedFiles immediately before each fallback
+// dispatch and clears it after; the pipeline registry factory reads it
+// back here so FallbackWriterView can narrow file.write_patch to the
+// declared paths.
+func currentFallbackAllowedFiles(state *session.State) []string {
+	if state == nil {
+		return nil
+	}
+	return state.SDDFallbackAllowedFiles()
 }
 
 // roleToolIterations returns the per-role tool-iteration cap, falling back
@@ -1247,6 +1347,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))
+			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
 			tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
@@ -1401,7 +1502,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -1440,6 +1541,9 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	if newPipelineFactory != nil {
 		rt.PipelineFactory = newPipelineFactory
+	}
+	if newPlanAuthorFactory != nil {
+		rt.PlanAuthorFactory = newPlanAuthorFactory
 	}
 
 	// Swap reload-owned pointers.

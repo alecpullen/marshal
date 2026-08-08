@@ -33,6 +33,13 @@ type Dispatcher struct {
 	// runner uses the parent registry (legacy).
 	RegistryFactory RegistryFactory
 
+	// FallbackAllowedFiles, when non-empty, narrows the next implementer
+	// dispatch to ScopeFallback and restricts the child registry's
+	// file.write_patch to these paths. Set by the controller immediately
+	// before dispatching a marshal.agent fallback; cleared afterwards.
+	// An empty value preserves the legacy ScopeFull behavior.
+	FallbackAllowedFiles []string
+
 	// exec is the seam tests replace. When nil, runExec is used.
 	exec func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error)
 }
@@ -112,7 +119,11 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 // label is used for the parent-session subagent card; when empty the
 // prompt's first 240 characters are used.
 func (d Dispatcher) Implement(ctx context.Context, role agent.AgentRole, label, prompt string) (ImplementerReport, error) {
-	out, err := d.run(ctx, role, swarm.ScopeFull, label, prompt)
+	scope := swarm.ScopeFull
+	if len(d.FallbackAllowedFiles) > 0 {
+		scope = swarm.ScopeFallback
+	}
+	out, err := d.run(ctx, role, scope, label, prompt)
 	if err != nil {
 		return ImplementerReport{}, err
 	}
@@ -148,15 +159,18 @@ func truncateForError(s string) string {
 }
 
 // pipelineScope maps a swarm registry scope to the pipeline's own scope.
-// The pipeline only distinguishes full, read-only, and artifact-writer; the
-// swarm tester scope is treated as full so the child registry keeps its
-// command tools.
+// The pipeline only distinguishes full, read-only, artifact-writer, and
+// fallback; the swarm tester scope is treated as full so the child
+// registry keeps its command tools.
 func pipelineScope(scope swarm.RegistryScope) RegistryScope {
 	if scope == swarm.ScopeReadOnly {
 		return ScopeReadOnly
 	}
 	if scope == swarm.ScopeArtifactWriter {
 		return ScopeArtifactWriter
+	}
+	if scope == swarm.ScopeFallback {
+		return ScopeFallback
 	}
 	return ScopeFull
 }

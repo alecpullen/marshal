@@ -20,6 +20,13 @@ const (
 	RoleSDDReviewer       AgentRole = "sdd_reviewer"
 	RoleSDDBranchReviewer AgentRole = "sdd_branch_reviewer"
 
+	// RoleSDDPlanAuthor is an internal child role for the SDD plan-authoring
+	// runner. It is deliberately excluded from AllRoles: it is not a
+	// user-editable role and must not appear in /agents settings. It
+	// resolves through the existing implementer fallback when no dedicated
+	// binding exists.
+	RoleSDDPlanAuthor AgentRole = "sdd_plan_author"
+
 	// RoleEmbedding selects the text-embedding provider+model. It is
 	// deliberately excluded from AllRoles: embedding is not a chat role, so
 	// onboarding/settings that enumerate AllRoles must not list it. Resolved

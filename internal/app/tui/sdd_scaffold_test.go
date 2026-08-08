@@ -67,3 +67,38 @@ func TestScaffoldDoesNotClobberAnExistingFile(t *testing.T) {
 		t.Error("scaffold must never overwrite an existing plan")
 	}
 }
+
+func TestScaffoldPlanCompilesWithExecutableBlocks(t *testing.T) {
+	m := newTestModelInRepo(t)
+	m.scaffoldSDDPlan()
+	path := filepath.Join(m.state.WorkingDir, m.state.Config.SDD.PlansDir, "starter-plan.md")
+
+	plan, err := pipeline.ParsePlan(path)
+	if err != nil {
+		t.Fatalf("ParsePlan: %v", err)
+	}
+	ir, diags, err := pipeline.CompilePlan(plan)
+	if err != nil {
+		t.Fatalf("CompilePlan: %v", err)
+	}
+	for _, d := range diags {
+		if d.Severity == pipeline.DiagError {
+			t.Fatalf("scaffolded plan has compile error: %s", d.Message)
+		}
+	}
+	hasFile := false
+	hasAssert := false
+	for _, task := range ir.Tasks {
+		for _, op := range task.Operations {
+			if op.OpKind() == "file" {
+				hasFile = true
+			}
+			if op.OpKind() == "assert" {
+				hasAssert = true
+			}
+		}
+	}
+	if !hasFile || !hasAssert {
+		t.Errorf("scaffolded plan must contain at least one file and one assert operation (file=%v assert=%v)", hasFile, hasAssert)
+	}
+}

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -208,5 +209,154 @@ func TestArtifactWriterPatchGuardEnforcesAliasPrefix(t *testing.T) {
 		if _, err := tool.Handler(context.Background(), ToolCall{Name: "file.write_patch", Args: []byte(args)}); err == nil {
 			t.Errorf("patch %q should be rejected (not under alias prefix), got no error", args)
 		}
+	}
+}
+
+func TestPlanWriterViewAllowsOnlyTheCandidatePlan(t *testing.T) {
+	src := New()
+	for _, tool := range []Tool{
+		{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler},
+		{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler},
+		{Name: "shell.run", Description: "shell", Risk: RiskCommand, Handler: nopHandler},
+		{Name: "question.ask", Description: "question", Risk: RiskReadOnly, Handler: nopHandler},
+	} {
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Name, err)
+		}
+	}
+	view := PlanWriterView(src, "@plan", []string{"@plan/feature.md"})
+
+	if _, ok := view.Lookup("file.read"); !ok {
+		t.Fatal("plan writer must retain file.read")
+	}
+	if _, ok := view.Lookup("file.write_patch"); !ok {
+		t.Fatal("plan writer must retain filtered file.write_patch")
+	}
+	if _, ok := view.Lookup("shell.run"); ok {
+		t.Fatal("plan writer must not expose shell.run")
+	}
+	if _, ok := view.Lookup("question.ask"); ok {
+		t.Fatal("orphaned authoring child must not expose question.ask")
+	}
+}
+
+func TestPlanWriterViewRejectsSourceAndSecondPlanWrites(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write_patch): %v", err)
+	}
+	view := PlanWriterView(src, "@plan", []string{"@plan/feature.md"})
+
+	for _, path := range []string{"internal/app/app.go", "@plan/other.md"} {
+		_, err := view.Dispatch(context.Background(), ToolCall{
+			Name: "file.write_patch",
+			Args: json.RawMessage(`{"patch":"File: ` + path + `\n<<<<<<< SEARCH\n\n=======\nnew\n>>>>>>> REPLACE"}`),
+		})
+		if err == nil {
+			t.Errorf("write to %q was accepted", path)
+		}
+	}
+}
+
+func TestFallbackWriterViewNarrowsFileWritePatch(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.read): %v", err)
+	}
+	if err := src.Register(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write_patch): %v", err)
+	}
+	if err := src.Register(Tool{Name: "shell.run", Description: "shell", Risk: RiskCommand, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(shell.run): %v", err)
+	}
+
+	// marshal.agent scope is directory-prefix; the view must allow
+	// descendants of any declared root.
+	view := FallbackWriterView(src, []string{"internal/foo", "internal/foo/sub"})
+
+	if _, ok := view.Lookup("file.read"); !ok {
+		t.Error("fallback view must retain read-only tools")
+	}
+	if _, ok := view.Lookup("file.write_patch"); !ok {
+		t.Error("fallback view must retain file.write_patch")
+	}
+	if _, ok := view.Lookup("shell.run"); !ok {
+		t.Error("fallback view must retain shell.run (command execution is governed by sandbox/policy at a higher layer)")
+	}
+
+	allowed := []string{
+		`{"patch":"File: internal/foo/x.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: internal/foo/sub/y.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: internal/foo\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+	}
+	for _, args := range allowed {
+		if _, err := view.Dispatch(context.Background(), ToolCall{Name: "file.write_patch", Args: json.RawMessage(args)}); err != nil {
+			t.Errorf("write to allowed path was rejected: %v\nargs: %s", err, args)
+		}
+	}
+	rejected := []string{
+		`{"patch":"File: internal/other/y.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: cmd/server/main.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		// Path traversal must not bypass the declared scope.
+		`{"patch":"File: internal/foo/../other/z.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: internal/foo/sub/../../bar.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: ./internal/foo/../other.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+	}
+	for _, args := range rejected {
+		if _, err := view.Dispatch(context.Background(), ToolCall{Name: "file.write_patch", Args: json.RawMessage(args)}); err == nil {
+			t.Errorf("write outside allowlist was accepted: %s", args)
+		}
+	}
+}
+
+// TestFallbackWriterViewRejectsPathTraversal also guards the exact-match
+// plan writer and prefix artifact writer via the same cleaning helper.
+func TestScopeViewsRejectPathTraversal(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write_patch): %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		view  *Registry
+		path  string
+		allow bool
+	}{
+		{"plan writer exact match", PlanWriterView(src, "@plan", []string{"@plan/feature.md"}), "@plan/feature.md", true},
+		{"plan writer traversal", PlanWriterView(src, "@plan", []string{"@plan/feature.md"}), "@plan/../feature.md", false},
+		{"artifact writer prefix", ArtifactWriterView(src, "@run"), "@run/task-1.md", true},
+		{"artifact writer traversal", ArtifactWriterView(src, "@run"), "@run/../app.go", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.view.Dispatch(context.Background(), ToolCall{
+				Name: "file.write_patch",
+				Args: json.RawMessage(`{"patch":"File: ` + tc.path + `\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`),
+			})
+			if tc.allow && err != nil {
+				t.Fatalf("expected %q to be allowed, got %v", tc.path, err)
+			}
+			if !tc.allow && err == nil {
+				t.Fatalf("expected %q to be rejected", tc.path)
+			}
+		})
+	}
+}
+
+// TestFallbackWriterViewRejectsEmptyAllowlist ensures an empty scope
+// fails closed: with no allowed paths the view must reject every
+// file.write_patch call so a controller bug that calls into the view
+// without setting the scope cannot leak a full registry.
+func TestFallbackWriterViewRejectsEmptyAllowlist(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write_patch): %v", err)
+	}
+	view := FallbackWriterView(src, nil)
+	if _, err := view.Dispatch(context.Background(), ToolCall{
+		Name: "file.write_patch",
+		Args: json.RawMessage(`{"patch":"File: anything.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`),
+	}); err == nil {
+		t.Fatal("empty allowlist must reject every write; got no error")
 	}
 }

@@ -5,6 +5,10 @@ package pipeline
 type Strategy string
 
 const (
+	// StrategyAuto selects the effective strategy from the plan's contents:
+	// adaptive when executable marshal.* blocks exist, agent otherwise.
+	StrategyAuto Strategy = "auto"
+
 	// StrategyAgent preserves the current model-led behavior. Every task
 	// dispatches an implementer subagent regardless of executable blocks.
 	StrategyAgent Strategy = "agent"

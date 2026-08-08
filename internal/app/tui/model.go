@@ -39,6 +39,7 @@ import (
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
+	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
@@ -52,6 +53,7 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
@@ -120,9 +122,12 @@ type Model struct {
 	runner          AgentRunner
 	swarmRunner     AgentRunner
 	pipelineFactory func(planPath string) AgentRunner
-	ctx             context.Context
-	busy            bool
-	configReloader  ConfigReloader
+	// planAuthorFactory builds a scoped SDD plan-authoring runner for one
+	// request. Nil when the runtime has no provider.
+	planAuthorFactory PlanAuthorFactory
+	ctx               context.Context
+	busy              bool
+	configReloader    ConfigReloader
 	// runnerSource exposes the runtime's current runner after a config
 	// reload. Used to recover from a startup provider-build failure, where
 	// the TUI was constructed without a runner: the first successful reload
@@ -503,6 +508,20 @@ func WithPipelineFactory(ctx context.Context, factory func(planPath string) Agen
 	return func(m *Model) {
 		m.ctx = ctx
 		m.pipelineFactory = factory
+	}
+}
+
+// PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
+// request. It is an alias for sddauthor.Factory so the TUI does not depend
+// on the authoring package's construction details.
+type PlanAuthorFactory = sddauthor.Factory
+
+// WithPlanAuthorFactory configures the TUI to build a scoped SDD
+// plan-authoring runner on demand when /sdd new is submitted.
+func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.planAuthorFactory = factory
 	}
 }
 
@@ -1402,7 +1421,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -1646,6 +1665,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.AddMessage(session.RoleSystem,
 			"Proposed verify commands: "+strings.TrimSpace(pm.build+" · "+pm.test)+". Press Enter to run with them (persisted to .marshal/config.toml), or Esc to cancel.",
 			session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	case sddreview.AcceptMsg:
+		// Accept leaves the candidate artifact in place for a later /sdd.
+		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
+	case sddreview.CancelMsg:
+		// Discard removes only the generated candidate.
+		if panel, ok := m.dock.Panel().(*sddreview.Panel); ok {
+			_ = sddauthor.RemoveCandidate(panel.CandidatePath(), m.state.WorkingDir, m.state.Config.SDD.PlansDir)
+		}
+		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
 	}
@@ -2754,6 +2786,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	router := routing.NewStaticRouter(m.state.Config.RoutingConfig())
 	roles := routing.SwarmCastRoles
 	title := "Start swarm run?"
+	var inspection *pipeline.Inspection
 	meta := []string{
 		"goal: " + strutil.Truncate(goal, 56, true),
 		fmt.Sprintf("fix rounds: %d · token budget: %d",
@@ -2778,6 +2811,12 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 				}
 			}
 		}
+		// Use the shared inspection for strategy selection and metadata.
+		if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
+			if insp, ierr := adapter.Controller().Inspect(); ierr == nil {
+				inspection = insp
+			}
+		}
 		worktree := "off"
 		if m.state.Config.SDD.AutoWorktree {
 			worktree = "on"
@@ -2787,6 +2826,14 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 			"one commit per task, on a branch — review and merge it yourself",
 			fmt.Sprintf("worktree: %s · fix rounds: %d · verify timeout: %dms",
 				worktree, m.state.Config.SDD.MaxFixRounds, m.state.Config.SDD.VerifyTimeoutMS),
+		}
+		if inspection != nil {
+			meta = append(meta, fmt.Sprintf("deterministic ops: %d · fallback ops: %d · est. model calls: %d",
+				inspection.Report.Total.DetOps, inspection.Report.Total.AgentOps, inspection.Report.Total.EstCalls))
+			for _, tr := range inspection.Report.Tasks {
+				meta = append(meta, fmt.Sprintf("task %d: %s · %d det · %d agent · %d call(s)",
+					tr.TaskN, tr.Title, tr.DetOps, tr.AgentOps, tr.EstCalls))
+			}
 		}
 		if v := m.state.Config.SDD.Verify; v.Build != "" || v.Test != "" {
 			meta = append(meta, "verify: "+strutil.Truncate(strings.TrimSpace(v.Build+" · "+v.Test), 48, true))
@@ -2807,7 +2854,39 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		rows = append(rows, verifyGateRow(m.state.Config, m.state.WorkingDir))
 	}
 	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
-	m.dock.Open(castlist.New(title, rows, meta, "agent"))
+	panel := castlist.New(title, rows, meta, "agent")
+	if kind == "sdd" {
+		// Strategy-aware preflight: select adaptive by default when the plan
+		// has executable blocks, and disable adaptive/strict when there are
+		// none. Strict is disabled when the inspection is blocked.
+		initial := "agent"
+		var options []castlist.StrategyOption
+		if inspection != nil {
+			if inspection.HasMarshalBlocks {
+				initial = "adaptive"
+			}
+			options = []castlist.StrategyOption{
+				{Value: "agent"},
+				{Value: "adaptive"},
+				{Value: "strict"},
+			}
+			if !inspection.HasMarshalBlocks {
+				options[1].DisabledReason = "no executable blocks found"
+				options[2].DisabledReason = "no executable blocks found"
+			} else if inspection.StrictBlocked {
+				options[2].DisabledReason = "fallback or unresolved work remains"
+			}
+			// An explicit strategy override wins over the automatic default.
+			if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
+				if s := adapter.Controller().Strategy; s != pipeline.StrategyAuto && s != "" {
+					initial = string(s)
+				}
+			}
+		}
+		panel.SetStrategyOptions(options)
+		panel.SetStrategy(initial)
+	}
+	m.dock.Open(panel)
 }
 
 // verifyGateRow renders the verify-gate row for the /sdd preflight. It uses
@@ -2841,6 +2920,70 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	agentCtx, cancel := context.WithCancel(m.ctx)
 	m.agentCancel = cancel
 	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
+}
+
+// startSDDAuthoring begins an authoring turn for /sdd new. It builds the
+// scoped authoring runner, resolves the candidate path, and starts the
+// async command. On success the completion handler opens the review panel;
+// it never starts an SDD run.
+func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
+	if m.planAuthorFactory == nil {
+		m.state.AddMessage(session.RoleSystem, "Plan authoring is not available (agent failed to initialise).", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+	if m.busy {
+		return m, nil
+	}
+	goal := parsed.Goal
+	design := goal
+	if parsed.FromLastPlan {
+		last, ok := lastFinalAssistantPlan(m.state)
+		if !ok {
+			m.state.AddMessage(session.RoleSystem, "No approved plan found in the last assistant turn. Run /plan first, then /sdd new --from-last-plan.", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		design = last
+		goal = "Convert the approved Plan mode result into an executable SDD plan."
+	}
+	if strings.TrimSpace(goal) == "" {
+		m.state.AddMessage(session.RoleSystem, "Usage: /sdd new <goal>", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+	planPath, err := sddplans.DraftPath(m.state.WorkingDir, m.state.Config.SDD.PlansDir, goal, m.now())
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot resolve plan path: %v", err), session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+	author, err := m.planAuthorFactory(sddauthor.Request{
+		Goal:     goal,
+		Design:   design,
+		RepoRoot: m.state.WorkingDir,
+		PlanPath: planPath,
+	})
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start plan authoring: %v", err), session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+	if err := m.state.BeginWork(); err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+	m.busy = true
+	m.turnStartedAt = m.now()
+	agentCtx, cancel := context.WithCancel(m.ctx)
+	m.agentCancel = cancel
+	return *m, tea.Batch(runPlanAuthorCmd(agentCtx, m.state, author, sddauthor.Request{
+		Goal:     goal,
+		Design:   design,
+		RepoRoot: m.state.WorkingDir,
+		PlanPath: planPath,
+	}), tickCmd(), spinnerTickCmd())
 }
 
 type agentFinishedMsg struct{ err error }
@@ -3076,12 +3219,41 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.state.SetProviderError(nil)
 		m.successPulse = true
 		m.successPulseAt = m.now()
+		// After a successful Plan mode turn, hint that the approved plan can
+		// become an executable SDD artifact. Do not auto-run it.
+		if m.approvalMode == policy.ModePlan {
+			m.state.AddMessage(session.RoleSystem,
+				"To turn this approved plan into an executable SDD artifact, run /sdd new --from-last-plan.",
+				session.ContentTypePlain)
+		}
 	}
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	m.updateViewportHeight()
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
 	return m, tea.Sequence(tickCmd(), flushCmd)
+}
+
+// handlePlanAuthorFinished handles the completion of an authoring turn. On
+// success it opens the review panel; on error it reports the error and keeps
+// any generated artifact. It never starts an SDD run.
+func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.Cmd) {
+	m.busy = false
+	m.turnStartedAt = time.Time{}
+	m.agentCancel = nil
+	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	if msg.err != nil {
+		m.state.SetProviderError(msg.err)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Plan authoring failed: %v", msg.err), session.ContentTypePlain)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m, nil
+	}
+	m.state.SetProviderError(nil)
+	m.dock.Open(sddreview.New(msg.result))
+	m.updateViewportHeight()
+	m.refreshViewport()
+	return m, nil
 }
 
 // handleJobCount handles a jobCountMsg, shared by Update and
@@ -3170,6 +3342,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case agentFinishedMsg:
 		return m.handleAgentFinished(msg)
+	case planAuthorFinishedMsg:
+		return m.handlePlanAuthorFinished(msg)
 	case jobCountMsg:
 		return m.handleJobCount(msg)
 	case steeringMsg:

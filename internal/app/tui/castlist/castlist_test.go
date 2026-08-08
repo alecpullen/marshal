@@ -232,3 +232,20 @@ func TestStartMsgCarriesStrategy(t *testing.T) {
 		t.Errorf("StartMsg.Strategy = %q, want %q", start.Strategy, "adaptive")
 	}
 }
+
+func TestDisabledStrategyIsSkippedAndCannotStart(t *testing.T) {
+	panel := New("Start plan run?", nil, nil, "adaptive")
+	panel.SetStrategyOptions([]StrategyOption{
+		{Value: "agent"},
+		{Value: "adaptive"},
+		{Value: "strict", DisabledReason: "fallback work remains"},
+	})
+	panel.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if panel.SelectedStrategy() != "agent" {
+		t.Fatalf("selected strategy = %q, want agent", panel.SelectedStrategy())
+	}
+	panel.SetStrategy("strict")
+	if cmd := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatal("disabled strict strategy must not emit StartMsg")
+	}
+}

@@ -1,7 +1,10 @@
 // internal/pipeline/parse_blocks_test.go
 package pipeline
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseMarshalBlocksExtractsPatch(t *testing.T) {
 	body := "Some prose.\n\n" +
@@ -199,6 +202,55 @@ func TestCompileAssertBlock(t *testing.T) {
 	}
 }
 
+func TestCompileFileBlockReadsReplaceFromFence(t *testing.T) {
+	blk := marshalBlock{
+		kind:    "marshal.file",
+		attrs:   map[string]string{"path": "foo.go", "replace": "true"},
+		content: "package foo\n",
+	}
+	op, err := compileBlock(blk)
+	if err != nil {
+		t.Fatalf("compileBlock: %v", err)
+	}
+	file, ok := op.(*FileOp)
+	if !ok {
+		t.Fatalf("op = %T, want *FileOp", op)
+	}
+	if file.Path != "foo.go" {
+		t.Errorf("Path = %q, want %q", file.Path, "foo.go")
+	}
+	if !file.Replace {
+		t.Errorf("Replace = false, want true")
+	}
+	// The body is written verbatim; it must not include a "replace" key line.
+	if strings.Contains(file.Content, "replace") {
+		t.Errorf("Content leaked replace metadata: %q", file.Content)
+	}
+}
+
+func TestCompileFileBlockDefaultsReplaceToFalse(t *testing.T) {
+	blk := marshalBlock{
+		kind:    "marshal.file",
+		attrs:   map[string]string{"path": "foo.go"},
+		content: "replace = true\npackage foo\n",
+	}
+	op, err := compileBlock(blk)
+	if err != nil {
+		t.Fatalf("compileBlock: %v", err)
+	}
+	file, ok := op.(*FileOp)
+	if !ok {
+		t.Fatalf("op = %T, want *FileOp", op)
+	}
+	if file.Replace {
+		t.Errorf("Replace = true, want false (replace in body is content, not metadata)")
+	}
+	// The body should be preserved verbatim so the line is written into the file.
+	if !strings.Contains(file.Content, "replace = true") {
+		t.Errorf("Content dropped replace line: %q", file.Content)
+	}
+}
+
 func TestCompileAgentBlock(t *testing.T) {
 	blk := marshalBlock{
 		kind:    "marshal.agent",
@@ -266,4 +318,15 @@ func indexOf(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+func TestCompileAssertBlockRejectsUnknownKind(t *testing.T) {
+	blk := marshalBlock{
+		kind:    "marshal.assert",
+		attrs:   map[string]string{},
+		content: "kind = \"unknown.kind\"\nfile = \"foo.go\"",
+	}
+	if _, err := compileBlock(blk); err == nil {
+		t.Fatal("compileBlock should reject unknown assert kind")
+	}
 }

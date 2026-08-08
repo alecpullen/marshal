@@ -221,3 +221,135 @@ type nativeCmdRunner struct{}
 func (nativeCmdRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
 	return native.CommandResult{Stdout: "ok", ExitCode: 0}, nil
 }
+
+// TestInspectionDrivesAdaptiveAndStrictExecution builds three plans — fully
+// deterministic, mixed (deterministic + agent), and prose-only legacy — and
+// verifies the shared inspection classifies them and the controller executes
+// them with the right dispatch counts and strict-mode blocking.
+func TestInspectionDrivesAdaptiveAndStrictExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires git")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	root := t.TempDir()
+	gitInit(t, root)
+	writeFile(t, filepath.Join(root, "README.md"), "# test repo\n")
+	gitAddCommit(t, root, "initial")
+
+	detPlan := filepath.Join(root, "det.md")
+	writeFile(t, detPlan, "# Plan\n\n## Task 1: Add file\n\n"+
+		"```marshal.file path=\"created.txt\"\nhello\n```\n\n"+
+		"```marshal.assert\nkind = \"file.exists\"\nfile = \"created.txt\"\n```\n")
+
+	mixedPlan := filepath.Join(root, "mixed.md")
+	writeFile(t, mixedPlan, "# Plan\n\n## Task 1: Add file\n\n"+
+		"```marshal.file path=\"created.txt\"\nhello\n```\n\n"+
+		"## Task 2: Resolve\n\n"+
+		"```marshal.agent\nscope = [\"internal/app\"]\nreason = \"needs design judgment\"\n```\n")
+
+	legacyPlan := filepath.Join(root, "legacy.md")
+	writeFile(t, legacyPlan, "# Plan\n\n## Task 1: Explain\n\nProse only.\n")
+
+	// Auto inspection: adaptive for the two executable plans, agent for legacy.
+	det, err := InspectPlan(detPlan, root, StrategyAuto)
+	if err != nil {
+		t.Fatalf("InspectPlan(det): %v", err)
+	}
+	if det.EffectiveStrategy != StrategyAdaptive {
+		t.Fatalf("det EffectiveStrategy = %q, want adaptive", det.EffectiveStrategy)
+	}
+	mixed, err := InspectPlan(mixedPlan, root, StrategyAuto)
+	if err != nil {
+		t.Fatalf("InspectPlan(mixed): %v", err)
+	}
+	if mixed.EffectiveStrategy != StrategyAdaptive {
+		t.Fatalf("mixed EffectiveStrategy = %q, want adaptive", mixed.EffectiveStrategy)
+	}
+	legacy, err := InspectPlan(legacyPlan, root, StrategyAuto)
+	if err != nil {
+		t.Fatalf("InspectPlan(legacy): %v", err)
+	}
+	if legacy.EffectiveStrategy != StrategyAgent {
+		t.Fatalf("legacy EffectiveStrategy = %q, want agent", legacy.EffectiveStrategy)
+	}
+
+	// Strict inspection blocks the mixed and legacy plans before worktree.
+	mixedStrict, err := InspectPlan(mixedPlan, root, StrategyStrict)
+	if err != nil {
+		t.Fatalf("InspectPlan(mixed, strict): %v", err)
+	}
+	if !mixedStrict.StrictBlocked {
+		t.Fatal("strict inspection must block a mixed plan")
+	}
+	legacyStrict, err := InspectPlan(legacyPlan, root, StrategyStrict)
+	if err != nil {
+		t.Fatalf("InspectPlan(legacy, strict): %v", err)
+	}
+	if !legacyStrict.StrictBlocked {
+		t.Fatal("strict inspection must block a prose-only plan")
+	}
+
+	// Fully deterministic adaptive task performs zero implementer dispatches.
+	detDispatches := 0
+	detD := Dispatcher{exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		detDispatches++
+		return "STATUS: DONE\nTESTS: ok\n", nil
+	}}
+	detC, err := NewController(ControllerOpts{
+		PlanPath: detPlan, RepoRoot: root, Git: worktree.CLIGitOps{},
+		Dispatch: detD, Verifier: Verifier{Runner: &noopRunner{}, Timeout: time.Minute},
+		Strategy: StrategyAdaptive, MaxFixRounds: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewController(det): %v", err)
+	}
+	if err := detC.Run(context.Background()); err != nil {
+		t.Fatalf("det Run: %v", err)
+	}
+	if detDispatches != 0 {
+		t.Fatalf("fully deterministic adaptive task made %d implementer dispatches, want 0", detDispatches)
+	}
+
+	// Mixed adaptive task dispatches only the fallback task.
+	mixedDispatches := 0
+	mixedD := Dispatcher{exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		mixedDispatches++
+		return "STATUS: DONE\nTESTS: ok\n", nil
+	}}
+	mixedC, err := NewController(ControllerOpts{
+		PlanPath: mixedPlan, RepoRoot: root, Git: worktree.CLIGitOps{},
+		Dispatch: mixedD, Verifier: Verifier{Runner: &noopRunner{}, Timeout: time.Minute},
+		Strategy: StrategyAdaptive, MaxFixRounds: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewController(mixed): %v", err)
+	}
+	if err := mixedC.Run(context.Background()); err != nil {
+		t.Fatalf("mixed Run: %v", err)
+	}
+	if mixedDispatches != 1 {
+		t.Fatalf("mixed adaptive task made %d dispatches, want 1 (only the fallback task)", mixedDispatches)
+	}
+
+	// Strict blocks before EnsureWorktree for the mixed plan.
+	strictD := Dispatcher{exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		return "STATUS: DONE\nTESTS: ok\n", nil
+	}}
+	strictC, err := NewController(ControllerOpts{
+		PlanPath: mixedPlan, RepoRoot: root, Git: worktree.CLIGitOps{},
+		Dispatch: strictD, Verifier: Verifier{Runner: &noopRunner{}, Timeout: time.Minute},
+		Strategy: StrategyStrict, MaxFixRounds: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewController(strict): %v", err)
+	}
+	if err := strictC.Run(context.Background()); err == nil {
+		t.Fatal("strict run must fail for a mixed plan")
+	}
+	if strictC.Worktree.Path != "" {
+		t.Fatal("strict run must not create a worktree for a blocked plan")
+	}
+}

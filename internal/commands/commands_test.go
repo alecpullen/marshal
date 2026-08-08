@@ -1052,6 +1052,12 @@ func TestSDDCommandDescriptionExplainsItself(t *testing.T) {
 	if !strings.Contains(strings.ToLower(desc), "commit") {
 		t.Errorf("the description must say it commits, got %q", desc)
 	}
+	if !strings.Contains(strings.ToLower(desc), "author") {
+		t.Errorf("the description must mention authoring (/sdd new), got %q", desc)
+	}
+	if !strings.Contains(strings.ToLower(desc), "deterministic") {
+		t.Errorf("the description must mention deterministic execution, got %q", desc)
+	}
 }
 
 func TestRunCommandIsRegistered(t *testing.T) {

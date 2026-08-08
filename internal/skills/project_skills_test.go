@@ -13,6 +13,9 @@ func TestProjectSkillsParse(t *testing.T) {
 	dir := filepath.Join("..", "..", ".marshal", "skills")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("project skills dir %s not present in this checkout", dir)
+		}
 		t.Fatalf("read project skills dir: %v", err)
 	}
 	idx := NewIndex()

@@ -3,6 +3,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -154,6 +155,73 @@ func TestRunOpNonZeroExitFails(t *testing.T) {
 	}
 }
 
+func TestRunOpExpectedNonZeroExitSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	runner := NewFakeCommandRunner()
+	runner.SetError("grep -q pattern missing.txt", "", exitErr(1))
+
+	op := &RunOp{
+		Command:    []string{"grep", "-q", "pattern", "missing.txt"},
+		Phase:      "verify",
+		ExpectExit: 1,
+		Status:     OpExecutable,
+	}
+	if err := runRunOp(context.Background(), dir, runner, op); err != nil {
+		t.Fatalf("runRunOp should accept expected exit 1: %v", err)
+	}
+}
+
+func TestRunOpUnexpectedZeroExitFails(t *testing.T) {
+	dir := t.TempDir()
+	runner := NewFakeCommandRunner()
+	runner.SetOutput("grep -q pattern file.txt", "")
+
+	op := &RunOp{
+		Command:    []string{"grep", "-q", "pattern", "file.txt"},
+		Phase:      "verify",
+		ExpectExit: 1,
+		Status:     OpExecutable,
+	}
+	if err := runRunOp(context.Background(), dir, runner, op); err == nil {
+		t.Fatal("runRunOp should error when command succeeds but exit 1 was expected")
+	}
+}
+
+func TestRunVerifyOpsExecutesVerifyPhase(t *testing.T) {
+	dir := t.TempDir()
+	runner := NewFakeCommandRunner()
+	runner.SetOutput("go vet ./...", "")
+
+	ops := []Operation{
+		&RunOp{Command: []string{"go", "build", "./..."}, Phase: "prepare", Status: OpExecutable},
+		&RunOp{Command: []string{"go", "vet", "./..."}, Phase: "verify", Status: OpExecutable},
+	}
+	res := runVerifyOps(context.Background(), dir, runner, ops)
+	if !res.OK {
+		t.Fatalf("runVerifyOps failed: %s", res.Output)
+	}
+	if len(runner.Calls) != 1 || runner.Calls[0] != "go vet ./..." {
+		t.Errorf("calls = %v, want [go vet ./...]", runner.Calls)
+	}
+}
+
+func TestRunVerifyOpsReturnsFirstFailure(t *testing.T) {
+	dir := t.TempDir()
+	runner := NewFakeCommandRunner()
+	runner.SetError("go vet ./...", "vet failure", exitErr(1))
+
+	ops := []Operation{
+		&RunOp{Command: []string{"go", "vet", "./..."}, Phase: "verify", Status: OpExecutable},
+	}
+	res := runVerifyOps(context.Background(), dir, runner, ops)
+	if res.OK {
+		t.Fatal("runVerifyOps should report failure")
+	}
+	if res.FailedCommand != "go vet ./..." {
+		t.Errorf("FailedCommand = %q, want go vet ./...", res.FailedCommand)
+	}
+}
+
 func TestAssertFileExistsPass(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "exists.go"), []byte("x"), 0o644)
@@ -299,5 +367,5 @@ func TestPreflightOpsMarksBlockedFileOverwrite(t *testing.T) {
 
 type exitErr int
 
-func (e exitErr) Error() string { return "exit status 1" }
-func (exitErr) ExitCode() int   { return 1 }
+func (e exitErr) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+func (e exitErr) ExitCode() int { return int(e) }

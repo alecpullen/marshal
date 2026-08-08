@@ -96,13 +96,18 @@ func (l Limits) WithPreset(presetContext, presetMaxOutput int) Limits {
 }
 
 // WithProbed merges a per-model capability probe's result over the current
-// limits, preferring the probe for any field it reported — it reflects the
-// actual pulled model file, not a generic name-keyed table entry.
+// limits. ToolCalling replaces whatever the catalog or discovery stage
+// reported, because the probe reflects the actual pulled model file. The
+// context window is treated as authoritative as well: a positive probed
+// value overwrites catalog/saved/fetched figures (unlike Materialize,
+// which never overwrites a saved non-zero field) so a wrong catalog figure
+// can be corrected by re-probing. A zero probed window is ignored to
+// avoid erasing an already-known cap.
 func (l Limits) WithProbed(toolCalling *bool, contextWindow int) Limits {
 	if toolCalling != nil {
 		l.ToolCalling, l.ToolSource = toolCalling, SourceProbed
 	}
-	if contextWindow > 0 && l.ContextWindow == 0 {
+	if contextWindow > 0 {
 		l.ContextWindow, l.ContextSource = contextWindow, SourceProbed
 	}
 	return l

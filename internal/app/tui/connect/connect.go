@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,11 @@ import (
 // appear in either half, unlike "/" which is common in model IDs
 // ("anthropic/claude-sonnet-4").
 const modelValueSep = "\x00"
+
+// probeOnlyLimits is passed to provider.NewFromConfig for capability
+// probing; limit-table discovery already happened during model-list probe
+// and must not block the TUI while the confirmation screen is opening.
+const probeOnlyLimits = false
 
 func encodeModelValue(provider, model string) string {
 	return provider + modelValueSep + model
@@ -104,6 +110,8 @@ type Model struct {
 	dataDir        string
 	confirm        *presetflow.ConfirmState
 	detectingCaps  bool
+	capProbeID     uint64
+	cancelCapProbe context.CancelFunc
 }
 
 func New(opts Opts) *Model {
@@ -145,10 +153,11 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	case picker.PickedMsg:
 		return m.handlePickerPicked(msg.Value)
 	case presetflow.CapabilityProbedMsg:
-		if m.step != stepConfirmLimits || msg.Provider != m.providerName || msg.Model != m.modelChosen {
+		if !m.detectingCaps || msg.RequestID != m.capProbeID ||
+			m.step != stepConfirmLimits || msg.Provider != m.providerName || msg.Model != m.modelChosen {
 			return m, nil // stale result from a since-abandoned selection
 		}
-		m.detectingCaps = false
+		m.finishCapabilityProbe()
 		m.confirm.Limits = m.confirm.Limits.WithProbed(msg.Caps.ToolCalling, msg.Caps.ContextWindow)
 		return m, nil
 	case picker.CancelledMsg:
@@ -166,6 +175,12 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	case tea.PasteMsg:
+		if m.step == stepConfirmLimits {
+			if m.detectingCaps || m.confirm == nil || !m.confirm.Editing() {
+				return m, nil
+			}
+			return m, m.confirm.UpdateInput(msg)
+		}
 		switch m.step {
 		case stepBaseURL, stepAPIKey:
 			var cmd tea.Cmd
@@ -234,9 +249,13 @@ func (m *Model) View(maxW, maxH int) string {
 		b.WriteString("\n")
 		b.WriteString(errStyle().Render(m.err))
 	}
-	if m.footer != "" {
+	footer := m.footer
+	if m.step == stepConfirmLimits && m.detectingCaps {
+		footer = "please wait…"
+	}
+	if footer != "" {
 		b.WriteString("\n")
-		b.WriteString(footerStyle().Render(m.footer))
+		b.WriteString(footerStyle().Render(footer))
 	}
 	return chrome.Panel("connect", b.String(), pw, min(lipgloss.Height(b.String())+2, maxH), true, theme.Current())
 }
@@ -371,6 +390,7 @@ func (m *Model) enterRemoteGate() {
 }
 
 func (m *Model) enterConfirmLimits() (*Model, tea.Cmd) {
+	m.cancelCapabilityProbe()
 	m.step = stepConfirmLimits
 	m.title = "Confirm model limits"
 	m.subtitle = m.providerName + " · " + m.modelChosen
@@ -384,7 +404,8 @@ func (m *Model) enterConfirmLimits() (*Model, tea.Cmd) {
 	}
 	m.confirm = presetflow.NewConfirmState(lim)
 
-	cmd := m.probeCapabilities()
+	cmd, cancel := m.probeCapabilities(m.capProbeID)
+	m.cancelCapProbe = cancel
 	m.detectingCaps = cmd != nil
 	return m, cmd
 }
@@ -406,15 +427,35 @@ func (m *Model) presetFor(providerName, modelID string) (routing.ModelPreset, bo
 // only), or nil if there is nothing to probe — callers must not set
 // detectingCaps=true unless this returns non-nil, or the "detecting…" state
 // would never clear.
-func (m *Model) probeCapabilities() tea.Cmd {
-	prov, err := provider.NewFromConfig(m.providerName, m.providerCfg, m.dataDir, m.cfg.Privacy.RemoteLimitDiscovery)
+func (m *Model) probeCapabilities(requestID uint64) (tea.Cmd, context.CancelFunc) {
+	// Capability probing only needs the provider client. Limit-table discovery
+	// already happened during model-list discovery and must not block the TUI
+	// while this confirmation screen is opening.
+	prov, err := provider.NewFromConfig(m.providerName, m.providerCfg, m.dataDir, probeOnlyLimits)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	if _, ok := prov.(provider.CapabilityProber); !ok {
-		return nil
+		return nil, nil
 	}
-	return presetflow.ProbeCapabilitiesCmd(prov, m.providerName, m.modelChosen)
+	return presetflow.ProbeCapabilitiesCmdWithCancel(prov, m.providerName, m.modelChosen, requestID)
+}
+
+func (m *Model) cancelCapabilityProbe() {
+	if m.cancelCapProbe != nil {
+		m.cancelCapProbe()
+		m.cancelCapProbe = nil
+	}
+	m.capProbeID++
+	m.detectingCaps = false
+}
+
+func (m *Model) finishCapabilityProbe() {
+	if m.cancelCapProbe != nil {
+		m.cancelCapProbe()
+		m.cancelCapProbe = nil
+	}
+	m.detectingCaps = false
 }
 
 func (m *Model) enterSummary() {
@@ -786,6 +827,11 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 		return m, nil
 	case stepConfirmLimits:
 		if m.detectingCaps {
+			if ks == "esc" {
+				m.cancelCapabilityProbe()
+				m.confirm = nil
+				enterPickModelStep(m, m.providerName)
+			}
 			return m, nil // ignore keys while the capability probe is in flight
 		}
 		result, cmd := m.confirm.HandleKey(k)
@@ -798,6 +844,8 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			m.enterSummary()
 			return m, nil
 		case presetflow.ConfirmCancelled:
+			m.cancelCapabilityProbe()
+			m.confirm = nil
 			enterPickModelStep(m, m.providerName)
 			return m, nil
 		}

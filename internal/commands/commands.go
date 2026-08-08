@@ -298,8 +298,8 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "sdd",
-			Description: "Run a plan file task-by-task (subagent-driven development): implement, review, and commit each task on a branch",
-			Args:        "[plan-file]",
+			Description: "Author or run a plan: /sdd new <goal>, or execute a plan task-by-task with deterministic operations, scoped fallback, review, and commits",
+			Args:        "[new <goal>|--strategy agent|adaptive|strict|plan-file]",
 			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},

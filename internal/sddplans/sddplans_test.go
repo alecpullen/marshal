@@ -3,7 +3,9 @@ package sddplans
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/pipeline"
 )
@@ -215,5 +217,117 @@ func TestDiscoverRecognizesNonTerminalRun(t *testing.T) {
 	}
 	if !got[0].Resumable() {
 		t.Error("a run with an in-flight checkpoint should be resumable even with 0 done")
+	}
+}
+
+func TestDiscoverPopulatesExecutionMetadata(t *testing.T) {
+	root := t.TempDir()
+	body := "# Plan\n\n## Task 1: Add file\n\n" +
+		"```marshal.file path=\"created.txt\"\nhello\n```\n"
+	writePlan(t, filepath.Join(root, ".marshal/plans"), "exec.md", body)
+
+	got := Discover(root, ".marshal/plans")
+	if len(got) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(got))
+	}
+	c := got[0]
+	if c.Err != nil {
+		t.Fatalf("unexpected parse error: %v", c.Err)
+	}
+	if !c.HasBlocks {
+		t.Error("an executable plan must report HasBlocks")
+	}
+	if c.DetOps != 1 {
+		t.Errorf("DetOps = %d, want 1", c.DetOps)
+	}
+	if c.Strategy != pipeline.StrategyAdaptive {
+		t.Errorf("Strategy = %q, want adaptive", c.Strategy)
+	}
+}
+
+func TestDiscoverKeepsCandidateWithDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	// A patch whose search block does not exist in the repo is a blocked
+	// operation, but the candidate must still be listed.
+	body := "# Plan\n\n## Task 1: Patch\n\n" +
+		"```marshal.patch file=\"missing.go\"\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n"
+	writePlan(t, filepath.Join(root, ".marshal/plans"), "blocked.md", body)
+
+	got := Discover(root, ".marshal/plans")
+	if len(got) != 1 {
+		t.Fatalf("got %d candidates, want 1 — a plan with diagnostics must not be hidden", len(got))
+	}
+	if got[0].Err != nil {
+		t.Fatalf("unexpected parse error: %v", got[0].Err)
+	}
+	if len(got[0].Diagnostics) == 0 {
+		t.Error("a blocked plan must carry diagnostics")
+	}
+}
+
+func TestDraftPathSlugifiesAndPrefixesDate(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	got, err := DraftPath(root, ".marshal/plans", "Add Retry Logic!", now)
+	if err != nil {
+		t.Fatalf("DraftPath: %v", err)
+	}
+	want := filepath.Join(root, ".marshal/plans", "2026-08-08-add-retry-logic.md")
+	if got != want {
+		t.Errorf("DraftPath = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(got); !os.IsNotExist(err) {
+		t.Error("DraftPath must not create the file")
+	}
+}
+
+func TestDraftPathEmptyGoalFallsBackToPlan(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	got, err := DraftPath(root, ".marshal/plans", "   ", now)
+	if err != nil {
+		t.Fatalf("DraftPath: %v", err)
+	}
+	if !strings.HasSuffix(got, "2026-08-08-plan.md") {
+		t.Errorf("DraftPath = %q, want plan fallback slug", got)
+	}
+}
+
+func TestDraftPathAppendsNumericSuffixOnCollision(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	dir := filepath.Join(root, ".marshal/plans")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(dir, "2026-08-08-feature.md")
+	if err := os.WriteFile(first, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DraftPath(root, ".marshal/plans", "Feature", now)
+	if err != nil {
+		t.Fatalf("DraftPath: %v", err)
+	}
+	if got != filepath.Join(dir, "2026-08-08-feature-2.md") {
+		t.Errorf("DraftPath = %q, want -2 suffix on collision", got)
+	}
+}
+
+func TestDraftPathRejectsSymlinkedPlansDirOutsideRepo(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, ".marshal", "plans")); err != nil {
+		t.Skipf("symlink(2) unavailable on this platform: %v", err)
+	}
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	got, err := DraftPath(root, ".marshal/plans", "feature", now)
+	if err == nil {
+		t.Fatalf("DraftPath succeeded with path %q; want symlink-escape rejection", got)
+	}
+	if !strings.Contains(err.Error(), "outside the repository root") {
+		t.Fatalf("err = %v, want outside-the-repository error", err)
 	}
 }

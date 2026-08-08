@@ -170,6 +170,7 @@ type State struct {
 	// Workspace().ActiveRoot instead; see workspace.go.
 	WorkingDir string
 	StartedAt  time.Time
+	now        func() time.Time
 	db         *db.DB
 	sessionID  string
 	logger     *slog.Logger
@@ -208,11 +209,16 @@ type State struct {
 	toolAuditThisTurn []db.ToolAuditEntry
 	swarmProgress     SwarmProgress
 	sddProgress       SDDProgress
-	sandbox           SandboxInfo
-	browser           BrowserInfo
-	trusted           bool
-	turnIndex         int
-	snapshotter       Snapshotter
+	// sddFallbackAllowed is the controller's pending marshal.agent
+	// fallback allowlist, stashed so the pipeline registry factory can
+	// narrow the next ScopeFallback dispatch to the declared paths.
+	// Empty/nil means no scope is declared; the factory must reject.
+	sddFallbackAllowed []string
+	sandbox            SandboxInfo
+	browser            BrowserInfo
+	trusted            bool
+	turnIndex          int
+	snapshotter        Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
@@ -359,6 +365,44 @@ func (s *State) SDDGate() SDDGate {
 	return s.sddGate
 }
 
+// SetSDDFallbackAllowedFiles stashes the controller's pending marshal.agent
+// fallback allowlist on the session so the pipeline registry factory can
+// apply FallbackWriterView during the next dispatch. The controller must
+// call ClearSDDFallbackAllowedFiles once the dispatch returns; an empty
+// slice is treated as no scope and the factory rejects the dispatch.
+func (s *State) SetSDDFallbackAllowedFiles(allowed []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(allowed) == 0 {
+		s.sddFallbackAllowed = nil
+		return
+	}
+	cp := make([]string, len(allowed))
+	copy(cp, allowed)
+	s.sddFallbackAllowed = cp
+}
+
+// SDDFallbackAllowedFiles returns the controller's pending fallback
+// allowlist, or nil when none is stashed. The pipeline registry factory
+// uses this to narrow ScopeFallback to the declared paths.
+func (s *State) SDDFallbackAllowedFiles() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.sddFallbackAllowed) == 0 {
+		return nil
+	}
+	cp := make([]string, len(s.sddFallbackAllowed))
+	copy(cp, s.sddFallbackAllowed)
+	return cp
+}
+
+// ClearSDDFallbackAllowedFiles drops the stashed fallback allowlist.
+func (s *State) ClearSDDFallbackAllowedFiles() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sddFallbackAllowed = nil
+}
+
 type turnUsage struct {
 	used      int
 	window    int
@@ -441,6 +485,18 @@ func WithDepth(d int) Option {
 	}
 }
 
+// WithClock overrides the function used to stamp scratchpad entry
+// timestamps. Tests pass a frozen clock so entries written back-to-back
+// share an Updated value and ordering is deterministic; the default is
+// time.Now.
+func WithClock(now func() time.Time) Option {
+	return func(s *State) {
+		if now != nil {
+			s.now = now
+		}
+	}
+}
+
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
 	ctx, cancel := context.WithCancel(context.Background())
 	scratchpadCfg := cfg.Scratchpad
@@ -449,6 +505,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		Config:           cfg,
 		WorkingDir:       workingDir,
 		StartedAt:        now,
+		now:              time.Now,
 		db:               p.DB,
 		sessionID:        p.SessionID,
 		logger:           p.Logger,
@@ -948,7 +1005,13 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 		return fmt.Errorf("scratchpad entry %q is ~%d tokens, exceeds max %d", key, tokens, s.scratchpadConfig.MaxEntryTokens)
 	}
 
-	entry := db.NewScratchpadEntry(key, content, format)
+	entry := db.ScratchpadEntry{
+		Key:       key,
+		Content:   content,
+		Format:    format,
+		Updated:   s.now().UnixMilli(),
+		SizeBytes: len(content),
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

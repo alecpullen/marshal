@@ -453,6 +453,30 @@ func TestSDDRoleAddenda(t *testing.T) {
 	}
 }
 
+func TestSDDPlanAuthorRolePrompt(t *testing.T) {
+	msg := BuildSystemPrompt(RoleSDDPlanAuthor, dummyTools(), nil, nil, false)
+	if !strings.Contains(msg.Content, "plan author") {
+		t.Errorf("plan-author system prompt missing authoring language: %q", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "approved design") {
+		t.Errorf("plan-author system prompt missing approved-design handoff: %q", msg.Content)
+	}
+	// The role's allowed-actions line must not include ask_user, even though
+	// the shared base rules mention it.
+	allowed := "Allowed actions for this role:"
+	idx := strings.Index(msg.Content, allowed)
+	if idx < 0 {
+		t.Fatalf("plan-author system prompt missing allowed-actions line")
+	}
+	line := msg.Content[idx:]
+	if end := strings.IndexByte(line, '\n'); end >= 0 {
+		line = line[:end]
+	}
+	if strings.Contains(line, "ask_user") {
+		t.Errorf("plan-author allowed actions must exclude ask_user: %q", line)
+	}
+}
+
 func TestModeDirectivePlan(t *testing.T) {
 	d := modeDirective(policy.ModePlan)
 	if !strings.Contains(d, "plan mode") {

@@ -23,6 +23,7 @@ import (
 	"marshal/internal/hooks"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
+	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
@@ -68,20 +69,23 @@ type Runtime struct {
 	SwarmRunner  *swarm.Orchestrator
 	// PipelineFactory builds a plan-execution runner for one plan file.
 	PipelineFactory func(planPath string) tui.AgentRunner
-	DB              DBCloser
-	ProjectID       int64
-	SessionID       string
-	JobBroker       BrokerCloser
-	SteeringBroker  BrokerCloser
-	EventBroker     BrokerCloser
-	WorkspaceBroker BrokerCloser
-	MCPManager      MCPCloser
-	Snapshot        SnapshotCloser
-	Logger          *slog.Logger
-	WorkingDir      string
-	HomeDir         string
-	DataDir         string
-	SkillIndex      *skills.Index
+	// PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
+	// request. Set by startRuntime and replaced on config reload.
+	PlanAuthorFactory sddauthor.Factory
+	DB                DBCloser
+	ProjectID         int64
+	SessionID         string
+	JobBroker         BrokerCloser
+	SteeringBroker    BrokerCloser
+	EventBroker       BrokerCloser
+	WorkspaceBroker   BrokerCloser
+	MCPManager        MCPCloser
+	Snapshot          SnapshotCloser
+	Logger            *slog.Logger
+	WorkingDir        string
+	HomeDir           string
+	DataDir           string
+	SkillIndex        *skills.Index
 	// PluginCommands are slash commands contributed by verified plugins.
 	// Run() registers them into the TUI command registry; headless
 	// sessions ignore them.
@@ -551,7 +555,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	state.SetEventBroker(eventBroker)
 	state.SetWorkspaceBroker(workspaceBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -581,6 +585,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		ToolRegistry:       toolReg,
 		SwarmRunner:        swarmRunner,
 		PipelineFactory:    pipelineFactory,
+		PlanAuthorFactory:  planAuthorFactory,
 		DB:                 database,
 		ProjectID:          projectID,
 		SessionID:          sessionID,

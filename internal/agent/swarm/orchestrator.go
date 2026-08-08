@@ -25,6 +25,10 @@ const (
 	ScopeReadOnly                            // planner, scouts, reviewer
 	ScopeTester                              // tester: read-only plus command execution
 	ScopeArtifactWriter                      // read-only source + artifact-only writes (pipeline reviewers)
+	// ScopeFallback narrows the implementer's file-write tools to a
+	// declared allowlist (marshal.agent scope) while still letting the
+	// agent run commands under the configured sandbox/policy.
+	ScopeFallback
 )
 
 // RunnerFactory builds a role-specific agent.Runner. Implementations must

@@ -86,6 +86,9 @@ type Controller struct {
 	// PlanIR is the compiled plan, populated when marshal.* blocks are
 	// present. Nil for legacy prose-only plans.
 	PlanIR *PlanIR
+	// Inspection is the shared parse/compile/preflight result, populated by
+	// Inspect() and used by the TUI preflight and the controller's Run.
+	Inspection *Inspection
 
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
@@ -172,6 +175,22 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 // resume); 0 means unlimited.
 func (c *Controller) overBudget() bool {
 	return c.maxTokens > 0 && c.UsageTokens >= c.maxTokens
+}
+
+// Inspect parses, compiles, and preflights the controller's plan against its
+// repository, resolving the effective strategy. It populates the controller's
+// Inspection, PlanIR, and Strategy so Run and the TUI preflight share one
+// source of statuses and diagnostics. It does not touch git or create a
+// worktree.
+func (c *Controller) Inspect() (*Inspection, error) {
+	inspection, err := InspectPlan(c.Plan.Path, c.RepoRoot, c.Strategy)
+	if err != nil {
+		return nil, err
+	}
+	c.Inspection = inspection
+	c.PlanIR = inspection.IR
+	c.Strategy = inspection.EffectiveStrategy
+	return inspection, nil
 }
 
 // CompletedCount returns the number of tasks the ledger marks complete.
@@ -528,7 +547,24 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 		}
 	}
 
-	// 4. Agent fallback for unresolved work.
+	report, execType, err := c.runFallbackAndVerifyGate(ctx, t, taskIR, briefPath, dir, base, needsAgent, report)
+	if err != nil {
+		return taskResult{}, err
+	}
+
+	// 6. Commit.
+	head, err := c.commit(t, report)
+	if err != nil {
+		return taskResult{}, err
+	}
+	return taskResult{Base: base, Head: head, Report: report, ExecType: execType}, nil
+}
+
+// runFallbackAndVerifyGate runs the optional marshal.agent fallback and the
+// build/test verify gate (including fixer rounds). The fallback's declared
+// scope must remain active through verification fixers, so it is cleared by
+// a defer that runs only after the gate finishes.
+func (c *Controller) runFallbackAndVerifyGate(ctx context.Context, t TaskSpec, taskIR *TaskIR, briefPath, dir, base string, needsAgent bool, report ImplementerReport) (ImplementerReport, ExecType, error) {
 	hasAgentOp := false
 	for _, op := range taskIR.Operations {
 		if op.OpKind() == "agent" || op.OpStatus() == OpBlocked {
@@ -540,9 +576,25 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 	execType := ExecDeterministic
 	if needsAgent || hasAgentOp {
 		if c.Strategy == StrategyStrict {
-			return taskResult{}, fmt.Errorf("pipeline: task %d has unresolved work and strategy is strict", t.N)
+			return report, execType, fmt.Errorf("pipeline: task %d has unresolved work and strategy is strict", t.N)
 		}
-		// Adaptive: dispatch one agent for the remaining work.
+		// Adaptive: dispatch one agent for the remaining work. The
+		// fallback's file.write_patch is narrowed to the marshal.agent
+		// scope declared by the plan; an empty scope is rejected so the
+		// fallback cannot rewrite the worktree at large.
+		if len(taskIR.AllowedFiles) == 0 {
+			return report, execType, fmt.Errorf("pipeline: task %d has unresolved work but no marshal.agent scope declared; rerun with a scope or skip the fallback", t.N)
+		}
+		c.Dispatch.FallbackAllowedFiles = taskIR.AllowedFiles
+		if c.Dispatch.State != nil {
+			c.Dispatch.State.SetSDDFallbackAllowedFiles(taskIR.AllowedFiles)
+		}
+		defer func() {
+			c.Dispatch.FallbackAllowedFiles = nil
+			if c.Dispatch.State != nil {
+				c.Dispatch.State.ClearSDDFallbackAllowedFiles()
+			}
+		}()
 		c.emit(t.N, 0, PhaseAgentFallback, "")
 		c.checkpoint(PhaseAgentFallback, t.N, func(cp *Checkpoint) {
 			cp.BaseSHA = base
@@ -561,15 +613,15 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 			Answer:         c.takeAnswer(),
 		})
 		if err != nil {
-			return taskResult{}, err
+			return report, execType, err
 		}
 		label := fmt.Sprintf("task %d — %s (agent fallback)", t.N, t.Title)
 		report, err = c.implementWithRetry(ctx, t.N, PhaseAgentFallback, routing.RoleSDDImplementer, label, prompt)
 		if err != nil {
-			return taskResult{}, fmt.Errorf("pipeline: task %d agent fallback: %w", t.N, err)
+			return report, execType, fmt.Errorf("pipeline: task %d agent fallback: %w", t.N, err)
 		}
 		if report.NeedsHuman() {
-			return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
+			return report, execType, c.openGateWithContext(t.N, report.Question, report)
 		}
 		execType = ExecMixed
 	}
@@ -583,7 +635,16 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 		})
 		res, err := c.Verifier.Run(ctx, dir)
 		if err != nil {
-			return taskResult{}, fmt.Errorf("pipeline: task %d gate: %w", t.N, err)
+			return report, execType, fmt.Errorf("pipeline: task %d gate: %w", t.N, err)
+		}
+		if res.OK || res.Skipped {
+			// Run plan-specified verify-phase commands alongside the
+			// build/test gate. If they fail, treat it as a gate failure
+			// so the fixer loop can address it.
+			vres := runVerifyOps(ctx, dir, c.Verifier.Runner, taskIR.Operations)
+			if !vres.OK {
+				res = vres
+			}
 		}
 		if res.Skipped {
 			break
@@ -592,10 +653,10 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 			break
 		}
 		if c.Strategy == StrategyStrict {
-			return taskResult{Report: report}, fmt.Errorf("pipeline: task %d gate failed in strict mode: `%s`:\n%s", t.N, res.FailedCommand, res.Output)
+			return report, execType, fmt.Errorf("pipeline: task %d gate failed in strict mode: `%s`:\n%s", t.N, res.FailedCommand, res.Output)
 		}
 		if round >= c.MaxFixRounds {
-			return taskResult{Report: report}, fmt.Errorf("pipeline: task %d still fails `%s` after %d fix rounds", t.N, res.FailedCommand, c.MaxFixRounds)
+			return report, execType, fmt.Errorf("pipeline: task %d still fails `%s` after %d fix rounds", t.N, res.FailedCommand, c.MaxFixRounds)
 		}
 		c.emitPayload(t.N, round+1, PhaseFixing, res.FailedCommand, VerifyFailedPayload{
 			Command:   res.FailedCommand,
@@ -622,25 +683,20 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 			CoveringTests: report.Tests,
 		})
 		if err != nil {
-			return taskResult{}, err
+			return report, execType, err
 		}
 		label := fmt.Sprintf("task %d fix — %s", t.N, t.Title)
 		report, err = c.implementWithRetry(ctx, t.N, PhaseFixing, routing.RoleSDDImplementer, label, fixPrompt)
 		if err != nil {
-			return taskResult{}, fmt.Errorf("pipeline: task %d gate fixer: %w", t.N, err)
+			return report, execType, fmt.Errorf("pipeline: task %d gate fixer: %w", t.N, err)
 		}
 		if report.NeedsHuman() {
-			return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
+			return report, execType, c.openGateWithContext(t.N, report.Question, report)
 		}
 		execType = ExecMixed
 	}
 
-	// 6. Commit.
-	head, err := c.commit(t, report)
-	if err != nil {
-		return taskResult{}, err
-	}
-	return taskResult{Base: base, Head: head, Report: report, ExecType: execType}, nil
+	return report, execType, nil
 }
 
 // commit records the task's work. The controller — never a subagent —
@@ -923,51 +979,21 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 // ErrHumanGateRequired when a subagent needs an answer, or an error when a
 // task cannot be completed.
 func (c *Controller) Run(ctx context.Context) error {
-	// Compile and preflight when strategy is adaptive or strict. This runs
-	// before any worktree is created: a strict plan with blocked or agent
-	// operations is rejected without minting a worktree.
-	if c.Strategy == StrategyAdaptive || c.Strategy == StrategyStrict {
-		ir, diags, err := CompilePlan(c.Plan)
-		if err != nil {
-			return fmt.Errorf("pipeline: compile plan: %w", err)
+	// Inspect (parse, compile, preflight) before any worktree is created: a
+	// strict plan with blocked, agent, or prose-only work is rejected without
+	// minting a worktree. The inspection is shared with the TUI preflight.
+	if _, err := c.Inspect(); err != nil {
+		return fmt.Errorf("pipeline: inspect plan: %w", err)
+	}
+	if c.Strategy == StrategyStrict && c.Inspection.StrictBlocked {
+		var msgs []string
+		for _, d := range c.Inspection.Errors() {
+			msgs = append(msgs, fmt.Sprintf("task %d: %s", d.TaskN, d.Message))
 		}
-		c.PlanIR = ir
-
-		// Check for error-severity diagnostics.
-		var errDiags []Diagnostic
-		for _, d := range diags {
-			if d.Severity == DiagError {
-				errDiags = append(errDiags, d)
-			}
+		if len(msgs) == 0 {
+			msgs = append(msgs, "plan contains unresolved or prose-only work")
 		}
-		if len(errDiags) > 0 && c.Strategy == StrategyStrict {
-			var msgs []string
-			for _, d := range errDiags {
-				msgs = append(msgs, fmt.Sprintf("task %d: %s", d.TaskN, d.Message))
-			}
-			return fmt.Errorf("pipeline: strict plan has compile errors:\n%s", strings.Join(msgs, "\n"))
-		}
-
-		// Preflight each task.
-		for i := range ir.Tasks {
-			taskDir := c.workDir()
-			opDiags := preflightOps(taskDir, ir.Tasks[i].Operations)
-			for _, d := range opDiags {
-				_ = c.Ledger.Note("Task %d: preflight: %s", ir.Tasks[i].TaskN, d.Message)
-			}
-			// Under strict, any blocked operation fails the run.
-			if c.Strategy == StrategyStrict && ir.Tasks[i].DerivedStatus() == TaskBlocked {
-				return fmt.Errorf("pipeline: task %d is blocked and strategy is strict", ir.Tasks[i].TaskN)
-			}
-			if c.Strategy == StrategyStrict {
-				for _, op := range ir.Tasks[i].Operations {
-					if op.OpKind() == "agent" {
-						return fmt.Errorf("pipeline: task %d has an agent operation and strategy is strict", ir.Tasks[i].TaskN)
-					}
-				}
-			}
-			ir.Tasks[i].Status = ir.Tasks[i].DerivedStatus()
-		}
+		return fmt.Errorf("pipeline: strict plan is blocked:\n%s", strings.Join(msgs, "\n"))
 	}
 	if c.Worktree.Path == "" {
 		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)

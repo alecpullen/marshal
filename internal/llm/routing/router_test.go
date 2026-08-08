@@ -835,3 +835,14 @@ func TestResolveRoleUsesFastRung(t *testing.T) {
 		t.Errorf("Model = %q, want small (via the fast rung)", route.Preset.Model)
 	}
 }
+
+func TestInternalSDDPlanAuthorFallsBackToImplementer(t *testing.T) {
+	router := testRouter()
+	route, err := router.ResolveRole(RoleSDDPlanAuthor)
+	if err != nil {
+		t.Fatalf("ResolveRole: %v", err)
+	}
+	if route.Preset.Model == "" {
+		t.Fatal("internal plan-author role should resolve through implementer")
+	}
+}

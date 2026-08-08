@@ -28,6 +28,7 @@ const (
 	RoleSDDImplementer    AgentRole = routing.RoleSDDImplementer
 	RoleSDDReviewer       AgentRole = routing.RoleSDDReviewer
 	RoleSDDBranchReviewer AgentRole = routing.RoleSDDBranchReviewer
+	RoleSDDPlanAuthor     AgentRole = routing.RoleSDDPlanAuthor
 )
 
 type rolePrompt struct {
@@ -86,6 +87,11 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		focus:          "You are the SDD branch reviewer — the merge gate. You see the full branch diff plus the full plan. Judge cross-task integration, whole-plan coverage, and architecture. Trust per-task reviews; your value is what they cannot see. Surface any accepted per-task deviations from the brief in your whole-branch review so the human knows they happened.",
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Read the full plan to check coverage.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "feature-plan.md"}}}`,
+	},
+	RoleSDDPlanAuthor: {
+		focus:          "You are a Marshal SDD plan author. Inspect the repository, convert an approved design into one reviewed executable Markdown plan, and write only the requested plan artifact. Never modify source files or start implementation.",
+		allowedActions: []string{"tool_call", "final"},
+		example:        `{"rationale":"The design is approved; I will inspect the target package before writing the plan.","action":{"type":"tool_call","tool":"file.read","args":{"path":"internal/example/example.go"}}}`,
 	},
 }
 

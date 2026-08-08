@@ -19,29 +19,26 @@ import (
 // CommandRunner is the seam for running verify commands. The real
 // implementation shells out; tests use FakeCommandRunner.
 type CommandRunner interface {
-	// Run executes a shell-style command string in dir and returns its
-	// combined output. A non-zero exit is returned as an error along with
-	// whatever output was produced.
-	Run(ctx context.Context, dir, command string) (string, error)
+	// Run executes argv in dir and returns its combined output. A non-zero
+	// exit is returned as an error along with whatever output was produced.
+	Run(ctx context.Context, dir string, argv []string) (string, error)
 }
 
-// CLICommandRunner executes commands with exec.CommandContext after
-// splitting the command string with shlex. No shell is involved, so
-// pipelines and redirection in a configured command will not work — the
-// command is an argv, not a script.
+// CLICommandRunner executes commands with exec.CommandContext. No shell is
+// involved, so pipelines and redirection in a configured command will not
+// work — the command is an argv, not a script.
 type CLICommandRunner struct{}
 
-func (CLICommandRunner) Run(ctx context.Context, dir, command string) (string, error) {
-	argv, err := shlex.Split(command)
-	if err != nil || len(argv) == 0 {
-		return "", fmt.Errorf("pipeline verify: cannot parse command %q: %w", command, err)
+func (CLICommandRunner) Run(ctx context.Context, dir string, argv []string) (string, error) {
+	if len(argv) == 0 {
+		return "", fmt.Errorf("pipeline verify: empty command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	err = cmd.Run()
+	err := cmd.Run()
 	return out.String(), err
 }
 
@@ -69,10 +66,14 @@ type Verifier struct {
 // command failure is reported in the result, not as an error; an error
 // return means the gate itself could not run.
 func (v Verifier) Run(ctx context.Context, dir string) (VerifyResult, error) {
-	commands := make([]string, 0, 2)
+	commands := make([][]string, 0, 2)
 	for _, c := range []string{v.Build, v.Test} {
 		if c != "" {
-			commands = append(commands, c)
+			argv, err := shlex.Split(c)
+			if err != nil || len(argv) == 0 {
+				return VerifyResult{}, fmt.Errorf("pipeline verify: cannot parse command %q: %w", c, err)
+			}
+			commands = append(commands, argv)
 		}
 	}
 	if len(commands) == 0 {
@@ -87,10 +88,10 @@ func (v Verifier) Run(ctx context.Context, dir string) (VerifyResult, error) {
 		runCtx, cancel = context.WithTimeout(ctx, v.Timeout)
 		defer cancel()
 	}
-	for _, c := range commands {
-		out, err := v.Runner.Run(runCtx, dir, c)
+	for _, argv := range commands {
+		out, err := v.Runner.Run(runCtx, dir, argv)
 		if err != nil {
-			return VerifyResult{OK: false, FailedCommand: c, Output: out}, nil
+			return VerifyResult{OK: false, FailedCommand: strings.Join(argv, " "), Output: out}, nil
 		}
 	}
 	return VerifyResult{OK: true}, nil
@@ -198,7 +199,8 @@ func (f *FakeCommandRunner) SetError(command, output string, err error) {
 	f.errs[command] = err
 }
 
-func (f *FakeCommandRunner) Run(ctx context.Context, dir, command string) (string, error) {
-	f.Calls = append(f.Calls, command)
-	return f.outputs[command], f.errs[command]
+func (f *FakeCommandRunner) Run(ctx context.Context, dir string, argv []string) (string, error) {
+	cmdStr := strings.Join(argv, " ")
+	f.Calls = append(f.Calls, cmdStr)
+	return f.outputs[cmdStr], f.errs[cmdStr]
 }

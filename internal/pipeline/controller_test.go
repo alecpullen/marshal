@@ -978,3 +978,130 @@ func TestRunTakesOverStaleLockFromDifferentRun(t *testing.T) {
 		t.Fatalf("dispatches = %d, want the full run (2 tasks + branch review)", len(*prompts))
 	}
 }
+
+func TestRunAdaptiveFullyDeterministicTaskZeroDispatches(t *testing.T) {
+	// Build a plan with one task that has a marshal.file block creating a
+	// new file, then a marshal.assert file.exists on that file.
+	dir := t.TempDir()
+	planContent := "# Det Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"## Task 1: Create file\n\n" +
+		"```marshal.file path=\"output.txt\"\nhello\n```\n\n" +
+		"```marshal.assert\nkind = \"file.exists\"\nfile = \"output.txt\"\n```\n"
+	planPath := filepath.Join(dir, "det-plan.md")
+	os.WriteFile(planPath, []byte(planContent), 0o644)
+
+	// The dispatch should never be called.
+	d, prompts := scriptedDispatch(t)
+	g := worktree.NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	g.Heads[dir] = g.Refs["main"]
+	g.Dirty = true
+	c, err := NewController(ControllerOpts{
+		PlanPath: planPath,
+		RepoRoot: dir,
+		Git:      g,
+		Dispatch: d,
+		Verifier: Verifier{Runner: NewFakeCommandRunner()},
+		Strategy: StrategyAdaptive,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+
+	// Compile the plan into the IR.
+	ir, diags, err := CompilePlan(c.Plan)
+	if err != nil {
+		t.Fatalf("CompilePlan: %v", err)
+	}
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	c.PlanIR = ir
+
+	// Preflight: the file doesn't exist yet, so the file op is executable
+	// (create new), and the assert is executable (it will check after).
+	preflightDiags := preflightOps(c.workDir(), ir.Tasks[0].Operations)
+	if len(preflightDiags) > 0 {
+		t.Fatalf("preflight diagnostics: %v", preflightDiags)
+	}
+
+	spec, _ := c.Plan.Task(1)
+	res, err := c.runTask(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if len(*prompts) != 0 {
+		t.Fatalf("dispatches = %d, want 0 for fully deterministic task", len(*prompts))
+	}
+	if res.Head == "" {
+		t.Fatal("expected a commit")
+	}
+	// Verify the file was created in the worktree.
+	if _, err := os.Stat(filepath.Join(c.workDir(), "output.txt")); err != nil {
+		t.Errorf("output.txt not created: %v", err)
+	}
+}
+
+func TestRunStrictRejectsAgentOp(t *testing.T) {
+	dir := t.TempDir()
+	planContent := "# Strict Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"## Task 1: Has agent op\n\n" +
+		"```marshal.agent\nallowed = true\nscope = [\"internal/foo\"]\nreason = \"needs model\"\n```\n"
+	planPath := filepath.Join(dir, "strict-plan.md")
+	os.WriteFile(planPath, []byte(planContent), 0o644)
+
+	d, _ := scriptedDispatch(t)
+	g := worktree.NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	g.Heads[dir] = g.Refs["main"]
+	c, err := NewController(ControllerOpts{
+		PlanPath: planPath,
+		RepoRoot: dir,
+		Git:      g,
+		Dispatch: d,
+		Verifier: Verifier{Runner: NewFakeCommandRunner()},
+		Strategy: StrategyStrict,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+
+	ir, _, err := CompilePlan(c.Plan)
+	if err != nil {
+		t.Fatalf("CompilePlan: %v", err)
+	}
+	c.PlanIR = ir
+
+	// The controller should reject the plan before running.
+	spec, _ := c.Plan.Task(1)
+	_, err = c.runTask(context.Background(), spec)
+	if err == nil {
+		t.Fatal("runTask should fail in strict mode with an AgentOp")
+	}
+	if !strings.Contains(err.Error(), "strict") {
+		t.Errorf("error should mention strict: %v", err)
+	}
+}
+
+func TestRunAdaptiveLegacyPlanBehavesLikeAgent(t *testing.T) {
+	d, prompts := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.Strategy = StrategyAdaptive
+
+	// No PlanIR set — legacy plan.
+	err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Should have dispatched implementer + reviewer for each task + branch review.
+	if len(*prompts) == 0 {
+		t.Fatal("expected dispatches for legacy plan under adaptive")
+	}
+}

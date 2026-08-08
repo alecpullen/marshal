@@ -27,6 +27,10 @@ const (
 	PhaseBranchReview = "branch review"
 	PhaseDone         = "done"
 	PhaseBlocked      = "blocked"
+
+	PhaseApplying      = "applying"
+	PhaseAsserting     = "asserting"
+	PhaseAgentFallback = "agent fallback"
 )
 
 // ErrHumanGateRequired is returned by Run when the controller needs the
@@ -47,7 +51,10 @@ type ControllerOpts struct {
 	AutoEscalate       bool
 	Observer           Observer
 	TargetBranch       string
-	MaxTokensCfg       int
+	// Strategy selects how the controller executes tasks. StrategyAgent
+	// (the zero value) preserves the current model-led behavior.
+	Strategy     Strategy
+	MaxTokensCfg int
 
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
@@ -73,6 +80,12 @@ type Controller struct {
 	AutoEscalate bool
 	Observer     Observer
 	TargetBranch string
+
+	// Strategy controls deterministic vs agent execution.
+	Strategy Strategy
+	// PlanIR is the compiled plan, populated when marshal.* blocks are
+	// present. Nil for legacy prose-only plans.
+	PlanIR *PlanIR
 
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
@@ -149,6 +162,7 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 		AutoEscalate:       opts.AutoEscalate,
 		Observer:           opts.Observer,
 		TargetBranch:       opts.TargetBranch,
+		Strategy:           opts.Strategy,
 		MaxTokensCfg:       opts.MaxTokensCfg,
 	}, nil
 }
@@ -294,14 +308,18 @@ func ledgerHasTask(l Ledger, n int) bool {
 
 // taskResult is one completed task's commit range and final report.
 type taskResult struct {
-	Base   string
-	Head   string
-	Report ImplementerReport
+	Base     string
+	Head     string
+	Report   ImplementerReport
+	ExecType ExecType
 }
 
-// runTask implements one task and gets it committed: brief, implementer,
-// gate (with fix rounds), commit. Review is Task 10's loop; it runs after
-// this returns.
+// runTask implements one task and gets it committed. Under agent strategy
+// it dispatches an implementer, runs the gate, and commits — the current
+// behavior. Under adaptive strategy it applies deterministic operations
+// first, runs assertions, then dispatches an agent only for unresolved
+// work. Under strict strategy it applies deterministic operations only and
+// fails if any work is unresolved.
 func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error) {
 	dir := c.workDir()
 	base, err := c.Git.RevParse(dir, "HEAD")
@@ -322,6 +340,29 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 		}
 	}
 
+	// Determine the task IR for this task, if the plan was compiled.
+	var taskIR *TaskIR
+	if c.PlanIR != nil {
+		for i := range c.PlanIR.Tasks {
+			if c.PlanIR.Tasks[i].TaskN == t.N {
+				taskIR = &c.PlanIR.Tasks[i]
+				break
+			}
+		}
+	}
+
+	// If the strategy is agent or there is no IR, use the legacy path.
+	if c.Strategy == StrategyAgent || taskIR == nil || len(taskIR.Operations) == 0 {
+		return c.runTaskAgent(ctx, t, briefPath, dir, base)
+	}
+
+	// Adaptive or strict: apply deterministic operations.
+	return c.runTaskDeterministic(ctx, t, taskIR, briefPath, dir, base)
+}
+
+// runTaskAgent is the legacy model-led path, preserved for the agent
+// strategy and for tasks with no executable operations.
+func (c *Controller) runTaskAgent(ctx context.Context, t TaskSpec, briefPath, dir, base string) (taskResult, error) {
 	prompt, err := RenderImplementer(ImplementerPrompt{
 		TaskN:          t.N,
 		Title:          t.Title,
@@ -429,7 +470,177 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 	if err != nil {
 		return taskResult{}, err
 	}
-	return taskResult{Base: base, Head: head, Report: report}, nil
+	return taskResult{Base: base, Head: head, Report: report, ExecType: ExecAgent}, nil
+}
+
+// runTaskDeterministic applies deterministic operations, runs assertions,
+// then optionally dispatches an agent for unresolved work.
+func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskIR *TaskIR, briefPath, dir, base string) (taskResult, error) {
+	var report ImplementerReport
+	needsAgent := false
+
+	// 1. Apply mutations (patches and files).
+	c.emit(t.N, 0, PhaseApplying, "")
+	c.checkpoint(PhaseApplying, t.N, func(cp *Checkpoint) {
+		cp.BaseSHA = base
+		cp.BriefPath = briefPath
+	})
+	for _, op := range taskIR.Operations {
+		switch o := op.(type) {
+		case *PatchOp:
+			if o.Status == OpExecutable {
+				if err := applyPatchOp(dir, o); err != nil {
+					return taskResult{}, fmt.Errorf("pipeline: task %d patch: %w", t.N, err)
+				}
+			} else {
+				needsAgent = true
+			}
+		case *FileOp:
+			if o.Status == OpExecutable {
+				if err := applyFileOp(dir, o); err != nil {
+					return taskResult{}, fmt.Errorf("pipeline: task %d file: %w", t.N, err)
+				}
+			} else {
+				needsAgent = true
+			}
+		}
+	}
+
+	// 2. Run prepare-phase commands.
+	for _, op := range taskIR.Operations {
+		if r, ok := op.(*RunOp); ok && r.Status == OpExecutable && r.Phase == "prepare" {
+			if err := runRunOp(ctx, dir, c.Verifier.Runner, r); err != nil {
+				return taskResult{}, fmt.Errorf("pipeline: task %d prepare: %w", t.N, err)
+			}
+		}
+	}
+
+	// 3. Run assertions.
+	c.emit(t.N, 0, PhaseAsserting, "")
+	c.checkpoint(PhaseAsserting, t.N, func(cp *Checkpoint) {
+		cp.BaseSHA = base
+	})
+	for _, op := range taskIR.Operations {
+		if a, ok := op.(*AssertOp); ok && a.Status == OpExecutable {
+			if err := checkAssert(ctx, dir, c.Verifier.Runner, a); err != nil {
+				return taskResult{}, fmt.Errorf("pipeline: task %d assert: %w", t.N, err)
+			}
+		}
+	}
+
+	// 4. Agent fallback for unresolved work.
+	hasAgentOp := false
+	for _, op := range taskIR.Operations {
+		if op.OpKind() == "agent" || op.OpStatus() == OpBlocked {
+			hasAgentOp = true
+			break
+		}
+	}
+
+	execType := ExecDeterministic
+	if needsAgent || hasAgentOp {
+		if c.Strategy == StrategyStrict {
+			return taskResult{}, fmt.Errorf("pipeline: task %d has unresolved work and strategy is strict", t.N)
+		}
+		// Adaptive: dispatch one agent for the remaining work.
+		c.emit(t.N, 0, PhaseAgentFallback, "")
+		c.checkpoint(PhaseAgentFallback, t.N, func(cp *Checkpoint) {
+			cp.BaseSHA = base
+			cp.BriefPath = briefPath
+		})
+		prompt, err := RenderImplementer(ImplementerPrompt{
+			TaskN:          t.N,
+			Title:          t.Title,
+			Placement:      fmt.Sprintf("Task %d of %d in the plan %q.", t.N, len(c.Plan.Tasks), c.Plan.Slug),
+			BriefPath:      briefPath,
+			BriefBasename:  filepath.Base(briefPath),
+			ReportPath:     c.Paths.Report(t.N),
+			ReportBasename: filepath.Base(c.Paths.Report(t.N)),
+			WorkDir:        dir,
+			Interfaces:     c.interfacesBefore(t.N),
+			Answer:         c.takeAnswer(),
+		})
+		if err != nil {
+			return taskResult{}, err
+		}
+		label := fmt.Sprintf("task %d — %s (agent fallback)", t.N, t.Title)
+		report, err = c.implementWithRetry(ctx, t.N, PhaseAgentFallback, routing.RoleSDDImplementer, label, prompt)
+		if err != nil {
+			return taskResult{}, fmt.Errorf("pipeline: task %d agent fallback: %w", t.N, err)
+		}
+		if report.NeedsHuman() {
+			return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
+		}
+		execType = ExecMixed
+	}
+
+	// 5. Verify gate.
+	for round := 0; ; round++ {
+		c.emit(t.N, round, PhaseVerifying, "")
+		c.checkpoint(PhaseVerifying, t.N, func(cp *Checkpoint) {
+			cp.BaseSHA = base
+			cp.FixRound = round
+		})
+		res, err := c.Verifier.Run(ctx, dir)
+		if err != nil {
+			return taskResult{}, fmt.Errorf("pipeline: task %d gate: %w", t.N, err)
+		}
+		if res.Skipped {
+			break
+		}
+		if res.OK {
+			break
+		}
+		if c.Strategy == StrategyStrict {
+			return taskResult{Report: report}, fmt.Errorf("pipeline: task %d gate failed in strict mode: `%s`:\n%s", t.N, res.FailedCommand, res.Output)
+		}
+		if round >= c.MaxFixRounds {
+			return taskResult{Report: report}, fmt.Errorf("pipeline: task %d still fails `%s` after %d fix rounds", t.N, res.FailedCommand, c.MaxFixRounds)
+		}
+		c.emitPayload(t.N, round+1, PhaseFixing, res.FailedCommand, VerifyFailedPayload{
+			Command:   res.FailedCommand,
+			Output:    res.Output,
+			Round:     round + 1,
+			MaxRounds: c.MaxFixRounds,
+		})
+		c.checkpoint(PhaseFixing, t.N, func(cp *Checkpoint) {
+			cp.BaseSHA = base
+			cp.FixRound = round + 1
+		})
+		fixPrompt, err := RenderFix(FixPrompt{
+			TaskN:          t.N,
+			BriefPath:      briefPath,
+			BriefBasename:  filepath.Base(briefPath),
+			ReportPath:     c.Paths.Report(t.N),
+			ReportBasename: filepath.Base(c.Paths.Report(t.N)),
+			WorkDir:        dir,
+			Reason:         fmt.Sprintf("the build and test gate failed on `%s`", res.FailedCommand),
+			Findings: []Finding{{
+				Severity: SeverityCritical,
+				Text:     fmt.Sprintf("`%s` fails:\n\n%s", res.FailedCommand, res.Output),
+			}},
+			CoveringTests: report.Tests,
+		})
+		if err != nil {
+			return taskResult{}, err
+		}
+		label := fmt.Sprintf("task %d fix — %s", t.N, t.Title)
+		report, err = c.implementWithRetry(ctx, t.N, PhaseFixing, routing.RoleSDDImplementer, label, fixPrompt)
+		if err != nil {
+			return taskResult{}, fmt.Errorf("pipeline: task %d gate fixer: %w", t.N, err)
+		}
+		if report.NeedsHuman() {
+			return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
+		}
+		execType = ExecMixed
+	}
+
+	// 6. Commit.
+	head, err := c.commit(t, report)
+	if err != nil {
+		return taskResult{}, err
+	}
+	return taskResult{Base: base, Head: head, Report: report, ExecType: execType}, nil
 }
 
 // commit records the task's work. The controller — never a subagent —

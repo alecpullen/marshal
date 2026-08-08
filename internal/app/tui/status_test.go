@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -491,6 +492,37 @@ func TestStatusCleanWhenNoDiagnostics(t *testing.T) {
 
 	if m.diagnosticCount != 0 {
 		t.Errorf("diagnosticCount = %d, want 0", m.diagnosticCount)
+	}
+}
+
+func TestWorkspaceMsgUpdatesGitInfoWhenDockOpen(t *testing.T) {
+	// gitinfo.Read reads real git state from the filesystem, so build a real
+	// temp repo and point the workspace message at it.
+	dir := t.TempDir()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "pipeline/feature", dir},
+		{"-C", dir, "config", "user.email", "test@example.com"},
+		{"-C", dir, "config", "user.name", "test"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	m := newTestModel(t)
+	m.gitInfo = gitinfo.Info{Branch: "main", InRepo: true}
+
+	mm, _ := m.Update(workspaceMsg{activeRoot: dir})
+	m = mm.(Model)
+
+	if !m.gitInfo.InRepo {
+		t.Fatalf("gitInfo.InRepo = false, want true after workspace change")
+	}
+	if m.gitInfo.Branch != "pipeline/feature" {
+		t.Errorf("gitInfo.Branch = %q, want pipeline/feature", m.gitInfo.Branch)
 	}
 }
 

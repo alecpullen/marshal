@@ -12,7 +12,13 @@ import (
 	"time"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
+	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 	"marshal/internal/worktree"
 )
 
@@ -37,6 +43,9 @@ func TestPipelineWorkerWritesToWorktreeNotMainRepo(t *testing.T) {
 
 	// Track what directory the "worker" tries to write to.
 	var workerDir string
+	// The run directory is where @run/... artifact paths resolve (Critical 1
+	// binds ArtifactRoot to c.Paths.Dir). Plan slug = "plan".
+	runDir := filepath.Join(root, ".marshal", "pipeline", "plan")
 	d := Dispatcher{
 		exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
 			// Extract the WorkDir from the prompt and record it.
@@ -51,12 +60,16 @@ func TestPipelineWorkerWritesToWorktreeNotMainRepo(t *testing.T) {
 				_ = os.WriteFile(filepath.Join(workerDir, "output.txt"), []byte("hello\n"), 0o644)
 			}
 			// Write the report file the reviewer preflight requires, as a
-			// real implementer would. The prompt line is
-			// "Write your full report to <path> — what you changed...".
+			// real implementer would. The prompt line is now an @run/...
+			// basename reference; resolve it against the run directory.
 			if i := strings.Index(prompt, "Write your full report to "); i >= 0 {
 				rest := prompt[i+len("Write your full report to "):]
 				if j := strings.Index(rest, " — "); j >= 0 {
-					_ = os.WriteFile(strings.TrimSpace(rest[:j]), []byte("report\n"), 0o644)
+					path := strings.TrimSpace(rest[:j])
+					if strings.HasPrefix(path, "@run/") {
+						path = filepath.Join(runDir, strings.TrimPrefix(path, "@run/"))
+					}
+					_ = os.WriteFile(path, []byte("report\n"), 0o644)
 				}
 			}
 			// Return a valid review report for reviewer dispatches (per-task
@@ -99,6 +112,77 @@ func TestPipelineWorkerWritesToWorktreeNotMainRepo(t *testing.T) {
 	}
 }
 
+// TestPipelineRunExecResolvesArtifactsUnderRunRoot drives a real runExec
+// with a RegistryFactory and asserts the child runner's native
+// file.write_patch resolves the @run/... artifact path under the artifact
+// root (the run directory), not the worktree or the main checkout. This
+// proves the isolation path — ExecCtx + RegistryFactory — is live.
+func TestPipelineRunExecResolvesArtifactsUnderRunRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires git")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	root := t.TempDir()
+	gitInit(t, root)
+	writeFile(t, filepath.Join(root, "README.md"), "# test repo\n")
+	gitAddCommit(t, root, "initial")
+
+	// Artifact root stands in for the run's .marshal/pipeline/<slug>/ dir.
+	artifactRoot := t.TempDir()
+	execCtx := ExecutionContext{
+		RepoRoot:      root,
+		WorkspaceRoot: root,
+		ArtifactRoot:  artifactRoot,
+		ArtifactAlias: "@run",
+	}
+	regFactory := func(ctx ExecutionContext, scope RegistryScope) (*registry.Registry, error) {
+		childState := session.New(config.Default(), ctx.WorkspaceRoot, time.Now(), session.Persistence{})
+		childReg := registry.New()
+		if err := native.RegisterAll(childReg, native.Options{
+			WorkspaceRoot: ctx.WorkspaceRoot,
+			CommandRunner: &nativeCmdRunner{},
+			SessionState:  childState,
+			Config:        config.Default(),
+			NamedRoots:    ctx.NamedRoots(),
+		}); err != nil {
+			return nil, err
+		}
+		return registry.ArtifactWriterView(childReg, ctx.ArtifactAlias), nil
+	}
+
+	d := Dispatcher{
+		Factory: func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+			p := &agenttest.ScriptedProvider{Responses: []string{
+				`{"rationale":"write brief","action":{"type":"tool_call","tool":"file.write_patch","args":{"patch":"File: @run/task-1-brief.md\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE"}}}`,
+				`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
+			}}
+			pol := policy.NewEngine(&config.Config{}, nil)
+			pol.SetApprovalMode(policy.ModeAuto)
+			runner := agent.NewRunner(p, registry.New(), pol, session.New(config.Default(), execCtx.WorkspaceRoot, time.Now(), session.Persistence{}), "test-model")
+			runner.Role = role
+			return runner, nil
+		},
+		ExecCtx:         execCtx,
+		RegistryFactory: regFactory,
+	}
+
+	if _, err := d.runExec(context.Background(), agent.RoleReviewer, swarm.ScopeArtifactWriter, "review", "write the verdict"); err != nil {
+		t.Fatalf("runExec: %v", err)
+	}
+
+	// The artifact must actually exist on disk under the artifact root.
+	if _, err := os.Stat(filepath.Join(artifactRoot, "task-1-brief.md")); err != nil {
+		t.Errorf("artifact not written under artifact root: %v", err)
+	}
+	// And it must NOT be under the main checkout.
+	if _, err := os.Stat(filepath.Join(root, "task-1-brief.md")); err == nil {
+		t.Error("artifact leaked into the main checkout")
+	}
+}
+
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
 	cmd := exec.Command("git", "init", "--initial-branch=main", dir)
@@ -128,4 +212,12 @@ type noopRunner struct{}
 
 func (noopRunner) Run(ctx context.Context, dir, command string) (string, error) {
 	return "ok\n", nil
+}
+
+// nativeCmdRunner implements native.CommandRunner for the isolation-path
+// integration test; commands are never actually executed.
+type nativeCmdRunner struct{}
+
+func (nativeCmdRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	return native.CommandResult{Stdout: "ok", ExitCode: 0}, nil
 }

@@ -118,7 +118,7 @@ func (d Dispatcher) Implement(ctx context.Context, role agent.AgentRole, label, 
 // label is used for the parent-session subagent card; when empty the
 // prompt's first 240 characters are used.
 func (d Dispatcher) Review(ctx context.Context, role agent.AgentRole, label, prompt string) (ReviewReport, error) {
-	out, err := d.run(ctx, role, swarm.ScopeReadOnly, label, prompt)
+	out, err := d.run(ctx, role, swarm.ScopeArtifactWriter, label, prompt)
 	if err != nil {
 		return ReviewReport{}, err
 	}
@@ -139,11 +139,15 @@ func truncateForError(s string) string {
 }
 
 // pipelineScope maps a swarm registry scope to the pipeline's own scope.
-// The pipeline only distinguishes full from read-only; the swarm tester
-// scope is treated as full so the child registry keeps its command tools.
+// The pipeline only distinguishes full, read-only, and artifact-writer; the
+// swarm tester scope is treated as full so the child registry keeps its
+// command tools.
 func pipelineScope(scope swarm.RegistryScope) RegistryScope {
 	if scope == swarm.ScopeReadOnly {
 		return ScopeReadOnly
+	}
+	if scope == swarm.ScopeArtifactWriter {
+		return ScopeArtifactWriter
 	}
 	return ScopeFull
 }

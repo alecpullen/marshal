@@ -24,6 +24,12 @@ var reportPathRe = regexp.MustCompile(`Write your full report to (\S+)`)
 // per call, and a pointer to the prompts it received. A real implementer or
 // fixer writes its report to the path named in the prompt; the scripted
 // dispatcher mirrors that so the reviewer's input preflight sees the file.
+// @run/... artifact paths are resolved against ExecCtx.ArtifactRoot, which
+// the controller sets to the run directory (Critical 1).
+// scriptedDispatch returns a Dispatcher whose exec pops one canned output
+// per call, and a pointer to the prompts it received. A real implementer or
+// fixer writes its report to the path named in the prompt; the scripted
+// dispatcher mirrors that so the reviewer's input preflight sees the file.
 func scriptedDispatch(t *testing.T, outputs ...string) (Dispatcher, *[]string) {
 	t.Helper()
 	prompts := &[]string{}
@@ -47,7 +53,11 @@ func scriptedDispatch(t *testing.T, outputs ...string) (Dispatcher, *[]string) {
 	return d, prompts
 }
 
-// testController builds a Controller over fakes with a two-task plan.
+// testController builds a Controller over fakes with a two-task plan. The
+// controller's Run() sets Dispatcher.ExecCtx (Critical 1) to the run dir,
+// so prompts now reference @run/... artifact paths. This wraps the given
+// dispatcher's exec so @run/ resolves to the run directory, mirroring what
+// the production RegistryFactory does for a real child registry.
 func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Controller {
 	t.Helper()
 	root := t.TempDir()
@@ -73,6 +83,17 @@ func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Con
 	})
 	if err != nil {
 		t.Fatalf("NewController: %v", err)
+	}
+	if d.exec != nil {
+		inner := d.exec
+		c.Dispatch.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+			// Resolve @run/... artifact references to the run directory,
+			// as the production @run alias does.
+			if c.Paths.Dir != "" {
+				prompt = strings.Replace(prompt, "@run/", c.Paths.Dir+"/", -1)
+			}
+			return inner(ctx, role, scope, prompt)
+		}
 	}
 	return c
 }
@@ -873,7 +894,11 @@ func TestRunStopsOnTokenBudgetExhaustion(t *testing.T) {
 	c.Dispatch.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
 		c.UsageTokens += 150 // exceeds budget
 		if m := reportPathRe.FindStringSubmatch(prompt); m != nil {
-			if err := os.WriteFile(m[1], []byte("STATUS: DONE\nTESTS: pass\n"), 0o644); err != nil {
+			p := m[1]
+			if c.Paths.Dir != "" {
+				p = strings.Replace(p, "@run/", c.Paths.Dir+"/", 1)
+			}
+			if err := os.WriteFile(p, []byte("STATUS: DONE\nTESTS: pass\n"), 0o644); err != nil {
 				return "", err
 			}
 		}
@@ -886,5 +911,70 @@ func TestRunStopsOnTokenBudgetExhaustion(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "budget") {
 		t.Errorf("error should mention budget: %v", err)
+	}
+}
+
+// TestRunFailsWhenAnotherRunHoldsTheLock asserts a second Run on the same
+// paths fails when a live lock exists (a different run owns it).
+func TestRunFailsWhenAnotherRunHoldsTheLock(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.RunStore = NewRunStore(c.Paths)
+	// Pre-create a manifest + lock owned by a different run, as a live
+	// concurrent process would.
+	if err := c.RunStore.CreateManifest(Manifest{
+		RunID: "other-run", PlanPath: c.Plan.Path, RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan",
+	}); err != nil {
+		t.Fatalf("CreateManifest: %v", err)
+	}
+	if err := c.RunStore.AcquireLock(RunLock{RunID: "other-run", PID: 99999, Host: "other-host", AcquiredAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should fail when another run holds the lock")
+	}
+	if !strings.Contains(err.Error(), "locked") {
+		t.Errorf("error should mention the lock: %v", err)
+	}
+	// The other run's lock must still be in place.
+	if l, ok, _ := c.RunStore.Lock(); !ok || l.RunID != "other-run" {
+		t.Errorf("lock = %+v (ok=%v), want the other run's lock preserved", l, ok)
+	}
+}
+
+// TestRunTakesOverStaleLockFromDifferentRun asserts a Run takes over a lock
+// that belongs to a different (stale) run and proceeds.
+func TestRunTakesOverStaleLockFromDifferentRun(t *testing.T) {
+	d, prompts := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.RunStore = NewRunStore(c.Paths)
+	// Manifest claims this controller's run; the lock is stale from a
+	// different (older) run, so Run must take it over.
+	if err := c.RunStore.CreateManifest(Manifest{
+		RunID: "current-run", PlanPath: c.Plan.Path, RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan",
+	}); err != nil {
+		t.Fatalf("CreateManifest: %v", err)
+	}
+	if err := c.RunStore.AcquireLock(RunLock{RunID: "stale-run", PID: 11111, Host: "old-host", AcquiredAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The stale lock was taken over and released on completion.
+	if _, ok, _ := c.RunStore.Lock(); ok {
+		t.Error("lock should be released after a successful run")
+	}
+	if len(*prompts) != 5 {
+		t.Fatalf("dispatches = %d, want the full run (2 tasks + branch review)", len(*prompts))
 	}
 }

@@ -19,6 +19,7 @@ type state struct {
 	discovered       map[string][]schema.ModelInfo
 	actionState      map[string]actionState
 	connectRequested bool
+	pending          *pendingMaterialization
 	pendingCmd       tea.Cmd
 
 	// dataDir enables on-disk limit resolution for probes launched from
@@ -88,6 +89,26 @@ func (s *state) takeConnectRequested() bool {
 	requested := s.connectRequested
 	s.connectRequested = false
 	return requested
+}
+
+// pendingMaterialization records that role should be bound to a newly
+// picked discovered model once its limits are confirmed. Set by
+// applyRolePick, read (and cleared) by BrowserPanel.handlePickerPicked.
+type pendingMaterialization struct {
+	Profile      string
+	Role         routing.AgentRole
+	ProviderName string
+	ModelID      string
+}
+
+func (s *state) requestMaterialization(profile string, role routing.AgentRole, providerName, modelID string) {
+	s.pending = &pendingMaterialization{Profile: profile, Role: role, ProviderName: providerName, ModelID: modelID}
+}
+
+func (s *state) takePendingMaterialization() *pendingMaterialization {
+	p := s.pending
+	s.pending = nil
+	return p
 }
 
 func (s *state) applyActionResult(fieldID, label string) {

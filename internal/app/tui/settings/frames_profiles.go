@@ -3,7 +3,6 @@ package settings
 import (
 	"fmt"
 	"maps"
-	"regexp"
 	"strings"
 
 	"marshal/internal/app/tui/picker"
@@ -25,57 +24,16 @@ const (
 	refreshModelsValue = "__refresh_models__"
 )
 
-var slugUnsafeRe = regexp.MustCompile(`[^a-z0-9]+`)
-
-// slugify reduces a provider/model pair to a preset name safe for a TOML key.
-func slugify(s string) string {
-	return strings.Trim(slugUnsafeRe.ReplaceAllString(strings.ToLower(s), "-"), "-")
-}
-
-// presetForModel returns the name of a preset bound to providerName+modelID,
-// reusing an existing one when the pair already appears in config and
-// creating one seeded from info otherwise.
-func presetForModel(s *state, providerName, modelID string, info schema.ModelInfo) string {
-	for _, name := range sortedKeys(s.cfg.Models.Presets) {
-		p := s.cfg.Models.Presets[name]
+// findPresetFor returns the preset already saved for providerName+modelID,
+// if any — re-picking a model whose limits came back unknown must not
+// erase figures confirmed earlier.
+func findPresetFor(s *state, providerName, modelID string) (routing.ModelPreset, bool) {
+	for _, p := range s.cfg.Models.Presets {
 		if p.Provider == providerName && p.Model == modelID {
-			return name
+			return p, true
 		}
 	}
-	base := slugify(providerName + "-" + modelID)
-	if base == "" {
-		base = "preset"
-	}
-	name := base
-	for i := 2; ; i++ {
-		if _, taken := s.cfg.Models.Presets[name]; !taken {
-			break
-		}
-		name = fmt.Sprintf("%s-%d", base, i)
-	}
-	if s.cfg.Models.Presets == nil {
-		s.cfg.Models.Presets = map[string]routing.ModelPreset{}
-	}
-	s.cfg.Models.Presets[name] = routing.ModelPreset{
-		Name:            name,
-		Provider:        providerName,
-		Model:           modelID,
-		ContextWindow:   info.ContextWindow,
-		MaxOutputTokens: info.MaxOutputTokens,
-		LocalOnly:       probe.IsLocalhost(s.cfg.Providers[providerName].BaseURL),
-	}
-	return name
-}
-
-// discoveredInfo returns the ModelInfo a probe reported for a provider's
-// model, or the zero value when discovery has not seen it.
-func discoveredInfo(s *state, providerName, modelID string) schema.ModelInfo {
-	for _, mi := range s.discovered[providerName] {
-		if mi.ID == modelID {
-			return mi
-		}
-	}
-	return schema.ModelInfo{}
+	return routing.ModelPreset{}, false
 }
 
 // probeAllProviders queues a probe for every configured provider not yet
@@ -404,7 +362,7 @@ func applyRolePick(s *state, profile string, role routing.AgentRole, v string) e
 		if !ok || providerName == "" || modelID == "" {
 			return fmt.Errorf("malformed model selection %q", v)
 		}
-		setRoleBinding(s, profile, role, presetForModel(s, providerName, modelID, discoveredInfo(s, providerName, modelID)))
+		s.requestMaterialization(profile, role, providerName, modelID)
 		return nil
 	}
 	if _, ok := s.cfg.Models.Presets[v]; !ok {

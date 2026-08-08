@@ -1073,15 +1073,23 @@ type actionDecodingConfig struct {
 // resolveActionDecoding builds the opt-in decoding mode for a model preset.
 // It never fails construction: unsupported preferences degrade to the next
 // provider-supported mode.
+//
+// An unset preference ("") falls back to whatever the provider advertises:
+// when caps.ToolCalling is true the runner uses native tool-calling, otherwise
+// it degrades to the JSON-envelope path (json_schema → json_object → nil),
+// matching the "native" preference's fallback. "none" explicitly opts out of
+// tool-calling entirely (text-only, no envelope).
 func resolveActionDecoding(toolCalling string, caps schema.ProviderCapabilities) actionDecodingConfig {
 	switch toolCalling {
-	case "native":
+	case "native", "":
 		if caps.ToolCalling {
 			return actionDecodingConfig{Native: true}
 		}
 		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
 	case "json_schema":
 		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
+	case "none":
+		return actionDecodingConfig{}
 	}
 	return actionDecodingConfig{}
 }

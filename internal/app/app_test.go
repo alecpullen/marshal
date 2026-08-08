@@ -313,8 +313,31 @@ func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 			caps:        schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true},
 		},
 		{
-			name:        "empty leaves decoding unconstrained",
+			name:        "empty falls back to native when provider supports tool calling",
 			toolCalling: "",
+			caps:        schema.ProviderCapabilities{ToolCalling: true, StructuredOutput: true, JSONMode: true},
+			wantNative:  true,
+		},
+		{
+			name:        "empty falls back to json_schema when provider lacks tool calling",
+			toolCalling: "",
+			caps:        schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true},
+			wantRF:      "json_schema",
+		},
+		{
+			name:        "empty falls back to json_object when only JSONMode advertised",
+			toolCalling: "",
+			caps:        schema.ProviderCapabilities{JSONMode: true},
+			wantRF:      "json_object",
+		},
+		{
+			name:        "empty falls back to nil when provider advertises nothing",
+			toolCalling: "",
+			caps:        schema.ProviderCapabilities{},
+		},
+		{
+			name:        "none explicitly blocks tools regardless of provider capability",
+			toolCalling: "none",
 			caps:        schema.ProviderCapabilities{ToolCalling: true, StructuredOutput: true, JSONMode: true},
 		},
 	}

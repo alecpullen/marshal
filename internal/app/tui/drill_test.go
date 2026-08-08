@@ -237,6 +237,24 @@ func TestUpArrowPopsDrill(t *testing.T) {
 	}
 }
 
+func TestDrilledChildShowsChildActiveTool(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	// Set an active tool on the child session.
+	child.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "file.read",
+		StartedAt: time.Now(),
+	})
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+	m.refreshViewport()
+
+	content := stripANSI(m.viewport.GetContent())
+	if !strings.Contains(content, "Read file") {
+		t.Fatalf("drilled view should show child's active tool 'Read file':\n%s", content)
+	}
+}
+
 func TestUpArrowRecallsHistoryWhenNotDrilled(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessage(session.RoleUser, "previous prompt", session.ContentTypePlain)

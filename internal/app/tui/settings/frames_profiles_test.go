@@ -275,56 +275,24 @@ func discoveredConfig() config.Config {
 	return cfg
 }
 
-func TestPresetForModelReusesExisting(t *testing.T) {
+func TestFindPresetForReusesExisting(t *testing.T) {
 	s := newState(discoveredConfig())
-	before := len(s.cfg.Models.Presets)
-	name := presetForModel(s, "anthropic", "claude-sonnet-4-5", schema.ModelInfo{})
-	if name != "base" {
-		t.Errorf("name = %q, want the existing preset \"base\"", name)
+	preset, ok := findPresetFor(s, "anthropic", "claude-sonnet-4-5")
+	if !ok {
+		t.Fatal("expected the existing \"base\" preset to be found")
 	}
-	if len(s.cfg.Models.Presets) != before {
+	if preset.Name != "base" {
+		t.Errorf("name = %q, want the existing preset \"base\"", preset.Name)
+	}
+	if len(s.cfg.Models.Presets) != 3 {
 		t.Error("matching an existing provider+model must not create a preset")
 	}
 }
 
-func TestPresetForModelCreatesWithLimits(t *testing.T) {
+func TestFindPresetForMissing(t *testing.T) {
 	s := newState(discoveredConfig())
-	name := presetForModel(s, "anthropic", "claude-3-7-sonnet", schema.ModelInfo{
-		ID: "claude-3-7-sonnet", ContextWindow: 200000, MaxOutputTokens: 64000,
-	})
-	if name != "anthropic-claude-3-7-sonnet" {
-		t.Fatalf("name = %q, want anthropic-claude-3-7-sonnet", name)
-	}
-	p, ok := s.cfg.Models.Presets[name]
-	if !ok {
-		t.Fatal("preset was not created")
-	}
-	if p.Provider != "anthropic" || p.Model != "claude-3-7-sonnet" {
-		t.Errorf("preset = %+v, want anthropic/claude-3-7-sonnet", p)
-	}
-	if p.ContextWindow != 200000 || p.MaxOutputTokens != 64000 {
-		t.Errorf("limits = (%d, %d), want (200000, 64000)", p.ContextWindow, p.MaxOutputTokens)
-	}
-}
-
-func TestPresetForModelSlugifiesAndDedupes(t *testing.T) {
-	s := newState(discoveredConfig())
-	s.cfg.Models.Presets["ollama-qwen2-5-coder-7b"] = routing.ModelPreset{
-		Name: "ollama-qwen2-5-coder-7b", Provider: "other", Model: "other",
-	}
-	name := presetForModel(s, "ollama", "qwen2.5-coder:7b", schema.ModelInfo{})
-	if name != "ollama-qwen2-5-coder-7b-2" {
-		t.Errorf("name = %q, want ollama-qwen2-5-coder-7b-2", name)
-	}
-}
-
-func TestPresetForModelMarksLocalOnly(t *testing.T) {
-	cfg := discoveredConfig()
-	cfg.Providers["ollama"] = config.ProviderConfig{BaseURL: "http://localhost:11434"}
-	s := newState(cfg)
-	name := presetForModel(s, "ollama", "llama3.1:8b", schema.ModelInfo{})
-	if !s.cfg.Models.Presets[name].LocalOnly {
-		t.Error("a localhost provider must produce a local_only preset")
+	if _, ok := findPresetFor(s, "anthropic", "claude-3-7-sonnet"); ok {
+		t.Fatal("findPresetFor must report false for a never-materialized model")
 	}
 }
 
@@ -349,17 +317,25 @@ func TestRolePickerListsDiscoveredModels(t *testing.T) {
 	}
 }
 
-func TestRolePickerPickingModelBindsNewPreset(t *testing.T) {
-	s := newState(discoveredConfig())
-	s.discovered["anthropic"] = []schema.ModelInfo{
-		{ID: "claude-opus-4-5", ContextWindow: 200000, MaxOutputTokens: 64000},
-	}
-	if err := applyRolePick(s, "coding", routing.RoleReviewer, "model:anthropic/claude-opus-4-5"); err != nil {
+func TestApplyRolePickOnDiscoveredModelRequestsMaterializationInsteadOfCreatingAPreset(t *testing.T) {
+	s := profilesTestState()
+	s.discovered = map[string][]schema.ModelInfo{"ollama": {{ID: "qwen3-coder"}}}
+
+	if err := applyRolePick(s, "local", routing.RoleImplementer, modelValuePrefix+"ollama/qwen3-coder"); err != nil {
 		t.Fatalf("applyRolePick: %v", err)
 	}
-	bound := s.cfg.AgentProfiles["coding"].Roles[routing.RoleReviewer].Preset
-	if bound != "deep" {
-		t.Fatalf("bound preset = %q, want the existing \"deep\" (anthropic/claude-opus-4-5)", bound)
+	// profilesTestState seeds two presets ("small", "large") already —
+	// applying the pick must not add a third.
+	if len(s.cfg.Models.Presets) != 2 {
+		t.Fatalf("expected no new preset to be created yet, got %d presets", len(s.cfg.Models.Presets))
+	}
+	pending := s.takePendingMaterialization()
+	if pending == nil {
+		t.Fatal("expected a pending materialization request")
+	}
+	if pending.Profile != "local" || pending.Role != routing.RoleImplementer ||
+		pending.ProviderName != "ollama" || pending.ModelID != "qwen3-coder" {
+		t.Errorf("pending = %+v, want Profile=local Role=implementer Provider=ollama Model=qwen3-coder", pending)
 	}
 }
 
@@ -373,7 +349,7 @@ func TestRolePickerRefreshQueuesProbe(t *testing.T) {
 	}
 }
 
-func TestRolePickerModelIDWithSlash(t *testing.T) {
+func TestRolePickerModelIDWithSlashRequestsMaterialization(t *testing.T) {
 	cfg := discoveredConfig()
 	cfg.Providers["groq"] = config.ProviderConfig{BaseURL: "https://api.groq.com"}
 	s := newState(cfg)
@@ -381,8 +357,14 @@ func TestRolePickerModelIDWithSlash(t *testing.T) {
 	if err := applyRolePick(s, "coding", routing.RoleReviewer, "model:groq/moonshotai/kimi-k2-instruct"); err != nil {
 		t.Fatalf("applyRolePick: %v", err)
 	}
-	name := s.cfg.AgentProfiles["coding"].Roles[routing.RoleReviewer].Preset
-	if got := s.cfg.Models.Presets[name].Model; got != "moonshotai/kimi-k2-instruct" {
-		t.Errorf("model = %q, want moonshotai/kimi-k2-instruct — the id's own slash must survive", got)
+	// The pick must not bind a preset yet — it only records what to
+	// materialize once the confirm screen completes. The id's own slash
+	// must survive into the pending request.
+	pending := s.takePendingMaterialization()
+	if pending == nil {
+		t.Fatal("expected a pending materialization request")
+	}
+	if pending.ProviderName != "groq" || pending.ModelID != "moonshotai/kimi-k2-instruct" {
+		t.Errorf("pending = %+v, want Provider=groq Model=moonshotai/kimi-k2-instruct", pending)
 	}
 }

@@ -258,7 +258,7 @@ type flakyRunner struct {
 	calls     int
 }
 
-func (f *flakyRunner) Run(ctx context.Context, dir, command string) (string, error) {
+func (f *flakyRunner) Run(ctx context.Context, dir string, argv []string) (string, error) {
 	f.calls++
 	if f.failFirst && f.calls == 1 {
 		return f.failOut, errors.New("exit status 2")
@@ -1322,5 +1322,74 @@ func TestAdaptiveFallbackSetsAllowedFilesOnDispatcher(t *testing.T) {
 	}
 	if got := st.SDDFallbackAllowedFiles(); got != nil {
 		t.Errorf("SDDFallbackAllowedFiles must be cleared after dispatch; got %v", got)
+	}
+}
+
+// TestAdaptiveFallbackScopePersistsThroughGateFixer asserts that the
+// marshal.agent scope stashed for the fallback agent is still active when
+// the verification gate fails and a fixer is dispatched.
+func TestAdaptiveFallbackScopePersistsThroughGateFixer(t *testing.T) {
+	dir := t.TempDir()
+	// A blocked patch forces needsAgent=true; the fallback must be scoped.
+	planContent := "# Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"## Task 1: Scoped fallback with fixer\n\n" +
+		"```marshal.patch file=\"internal/foo/foo.go\"\n" +
+		"<<<<<<< SEARCH\n" +
+		"this text does not exist\n" +
+		"=======\n" +
+		"replacement\n" +
+		">>>>>>> REPLACE\n" +
+		"```\n\n" +
+		"```marshal.agent\nallowed = true\nscope = [\"internal/foo\"]\nreason = \"scoped\"\n```\n"
+	planPath := filepath.Join(dir, "scoped-fixer.md")
+	if err := os.WriteFile(planPath, []byte(planContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := session.New(config.Default(), dir, time.Now(), session.Persistence{})
+	var seen [][]string
+	d := Dispatcher{State: st}
+	d.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		seen = append(seen, st.SDDFallbackAllowedFiles())
+		return "STATUS: DONE\nTESTS: ok\n", nil
+	}
+	g := worktree.NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	g.Heads[dir] = g.Refs["main"]
+	g.Dirty = true
+	c, err := NewController(ControllerOpts{
+		PlanPath:     planPath,
+		RepoRoot:     dir,
+		Git:          g,
+		Dispatch:     d,
+		Verifier:     Verifier{Build: "go test ./...", Runner: &flakyRunner{failFirst: true, failOut: "FAIL"}, Timeout: time.Minute},
+		MaxFixRounds: 2,
+		Strategy:     StrategyAdaptive,
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+
+	if _, err := c.Inspect(); err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	spec, _ := c.Plan.Task(1)
+	res, err := c.runTask(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if res.ExecType != ExecMixed {
+		t.Errorf("ExecType = %q, want %q", res.ExecType, ExecMixed)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 dispatches (fallback + fixer), got %d", len(seen))
+	}
+	for i, got := range seen {
+		if len(got) != 1 || got[0] != "internal/foo" {
+			t.Errorf("dispatch %d scope = %v, want [internal/foo]", i+1, got)
+		}
+	}
+	if got := st.SDDFallbackAllowedFiles(); got != nil {
+		t.Errorf("SDDFallbackAllowedFiles must be cleared after verify gate; got %v", got)
 	}
 }

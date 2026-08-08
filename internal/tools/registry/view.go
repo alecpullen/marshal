@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"marshal/internal/tools/patch"
@@ -115,7 +116,8 @@ func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
 			return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope requires a non-empty patch inside the declared allowlist")
 		}
 		for _, fp := range res.Patches {
-			if !pathInAllowlist(fp.Path, allowed) {
+			cleaned := cleanScopePath(fp.Path)
+			if !pathInAllowlist(cleaned, allowed) {
 				return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope may only write under the declared scope (path %q is outside)", fp.Path)
 			}
 		}
@@ -126,6 +128,7 @@ func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
 
 // pathInAllowlist reports whether path equals one of the allowed entries
 // or sits beneath one as a descendant. Empty allowlist denies everything.
+// Both path and allowed entries are expected to be clean (no ".." segments).
 func pathInAllowlist(path string, allowed map[string]bool) bool {
 	if len(allowed) == 0 {
 		return false
@@ -139,6 +142,17 @@ func pathInAllowlist(path string, allowed map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// cleanScopePath returns a cleaned, slash-separated path suitable for
+// scope checks. It collapses ".." segments and strips leading "./" so
+// that traversal attempts such as "internal/foo/../bar" cannot bypass a
+// prefix check. Paths that escape the repository (e.g. "../outside") are
+// returned as-is and will then fail the allowlist check.
+func cleanScopePath(path string) string {
+	path = filepath.ToSlash(filepath.Clean(path))
+	path = strings.TrimPrefix(path, "./")
+	return path
 }
 
 // ArtifactWriterView returns a new Registry containing src's read-only
@@ -176,7 +190,8 @@ func artifactWriterPatchTool(tool Tool, alias string) Tool {
 			return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/", alias)
 		}
 		for _, fp := range res.Patches {
-			if !strings.HasPrefix(fp.Path, alias+"/") {
+			cleaned := cleanScopePath(fp.Path)
+			if !strings.HasPrefix(cleaned, alias+"/") {
 				return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/ (path %q is outside)", alias, fp.Path)
 			}
 		}
@@ -236,7 +251,8 @@ func planWriterPatchTool(tool Tool, alias string, allowed map[string]bool) Tool 
 			return ToolResult{}, fmt.Errorf("file.write_patch in plan-writer scope may only write the candidate plan under %s/", alias)
 		}
 		for _, fp := range res.Patches {
-			if !allowed[fp.Path] {
+			cleaned := cleanScopePath(fp.Path)
+			if !allowed[cleaned] {
 				return ToolResult{}, fmt.Errorf("file.write_patch in plan-writer scope may only write the candidate plan (path %q is not allowed)", fp.Path)
 			}
 		}

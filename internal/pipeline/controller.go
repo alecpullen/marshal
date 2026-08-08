@@ -547,7 +547,24 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 		}
 	}
 
-	// 4. Agent fallback for unresolved work.
+	report, execType, err := c.runFallbackAndVerifyGate(ctx, t, taskIR, briefPath, dir, base, needsAgent, report)
+	if err != nil {
+		return taskResult{}, err
+	}
+
+	// 6. Commit.
+	head, err := c.commit(t, report)
+	if err != nil {
+		return taskResult{}, err
+	}
+	return taskResult{Base: base, Head: head, Report: report, ExecType: execType}, nil
+}
+
+// runFallbackAndVerifyGate runs the optional marshal.agent fallback and the
+// build/test verify gate (including fixer rounds). The fallback's declared
+// scope must remain active through verification fixers, so it is cleared by
+// a defer that runs only after the gate finishes.
+func (c *Controller) runFallbackAndVerifyGate(ctx context.Context, t TaskSpec, taskIR *TaskIR, briefPath, dir, base string, needsAgent bool, report ImplementerReport) (ImplementerReport, ExecType, error) {
 	hasAgentOp := false
 	for _, op := range taskIR.Operations {
 		if op.OpKind() == "agent" || op.OpStatus() == OpBlocked {
@@ -559,19 +576,19 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 	execType := ExecDeterministic
 	if needsAgent || hasAgentOp {
 		if c.Strategy == StrategyStrict {
-			return taskResult{}, fmt.Errorf("pipeline: task %d has unresolved work and strategy is strict", t.N)
+			return report, execType, fmt.Errorf("pipeline: task %d has unresolved work and strategy is strict", t.N)
 		}
 		// Adaptive: dispatch one agent for the remaining work. The
 		// fallback's file.write_patch is narrowed to the marshal.agent
 		// scope declared by the plan; an empty scope is rejected so the
 		// fallback cannot rewrite the worktree at large.
 		if len(taskIR.AllowedFiles) == 0 {
-			return taskResult{}, fmt.Errorf("pipeline: task %d has unresolved work but no marshal.agent scope declared; rerun with a scope or skip the fallback", t.N)
+			return report, execType, fmt.Errorf("pipeline: task %d has unresolved work but no marshal.agent scope declared; rerun with a scope or skip the fallback", t.N)
 		}
+		c.Dispatch.FallbackAllowedFiles = taskIR.AllowedFiles
 		if c.Dispatch.State != nil {
 			c.Dispatch.State.SetSDDFallbackAllowedFiles(taskIR.AllowedFiles)
 		}
-		c.Dispatch.FallbackAllowedFiles = taskIR.AllowedFiles
 		defer func() {
 			c.Dispatch.FallbackAllowedFiles = nil
 			if c.Dispatch.State != nil {
@@ -596,15 +613,15 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 			Answer:         c.takeAnswer(),
 		})
 		if err != nil {
-			return taskResult{}, err
+			return report, execType, err
 		}
 		label := fmt.Sprintf("task %d — %s (agent fallback)", t.N, t.Title)
 		report, err = c.implementWithRetry(ctx, t.N, PhaseAgentFallback, routing.RoleSDDImplementer, label, prompt)
 		if err != nil {
-			return taskResult{}, fmt.Errorf("pipeline: task %d agent fallback: %w", t.N, err)
+			return report, execType, fmt.Errorf("pipeline: task %d agent fallback: %w", t.N, err)
 		}
 		if report.NeedsHuman() {
-			return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
+			return report, execType, c.openGateWithContext(t.N, report.Question, report)
 		}
 		execType = ExecMixed
 	}
@@ -618,7 +635,16 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 		})
 		res, err := c.Verifier.Run(ctx, dir)
 		if err != nil {
-			return taskResult{}, fmt.Errorf("pipeline: task %d gate: %w", t.N, err)
+			return report, execType, fmt.Errorf("pipeline: task %d gate: %w", t.N, err)
+		}
+		if res.OK || res.Skipped {
+			// Run plan-specified verify-phase commands alongside the
+			// build/test gate. If they fail, treat it as a gate failure
+			// so the fixer loop can address it.
+			vres := runVerifyOps(ctx, dir, c.Verifier.Runner, taskIR.Operations)
+			if !vres.OK {
+				res = vres
+			}
 		}
 		if res.Skipped {
 			break
@@ -627,10 +653,10 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 			break
 		}
 		if c.Strategy == StrategyStrict {
-			return taskResult{Report: report}, fmt.Errorf("pipeline: task %d gate failed in strict mode: `%s`:\n%s", t.N, res.FailedCommand, res.Output)
+			return report, execType, fmt.Errorf("pipeline: task %d gate failed in strict mode: `%s`:\n%s", t.N, res.FailedCommand, res.Output)
 		}
 		if round >= c.MaxFixRounds {
-			return taskResult{Report: report}, fmt.Errorf("pipeline: task %d still fails `%s` after %d fix rounds", t.N, res.FailedCommand, c.MaxFixRounds)
+			return report, execType, fmt.Errorf("pipeline: task %d still fails `%s` after %d fix rounds", t.N, res.FailedCommand, c.MaxFixRounds)
 		}
 		c.emitPayload(t.N, round+1, PhaseFixing, res.FailedCommand, VerifyFailedPayload{
 			Command:   res.FailedCommand,
@@ -657,25 +683,20 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 			CoveringTests: report.Tests,
 		})
 		if err != nil {
-			return taskResult{}, err
+			return report, execType, err
 		}
 		label := fmt.Sprintf("task %d fix — %s", t.N, t.Title)
 		report, err = c.implementWithRetry(ctx, t.N, PhaseFixing, routing.RoleSDDImplementer, label, fixPrompt)
 		if err != nil {
-			return taskResult{}, fmt.Errorf("pipeline: task %d gate fixer: %w", t.N, err)
+			return report, execType, fmt.Errorf("pipeline: task %d gate fixer: %w", t.N, err)
 		}
 		if report.NeedsHuman() {
-			return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
+			return report, execType, c.openGateWithContext(t.N, report.Question, report)
 		}
 		execType = ExecMixed
 	}
 
-	// 6. Commit.
-	head, err := c.commit(t, report)
-	if err != nil {
-		return taskResult{}, err
-	}
-	return taskResult{Base: base, Head: head, Report: report, ExecType: execType}, nil
+	return report, execType, nil
 }
 
 // commit records the task's work. The controller — never a subagent —

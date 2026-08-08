@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"marshal/internal/pipeline"
+	"marshal/internal/repo"
 )
 
 // Candidate is one plan file the picker can offer.
@@ -138,44 +139,12 @@ func completedCount(repoRoot, slug string) (int, error, bool) {
 // hyphens; they are replaced with a hyphen during slugification.
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
-// resolveCanonical resolves symlinks in path when the path exists. When
-// path (or any prefix) does not exist, it walks up to the nearest existing
-// ancestor, canonicalizes that, and re-appends the unresolved tail. The
-// result is consistent across both existing and not-yet-existing paths,
-// so a non-existent plans directory cannot be canonicalized into a
-// different namespace than the repo root that contains it.
-func resolveCanonical(path string) string {
-	if path == "" {
-		return ""
-	}
-	// Walk up to the nearest existing prefix.
-	tail := ""
-	cur := path
-	for {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(resolved, tail)
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			// Reached the filesystem root without finding anything
-			// existing. Fall back to the lexical absolute path.
-			abs, aerr := filepath.Abs(path)
-			if aerr != nil {
-				return path
-			}
-			return abs
-		}
-		tail = filepath.Join(filepath.Base(cur), tail)
-		cur = parent
-	}
-}
-
 // assertPlansInsideRepo confirms the resolved plans directory is contained
 // inside the resolved repository root. Symlinked plans_dir paths that
 // point outside the repo are rejected.
 func assertPlansInsideRepo(repoRoot, plansDir string) error {
-	repoResolved := resolveCanonical(repoRoot)
-	plansResolved := resolveCanonical(plansDir)
+	repoResolved := repo.Canonical(repoRoot)
+	plansResolved := repo.Canonical(plansDir)
 	if repoResolved == "" || plansResolved == "" {
 		return fmt.Errorf("sddplans: empty repository or plans directory")
 	}

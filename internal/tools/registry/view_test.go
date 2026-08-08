@@ -297,11 +297,49 @@ func TestFallbackWriterViewNarrowsFileWritePatch(t *testing.T) {
 	rejected := []string{
 		`{"patch":"File: internal/other/y.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
 		`{"patch":"File: cmd/server/main.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		// Path traversal must not bypass the declared scope.
+		`{"patch":"File: internal/foo/../other/z.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: internal/foo/sub/../../bar.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
+		`{"patch":"File: ./internal/foo/../other.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`,
 	}
 	for _, args := range rejected {
 		if _, err := view.Dispatch(context.Background(), ToolCall{Name: "file.write_patch", Args: json.RawMessage(args)}); err == nil {
 			t.Errorf("write outside allowlist was accepted: %s", args)
 		}
+	}
+}
+
+// TestFallbackWriterViewRejectsPathTraversal also guards the exact-match
+// plan writer and prefix artifact writer via the same cleaning helper.
+func TestScopeViewsRejectPathTraversal(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write_patch): %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		view  *Registry
+		path  string
+		allow bool
+	}{
+		{"plan writer exact match", PlanWriterView(src, "@plan", []string{"@plan/feature.md"}), "@plan/feature.md", true},
+		{"plan writer traversal", PlanWriterView(src, "@plan", []string{"@plan/feature.md"}), "@plan/../feature.md", false},
+		{"artifact writer prefix", ArtifactWriterView(src, "@run"), "@run/task-1.md", true},
+		{"artifact writer traversal", ArtifactWriterView(src, "@run"), "@run/../app.go", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.view.Dispatch(context.Background(), ToolCall{
+				Name: "file.write_patch",
+				Args: json.RawMessage(`{"patch":"File: ` + tc.path + `\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`),
+			})
+			if tc.allow && err != nil {
+				t.Fatalf("expected %q to be allowed, got %v", tc.path, err)
+			}
+			if !tc.allow && err == nil {
+				t.Fatalf("expected %q to be rejected", tc.path)
+			}
+		})
 	}
 }
 

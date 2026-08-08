@@ -37,6 +37,7 @@ import (
 	"marshal/internal/lsp"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/repo"
 	"marshal/internal/rollover"
 	"marshal/internal/sandbox"
 	"marshal/internal/sddauthor"
@@ -954,24 +955,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 // different directory and is rejected by sddplans.DraftPath at authoring
 // time.
 func resolveAuthorPlansDir(workingDir, plansDirRel string) string {
-	full := filepath.Join(workingDir, plansDirRel)
-	tail := ""
-	cur := full
-	for {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(resolved, tail)
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			abs, aerr := filepath.Abs(full)
-			if aerr != nil {
-				return full
-			}
-			return abs
-		}
-		tail = filepath.Join(filepath.Base(cur), tail)
-		cur = parent
-	}
+	return repo.Canonical(filepath.Join(workingDir, plansDirRel))
 }
 
 // buildPlanAuthorFactory returns a factory that builds a scoped SDD

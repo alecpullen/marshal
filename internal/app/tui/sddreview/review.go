@@ -107,7 +107,7 @@ func (p *Panel) View(width, maxHeight int) string {
 
 	hints := "enter accept · esc discard"
 	if p.hasErrors() {
-		hints = "esc discard · fix the plan and rerun inspection"
+		hints = "esc discard · edit the plan, then run /sdd"
 	}
 	ph := min(lipgloss.Height(body)+1, maxHeight)
 	return chrome.PanelWithHints("Review plan", hints, body, pw, ph, true, th)

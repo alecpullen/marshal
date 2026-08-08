@@ -3,6 +3,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"marshal/internal/tools/patch"
 )
+
 
 // applyPatchOp applies a SEARCH/REPLACE patch to a file in dir. It uses the
 // existing patch engine's ValidatePatch to check uniqueness, then ApplyPatch
@@ -58,14 +60,41 @@ func applyFileOp(dir string, op *FileOp) error {
 	return nil
 }
 
-// runRunOp executes a command and checks its exit status.
+// runRunOp executes a command and checks its exit status. An expected
+// non-zero exit code (ExpectExit) is treated as success.
 func runRunOp(ctx context.Context, dir string, runner CommandRunner, op *RunOp) error {
-	cmdStr := strings.Join(op.Command, " ")
-	out, err := runner.Run(ctx, dir, cmdStr)
+	out, err := runner.Run(ctx, dir, op.Command)
 	if err != nil {
-		return fmt.Errorf("ops run: %s: %w\noutput: %s", cmdStr, err, out)
+		var exitErr interface{ ExitCode() int }
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == op.ExpectExit {
+			return nil
+		}
+		return fmt.Errorf("ops run: %v: %w\noutput: %s", op.Command, err, out)
+	}
+	if op.ExpectExit != 0 {
+		return fmt.Errorf("ops run: %v: expected exit %d but command succeeded", op.Command, op.ExpectExit)
 	}
 	return nil
+}
+
+// runVerifyOps executes all verify-phase RunOps and returns the first
+// failure as a VerifyResult. It is called inside the verify gate loop so
+// that a failing verify command triggers the fixer rounds.
+func runVerifyOps(ctx context.Context, dir string, runner CommandRunner, ops []Operation) VerifyResult {
+	for _, op := range ops {
+		r, ok := op.(*RunOp)
+		if !ok || r.Status != OpExecutable || r.Phase != "verify" {
+			continue
+		}
+		if err := runRunOp(ctx, dir, runner, r); err != nil {
+			return VerifyResult{
+				OK:            false,
+				FailedCommand: strings.Join(r.Command, " "),
+				Output:        err.Error(),
+			}
+		}
+	}
+	return VerifyResult{OK: true}
 }
 
 // checkAssert evaluates one assertion against the worktree state.
@@ -90,10 +119,9 @@ func checkAssert(ctx context.Context, dir string, runner CommandRunner, op *Asse
 		return nil
 
 	case AssertTestPasses:
-		cmdStr := strings.Join(op.Command, " ")
-		out, err := runner.Run(ctx, dir, cmdStr)
+		out, err := runner.Run(ctx, dir, op.Command)
 		if err != nil {
-			return fmt.Errorf("assert test.passes: %s: %w\noutput: %s", cmdStr, err, out)
+			return fmt.Errorf("assert test.passes: %v: %w\noutput: %s", op.Command, err, out)
 		}
 		return nil
 
@@ -120,8 +148,7 @@ func checkAssert(ctx context.Context, dir string, runner CommandRunner, op *Asse
 		return nil
 
 	case AssertGoCompiles:
-		cmdStr := "go build " + op.Package
-		out, err := runner.Run(ctx, dir, cmdStr)
+		out, err := runner.Run(ctx, dir, []string{"go", "build", op.Package})
 		if err != nil {
 			return fmt.Errorf("assert go.compiles: %s: %w\noutput: %s", op.Package, err, out)
 		}

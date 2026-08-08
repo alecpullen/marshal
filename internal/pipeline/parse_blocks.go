@@ -144,7 +144,7 @@ func compileBlock(blk marshalBlock) (Operation, error) {
 		return &FileOp{
 			Path:      blk.attrs["path"],
 			Content:   blk.content,
-			Replace:   props["replace"] == "true",
+			Replace:   blk.attrs["replace"] == "true",
 			LineStart: lineStart,
 			LineEnd:   lineEnd,
 		}, nil
@@ -174,6 +174,12 @@ func compileBlock(blk marshalBlock) (Operation, error) {
 
 	case "marshal.assert":
 		kind := AssertKind(props["kind"])
+		switch kind {
+		case AssertGoSymbol, AssertGoCompiles, AssertFileExists, AssertFileMatches, AssertTestPasses:
+			// known
+		default:
+			return nil, fmt.Errorf("compile assert: unknown kind %q at line %d", kind, lineStart+1)
+		}
 		op := &AssertOp{
 			Kind:      kind,
 			File:      props["file"],

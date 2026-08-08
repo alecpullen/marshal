@@ -38,6 +38,86 @@ Ordinary prose and ordinary code fences are never executed. Never invent a
 precondition, command result, symbol, or test name. If the exact operation is
 not provable, use scoped fallback rather than guessing.
 
+## Block Syntax
+
+Fence info strings carry metadata as `key="value"` pairs after the kind.
+Everything inside the fence is the body and is written or executed verbatim.
+
+### Patch an existing file
+
+```marshal.patch file="internal/foo/bar.go"
+<<<<<<< SEARCH
+func Old() string {
+	return "old"
+}
+=======
+func Old() string {
+	return "new"
+}
+>>>>>>> REPLACE
+```
+
+### Create or overwrite a file
+
+```marshal.file path="internal/foo/bar.go"
+package foo
+
+func New() string { return "new" }
+```
+
+To overwrite an existing file, add `replace="true"` to the fence info:
+
+```marshal.file path="internal/foo/bar.go" replace="true"
+package foo
+
+func New() string { return "new" }
+```
+
+### Run a command
+
+Use `phase="prepare"` for commands that must run before assertions, and
+`phase="verify"` for commands that are part of the verification gate. Use
+`expect_exit="N"` when a non-zero exit is expected.
+
+```marshal.run phase="verify" expect_exit="0"
+command = ["go", "test", "./internal/foo/..."]
+```
+
+### Assert a postcondition
+
+```marshal.assert
+kind = "file.exists"
+file = "internal/foo/bar.go"
+```
+
+```marshal.assert
+kind = "file.matches"
+file = "internal/foo/bar.go"
+content = "func New() string"
+```
+
+```marshal.assert
+kind = "go.symbol"
+file = "internal/foo/bar.go"
+symbol = "foo.New"
+```
+
+```marshal.assert
+kind = "go.compiles"
+package = "./internal/foo"
+```
+
+### Scoped fallback
+
+Use when the exact change cannot be encoded deterministically. The `scope`
+array restricts the fallback agent's file writes to the listed directories.
+An empty or missing scope is rejected.
+
+```marshal.agent
+scope = ["internal/foo"]
+reason = "The exact UI copy depends on runtime layout and needs model judgment."
+```
+
 ## Handoff
 
 This is the Marshal replacement for generic `writing-plans` only in the SDD

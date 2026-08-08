@@ -1396,9 +1396,9 @@ func TestSkillsAutoloadDefaultsEmpty(t *testing.T) {
 	}
 }
 
-func TestSkillsMaxActiveDefaultsThree(t *testing.T) {
-	if got := Default().Skills.MaxActive; got != 3 {
-		t.Fatalf("Default().Skills.MaxActive = %d, want 3", got)
+func TestSkillsMaxActiveDefaultsEight(t *testing.T) {
+	if got := Default().Skills.MaxActive; got != 8 {
+		t.Fatalf("Default().Skills.MaxActive = %d, want 8", got)
 	}
 }
 

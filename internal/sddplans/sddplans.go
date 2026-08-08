@@ -25,11 +25,20 @@ type Candidate struct {
 	// with an unreadable ledger is not a fresh run, and must not be shown
 	// as "0 done" as if it had never started.
 	LedgerErr error
+	// NonTerminal indicates a manifest or checkpoint exists and the run
+	// has not reached a terminal state.
+	NonTerminal bool
 }
 
 // Resumable reports whether a previous run left this plan partly complete.
 func (c Candidate) Resumable() bool {
-	return c.Err == nil && c.LedgerErr == nil && c.Tasks > 0 && c.Done > 0 && c.Done < c.Tasks
+	if c.Err != nil || c.LedgerErr != nil || c.Tasks == 0 {
+		return false
+	}
+	if c.NonTerminal {
+		return true
+	}
+	return c.Done > 0 && c.Done < c.Tasks
 }
 
 // Discover lists every *.md file in plansDir (relative to repoRoot), parses
@@ -58,24 +67,41 @@ func Discover(repoRoot, plansDir string) []Candidate {
 			continue
 		}
 		c.Tasks = len(plan.Tasks)
-		c.Done, c.LedgerErr = completedCount(repoRoot, c.Slug)
+		c.Done, c.LedgerErr, c.NonTerminal = completedCount(repoRoot, c.Slug)
 		out = append(out, c)
 	}
 	return out
 }
 
-// completedCount reads how many tasks a previous run finished. A missing
-// ledger means nothing has run, which is zero, not an error. A ledger that
-// exists but cannot be read is surfaced as an error so the picker does not
-// masquerade a corrupted ledger as a fresh run.
-func completedCount(repoRoot, slug string) (int, error) {
+// completedCount reads how many tasks a previous run finished, and whether
+// the run is still in-flight. A missing ledger means nothing has run, which
+// is zero, not an error. A ledger that exists but cannot be read is surfaced
+// as an error so the picker does not masquerade a corrupted ledger as a fresh
+// run. A manifest or in-flight checkpoint that has not reached a terminal
+// state marks the run non-terminal so it stays resumable even with no ledger
+// progress.
+func completedCount(repoRoot, slug string) (int, error, bool) {
 	paths, err := pipeline.NewPaths(repoRoot, slug)
 	if err != nil {
-		return 0, err
+		return 0, err, false
+	}
+	rs := pipeline.NewRunStore(paths)
+	// Check for a manifest; if present, this is a real run.
+	if _, err := rs.Manifest(); err == nil {
+		last, ok, _ := rs.LastCheckpoint()
+		if ok {
+			if last.Phase == "run_finished" {
+				// Terminal — count done from ledger.
+				done, err := (pipeline.Ledger{Path: paths.Ledger()}).CompletedTasks()
+				return len(done), err, false
+			}
+			done, _ := (pipeline.Ledger{Path: paths.Ledger()}).CompletedTasks()
+			return len(done), nil, true // non-terminal
+		}
 	}
 	done, err := (pipeline.Ledger{Path: paths.Ledger()}).CompletedTasks()
 	if err != nil {
-		return 0, err
+		return 0, err, false
 	}
-	return len(done), nil
+	return len(done), nil, false
 }

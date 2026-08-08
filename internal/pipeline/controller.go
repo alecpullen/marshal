@@ -46,7 +46,7 @@ type ControllerOpts struct {
 	AutoEscalate       bool
 	Observer           Observer
 	TargetBranch       string
-	maxTokensCfg       int
+	MaxTokensCfg       int
 
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
@@ -98,12 +98,15 @@ type Controller struct {
 
 	// runID, lastSeq, curAttempt, curFixRound, maxTokens carry the run's
 	// durable identity and progress counters across Run calls and crashes.
-	runID        string
-	lastSeq      int
-	curAttempt   int
-	curFixRound  int
-	maxTokens    int
-	maxTokensCfg int
+	runID       string
+	lastSeq     int
+	curAttempt  int
+	curFixRound int
+	maxTokens   int
+	// MaxTokensCfg is the configured total-token budget for the run. It is
+	// set on the controller from ControllerOpts.MaxTokensCfg and written to
+	// the manifest on the first Run.
+	MaxTokensCfg int
 
 	UsageTokens int
 }
@@ -145,7 +148,7 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 		AutoEscalate:       opts.AutoEscalate,
 		Observer:           opts.Observer,
 		TargetBranch:       opts.TargetBranch,
-		maxTokensCfg:       opts.maxTokensCfg,
+		MaxTokensCfg:       opts.MaxTokensCfg,
 	}, nil
 }
 
@@ -670,7 +673,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	if _, err := c.RunStore.Manifest(); err != nil {
 		planHash, _ := planHash(c.Plan.Path)
 		c.runID = fmt.Sprintf("run-%d", time.Now().UnixNano())
-		c.maxTokens = c.maxTokensCfg
+		c.maxTokens = c.MaxTokensCfg
 		if err := c.RunStore.CreateManifest(Manifest{
 			SchemaVersion:      1,
 			RunID:              c.runID,

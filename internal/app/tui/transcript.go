@@ -536,6 +536,16 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 	// the sole status indicator (spinner for running, ✓ for done, ✗ for
 	// failed).
 	head := v.Label
+	if v.Model != "" {
+		if v.Provider != "" {
+			head += dimSeparator + fmt.Sprintf("%s @ %s", v.Model, v.Provider)
+		} else {
+			head += dimSeparator + v.Model
+		}
+	}
+	if v.Fallback {
+		head += dimSeparator + mutedStyle().Render("(fallback)")
+	}
 	if v.ToolCalls > 0 {
 		head += dimSeparator + fmt.Sprintf("%d tool calls", v.ToolCalls)
 	}

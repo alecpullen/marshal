@@ -161,9 +161,20 @@ func (m Model) renderTranscriptFrame() string {
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
 	if v, ok := m.drilledInto(); ok {
+		label := v.Label
+		if v.Model != "" {
+			if v.Provider != "" {
+				label += fmt.Sprintf(" · %s @ %s", v.Model, v.Provider)
+			} else {
+				label += " · " + v.Model
+			}
+		}
+		if v.Fallback {
+			label += " (fallback)"
+		}
 		crumb := lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand+" orchestrator") +
 			mutedStyle().Render(" "+glyph.Running+" ") +
-			lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(glyph.Agent+" "+v.Label) +
+			lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(glyph.Agent+" "+label) +
 			mutedStyle().Render("  (↑/Esc to go back)")
 		content = lipgloss.JoinVertical(lipgloss.Left, crumb, content)
 	}

@@ -56,9 +56,10 @@ func fetchURL(ctx context.Context, url string, normalize func([]byte) (map[strin
 func NormalizeOpenRouter(data []byte) (map[string]Limit, error) {
 	var payload struct {
 		Data []struct {
-			ID            string `json:"id"`
-			ContextLength int    `json:"context_length"`
-			TopProvider   struct {
+			ID                  string   `json:"id"`
+			ContextLength       int      `json:"context_length"`
+			SupportedParameters []string `json:"supported_parameters"`
+			TopProvider         struct {
 				ContextLength       int `json:"context_length"`
 				MaxCompletionTokens int `json:"max_completion_tokens"`
 			} `json:"top_provider"`
@@ -78,7 +79,19 @@ func NormalizeOpenRouter(data []byte) (map[string]Limit, error) {
 			cw = m.ContextLength
 		}
 		maxOut := m.TopProvider.MaxCompletionTokens
-		out[m.ID] = Limit{ContextWindow: cw, MaxOutputTokens: maxOut}
+
+		var toolCalling *bool
+		if m.SupportedParameters != nil {
+			supportsTools := false
+			for _, param := range m.SupportedParameters {
+				if param == "tools" {
+					supportsTools = true
+					break
+				}
+			}
+			toolCalling = &supportsTools
+		}
+		out[m.ID] = Limit{ContextWindow: cw, MaxOutputTokens: maxOut, ToolCalling: toolCalling}
 	}
 	return out, nil
 }

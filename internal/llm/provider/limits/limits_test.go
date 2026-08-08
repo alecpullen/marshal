@@ -122,3 +122,43 @@ func TestCacheRoundTrip(t *testing.T) {
 		t.Errorf("ContextWindow = %d, want 1048576", got.ContextWindow)
 	}
 }
+
+func TestNormalizeOpenRouterParsesToolCalling(t *testing.T) {
+	data := []byte(`{
+		"data": [
+			{
+				"id": "openai/gpt-4o",
+				"context_length": 128000,
+				"supported_parameters": ["tools", "tool_choice", "response_format"],
+				"top_provider": {"context_length": 128000, "max_completion_tokens": 16384}
+			},
+			{
+				"id": "some/no-tools-model",
+				"context_length": 8192,
+				"supported_parameters": ["response_format"],
+				"top_provider": {"context_length": 8192, "max_completion_tokens": 4096}
+			}
+		]
+	}`)
+
+	out, err := NormalizeOpenRouter(data)
+	if err != nil {
+		t.Fatalf("NormalizeOpenRouter: %v", err)
+	}
+
+	withTools, ok := out["openai/gpt-4o"]
+	if !ok {
+		t.Fatalf("missing entry for openai/gpt-4o")
+	}
+	if withTools.ToolCalling == nil || !*withTools.ToolCalling {
+		t.Errorf("openai/gpt-4o: want ToolCalling=true, got %v", withTools.ToolCalling)
+	}
+
+	withoutTools, ok := out["some/no-tools-model"]
+	if !ok {
+		t.Fatalf("missing entry for some/no-tools-model")
+	}
+	if withoutTools.ToolCalling == nil || *withoutTools.ToolCalling {
+		t.Errorf("some/no-tools-model: want ToolCalling=false, got %v", withoutTools.ToolCalling)
+	}
+}

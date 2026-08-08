@@ -981,3 +981,36 @@ func TestModelsEnrichesLimitsFromTable(t *testing.T) {
 		t.Errorf("MaxOutputTokens = %d, want 384000", models[0].MaxOutputTokens)
 	}
 }
+
+func TestModelsPropagatesToolCallingFromLimitsTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`))
+	}))
+	defer server.Close()
+
+	toolCalling := true
+	table := limits.NewTable(map[string]limits.Limit{
+		"openrouter/gpt-4o": {ContextWindow: 128000, MaxOutputTokens: 16384, ToolCalling: &toolCalling},
+	})
+	p, err := NewOpenAICompatible(Options{Name: "openrouter", BaseURL: server.URL, LimitsTable: &table})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("Models() returned %d models, want 1", len(models))
+	}
+	got := models[0]
+	if got.ContextWindow != 128000 || got.MaxOutputTokens != 16384 {
+		t.Errorf("Models()[0] limits = %+v, want context=128000 maxOutput=16384", got)
+	}
+	if got.ToolCalling == nil || !*got.ToolCalling {
+		t.Errorf("Models()[0].ToolCalling = %v, want true", got.ToolCalling)
+	}
+}

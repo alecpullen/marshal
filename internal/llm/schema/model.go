@@ -10,4 +10,7 @@ type ModelInfo struct {
 	OwnedBy         string
 	ContextWindow   int // 0 when unknown
 	MaxOutputTokens int // 0 when unknown
+	// ToolCalling reports whether the model supports tool/function calling,
+	// when some source reports it. nil means no source reported it.
+	ToolCalling *bool
 }

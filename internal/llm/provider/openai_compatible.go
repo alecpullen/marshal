@@ -125,6 +125,7 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 			if lim, kind := p.limitsTable.Lookup(p.name, m.ID); kind != limits.MatchNone {
 				info.ContextWindow = lim.ContextWindow
 				info.MaxOutputTokens = lim.MaxOutputTokens
+				info.ToolCalling = lim.ToolCalling
 			}
 		}
 		models = append(models, info)

@@ -38,6 +38,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/settings"
@@ -3810,34 +3811,18 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// Selecting a model synthesizes a preset plus a profile binding every
 	// role to it. The router resolves through profiles only; there is no
 	// legacy pair and no implicit "empty default means fall through".
-	presetName := msg.Provider + "/" + msg.Model
-	if newCfg.Models.Presets == nil {
-		newCfg.Models.Presets = map[string]routing.ModelPreset{}
-	} else {
+	if newCfg.Models.Presets != nil {
 		presets := make(map[string]routing.ModelPreset, len(newCfg.Models.Presets)+1)
 		for k, v := range newCfg.Models.Presets {
 			presets[k] = v
 		}
 		newCfg.Models.Presets = presets
 	}
-	preset := routing.ModelPreset{
-		Name:            presetName,
-		Provider:        msg.Provider,
-		Model:           msg.Model,
+	presetName := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
 		ContextWindow:   msg.ContextWindow,
 		MaxOutputTokens: msg.MaxOutputTokens,
-	}
-	// Re-picking a model whose limits came back unknown (zero) must not
-	// erase figures saved earlier — zero means "unknown", not "reset".
-	if existing, ok := newCfg.Models.Presets[presetName]; ok {
-		if preset.ContextWindow == 0 {
-			preset.ContextWindow = existing.ContextWindow
-		}
-		if preset.MaxOutputTokens == 0 {
-			preset.MaxOutputTokens = existing.MaxOutputTokens
-		}
-	}
-	newCfg.Models.Presets[presetName] = preset
+		ToolCalling:     msg.ToolCalling,
+	})
 
 	if newCfg.AgentProfiles == nil {
 		newCfg.AgentProfiles = map[string]routing.AgentProfile{}

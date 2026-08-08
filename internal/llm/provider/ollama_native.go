@@ -463,6 +463,7 @@ func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 			if lim, kind := p.limitsTable.Lookup(p.name, m.Name); kind != limits.MatchNone {
 				info.ContextWindow = lim.ContextWindow
 				info.MaxOutputTokens = lim.MaxOutputTokens
+				info.ToolCalling = lim.ToolCalling
 			}
 		}
 		models = append(models, info)

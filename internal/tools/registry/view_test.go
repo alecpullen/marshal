@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -207,6 +208,52 @@ func TestArtifactWriterPatchGuardEnforcesAliasPrefix(t *testing.T) {
 	for _, args := range rejected {
 		if _, err := tool.Handler(context.Background(), ToolCall{Name: "file.write_patch", Args: []byte(args)}); err == nil {
 			t.Errorf("patch %q should be rejected (not under alias prefix), got no error", args)
+		}
+	}
+}
+
+func TestPlanWriterViewAllowsOnlyTheCandidatePlan(t *testing.T) {
+	src := New()
+	for _, tool := range []Tool{
+		{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler},
+		{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler},
+		{Name: "shell.run", Description: "shell", Risk: RiskCommand, Handler: nopHandler},
+		{Name: "question.ask", Description: "question", Risk: RiskReadOnly, Handler: nopHandler},
+	} {
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Name, err)
+		}
+	}
+	view := PlanWriterView(src, "@plan", []string{"@plan/feature.md"})
+
+	if _, ok := view.Lookup("file.read"); !ok {
+		t.Fatal("plan writer must retain file.read")
+	}
+	if _, ok := view.Lookup("file.write_patch"); !ok {
+		t.Fatal("plan writer must retain filtered file.write_patch")
+	}
+	if _, ok := view.Lookup("shell.run"); ok {
+		t.Fatal("plan writer must not expose shell.run")
+	}
+	if _, ok := view.Lookup("question.ask"); ok {
+		t.Fatal("orphaned authoring child must not expose question.ask")
+	}
+}
+
+func TestPlanWriterViewRejectsSourceAndSecondPlanWrites(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write_patch): %v", err)
+	}
+	view := PlanWriterView(src, "@plan", []string{"@plan/feature.md"})
+
+	for _, path := range []string{"internal/app/app.go", "@plan/other.md"} {
+		_, err := view.Dispatch(context.Background(), ToolCall{
+			Name: "file.write_patch",
+			Args: json.RawMessage(`{"patch":"File: ` + path + `\n<<<<<<< SEARCH\n\n=======\nnew\n>>>>>>> REPLACE"}`),
+		})
+		if err == nil {
+			t.Errorf("write to %q was accepted", path)
 		}
 	}
 }

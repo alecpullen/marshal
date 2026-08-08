@@ -118,3 +118,55 @@ func artifactWriterPatchTool(tool Tool, alias string) Tool {
 	}
 	return filtered
 }
+
+// PlanWriterView returns a new Registry for the SDD plan-authoring child. It
+// retains read-only tools (except nested-agent, question, and mode tools),
+// plus file.write_patch restricted to exactly the allowed plan artifact
+// paths. The child may inspect the repository and write one plan artifact,
+// but must not modify source, run commands, or reach the network.
+func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, p := range allowed {
+		allowedSet[p] = true
+	}
+	view := New()
+	for _, tool := range src.List() {
+		switch {
+		case tool.Deferred:
+			// Deferred tools are never exposed to the authoring child.
+		case tool.Risk == RiskReadOnly:
+			switch tool.Name {
+			case "agent.run", "question.ask", "ask_user", "mode.request":
+				// Nested-agent, question, and mode tools are excluded: the
+				// orphaned child must not spawn agents or ask the user.
+			default:
+				_ = view.Register(tool)
+			}
+		case tool.Name == "file.write_patch":
+			_ = view.Register(planWriterPatchTool(tool, alias, allowedSet))
+		}
+	}
+	return view
+}
+
+func planWriterPatchTool(tool Tool, alias string, allowed map[string]bool) Tool {
+	original := tool.Handler
+	filtered := tool
+	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
+		var args struct {
+			Patch string `json:"patch"`
+		}
+		_ = json.Unmarshal(call.Args, &args)
+		res, err := patch.ParseRepairing(args.Patch)
+		if err != nil || len(res.Patches) == 0 {
+			return ToolResult{}, fmt.Errorf("file.write_patch in plan-writer scope may only write the candidate plan under %s/", alias)
+		}
+		for _, fp := range res.Patches {
+			if !allowed[fp.Path] {
+				return ToolResult{}, fmt.Errorf("file.write_patch in plan-writer scope may only write the candidate plan (path %q is not allowed)", fp.Path)
+			}
+		}
+		return original(ctx, call)
+	}
+	return filtered
+}

@@ -900,6 +900,52 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 // ErrHumanGateRequired when a subagent needs an answer, or an error when a
 // task cannot be completed.
 func (c *Controller) Run(ctx context.Context) error {
+	// Compile and preflight when strategy is adaptive or strict. This runs
+	// before any worktree is created: a strict plan with blocked or agent
+	// operations is rejected without minting a worktree.
+	if c.Strategy == StrategyAdaptive || c.Strategy == StrategyStrict {
+		ir, diags, err := CompilePlan(c.Plan)
+		if err != nil {
+			return fmt.Errorf("pipeline: compile plan: %w", err)
+		}
+		c.PlanIR = ir
+
+		// Check for error-severity diagnostics.
+		var errDiags []Diagnostic
+		for _, d := range diags {
+			if d.Severity == DiagError {
+				errDiags = append(errDiags, d)
+			}
+		}
+		if len(errDiags) > 0 && c.Strategy == StrategyStrict {
+			var msgs []string
+			for _, d := range errDiags {
+				msgs = append(msgs, fmt.Sprintf("task %d: %s", d.TaskN, d.Message))
+			}
+			return fmt.Errorf("pipeline: strict plan has compile errors:\n%s", strings.Join(msgs, "\n"))
+		}
+
+		// Preflight each task.
+		for i := range ir.Tasks {
+			taskDir := c.workDir()
+			opDiags := preflightOps(taskDir, ir.Tasks[i].Operations)
+			for _, d := range opDiags {
+				_ = c.Ledger.Note("Task %d: preflight: %s", ir.Tasks[i].TaskN, d.Message)
+			}
+			// Under strict, any blocked operation fails the run.
+			if c.Strategy == StrategyStrict && ir.Tasks[i].DerivedStatus() == TaskBlocked {
+				return fmt.Errorf("pipeline: task %d is blocked and strategy is strict", ir.Tasks[i].TaskN)
+			}
+			if c.Strategy == StrategyStrict {
+				for _, op := range ir.Tasks[i].Operations {
+					if op.OpKind() == "agent" {
+						return fmt.Errorf("pipeline: task %d has an agent operation and strategy is strict", ir.Tasks[i].TaskN)
+					}
+				}
+			}
+			ir.Tasks[i].Status = ir.Tasks[i].DerivedStatus()
+		}
+	}
 	if c.Worktree.Path == "" {
 		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
 		if err != nil {
@@ -1025,50 +1071,6 @@ func (c *Controller) Run(ctx context.Context) error {
 	if c.pendingQuestion != "" {
 		return ErrHumanGateRequired
 	}
-	// Compile and preflight when strategy is adaptive or strict.
-	if c.Strategy == StrategyAdaptive || c.Strategy == StrategyStrict {
-		ir, diags, err := CompilePlan(c.Plan)
-		if err != nil {
-			return fmt.Errorf("pipeline: compile plan: %w", err)
-		}
-		c.PlanIR = ir
-
-		// Check for error-severity diagnostics.
-		var errDiags []Diagnostic
-		for _, d := range diags {
-			if d.Severity == DiagError {
-				errDiags = append(errDiags, d)
-			}
-		}
-		if len(errDiags) > 0 && c.Strategy == StrategyStrict {
-			var msgs []string
-			for _, d := range errDiags {
-				msgs = append(msgs, fmt.Sprintf("task %d: %s", d.TaskN, d.Message))
-			}
-			return fmt.Errorf("pipeline: strict plan has compile errors:\n%s", strings.Join(msgs, "\n"))
-		}
-
-		// Preflight each task.
-		for i := range ir.Tasks {
-			taskDir := c.workDir()
-			opDiags := preflightOps(taskDir, ir.Tasks[i].Operations)
-			for _, d := range opDiags {
-				_ = c.Ledger.Note("Task %d: preflight: %s", ir.Tasks[i].TaskN, d.Message)
-			}
-			// Under strict, any blocked operation fails the run.
-			if c.Strategy == StrategyStrict && ir.Tasks[i].DerivedStatus() == TaskBlocked {
-				return fmt.Errorf("pipeline: task %d is blocked and strategy is strict", ir.Tasks[i].TaskN)
-			}
-			if c.Strategy == StrategyStrict {
-				for _, op := range ir.Tasks[i].Operations {
-					if op.OpKind() == "agent" {
-						return fmt.Errorf("pipeline: task %d has an agent operation and strategy is strict", ir.Tasks[i].TaskN)
-					}
-				}
-			}
-			ir.Tasks[i].Status = ir.Tasks[i].DerivedStatus()
-		}
-	}
 	for _, t := range c.Plan.Tasks {
 		select {
 		case <-ctx.Done():
@@ -1109,7 +1111,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			cp.BaseSHA = res.Base
 			cp.HeadSHA = res.Head
 		})
-		c.emit(t.N, 0, PhaseDone, "")
+		c.emitPayload(t.N, 0, PhaseDone, "", ExecPayload{TaskN: t.N, ExecType: res.ExecType})
 	}
 	if c.overBudget() {
 		return fmt.Errorf("pipeline: token budget exhausted (%d/%d) — resumable", c.UsageTokens, c.maxTokens)

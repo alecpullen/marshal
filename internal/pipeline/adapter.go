@@ -54,6 +54,7 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 		// durations from a previous session say nothing reliable about this
 		// one, so the estimate re-earns itself from scratch.
 		p.TaskTimings = make([]session.TaskTiming, len(a.c.Plan.Tasks))
+		p.TaskExecTypes = make([]string, len(a.c.Plan.Tasks))
 	})
 	if completed, err := a.c.CompletedCount(); err == nil && completed > 0 {
 		a.state.AddMessage(session.RoleSystem, fmt.Sprintf("Resuming %s at task %d/%d (ledger from previous run)", a.c.Plan.Slug, completed+1, len(a.c.Plan.Tasks)), session.ContentTypePlain)
@@ -109,6 +110,12 @@ func (a *ControllerAdapter) Event(ev Event) {
 		}
 		if ev.Phase == PhaseDone {
 			p.DoneTasks++
+		}
+		if len(p.TaskExecTypes) != p.TotalTasks {
+			p.TaskExecTypes = make([]string, p.TotalTasks)
+		}
+		if ep, ok := ev.Payload.(ExecPayload); ok && ep.TaskN >= 1 && ep.TaskN <= len(p.TaskExecTypes) {
+			p.TaskExecTypes[ep.TaskN-1] = string(ep.ExecType)
 		}
 		// Branch-level events carry TaskN 0 and a malformed plan could emit
 		// a TaskN past the slice; both record nothing rather than panic.

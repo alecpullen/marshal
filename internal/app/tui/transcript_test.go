@@ -266,7 +266,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 				StartedAt: time.Now(),
 			},
 		}
-		result := renderTranscriptItem(item, false, width)
+		result := renderTranscriptItem(item, false, "⠋", width)
 		if !strings.Contains(result, "thought for 2s") {
 			t.Errorf("expected thinking summary, got: %s", result)
 		}
@@ -280,7 +280,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 				ResultSummary: "file contents here",
 			},
 		}
-		result := renderTranscriptItem(item, false, width)
+		result := renderTranscriptItem(item, false, "⠋", width)
 		if !strings.Contains(result, "Read file") {
 			t.Errorf("expected completed tool call, got: %s", result)
 		}
@@ -305,7 +305,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 			Kind:    session.KindMessage,
 			Message: &msg,
 		}
-		result := renderTranscriptItem(item, false, width)
+		result := renderTranscriptItem(item, false, "⠋", width)
 		if !strings.Contains(result, "thought for 1s") {
 			t.Errorf("expected thinking summary before message, got: %s", result)
 		}
@@ -1113,7 +1113,7 @@ func TestRunningSubagentCardShowsCurrentTool(t *testing.T) {
 		CurrentTool: "editing internal/retry/retry.go",
 		StartedAt:   time.Now().Add(-72 * time.Second),
 	}
-	got := stripANSI(renderSubagentCard(v, false, 100))
+	got := stripANSI(renderSubagentCard(v, false, "⠋", 100))
 	if !strings.Contains(got, "editing internal/retry/retry.go") {
 		t.Errorf("a running card must say what the subagent is doing, not just count calls:\n%s", got)
 	}
@@ -1128,8 +1128,44 @@ func TestFinishedSubagentCardOmitsCurrentTool(t *testing.T) {
 		StartedAt:   time.Now().Add(-2 * time.Minute),
 		EndedAt:     time.Now(),
 	}
-	got := stripANSI(renderSubagentCard(v, false, 100))
+	got := stripANSI(renderSubagentCard(v, false, "⠋", 100))
 	if strings.Contains(got, "editing") {
 		t.Errorf("a finished card must not claim in-flight work:\n%s", got)
+	}
+}
+
+func TestRenderSubagentCardRunningHasOneGlyph(t *testing.T) {
+	child := newChildState(t)
+	running := session.SubagentView{
+		ID:        1,
+		Label:     "explore repo",
+		Status:    session.SubagentRunning,
+		StartedAt: time.Now().Add(-5 * time.Second),
+		Child:     child,
+	}
+	out := stripANSI(renderSubagentCard(running, false, "⠋", 80))
+	// The running card should have a spinner glyph in the gutter and NO
+	// leading agent glyph in the head line.
+	glyphCount := strings.Count(out, "⧉")
+	if glyphCount != 0 {
+		t.Errorf("running card should not contain agent glyph ⧉, found %d:\n%s", glyphCount, out)
+	}
+	// It should contain the spinner frame.
+	if !strings.Contains(out, "⠋") {
+		t.Errorf("running card should contain spinner frame ⠋:\n%s", out)
+	}
+}
+
+func TestRenderSubagentCardDoneHasOneGlyph(t *testing.T) {
+	done := session.SubagentView{
+		ID:     2,
+		Label:  "explore repo",
+		Status: session.SubagentDone,
+		Child:  newChildState(t),
+	}
+	out := stripANSI(renderSubagentCard(done, false, "⠋", 80))
+	glyphCount := strings.Count(out, "⧉")
+	if glyphCount != 0 {
+		t.Errorf("done card should not contain agent glyph ⧉, found %d:\n%s", glyphCount, out)
 	}
 }

@@ -267,9 +267,16 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.viewportFollow = true
 		return *m, nil, true
 	case "up":
-		// Completion popups keep precedence over prompt history.
+		// Completion popups keep precedence over drill exit and prompt
+		// history.
 		if p := m.activeCompletionPopup(); p != nil {
 			p.moveUp()
+			return *m, nil, true
+		}
+		// While drilled into a subagent, up arrow pops back to the
+		// parent transcript — matching ESC and the breadcrumb hint.
+		if m.popDrill() {
+			m.refreshViewport()
 			return *m, nil, true
 		}
 		if m.recallOlder() {

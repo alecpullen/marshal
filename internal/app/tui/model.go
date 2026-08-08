@@ -1375,7 +1375,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg:
+	case agentFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2622,7 +2622,7 @@ func (m *Model) refreshViewport() {
 		} else {
 			key := itemKeyFor(entry.Item)
 			expanded := m.isExpanded(key)
-			s := renderTranscriptItem(*entry.Item, expanded, m.viewport.Width())
+			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, m.viewport.Width())
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
@@ -2638,8 +2638,12 @@ func (m *Model) refreshViewport() {
 	if inProgress.Active && inProgress.Reasoning != "" {
 		addBlock(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()), nil)
 	}
-	if atc, ok := m.state.ActiveToolCall(); ok {
-		s := renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width())
+	// Use the same transcriptState that was computed for the drilled-in
+	// child (or the parent when not drilling). The previous code read
+	// m.state.ActiveToolCall(), which always used the parent session
+	// and showed the wrong tool inside a drilled subagent view.
+	if atc, ok := transcriptState.ActiveToolCall(); ok {
+		s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width())
 		addBlock(s, &clickTarget{isActiveTool: true})
 	}
 	if err := m.state.ProviderError(); err != nil {
@@ -3808,7 +3812,7 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 			// Subagent cards are live while the child runs: status, tool-call
 			// count, and summary must bust the viewport cache or the card
 			// freezes at registration time.
-			fmt.Fprintf(h, "sub=%d|%v|%s|%d|%d|%s\x00", item.Subagent.ID, item.Subagent.Status, item.Subagent.Label, item.Subagent.ToolCalls, item.Subagent.EndedAt.UnixNano(), item.Subagent.Summary)
+			fmt.Fprintf(h, "sub=%d|%v|%s|%d|%d|%s|%s\x00", item.Subagent.ID, item.Subagent.Status, item.Subagent.Label, item.Subagent.ToolCalls, item.Subagent.EndedAt.UnixNano(), item.Subagent.Summary, item.Subagent.CurrentTool)
 		}
 	}
 	for _, todo := range todos {

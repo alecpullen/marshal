@@ -130,7 +130,7 @@ func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
 	m.drillIntoSubagent(view)
 
 	frame := stripANSI(m.renderTranscriptFrame())
-	for _, want := range []string{"orchestrator", "explore repo", "Esc to go back"} {
+	for _, want := range []string{"orchestrator", "explore repo", "go back"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("breadcrumb missing %q, frame:\n%s", want, frame)
 		}
@@ -192,7 +192,7 @@ func TestRenderSubagentCardContent(t *testing.T) {
 		ToolCalls: 7,
 		Child:     child,
 	}
-	out := stripANSI(renderSubagentCard(running, false, 80))
+	out := stripANSI(renderSubagentCard(running, false, "⠋", 80))
 	for _, want := range []string{"explore repo", "7 tool calls", "click to inspect"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("running card missing %q, got:\n%s", want, out)
@@ -208,15 +208,65 @@ func TestRenderSubagentCardContent(t *testing.T) {
 		ToolCalls: 3,
 		Summary:   "found three entry points",
 	}
-	collapsed := stripANSI(renderSubagentCard(done, false, 80))
+	collapsed := stripANSI(renderSubagentCard(done, false, "⠋", 80))
 	if strings.Contains(collapsed, "found three entry points") {
 		t.Fatalf("collapsed card must hide the summary, got:\n%s", collapsed)
 	}
 	if strings.Contains(collapsed, "click to inspect") {
 		t.Fatalf("childless card must not offer drill-down, got:\n%s", collapsed)
 	}
-	expanded := stripANSI(renderSubagentCard(done, true, 80))
+	expanded := stripANSI(renderSubagentCard(done, true, "⠋", 80))
 	if !strings.Contains(expanded, "found three entry points") {
 		t.Fatalf("expanded card should show the summary, got:\n%s", expanded)
+	}
+}
+
+func TestUpArrowPopsDrill(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+
+	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyUp})
+	if !handled {
+		t.Fatal("up arrow must be handled while drilled")
+	}
+	m = mm.(Model)
+	if len(m.viewStack) != 0 {
+		t.Fatalf("up arrow should pop the drill stack, len = %d", len(m.viewStack))
+	}
+}
+
+func TestDrilledChildShowsChildActiveTool(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	// Set an active tool on the child session.
+	child.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "file.read",
+		StartedAt: time.Now(),
+	})
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+	m.refreshViewport()
+
+	content := stripANSI(m.viewport.GetContent())
+	if !strings.Contains(content, "Read file") {
+		t.Fatalf("drilled view should show child's active tool 'Read file':\n%s", content)
+	}
+}
+
+func TestUpArrowRecallsHistoryWhenNotDrilled(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessage(session.RoleUser, "previous prompt", session.ContentTypePlain)
+	m.resetHistoryNav()
+
+	// Not drilled: up arrow should recall history, not pop drill.
+	mm, _, _ := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyUp})
+	// Whether handled depends on whether there is history to recall.
+	// The key assertion is that it does NOT crash and the view stack
+	// remains empty.
+	m = mm.(Model)
+	if len(m.viewStack) != 0 {
+		t.Fatal("up arrow should not affect view stack when not drilled")
 	}
 }

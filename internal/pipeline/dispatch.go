@@ -77,7 +77,16 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 		if label == "" {
 			label = truncateForError(prompt)
 		}
-		view = d.State.RegisterSubagent(fmt.Sprintf("%s · %s", role, label), runner.State)
+		meta := session.SubagentMeta{
+			Role: role,
+		}
+		if runner.Model != "" {
+			meta.Model = runner.Model
+		}
+		if runner.Provider != nil {
+			meta.Provider = runner.Provider.Name()
+		}
+		view = d.State.RegisterSubagentWithMeta(fmt.Sprintf("%s · %s", role, label), runner.State, meta)
 	}
 	task, err := runner.RunTask(ctx, prompt)
 	if err != nil {

@@ -472,7 +472,7 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, width int) string {
+func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, width int) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
@@ -498,7 +498,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 		if item.Subagent == nil {
 			return ""
 		}
-		return renderSubagentCard(*item.Subagent, detailExpanded, width)
+		return renderSubagentCard(*item.Subagent, detailExpanded, spinnerFrame, width)
 	case session.KindRunEvent:
 		if item.RunEvent == nil {
 			return ""
@@ -513,8 +513,8 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 // time while running (duration when finished), plus a hint that clicking
 // drills into the subagent's own transcript. When expanded (ctrl+g or a
 // per-item override) the subagent's final summary is appended below.
-func renderSubagentCard(v session.SubagentView, expanded bool, width int) string {
-	g := glyph.Agent
+func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame string, width int) string {
+	g := spinnerFrame
 	gutterColor := accentColor
 	style := statusBusyStyle()
 	switch v.Status {
@@ -527,9 +527,25 @@ func renderSubagentCard(v session.SubagentView, expanded bool, width int) string
 		gutterColor = theme.Current().StatusError
 		style = errorStyle()
 	}
+	if g == "" {
+		g = glyph.Running
+	}
 	gutter := gutterPrefix(g, gutterColor)
 
-	head := glyph.Agent + " " + v.Label
+	// The head line no longer prepends glyph.Agent — the gutter carries
+	// the sole status indicator (spinner for running, ✓ for done, ✗ for
+	// failed).
+	head := v.Label
+	if v.Model != "" {
+		if v.Provider != "" {
+			head += dimSeparator + fmt.Sprintf("%s @ %s", v.Model, v.Provider)
+		} else {
+			head += dimSeparator + v.Model
+		}
+	}
+	if v.Fallback {
+		head += dimSeparator + mutedStyle().Render("(fallback)")
+	}
 	if v.ToolCalls > 0 {
 		head += dimSeparator + fmt.Sprintf("%d tool calls", v.ToolCalls)
 	}

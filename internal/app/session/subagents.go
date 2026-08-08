@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 )
 
@@ -42,6 +43,23 @@ type SubagentView struct {
 	// Summary is the subagent's final report, captured when it finishes so
 	// the completed card (and the drilled-in view header) can show it.
 	Summary string
+
+	// Role, Provider, Model, and Fallback record the dispatched agent's
+	// route provenance so the TUI can display what model is actually
+	// running (or ran) each subagent. Populated by the pipeline
+	// dispatcher; defaults to zero values for non-pipeline subagents.
+	Role     routing.AgentRole
+	Provider string
+	Model    string
+	Fallback bool
+}
+
+// SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
+type SubagentMeta struct {
+	Role     routing.AgentRole
+	Provider string
+	Model    string
+	Fallback bool
 }
 
 // SubagentEvent is published on the subagent broker when a subagent is
@@ -78,7 +96,36 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 	return v
 }
 
-// FinishSubagent marks the subagent with the given ID done (or failed when
+// RegisterSubagentWithMeta records a new running subagent and returns its
+// view, carrying the dispatched agent's route provenance. It mirrors
+// RegisterSubagent but additionally records Role, Provider, Model, and
+// Fallback so the TUI can display what model is actually running (or ran)
+// the subagent.
+func (s *State) RegisterSubagentWithMeta(label string, child *State, meta SubagentMeta) SubagentView {
+	v := s.RegisterSubagent(label, child)
+	v.Role = meta.Role
+	v.Provider = meta.Provider
+	v.Model = meta.Model
+	v.Fallback = meta.Fallback
+	// Update the stored copy.
+	s.mu.Lock()
+	for i := range s.subagents {
+		if s.subagents[i].ID == v.ID {
+			s.subagents[i].Role = meta.Role
+			s.subagents[i].Provider = meta.Provider
+			s.subagents[i].Model = meta.Model
+			s.subagents[i].Fallback = meta.Fallback
+			break
+		}
+	}
+	broker := s.subagentBroker
+	s.mu.Unlock()
+	if broker != nil {
+		broker.Publish("subagent", SubagentEvent{View: v})
+	}
+	return v
+}
+
 // err != nil), records its end time and final summary, and republishes so
 // the card flips from the running spinner to its terminal state.
 func (s *State) FinishSubagent(id int64, summary string, err error) {

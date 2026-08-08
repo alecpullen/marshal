@@ -526,6 +526,29 @@ func TestWorkspaceMsgUpdatesGitInfoWhenDockOpen(t *testing.T) {
 	}
 }
 
+func TestStatusLineSDDTokensUnlimited(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSDDProgress(session.SDDProgress{
+		Active:     true,
+		TokensUsed: 886000,
+		TokensMax:  0, // unlimited
+	})
+	line := stripANSI(m.renderStatusLine(120))
+	if !strings.Contains(line, "sdd tokens") {
+		t.Fatalf("status line missing sdd tokens segment:\n%s", line)
+	}
+	if strings.Contains(line, "/0") {
+		t.Errorf("unlimited budget should not show /0:\n%s", line)
+	}
+	if strings.Contains(line, "/∞") {
+		t.Errorf("unlimited budget should not show /∞ (just omit denominator):\n%s", line)
+	}
+	// Should show the used amount.
+	if !strings.Contains(line, "886k") {
+		t.Errorf("status line should show used tokens:\n%s", line)
+	}
+}
+
 func TestStatusLineDropsHintsBeforePathAndWorktree(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetTrusted(true)

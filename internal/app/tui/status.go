@@ -226,9 +226,17 @@ func (m Model) statusLeftSegments() []statusSeg {
 		// The run panel owns task counts and phase; the status line keeps
 		// only the mode cue (modeSegment) and the token budget.
 		if sp.TokensMax > 0 || sp.TokensUsed > 0 {
-			segs = append(segs, statusSeg{text: fmt.Sprintf("sdd tokens %s/%s",
-				strutil.CompactTokens(sp.TokensUsed),
-				strutil.CompactTokens(sp.TokensMax)), priority: 6})
+			var seg string
+			if sp.TokensMax > 0 {
+				seg = fmt.Sprintf("sdd tokens %s/%s",
+					strutil.CompactTokens(sp.TokensUsed),
+					strutil.CompactTokens(sp.TokensMax))
+			} else {
+				// MaxTotalTokens == 0 means unlimited: show used only.
+				seg = fmt.Sprintf("sdd tokens %s",
+					strutil.CompactTokens(sp.TokensUsed))
+			}
+			segs = append(segs, statusSeg{text: seg, priority: 6})
 		}
 	}
 

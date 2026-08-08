@@ -204,6 +204,10 @@ func TestPickModelEmitsDone(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a capability-probe cmd")
 	}
+	view := ansi.Strip(m.View(80, 24))
+	if !strings.Contains(view, "please wait") || strings.Contains(view, "[↵] confirm") {
+		t.Fatalf("detecting view should show a wait-only footer, got:\n%s", view)
+	}
 
 	// Enter while still detecting must not advance the step.
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
@@ -243,6 +247,31 @@ func TestPickModelEmitsDone(t *testing.T) {
 	}
 	if dm.Model != "qwen2.5-coder:7b" {
 		t.Fatalf("DoneMsg.Model = %q", dm.Model)
+	}
+}
+
+func TestEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen3"}}})
+	m, _ = m.Update(pickerPicked("qwen3"))
+	oldRequestID := m.capProbeID
+	if !m.detectingCaps {
+		t.Fatal("expected capability detection to be active")
+	}
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.step != stepPickModel || m.detectingCaps {
+		t.Fatalf("Esc should cancel detection and return to model picker: step=%v detecting=%v", m.step, m.detectingCaps)
+	}
+
+	m, _ = m.Update(pickerPicked("qwen3"))
+	if m.capProbeID == oldRequestID || !m.detectingCaps {
+		t.Fatal("re-picking the model should start a new capability request")
+	}
+	m, _ = m.Update(presetflow.CapabilityProbedMsg{Provider: "ollama", Model: "qwen3", RequestID: oldRequestID})
+	if !m.detectingCaps {
+		t.Fatal("late result from the canceled request must not clear the new detection state")
 	}
 }
 
@@ -302,6 +331,22 @@ func TestPasteMsgIntoBaseURLInput(t *testing.T) {
 	updated, _ := m.Update(tea.PasteMsg{Content: "https://example.com/v1"})
 	if got := updated.input.Value(); got != "https://example.com/v1" {
 		t.Fatalf("input.Value() = %q, want %q", got, "https://example.com/v1")
+	}
+}
+
+func TestPasteMsgIntoConfirmLimitInput(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
+
+	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.Update(tea.PasteMsg{Content: "65536"})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.confirm.Limits.ContextWindow != 65536 {
+		t.Fatalf("pasted context window = %d, want 65536", m.confirm.Limits.ContextWindow)
+	}
+	if m.confirm.Limits.ContextSource != presetflow.SourceEdited {
+		t.Fatalf("pasted context source = %q, want %q", m.confirm.Limits.ContextSource, presetflow.SourceEdited)
 	}
 }
 
@@ -667,7 +712,7 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 // Ollama-backed provider (providerCfg.Type == "ollama") must call this after
 // the pick so a subsequent Enter can advance the confirm screen.
 func clearCaps(m *Model) {
-	m.Update(presetflow.CapabilityProbedMsg{Provider: m.providerName, Model: m.modelChosen})
+	m.Update(presetflow.CapabilityProbedMsg{Provider: m.providerName, Model: m.modelChosen, RequestID: m.capProbeID})
 }
 
 // newConnectForModelPick builds a Model at stepPickModel with a discovered

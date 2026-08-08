@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -23,6 +24,19 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/strutil"
 )
+
+// probeOnlyLimits is passed to provider.NewFromConfig for capability
+// probing; limit-table discovery already happened during model-list probe
+// and must not block the TUI while the confirmation screen is opening.
+const probeOnlyLimits = false
+
+// probeProviderFor builds a provider client for capability probing only.
+// Capability probing does not need the limit table (the bulk model probe
+// already populated it), so remote limit-table discovery is always
+// disabled to keep the confirmation screen responsive.
+func probeProviderFor(name string, pc config.ProviderConfig, dataDir string) (provider.Provider, error) {
+	return provider.NewFromConfig(name, pc, dataDir, probeOnlyLimits)
+}
 
 // BrowserOption customizes a BrowserPanel.
 type BrowserOption func(*BrowserPanel)
@@ -62,9 +76,11 @@ type BrowserPanel struct {
 	pickerOnPick func(string) error
 	pickerField  string
 
-	confirm       *presetflow.ConfirmState
-	confirmTarget *pendingMaterialization
-	detectingCaps bool
+	confirm        *presetflow.ConfirmState
+	confirmTarget  *pendingMaterialization
+	detectingCaps  bool
+	capProbeID     uint64
+	cancelCapProbe context.CancelFunc
 
 	pendingKey  string
 	saveBlocked string
@@ -255,7 +271,7 @@ func (b *BrowserPanel) collectionFields(query string) []*field {
 	var fields []*field
 	for _, spec := range sectionList() {
 		root := spec.Root(b.reg.st)
-		if root.List.OnAdd == nil && root.List.OnAddMsg == nil {
+		if root.List.OnAdd == nil && root.List.OnAddMsg == nil && len(root.List.Rows()) == 0 {
 			continue
 		}
 		haystack := spec.ID + " " + spec.Title + " collection"
@@ -342,6 +358,12 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 	// Forward paste to the active picker, the drilled pane stack, the field
 	// being edited, or the flat filter input.
 	if paste, ok := msg.(tea.PasteMsg); ok {
+		if b.confirm != nil {
+			if b.detectingCaps || !b.confirm.Editing() {
+				return nil
+			}
+			return b.confirm.UpdateInput(paste)
+		}
 		if b.pickerModel != nil {
 			return b.pickerModel.Update(paste)
 		}
@@ -478,6 +500,7 @@ func (b *BrowserPanel) closePicker() {
 // "detecting…" state never appears, and never hangs, for providers that
 // can't report anything beyond their bulk model list.
 func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
+	b.cancelCapabilityProbe()
 	lim := presetflow.Resolve(b.reg.st.discovered[pending.ProviderName], pending.ModelID)
 	if preset, ok := findPresetFor(b.reg.st, pending.ProviderName, pending.ModelID); ok {
 		lim = lim.WithPreset(preset.ContextWindow, preset.MaxOutputTokens)
@@ -486,7 +509,10 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	b.confirmTarget = &pending
 
 	pc := b.reg.st.cfg.Providers[pending.ProviderName]
-	prov, err := provider.NewFromConfig(pending.ProviderName, pc, b.reg.st.dataDir, b.reg.st.cfg.Privacy.RemoteLimitDiscovery)
+	// Capability probing only needs the provider client. Limit-table discovery
+	// already happened during model-list discovery and must not block the TUI
+	// while this confirmation screen is opening.
+	prov, err := probeProviderFor(pending.ProviderName, pc, b.reg.st.dataDir)
 	if err != nil {
 		return nil
 	}
@@ -494,21 +520,28 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 		return nil
 	}
 	b.detectingCaps = true
-	return presetflow.ProbeCapabilitiesCmd(prov, pending.ProviderName, pending.ModelID)
+	cmd, cancel := presetflow.ProbeCapabilitiesCmdWithCancel(prov, pending.ProviderName, pending.ModelID, b.capProbeID)
+	b.cancelCapProbe = cancel
+	return cmd
 }
 
 func (b *BrowserPanel) handleCapabilityProbed(msg presetflow.CapabilityProbedMsg) tea.Cmd {
-	if b.confirm == nil || b.confirmTarget == nil ||
+	if !b.detectingCaps || msg.RequestID != b.capProbeID || b.confirm == nil || b.confirmTarget == nil ||
 		msg.Provider != b.confirmTarget.ProviderName || msg.Model != b.confirmTarget.ModelID {
 		return nil // stale result from an abandoned confirm
 	}
-	b.detectingCaps = false
+	b.finishCapabilityProbe()
 	b.confirm.Limits = b.confirm.Limits.WithProbed(msg.Caps.ToolCalling, msg.Caps.ContextWindow)
 	return nil
 }
 
 func (b *BrowserPanel) handleConfirmKey(k tea.KeyPressMsg) tea.Cmd {
 	if b.detectingCaps {
+		if k.String() == "esc" {
+			b.cancelCapabilityProbe()
+			b.confirm, b.confirmTarget = nil, nil
+			b.pendingKey = ""
+		}
 		return nil
 	}
 	result, cmd := b.confirm.HandleKey(k)
@@ -516,15 +549,38 @@ func (b *BrowserPanel) handleConfirmKey(k tea.KeyPressMsg) tea.Cmd {
 	case presetflow.ConfirmDone:
 		target := *b.confirmTarget
 		pc := b.reg.st.cfg.Providers[target.ProviderName]
-		name := presetflow.Materialize(&b.reg.st.cfg, target.ProviderName, target.ModelID, pc.BaseURL, b.confirm.Limits)
+		name, err := presetflow.Materialize(&b.reg.st.cfg, target.ProviderName, target.ModelID, pc.BaseURL, b.confirm.Limits)
+		if err != nil {
+			b.confirm.Err = err.Error()
+			return nil
+		}
 		setRoleBinding(b.reg.st, target.Profile, target.Role, name)
 		b.confirm, b.confirmTarget = nil, nil
 		return b.flushChanges(nil, true)
 	case presetflow.ConfirmCancelled:
+		b.cancelCapabilityProbe()
 		b.confirm, b.confirmTarget = nil, nil
+		b.pendingKey = ""
 		return nil
 	}
 	return cmd
+}
+
+func (b *BrowserPanel) cancelCapabilityProbe() {
+	if b.cancelCapProbe != nil {
+		b.cancelCapProbe()
+		b.cancelCapProbe = nil
+	}
+	b.capProbeID++
+	b.detectingCaps = false
+}
+
+func (b *BrowserPanel) finishCapabilityProbe() {
+	if b.cancelCapProbe != nil {
+		b.cancelCapProbe()
+		b.cancelCapProbe = nil
+	}
+	b.detectingCaps = false
 }
 
 // flushChanges persists mutations and turns the reflected config diff into

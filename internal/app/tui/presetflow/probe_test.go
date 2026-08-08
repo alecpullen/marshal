@@ -77,3 +77,18 @@ func TestProbeCapabilitiesCmdReturnsZeroValueWhenNotAProber(t *testing.T) {
 		t.Errorf("msg.Caps = %+v, want zero value", msg.Caps)
 	}
 }
+
+func TestProbeCapabilitiesCmdCarriesRequestID(t *testing.T) {
+	toolCalling := true
+	prov := fakeProviderWithCaps{caps: provider.ModelCapabilities{ToolCalling: &toolCalling}}
+
+	cmd, cancel := ProbeCapabilitiesCmdWithCancel(prov, "ollama", "qwen3", 42)
+	defer cancel()
+	msg, ok := cmd().(CapabilityProbedMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want CapabilityProbedMsg", msg)
+	}
+	if msg.RequestID != 42 {
+		t.Fatalf("RequestID = %d, want 42", msg.RequestID)
+	}
+}

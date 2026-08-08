@@ -7,7 +7,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
-	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
@@ -17,6 +16,34 @@ func TestPresetsFrameHasNoManualAddAffordance(t *testing.T) {
 	built := frame
 	if built.List.OnAdd != nil {
 		t.Error("presetsFrame's collection must not allow manual add — presets are materialized automatically")
+	}
+}
+
+func TestPresetsFrameHasNoManualCopyAffordance(t *testing.T) {
+	s := profilesTestState()
+	row := presetsFrame(s).List.Rows()[0]
+	if row.Yank != nil || row.Paste != nil {
+		t.Fatal("presets must not be manually copied; materialization owns preset creation")
+	}
+}
+
+func TestPresetProviderAndModelFieldsAreReadOnly(t *testing.T) {
+	s := profilesTestState()
+	detail := presetsFrame(s).List.Rows()[0].Build()
+	for _, title := range []string{"Provider", "Model"} {
+		var found *field
+		for _, row := range detail.List.Rows() {
+			if row.Title == title {
+				found = row
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("preset detail is missing %s field", title)
+		}
+		if found.Kind != kindScalar || found.SetStr != nil || found.PickOnPick != nil {
+			t.Fatalf("preset %s field must be read-only, got kind=%v set=%v pick=%v", title, found.Kind, found.SetStr != nil, found.PickOnPick != nil)
+		}
 	}
 }
 
@@ -61,33 +88,6 @@ func TestProviderRowShowsEndpointAndKeySource(t *testing.T) {
 		if !strings.Contains(label, tt.wantPart) {
 			t.Errorf("provider %q row label = %q, want substring %q", tt.name, label, tt.wantPart)
 		}
-	}
-}
-
-func TestPresetProviderFieldIsKindPicker(t *testing.T) {
-	cfg := config.Default()
-	cfg.Providers = map[string]config.ProviderConfig{
-		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b"},
-	}
-	st := newState(cfg)
-	drill := presetsFrame(st).List.Rows()[0]
-	detail := drill.Build()
-
-	var providerRow *field
-	for _, r := range detail.List.Rows() {
-		if r.Title == "Provider" {
-			providerRow = r
-			break
-		}
-	}
-	if providerRow == nil {
-		t.Fatal("preset detail must have a Provider row")
-	}
-	if providerRow.Kind != kindPicker {
-		t.Fatalf("preset Provider row kind = %v, want kindPicker", providerRow.Kind)
 	}
 }
 
@@ -434,75 +434,6 @@ func TestLanguagesReorderMoveDown(t *testing.T) {
 	row0.MoveDown()
 	if st.cfg.Project.Languages[0] != "markdown" {
 		t.Fatalf("after moveDown, languages[0] = %q, want markdown", st.cfg.Project.Languages[0])
-	}
-}
-
-func TestModelPickerDiscoverRunsProbe(t *testing.T) {
-	cfg := config.Default()
-	cfg.Providers = map[string]config.ProviderConfig{
-		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b"},
-	}
-	st := newState(cfg)
-	drill := presetsFrame(st).List.Rows()[0]
-	detail := drill.Build()
-
-	var modelRow *field
-	for _, r := range detail.List.Rows() {
-		if r.Title == "Model" {
-			modelRow = r
-			break
-		}
-	}
-	if modelRow == nil {
-		t.Fatal("preset detail must have a Model row")
-	}
-
-	// pickOnPick with __discover__ for a local provider should queue a command
-	// and return nil error.
-	err := modelRow.PickOnPick("__discover__")
-	if err != nil {
-		t.Fatalf("pickOnPick(__discover__) for local provider = %v, want nil", err)
-	}
-	if st.pendingCmd == nil {
-		t.Fatal("pickOnPick(__discover__) should set state.pendingCmd")
-	}
-}
-
-func TestModelPickerDiscoverBlockedForRemote(t *testing.T) {
-	cfg := config.Default()
-	cfg.Privacy.RemoteProvidersAllowed = false
-	cfg.Providers = map[string]config.ProviderConfig{
-		"openrouter": {Type: "openai_compatible", BaseURL: "https://openrouter.ai/api/v1"},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "openrouter", Model: "claude-3.5-sonnet"},
-	}
-	st := newState(cfg)
-	drill := presetsFrame(st).List.Rows()[0]
-	detail := drill.Build()
-
-	var modelRow *field
-	for _, r := range detail.List.Rows() {
-		if r.Title == "Model" {
-			modelRow = r
-			break
-		}
-	}
-	if modelRow == nil {
-		t.Fatal("preset detail must have a Model row")
-	}
-
-	// pickOnPick with __discover__ for a remote provider with privacy off
-	// should return an error and NOT queue a command.
-	err := modelRow.PickOnPick("__discover__")
-	if err == nil {
-		t.Fatal("pickOnPick(__discover__) for remote provider with privacy off should return error")
-	}
-	if st.pendingCmd != nil {
-		t.Fatal("pickOnPick(__discover__) for remote provider should NOT set state.pendingCmd")
 	}
 }
 

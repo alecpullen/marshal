@@ -1496,6 +1496,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.dock.Update(pm)
 		}
 		return m, nil
+	case presetflow.CapabilityProbedMsg:
+		if _, ok := m.dock.Panel().(connect.Panel); ok {
+			return m, m.dock.Update(pm)
+		}
+		return m, nil
 	case picker.PickedMsg:
 		// Forward to panel overlays that host their own picker (agents roster,
 		// connect wizard). Their internal handlers will emit their own done
@@ -3693,7 +3698,7 @@ func (m *Model) cycleModel(forward bool) {
 	names := m.sortedPresetNames()
 	if len(names) == 0 {
 		m.state.AddMessage(session.RoleSystem,
-			"No model presets configured. Add one in /settings → Model Presets.",
+			"No model presets configured. Use /connect to add a provider or /profiles to assign a discovered model.",
 			session.ContentTypePlain)
 		m.refreshViewport()
 		return
@@ -3818,11 +3823,15 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		}
 		newCfg.Models.Presets = presets
 	}
-	presetName := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
+	presetName, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
 		ContextWindow:   msg.ContextWindow,
 		MaxOutputTokens: msg.MaxOutputTokens,
 		ToolCalling:     msg.ToolCalling,
 	})
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to materialize model preset: %v", err), session.ContentTypePlain)
+		return
+	}
 
 	if newCfg.AgentProfiles == nil {
 		newCfg.AgentProfiles = map[string]routing.AgentProfile{}

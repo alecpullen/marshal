@@ -27,6 +27,7 @@ import (
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/settings"
@@ -3688,6 +3689,9 @@ func TestAltMNoPresetsShowsGuidance(t *testing.T) {
 	if !strings.Contains(last.Content, "No model presets configured") {
 		t.Fatalf("message = %q, want guidance about presets", last.Content)
 	}
+	if strings.Contains(last.Content, "Add one in /settings") {
+		t.Fatalf("message advertises removed manual preset creation: %q", last.Content)
+	}
 }
 
 func TestAltMBlockedWhileBusy(t *testing.T) {
@@ -4561,9 +4565,31 @@ func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir strin
 	return
 }
 
+func TestApplyConnectDoneMaterializeCollisionSurfacesError(t *testing.T) {
+	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "other", Model: "other"},
+	}
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen3",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	})
+	m = asModel(t, updated)
+	last := m.state.Messages()[len(m.state.Messages())-1]
+	if !strings.HasPrefix(last.Content, "✗") || !strings.Contains(last.Content, "already used") {
+		t.Fatalf("materialize collision should surface an error, got %q", last.Content)
+	}
+	if got := m.state.Config.Models.Presets["ollama/qwen3"].Provider; got != "other" {
+		t.Fatalf("collision must not overwrite the occupant, got provider %q", got)
+	}
+}
+
 func TestApplyConnectDoneWritesAPresetAndProfile(t *testing.T) {
 	m, workDir, _ := newModelForConfigTest(t)
 
+	_ = workDir
 	m.applyConnectDone(connect.DoneMsg{
 		Provider:    "openai",
 		Model:       "gpt-4o",
@@ -5006,6 +5032,28 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
 		t.Fatalf("success receipt = %q", got)
+	}
+}
+
+func TestModelsRoutesCapabilityProbeToConnectPanel(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+	}
+	m.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen3"}}
+
+	updated, _ := m.dispatchCommand("/models")
+	m = asModel(t, updated)
+	updated, _ = m.Update(picker.PickedMsg{Value: "qwen3"})
+	m = asModel(t, updated)
+	if m.connectModel == nil || !strings.Contains(stripANSI(m.connectModel.View(80, 24)), "detecting model capabilities") {
+		t.Fatal("Ollama model pick should wait for capability detection")
+	}
+
+	updated, _ = m.Update(presetflow.CapabilityProbedMsg{Provider: "ollama", Model: "qwen3", RequestID: 1})
+	m = asModel(t, updated)
+	if strings.Contains(stripANSI(m.connectModel.View(80, 24)), "detecting model capabilities") {
+		t.Fatal("outer model should route CapabilityProbedMsg to connect")
 	}
 }
 

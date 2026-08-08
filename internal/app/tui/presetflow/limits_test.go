@@ -72,3 +72,11 @@ func TestWithProbedOverridesToolCallingAndFillsContext(t *testing.T) {
 		t.Errorf("ContextWindow=%d Source=%q, want 40960/probed", got.ContextWindow, got.ContextSource)
 	}
 }
+
+func TestWithProbedOverridesKnownContext(t *testing.T) {
+	lim := Limits{ContextWindow: 32768, ContextSource: SourceCatalog}
+	got := lim.WithProbed(nil, 65536)
+	if got.ContextWindow != 65536 || got.ContextSource != SourceProbed {
+		t.Errorf("ContextWindow=%d Source=%q, want 65536/probed", got.ContextWindow, got.ContextSource)
+	}
+}

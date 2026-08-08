@@ -12,6 +12,9 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/presetflow"
+	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 // stripANSI removes ANSI escape sequences from text so test assertions
@@ -243,6 +246,78 @@ func TestBrowserCollectionRowShowsSectionTitle(t *testing.T) {
 	view := b.View(80, 24)
 	if !strings.Contains(view, "Providers") {
 		t.Fatalf("collection row should show the section title, got:\n%s", view)
+	}
+}
+
+func TestBrowserShowsExistingReadOnlyPresetsCollection(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen3": {
+			Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3",
+		},
+	}
+	b := NewBrowser(cfg, "", "presets")
+	fields := b.collectionFields("presets")
+	if len(fields) != 1 || fields[0].Title != "Model Presets" {
+		t.Fatalf("populated read-only preset collection should be visible, got %#v", fields)
+	}
+}
+
+func TestBrowserPasteRoutesToConfirmLimitInput(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"coding": {Name: "coding", Roles: map[routing.AgentRole]routing.RoleBinding{}},
+	}
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "")
+	b.confirm = presetflow.NewConfirmState(presetflow.Limits{ContextSource: presetflow.SourceUnknown})
+	b.confirmTarget = &pendingMaterialization{
+		Profile: "coding", Role: routing.RoleImplementer,
+		ProviderName: "openai", ModelID: "unknown-model",
+	}
+
+	b.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	b.Update(tea.PasteMsg{Content: "65536"})
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	preset, ok := b.reg.Config().Models.Presets["openai/unknown-model"]
+	if !ok {
+		t.Fatal("confirming the overlay should materialize the selected model")
+	}
+	if preset.ContextWindow != 65536 {
+		t.Fatalf("pasted context window = %d, want 65536", preset.ContextWindow)
+	}
+}
+
+func TestBrowserEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+	}
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "")
+	b.reg.st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen3"}}
+	target := pendingMaterialization{
+		Profile: "coding", Role: routing.RoleImplementer,
+		ProviderName: "ollama", ModelID: "qwen3",
+	}
+	if cmd := b.startConfirm(target); cmd == nil || !b.detectingCaps {
+		t.Fatal("Ollama confirm should start capability detection")
+	}
+	oldRequestID := b.capProbeID
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if b.confirm != nil || b.detectingCaps {
+		t.Fatal("Esc should cancel the active capability probe")
+	}
+
+	if cmd := b.startConfirm(target); cmd == nil || !b.detectingCaps {
+		t.Fatal("restarting confirm should start a new capability probe")
+	}
+	b.Update(presetflow.CapabilityProbedMsg{Provider: "ollama", Model: "qwen3", RequestID: oldRequestID})
+	if !b.detectingCaps {
+		t.Fatal("late result from the canceled request must not clear new detection")
 	}
 }
 

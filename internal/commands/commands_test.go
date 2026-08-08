@@ -127,6 +127,16 @@ func TestRegisterAll(t *testing.T) {
 	if !optCmd.TUIOnly {
 		t.Error("/options should be TUIOnly")
 	}
+	profCmd, ok := cmdReg.Lookup("profiles")
+	if !ok {
+		t.Fatal("/profiles not registered")
+	}
+	if profCmd.Group != "Models & providers" {
+		t.Errorf("/profiles group = %q, want Models & providers", profCmd.Group)
+	}
+	if !profCmd.TUIOnly {
+		t.Error("/profiles should be TUIOnly")
+	}
 }
 
 func TestHelpCommandReturnsGroupedDoc(t *testing.T) {

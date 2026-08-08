@@ -21,9 +21,10 @@ import (
 type RegistryScope int
 
 const (
-	ScopeFull     RegistryScope = iota // implementer: full registry (sole writer)
-	ScopeReadOnly                      // planner, scouts, reviewer
-	ScopeTester                        // tester: read-only plus command execution
+	ScopeFull           RegistryScope = iota // implementer: full registry (sole writer)
+	ScopeReadOnly                            // planner, scouts, reviewer
+	ScopeTester                              // tester: read-only plus command execution
+	ScopeArtifactWriter                      // read-only source + artifact-only writes (pipeline reviewers)
 )
 
 // RunnerFactory builds a role-specific agent.Runner. Implementations must

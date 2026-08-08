@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -44,6 +45,7 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/jsonextract"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -79,6 +81,12 @@ type AgentRunner interface {
 // by buildCustomAgentRunner to dispatch Run-now. Returns nil when the agent
 // name is unknown or the factory is not available.
 type CustomAgentRunnerFactory func(agentName string) (AgentRunner, error)
+
+// SubagentRunnerFactory builds a fresh child *agent.Runner bound to a fresh
+// child session. It mirrors agent.SubagentRunnerFactory without importing
+// internal/agent, keeping the TUI a rendering layer. Used by the /sdd
+// offer-to-fill flow to run a one-shot proposal task.
+type SubagentRunnerFactory func(agentName string) (AgentRunner, error)
 
 const (
 	minTerminalWidth  = 80
@@ -321,6 +329,11 @@ type Model struct {
 	// agent. Wired from app.go; used by buildCustomAgentRunner for Run-now.
 	customAgentFactory CustomAgentRunnerFactory
 
+	// subagentFactory builds a fresh child *agent.Runner for a one-shot
+	// proposal task. Wired from app.go; used by the /sdd offer-to-fill flow
+	// to propose build/test commands when none can be detected.
+	subagentFactory SubagentRunnerFactory
+
 	// pendingModelOptions holds a config candidate saved while the runner
 	// or background jobs are active. It is flushed when the model becomes
 	// idle and applies via the configured reloader.
@@ -354,6 +367,11 @@ type Model struct {
 type pendingAgentRun struct {
 	runner AgentRunner
 	goal   string
+	// verifyBuild/verifyTest hold commands proposed by the offer-to-fill
+	// flow. When set, they are persisted to project config on confirm and
+	// used for this run.
+	verifyBuild string
+	verifyTest  string
 }
 
 type Option func(*Model)
@@ -527,6 +545,15 @@ func WithWorkspaceBroker(ctx context.Context, broker *pubsub.Broker[session.Work
 func WithCustomAgentRunnerFactory(fn CustomAgentRunnerFactory) Option {
 	return func(m *Model) {
 		m.customAgentFactory = fn
+	}
+}
+
+// WithSubagentFactory wires a factory that builds a one-shot AgentRunner for
+// a proposal task. Used by the /sdd offer-to-fill flow to propose build/test
+// commands when none can be detected.
+func WithSubagentFactory(fn SubagentRunnerFactory) Option {
+	return func(m *Model) {
+		m.subagentFactory = fn
 	}
 }
 
@@ -1570,6 +1597,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
+		// Persist proposed verify commands to project config before the run
+		// starts. A write failure warns but never blocks the run.
+		if run.verifyBuild != "" || run.verifyTest != "" {
+			if err := config.SaveVerifyCommands(projectConfigPath(m.state.WorkingDir), run.verifyBuild, run.verifyTest); err != nil {
+				m.state.AddMessage(session.RoleSystem,
+					fmt.Sprintf("✗ verify commands apply to this run but could not be persisted: %v", err),
+					session.ContentTypePlain)
+			} else {
+				m.state.AddMessage(session.RoleSystem,
+					"✓ verify commands persisted to "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
+					session.ContentTypePlain)
+			}
+		}
 		// Pass the selected strategy to the runner.
 		if start, ok := msg.(castlist.StartMsg); ok {
 			if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
@@ -1582,10 +1622,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingRun = nil
 		m.refreshViewport()
 		return m, nil
+	case verifyProposeMsg:
+		if pm.err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ could not propose verify commands: %v", pm.err), session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		// Stash the proposed commands for this run and re-render the gate
+		// row so the user sees exactly what will run. Persistence happens on
+		// confirm (castlist.StartMsg), not here.
+		if m.pendingRun != nil {
+			m.pendingRun.verifyBuild = pm.build
+			m.pendingRun.verifyTest = pm.test
+		}
+		if p, ok := m.dock.Panel().(*castlist.Panel); ok {
+			detail := strings.TrimSpace(pm.build + " · " + pm.test)
+			if detail == "" {
+				detail = "no commands proposed"
+			}
+			p.SetVerifyRow(strutil.Truncate(detail, 44, true))
+		}
+		m.state.AddMessage(session.RoleSystem,
+			"Proposed verify commands: "+strings.TrimSpace(pm.build+" · "+pm.test)+". Press Enter to run with them (persisted to .marshal/config.toml), or Esc to cancel.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
 	}
 	if m.dock.IsOpen() {
 		switch msg.(type) {
 		case tea.KeyPressMsg, tea.PasteMsg:
+			// Offer-to-fill: while the /sdd preflight is open and the verify
+			// gate is unknown, `f` dispatches a one-shot proposal task instead
+			// of falling through to the dock.
+			if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "f" && m.pendingRun != nil && m.pendingRun.verifyBuild == "" && m.pendingRun.verifyTest == "" {
+				if p, ok := m.dock.Panel().(*castlist.Panel); ok {
+					if p.VerifyGateUnknown() {
+						m.state.AddMessage(session.RoleSystem,
+							"Proposing verify commands from the repository…", session.ContentTypePlain)
+						m.refreshViewport()
+						return m, m.startVerifyProposal()
+					}
+				}
+			}
 			return m, m.dock.Update(msg)
 		default:
 			// A panel's own async results (install finished, scan returned)
@@ -2725,18 +2804,27 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		rows = append(rows, row)
 	}
 	if kind == "sdd" {
-		v := m.state.Config.SDD.Verify
-		row := castlist.Row{Title: "verify gate"}
-		switch {
-		case v.Build == "" && v.Test == "":
-			row.Warn = "no build or test command configured — every task's gate will be skipped"
-		default:
-			row.Detail = strutil.Truncate(strings.TrimSpace(v.Build+" · "+v.Test), 44, true)
-		}
-		rows = append(rows, row)
+		rows = append(rows, verifyGateRow(m.state.Config, m.state.WorkingDir))
 	}
 	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
 	m.dock.Open(castlist.New(title, rows, meta, "agent"))
+}
+
+// verifyGateRow renders the verify-gate row for the /sdd preflight. It uses
+// the same resolver as the gate itself so the UI always shows what will run.
+func verifyGateRow(cfg config.Config, repoRoot string) castlist.Row {
+	row := castlist.Row{Title: "verify gate"}
+	res := pipeline.ResolveVerifyCommands(repoRoot, cfg.SDD.Verify.Build, cfg.SDD.Verify.Test)
+	if !res.Known {
+		row.Warn = "no build or test command configured — press f to propose one"
+		return row
+	}
+	detail := strings.TrimSpace(res.Build + " · " + res.Test)
+	if res.Build != cfg.SDD.Verify.Build || res.Test != cfg.SDD.Verify.Test {
+		detail += " (detected)"
+	}
+	row.Detail = strutil.Truncate(detail, 44, true)
+	return row
 }
 
 // startAgentRun begins a turn on runner with goal, wiring cancellation and
@@ -2758,6 +2846,68 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 type agentFinishedMsg struct{ err error }
 type agentTickMsg struct{}
 type spinnerTickMsg struct{}
+
+// verifyProposeMsg carries the result of a one-shot proposal task that
+// inspects the repo and proposes build/test commands for the verify gate.
+type verifyProposeMsg struct {
+	build, test string
+	err         error
+}
+
+// startVerifyProposal dispatches a one-shot sub-agent that inspects the
+// repo and proposes build/test commands, reporting via verifyProposeMsg. It
+// runs in the background while the preflight dock stays open; the result is
+// surfaced on the verify-gate row for the user to approve or edit.
+func (m *Model) startVerifyProposal() tea.Cmd {
+	return func() tea.Msg {
+		if m.subagentFactory == nil {
+			return verifyProposeMsg{err: errors.New("no subagent factory wired")}
+		}
+		runner, err := m.subagentFactory("")
+		if err != nil {
+			return verifyProposeMsg{err: fmt.Errorf("build proposal runner: %w", err)}
+		}
+		if runner == nil {
+			return verifyProposeMsg{err: errors.New("proposal runner is nil")}
+		}
+		prompt := "Inspect this repository and return exactly one JSON object with \"build\" and \"test\" fields: the shell commands (argv, no pipes) to compile and test it, or empty strings if a step does not apply. Only propose commands that will actually work."
+		if err := runner.Run(m.ctx, prompt); err != nil {
+			return verifyProposeMsg{err: fmt.Errorf("proposal task failed: %w", err)}
+		}
+		// The runner's final message holds the structured output; read it
+		// from the session transcript.
+		build, test, err := m.proposalFromSession()
+		return verifyProposeMsg{build: build, test: test, err: err}
+	}
+}
+
+// proposalFromSession extracts the build/test proposal from the last user
+// turn's assistant output in the session transcript.
+func (m *Model) proposalFromSession() (build, test string, err error) {
+	msgs := m.state.Messages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != session.RoleAssistant {
+			continue
+		}
+		raw := msgs[i].Content
+		if raw == "" {
+			continue
+		}
+		text, rerr := jsonextract.Extract(raw)
+		if rerr != nil {
+			continue
+		}
+		var p struct {
+			Build string `json:"build"`
+			Test  string `json:"test"`
+		}
+		if json.Unmarshal([]byte(text), &p) != nil {
+			continue
+		}
+		return p.Build, p.Test, nil
+	}
+	return "", "", errors.New("proposal task returned no parseable JSON")
+}
 
 // runAgentCmd wraps an agent turn into a Bubble Tea command that
 // registers session work via BeginWork on construction and releases it

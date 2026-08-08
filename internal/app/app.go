@@ -1257,6 +1257,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 					return runner, err
 				},
 			))
+			tuiOpts = append(tuiOpts, tui.WithSubagentFactory(
+				func(agentName string) (tui.AgentRunner, error) {
+					runner, _, err := rt.CustomAgentFactory(agentName)
+					return runner, err
+				},
+			))
 		}
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))

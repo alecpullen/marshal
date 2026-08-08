@@ -57,6 +57,36 @@ func SaveProjectConfig(path string, cfg Config) error {
 	return nil
 }
 
+// SaveVerifyCommands persists just the [sdd.verify] build/test fields to the
+// project config at path, preserving all other sections and fields. It is
+// used by the /sdd offer-to-fill flow; a write failure must not block the run.
+func SaveVerifyCommands(path, build, test string) error {
+	file, err := loadFile(path)
+	if err != nil {
+		return fmt.Errorf("load existing project config: %w", err)
+	}
+	if file.SDD == nil {
+		file.SDD = &fileSDD{}
+	}
+	if file.SDD.Verify == nil {
+		file.SDD.Verify = &fileSDDVerify{}
+	}
+	file.SDD.Verify.Build = strutil.Ptr(build)
+	file.SDD.Verify.Test = strutil.Ptr(test)
+
+	data, err := toml.Marshal(&file)
+	if err != nil {
+		return fmt.Errorf("marshal project config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write project config: %w", err)
+	}
+	return nil
+}
+
 // SaveUserConfigSection writes the editable sections of cfg to the user-global
 // config file at path, preserving unrelated sections already present. It
 // mirrors SaveProjectConfig's section-preservation logic against the global

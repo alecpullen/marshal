@@ -52,6 +52,31 @@ func New(title string, rows []Row, meta []string, strategy string) *Panel {
 	return &Panel{title: title, rows: rows, meta: meta, strategy: strategy}
 }
 
+// SetVerifyRow updates the verify-gate row's detail after a proposal fills
+// in commands, clearing its warning. It is a no-op when the panel has no
+// verify-gate row.
+func (p *Panel) SetVerifyRow(detail string) {
+	for i := len(p.rows) - 1; i >= 0; i-- {
+		if p.rows[i].Title == "verify gate" {
+			p.rows[i].Warn = ""
+			p.rows[i].Detail = detail
+			return
+		}
+	}
+}
+
+// VerifyGateUnknown reports whether the verify-gate row is in the unknown
+// state (a warning present and no detail), meaning the offer-to-fill flow
+// should be offered.
+func (p *Panel) VerifyGateUnknown() bool {
+	for i := len(p.rows) - 1; i >= 0; i-- {
+		if p.rows[i].Title == "verify gate" {
+			return p.rows[i].Warn != "" && p.rows[i].Detail == ""
+		}
+	}
+	return false
+}
+
 // blocked reports whether any row has a non-empty Err.
 func (p *Panel) blocked() bool {
 	for _, r := range p.rows {

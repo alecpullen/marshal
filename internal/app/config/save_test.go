@@ -12,6 +12,42 @@ import (
 	"marshal/internal/llm/routing"
 )
 
+func TestSaveVerifyCommandsPreservesOtherFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`[sdd]
+verify_timeout_ms = 600000
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveVerifyCommands(path, "make build", "make test"); err != nil {
+		t.Fatalf("SaveVerifyCommands: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	s := string(data)
+	if !strings.Contains(s, "make build") || !strings.Contains(s, "make test") {
+		t.Fatalf("commands not persisted:\n%s", s)
+	}
+	if !strings.Contains(s, "600000") {
+		t.Errorf("verify_timeout_ms clobbered:\n%s", s)
+	}
+}
+
+func TestSaveVerifyCommandsCreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SaveVerifyCommands(path, "go build ./...", "go test ./..."); err != nil {
+		t.Fatalf("SaveVerifyCommands: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "go build ./...") {
+		t.Fatalf("created file missing build:\n%s", data)
+	}
+}
+
 func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

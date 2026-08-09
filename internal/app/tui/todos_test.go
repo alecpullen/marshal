@@ -171,6 +171,24 @@ func TestTodoPanelClipsToBudgetAndKeepsInProgressVisible(t *testing.T) {
 	}
 }
 
+func TestTodoPanelNoBlankFirstRowWhenClipped(t *testing.T) {
+	// 14 tasks with 8 done pushes the in-progress item to index 8.
+	// The panel collapses the leading completed run to one summary line,
+	// then clips the remaining rows. The first clipped row must be real
+	// content, not a blank placeholder from chrome.ClipLines.
+	todos := sampleTodos(14, 8, 8)
+	out := stripANSI(renderTodoPanelBody(todos, todoPanelExpanded, 40, 80))
+	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(rows) < 2 {
+		t.Fatalf("panel too short to inspect:\n%s", out)
+	}
+	for i, row := range rows {
+		if strings.TrimSpace(row) == "" {
+			t.Fatalf("row %d is blank:\n%s", i, out)
+		}
+	}
+}
+
 func TestTodoPanelRespectsShortFrames(t *testing.T) {
 	todos := sampleTodos(9, 2, 2)
 	// A 24-row frame gives an 8-row budget (33%).

@@ -212,8 +212,8 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			ds := p.descriptors()
 			for _, d := range ds {
 				if d.id == row.ID {
-					oldVal, _ := d.values(oldPreset)
-					_, newVal := d.values(newPreset)
+					oldVal := d.valueString(oldPreset)
+					newVal := d.valueString(newPreset)
 					return tea.Batch(cmd, func() tea.Msg {
 						return ChangedMsg{
 							Config:     cloneConfig(p.cfg),
@@ -230,25 +230,25 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// values renders the old and new value strings for a descriptor against the
-// given preset, for the ChangedMsg receipt.
-func (d descriptor) values(preset routing.ModelPreset) (old, new string) {
+// valueString renders a descriptor's current value as a display string for
+// the ChangedMsg receipt.
+func (d descriptor) valueString(preset routing.ModelPreset) string {
 	switch {
 	case d.setInt != nil:
 		v := d.getInt(preset)
 		if v == 0 {
-			return "automatic", "automatic"
+			return "automatic"
 		}
-		return strconv.Itoa(v), strconv.Itoa(v)
+		return strconv.Itoa(v)
 	case d.setStr != nil:
-		return d.getStr(preset), d.getStr(preset)
+		return d.getStr(preset)
 	case d.setBool != nil:
 		if d.getBool(preset) {
-			return "on", "on"
+			return "on"
 		}
-		return "off", "off"
+		return "off"
 	}
-	return "", ""
+	return ""
 }
 
 // View renders the panel inside the dock's dimensions.

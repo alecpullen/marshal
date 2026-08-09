@@ -1,6 +1,11 @@
 package config
 
-import "marshal/internal/llm/routing"
+import (
+	"maps"
+	"strings"
+
+	"marshal/internal/llm/routing"
+)
 
 // RoutingConfig converts the Config into a routing.Config for the static
 // router. It maps agent role configurations to context budgets and copies
@@ -21,7 +26,7 @@ func (c Config) RoutingConfig() routing.Config {
 	for name, p := range c.Providers {
 		providerBaseURLs[name] = p.BaseURL
 	}
-	profiles := c.AgentProfiles
+	profiles := maps.Clone(c.AgentProfiles)
 	if profiles == nil {
 		profiles = map[string]routing.AgentProfile{}
 	}
@@ -58,6 +63,19 @@ func synthesizeSingleModelProfile(c Config, profiles map[string]routing.AgentPro
 	}
 	if presetName == "" {
 		return nil
+	}
+	// Guard against a stale ActivePreset: if the preset it names no longer
+	// exists and no provider is configured for it, don't revive it. This
+	// handles the edge case where the default profile was switched to a
+	// custom one and the preset was later deleted.
+	if _, ok := c.Models.Presets[presetName]; !ok {
+		provider, _, hasSlash := strings.Cut(presetName, "/")
+		if !hasSlash || provider == "" {
+			return nil
+		}
+		if _, known := c.Providers[provider]; !known {
+			return nil
+		}
 	}
 	p := routing.SingleModelProfile(c.Profile.Default, presetName)
 	return &p

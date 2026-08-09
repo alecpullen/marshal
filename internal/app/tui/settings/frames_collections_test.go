@@ -173,6 +173,27 @@ func TestProviderRenameCascadesToPresetsAndDiscovered(t *testing.T) {
 	}
 }
 
+func TestSettingsModelPickerUsesStoredTemplateID(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"work-openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
+	}
+	st := newState(cfg)
+	f := modelPickerField(st, "test.model",
+		func() string { return "work-openai" },
+		func() string { return "gpt-4o" },
+		func(string) error { return nil })
+	found := false
+	for _, it := range f.PickOptions() {
+		if it.Label == "gpt-4o" && strings.Contains(it.Badge, "catalog") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected catalog model from stored template ID")
+	}
+}
+
 func TestProviderBaseURLEditInvalidatesDiscovery(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{

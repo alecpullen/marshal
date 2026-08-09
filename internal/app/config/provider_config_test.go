@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
@@ -33,5 +34,30 @@ thinking_budget = 4096
 	}
 	if got := cfg.Providers["local"].ThinkingBudget; got != 0 {
 		t.Fatalf("unset ThinkingBudget = %d, want 0", got)
+	}
+}
+
+func TestProviderConfigTemplateRoundTrip(t *testing.T) {
+	var cfg struct {
+		Providers map[string]ProviderConfig `toml:"providers"`
+	}
+	doc := `
+[providers.work]
+type = "openai_compatible"
+base_url = "https://api.openai.com/v1"
+template = "openai"
+`
+	if err := toml.Unmarshal([]byte(doc), &cfg); err != nil {
+		t.Fatalf("toml.Unmarshal: %v", err)
+	}
+	if got := cfg.Providers["work"].Template; got != "openai" {
+		t.Fatalf("Template = %q, want openai", got)
+	}
+	out, err := toml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("toml.Marshal: %v", err)
+	}
+	if strings.Contains(string(out), `template = ""`) {
+		t.Fatalf("empty template should be omitted, got:\n%s", out)
 	}
 }

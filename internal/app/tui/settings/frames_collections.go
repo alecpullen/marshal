@@ -228,13 +228,19 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 					}
 					items = append(items, picker.Item{Label: mi.ID, Value: mi.ID, Badge: badge})
 				}
-			} else if tpl, ok := provider.Lookup(pn); ok && len(tpl.Models) > 0 {
-				for _, m := range tpl.Models {
-					badge := "\u25cb catalog"
-					if m == current {
-						badge = "\u25cf now \u25cb catalog"
+			} else if pc, ok := s.cfg.Providers[pn]; ok {
+				tplID := pn
+				if pc.Template != "" {
+					tplID = pc.Template
+				}
+				if tpl, ok := provider.Lookup(tplID); ok && len(tpl.Models) > 0 {
+					for _, mdl := range tpl.Models {
+						badge := "\u25cb catalog"
+						if mdl == current {
+							badge = "\u25cf now \u25cb catalog"
+						}
+						items = append(items, picker.Item{Label: mdl, Value: mdl, Badge: badge})
 					}
-					items = append(items, picker.Item{Label: m, Value: m, Badge: badge})
 				}
 			} else {
 				items = []picker.Item{{Label: "Discover models via probe", Value: "__discover__", Badge: "refresh"}}

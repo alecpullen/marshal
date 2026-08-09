@@ -330,6 +330,7 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	var finishReason string
 	var usage *schema.TokenUsage
 	toolBuffers := make(map[int]*streamingToolCallBuffer)
+	var thinkParser inlineThinkParser
 
 	for dec.Next() {
 		data := strings.TrimSpace(dec.Event().Data)
@@ -360,7 +361,13 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: choice.Delta.ReasoningContent}
 		}
 		if choice.Delta.Content != "" {
-			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: choice.Delta.Content}
+			content, thinking := thinkParser.feed(choice.Delta.Content)
+			if thinking != "" {
+				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: thinking}
+			}
+			if content != "" {
+				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
+			}
 		}
 		for _, call := range choice.Delta.ToolCalls {
 			buf := toolBuffers[call.Index]
@@ -378,6 +385,17 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
 		return
 	}
+
+	// Flush any trailing bytes from the inline think parser.
+	if content, thinking := thinkParser.flush(); content != "" || thinking != "" {
+		if thinking != "" {
+			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: thinking}
+		}
+		if content != "" {
+			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
+		}
+	}
+
 	events <- schema.ChatEvent{
 		Type:         schema.ChatEventDone,
 		FinishReason: finishReason,

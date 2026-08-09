@@ -3363,8 +3363,11 @@ func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("exact preset arg must switch directly, no overlay")
 	}
-	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "anthropic/sonnet-5" {
-		t.Fatalf("direct switch should reload with anthropic/sonnet-5, got %+v", reloaded)
+	if reloaded == nil || reloaded.Profile.Default != singleModelProfileName {
+		t.Fatalf("direct switch should set default profile to single, got %+v", reloaded)
+	}
+	if _, ok := reloaded.Models.Presets["anthropic/sonnet-5"]; !ok {
+		t.Fatalf("direct switch should keep the anthropic/sonnet-5 preset, got %+v", reloaded.Models.Presets)
 	}
 }
 
@@ -3378,8 +3381,11 @@ func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("model-ID arg must switch directly, no overlay")
 	}
-	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5" {
-		t.Fatalf("model-ID switch should reload with ollama/qwen2.5, got %+v", reloaded)
+	if reloaded == nil || reloaded.Profile.Default != singleModelProfileName {
+		t.Fatalf("model-ID switch should set default profile to single, got %+v", reloaded)
+	}
+	if _, ok := reloaded.Models.Presets["ollama/qwen2.5"]; !ok {
+		t.Fatalf("model-ID switch should keep the ollama/qwen2.5 preset, got %+v", reloaded.Models.Presets)
 	}
 }
 
@@ -3403,8 +3409,11 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("pick should close the modal")
 	}
-	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5" {
-		t.Fatalf("pick should reload with ollama/qwen2.5, got %+v", reloaded)
+	if reloaded == nil || reloaded.Profile.Default != singleModelProfileName {
+		t.Fatalf("pick should set default profile to single, got %+v", reloaded)
+	}
+	if _, ok := reloaded.Models.Presets["ollama/qwen2.5"]; !ok {
+		t.Fatalf("pick should keep the ollama/qwen2.5 preset, got %+v", reloaded.Models.Presets)
 	}
 }
 
@@ -3772,9 +3781,12 @@ func TestAltMCyclesModelForward(t *testing.T) {
 	if reloaded == nil {
 		t.Fatal("configReloader was not called")
 	}
-	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "anthropic/sonnet-5" {
-		t.Fatalf("configReloader preset = %q, want \"anthropic/sonnet-5\"",
-			reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset)
+	if reloaded.Profile.Default != singleModelProfileName {
+		t.Fatalf("configReloader default profile = %q, want single",
+			reloaded.Profile.Default)
+	}
+	if _, ok := reloaded.Models.Presets["anthropic/sonnet-5"]; !ok {
+		t.Fatalf("configReloader should keep the anthropic/sonnet-5 preset, got %+v", reloaded.Models.Presets)
 	}
 	// A confirmation system message should appear
 	msgs := state.Messages()
@@ -3805,9 +3817,12 @@ func TestAltShiftMCyclesModelBackward(t *testing.T) {
 	if reloaded == nil {
 		t.Fatal("configReloader was not called")
 	}
-	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5" {
-		t.Fatalf("configReloader preset = %q, want \"ollama/qwen2.5\"",
-			reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset)
+	if reloaded.Profile.Default != singleModelProfileName {
+		t.Fatalf("configReloader default profile = %q, want single",
+			reloaded.Profile.Default)
+	}
+	if _, ok := reloaded.Models.Presets["ollama/qwen2.5"]; !ok {
+		t.Fatalf("configReloader should keep the ollama/qwen2.5 preset, got %+v", reloaded.Models.Presets)
 	}
 }
 
@@ -4724,10 +4739,8 @@ func TestApplyConnectDoneMaterializeCollisionSurfacesError(t *testing.T) {
 	}
 }
 
-func TestApplyConnectDoneWritesAPresetAndProfile(t *testing.T) {
+func TestApplyConnectDoneWritesAPresetAndPair(t *testing.T) {
 	m, workDir, _ := newModelForConfigTest(t)
-
-	_ = workDir
 	m.applyConnectDone(connect.DoneMsg{
 		Provider:    "openai",
 		Model:       "gpt-4o",
@@ -4736,33 +4749,27 @@ func TestApplyConnectDoneWritesAPresetAndProfile(t *testing.T) {
 
 	cfg := m.state.Config
 	if cfg.Profile.Default == "" {
-		t.Fatal("Profile.Default is empty — the legacy fallback signal must be gone")
+		t.Fatal("Profile.Default is empty")
 	}
-
-	profile, ok := cfg.AgentProfiles[cfg.Profile.Default]
-	if !ok {
-		t.Fatalf("no profile named %q", cfg.Profile.Default)
-	}
-	if len(profile.Roles) != len(routing.AllRoles) {
-		t.Errorf("profile binds %d roles, want %d", len(profile.Roles), len(routing.AllRoles))
-	}
-
-	presetName := profile.Roles[routing.RoleImplementer].Preset
+	presetName := "openai/gpt-4o"
 	preset, ok := cfg.Models.Presets[presetName]
 	if !ok {
-		t.Fatalf("profile references preset %q which does not exist", presetName)
+		t.Fatalf("preset %q missing", presetName)
 	}
 	if preset.Provider != "openai" || preset.Model != "gpt-4o" {
 		t.Errorf("preset = %s/%s, want openai/gpt-4o", preset.Provider, preset.Model)
 	}
 
-	// And it must survive a round trip through the config file.
 	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
 	if err != nil {
 		t.Fatalf("read project config: %v", err)
 	}
 	if !strings.Contains(string(data), "gpt-4o") {
 		t.Errorf("preset not persisted:\n%s", data)
+	}
+	// No agent_profiles section should be written for the simple case.
+	if strings.Contains(string(data), "[agent_profiles]") {
+		t.Errorf("simple model switch should not write agent_profiles:\n%s", data)
 	}
 }
 
@@ -4885,9 +4892,7 @@ func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
 	})
 
 	cfg := m.state.Config
-	profile := cfg.AgentProfiles[cfg.Profile.Default]
-	presetName := profile.Roles[routing.RoleImplementer].Preset
-	preset := cfg.Models.Presets[presetName]
+	preset := cfg.Models.Presets["openai/gpt-4o"]
 
 	if preset.ContextWindow != 128000 {
 		t.Errorf("ContextWindow = %d, want 128000", preset.ContextWindow)
@@ -5158,9 +5163,6 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("preset ollama/qwen2.5-coder:7b should exist")
 	}
-	if _, ok := m.state.Config.AgentProfiles["single"]; !ok {
-		t.Fatal("profile single should exist")
-	}
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
 		t.Fatalf("success receipt = %q", got)
@@ -5204,9 +5206,6 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	if _, ok := updated.(Model).state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("preset ollama/qwen2.5-coder:7b should exist")
 	}
-	if _, ok := updated.(Model).state.Config.AgentProfiles["single"]; !ok {
-		t.Fatal("profile single should exist")
-	}
 	prov, ok := updated.(Model).state.Config.Providers["ollama"]
 	if !ok {
 		t.Fatal(`providers["ollama"] should exist after DoneMsg`)
@@ -5249,9 +5248,6 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("failed connect reload must create preset")
 	}
-	if _, ok := m.state.Config.AgentProfiles["single"]; !ok {
-		t.Fatal("failed connect reload must create profile")
-	}
 	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
 		t.Fatal("failed connect reload must align m.state.Config.Providers")
 	}
@@ -5280,9 +5276,6 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	}
 	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("save failure must keep the preset in session config")
-	}
-	if _, ok := m.state.Config.AgentProfiles["single"]; !ok {
-		t.Fatal("save failure must keep the profile in session config")
 	}
 	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
 		t.Fatal("save failure must keep the new provider in session config")
@@ -5377,8 +5370,8 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.state.Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("failed model reload must align m.state.Config profile, got %q", m.state.Config.Profile.Default)
 	}
-	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5-coder:7b" {
-		t.Fatal("failed model reload must align m.state.Config.AgentProfiles")
+	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatal("failed model reload must keep the preset")
 	}
 }
 
@@ -5407,8 +5400,8 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	if m.state.Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("save failure must keep the switched profile in session, got %q", m.state.Config.Profile.Default)
 	}
-	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5-coder:7b" {
-		t.Fatal("save failure must keep the switched profile roles in session config")
+	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatal("save failure must keep the preset in session config")
 	}
 	if !m.configSavePending {
 		t.Fatal("save failure must mark config save pending")
@@ -5460,7 +5453,7 @@ func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	}
 }
 
-func TestSwitchModelPresetBindsEveryRole(t *testing.T) {
+func TestSwitchModelPresetSetsDefaultProfile(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
@@ -5471,12 +5464,11 @@ func TestSwitchModelPresetBindsEveryRole(t *testing.T) {
 
 	m.switchModelPreset("openai/gpt-4o")
 
-	profile, ok := m.state.Config.AgentProfiles[m.state.Config.Profile.Default]
-	if !ok {
-		t.Fatal("no active profile after switching")
+	if m.state.Config.Profile.Default != singleModelProfileName {
+		t.Fatalf("default profile = %q, want single", m.state.Config.Profile.Default)
 	}
-	if len(profile.Roles) != len(routing.AllRoles) {
-		t.Errorf("bound %d roles, want %d", len(profile.Roles), len(routing.AllRoles))
+	if _, ok := m.state.Config.Models.Presets["openai/gpt-4o"]; !ok {
+		t.Fatal("preset openai/gpt-4o should exist")
 	}
 }
 

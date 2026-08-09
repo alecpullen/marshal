@@ -30,7 +30,17 @@ func (c Config) RoutingConfig() routing.Config {
 	if profiles == nil {
 		profiles = map[string]routing.AgentProfile{}
 	}
-	if _, ok := profiles[c.Profile.Default]; !ok {
+	// When ActivePreset is set, always (re)synthesize the default profile
+	// from it — even if a stale entry already exists in AgentProfiles. This
+	// happens after MigrateLegacyAgentModel persists a "single" profile
+	// bound to the old model; without this overwrite, switching models via
+	// /models or /connect would leave the stale bindings in place and the
+	// status bar would never update.
+	if c.Profile.ActivePreset != "" {
+		if p := synthesizeSingleModelProfile(c, profiles); p != nil {
+			profiles[c.Profile.Default] = *p
+		}
+	} else if _, ok := profiles[c.Profile.Default]; !ok {
 		if p := synthesizeSingleModelProfile(c, profiles); p != nil {
 			profiles[c.Profile.Default] = *p
 		}

@@ -3908,9 +3908,10 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	newCfg.Profile.Default = singleModelProfileName
 	newCfg.Profile.ActivePreset = presetName
 	// The "single" profile is synthesized in memory by RoutingConfig when no
-	// explicit agent_profiles entry matches the default profile. Do not
-	// persist it here; that keeps the config file limited to provider + model
-	// pair.
+	// explicit agent_profiles entry matches the default profile. When
+	// ActivePreset is set, RoutingConfig always (re)synthesizes from it,
+	// overwriting any stale entry left by a legacy migration. Do not persist
+	// it here; that keeps the config file limited to provider + model pair.
 
 	// Credentials never go to project config. Write the key to the user
 	// config first; if that fails, configure nothing rather than leaving a
@@ -3978,6 +3979,9 @@ func (m *Model) switchModelPreset(presetName string) {
 	newCfg.Profile.Default = singleModelProfileName
 	newCfg.Profile.ActivePreset = presetName
 	// In-memory profile synthesis in RoutingConfig handles role bindings.
+	// When ActivePreset is set, RoutingConfig always (re)synthesizes the
+	// "single" profile from it, overwriting any stale entry left by a
+	// legacy [agent] model migration.
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {

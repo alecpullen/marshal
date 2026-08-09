@@ -2592,7 +2592,7 @@ func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
 	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
-	child, _, err := factory("my-scout")
+	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
@@ -2636,12 +2636,120 @@ func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
 	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
-	child, _, err := factory("")
+	child, _, err := factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
 	if child.UsageObserver == nil || child.MetricsObserver == nil {
 		t.Fatal("ad-hoc subagent children must also carry UsageObserver + MetricsObserver")
+	}
+}
+
+// TestSubagentFactoryExplicitModelOverridesNamedAgent verifies that an
+// explicit model on a named-agent request replaces only the preset
+// provider/model while retaining the agent's other overrides (addendum,
+// tool denylist, max iterations).
+func TestSubagentFactoryExplicitModelOverridesNamedAgent(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+		"other":  {Type: "openai_compatible", BaseURL: "http://localhost:11435/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast":  {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"other": {Provider: "other", Model: "x", LocalOnly: true},
+	}
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"my-scout": {Name: "my-scout", Preset: "fast", SystemPrompt: "scout addendum", ToolDenylist: []string{"web.fetch"}, MaxIterations: 7},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout", Model: "other/x"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Model != "x" {
+		t.Fatalf("child.Model = %q, want x (explicit override)", child.Model)
+	}
+	if child.SystemPromptAddendum == "" || !strings.Contains(child.SystemPromptAddendum, "scout addendum") {
+		t.Fatalf("child.SystemPromptAddendum should retain the agent addendum, got %q", child.SystemPromptAddendum)
+	}
+	if child.MaxToolIterations != 7 {
+		t.Fatalf("child.MaxToolIterations = %d, want 7 (agent override)", child.MaxToolIterations)
+	}
+}
+
+// TestSubagentFactoryExplicitModelAdHoc verifies an explicit model on an
+// ad-hoc request selects that model instead of the default.
+func TestSubagentFactoryExplicitModelAdHoc(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"big":  {Provider: "ollama", Model: "qwen2.5-coder:32b", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	child, _, err := factory(agent.SubagentRequest{Model: "ollama/qwen2.5-coder:32b"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Model != "qwen2.5-coder:32b" {
+		t.Fatalf("child.Model = %q, want qwen2.5-coder:32b", child.Model)
+	}
+}
+
+// TestSubagentFactoryInvalidPairErrors verifies an invalid provider/model
+// pair fails clearly before any child is built.
+func TestSubagentFactoryInvalidPairErrors(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	if _, _, err := factory(agent.SubagentRequest{Model: "bogus/nope"}); err == nil {
+		t.Fatal("expected an error for an invalid provider/model pair")
+	} else if !strings.Contains(err.Error(), "bogus/nope") {
+		t.Fatalf("error should name the pair, got: %v", err)
 	}
 }
 

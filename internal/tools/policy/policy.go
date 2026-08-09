@@ -411,6 +411,14 @@ func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Ru
 		return DecisionConfirm, "network access requires approval"
 	}
 
+	// Session-state tools manage pure in-memory session state (todo list,
+	// scratchpad). They should not prompt the user even though they declare
+	// RiskWorkspaceWrite, because they do not modify files on disk.
+	switch toolName {
+	case "todo.write", "scratchpad.write", "scratchpad.delete":
+		return DecisionAllow, "session-state tool"
+	}
+
 	// 4. Non-shell tools resolve via the registered risk level.
 	if toolName != "shell.run" && toolName != "test.run" {
 		if reg != nil {

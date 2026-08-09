@@ -1108,6 +1108,43 @@ func TestUniqueNameEmptyTemplateIDBehavesAsCustom(t *testing.T) {
 	}
 }
 
+func TestUniqueNameDerivesFromBaseURLHost(t *testing.T) {
+	m := &Model{
+		template:    provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		providerCfg: config.ProviderConfig{BaseURL: "https://api.coolmodels.com/v1"},
+		cfg:         config.Config{Providers: map[string]config.ProviderConfig{}},
+	}
+	if got := m.uniqueName(); got != "coolmodels.com" {
+		t.Errorf("uniqueName() = %q, want %q", got, "coolmodels.com")
+	}
+}
+
+func TestUniqueNameDisambiguatesHostDerivedName(t *testing.T) {
+	m := &Model{
+		template:    provider.ProviderTemplate{ID: "openai_compatible", Type: "openai_compatible"},
+		providerCfg: config.ProviderConfig{BaseURL: "https://api.openai.com/v1"},
+		cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"openai.com": {},
+		}},
+	}
+	if got := m.uniqueName(); got != "openai.com-2" {
+		t.Errorf("uniqueName() = %q, want %q", got, "openai.com-2")
+	}
+}
+
+func TestUniqueNameFallsBackToCustomForInvalidURL(t *testing.T) {
+	m := &Model{
+		template:    provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		providerCfg: config.ProviderConfig{BaseURL: "not a url"},
+		cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"custom": {},
+		}},
+	}
+	if got := m.uniqueName(); got != "custom-2" {
+		t.Errorf("uniqueName() = %q, want %q", got, "custom-2")
+	}
+}
+
 func TestModelStepEmitsRefreshOnCtrlR(t *testing.T) {
 	m := New(Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{

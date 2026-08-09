@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -990,15 +991,41 @@ func (m *Model) done() tea.Cmd {
 }
 
 func (m *Model) uniqueName() string {
-	base := m.template.ID
-	if base == "" || base == "custom" {
-		base = "custom"
-	}
+	base := nameBase(m.template.ID, m.providerCfg.BaseURL)
 	existing := map[string]bool{}
 	for k := range m.cfg.Providers {
 		existing[k] = true
 	}
 	return provider.UniqueName(base, existing)
+}
+
+// nameBase picks the default provider name base. For known templates it uses
+// the template ID; for custom/openai-compatible entries it tries to derive a
+// readable name from the base URL host.
+func nameBase(templateID, baseURL string) string {
+	if templateID != "" && templateID != "custom" && templateID != "openai_compatible" {
+		return templateID
+	}
+	if host := hostBase(baseURL); host != "" {
+		return host
+	}
+	return "custom"
+}
+
+// hostBase extracts a clean host from a URL: scheme and path are removed,
+// the port is stripped, and leading "api."/"www." prefixes are removed.
+func hostBase(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := u.Host
+	if i := strings.Index(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimPrefix(host, "api.")
+	host = strings.TrimPrefix(host, "www.")
+	return host
 }
 
 func orDefault(v, def string) string {

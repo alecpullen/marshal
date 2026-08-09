@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/strutil"
 )
@@ -75,13 +76,17 @@ func providersFrame(s *state) *frame {
 						if v == k {
 							return nil
 						}
-						if _, ok := s.cfg.Providers[v]; ok {
-							return fmt.Errorf("name already exists")
+						if err := config.RenameProvider(&s.cfg, k, v, s.discovered); err != nil {
+							return err
 						}
-						pc := s.cfg.Providers[k]
-						delete(s.cfg.Providers, k)
-						s.cfg.Providers[v] = pc
-						delete(s.discovered, k)
+						if s.dataDir != "" {
+							c := modelcache.Load(s.dataDir)
+							if e, ok := c.Providers[k]; ok {
+								delete(c.Providers, k)
+								c.Providers[v] = e
+								_ = modelcache.Save(s.dataDir, c)
+							}
+						}
 						k = v
 						return nil
 					})

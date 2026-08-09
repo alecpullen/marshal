@@ -437,6 +437,83 @@ func TestChatStreamingReasoningContentEmitsThinkingDelta(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+func TestInlineThinkParserExtractsThinkingAndContent(t *testing.T) {
+	p := inlineThinkParser{}
+	c1, th1 := p.feed(" thinkingone ")
+	if c1 != "" || th1 != "" {
+		t.Fatalf("partial open tag should emit nothing, got content=%q thinking=%q", c1, th1)
+	}
+	c2, th2 := p.feed("two responseanswer")
+	if th2 != "one two" {
+		t.Fatalf("thinking = %q, want %q", th2, "one two")
+	}
+	if c2 != "answer" {
+		t.Fatalf("content = %q, want %q", c2, "answer")
+	}
+	c3, th3 := p.flush()
+	if c3 != "" || th3 != "" {
+		t.Fatalf("flush after closed tag should be empty, got content=%q thinking=%q", c3, th3)
+	}
+}
+
+func TestInlineThinkParserHandlesSplitCloseTag(t *testing.T) {
+	p := inlineThinkParser{}
+	_, th1 := p.feed(" thinkingreasoning respon")
+	if th1 != "" {
+		t.Fatalf("partial close tag should not emit thinking, got %q", th1)
+	}
+	c2, th2 := p.feed("seout")
+	if th2 != "reasoning" {
+		t.Fatalf("thinking = %q, want %q", th2, "reasoning")
+	}
+	if c2 != "out" {
+		t.Fatalf("content = %q, want %q", c2, "out")
+	}
+}
+
+func TestChatStreamingInlineThinkTagEmitsThinkingDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"content\":\" thinking\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"content\":\"step one\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"content\":\" responsethe answer\"}}]}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev1, ok := recvEvent(t, events)
+	if !ok {
+		t.Fatal("channel closed before first event")
+	}
+	if ev1.Type != schema.ChatEventDelta || ev1.Kind != schema.DeltaThinking || ev1.Delta != "step one" {
+		t.Fatalf("event 1 = %+v, want thinking delta %q", ev1, "step one")
+	}
+
+	ev2, ok := recvEvent(t, events)
+	if !ok {
+		t.Fatal("channel closed before second event")
+	}
+	if ev2.Type != schema.ChatEventDelta || ev2.Kind != schema.DeltaAnswer || ev2.Delta != "the answer" {
+		t.Fatalf("event 2 = %+v, want answer delta %q", ev2, "the answer")
+	}
+
+	ev3, ok := recvEvent(t, events)
+	if !ok || ev3.Type != schema.ChatEventDone {
+		t.Fatalf("event 3 = %+v ok=%v, want Done", ev3, ok)
+	}
+
+	assertChannelClosed(t, events)
+}
+
 func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
 	body, err := buildChatRequestBody(schema.ChatRequest{
 		Model:          "test-model",

@@ -12,7 +12,6 @@ func sectionList() []sectionSpec {
 	return []sectionSpec{
 		{ID: "agent", Title: "Agent", Root: agentFrame},
 		{ID: "providers", Title: "Providers", Root: providersFrame},
-		{ID: "presets", Title: "Model Presets", Root: presetsFrame},
 		{ID: "profiles", Title: "Profiles", Root: profilesFrame},
 		{ID: "custom_agents", Title: "Custom Agents", Root: customAgentsFrame},
 		{ID: "privacy", Title: "Privacy", Root: privacyFrame},

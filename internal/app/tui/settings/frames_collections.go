@@ -12,7 +12,6 @@ import (
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
-	"marshal/internal/llm/routing"
 	"marshal/internal/strutil"
 )
 
@@ -141,6 +140,13 @@ func providersFrame(s *state) *frame {
 						GetBool: func() bool { return s.cfg.Providers[k].ToolCalling },
 						SetBool: func(v bool) { mut(func(p *config.ProviderConfig) { p.ToolCalling = v }) }},
 					testConnectionField(s, k),
+					{ID: "providers." + k + ".options", Title: "Model options", Kind: kindAction,
+						Desc: "edit context window / max output / tool calling for each model pair using this provider",
+						Act: func() tea.Cmd {
+							return func() tea.Msg {
+								return OpenModelOptionsForProviderMsg{ProviderName: k}
+							}
+						}},
 				}
 			})
 		},
@@ -285,58 +291,6 @@ func uniqueCopyName(base string, existing map[string]bool) string {
 			return c
 		}
 	}
-}
-func presetsFrame(s *state) *frame {
-	drill := entriesDrillExt("presets", "Model Presets", "New preset name",
-		func() []string { return sortedKeys(s.cfg.Models.Presets) },
-		func(k string) string {
-			p := s.cfg.Models.Presets[k]
-			return k + "  (" + p.Provider + "/" + p.Model + ")"
-		},
-		nil, // presets are materialized automatically; see presetflow.Materialize
-		func(k string) *frame {
-			mut := func(f func(*routing.ModelPreset)) {
-				p := s.cfg.Models.Presets[k]
-				f(&p)
-				s.cfg.Models.Presets[k] = p
-			}
-			return newFrame(k, func() []*field {
-				ctxField := intField("presets."+k+".context_window", "Context window",
-					func() int { return s.cfg.Models.Presets[k].ContextWindow }, 0,
-					func(v int) { mut(func(p *routing.ModelPreset) { p.ContextWindow = v }) })
-				ctxField.Desc = "max context tokens for this preset"
-				maxOutField := intField("presets."+k+".max_output", "Max output tokens",
-					func() int { return s.cfg.Models.Presets[k].MaxOutputTokens }, 0,
-					func(v int) { mut(func(p *routing.ModelPreset) { p.MaxOutputTokens = v }) })
-				maxOutField.Desc = "max output tokens per request"
-				tcField := enumField("presets."+k+".tool_calling", "Tool calling",
-					[]string{"native", "simulated", "none"},
-					func() string { return s.cfg.Models.Presets[k].ToolCalling },
-					func(v string) { mut(func(p *routing.ModelPreset) { p.ToolCalling = v }) })
-				tcField.Desc = "how this preset handles tool calls"
-				providerField := scalarField("presets."+k+".provider", "Provider",
-					func() string { return s.cfg.Models.Presets[k].Provider }, nil)
-				providerField.Desc = "provider selected during model materialization"
-				modelField := scalarField("presets."+k+".model", "Model",
-					func() string { return s.cfg.Models.Presets[k].Model }, nil)
-				modelField.Desc = "model selected during model materialization"
-				return []*field{
-					providerField,
-					modelField,
-					ctxField,
-					maxOutField,
-					tcField,
-					{ID: "presets." + k + ".local_only", Title: "Local only", Kind: kindToggle,
-						Desc:    "block remote providers for this preset",
-						GetBool: func() bool { return s.cfg.Models.Presets[k].LocalOnly },
-						SetBool: func(v bool) { mut(func(p *routing.ModelPreset) { p.LocalOnly = v }) }},
-				}
-			})
-		},
-		func(k string) { delete(s.cfg.Models.Presets, k) },
-		entriesOpts{},
-	)
-	return rootDrillFrame("Model Presets", drill)
 }
 
 // sliceKeys returns "0".."n-1" index keys for slice-backed collections.

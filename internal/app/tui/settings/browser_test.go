@@ -249,20 +249,6 @@ func TestBrowserCollectionRowShowsSectionTitle(t *testing.T) {
 	}
 }
 
-func TestBrowserShowsExistingReadOnlyPresetsCollection(t *testing.T) {
-	cfg := config.Default()
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"ollama/qwen3": {
-			Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3",
-		},
-	}
-	b := NewBrowser(cfg, "", "presets")
-	fields := b.collectionFields("presets")
-	if len(fields) != 1 || fields[0].Title != "Model Presets" {
-		t.Fatalf("populated read-only preset collection should be visible, got %#v", fields)
-	}
-}
-
 func TestBrowserPasteRoutesToConfirmLimitInput(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{

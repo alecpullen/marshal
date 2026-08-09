@@ -8,6 +8,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/modeloptions"
+	"marshal/internal/app/tui/picker"
 )
 
 // pendingModelOptionsState tracks a model-options config candidate that was
@@ -36,6 +37,26 @@ func (m *Model) openModelOptions() {
 		return
 	}
 	m.dock.Open(modeloptions.New(m.state.Config, presetName))
+}
+
+// openModelOptionsForProvider opens a picker listing the model pairs that use
+// the named provider, then opens the model-options editor for the selected
+// pair. It is wired to the "Model options" action in the provider drill-in.
+func (m *Model) openModelOptionsForProvider(providerName string) {
+	var items []picker.Item
+	for name, preset := range m.state.Config.Models.Presets {
+		if preset.Provider != providerName {
+			continue
+		}
+		items = append(items, picker.Item{Label: preset.Model, Value: name})
+	}
+	if len(items) == 0 {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("No model pairs configured for %q yet. Use /connect or /models to pick one.", providerName), session.ContentTypePlain)
+		return
+	}
+	p := picker.New("Pick a model pair", "override context/max-output", items)
+	m.dock.Open(p)
+	m.pickerCommand = "model-options"
 }
 
 // handleModelOptionsChanged persists the candidate config and either reloads
@@ -99,6 +120,10 @@ func fieldLabel(id string) string {
 		return "Context window"
 	case "max_output_tokens":
 		return "Max output tokens"
+	case "tool_calling":
+		return "Tool calling"
+	case "local_only":
+		return "Local only"
 	}
 	return id
 }

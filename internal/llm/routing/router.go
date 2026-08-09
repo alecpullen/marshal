@@ -122,9 +122,9 @@ func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, p
 // "openai/gpt-4o-mini") against the configured presets. It returns a Route
 // whose Preset is the first configured preset matching the pair, so pricing,
 // local-only gating, and context budgets resolve exactly as if the model were
-// bound to a role. It errors clearly (ErrUnknownProvider or ErrPresetNotFound)
-// when no provider or no preset matches the pair, and applies the same
-// remote-provider gate as role resolution.
+// bound to a role. It errors clearly (ErrUnknownProvider) when no provider or
+// no preset matches the pair, and applies the same remote-provider gate as
+// role resolution.
 func (r *StaticRouter) ResolveExplicitModel(pair string, asRole AgentRole) (Route, error) {
 	provider, model, ok := strings.Cut(pair, "/")
 	if !ok || provider == "" || model == "" {

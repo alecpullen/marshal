@@ -1134,7 +1134,6 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		// An explicit provider/model pair resolves first so invalid pairs
 		// fail clearly before any execution, and so a named agent can replace
 		// only its preset provider/model while keeping its other overrides.
-		var explicitPreset *routing.ModelPreset
 		if req.Model != "" {
 			if router == nil {
 				return nil, nil, fmt.Errorf("agent.run: explicit model %q requested but no router configured", req.Model)
@@ -1145,14 +1144,13 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			}
 			model = eroute.Preset.Model
 			pricingRates = pricing.Lookup(eroute.Preset)
-			explicitPreset = &eroute.Preset
 		}
 		if req.Agent != "" && router != nil {
 			route, err := router.ResolveCustomAgent(req.Agent, agent.RoleSubtask)
 			if err != nil {
 				return nil, nil, fmt.Errorf("agent.run: %w", err)
 			}
-			if explicitPreset == nil {
+			if req.Model == "" {
 				model = route.Preset.Model
 				pricingRates = pricing.Lookup(route.Preset)
 			}

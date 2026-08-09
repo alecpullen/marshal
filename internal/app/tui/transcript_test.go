@@ -1138,7 +1138,7 @@ func TestSubagentCardShowsProviderModel(t *testing.T) {
 	// A childless, metadata-less card must not render a dangling separator.
 	plain := session.SubagentView{Label: "no meta", Status: session.SubagentDone}
 	gotPlain := stripANSI(renderSubagentCard(plain, false, "⠋", 100))
-	if strings.Contains(gotPlain, "· ·") {
+	if strings.Contains(gotPlain, " · ") {
 		t.Errorf("metadata-less card rendered dangling separators:\n%q", gotPlain)
 	}
 }

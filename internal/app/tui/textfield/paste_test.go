@@ -65,12 +65,12 @@ func TestPasteReachesEveryTextInput(t *testing.T) {
 			return fl.InputValue()
 		},
 		"skills panel filter": func(t *testing.T) string {
-			p := skills.NewPanel(t.TempDir(), t.TempDir(), false, nil)
+			p := skills.NewPanel(t.TempDir(), t.TempDir(), false, nil, nil)
 			p.Update(tea.PasteMsg{Content: pasted})
 			return p.FilterValue()
 		},
 		"skills install source input": func(t *testing.T) string {
-			p := skills.NewPanel(t.TempDir(), t.TempDir(), false, nil)
+			p := skills.NewPanel(t.TempDir(), t.TempDir(), false, nil, nil)
 			// Navigate down to the "＋ Install skill" action and activate it
 			// to push the install frame onto the stack.
 			p.Update(tea.KeyPressMsg{Code: tea.KeyDown})

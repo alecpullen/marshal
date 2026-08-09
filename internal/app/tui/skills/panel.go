@@ -29,6 +29,7 @@ type Panel struct {
 	workDir        string
 	projectTrusted bool
 	state          *session.State
+	skillIndex     *skills.Index
 
 	filter textfield.Model
 	list   *settings.FieldList
@@ -46,13 +47,16 @@ type Panel struct {
 
 var _ dock.Panel = (*Panel)(nil)
 
-// NewPanel builds a skills panel.
-func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State) *Panel {
+// NewPanel builds a skills panel. skillIndex is the runtime skill index
+// (may be nil); when present it is the source of truth for loading skills
+// so the panel reflects skills the runtime has already loaded.
+func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State, skillIndex *skills.Index) *Panel {
 	p := &Panel{
 		homeDir:        homeDir,
 		workDir:        workDir,
 		projectTrusted: projectTrusted,
 		state:          state,
+		skillIndex:     skillIndex,
 		removeArmed:    make(map[string]bool),
 		installScope:   scopeGlobal,
 	}
@@ -145,6 +149,9 @@ func (p *Panel) projectSkillsDir() string {
 }
 
 func (p *Panel) activeIndex() *skills.Index {
+	if p.skillIndex != nil {
+		return p.skillIndex
+	}
 	idx, _ := skills.LoadSkills(p.globalSkillsDir(), p.projectSkillsDir())
 	if idx == nil {
 		idx = skills.NewIndex()
@@ -383,8 +390,11 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case loadResultMsg:
 		if msg.Err != nil {
-			p.list.ErrMsg = msg.Err.Error()
+			p.ActiveList().ErrMsg = msg.Err.Error()
+			return nil
 		}
+		p.status = fmt.Sprintf("loaded %s", msg.Name)
+		p.ActiveList().ErrMsg = ""
 		return nil
 	case installResultMsg:
 		p.installing = false
@@ -403,7 +413,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case removeResultMsg:
 		if msg.Err != nil {
-			p.list.ErrMsg = msg.Err.Error()
+			p.ActiveList().ErrMsg = msg.Err.Error()
 			return nil
 		}
 		p.status = fmt.Sprintf("removed %s (%s)", msg.Name, msg.Scope)

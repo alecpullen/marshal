@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -21,6 +23,59 @@ import (
 // (headless-capable) commands carry a registry Handler; interactive
 // commands live here, one entry each, next to the dispatch entry point.
 var tuiCommandEffects map[string]func(m *Model, args []string) (tea.Model, tea.Cmd)
+
+// newSessionEffect is the shared /new and /clear handler. It asks the
+// runtime to build a brand-new session, then re-points every model field
+// that depends on the current session and drops per-message UI state that
+// belonged to the old one.
+func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
+	if m.sessionSwapper == nil {
+		m.state.AddMessage(session.RoleSystem, "New session is not available in this build.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	oldCount := len(m.state.Messages())
+	snap, err := m.sessionSwapper.NewSession()
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to start new session: %v", err), session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	m.state = snap.State
+	if snap.Runner != nil {
+		m.runner = snap.Runner
+	}
+	if snap.SwarmRunner != nil {
+		m.swarmRunner = snap.SwarmRunner
+	}
+	if snap.PipelineFactory != nil {
+		m.pipelineFactory = snap.PipelineFactory
+	}
+	if snap.PlanAuthorFactory != nil {
+		m.planAuthorFactory = snap.PlanAuthorFactory
+	}
+	if snap.ToolRegistry != nil {
+		m.toolRegistry = snap.ToolRegistry
+	}
+
+	// Drop per-message UI state that belongs to the old session.
+	m.itemExpanded = make(map[itemKey]bool)
+	m.viewStack = nil
+	m.lastTranscriptHash = 0
+	m.detailExpanded = false
+	m.activeToolExpanded = false
+	m.activeToolStartedAt = time.Time{}
+	m.clickRegions = nil
+
+	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount), session.ContentTypePlain)
+	m.refreshViewport()
+	return m, nil
+}
 
 func init() {
 	tuiCommandEffects = map[string]func(m *Model, args []string) (tea.Model, tea.Cmd){
@@ -234,5 +289,7 @@ func init() {
 			}
 			return m.beginResume(id)
 		},
+		"new":   newSessionEffect,
+		"clear": newSessionEffect,
 	}
 }

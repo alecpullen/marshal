@@ -1394,6 +1394,23 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.DataDir != "" {
 			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
 		}
+		// /new and /clear swap in a brand-new session via the runtime. This
+		// is wired outside the ProviderError block so the commands stay
+		// available even when the initial provider build failed.
+		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func() (tui.SessionSwapResult, error) {
+			state, runner, swarmRunner, pipelineFactory, planAuthorFactory, toolReg, err := rt.NewSession()
+			if err != nil {
+				return tui.SessionSwapResult{}, err
+			}
+			return tui.SessionSwapResult{
+				State:             state,
+				Runner:            runner,
+				SwarmRunner:       swarmRunner,
+				PipelineFactory:   pipelineFactory,
+				PlanAuthorFactory: planAuthorFactory,
+				ToolRegistry:      toolReg,
+			}, nil
+		})))
 
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 

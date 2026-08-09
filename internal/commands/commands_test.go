@@ -309,22 +309,22 @@ func TestContextCommandListsPackSections(t *testing.T) {
 	}
 }
 
-func TestNewCommand(t *testing.T) {
+func TestNewAndClearAreTUIOnly(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	state := newTestState()
-	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypePlain)
-
-	cmd, _ := cmdReg.Lookup("new")
-	result := cmd.Handler(state, nil).Text
-	if !strings.Contains(result, "Cleared 2 messages") {
-		t.Errorf("new command output wrong: %s", result)
-	}
-	if len(state.Messages()) != 0 {
-		t.Errorf("expected 0 messages after clear, got %d", len(state.Messages()))
+	for _, name := range []string{"new", "clear"} {
+		cmd, ok := cmdReg.Lookup(name)
+		if !ok {
+			t.Fatalf("/%s not registered", name)
+		}
+		if !cmd.TUIOnly {
+			t.Errorf("/%s must be TUIOnly", name)
+		}
+		if cmd.Handler != nil {
+			t.Errorf("/%s must not have a headless Handler", name)
+		}
 	}
 }
 

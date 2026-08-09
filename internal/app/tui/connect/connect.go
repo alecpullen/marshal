@@ -84,35 +84,36 @@ type Opts struct {
 }
 
 type Model struct {
-	step           step
-	picker         *picker.Model
-	input          textfield.Model
-	renameInput    textfield.Model
-	title          string
-	subtitle       string
-	footer         string
-	err            string
-	template       provider.ProviderTemplate
-	providerName   string
-	providerCfg    config.ProviderConfig
-	models         []schema.ModelInfo
-	cfg            config.Config
-	discovered     map[string][]schema.ModelInfo
-	scopedProvider string
-	cfgPath        string
-	width          int
-	height         int
-	probeStart     int64
-	spinner        int
-	modelChosen    string
-	remoteEnabled  bool
-	allProviders   bool
-	probeErrs      map[string]error
-	dataDir        string
-	confirm        *presetflow.ConfirmState
-	detectingCaps  bool
-	capProbeID     uint64
-	cancelCapProbe context.CancelFunc
+	step             step
+	renameReturnStep step
+	picker           *picker.Model
+	input            textfield.Model
+	renameInput      textfield.Model
+	title            string
+	subtitle         string
+	footer           string
+	err              string
+	template         provider.ProviderTemplate
+	providerName     string
+	providerCfg      config.ProviderConfig
+	models           []schema.ModelInfo
+	cfg              config.Config
+	discovered       map[string][]schema.ModelInfo
+	scopedProvider   string
+	cfgPath          string
+	width            int
+	height           int
+	probeStart       int64
+	spinner          int
+	modelChosen      string
+	remoteEnabled    bool
+	allProviders     bool
+	probeErrs        map[string]error
+	dataDir          string
+	confirm          *presetflow.ConfirmState
+	detectingCaps    bool
+	capProbeID       uint64
+	cancelCapProbe   context.CancelFunc
 }
 
 func New(opts Opts) *Model {
@@ -328,7 +329,14 @@ func (m *Model) back() tea.Cmd {
 	case stepSummary:
 		m.enterPickTemplate()
 	case stepRename:
-		m.enterSummary()
+		switch m.renameReturnStep {
+		case stepBaseURL:
+			enterBaseURLStep(m)
+		case stepRemoteGate:
+			m.enterRemoteGate()
+		default:
+			m.enterSummary()
+		}
 	default:
 		return m.cancel()
 	}
@@ -463,13 +471,14 @@ func (m *Model) enterSummary() {
 	m.step = stepSummary
 	m.title = "Review provider"
 	m.subtitle = ""
-	m.footer = "[↵] confirm  [n] rename  [Esc] back"
+	m.footer = "[↵] confirm  [n] rename provider  [Esc] back"
 	m.err = ""
 	m.picker = nil
 }
 
-func (m *Model) enterRename() {
+func (m *Model) enterRename(returnTo step) {
 	m.step = stepRename
+	m.renameReturnStep = returnTo
 	m.title = "Rename provider"
 	m.subtitle = "enter a new name for this provider"
 	m.footer = "[↵] save  [Esc] back"
@@ -480,6 +489,10 @@ func (m *Model) enterRename() {
 	ri.SetValue(m.providerName)
 	m.renameInput = ri
 	m.picker = nil
+}
+
+func (m *Model) isCustomTemplate() bool {
+	return m.template.ID == "custom" || m.template.ID == "openai_compatible"
 }
 
 func (m *Model) keySourceLabel() string {
@@ -806,6 +819,11 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 		switch ks {
 		case "y":
 			m.remoteEnabled = true
+			if m.isCustomTemplate() {
+				m.providerName = m.uniqueName()
+				m.enterRename(stepRemoteGate)
+				return m, nil
+			}
 			m.enterAPIKey()
 			return m, nil
 		case "esc":
@@ -819,7 +837,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			m.step = stepDone
 			return m, m.done()
 		case "n":
-			m.enterRename()
+			m.enterRename(stepSummary)
 			return m, nil
 		case "esc":
 			enterPickModelStep(m, m.providerName)
@@ -856,8 +874,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 		case "enter":
 			return m.confirmRename()
 		case "esc":
-			m.enterSummary()
-			return m, nil
+			return m, m.back()
 		default:
 			var cmd tea.Cmd
 			m.renameInput, cmd = m.renameInput.Update(k)
@@ -881,6 +898,11 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 		m.providerCfg.BaseURL = v
 		if m.remoteBlocked(v) {
 			m.enterRemoteGate()
+			return m, nil
+		}
+		if m.isCustomTemplate() {
+			m.providerName = m.uniqueName()
+			m.enterRename(stepBaseURL)
 			return m, nil
 		}
 		m.enterAPIKey()
@@ -917,8 +939,14 @@ func (m *Model) confirmRename() (*Model, tea.Cmd) {
 		return m, nil
 	}
 	m.providerName = v
-	m.enterSummary()
-	return m, nil
+	switch m.renameReturnStep {
+	case stepBaseURL, stepRemoteGate:
+		m.enterAPIKey()
+		return m, nil
+	default:
+		m.enterSummary()
+		return m, nil
+	}
 }
 
 func (m *Model) enterProbing() (*Model, tea.Cmd) {
@@ -928,7 +956,12 @@ func (m *Model) enterProbing() (*Model, tea.Cmd) {
 	m.footer = "[r] retry  [s] skip  [Esc] cancel"
 	m.err = ""
 	m.picker = nil
-	m.providerName = m.uniqueName()
+	if m.providerName == "" {
+		m.providerName = m.uniqueName()
+	}
+	if m.providerCfg.Template == "" && m.template.ID != "" {
+		m.providerCfg.Template = m.template.ID
+	}
 	m.providerCfg.Type = orDefault(m.template.Type, "openai_compatible")
 	m.probeStart = time.Now().UnixNano()
 	m.spinner = 0

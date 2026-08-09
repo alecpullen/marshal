@@ -125,11 +125,16 @@ func TestCustomBaseURLThenKey(t *testing.T) {
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://myhost/v1")
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
-	if m.step != stepAPIKey {
-		t.Fatalf("after baseURL should be apiKey, got %v", m.step)
+	if m.step != stepRename {
+		t.Fatalf("after baseURL should be rename, got %v", m.step)
 	}
 	if m.providerCfg.BaseURL != "https://myhost/v1" {
 		t.Fatalf("base_url not captured: %q", m.providerCfg.BaseURL)
+	}
+	// Confirm the rename to advance to the API key step.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	if m.step != stepAPIKey {
+		t.Fatalf("after rename should be apiKey, got %v", m.step)
 	}
 	m.input.SetValue("sk-x")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -463,8 +468,8 @@ func TestCustomLocalhostBaseURLSkipsGate(t *testing.T) {
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("http://localhost:11434/v1")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
-	if updated.step != stepAPIKey {
-		t.Fatalf("localhost baseURL should skip gate and enter apiKey, got step = %v", updated.step)
+	if updated.step != stepRename {
+		t.Fatalf("localhost baseURL should skip gate and enter rename, got step = %v", updated.step)
 	}
 }
 
@@ -703,6 +708,67 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 	m, _ = m.Update(tea.PasteMsg{Content: "renamed-provider"})
 	if got := m.renameInput.Value(); got != "renamed-provider" {
 		t.Fatalf("renameInput.Value() = %q, want %q", got, "renamed-provider")
+	}
+}
+
+func TestCustomFlowPromptsForNameAfterBaseURL(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	m, _ = m.Update(pickerPicked("custom"))
+	m.input.SetValue("https://api.coolmodels.com/v1")
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	if m.step != stepRename {
+		t.Fatalf("custom flow should prompt for name after baseURL, got %v", m.step)
+	}
+	if got := m.providerName; got != "coolmodels.com" {
+		t.Errorf("default providerName = %q, want coolmodels.com", got)
+	}
+	if got := m.renameInput.Value(); got != m.providerName {
+		t.Errorf("rename input = %q, want %q", got, m.providerName)
+	}
+}
+
+func TestCustomFlowRenameAdvancesToAPIKey(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	m, _ = m.Update(pickerPicked("custom"))
+	m.input.SetValue("https://api.coolmodels.com/v1")
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	m.renameInput.SetValue("cool")
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	if m.step != stepAPIKey {
+		t.Fatalf("after custom rename should be apiKey, got %v", m.step)
+	}
+	if m.providerName != "cool" {
+		t.Errorf("providerName = %q, want cool", m.providerName)
+	}
+}
+
+func TestCustomFlowRenameEscReturnsToBaseURL(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	m, _ = m.Update(pickerPicked("custom"))
+	m.input.SetValue("https://api.coolmodels.com/v1")
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 27})
+	if m.step != stepBaseURL {
+		t.Fatalf("Esc from custom rename should return to baseURL, got %v", m.step)
+	}
+}
+
+func TestSummaryRenameHintIsProminent(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	clearCaps(m)
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	view := m.View(80, 24)
+	if !strings.Contains(view, "rename provider") {
+		t.Fatalf("summary view should mention rename provider, got:\n%s", view)
 	}
 }
 

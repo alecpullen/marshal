@@ -121,33 +121,16 @@ func SaveUserConfigSection(path string, cfg Config) error {
 func writeSections(file *configFile, cfg Config, def Config) {
 	file.Profile = &fileProfile{Default: strutil.Ptr(cfg.Profile.Default)}
 
-	activePresetName := activePresetName(cfg)
-	if activePresetName == "" {
-		file.Agent = &fileAgent{
-			Provider:                 strutil.Ptr(cfg.Agent.Provider),
-			Model:                    strutil.Ptr(cfg.Agent.Model),
-			MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),
-			MaxRetries:               strutil.Ptr(cfg.Agent.MaxRetries),
-			MaxTurnContextTokens:     strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
-			MaxToolResultChars:       strutil.Ptr(cfg.Agent.MaxToolResultChars),
-			MaxStructuredOutputChars: strutil.Ptr(cfg.Agent.MaxStructuredOutputChars),
-			PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
-			SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
-			ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
-			HistoryBudgetTokens:      strutil.Ptr(cfg.Agent.HistoryBudgetTokens),
-		}
-	} else {
-		file.Agent = &fileAgent{
-			MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),
-			MaxRetries:               strutil.Ptr(cfg.Agent.MaxRetries),
-			MaxTurnContextTokens:     strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
-			MaxToolResultChars:       strutil.Ptr(cfg.Agent.MaxToolResultChars),
-			MaxStructuredOutputChars: strutil.Ptr(cfg.Agent.MaxStructuredOutputChars),
-			PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
-			SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
-			ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
-			HistoryBudgetTokens:      strutil.Ptr(cfg.Agent.HistoryBudgetTokens),
-		}
+	file.Agent = &fileAgent{
+		MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),
+		MaxRetries:               strutil.Ptr(cfg.Agent.MaxRetries),
+		MaxTurnContextTokens:     strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
+		MaxToolResultChars:       strutil.Ptr(cfg.Agent.MaxToolResultChars),
+		MaxStructuredOutputChars: strutil.Ptr(cfg.Agent.MaxStructuredOutputChars),
+		PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
+		SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
+		ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
+		HistoryBudgetTokens:      strutil.Ptr(cfg.Agent.HistoryBudgetTokens),
 	}
 
 	if file.Privacy == nil {
@@ -360,24 +343,6 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			file.CustomAgents[name] = ca
 		}
 	}
-}
-
-func activePresetName(cfg Config) string {
-	profile, ok := cfg.AgentProfiles[cfg.Profile.Default]
-	if !ok {
-		return ""
-	}
-	binding, ok := profile.Roles[routing.RoleImplementer]
-	if !ok {
-		return ""
-	}
-	if binding.CustomAgent != "" {
-		if a, ok := cfg.CustomAgents[binding.CustomAgent]; ok {
-			return a.Preset
-		}
-		return ""
-	}
-	return binding.Preset
 }
 
 // userConfigFileMode and userConfigDirMode are the permissions for the

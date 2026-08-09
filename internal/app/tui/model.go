@@ -3901,8 +3901,6 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	}
 	newCfg.AgentProfiles[singleModelProfileName] = routing.SingleModelProfile(singleModelProfileName, presetName)
 	newCfg.Profile.Default = singleModelProfileName
-	newCfg.Agent.Provider = ""
-	newCfg.Agent.Model = ""
 
 	// Credentials never go to project config. Write the key to the user
 	// config first; if that fails, configure nothing rather than leaving a

@@ -16,8 +16,6 @@ import (
 
 func TestConfigReadReturnsMaskedConfig(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 	cfg.Providers = map[string]config.ProviderConfig{
 		"openai": {BaseURL: "https://api.openai.com", APIKey: "sk-secret"},
 	}
@@ -45,8 +43,8 @@ func TestConfigReadReturnsMaskedConfig(t *testing.T) {
 	if strings.Contains(res.Content, "sk-secret") {
 		t.Fatalf("secret leaked into config.read output: %s", res.Content)
 	}
-	if !strings.Contains(res.Content, "gpt-4o") {
-		t.Fatalf("expected model in output, got: %s", res.Content)
+	if !strings.Contains(res.Content, "api.openai.com") {
+		t.Fatalf("expected provider base URL in output, got: %s", res.Content)
 	}
 }
 
@@ -56,8 +54,6 @@ func TestConfigAgentSetProjectScope(t *testing.T) {
 	cfgPath := config.ProjectConfigPath(dir)
 
 	cfg := config.Default()
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 
 	var reloaded *config.Config
 	ts := toolSet{
@@ -81,7 +77,7 @@ func TestConfigAgentSetProjectScope(t *testing.T) {
 	res, err := tool.Handler(context.Background(), registry.ToolCall{
 		ID:   "1",
 		Name: "config.agent.set",
-		Args: json.RawMessage(`{"model":"claude-3.5-sonnet","max_tool_iterations":30}`),
+		Args: json.RawMessage(`{"max_tool_iterations":30}`),
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -89,30 +85,36 @@ func TestConfigAgentSetProjectScope(t *testing.T) {
 	if !strings.Contains(res.Summary, "reloaded") {
 		t.Fatalf("expected reloaded receipt, got: %s", res.Summary)
 	}
-	// provider/model are the deprecated legacy pair: setting them folds the
-	// selection into a preset and a single-model profile, so assert on that
-	// rather than on the cleared fields.
-	const presetName = "openai/claude-3.5-sonnet"
 	if reloaded == nil {
 		t.Fatal("reloader never ran")
-	}
-	if got := reloaded.Models.Presets[presetName]; got.Model != "claude-3.5-sonnet" || got.Provider != "openai" {
-		t.Fatalf("reloader did not see the new preset: %+v", reloaded.Models.Presets)
 	}
 	if reloaded.Agent.MaxToolIterations != 30 {
 		t.Fatalf("max_tool_iterations not applied: %d", reloaded.Agent.MaxToolIterations)
 	}
-	// File on disk reflects the change.
-	loaded, err := config.Load(config.LoadOptions{WorkingDir: dir})
+}
+
+func TestConfigAgentSetRejectsProviderModel(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+
+	ts := toolSet{config: cfg, configPath: cfgPath}
+	reg := registry.New()
+	tools, err := newConfigToolSet(ts)
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatal(err)
 	}
-	profile, ok := loaded.AgentProfiles[loaded.Profile.Default]
-	if !ok {
-		t.Fatalf("default profile %q missing on disk", loaded.Profile.Default)
+	if err := reg.Register(tools.configAgentSetTool()); err != nil {
+		t.Fatal(err)
 	}
-	if got := profile.Roles[routing.RoleImplementer].Preset; got != presetName {
-		t.Fatalf("disk implementer preset = %q, want %q", got, presetName)
+	tool, _ := reg.Lookup("config.agent.set")
+	_, err = tool.Handler(context.Background(), registry.ToolCall{
+		ID:   "1",
+		Name: "config.agent.set",
+		Args: json.RawMessage(`{"provider":"openai","model":"gpt-4o"}`),
+	})
+	if err == nil {
+		t.Fatal("config.agent.set must reject provider/model args")
 	}
 }
 
@@ -121,8 +123,6 @@ func TestConfigAgentSetGlobalScopeForcesApproval(t *testing.T) {
 	userPath := config.UserConfigPath(dir)
 
 	cfg := config.Default()
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 
 	state := session.New(config.Config{}, dir, time.Now(), session.Persistence{})
 
@@ -162,7 +162,7 @@ func TestConfigAgentSetGlobalScopeForcesApproval(t *testing.T) {
 	res, err := tool.Handler(context.Background(), registry.ToolCall{
 		ID:   "1",
 		Name: "config.agent.set",
-		Args: json.RawMessage(`{"scope":"global","model":"claude-3.5-sonnet"}`),
+		Args: json.RawMessage(`{"scope":"global","max_tool_iterations":30}`),
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -170,20 +170,19 @@ func TestConfigAgentSetGlobalScopeForcesApproval(t *testing.T) {
 	if !strings.Contains(res.Summary, "global") {
 		t.Fatalf("expected global in receipt, got: %s", res.Summary)
 	}
-	// The legacy pair is migrated into a preset on write.
 	if reloaded == nil {
 		t.Fatal("reloader never ran")
 	}
-	if got := reloaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
-		t.Fatalf("global write did not apply: %+v", reloaded.Models.Presets)
+	if reloaded.Agent.MaxToolIterations != 30 {
+		t.Fatalf("global write did not apply: %+v", reloaded.Agent)
 	}
 	// Global file on disk reflects the change.
 	loaded, err := config.Load(config.LoadOptions{HomeDir: dir, WorkingDir: dir})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := loaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
-		t.Fatalf("global disk preset missing: %+v", loaded.Models.Presets)
+	if loaded.Agent.MaxToolIterations != 30 {
+		t.Fatalf("global disk agent scalar missing: %+v", loaded.Agent)
 	}
 }
 
@@ -231,7 +230,6 @@ func TestConfigAgentSetGlobalScopeDeniedAborts(t *testing.T) {
 	userPath := config.UserConfigPath(dir)
 
 	cfg := config.Default()
-	cfg.Agent.Model = "gpt-4o"
 
 	state := session.New(config.Config{}, dir, time.Now(), session.Persistence{})
 
@@ -270,7 +268,7 @@ func TestConfigAgentSetGlobalScopeDeniedAborts(t *testing.T) {
 	res, err := tool.Handler(context.Background(), registry.ToolCall{
 		ID:   "1",
 		Name: "config.agent.set",
-		Args: json.RawMessage(`{"scope":"global","model":"claude-3.5-sonnet"}`),
+		Args: json.RawMessage(`{"scope":"global","max_tool_iterations":30}`),
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)

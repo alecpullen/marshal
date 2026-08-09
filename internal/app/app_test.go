@@ -1161,8 +1161,6 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Profile.Default = "single"
-	cfg.Agent.Provider = ""
-	cfg.Agent.Model = ""
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		"ollama/qwen2.5-coder:14b": {
 			Name:      "ollama/qwen2.5-coder:14b",

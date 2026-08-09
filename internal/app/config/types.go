@@ -335,17 +335,14 @@ type ProfileConfig struct {
 	Default string `toml:"default"`
 }
 
-// AgentConfig names which configured provider and model the agent loop
-// (Milestone H) uses. Both fields are intentionally blank in Default():
-// Marshal is local-friendly with no built-in provider assumptions (see
-// Providers' Default() comment) — the app runs with the agent loop disabled
-// until a user configures both a [providers.<name>] entry and this section.
+// AgentConfig holds the scalar tuning knobs for the agent loop. The legacy
+// [agent] provider/model pair is gone: a model is now identified only by its
+// provider/model pair under [models.presets], with profiles binding roles to
+// those pairs.
 type AgentConfig struct {
-	Provider             string `toml:"provider"`
-	Model                string `toml:"model"`
-	MaxToolIterations    int    `toml:"max_tool_iterations"`
-	MaxRetries           int    `toml:"max_retries"`
-	MaxTurnContextTokens int    `toml:"max_turn_context_tokens"`
+	MaxToolIterations    int `toml:"max_tool_iterations"`
+	MaxRetries           int `toml:"max_retries"`
+	MaxTurnContextTokens int `toml:"max_turn_context_tokens"`
 	// MaxToolResultChars caps a single tool result's characters before it
 	// reaches the model. 0 = derive from the turn's context threshold
 	// (~5% of the token budget), which is what large-window models want.

@@ -6,65 +6,19 @@ import (
 )
 
 func agentFrame(s *state) *frame {
-	// Preset-aware setters: write into the active preset when one exists,
-	// else into cfg.Agent — same rule as the legacy huh form.
-	setProvider := func(v string) error {
-		if name := activePresetNameFor(s.cfg); name != "" {
-			if p, ok := s.cfg.Models.Presets[name]; ok {
-				p.Provider = v
-				s.cfg.Models.Presets[name] = p
-				return nil
-			}
+	getActivePreset := func() routing.ModelPreset {
+		name := activePresetNameFor(s.cfg)
+		if name == "" {
+			return routing.ModelPreset{}
 		}
-		s.cfg.Agent.Provider = v
-		return nil
-	}
-	setModel := func(v string) error {
-		if name := activePresetNameFor(s.cfg); name != "" {
-			if p, ok := s.cfg.Models.Presets[name]; ok {
-				p.Model = v
-				s.cfg.Models.Presets[name] = p
-				return nil
-			}
-		}
-		s.cfg.Agent.Model = v
-		return nil
-	}
-	getActive := func() routing.ModelPreset {
-		if name := activePresetNameFor(s.cfg); name != "" {
-			if p, ok := s.cfg.Models.Presets[name]; ok {
-				return p
-			}
-		}
-		return routing.ModelPreset{}
+		return s.cfg.Models.Presets[name]
 	}
 
 	return newFrame("Agent", func() []*field {
-		active := getActive()
-		provider := active.Provider
-		if provider == "" {
-			provider = s.cfg.Agent.Provider
-		}
-		model := active.Model
-		if model == "" {
-			model = s.cfg.Agent.Model
-		}
+		active := getActivePreset()
 		presetTitle := active.Name
 		if presetTitle == "" {
 			presetTitle = "(none)"
-		}
-		providerRow := providerPickerField(s, "agent.provider",
-			func() string { return provider },
-			setProvider)
-		modelRow := modelPickerField(s, "agent.model",
-			func() string { return provider },
-			func() string { return model },
-			setModel)
-		if active.Name != "" {
-			providerRow.Title = "Provider (preset: " + active.Name + ")"
-			providerRow.Desc = "writes into preset " + active.Name + " — shared by every role that uses it"
-			modelRow.Title = "Model (preset: " + active.Name + ")"
-			modelRow.Desc = "writes into preset " + active.Name + " — shared by every role that uses it"
 		}
 		return []*field{
 			func() *field {
@@ -75,33 +29,10 @@ func agentFrame(s *state) *frame {
 				f.Desc = "active agent profile that sets model routing roles"
 				return f
 			}(),
-			// Read-only: shows which preset the profile resolves to.
 			{ID: "agent.preset", Title: "Preset", Kind: kindScalar,
 				TomlPath: "models.presets.<name>",
 				Desc:     "resolved from the default profile's implementer role",
 				GetStr:   func() string { return presetTitle }},
-			func() *field {
-				f := providerRow
-				f.TomlPath = "agent.provider"
-				return f
-			}(),
-			func() *field {
-				f := modelRow
-				f.TomlPath = "agent.model"
-				return f
-			}(),
-			{ID: "agent.local_only", Title: "Local only", Kind: kindToggle,
-				TomlPath: "models.presets.<name>.local_only",
-				Desc:     "block remote providers for this preset",
-				GetBool:  func() bool { return getActive().LocalOnly },
-				SetBool: func(v bool) {
-					if name := activePresetNameFor(s.cfg); name != "" {
-						if p, ok := s.cfg.Models.Presets[name]; ok {
-							p.LocalOnly = v
-							s.cfg.Models.Presets[name] = p
-						}
-					}
-				}},
 			func() *field {
 				f := intField("agent.max_tool_iterations", "Max tool iterations",
 					func() int { return s.cfg.Agent.MaxToolIterations }, 1,

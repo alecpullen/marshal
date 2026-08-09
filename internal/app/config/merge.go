@@ -31,8 +31,6 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Profile.Default, file.Profile.Default)
 	}
 	if file.Agent != nil {
-		set(&cfg.Agent.Provider, file.Agent.Provider)
-		set(&cfg.Agent.Model, file.Agent.Model)
 		set(&cfg.Agent.MaxToolIterations, file.Agent.MaxToolIterations)
 		set(&cfg.Agent.MaxRetries, file.Agent.MaxRetries)
 		set(&cfg.Agent.MaxTurnContextTokens, file.Agent.MaxTurnContextTokens)

@@ -54,8 +54,6 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 
 	cfg := Default()
 	cfg.Profile.Default = "local_balanced"
-	cfg.Agent.Provider = "ollama"
-	cfg.Agent.Model = "qwen2.5-coder:14b"
 	cfg.Privacy.RemoteProvidersAllowed = false
 	cfg.Privacy.RedactSecrets = false
 	cfg.Privacy.IncludeGitignoredFiles = true
@@ -88,9 +86,6 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	if loaded.Profile.Default != "local_balanced" {
 		t.Fatalf("profile default = %q, want local_balanced", loaded.Profile.Default)
 	}
-	if loaded.Agent.Provider != "" || loaded.Agent.Model != "" {
-		t.Fatalf("agent section should be omitted when preset is active, got %+v", loaded.Agent)
-	}
 	if loaded.Privacy.RemoteProvidersAllowed {
 		t.Fatal("remote_providers_allowed = true, want false")
 	}
@@ -106,18 +101,18 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSaveProjectConfigRoundTripLegacyAgent(t *testing.T) {
+func TestLoadMigratesLegacyAgentPair(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")
-
-	cfg := Default()
-	cfg.Profile.Default = ""
-	cfg.Agent.Provider = "anthropic"
-	cfg.Agent.Model = "claude-sonnet-4"
-	cfg.AgentProfiles = nil
-
-	if err := SaveProjectConfig(path, cfg); err != nil {
-		t.Fatalf("SaveProjectConfig failed: %v", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write the legacy [agent] provider/model pair directly; the fields no
+	// longer exist on AgentConfig, so the load path reads them from the raw
+	// file mirror and migrates them.
+	legacy := "[agent]\nprovider = \"anthropic\"\nmodel = \"claude-sonnet-4\"\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 
 	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
@@ -125,10 +120,7 @@ func TestSaveProjectConfigRoundTripLegacyAgent(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	// Migration clears legacy fields and creates a single-model profile.
-	if loaded.Agent.Provider != "" || loaded.Agent.Model != "" {
-		t.Fatalf("legacy fields not cleared after migration: %+v", loaded.Agent)
-	}
+	// Migration creates a single-model profile and preset.
 	if loaded.Profile.Default != "single" {
 		t.Fatalf("expected default profile 'single', got %q", loaded.Profile.Default)
 	}
@@ -206,25 +198,24 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 }
 
-func TestSaveProjectConfigOmitsAgentWhenPresetActive(t *testing.T) {
+func TestSaveProjectConfigRoundTripsAgentScalars(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")
 
 	cfg := Default()
 	cfg.Profile.Default = "local_balanced"
-	cfg.Agent.Provider = "ollama"
-	cfg.Agent.Model = "qwen2.5-coder:14b"
+	cfg.Agent.MaxToolIterations = 8
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {
 			Name: "local_balanced",
 			Roles: map[routing.AgentRole]routing.RoleBinding{
-				routing.RoleImplementer: {Preset: "coder"},
+				routing.RoleImplementer: {Preset: "ollama/qwen2.5-coder:14b"},
 			},
 		},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {
-			Name:     "coder",
+		"ollama/qwen2.5-coder:14b": {
+			Name:     "ollama/qwen2.5-coder:14b",
 			Provider: "ollama",
 			Model:    "qwen2.5-coder:14b",
 		},
@@ -239,8 +230,8 @@ func TestSaveProjectConfigOmitsAgentWhenPresetActive(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if loaded.Agent.Provider != "" || loaded.Agent.Model != "" {
-		t.Fatalf("agent section should be omitted when preset is active, got %+v", loaded.Agent)
+	if loaded.Agent.MaxToolIterations != 8 {
+		t.Fatalf("agent scalar not round-tripped, got %+v", loaded.Agent)
 	}
 }
 
@@ -780,8 +771,6 @@ func TestSaveUserConfigSectionRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 
 	cfg := Default()
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 	cfg.Agent.MaxToolIterations = 25
 	cfg.Privacy.RemoteProvidersAllowed = true
 	cfg.Providers = map[string]ProviderConfig{
@@ -796,11 +785,8 @@ func TestSaveUserConfigSectionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFile: %v", err)
 	}
-	if loaded.Agent == nil || loaded.Agent.Provider == nil || *loaded.Agent.Provider != "openai" {
-		t.Fatalf("agent.provider not persisted: %+v", loaded.Agent)
-	}
-	if loaded.Agent.Model == nil || *loaded.Agent.Model != "gpt-4o" {
-		t.Fatalf("agent.model not persisted: %+v", loaded.Agent)
+	if loaded.Agent == nil || loaded.Agent.MaxToolIterations == nil || *loaded.Agent.MaxToolIterations != 25 {
+		t.Fatalf("agent.max_tool_iterations not persisted: %+v", loaded.Agent)
 	}
 	if loaded.Privacy == nil || loaded.Privacy.RemoteProvidersAllowed == nil || !*loaded.Privacy.RemoteProvidersAllowed {
 		t.Fatalf("privacy.remote_providers_allowed not persisted: %+v", loaded.Privacy)
@@ -823,8 +809,7 @@ func TestSaveUserConfigSectionPreservesUnrelated(t *testing.T) {
 
 	// Now write only agent changes — swarm must survive.
 	next := Default()
-	next.Agent.Provider = "anthropic"
-	next.Agent.Model = "claude-3.5-sonnet"
+	next.Agent.MaxToolIterations = 12
 	if err := SaveUserConfigSection(path, next); err != nil {
 		t.Fatalf("second save: %v", err)
 	}

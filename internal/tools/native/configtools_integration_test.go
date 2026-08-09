@@ -18,8 +18,6 @@ func TestConfigIntegrationProjectThenGlobal(t *testing.T) {
 	globalPath := config.UserConfigPath(dir)
 
 	cfg := config.Default()
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 
 	state := session.New(cfg, dir, time.Now(), session.Persistence{})
 	approvalRequested := false
@@ -50,15 +48,13 @@ func TestConfigIntegrationProjectThenGlobal(t *testing.T) {
 		}
 	}
 
-	// 1. Project: switch model.
+	// 1. Project: set an agent scalar.
 	agentTool, _ := reg.Lookup("config.agent.set")
-	if _, err := agentTool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.agent.set", Args: json.RawMessage(`{"model":"claude-3.5-sonnet"}`)}); err != nil {
+	if _, err := agentTool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.agent.set", Args: json.RawMessage(`{"max_tool_iterations":30}`)}); err != nil {
 		t.Fatalf("agent set: %v", err)
 	}
-	// The legacy pair is migrated into a preset on write, so the selection
-	// shows up there rather than in cfg.Agent.
-	if got := reloaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
-		t.Fatalf("model not reloaded as a preset: %+v", reloaded.Models.Presets)
+	if reloaded == nil || reloaded.Agent.MaxToolIterations != 30 {
+		t.Fatalf("agent scalar not reloaded: %+v", reloaded)
 	}
 
 	// 2. Global: enable web search (forces approval).
@@ -73,13 +69,14 @@ func TestConfigIntegrationProjectThenGlobal(t *testing.T) {
 		t.Fatal("global write must have requested approval")
 	}
 
-	// 3. Disk reflects both: project file has model, global file has web.
+	// 3. Disk reflects both: project file has the agent scalar, global file
+	// has web.
 	loaded, err := config.Load(config.LoadOptions{HomeDir: dir, WorkingDir: dir})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := loaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
-		t.Fatalf("project disk preset missing: %+v", loaded.Models.Presets)
+	if loaded.Agent.MaxToolIterations != 30 {
+		t.Fatalf("project disk agent scalar missing: %+v", loaded.Agent)
 	}
 	if !loaded.Web.Enabled {
 		t.Fatalf("global disk web.enabled = %v", loaded.Web.Enabled)
@@ -88,14 +85,13 @@ func TestConfigIntegrationProjectThenGlobal(t *testing.T) {
 	// 4. config.read reflects merged state with secrets masked.
 	// Use capitalized section names to match Go struct field names (no json tags).
 	readTool, _ := reg.Lookup("config.read")
-	// Models rather than Agent: the selected model now lives in a preset.
-	res, err := readTool.Handler(context.Background(), registry.ToolCall{ID: "3", Name: "config.read", Args: json.RawMessage(`{"sections":["Models","Web"]}`)})
+	res, err := readTool.Handler(context.Background(), registry.ToolCall{ID: "3", Name: "config.read", Args: json.RawMessage(`{"sections":["Agent","Web"]}`)})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 
-	if !strings.Contains(res.Content, "claude-3.5-sonnet") {
-		t.Fatalf("read missing model: %s", res.Content)
+	if !strings.Contains(res.Content, `"MaxToolIterations": 30`) {
+		t.Fatalf("read missing agent scalar: %s", res.Content)
 	}
 	if !strings.Contains(res.Content, `"Enabled": true`) {
 		t.Fatalf("read missing web.Enabled: %s", res.Content)

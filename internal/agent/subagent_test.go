@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
 
@@ -254,6 +255,55 @@ func TestNewSubagentToolForwardsExplicitModel(t *testing.T) {
 	if got.Model != "openai/gpt-4o-mini" {
 		t.Fatalf("req.Model = %q, want openai/gpt-4o-mini", got.Model)
 	}
+}
+
+// TestNewSubagentToolRecordsMetaFromRunner verifies that the handler records
+// the child runner's resolved model and provider onto the registered
+// SubagentView via RegisterSubagentWithMeta, so the TUI card can display
+// what model actually ran the subagent.
+func TestNewSubagentToolRecordsMetaFromRunner(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		r := &Runner{
+			Model:    "gpt-4o-mini",
+			Provider: &stubProvider{name: "ollama"},
+			RunTaskFunc: func(context.Context, string) (*Task, error) {
+				return &Task{Summary: "ok"}, nil
+			},
+		}
+		return r, nil, nil
+	}
+	tool := NewSubagentTool(factory, registry.New(), state)
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"ollama/gpt-4o-mini"}`),
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	subs := state.Subagents()
+	if len(subs) != 1 {
+		t.Fatalf("registered subagents = %d, want 1", len(subs))
+	}
+	if subs[0].Model != "gpt-4o-mini" {
+		t.Fatalf("view.Model = %q, want gpt-4o-mini", subs[0].Model)
+	}
+	if subs[0].Provider != "ollama" {
+		t.Fatalf("view.Provider = %q, want ollama", subs[0].Provider)
+	}
+}
+
+// stubProvider is a minimal provider.Provider implementation for tests that
+// need the metadata-recording path to observe a non-nil provider.
+type stubProvider struct{ name string }
+
+func (s *stubProvider) Name() string { return s.name }
+func (s *stubProvider) Models(context.Context) ([]schema.ModelInfo, error) {
+	return nil, nil
+}
+func (s *stubProvider) Chat(context.Context, schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	return nil, nil
+}
+func (s *stubProvider) Capabilities(context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
 }
 
 // TestNewSubagentToolModelDefaultsWhenOmitted verifies that omitting the

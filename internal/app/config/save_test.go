@@ -63,13 +63,13 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 		"local_balanced": {
 			Name: "local_balanced",
 			Roles: map[routing.AgentRole]routing.RoleBinding{
-				routing.RoleImplementer: {Preset: "coder"},
+				routing.RoleImplementer: {Preset: "ollama/qwen2.5-coder:14b"},
 			},
 		},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {
-			Name:      "coder",
+		"ollama/qwen2.5-coder:14b": {
+			Name:      "ollama/qwen2.5-coder:14b",
 			Provider:  "ollama",
 			Model:     "qwen2.5-coder:14b",
 			LocalOnly: true,
@@ -100,9 +100,9 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	if !loaded.Privacy.IncludeGitignoredFiles {
 		t.Fatal("include_gitignored_files = false, want true")
 	}
-	preset := loaded.Models.Presets["coder"]
+	preset := loaded.Models.Presets["ollama/qwen2.5-coder:14b"]
 	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" || !preset.LocalOnly {
-		t.Fatalf("preset coder = %+v", preset)
+		t.Fatalf("preset ollama/qwen2.5-coder:14b = %+v", preset)
 	}
 }
 
@@ -391,7 +391,7 @@ func fullEditedConfig() Config {
 	cfg.Hooks = HooksConfig{FailClosed: true, Entries: []HookConfig{{Event: "pre_tool", Matcher: "shell.*", Command: "echo hi", TimeoutMS: 500}}}
 	cfg.Providers = map[string]ProviderConfig{"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "real-key", APIKeyEnv: "OLLAMA_KEY", ToolCalling: true}}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Name: "fast", Provider: "ollama", Model: "qwen3", ContextWindow: 32768, MaxOutputTokens: 4096, ToolCalling: "native", LocalOnly: true},
+		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3", ContextWindow: 32768, MaxOutputTokens: 4096, ToolCalling: "native", LocalOnly: true},
 	}
 	return cfg
 }
@@ -452,8 +452,8 @@ func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(loaded.Providers, wantProviders) {
 		t.Errorf("providers: got %+v want %+v", loaded.Providers, wantProviders)
 	}
-	if !reflect.DeepEqual(loaded.Models.Presets["fast"], cfg.Models.Presets["fast"]) {
-		t.Errorf("preset fast: got %+v want %+v", loaded.Models.Presets["fast"], cfg.Models.Presets["fast"])
+	if !reflect.DeepEqual(loaded.Models.Presets["ollama/qwen3"], cfg.Models.Presets["ollama/qwen3"]) {
+		t.Errorf("preset ollama/qwen3: got %+v want %+v", loaded.Models.Presets["ollama/qwen3"], cfg.Models.Presets["ollama/qwen3"])
 	}
 }
 

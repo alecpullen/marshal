@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
 )
 
@@ -100,13 +99,16 @@ func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 	return r.resolvePresetBinding(binding.Preset, from, profile.Name)
 }
 
+// IsCanonicalPresetName reports whether name is exactly "<provider>/<model>".
+func IsCanonicalPresetName(name string) bool {
+	provider, model, ok := strings.Cut(name, "/")
+	return ok && provider != "" && model != "" && !strings.Contains(provider, "/")
+}
+
 func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, profileName string) (Route, error) {
 	preset, ok := r.config.Presets[presetName]
 	if !ok {
 		return Route{}, fmt.Errorf("%w: %s", ErrPresetNotFound, presetName)
-	}
-	if preset.Name == "" {
-		preset.Name = presetName
 	}
 	if !preset.LocalOnly && !r.config.RemoteAllowed {
 		return Route{}, fmt.Errorf("%w: preset %s", ErrRemoteProviderBlocked, presetName)
@@ -120,41 +122,20 @@ func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, p
 }
 
 // ResolveExplicitModel resolves an explicit "provider/model" pair (e.g.
-// "openai/gpt-4o-mini") against the configured presets. It returns a Route
-// whose Preset is the first configured preset matching the pair, so pricing,
-// local-only gating, and context budgets resolve exactly as if the model were
-// bound to a role. It errors clearly (ErrUnknownProvider) when no provider or
-// no preset matches the pair, and applies the same remote-provider gate as
-// role resolution.
+// "openai/gpt-4o-mini") against the configured presets. The preset map key
+// must be exactly the pair string; there is no fuzzy scan. It returns a Route
+// carrying that preset, so pricing, local-only gating, and context budgets
+// resolve exactly as if the model were bound to a role.
 func (r *StaticRouter) ResolveExplicitModel(pair string, asRole AgentRole) (Route, error) {
 	provider, model, ok := strings.Cut(pair, "/")
 	if !ok || provider == "" || model == "" {
 		return Route{}, fmt.Errorf("%w: invalid provider/model pair %q", ErrUnknownProvider, pair)
 	}
-	// Iterate preset names in sorted order so that, when several presets
-	// share the same provider/model, resolution is deterministic across
-	// runs (map iteration order is random).
-	names := make([]string, 0, len(r.config.Presets))
-	for name := range r.config.Presets {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	var matched *ModelPreset
-	for _, name := range names {
-		preset := r.config.Presets[name]
-		if preset.Provider == provider && preset.Model == model {
-			p := preset
-			if p.Name == "" {
-				p.Name = name
-			}
-			matched = &p
-			break
-		}
-	}
-	if matched == nil {
+	preset, ok := r.config.Presets[pair]
+	if !ok {
 		return Route{}, fmt.Errorf("%w: no preset configured for %q", ErrUnknownProvider, pair)
 	}
-	preset := *matched
+	preset.Name = pair
 	if !preset.LocalOnly && !r.config.RemoteAllowed {
 		return Route{}, fmt.Errorf("%w: preset %s", ErrRemoteProviderBlocked, pair)
 	}
@@ -219,9 +200,6 @@ func (r *StaticRouter) resolveAgentBinding(name string, role AgentRole, profileN
 	preset, ok := r.config.Presets[agent.Preset]
 	if !ok {
 		return Route{}, fmt.Errorf("%w: custom agent %s preset %s", ErrPresetNotFound, name, agent.Preset)
-	}
-	if preset.Name == "" {
-		preset.Name = agent.Preset
 	}
 	if !preset.LocalOnly && !r.config.RemoteAllowed {
 		return Route{}, fmt.Errorf("%w: custom agent %s", ErrRemoteProviderBlocked, name)

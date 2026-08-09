@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -130,8 +131,17 @@ func (r *StaticRouter) ResolveExplicitModel(pair string, asRole AgentRole) (Rout
 	if !ok || provider == "" || model == "" {
 		return Route{}, fmt.Errorf("%w: invalid provider/model pair %q", ErrUnknownProvider, pair)
 	}
+	// Iterate preset names in sorted order so that, when several presets
+	// share the same provider/model, resolution is deterministic across
+	// runs (map iteration order is random).
+	names := make([]string, 0, len(r.config.Presets))
+	for name := range r.config.Presets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	var matched *ModelPreset
-	for name, preset := range r.config.Presets {
+	for _, name := range names {
+		preset := r.config.Presets[name]
 		if preset.Provider == provider && preset.Model == model {
 			p := preset
 			if p.Name == "" {

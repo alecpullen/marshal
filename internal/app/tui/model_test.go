@@ -4526,13 +4526,13 @@ func TestSetCommandUnavailableAgentToggleDoesNotSaveOrReportSuccess(t *testing.T
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()
 
-	m.dispatchCommand("/set agent.local_only on")
+	m.dispatchCommand("/set agent.provider ollama")
 
 	if _, err := os.Stat(filepath.Join(m.state.WorkingDir, ".marshal", "config.toml")); !os.IsNotExist(err) {
 		t.Fatalf("unavailable setting should not be persisted, stat error = %v", err)
 	}
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
-	if strings.Contains(got, "✓") || !strings.Contains(got, "unavailable") {
+	if strings.Contains(got, "✓") || !strings.Contains(got, "unknown setting") {
 		t.Fatalf("unavailable setting receipt = %q", got)
 	}
 }
@@ -4737,9 +4737,6 @@ func TestApplyConnectDoneWritesAPresetAndProfile(t *testing.T) {
 	cfg := m.state.Config
 	if cfg.Profile.Default == "" {
 		t.Fatal("Profile.Default is empty — the legacy fallback signal must be gone")
-	}
-	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
-		t.Errorf("legacy pair still written: %q/%q", cfg.Agent.Provider, cfg.Agent.Model)
 	}
 
 	profile, ok := cfg.AgentProfiles[cfg.Profile.Default]
@@ -5155,9 +5152,6 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("selecting a model should close the overlay")
 	}
-	if m.state.Config.Agent.Provider != "" || m.state.Config.Agent.Model != "" {
-		t.Fatalf("legacy pair still set: got provider=%q model=%q", m.state.Config.Agent.Provider, m.state.Config.Agent.Model)
-	}
 	if m.state.Config.Profile.Default != "single" {
 		t.Fatalf("profile default should be %q, got %q", "single", m.state.Config.Profile.Default)
 	}
@@ -5203,9 +5197,6 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	updated, _ := m.Update(connect.DoneMsg{Provider: "ollama", Model: "qwen2.5-coder:7b", ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}})
 	if !reloaded {
 		t.Fatal("DoneMsg should call configReloader")
-	}
-	if updated.(Model).state.Config.Agent.Provider != "" || updated.(Model).state.Config.Agent.Model != "" {
-		t.Fatalf("legacy pair still set: %+v", updated.(Model).state.Config.Agent)
 	}
 	if updated.(Model).state.Config.Profile.Default != "single" {
 		t.Fatalf("profile default should be %q, got %q", "single", updated.(Model).state.Config.Profile.Default)
@@ -5255,9 +5246,6 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.setReg != nil {
 		t.Fatal("failed connect reload must invalidate the cached /set registry")
 	}
-	if m.state.Config.Agent.Provider != "" || m.state.Config.Agent.Model != "" {
-		t.Fatalf("failed connect reload must align m.state.Config, got %+v", m.state.Config.Agent)
-	}
 	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("failed connect reload must create preset")
 	}
@@ -5289,9 +5277,6 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 
 	if reloaded {
 		t.Fatal("save failure must not call configReloader")
-	}
-	if m.state.Config.Agent.Provider != "" || m.state.Config.Agent.Model != "" {
-		t.Fatalf("save failure must keep the new config in session, got %+v", m.state.Config.Agent)
 	}
 	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("save failure must keep the preset in session config")

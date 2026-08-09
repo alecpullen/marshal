@@ -61,15 +61,15 @@ func TestRegistryApplyToggle(t *testing.T) {
 	}
 }
 
-func TestRegistryApplyUnavailableAgentToggle(t *testing.T) {
+func TestRegistryApplyUnknownAgentSetting(t *testing.T) {
 	registry := BuildRegistry(config.Default())
 	before := registry.Config()
-	if _, err := registry.Apply("agent.local_only", "on"); err == nil ||
-		!strings.Contains(err.Error(), "unavailable") {
-		t.Fatalf("Apply unavailable agent toggle error = %v, want unavailable error", err)
+	if _, err := registry.Apply("agent.provider", "ollama"); err == nil ||
+		!strings.Contains(err.Error(), "unknown setting") {
+		t.Fatalf("Apply unknown agent setting error = %v, want unknown setting error", err)
 	}
 	if !reflect.DeepEqual(registry.Config(), before) {
-		t.Fatal("unavailable agent toggle must not mutate config")
+		t.Fatal("unknown agent setting must not mutate config")
 	}
 }
 
@@ -78,21 +78,21 @@ func TestRegistryApplyAgentToggleWithActivePreset(t *testing.T) {
 	cfg.Profile.Default = "default"
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"default": {
-			Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "local"}},
+			Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "ollama/local"}},
 		},
 	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{"local": {}}
+	cfg.Models.Presets = map[string]routing.ModelPreset{"ollama/local": {}}
 	registry := BuildRegistry(cfg)
 
-	change, err := registry.Apply("agent.local_only", "on")
+	change, err := registry.Apply("agent.plan_first", "on")
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if !change.Changed || !registry.Config().Models.Presets["local"].LocalOnly {
-		t.Fatalf("agent toggle did not update active preset: %#v", change)
+	if !change.Changed || !registry.Config().Agent.PlanFirst {
+		t.Fatalf("agent toggle did not apply: %#v", change)
 	}
 
-	change, err = registry.Apply("agent.local_only", "on")
+	change, err = registry.Apply("agent.plan_first", "on")
 	if err != nil {
 		t.Fatalf("reapplying active agent toggle: %v", err)
 	}

@@ -74,8 +74,10 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			*opts.Trusted = decision == trust.DecisionTrustPermanent || decision == trust.DecisionTrustSession
 		}
 	}
+	var projectFile configFile
 	if applyProject {
-		projectFile, err := loadFile(projectPath)
+		var err error
+		projectFile, err = loadFile(projectPath)
 		if err != nil {
 			return Layers{}, err
 		}
@@ -83,7 +85,17 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			return Layers{}, fmt.Errorf("merge config %s: %w", projectPath, err)
 		}
 	}
-	migrated := MigrateLegacyAgentModel(&cfg)
+	// The legacy [agent] provider/model pair is read from the raw file
+	// mirror (the fields no longer exist on AgentConfig). The project file
+	// wins over the user file when both name a pair. TODO: remove this
+	// compatibility shim after one release cycle.
+	legacyProvider, legacyModel := "", ""
+	if projectFile.Agent != nil && projectFile.Agent.Provider != nil && projectFile.Agent.Model != nil {
+		legacyProvider, legacyModel = *projectFile.Agent.Provider, *projectFile.Agent.Model
+	} else if userFile.Agent != nil && userFile.Agent.Provider != nil && userFile.Agent.Model != nil {
+		legacyProvider, legacyModel = *userFile.Agent.Provider, *userFile.Agent.Model
+	}
+	migrated := MigrateLegacyAgentModel(&cfg, legacyProvider, legacyModel)
 	coercePresetPricing(&cfg)
 	return Layers{Default: def, User: user, Merged: cfg, Migrated: migrated}, nil
 }

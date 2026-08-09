@@ -375,12 +375,8 @@ func TestLoadParsesAgentSection(t *testing.T) {
 		t.Fatalf("Load returned error: %v", err)
 	}
 	// The [agent] provider/model pair is deprecated: Load migrates it into a
-	// preset plus a single-model profile, then clears the legacy fields. What
-	// this test guards is that the section is still understood, not that the
-	// old shape survives.
-	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
-		t.Fatalf("legacy pair survived migration: %q/%q", cfg.Agent.Provider, cfg.Agent.Model)
-	}
+	// preset plus a single-model profile. What this test guards is that the
+	// section is still understood, not that the old shape survives.
 	const presetName = "ollama/qwen2.5-coder:14b"
 	preset, ok := cfg.Models.Presets[presetName]
 	if !ok {
@@ -398,9 +394,9 @@ func TestLoadParsesAgentSection(t *testing.T) {
 	}
 }
 
-func TestDefaultLeavesAgentProviderEmpty(t *testing.T) {
+func TestDefaultLeavesAgentScalarsZero(t *testing.T) {
 	cfg := Default()
-	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
+	if cfg.Agent.MaxToolIterations != 0 || cfg.Agent.MaxRetries != 0 {
 		t.Fatalf("Default().Agent = %#v, want zero value (local-friendly: no assumed provider)", cfg.Agent)
 	}
 }

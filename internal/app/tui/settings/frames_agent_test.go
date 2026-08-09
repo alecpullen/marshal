@@ -3,14 +3,11 @@ package settings
 import (
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
-	"marshal/internal/llm/schema"
 )
 
-func TestAgentProviderFieldIsKindPicker(t *testing.T) {
+func TestAgentFrameHasScalarRows(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama":     {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
@@ -19,160 +16,65 @@ func TestAgentProviderFieldIsKindPicker(t *testing.T) {
 	st := newState(cfg)
 	f := agentFrame(st)
 
-	var providerRow *field
+	titles := map[string]*field{}
 	for _, r := range f.List.Rows() {
-		if r.Title == "Provider" {
-			providerRow = r
-			break
+		titles[r.Title] = r
+	}
+	for _, want := range []string{"Default profile", "Preset", "Max tool iterations", "Max retries", "Max turn context tokens", "Max tool result chars", "Subtask iterations", "Plan first", "Approval mode"} {
+		if titles[want] == nil {
+			t.Fatalf("Agent frame missing row %q; rows: %v", want, titles)
 		}
 	}
-	if providerRow == nil {
-		t.Fatal("Agent frame must have a Provider row")
-	}
-	if providerRow.Kind != kindPicker {
-		t.Fatalf("Provider row kind = %v, want kindPicker", providerRow.Kind)
-	}
-	values := map[string]bool{}
-	for _, item := range providerRow.PickOptions() {
-		values[item.Value] = true
-	}
-	if !values["ollama"] || !values["openrouter"] {
-		t.Fatalf("provider picker items missing configured providers, got %v", values)
+	// The legacy provider/model rows are gone.
+	if titles["Provider"] != nil || titles["Model"] != nil {
+		t.Fatal("Agent frame must not expose legacy provider/model rows")
 	}
 }
 
-func TestAgentProviderPickerEmptyState(t *testing.T) {
-	st := newState(config.Default())
-	f := agentFrame(st)
-
-	var providerRow *field
-	for _, r := range f.List.Rows() {
-		if r.Title == "Provider" {
-			providerRow = r
-			break
-		}
-	}
-	items := providerRow.PickOptions()
-	if len(items) == 0 || items[0].Value != "__add_provider__" {
-		t.Fatalf("empty provider picker should have an 'Add a provider' item, got %v", items)
-	}
-}
-
-func TestAgentModelPickerUsesDiscoveredCache(t *testing.T) {
+func TestAgentFramePresetRowShowsActivePreset(t *testing.T) {
 	cfg := config.Default()
-	cfg.Providers = map[string]config.ProviderConfig{
-		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
-	}
-	cfg.Agent.Provider = "ollama"
-	st := newState(cfg)
-	st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}, {ID: "llama3.1:8b"}}
-
-	f := agentFrame(st)
-	var modelRow *field
-	for _, r := range f.List.Rows() {
-		if r.Title == "Model" {
-			modelRow = r
-			break
-		}
-	}
-	if modelRow.Kind != kindPicker {
-		t.Fatalf("Model row kind = %v, want kindPicker", modelRow.Kind)
-	}
-	values := map[string]bool{}
-	for _, item := range modelRow.PickOptions() {
-		values[item.Value] = true
-	}
-	if !values["qwen2.5-coder:7b"] {
-		t.Fatal("model picker should include discovered models")
-	}
-}
-
-func TestAgentFrameProviderWritesToActivePreset(t *testing.T) {
-	cfg := config.Default()
-	s := newState(cfg)
-	preset := activePresetNameFor(s.cfg)
-	if preset == "" {
-		t.Skip("default config has no active preset; covered by direct-write test below")
-	}
-	ps := newPaneStack(agentFrame(s))
-	ps.SetSize(80, 24)
-	for ps.Top().List.CursorRow().Title != "Provider" {
-		ps.Update(kp("j"))
-	}
-	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	ps.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-populated value
-	for _, r := range "vllm" {
-		ps.Update(kp(string(r)))
-	}
-	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if s.cfg.Models.Presets[preset].Provider != "vllm" {
-		t.Fatalf("provider should write to preset %q, got %q", preset, s.cfg.Models.Presets[preset].Provider)
-	}
-}
-
-func TestAgentFrameTitlesShowActivePreset(t *testing.T) {
-	cfg := config.Default()
-	cfg.Models.Presets["my-preset"] = routing.ModelPreset{
-		Name:     "my-preset",
+	cfg.Models.Presets["ollama/llama3.1:8b"] = routing.ModelPreset{
+		Name:     "ollama/llama3.1:8b",
 		Provider: "ollama",
 		Model:    "llama3.1:8b",
 	}
 	cfg.AgentProfiles["local_balanced"] = routing.AgentProfile{
 		Name:  "local_balanced",
-		Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "my-preset"}},
+		Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "ollama/llama3.1:8b"}},
 	}
 	st := newState(cfg)
 	f := agentFrame(st)
 
-	var providerRow, modelRow *field
+	var presetRow *field
 	for _, r := range f.List.Rows() {
-		if r.Title == "Provider (preset: my-preset)" {
-			providerRow = r
-		}
-		if r.Title == "Model (preset: my-preset)" {
-			modelRow = r
+		if r.Title == "Preset" {
+			presetRow = r
 		}
 	}
-	if providerRow == nil {
-		t.Fatal("Agent frame must have a Provider (preset: my-preset) row when preset is active")
+	if presetRow == nil {
+		t.Fatal("Agent frame must have a Preset row")
 	}
-	if modelRow == nil {
-		t.Fatal("Agent frame must have a Model (preset: my-preset) row when preset is active")
-	}
-	wantDesc := "writes into preset my-preset — shared by every role that uses it"
-	if providerRow.Desc != wantDesc {
-		t.Fatalf("Provider row desc = %q, want %q", providerRow.Desc, wantDesc)
-	}
-	if modelRow.Desc != wantDesc {
-		t.Fatalf("Model row desc = %q, want %q", modelRow.Desc, wantDesc)
+	if got := presetRow.GetStr(); got != "ollama/llama3.1:8b" {
+		t.Fatalf("Preset row = %q, want ollama/llama3.1:8b", got)
 	}
 }
 
-func TestAgentFrameTitlesPlainWithoutPreset(t *testing.T) {
+func TestAgentFramePresetRowShowsNoneWithoutPreset(t *testing.T) {
 	// Default config has no AgentProfiles, so no preset is active.
 	st := newState(config.Default())
 	f := agentFrame(st)
 
-	var providerRow, modelRow *field
+	var presetRow *field
 	for _, r := range f.List.Rows() {
-		if r.Title == "Provider" {
-			providerRow = r
-		}
-		if r.Title == "Model" {
-			modelRow = r
+		if r.Title == "Preset" {
+			presetRow = r
 		}
 	}
-	if providerRow == nil {
-		t.Fatal("Agent frame must have a plain Provider row when no preset is active")
+	if presetRow == nil {
+		t.Fatal("Agent frame must have a Preset row")
 	}
-	if modelRow == nil {
-		t.Fatal("Agent frame must have a plain Model row when no preset is active")
-	}
-	if providerRow.Desc != "configured provider for this role" {
-		t.Fatalf("Provider row desc = %q, want default desc", providerRow.Desc)
-	}
-	if modelRow.Desc != "model id for this role" {
-		t.Fatalf("Model row desc = %q, want default desc", modelRow.Desc)
+	if got := presetRow.GetStr(); got != "(none)" {
+		t.Fatalf("Preset row = %q, want (none)", got)
 	}
 }
 

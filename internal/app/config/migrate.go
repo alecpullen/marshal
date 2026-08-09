@@ -5,12 +5,10 @@ import "marshal/internal/llm/routing"
 // MigrateLegacyAgentModel rewrites a legacy [agent] provider+model pair into
 // a single-model profile and preset. It returns true when it made changes.
 //
-// A legacy config has both cfg.Agent.Provider and cfg.Agent.Model set and no
-// usable default profile. The migration creates a preset named
-// "<provider>/<model>", creates a single-model profile named "single" that
-// binds every chat role to that preset, and sets cfg.Profile.Default = "single".
-// The legacy fields are then cleared so the rest of the system sees only the
-// new shape.
+// A legacy config has both a provider and model set and no usable default
+// profile. The migration creates a preset named "<provider>/<model>", creates
+// a single-model profile named "single" that binds every chat role to that
+// preset, and sets cfg.Profile.Default = "single".
 //
 // "No usable default profile" means the name in cfg.Profile.Default does not
 // resolve to an entry in cfg.AgentProfiles — not merely that the string is
@@ -21,15 +19,15 @@ import "marshal/internal/llm/routing"
 // route at all. That shape is what docs/09-configuration-examples.md shows.
 //
 // Existing presets and profiles are never disturbed.
-func MigrateLegacyAgentModel(cfg *Config) bool {
-	if cfg.Agent.Provider == "" || cfg.Agent.Model == "" {
+func MigrateLegacyAgentModel(cfg *Config, provider, model string) bool {
+	if provider == "" || model == "" {
 		return false
 	}
 	if _, ok := cfg.AgentProfiles[cfg.Profile.Default]; ok {
 		return false
 	}
 
-	presetName := cfg.Agent.Provider + "/" + cfg.Agent.Model
+	presetName := provider + "/" + model
 
 	// Insert preset, preserving existing entries.
 	if cfg.Models.Presets == nil {
@@ -46,13 +44,13 @@ func MigrateLegacyAgentModel(cfg *Config) bool {
 		// entry is never assumed local: guessing wrong here would let a
 		// remote endpoint past a privacy gate the user did not open.
 		localOnly := false
-		if pc, ok := cfg.Providers[cfg.Agent.Provider]; ok && pc.BaseURL != "" {
+		if pc, ok := cfg.Providers[provider]; ok && pc.BaseURL != "" {
 			localOnly = routing.IsLocalProvider(pc.BaseURL)
 		}
 		cfg.Models.Presets[presetName] = routing.ModelPreset{
 			Name:      presetName,
-			Provider:  cfg.Agent.Provider,
-			Model:     cfg.Agent.Model,
+			Provider:  provider,
+			Model:     model,
 			LocalOnly: localOnly,
 		}
 	}
@@ -66,8 +64,6 @@ func MigrateLegacyAgentModel(cfg *Config) bool {
 	}
 
 	cfg.Profile.Default = "single"
-	cfg.Agent.Provider = ""
-	cfg.Agent.Model = ""
 
 	return true
 }

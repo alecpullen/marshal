@@ -9,17 +9,12 @@ import (
 func TestMigrateLegacyAgentModel(t *testing.T) {
 	cfg := Default()
 	cfg.Profile.Default = "" // clear the built-in default so migration fires
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 	cfg.Providers = map[string]ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	}
 
-	if !MigrateLegacyAgentModel(&cfg) {
+	if !MigrateLegacyAgentModel(&cfg, "openai", "gpt-4o") {
 		t.Fatal("migration reported no change")
-	}
-	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
-		t.Errorf("legacy fields not cleared: %q/%q", cfg.Agent.Provider, cfg.Agent.Model)
 	}
 	if cfg.Profile.Default == "" {
 		t.Fatal("no default profile after migration")
@@ -43,8 +38,6 @@ func TestMigrateLegacyAgentModel(t *testing.T) {
 
 func TestMigrateNoOpWhenProfileAlreadySet(t *testing.T) {
 	cfg := Default()
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 	cfg.Profile.Default = "mine"
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"mine": {Name: "mine", Roles: map[routing.AgentRole]routing.RoleBinding{
@@ -52,7 +45,7 @@ func TestMigrateNoOpWhenProfileAlreadySet(t *testing.T) {
 		}},
 	}
 
-	if MigrateLegacyAgentModel(&cfg) {
+	if MigrateLegacyAgentModel(&cfg, "openai", "gpt-4o") {
 		t.Error("migrated a config that already has a default profile")
 	}
 	if cfg.Profile.Default != "mine" {
@@ -68,15 +61,13 @@ func TestMigrateNoOpWhenProfileAlreadySet(t *testing.T) {
 // resolution path was deleted.
 func TestMigrateWhenDefaultProfileNameDoesNotExist(t *testing.T) {
 	cfg := Default()
-	cfg.Agent.Provider = "ollama"
-	cfg.Agent.Model = "qwen3-coder"
 	cfg.AgentProfiles = nil // nothing defines cfg.Profile.Default
 
 	if cfg.Profile.Default == "" {
 		t.Fatal("precondition: Default() is expected to name a default profile")
 	}
 
-	if !MigrateLegacyAgentModel(&cfg) {
+	if !MigrateLegacyAgentModel(&cfg, "ollama", "qwen3-coder") {
 		t.Fatalf("did not migrate a config whose default profile %q does not exist",
 			cfg.Profile.Default)
 	}
@@ -96,8 +87,6 @@ func TestMigrateWhenDefaultProfileNameDoesNotExist(t *testing.T) {
 // is already valid and must be left alone.
 func TestMigrateNoOpWhenDefaultProfileExists(t *testing.T) {
 	cfg := Default()
-	cfg.Agent.Provider = "ollama"
-	cfg.Agent.Model = "qwen3-coder"
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		cfg.Profile.Default: {Name: cfg.Profile.Default, Roles: map[routing.AgentRole]routing.RoleBinding{
 			routing.RoleImplementer: {Preset: "p"},
@@ -105,7 +94,7 @@ func TestMigrateNoOpWhenDefaultProfileExists(t *testing.T) {
 	}
 	want := cfg.Profile.Default
 
-	if MigrateLegacyAgentModel(&cfg) {
+	if MigrateLegacyAgentModel(&cfg, "ollama", "qwen3-coder") {
 		t.Error("migrated a config whose default profile is defined")
 	}
 	if cfg.Profile.Default != want {
@@ -121,14 +110,12 @@ func TestMigrateNoOpWhenDefaultProfileExists(t *testing.T) {
 func TestMigrateMarksLocalProviderPresetLocalOnly(t *testing.T) {
 	cfg := Default()
 	cfg.Privacy.RemoteProvidersAllowed = false
-	cfg.Agent.Provider = "ollama"
-	cfg.Agent.Model = "qwen3-coder"
 	cfg.AgentProfiles = nil
 	cfg.Providers = map[string]ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
 
-	if !MigrateLegacyAgentModel(&cfg) {
+	if !MigrateLegacyAgentModel(&cfg, "ollama", "qwen3-coder") {
 		t.Fatal("did not migrate")
 	}
 	preset := cfg.Models.Presets["ollama/qwen3-coder"]
@@ -139,14 +126,12 @@ func TestMigrateMarksLocalProviderPresetLocalOnly(t *testing.T) {
 
 func TestMigrateDoesNotMarkRemoteProviderLocalOnly(t *testing.T) {
 	cfg := Default()
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 	cfg.AgentProfiles = nil
 	cfg.Providers = map[string]ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	}
 
-	if !MigrateLegacyAgentModel(&cfg) {
+	if !MigrateLegacyAgentModel(&cfg, "openai", "gpt-4o") {
 		t.Fatal("did not migrate")
 	}
 	if cfg.Models.Presets["openai/gpt-4o"].LocalOnly {
@@ -156,12 +141,10 @@ func TestMigrateDoesNotMarkRemoteProviderLocalOnly(t *testing.T) {
 
 func TestMigrateUnknownProviderIsNotLocalOnly(t *testing.T) {
 	cfg := Default()
-	cfg.Agent.Provider = "ghost"
-	cfg.Agent.Model = "m"
 	cfg.AgentProfiles = nil
 	cfg.Providers = nil // no matching [providers.ghost] block
 
-	if !MigrateLegacyAgentModel(&cfg) {
+	if !MigrateLegacyAgentModel(&cfg, "ghost", "m") {
 		t.Fatal("did not migrate")
 	}
 	if cfg.Models.Presets["ghost/m"].LocalOnly {
@@ -171,15 +154,14 @@ func TestMigrateUnknownProviderIsNotLocalOnly(t *testing.T) {
 
 func TestMigrateNoOpWhenNoLegacyFields(t *testing.T) {
 	cfg := Default()
-	if MigrateLegacyAgentModel(&cfg) {
+	if MigrateLegacyAgentModel(&cfg, "", "") {
 		t.Error("migrated a config with nothing to migrate")
 	}
 }
 
 func TestMigratePartialLegacyIsIgnored(t *testing.T) {
 	cfg := Default()
-	cfg.Agent.Provider = "openai" // model missing
-	if MigrateLegacyAgentModel(&cfg) {
+	if MigrateLegacyAgentModel(&cfg, "openai", "") { // model missing
 		t.Error("migrated a half-configured legacy pair")
 	}
 }
@@ -192,13 +174,11 @@ func TestMigratePartialLegacyIsIgnored(t *testing.T) {
 func TestMigrateProfileNameContract(t *testing.T) {
 	cfg := Default()
 	cfg.Profile.Default = "" // clear the built-in default so migration fires
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 	cfg.Providers = map[string]ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	}
 
-	if !MigrateLegacyAgentModel(&cfg) {
+	if !MigrateLegacyAgentModel(&cfg, "openai", "gpt-4o") {
 		t.Fatal("migration reported no change")
 	}
 
@@ -216,13 +196,11 @@ func TestMigrateProfileNameContract(t *testing.T) {
 func TestMigratePreservesExistingPresets(t *testing.T) {
 	cfg := Default()
 	cfg.Profile.Default = "" // clear the built-in default so migration fires
-	cfg.Agent.Provider = "openai"
-	cfg.Agent.Model = "gpt-4o"
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		"mine": {Name: "mine", Provider: "groq", Model: "llama"},
 	}
 
-	MigrateLegacyAgentModel(&cfg)
+	MigrateLegacyAgentModel(&cfg, "openai", "gpt-4o")
 
 	if _, ok := cfg.Models.Presets["mine"]; !ok {
 		t.Error("migration dropped an existing preset")

@@ -159,15 +159,13 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 func (t *toolSet) configAgentSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.agent.set",
-		Description: "Set fields in the [agent] section of the Marshal config (provider, model, max_tool_iterations, max_retries, max_turn_context_tokens, max_structured_output_chars, plan_first, subtask_iterations, approval_mode). Omitted fields are preserved. Use scope=\"global\" to write to the user-global config (requires explicit approval).",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"],"description":"project (default) or global"},"provider":{"type":"string"},"model":{"type":"string"},"max_tool_iterations":{"type":"integer"},"max_retries":{"type":"integer"},"max_turn_context_tokens":{"type":"integer"},"max_structured_output_chars":{"type":"integer"},"plan_first":{"type":"boolean"},"subtask_iterations":{"type":"integer"},"approval_mode":{"type":"string"}},"additionalProperties":false}`),
+		Description: "Set fields in the [agent] section of the Marshal config (max_tool_iterations, max_retries, max_turn_context_tokens, max_structured_output_chars, plan_first, subtask_iterations, approval_mode). Omitted fields are preserved. Use scope=\"global\" to write to the user-global config (requires explicit approval).",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"],"description":"project (default) or global"},"max_tool_iterations":{"type":"integer"},"max_retries":{"type":"integer"},"max_turn_context_tokens":{"type":"integer"},"max_structured_output_chars":{"type":"integer"},"plan_first":{"type":"boolean"},"subtask_iterations":{"type":"integer"},"approval_mode":{"type":"string"}},"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		var args struct {
 			configWriteEnvelope
-			Provider                 *string `json:"provider"`
-			Model                    *string `json:"model"`
 			MaxToolIterations        *int    `json:"max_tool_iterations"`
 			MaxRetries               *int    `json:"max_retries"`
 			MaxTurnContextTokens     *int    `json:"max_turn_context_tokens"`
@@ -186,12 +184,6 @@ func (t *toolSet) configAgentSetTool() registry.Tool {
 		// Build a diff summary for the approval reason.
 		reason := fmt.Sprintf("config.agent.set (%s scope): update agent section", scope)
 		return t.commitConfigWrite(ctx, scope, reason, approvalModeWeakened, func(cfg *config.Config) {
-			if args.Provider != nil {
-				cfg.Agent.Provider = *args.Provider
-			}
-			if args.Model != nil {
-				cfg.Agent.Model = *args.Model
-			}
 			if args.MaxToolIterations != nil {
 				cfg.Agent.MaxToolIterations = *args.MaxToolIterations
 			}
@@ -212,15 +204,6 @@ func (t *toolSet) configAgentSetTool() registry.Tool {
 			}
 			if args.ApprovalMode != nil {
 				cfg.Agent.ApprovalMode = *args.ApprovalMode
-			}
-			// provider/model are the deprecated legacy pair. Routing resolves
-			// through profiles only, so fold them into a preset and a
-			// single-model profile before the config is written — otherwise
-			// this tool persists a shape that is migrated away on the very
-			// next load, and the file on disk contradicts what /doctor and
-			// the docs tell the user to write.
-			if args.Provider != nil || args.Model != nil {
-				config.MigrateLegacyAgentModel(cfg)
 			}
 		})
 	}

@@ -862,3 +862,15 @@ func TestSkillDirectiveFavorsRelevance(t *testing.T) {
 		t.Fatal("directive should call out the existing-plan case")
 	}
 }
+
+func TestSkillDirectiveMentionsAgentRun(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{Name: "debug", Description: "debugging", Body: "# Debug\n"})
+	msg := BuildSystemPrompt(RoleGeneral, nil, idx, nil, false)
+	if !strings.Contains(msg.Content, "agent.run") {
+		t.Fatalf("system prompt should tell the model to use agent.run for skill-driven subagents:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "dispatch or spawn a subagent") {
+		t.Fatalf("system prompt should mention dispatching/spawning subagents:\n%s", msg.Content)
+	}
+}

@@ -138,7 +138,8 @@ const baseRules = `Rules:
 const skillDirective = `Skills are instruction sets you load on demand with the skill.load tool. Deciding to load one is YOUR job — the user will not ask you to.
 
 Before you start any task, scan this list and load only the skills whose description directly matches what you are about to do. Load them BEFORE acting, not after. If a loaded skill tells you to use another skill, weigh that claim against the task yourself before loading it. Do not load skills about writing plans or brainstorming approaches when the task already hands you a plan to execute. Active skills are limited, so spend them on the ones that apply.
-`
+
+When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
 
 // skillReminder is the last line of the system prompt. It targets the case
 // the roster alone does not catch: a conversational opener with no repository

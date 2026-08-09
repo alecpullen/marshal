@@ -15,7 +15,7 @@ import (
 // agent.run must not be RiskReadOnly because its child runner can execute
 // write tools and shell commands.
 func TestAgentRunIsWriteRisk(t *testing.T) {
-	factory := func(_ string) (*Runner, *session.State, error) {
+	factory := func(_ SubagentRequest) (*Runner, *session.State, error) {
 		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
 			return &Task{Summary: "ok"}, nil
 		}}, nil, nil

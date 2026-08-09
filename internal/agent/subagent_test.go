@@ -20,7 +20,7 @@ import (
 // factory never gets a chance to "build" it into a parent).
 func TestSubagentDepthLimit(t *testing.T) {
 	called := false
-	factory := func(_ string) (*Runner, *session.State, error) {
+	factory := func(_ SubagentRequest) (*Runner, *session.State, error) {
 		called = true
 		return &Runner{}, nil, nil
 	}
@@ -80,7 +80,7 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 	}
 
 	factoryCalls := 0
-	factory := func(_ string) (*Runner, *session.State, error) {
+	factory := func(_ SubagentRequest) (*Runner, *session.State, error) {
 		factoryCalls++
 		return &Runner{}, nil, nil
 	}
@@ -192,8 +192,8 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 
 func TestNewSubagentToolAgentArgResolves(t *testing.T) {
 	called := ""
-	factory := func(agentName string) (*Runner, *session.State, error) {
-		called = agentName
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		called = req.Agent
 		r := &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
 			return &Task{Summary: "ok"}, nil
 		}}
@@ -215,9 +215,9 @@ func TestNewSubagentToolAgentArgResolves(t *testing.T) {
 }
 
 func TestNewSubagentToolNoAgentArgStillWorks(t *testing.T) {
-	factory := func(agentName string) (*Runner, *session.State, error) {
-		if agentName != "" {
-			t.Fatalf("factory called with %q, want empty", agentName)
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		if req.Agent != "" {
+			t.Fatalf("factory called with %q, want empty", req.Agent)
 		}
 		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
 			return &Task{Summary: "ok"}, nil
@@ -228,6 +228,79 @@ func TestNewSubagentToolNoAgentArgStillWorks(t *testing.T) {
 		Args: json.RawMessage(`{"prompt":"do it","description":"d"}`),
 	}); err != nil {
 		t.Fatalf("handler: %v", err)
+	}
+}
+
+// TestNewSubagentToolForwardsExplicitModel verifies that an explicit
+// "provider/model" pair passed in the JSON payload is forwarded to the
+// factory as SubagentRequest.Model alongside the named agent.
+func TestNewSubagentToolForwardsExplicitModel(t *testing.T) {
+	var got SubagentRequest
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		got = req
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil, nil
+	}
+	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d","agent":"my-scout","model":"openai/gpt-4o-mini"}`),
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if got.Agent != "my-scout" {
+		t.Fatalf("req.Agent = %q, want my-scout", got.Agent)
+	}
+	if got.Model != "openai/gpt-4o-mini" {
+		t.Fatalf("req.Model = %q, want openai/gpt-4o-mini", got.Model)
+	}
+}
+
+// TestNewSubagentToolModelDefaultsWhenOmitted verifies that omitting the
+// model in the JSON payload forwards an empty Model to the factory (the
+// default model selection), preserving existing ad-hoc behavior.
+func TestNewSubagentToolModelDefaultsWhenOmitted(t *testing.T) {
+	var got SubagentRequest
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		got = req
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil, nil
+	}
+	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d"}`),
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if got.Agent != "" {
+		t.Fatalf("req.Agent = %q, want empty (ad-hoc)", got.Agent)
+	}
+	if got.Model != "" {
+		t.Fatalf("req.Model = %q, want empty (default model)", got.Model)
+	}
+}
+
+// TestNewSubagentToolFactoryErrorPreventsRegistration verifies that when
+// the factory returns an error (e.g. an invalid provider/model pair), the
+// handler surfaces that error and does NOT register a subagent view.
+func TestNewSubagentToolFactoryErrorPreventsRegistration(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factory := func(SubagentRequest) (*Runner, *session.State, error) {
+		return nil, nil, errors.New("invalid provider/model pair")
+	}
+	tool := NewSubagentTool(factory, registry.New(), state)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"bogus/nope"}`),
+	})
+	if err == nil {
+		t.Fatal("expected factory error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid provider/model pair") {
+		t.Fatalf("error = %v, want it to surface the factory error", err)
+	}
+	if got := len(state.Subagents()); got != 0 {
+		t.Fatalf("registered subagent views = %d, want 0", got)
 	}
 }
 

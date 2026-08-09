@@ -10,16 +10,25 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// SubagentRequest carries the caller's explicit choices for one agent.run
+// child. Agent is "" for an ad-hoc subtask or the name of a configured
+// custom agent. Model is an optional "provider/model" pair; "" means use
+// the default model selection (the factory's captured base model / the
+// named agent's own preset).
+type SubagentRequest struct {
+	Agent string
+	Model string
+}
+
 // SubagentRunnerFactory builds a fresh Runner bound to a fresh child
-// session state. agentName is "" for an ad-hoc subtask (today's behavior)
-// or the name of a configured custom agent to run as. The factory
-// deliberately does NOT take the prompt as an argument: the caller
-// (agent.run) constructs the runner with the parent's provider, session
-// config, and shared policy engine, and then passes the prompt to RunTask
-// on the returned runner. This keeps the per-session construction
-// (provider resolution, route, registry view sizing, role binding) in one
-// place while leaving the prompt fetching/decoding to the tool handler.
-type SubagentRunnerFactory func(agentName string) (*Runner, *session.State, error)
+// session state. The factory deliberately does NOT take the prompt as an
+// argument: the caller (agent.run) constructs the runner with the parent's
+// provider, session config, and shared policy engine, and then passes the
+// prompt to RunTask on the returned runner. This keeps the per-session
+// construction (provider resolution, route, registry view sizing, role
+// binding) in one place while leaving the prompt fetching/decoding to the
+// tool handler.
+type SubagentRunnerFactory func(req SubagentRequest) (*Runner, *session.State, error)
 
 // runSubagentChild is the default runner runtime the agent.run tool uses to
 // execute a child runner. It is a small wrapper around RunTask that returns
@@ -84,11 +93,14 @@ func WithSubagentExec(exec func(ctx context.Context, child *Runner, prompt strin
 // Description is a short human label used in the tool result summary so the
 // parent agent can identify which subtask produced which artefact.
 // Agent is an optional custom-agent name; when set, the factory resolves
-// the named agent's overrides.
+// the named agent's overrides. Model is an optional "provider/model" pair
+// that overrides the default model selection (or the named agent's own
+// preset).
 type agentRunArgs struct {
 	Prompt      string `json:"prompt"`
 	Description string `json:"description"`
 	Agent       string `json:"agent,omitempty"`
+	Model       string `json:"model,omitempty"`
 }
 
 // NewSubagentTool returns the registry.Tool entry for agent.run. The
@@ -101,9 +113,9 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 	}
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer).",
+		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer).",
 		Schema: json.RawMessage(
-			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."}},"required":["prompt","description"],"additionalProperties":false}`,
+			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
 		// The tool itself delegates to a child runner that may execute write
 		// tools and shell commands. Treating it as read-only bypassed the
@@ -120,14 +132,23 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 		}
 		defer state.ExitSubagent()
 
-		child, childState, err := factory(args.Agent)
+		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model})
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)
 		}
 		// Register a summary card in the parent transcript in place of the
 		// child's full tool log; the drill-down view reaches the live child
 		// transcript through the registered Child state.
-		view := state.RegisterSubagent(args.Description, childState)
+		meta := session.SubagentMeta{
+			Role: RoleSubtask,
+		}
+		if child.Model != "" {
+			meta.Model = child.Model
+		}
+		if child.Provider != nil {
+			meta.Provider = child.Provider.Name()
+		}
+		view := state.RegisterSubagentWithMeta(args.Description, childState, meta)
 		summary, err := cfg.exec(ctx, child, args.Prompt)
 		state.FinishSubagent(view.ID, summary, err)
 		if err != nil {

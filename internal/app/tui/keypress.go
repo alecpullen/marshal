@@ -116,6 +116,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// turn.
 		if m.activeCompletionPopup() != nil {
 			m.activeCompletionPopup().dismiss()
+			m.completionSuppressed = true
 			return *m, nil, true
 		}
 		// While drilled into a subagent, esc pops back to the parent
@@ -354,6 +355,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		m.input.Reset()
+		m.completionSuppressed = false
+		m.lastInputForPopups = ""
 		// The all-done todo summary belongs to the finished turn; the next
 		// user turn clears it (a fresh list from the agent brings it back —
 		// see refreshViewport).

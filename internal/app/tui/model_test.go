@@ -2940,6 +2940,52 @@ func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
 	}
 }
 
+// Regression: pressing Esc on a visible completion popup should keep the
+// popup suppressed until the input value changes. Without this, the next
+// keystroke re-runs updateCompletionPopups and immediately re-shows it.
+func TestCompletionPopupEscStaysSuppressedUntilInputChanges(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		mustRegister(t, reg, commands.Command{
+			Name:    name,
+			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
+		})
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "/"})
+	m = updated.(Model)
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("popup not visible after /")
+	}
+
+	// Esc dismisses the popup.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(Model)
+	if m.cmdPopup.isVisible() {
+		t.Fatal("popup still visible after Esc")
+	}
+
+	// Typing a continuation of the same trigger must NOT re-show it.
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "a"})
+	m = updated.(Model)
+	if m.cmdPopup.isVisible() {
+		t.Fatal("popup reappeared after Esc on the same trigger; should stay suppressed until input changes meaningfully")
+	}
+
+	// Clearing the input and starting a fresh trigger should show it again.
+	m.input.Reset()
+	m.updateCompletionPopups()
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "/"})
+	m = updated.(Model)
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("popup did not reappear for a fresh trigger after the input was cleared")
+	}
+}
+
 // F18: @file completion popup is triggered by "@" at a word start and
 // accepting a suggestion replaces the trigger token with the matched
 // @file path. Requires a model with a seeded file index — see

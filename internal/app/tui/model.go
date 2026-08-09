@@ -159,12 +159,15 @@ type Model struct {
 	// updateCompletionPopups). lastInputForPopups caches the value seen
 	// by updateCompletionPopups so non-key events (mouse, paste, ticks)
 	// don't re-evaluate and clobber the popup's index/offset.
-	cmdPopup           *completionPopup
-	filePopup          *completionPopup
-	setPopup           *completionPopup
-	fileIndex          []completionItem
-	fileIndexLoaded    bool
-	lastInputForPopups string
+	// completionSuppressed is set by Esc and cleared when the input value
+	// changes, on accept, or on submit/reset.
+	cmdPopup             *completionPopup
+	filePopup            *completionPopup
+	setPopup             *completionPopup
+	fileIndex            []completionItem
+	fileIndexLoaded      bool
+	lastInputForPopups   string
+	completionSuppressed bool
 	// Prompt history (project-scoped), newest first. histIdx == -1 means
 	// "not browsing history, editing own draft"; draft stashes in-progress
 	// text while browsing.
@@ -629,6 +632,7 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	m.setReg = nil
 	m.setPopup = nil
 	m.lastInputForPopups = ""
+	m.completionSuppressed = false
 	loadTheme(cfg.TUI)
 }
 
@@ -2256,6 +2260,16 @@ func (m *Model) updateCompletionPopups() {
 		return
 	}
 	value := m.input.Value()
+	// Esc dismissed the popup; keep it suppressed until the user clears
+	// the input and starts a fresh trigger. Typing a continuation of the
+	// same trigger (e.g. "/a" after Esc on "/") must not re-show it.
+	if m.completionSuppressed {
+		if value == "" {
+			m.completionSuppressed = false
+		} else {
+			return
+		}
+	}
 	// Idempotency guard: the default Update path calls this on every
 	// non-handled message (mouse, spinner tick, KeyReleaseMsg, paste
 	// echo, etc.) and the popup's update() always resets index to 0.
@@ -2506,6 +2520,7 @@ func (m *Model) acceptCompletion() bool {
 		return false
 	}
 	p.accept()
+	m.completionSuppressed = false
 	accepted := p.acceptedText
 	if accepted == "" {
 		// Disabled / placeholder items produce no accepted text — just

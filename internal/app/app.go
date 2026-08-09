@@ -556,6 +556,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
+	repoInstructions, _ := loadRepoInstructions(state.WorkingDir)
+	runner.SystemPromptAddendum = composeAddendum(repoInstructions, "")
 	runner.SkillIndex = skillIndex
 	runner.RouteResolver = resolver
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
@@ -965,6 +967,7 @@ func resolveAuthorPlansDir(workingDir, plansDirRel string) string {
 // repository and write exactly one plan artifact; it cannot modify source
 // files, run commands, spawn agents, or ask the user.
 func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner) sddauthor.Factory {
+	repoInstructionsForPlanAuthor, _ := loadRepoInstructions(state.WorkingDir)
 	return func(req sddauthor.Request) (*sddauthor.Runner, error) {
 		route, p, err := resolver.ResolveRole(routing.RoleSDDPlanAuthor)
 		if err != nil {
@@ -1018,6 +1021,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 			childRunner.MaxToolIterations = cap
 		}
 		childRunner.Pricing = pricing.Lookup(route.Preset)
+		childRunner.SystemPromptAddendum = repoInstructionsForPlanAuthor
 		return sddauthor.NewRunner(childRunner), nil
 	}
 }

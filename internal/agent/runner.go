@@ -458,6 +458,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.SnapshotRecorder = other.SnapshotRecorder
 	r.DigestModel = other.DigestModel
 	r.Pricing = other.Pricing
+	r.SystemPromptAddendum = other.SystemPromptAddendum
 }
 
 func (r *Runner) role() AgentRole {

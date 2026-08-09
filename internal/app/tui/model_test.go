@@ -5493,6 +5493,64 @@ func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
 	}
 }
 
+// TestSwitchModelPresetUpdatesStaleSingleProfile verifies that switching
+// models via /models updates the "single" profile's role bindings even when
+// a stale "single" profile already exists in AgentProfiles. This happens
+// after MigrateLegacyAgentModel persists a "single" profile bound to the old
+// model. Without the fix, RoutingConfig skips synthesis (because the profile
+// already exists) and the stale bindings keep resolving to the old model,
+// so the status bar never updates.
+func TestSwitchModelPresetUpdatesStaleSingleProfile(t *testing.T) {
+	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/old-model": {Name: "ollama/old-model", Provider: "ollama", Model: "old-model", LocalOnly: true},
+		"ollama/new-model": {Name: "ollama/new-model", Provider: "ollama", Model: "new-model", LocalOnly: true},
+	}
+	// Simulate a stale "single" profile left behind by MigrateLegacyAgentModel,
+	// bound to the old model.
+	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{
+		singleModelProfileName: routing.SingleModelProfile(singleModelProfileName, "ollama/old-model"),
+	}
+	m.state.Config.Profile.Default = singleModelProfileName
+	m.state.Config.Profile.ActivePreset = "ollama/old-model"
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(cfg config.Config) error {
+		m.state.Config = cfg
+		return nil
+	}
+
+	m.switchModelPreset("ollama/new-model")
+
+	// RoutingConfig must (re)synthesize the "single" profile from
+	// ActivePreset, overwriting the stale bindings. The router must resolve
+	// to the new model, not the old one.
+	rc := m.state.Config.RoutingConfig()
+	profile, ok := rc.Profiles[singleModelProfileName]
+	if !ok {
+		t.Fatal("single profile missing from RoutingConfig after switch")
+	}
+	for _, role := range routing.AllRoles {
+		binding, ok := profile.Roles[role]
+		if !ok {
+			t.Fatalf("role %s missing from single profile", role)
+		}
+		if binding.Preset != "ollama/new-model" {
+			t.Errorf("role %s preset = %q, want %q", role, binding.Preset, "ollama/new-model")
+		}
+	}
+	router := routing.NewStaticRouter(rc)
+	route, err := router.Resolve("edit")
+	if err != nil {
+		t.Fatalf("Resolve(edit): %v", err)
+	}
+	if route.Preset.Model != "new-model" {
+		t.Fatalf("resolved model = %q, want %q", route.Preset.Model, "new-model")
+	}
+}
+
 func TestConnectCancelledClosesOverlay(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/connect")

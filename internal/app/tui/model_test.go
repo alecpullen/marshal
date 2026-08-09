@@ -33,6 +33,7 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
@@ -46,6 +47,20 @@ import (
 	"marshal/internal/trust"
 	"marshal/internal/worktree"
 )
+
+type fakeSessionSwapper struct {
+	newState *session.State
+	called   bool
+	err      error
+}
+
+func (f *fakeSessionSwapper) NewSession() (SessionSwapResult, error) {
+	f.called = true
+	if f.err != nil {
+		return SessionSwapResult{}, f.err
+	}
+	return SessionSwapResult{State: f.newState}, nil
+}
 
 // drainCmds executes the returned command tree (up to a small bound) and
 // feeds each produced message back into the model. This is necessary whenever
@@ -2277,23 +2292,96 @@ func TestSlashCommandNotSentToAgent(t *testing.T) {
 }
 
 func TestSlashCommandClearMessages(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	oldState.AddMessage(session.RoleUser, "one", session.ContentTypePlain)
+	oldState.AddMessage(session.RoleUser, "two", session.ContentTypePlain)
+	oldState.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Title: "ctx", EstimatedTokens: 1000}},
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 1000, MaxTokens: 2000},
+	})
+	oldState.SetTurnUsage(123)
+	oldState.SetTurnContextWindow(1000)
+
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+
 	cmdReg := setupCmdReg(t)
-	model := New(state, WithCommandRegistry(cmdReg))
+	swapper := &fakeSessionSwapper{newState: newState}
+	model := New(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	model.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	model.input.SetValue("/new")
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
+	if !swapper.called {
+		t.Fatal("expected session swapper to be called")
+	}
+	if m.state != newState {
+		t.Fatal("expected model state to be swapped to the new session")
+	}
 	msgs := m.state.Messages()
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 system message after /new, got %d", len(msgs))
 	}
-	if !strings.Contains(msgs[0].Content, "Cleared") {
-		t.Errorf("expected system message to mention clearing, got: %s", msgs[0].Content)
+	if !strings.Contains(msgs[0].Content, "Started new conversation") {
+		t.Errorf("expected system message to start conversation, got: %s", msgs[0].Content)
+	}
+	if !strings.Contains(msgs[0].Content, "Cleared 2 messages") {
+		t.Errorf("expected system message to mention cleared count, got: %s", msgs[0].Content)
+	}
+
+	view := stripANSI(m.viewport.View())
+	if strings.Contains(view, "one") || strings.Contains(view, "two") {
+		t.Fatalf("viewport should not contain old messages:\n%s", view)
+	}
+	if !strings.Contains(view, "Started new conversation") {
+		t.Fatalf("viewport should contain the new-session system message:\n%s", view)
+	}
+
+	for _, seg := range m.statusLeftSegments() {
+		if strings.Contains(seg.text, "ctx ") || strings.Contains(seg.text, "turn ") {
+			t.Errorf("expected footer counters cleared, got segment: %s", seg.text)
+		}
+	}
+}
+
+func TestSlashCommandClearAlias(t *testing.T) {
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	swapper := &fakeSessionSwapper{newState: newState}
+	model := New(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.input.SetValue("/clear")
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !swapper.called {
+		t.Fatal("/clear should trigger the same session swap as /new")
+	}
+}
+
+func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	swapper := &fakeSessionSwapper{newState: newState}
+	model := New(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.busy = true
+	model.input.SetValue("/new")
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := updated.(*Model)
+
+	if swapper.called {
+		t.Fatal("expected swapper not to be called while busy")
+	}
+	if m.state != oldState {
+		t.Fatal("expected state to remain unchanged while busy")
 	}
 }
 

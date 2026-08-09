@@ -28,6 +28,7 @@ import (
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/commands"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
@@ -3046,4 +3047,76 @@ command = "` + stub + `"
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("LSP stub was never invoked -- LSPManager.Run() was not started by StartRuntime")
+}
+
+func TestRuntimeNewSessionResetsState(t *testing.T) {
+	tmp := t.TempDir()
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("session-test")
+
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(tmp),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+
+	oldID := rt.SessionID
+	oldDB := rt.DB
+	oldProjectID := rt.ProjectID
+
+	rt.State.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	rt.State.AddMessage(session.RoleAssistant, "hi", session.ContentTypePlain)
+	rt.State.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Title: "ctx", EstimatedTokens: 1000}},
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 1000, MaxTokens: 2000},
+	})
+	rt.State.SetTurnUsage(123)
+	rt.State.SetTurnContextWindow(1000)
+
+	newState, _, _, _, _, _, err := rt.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	if newState.SessionID() == oldID {
+		t.Fatalf("expected new session id, got %s", newState.SessionID())
+	}
+	if rt.SessionID != newState.SessionID() {
+		t.Fatalf("runtime.SessionID not updated: %s", rt.SessionID)
+	}
+	if rt.ProjectID != oldProjectID {
+		t.Fatalf("project id changed: %d -> %d", oldProjectID, rt.ProjectID)
+	}
+	if rt.DB != oldDB {
+		t.Fatal("database handle changed")
+	}
+	if len(newState.Transcript()) != 0 {
+		t.Fatalf("expected empty transcript, got %d items", len(newState.Transcript()))
+	}
+	if pack := newState.ContextPack(); !pack.IsEmpty() {
+		t.Fatalf("expected empty context pack, got %+v", pack)
+	}
+	if used, window := newState.TurnUsage(); used != 0 || window != 0 {
+		t.Fatalf("expected zero turn usage, got used=%d window=%d", used, window)
+	}
+
+	database := must[*db.DB](rt.DB)
+	sessions, _, err := database.ListSessions(ctx, tmp, "", 100)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	foundOld := false
+	for _, s := range sessions {
+		if s.SessionID == oldID {
+			foundOld = true
+			break
+		}
+	}
+	if !foundOld {
+		t.Fatalf("old session %s not persisted", oldID)
+	}
 }

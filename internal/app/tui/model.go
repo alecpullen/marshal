@@ -80,6 +80,29 @@ type AgentRunner interface {
 	AnswerGate(answer string)
 }
 
+// SessionSwapResult carries the rebuilt runtime pieces for a /new or /clear
+// swap so the TUI can re-point every model field that depends on the current
+// session.
+type SessionSwapResult struct {
+	State             *session.State
+	Runner            AgentRunner
+	SwarmRunner       AgentRunner
+	PipelineFactory   func(planPath string) AgentRunner
+	PlanAuthorFactory PlanAuthorFactory
+	ToolRegistry      *registry.Registry
+}
+
+// SessionSwapper is the runtime-facing seam the TUI uses to request a new
+// session without importing the app package (avoiding an import cycle).
+type SessionSwapper interface {
+	NewSession() (SessionSwapResult, error)
+}
+
+// SessionSwapperFunc lets app.go pass a closure directly as a SessionSwapper.
+type SessionSwapperFunc func() (SessionSwapResult, error)
+
+func (f SessionSwapperFunc) NewSession() (SessionSwapResult, error) { return f() }
+
 // CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
 // agent. It is wired from app.go via WithCustomAgentRunnerFactory and used
 // by buildCustomAgentRunner to dispatch Run-now. Returns nil when the agent
@@ -135,6 +158,7 @@ type Model struct {
 	// the TUI was constructed without a runner: the first successful reload
 	// rebuilds one, and adoptRunner installs it here.
 	runnerSource       func() (context.Context, AgentRunner)
+	sessionSwapper     SessionSwapper
 	openConnectOnStart bool
 	trustPromptDir     string
 	trustDecide        func(trust.Decision)
@@ -404,6 +428,13 @@ func WithRunnerSource(fn func() (context.Context, AgentRunner)) Option {
 	return func(m *Model) {
 		m.runnerSource = fn
 	}
+}
+
+// WithSessionSwapper wires the runtime-facing seam that /new and /clear use
+// to swap in a brand-new session. Nil (the default) makes those commands
+// report that a new session is unavailable.
+func WithSessionSwapper(swapper SessionSwapper) Option {
+	return func(m *Model) { m.sessionSwapper = swapper }
 }
 
 // WithOpenConnectOnStart opens the connect panel as the TUI starts. Used

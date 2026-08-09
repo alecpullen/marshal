@@ -677,6 +677,106 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 	}
 }
 
+// NewSession creates a brand-new session (new DB row, new SessionID, fresh
+// State) and rebuilds the agent runtime against it. On success it swaps the
+// new state/runner into rt and returns the new pieces; on failure it leaves
+// the current session untouched and returns the error.
+func (rt *Runtime) NewSession() (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string) tui.AgentRunner, sddauthor.Factory, *registry.Registry, error) {
+	db := must[*db.DB](rt.DB)
+	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
+
+	now := time.Now()
+	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
+	if err := db.CreateSession(sessionID, rt.ProjectID, "", now); err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("create session: %w", err)
+	}
+
+	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger})
+	newState.SetTrusted(rt.State.Trusted())
+	newState.SetLayers(rt.Layers)
+	if rt.SteeringBroker != nil {
+		newState.SetSteeringBroker(must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker))
+	}
+	if rt.EventBroker != nil {
+		newState.SetEventBroker(must[*pubsub.Broker[session.Event]](rt.EventBroker))
+	}
+	if rt.WorkspaceBroker != nil {
+		newState.SetWorkspaceBroker(must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker))
+	}
+	autoloadSkills(rt.Config, rt.SkillIndex, newState, rt.Logger)
+
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunner(
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir,
+	)
+	if err != nil {
+		// Roll back the empty session row so /sessions stays clean.
+		_, _ = db.DeleteSession(context.Background(), sessionID)
+		rt.Logger.Warn("new session: runner build failed; keeping previous session", "error", err)
+		rt.State.SetProviderError(err)
+		return nil, nil, nil, nil, nil, nil, err
+	}
+
+	// Success — swap under the runtime lock and clean up old resources outside it.
+	rt.mu.Lock()
+	oldState := rt.State
+	oldRunner := rt.Runner
+	oldMCP := rt.MCPManager
+	oldJobMgr := rt.JobManager
+	oldDesktopCloser := rt.DesktopCloser
+	oldLSP := rt.LSPManager
+
+	rt.State = newState
+	rt.SessionID = sessionID
+	rt.Runner = newRunner
+	rt.ToolRegistry = newReg
+	rt.SwarmRunner = newSwarmRunner
+	rt.PipelineFactory = newPipelineFactory
+	rt.PlanAuthorFactory = newPlanAuthorFactory
+	rt.CustomAgentFactory = newSubagentFactory
+	rt.JobManager = newJobMgr
+	rt.DesktopCloser = newDesktopCloser
+	if newMCP != nil {
+		rt.MCPManager = newMCP
+	} else {
+		rt.MCPManager = nil
+	}
+	if newSnap != nil {
+		rt.Snapshot = newSnap
+	} else {
+		rt.Snapshot = nil
+	}
+	if newLSPHandle != nil {
+		rt.LSPManager = newLSPHandle
+	}
+	rt.mu.Unlock()
+
+	if oldMCP != nil {
+		_ = oldMCP.Close()
+	}
+	if oldJobMgr != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = oldJobMgr.Shutdown(sc)
+	}
+	if oldDesktopCloser != nil {
+		oldDesktopCloser()
+	}
+	if oldRunner != nil && oldRunner.Rollover != nil {
+		_ = oldRunner.Rollover.Close(context.Background())
+	}
+	if oldLSP != nil && oldLSP != newLSPHandle {
+		// Restart the LSP worker against the new handle, matching the
+		// reloadAgentRuntime cleanup pattern.
+		rt.lspCancel()
+		if newLSPHandle != nil {
+			rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
+		}
+	}
+	oldState.Shutdown()
+
+	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newReg, nil
+}
+
 func resolveWorkingDir(override string) (string, error) {
 	if override != "" {
 		return override, nil

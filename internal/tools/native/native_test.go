@@ -164,6 +164,23 @@ func TestFileWritePatchDescriptionMentionsCreationAndChaining(t *testing.T) {
 	}
 }
 
+func TestShellRunDescriptionMentionsWorkspaceCwdAndNativeSearch(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	tool, ok := reg.Lookup("shell.run")
+	if !ok {
+		t.Fatal("shell.run not registered")
+	}
+	for _, want := range []string{"workspace root", "current working directory", "repo.search", "symbols.find", "file.read"} {
+		if !strings.Contains(tool.Description, want) {
+			t.Errorf("shell.run description missing %q: %s", want, tool.Description)
+		}
+	}
+}
+
 func TestResolveWorkspacePathRejectsTraversalAndAbsolutePaths(t *testing.T) {
 	root := t.TempDir()
 

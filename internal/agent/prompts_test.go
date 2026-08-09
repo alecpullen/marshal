@@ -609,21 +609,39 @@ func TestBuildSystemPromptWithModeDefaultAdvertisesModeRequest(t *testing.T) {
 }
 
 func TestBuildSystemPromptIncludesScratchpadAddendumForNativeTools(t *testing.T) {
-	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, true, policy.ModeAuto, "")
+	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, true, policy.ModeAuto, "", "")
 	if !strings.Contains(prompt.Content, "scratchpad.write") {
 		t.Fatal("expected scratchpad addendum when nativeTools is true")
 	}
 }
 
 func TestBuildSystemPromptOmitsScratchpadAddendumForJSONTools(t *testing.T) {
-	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, false, policy.ModeAuto, "")
+	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, false, policy.ModeAuto, "", "")
 	if strings.Contains(prompt.Content, "scratchpad.write") {
 		t.Fatal("expected no scratchpad addendum when nativeTools is false")
 	}
 }
 
+func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
+	wantDir := "/Users/alecpullen/projects/marshal"
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", wantDir)
+	if !strings.Contains(msg.Content, wantDir) {
+		t.Fatalf("system prompt missing working dir %q\n%s", wantDir, msg.Content)
+	}
+	if !strings.Contains(msg.Content, "shell.run executes with this directory as its cwd") {
+		t.Errorf("system prompt missing cwd guidance\n%s", msg.Content)
+	}
+}
+
+func TestBuildSystemPromptOmitsWorkingDirWhenEmpty(t *testing.T) {
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", "")
+	if strings.Contains(msg.Content, "The workspace root is") {
+		t.Errorf("empty workingDir should not inject workspace root line\n%s", msg.Content)
+	}
+}
+
 func TestBuildSystemPromptWithAddendum(t *testing.T) {
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.", "")
 	if !strings.Contains(msg.Content, "Be extra careful with diffs.") {
 		t.Fatalf("addendum missing from prompt:\n%s", msg.Content)
 	}

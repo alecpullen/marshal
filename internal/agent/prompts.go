@@ -97,13 +97,22 @@ var roleAddenda = map[AgentRole]rolePrompt{
 
 const baseIdentity = `You are Marshal, a local-friendly coding assistant operating inside the user's repository.`
 
-const baseEnvironment = `You receive a context pack with each turn. It contains relevant files, symbols, summaries, recent tool results, and durable project memories. Use it before asking to read files, but request raw files when you need un-summarised content or specific line ranges.
+func baseEnvironment(workingDir string) string {
+	var b strings.Builder
+	b.WriteString(`You receive a context pack with each turn. It contains relevant files, symbols, summaries, recent tool results, and durable project memories. Use it before asking to read files, but request raw files when you need un-summarised content or specific line ranges.
 
 When a tool result is large, use file.read with start_line/end_line (1-based, inclusive) or use file.page to read one page at a time instead of re-reading the spilled output file.
 
 Project memories are durable facts about the codebase. You may read them in the context pack; you do not update them directly during a normal turn.
 
-Tool results from earlier in the conversation are in the transcript and context pack.`
+Tool results from earlier in the conversation are in the transcript and context pack.`)
+	if workingDir != "" {
+		b.WriteString("\n\nThe workspace root is ")
+		b.WriteString(workingDir)
+		b.WriteString(". Relative paths in tool arguments are resolved from this directory, and shell.run executes with this directory as its cwd.")
+	}
+	return b.String()
+}
 
 const baseRules = `Rules:
 - Prefer small, verifiable changes over large refactors.
@@ -270,7 +279,7 @@ func modeDirective(mode policy.ApprovalMode) string {
 }
 
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "")
+	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "")
 }
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
@@ -278,27 +287,27 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 // runner passes the registry's ListDeferred() so the agent can see what
 // it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "")
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "")
 }
 
 // BuildSystemPromptWithMode is BuildSystemPromptWithDeferred with an
 // explicit approval mode. The runner calls this to inject the per-mode
 // directive into the system prompt.
 func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, "")
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, "", "")
 }
 
 // BuildSystemPromptWithAddendum is BuildSystemPromptWithMode plus a
 // custom-agent system-prompt addendum appended after the role addendum.
-func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum)
+func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum, workingDir)
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
 // runner to advertise MCP tools the agent hasn't loaded yet but may want
 // to opt into). Tests that pass nil get the old behavior with no
 // announcement appended.
-func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string) schema.ChatMessage {
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
@@ -307,7 +316,7 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	var b strings.Builder
 	b.WriteString(baseIdentity)
 	b.WriteString("\n\n")
-	b.WriteString(baseEnvironment)
+	b.WriteString(baseEnvironment(workingDir))
 	b.WriteString("\n\n")
 	b.WriteString(baseRules)
 	for _, tool := range tools {

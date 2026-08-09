@@ -31,10 +31,12 @@ type testRunArgs struct {
 
 func (t *toolSet) shellRunTool() registry.Tool {
 	tool := registry.Tool{
-		Name:        "shell.run",
-		Description: "Run a shell command in the workspace with conservative guardrails.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"},"background":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),
-		Risk:        registry.RiskCommand,
+		Name: "shell.run",
+		Description: "Run a shell command with the workspace root as the current working directory. " +
+			"Prefer native tools such as repo.search, symbols.find, file.read, and repo.map over broad filesystem commands " +
+			"(e.g. find /, ls -R /, grep -r /). Commands are subject to conservative guardrails.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"},"background":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),
+		Risk:   registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[shellRunArgs](tool, call.Args)

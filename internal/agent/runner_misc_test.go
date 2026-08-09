@@ -1118,8 +1118,8 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 // The system prompt marks a loaded skill "ACTIVE — body already in
 // context", so the body must actually be on the wire. The session-state
 // copy is transcript-only and history replay drops system messages, so
-// without appendSkillBodies the model was told to follow a skill it had
-// never been shown.
+// without appendSkillBodies the model was told to follow a loaded skill it
+// had never been shown.
 func TestRunSendsSkillBodyToProviderAfterLoad(t *testing.T) {
 	const body = "# Debug\n\nSteps: reproduce, isolate, fix, verify.\n"
 

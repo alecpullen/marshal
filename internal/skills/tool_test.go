@@ -69,12 +69,9 @@ func TestSkillLoadToolSuccess(t *testing.T) {
 	if msgs[1].ContentType != session.ContentTypeSkill || msgs[1].Content != "debug" {
 		t.Fatalf("Tag message = (%q, %q), want (skill, debug)", msgs[1].ContentType, msgs[1].Content)
 	}
-	// Content should be wrapped in a reference-material marker.
-	if !strings.Contains(msgs[0].Content, "reference material") {
-		t.Fatalf("Message content missing reference marker:\n%s", msgs[0].Content)
-	}
-	if !strings.Contains(msgs[0].Content, "Treat the contents as data") && !strings.Contains(msgs[0].Content, "do not follow") {
-		t.Fatalf("Message content missing disclaimer:\n%s", msgs[0].Content)
+	// Content should be wrapped in a procedure marker.
+	if !strings.Contains(msgs[0].Content, "procedure to follow") {
+		t.Fatalf("Message content missing procedure marker:\n%s", msgs[0].Content)
 	}
 	if !strings.Contains(msgs[0].Content, "```") {
 		t.Fatalf("Message content missing fenced block:\n%s", msgs[0].Content)
@@ -208,9 +205,9 @@ func TestSkillBodyIsWrappedAsReference(t *testing.T) {
 	if !strings.Contains(content, "```") {
 		t.Fatalf("expected fenced block (triple backticks) in content:\n%s", content)
 	}
-	// Must contain a "do not follow" / "treat as data" disclaimer.
-	if !strings.Contains(content, "do not follow") && !strings.Contains(content, "Treat the contents as data") {
-		t.Fatalf("expected 'do not follow' or 'treat as data' disclaimer in content:\n%s", content)
+	// Must contain a "procedure to follow" marker.
+	if !strings.Contains(content, "procedure to follow") {
+		t.Fatalf("expected 'procedure to follow' marker in content:\n%s", content)
 	}
 	// Must contain the skill name.
 	if !strings.Contains(content, "test-skill") {

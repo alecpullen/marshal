@@ -14,12 +14,12 @@ import (
 func profilesTestState() *state {
 	cfg := config.Default()
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"small": {Name: "small", Provider: "ollama", Model: "qwen3:8b"},
-		"large": {Name: "large", Provider: "ollama", Model: "qwen3:32b"},
+		"ollama/qwen3:8b":  {Name: "ollama/qwen3:8b", Provider: "ollama", Model: "qwen3:8b"},
+		"ollama/qwen3:32b": {Name: "ollama/qwen3:32b", Provider: "ollama", Model: "qwen3:32b"},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local": {Name: "local", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "large"},
+			routing.RoleImplementer: {Preset: "ollama/qwen3:32b"},
 		}},
 	}
 	return newState(cfg)
@@ -89,8 +89,8 @@ func TestProfileEntryHasOneRowPerRole(t *testing.T) {
 	if implRow == nil {
 		t.Fatal("no implementer row in profile detail")
 	}
-	if implRow.GetStr() != "large" {
-		t.Fatalf("implementer preset = %q, want 'large'", implRow.GetStr())
+	if implRow.GetStr() != "ollama/qwen3:32b" {
+		t.Fatalf("implementer preset = %q, want 'ollama/qwen3:32b'", implRow.GetStr())
 	}
 	if implRow.Display == nil {
 		t.Fatal("implementer (Base model) row must carry a Display closure")
@@ -104,15 +104,15 @@ func TestProfileRolePickAssignsAndClears(t *testing.T) {
 	s := profilesTestState()
 	// Get the implementer role field for the "local" profile
 	field := roleModelField(s, "local", routing.RoleImplementer)
-	if field.GetStr() != "large" {
-		t.Fatalf("initial preset = %q, want 'large'", field.GetStr())
+	if field.GetStr() != "ollama/qwen3:32b" {
+		t.Fatalf("initial preset = %q, want 'ollama/qwen3:32b'", field.GetStr())
 	}
 	// Pick a different preset
-	if err := field.PickOnPick("small"); err != nil {
-		t.Fatalf("pickOnPick(small) = %v", err)
+	if err := field.PickOnPick("ollama/qwen3:8b"); err != nil {
+		t.Fatalf("pickOnPick(ollama/qwen3:8b) = %v", err)
 	}
-	if field.GetStr() != "small" {
-		t.Fatalf("after pick, preset = %q, want 'small'", field.GetStr())
+	if field.GetStr() != "ollama/qwen3:8b" {
+		t.Fatalf("after pick, preset = %q, want 'ollama/qwen3:8b'", field.GetStr())
 	}
 	// Clear via unset sentinel
 	if err := field.PickOnPick(unsetRoleValue); err != nil {
@@ -159,13 +159,13 @@ func TestProfilesAddCreatesEmptyProfile(t *testing.T) {
 func profileTestConfig() config.Config {
 	cfg := config.Default()
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"base":  {Name: "base", Provider: "anthropic", Model: "claude-sonnet-4-5"},
-		"cheap": {Name: "cheap", Provider: "anthropic", Model: "claude-haiku-4-5"},
-		"deep":  {Name: "deep", Provider: "anthropic", Model: "claude-opus-4-5"},
+		"anthropic/claude-sonnet-4-5": {Name: "anthropic/claude-sonnet-4-5", Provider: "anthropic", Model: "claude-sonnet-4-5"},
+		"anthropic/claude-haiku-4-5":  {Name: "anthropic/claude-haiku-4-5", Provider: "anthropic", Model: "claude-haiku-4-5"},
+		"anthropic/claude-opus-4-5":   {Name: "anthropic/claude-opus-4-5", Provider: "anthropic", Model: "claude-opus-4-5"},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"coding": {Name: "coding", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "base"},
+			routing.RoleImplementer: {Preset: "anthropic/claude-sonnet-4-5"},
 		}},
 	}
 	return cfg
@@ -196,7 +196,7 @@ func TestRolesInheritBaseModel(t *testing.T) {
 func TestFastRolesUseFastModelWhenSet(t *testing.T) {
 	cfg := profileTestConfig()
 	p := cfg.AgentProfiles["coding"]
-	p.Roles[routing.RoleFast] = routing.RoleBinding{Preset: "cheap"}
+	p.Roles[routing.RoleFast] = routing.RoleBinding{Preset: "anthropic/claude-haiku-4-5"}
 	cfg.AgentProfiles["coding"] = p
 	s := newState(cfg)
 
@@ -213,7 +213,7 @@ func TestFastRolesUseFastModelWhenSet(t *testing.T) {
 func TestOverriddenRoleShowsOverrideBadge(t *testing.T) {
 	cfg := profileTestConfig()
 	p := cfg.AgentProfiles["coding"]
-	p.Roles[routing.RoleReviewer] = routing.RoleBinding{Preset: "deep"}
+	p.Roles[routing.RoleReviewer] = routing.RoleBinding{Preset: "anthropic/claude-opus-4-5"}
 	cfg.AgentProfiles["coding"] = p
 	s := newState(cfg)
 
@@ -226,7 +226,7 @@ func TestOverriddenRoleShowsOverrideBadge(t *testing.T) {
 func TestDeleteRestoresInheritedDisplay(t *testing.T) {
 	cfg := profileTestConfig()
 	p := cfg.AgentProfiles["coding"]
-	p.Roles[routing.RoleReviewer] = routing.RoleBinding{Preset: "deep"}
+	p.Roles[routing.RoleReviewer] = routing.RoleBinding{Preset: "anthropic/claude-opus-4-5"}
 	cfg.AgentProfiles["coding"] = p
 	s := newState(cfg)
 
@@ -279,10 +279,10 @@ func TestFindPresetForReusesExisting(t *testing.T) {
 	s := newState(discoveredConfig())
 	preset, ok := findPresetFor(s, "anthropic", "claude-sonnet-4-5")
 	if !ok {
-		t.Fatal("expected the existing \"base\" preset to be found")
+		t.Fatal("expected the existing \"anthropic/claude-sonnet-4-5\" preset to be found")
 	}
-	if preset.Name != "base" {
-		t.Errorf("name = %q, want the existing preset \"base\"", preset.Name)
+	if preset.Name != "anthropic/claude-sonnet-4-5" {
+		t.Errorf("name = %q, want the existing preset \"anthropic/claude-sonnet-4-5\"", preset.Name)
 	}
 	if len(s.cfg.Models.Presets) != 3 {
 		t.Error("matching an existing provider+model must not create a preset")
@@ -324,8 +324,8 @@ func TestApplyRolePickOnDiscoveredModelRequestsMaterializationInsteadOfCreatingA
 	if err := applyRolePick(s, "local", routing.RoleImplementer, modelValuePrefix+"ollama/qwen3-coder"); err != nil {
 		t.Fatalf("applyRolePick: %v", err)
 	}
-	// profilesTestState seeds two presets ("small", "large") already —
-	// applying the pick must not add a third.
+	// profilesTestState seeds two presets already — applying the pick must
+	// not add a third.
 	if len(s.cfg.Models.Presets) != 2 {
 		t.Fatalf("expected no new preset to be created yet, got %d presets", len(s.cfg.Models.Presets))
 	}

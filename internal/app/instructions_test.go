@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,25 @@ func TestRoleRunnerLoadsRepoInstructionsFromWorkingDir(t *testing.T) {
 	}
 	if !strings.Contains(runner.SystemPromptAddendum, "use go test") {
 		t.Fatalf("SystemPromptAddendum = %q, want it to contain the file body", runner.SystemPromptAddendum)
+	}
+}
+
+func TestMainRunnerLoadsRepoInstructionsFromWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# repo rules\nuse go test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := nativeToolAgentConfig("test-provider")
+	state := session.New(cfg, dir, time.Now(), session.Persistence{})
+	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(context.Background(), cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if !strings.Contains(runner.SystemPromptAddendum, "# repo rules") {
+		t.Fatalf("SystemPromptAddendum = %q, want repo instructions", runner.SystemPromptAddendum)
+	}
+	if !strings.Contains(runner.SystemPromptAddendum, "use go test") {
+		t.Fatalf("SystemPromptAddendum = %q, want file body", runner.SystemPromptAddendum)
 	}
 }
 

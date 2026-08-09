@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -322,12 +323,14 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		file.Models.Presets = map[string]routing.ModelPreset{}
 		for name, p := range cfg.Models.Presets {
 			preset := routing.ModelPreset{
-				Provider: p.Provider, Model: p.Model, ContextWindow: p.ContextWindow,
+				ContextWindow:   p.ContextWindow,
 				MaxOutputTokens: p.MaxOutputTokens,
-				ToolCalling:     p.ToolCalling, LocalOnly: p.LocalOnly,
-				Pricing: p.Pricing,
+				ToolCalling:     p.ToolCalling,
+				LocalOnly:       p.LocalOnly,
+				Pricing:         p.Pricing,
 			}
 			preset.Name = name
+			preset.Provider, preset.Model, _ = strings.Cut(name, "/")
 			file.Models.Presets[name] = preset
 		}
 	}

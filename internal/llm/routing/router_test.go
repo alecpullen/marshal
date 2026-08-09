@@ -11,20 +11,20 @@ func testRouter() *StaticRouter {
 		DefaultProfile: "local_balanced",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"fast": {
-				Name:      "fast",
+			"ollama/qwen2.5-coder:7b": {
+				Name:      "ollama/qwen2.5-coder:7b",
 				Provider:  "ollama",
 				Model:     "qwen2.5-coder:7b",
 				LocalOnly: true,
 			},
-			"coder": {
-				Name:      "coder",
+			"ollama/qwen2.5-coder:14b": {
+				Name:      "ollama/qwen2.5-coder:14b",
 				Provider:  "ollama",
 				Model:     "qwen2.5-coder:14b",
 				LocalOnly: true,
 			},
-			"remote": {
-				Name:      "remote",
+			"openrouter/anthropic/claude-sonnet-4": {
+				Name:      "openrouter/anthropic/claude-sonnet-4",
 				Provider:  "openrouter",
 				Model:     "anthropic/claude-sonnet-4",
 				LocalOnly: false,
@@ -34,8 +34,8 @@ func testRouter() *StaticRouter {
 			"local_balanced": {
 				Name: "local_balanced",
 				Roles: map[AgentRole]RoleBinding{
-					RoleRepoScout:   {Preset: "fast"},
-					RoleImplementer: {Preset: "coder"},
+					RoleRepoScout:   {Preset: "ollama/qwen2.5-coder:7b"},
+					RoleImplementer: {Preset: "ollama/qwen2.5-coder:14b"},
 				},
 			},
 		},
@@ -43,6 +43,42 @@ func testRouter() *StaticRouter {
 			RoleImplementer: {MaxRepoContextTokens: 48000},
 		},
 	})
+}
+
+func TestResolveExplicitModelUsesExactPresetKey(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Presets: map[string]ModelPreset{
+			"ollama/qwen2.5-coder:7b": {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "ollama/qwen2.5-coder:7b"}}}},
+	})
+	route, err := r.ResolveExplicitModel("ollama/qwen2.5-coder:7b", RoleSubtask)
+	if err != nil {
+		t.Fatalf("ResolveExplicitModel: %v", err)
+	}
+	if route.Preset.Name != "ollama/qwen2.5-coder:7b" {
+		t.Fatalf("Preset.Name = %q, want ollama/qwen2.5-coder:7b", route.Preset.Name)
+	}
+}
+
+func TestResolveExplicitModelRejectsNonCanonicalKey(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Presets: map[string]ModelPreset{
+			"fast": {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{"p": {Name: "p"}},
+	})
+	_, err := r.ResolveExplicitModel("ollama/qwen2.5-coder:7b", RoleSubtask)
+	if err == nil {
+		t.Fatal("expected error when preset key is not canonical")
+	}
+	if !errors.Is(err, ErrUnknownProvider) {
+		t.Fatalf("want ErrUnknownProvider, got %v", err)
+	}
 }
 
 func TestResolveExplicitModelValidPair(t *testing.T) {
@@ -154,8 +190,8 @@ func TestResolveQuestionUsesRepoScout(t *testing.T) {
 	if route.Role != RoleRepoScout {
 		t.Fatalf("Role = %q, want %q", route.Role, RoleRepoScout)
 	}
-	if route.Preset.Name != "fast" || route.Preset.Model != "qwen2.5-coder:7b" {
-		t.Fatalf("Preset = %#v, want fast qwen2.5-coder:7b", route.Preset)
+	if route.Preset.Name != "ollama/qwen2.5-coder:7b" || route.Preset.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("Preset = %#v, want ollama/qwen2.5-coder:7b qwen2.5-coder:7b", route.Preset)
 	}
 }
 
@@ -176,13 +212,13 @@ func TestResolveFallsBackToImplementerForMissingRole(t *testing.T) {
 	router := NewStaticRouter(Config{
 		DefaultProfile: "local_balanced",
 		Presets: map[string]ModelPreset{
-			"coder": {Name: "coder", Provider: "ollama", Model: "coder", LocalOnly: true},
+			"ollama/coder": {Name: "ollama/coder", Provider: "ollama", Model: "coder", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
 				Roles: map[AgentRole]RoleBinding{
-					RoleImplementer: {Preset: "coder"},
+					RoleImplementer: {Preset: "ollama/coder"},
 				},
 			},
 		},
@@ -200,14 +236,14 @@ func TestResolveQuestionMissingRepoScoutPresetDoesNotFallBackToImplementer(t *te
 	router := NewStaticRouter(Config{
 		DefaultProfile: "local_balanced",
 		Presets: map[string]ModelPreset{
-			"coder": {Name: "coder", Provider: "ollama", Model: "coder", LocalOnly: true},
+			"ollama/coder": {Name: "ollama/coder", Provider: "ollama", Model: "coder", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
 				Roles: map[AgentRole]RoleBinding{
 					RoleRepoScout:   {Preset: "missing"},
-					RoleImplementer: {Preset: "coder"},
+					RoleImplementer: {Preset: "ollama/coder"},
 				},
 			},
 		},
@@ -223,15 +259,15 @@ func TestResolveQuestionRemoteBlockedDoesNotFallBackToImplementer(t *testing.T) 
 		DefaultProfile: "local_balanced",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"remote": {Name: "remote", Provider: "openrouter", Model: "remote-model", LocalOnly: false},
-			"coder":  {Name: "coder", Provider: "ollama", Model: "coder", LocalOnly: true},
+			"openrouter/remote-model": {Name: "openrouter/remote-model", Provider: "openrouter", Model: "remote-model", LocalOnly: false},
+			"ollama/coder":            {Name: "ollama/coder", Provider: "ollama", Model: "coder", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
 				Roles: map[AgentRole]RoleBinding{
-					RoleRepoScout:   {Preset: "remote"},
-					RoleImplementer: {Preset: "coder"},
+					RoleRepoScout:   {Preset: "openrouter/remote-model"},
+					RoleImplementer: {Preset: "ollama/coder"},
 				},
 			},
 		},
@@ -249,9 +285,9 @@ func TestResolveUsesSingleModelProfileWhenNoProfileRouteExists(t *testing.T) {
 		DefaultProfile: "single",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"fast": {Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+			"ollama/qwen2.5-coder:14b": {Name: "ollama/qwen2.5-coder:14b", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
 		},
-		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "fast")},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "ollama/qwen2.5-coder:14b")},
 	})
 	route, err := router.Resolve("question")
 	if err != nil {
@@ -287,10 +323,10 @@ func TestResolveBlocksRemotePresetWhenRemoteDisabled(t *testing.T) {
 		DefaultProfile: "remote_profile",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"remote": {Name: "remote", Provider: "openrouter", Model: "model", LocalOnly: false},
+			"openrouter/model": {Name: "openrouter/model", Provider: "openrouter", Model: "model", LocalOnly: false},
 		},
 		Profiles: map[string]AgentProfile{
-			"remote_profile": {Name: "remote_profile", Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "remote"}}},
+			"remote_profile": {Name: "remote_profile", Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "openrouter/model"}}},
 		},
 	})
 	_, err := router.Resolve("edit")
@@ -304,13 +340,13 @@ func TestResolveKnowledgeUsesKnowledgeRoleWhenConfigured(t *testing.T) {
 		DefaultProfile: "local_balanced",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"tiny": {Name: "tiny", Provider: "ollama", Model: "qwen2.5:0.5b", LocalOnly: true},
+			"ollama/qwen2.5:0.5b": {Name: "ollama/qwen2.5:0.5b", Provider: "ollama", Model: "qwen2.5:0.5b", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
 				Roles: map[AgentRole]RoleBinding{
-					RoleKnowledge: {Preset: "tiny"},
+					RoleKnowledge: {Preset: "ollama/qwen2.5:0.5b"},
 				},
 			},
 		},
@@ -323,8 +359,8 @@ func TestResolveKnowledgeUsesKnowledgeRoleWhenConfigured(t *testing.T) {
 	if route.Role != RoleKnowledge {
 		t.Fatalf("Role = %q, want %q", route.Role, RoleKnowledge)
 	}
-	if route.Preset.Name != "tiny" {
-		t.Fatalf("Preset = %#v, want tiny", route.Preset)
+	if route.Preset.Name != "ollama/qwen2.5:0.5b" {
+		t.Fatalf("Preset = %#v, want ollama/qwen2.5:0.5b", route.Preset)
 	}
 }
 
@@ -336,8 +372,8 @@ func TestResolveKnowledgeFallsBackToImplementerWhenNotConfigured(t *testing.T) {
 	if route.Role != RoleImplementer {
 		t.Fatalf("Role = %q, want %q (fallback)", route.Role, RoleImplementer)
 	}
-	if route.Preset.Name != "coder" {
-		t.Fatalf("Preset = %#v, want coder", route.Preset)
+	if route.Preset.Name != "ollama/qwen2.5-coder:14b" {
+		t.Fatalf("Preset = %#v, want ollama/qwen2.5-coder:14b", route.Preset)
 	}
 }
 
@@ -346,15 +382,15 @@ func TestResolveRoleReturnsConfiguredPreset(t *testing.T) {
 		DefaultProfile: "default",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"local-small": {Provider: "ollama", Model: "small", LocalOnly: true},
-			"local-big":   {Provider: "ollama", Model: "big", LocalOnly: true},
+			"ollama/small": {Provider: "ollama", Model: "small", LocalOnly: true},
+			"ollama/big":   {Provider: "ollama", Model: "big", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
 			"default": {
 				Name: "default",
 				Roles: map[AgentRole]RoleBinding{
-					RolePlanner:     {Preset: "local-big"},
-					RoleImplementer: {Preset: "local-small"},
+					RolePlanner:     {Preset: "ollama/big"},
+					RoleImplementer: {Preset: "ollama/small"},
 				},
 			},
 		},
@@ -373,13 +409,13 @@ func TestResolveSDDRolesFallBackToImplementer(t *testing.T) {
 	router := NewStaticRouter(Config{
 		DefaultProfile: "local_balanced",
 		Presets: map[string]ModelPreset{
-			"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+			"ollama/qwen2.5-coder:14b": {Name: "ollama/qwen2.5-coder:14b", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
 				Roles: map[AgentRole]RoleBinding{
-					RoleImplementer: {Preset: "coder"},
+					RoleImplementer: {Preset: "ollama/qwen2.5-coder:14b"},
 				},
 			},
 		},
@@ -389,8 +425,8 @@ func TestResolveSDDRolesFallBackToImplementer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ResolveRole(%s): %v", role, err)
 		}
-		if route.Preset.Name != "coder" {
-			t.Errorf("ResolveRole(%s) preset = %q, want coder (fallback)", role, route.Preset.Name)
+		if route.Preset.Name != "ollama/qwen2.5-coder:14b" {
+			t.Errorf("ResolveRole(%s) preset = %q, want ollama/qwen2.5-coder:14b (fallback)", role, route.Preset.Name)
 		}
 	}
 }
@@ -399,12 +435,12 @@ func TestResolveRoleFallsBackToImplementerForUnconfiguredRole(t *testing.T) {
 	router := NewStaticRouter(Config{
 		DefaultProfile: "default",
 		Presets: map[string]ModelPreset{
-			"local-small": {Provider: "ollama", Model: "small", LocalOnly: true},
+			"ollama/small": {Provider: "ollama", Model: "small", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
 			"default": {
 				Name:  "default",
-				Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "local-small"}},
+				Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "ollama/small"}},
 			},
 		},
 	})
@@ -425,9 +461,9 @@ func TestSingleModelProfileHasSaneDefaults(t *testing.T) {
 		DefaultProfile: "single",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"fast": {Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
 		},
-		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "fast")},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "ollama/qwen2.5-coder:7b")},
 		ContextBudgets: map[AgentRole]ContextBudget{
 			RoleImplementer: {MaxRepoContextTokens: 8000},
 		},
@@ -459,9 +495,9 @@ func TestResolveRoleStillFallsBackToImplementer(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
 		RemoteAllowed:  true,
-		Presets:        map[string]ModelPreset{"fast": {Name: "fast", Provider: "openai", Model: "gpt-4o"}},
+		Presets:        map[string]ModelPreset{"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
-			RoleImplementer: {Preset: "fast"},
+			RoleImplementer: {Preset: "openai/gpt-4o"},
 		}}},
 	})
 	route, err := r.ResolveRole(RoleReviewer)
@@ -540,9 +576,9 @@ func TestRemoteProviderBlockedWhenNotAllowed(t *testing.T) {
 		DefaultProfile: "single",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"remote": {Name: "remote", Provider: "https://api.openai.com/v1", Model: "gpt-4o"},
+			"https://api.openai.com/v1/gpt-4o": {Name: "https://api.openai.com/v1/gpt-4o", Provider: "https://api.openai.com/v1", Model: "gpt-4o"},
 		},
-		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "remote")},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "https://api.openai.com/v1/gpt-4o")},
 	})
 	_, err := r.ResolveRole(RoleImplementer)
 	if !errors.Is(err, ErrRemoteProviderBlocked) {
@@ -555,9 +591,9 @@ func TestLocalProviderAllowedWhenRemoteNotAllowed(t *testing.T) {
 		DefaultProfile: "single",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"local": {Name: "local", Provider: "http://localhost:11434/v1", Model: "qwen2.5-coder:7b", LocalOnly: true},
+			"http://localhost:11434/v1/qwen2.5-coder:7b": {Name: "http://localhost:11434/v1/qwen2.5-coder:7b", Provider: "http://localhost:11434/v1", Model: "qwen2.5-coder:7b", LocalOnly: true},
 		},
-		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "local")},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "http://localhost:11434/v1/qwen2.5-coder:7b")},
 	})
 	route, err := r.ResolveRole(RoleImplementer)
 	if err != nil {
@@ -599,12 +635,12 @@ func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
 func TestResolveCustomAgentWithPreset(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets:        map[string]ModelPreset{"fast": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"ollama/qwen": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
-			RoleImplementer: {Preset: "fast"},
+			RoleImplementer: {Preset: "ollama/qwen"},
 		}}},
 		CustomAgents: map[string]CustomAgent{
-			"my-scout": {Name: "my-scout", Preset: "fast", SystemPrompt: "be fast"},
+			"my-scout": {Name: "my-scout", Preset: "ollama/qwen", SystemPrompt: "be fast"},
 		},
 	})
 	route, err := r.ResolveCustomAgent("my-scout", RoleSubtask)
@@ -622,9 +658,9 @@ func TestResolveCustomAgentWithPreset(t *testing.T) {
 func TestResolveCustomAgentFallsBackToRole(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets:        map[string]ModelPreset{"impl": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"ollama/qwen": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
-			RoleImplementer: {Preset: "impl"},
+			RoleImplementer: {Preset: "ollama/qwen"},
 		}}},
 		CustomAgents: map[string]CustomAgent{
 			"my-scout": {Name: "my-scout", Preset: ""}, // no preset, no role bound
@@ -656,13 +692,13 @@ func TestResolveCustomAgentMissing(t *testing.T) {
 func TestResolveRoleCustomAgentBinding(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets:        map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"ollama/qwen-reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
 			RoleReviewer:    {CustomAgent: "my-reviewer"},
-			RoleImplementer: {Preset: "reason"},
+			RoleImplementer: {Preset: "ollama/qwen-reason"},
 		}}},
 		CustomAgents: map[string]CustomAgent{
-			"my-reviewer": {Name: "my-reviewer", Preset: "reason", SystemPrompt: "strict"},
+			"my-reviewer": {Name: "my-reviewer", Preset: "ollama/qwen-reason", SystemPrompt: "strict"},
 		},
 	})
 	route, err := r.ResolveRole(RoleReviewer)
@@ -682,10 +718,10 @@ func TestResolveEmbedding(t *testing.T) {
 		DefaultProfile: "local",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"nomic": {Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
+			"ollama/nomic-embed-text": {Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
 		},
 		Profiles: map[string]AgentProfile{
-			"local": {Name: "local", Roles: map[AgentRole]RoleBinding{RoleEmbedding: {Preset: "nomic"}}},
+			"local": {Name: "local", Roles: map[AgentRole]RoleBinding{RoleEmbedding: {Preset: "ollama/nomic-embed-text"}}},
 		},
 	}
 	route, err := NewStaticRouter(cfg).ResolveEmbedding()
@@ -712,10 +748,10 @@ func TestResolveEmbeddingRemoteBlocked(t *testing.T) {
 		DefaultProfile: "local",
 		RemoteAllowed:  false,
 		Presets: map[string]ModelPreset{
-			"remote": {Provider: "openai", Model: "text-embedding-3-small", LocalOnly: false},
+			"openai/text-embedding-3-small": {Provider: "openai", Model: "text-embedding-3-small", LocalOnly: false},
 		},
 		Profiles: map[string]AgentProfile{
-			"local": {Name: "local", Roles: map[AgentRole]RoleBinding{RoleEmbedding: {Preset: "remote"}}},
+			"local": {Name: "local", Roles: map[AgentRole]RoleBinding{RoleEmbedding: {Preset: "openai/text-embedding-3-small"}}},
 		},
 	}
 	if _, err := NewStaticRouter(cfg).ResolveEmbedding(); !errors.Is(err, ErrRemoteProviderBlocked) {
@@ -770,36 +806,36 @@ func TestSDDCastRolesIsFullProductionCast(t *testing.T) {
 func TestConfigWithRoleOverride(t *testing.T) {
 	cfg := Config{
 		Presets: map[string]ModelPreset{
-			"fast": {Model: "fast-model"},
-			"pro":  {Model: "pro-model"},
+			"ollama/fast-model": {Model: "fast-model"},
+			"ollama/pro-model":  {Model: "pro-model"},
 		},
 		Profiles: map[string]AgentProfile{
 			"default": {
 				Name: "default",
 				Roles: map[AgentRole]RoleBinding{
-					RoleImplementer: {Preset: "fast"},
+					RoleImplementer: {Preset: "ollama/fast-model"},
 				},
 			},
 		},
 		DefaultProfile: "default",
 	}
-	overridden := cfg.WithRoleOverride(RoleImplementer, "pro")
+	overridden := cfg.WithRoleOverride(RoleImplementer, "ollama/pro-model")
 	// The original config must be unchanged.
-	if cfg.Profiles["default"].Roles[RoleImplementer].Preset != "fast" {
+	if cfg.Profiles["default"].Roles[RoleImplementer].Preset != "ollama/fast-model" {
 		t.Fatal("original config was mutated")
 	}
 	// The overridden config must have the new binding.
-	if overridden.Profiles["default"].Roles[RoleImplementer].Preset != "pro" {
-		t.Fatalf("overridden binding = %q, want pro", overridden.Profiles["default"].Roles[RoleImplementer].Preset)
+	if overridden.Profiles["default"].Roles[RoleImplementer].Preset != "ollama/pro-model" {
+		t.Fatalf("overridden binding = %q, want ollama/pro-model", overridden.Profiles["default"].Roles[RoleImplementer].Preset)
 	}
 }
 
 func TestResolveRolePresetBindingUnchanged(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets:        map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"ollama/qwen-reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
-			RoleReviewer: {Preset: "reason"},
+			RoleReviewer: {Preset: "ollama/qwen-reason"},
 		}}},
 	})
 	route, err := r.ResolveRole(RoleReviewer)
@@ -882,14 +918,14 @@ func TestResolveRoleUsesFastRung(t *testing.T) {
 		DefaultProfile: "coding",
 		RemoteAllowed:  true,
 		Presets: map[string]ModelPreset{
-			"base":  {Provider: "anthropic", Model: "big"},
-			"cheap": {Provider: "anthropic", Model: "small"},
+			"anthropic/big":   {Provider: "anthropic", Model: "big"},
+			"anthropic/small": {Provider: "anthropic", Model: "small"},
 		},
 		Profiles: map[string]AgentProfile{"coding": {
 			Name: "coding",
 			Roles: map[AgentRole]RoleBinding{
-				RoleImplementer: {Preset: "base"},
-				RoleFast:        {Preset: "cheap"},
+				RoleImplementer: {Preset: "anthropic/big"},
+				RoleFast:        {Preset: "anthropic/small"},
 			},
 		}},
 	})

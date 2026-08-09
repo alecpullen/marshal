@@ -105,6 +105,8 @@ var AllRoles = []AgentRole{
 	RoleSDDBranchReviewer,
 }
 
+// ModelPreset is a configured provider/model pair plus optional overrides.
+// Preset map keys are always "<provider>/<model>"; Name stores the key.
 type ModelPreset struct {
 	Name            string `toml:"-"`
 	Provider        string `toml:"provider"`

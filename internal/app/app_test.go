@@ -2659,15 +2659,15 @@ func TestSubagentFactoryExplicitModelOverridesNamedAgent(t *testing.T) {
 		"other":  {Type: "openai_compatible", BaseURL: "http://localhost:11435/v1", APIKey: "test", ToolCalling: true},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast":  {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
-		"other": {Provider: "other", Model: "x", LocalOnly: true},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"other/x":            {Provider: "other", Model: "x", LocalOnly: true},
 	}
 	cfg.CustomAgents = map[string]routing.CustomAgent{
-		"my-scout": {Name: "my-scout", Preset: "fast", SystemPrompt: "scout addendum", ToolDenylist: []string{"web.fetch"}, MaxIterations: 7},
+		"my-scout": {Name: "my-scout", Preset: "ollama/gpt-4o-mini", SystemPrompt: "scout addendum", ToolDenylist: []string{"web.fetch"}, MaxIterations: 7},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -2714,12 +2714,12 @@ func TestSubagentFactoryExplicitModelAdHoc(t *testing.T) {
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
-		"big":  {Provider: "ollama", Model: "qwen2.5-coder:32b", LocalOnly: true},
+		"ollama/gpt-4o-mini":       {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"ollama/qwen2.5-coder:32b": {Provider: "ollama", Model: "qwen2.5-coder:32b", LocalOnly: true},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())

@@ -11,40 +11,27 @@ import (
 	"marshal/internal/llm/schema"
 )
 
-func TestPresetsFrameHasNoManualAddAffordance(t *testing.T) {
-	s := profilesTestState() // reuse the existing helper from frames_profiles_test.go
-	frame := presetsFrame(s)
-	built := frame
-	if built.List.OnAdd != nil {
-		t.Error("presetsFrame's collection must not allow manual add — presets are materialized automatically")
+func TestProviderDetailHasModelOptionsAction(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-}
+	st := newState(cfg)
+	drill := providersFrame(st).List.Rows()[0]
+	detail := drill.Build()
 
-func TestPresetsFrameHasNoManualCopyAffordance(t *testing.T) {
-	s := profilesTestState()
-	row := presetsFrame(s).List.Rows()[0]
-	if row.Yank != nil || row.Paste != nil {
-		t.Fatal("presets must not be manually copied; materialization owns preset creation")
+	var found *field
+	for _, r := range detail.List.Rows() {
+		if r.Title == "Model options" {
+			found = r
+			break
+		}
 	}
-}
-
-func TestPresetProviderAndModelFieldsAreReadOnly(t *testing.T) {
-	s := profilesTestState()
-	detail := presetsFrame(s).List.Rows()[0].Build()
-	for _, title := range []string{"Provider", "Model"} {
-		var found *field
-		for _, row := range detail.List.Rows() {
-			if row.Title == title {
-				found = row
-				break
-			}
-		}
-		if found == nil {
-			t.Fatalf("preset detail is missing %s field", title)
-		}
-		if found.Kind != kindScalar || found.SetStr != nil || found.PickOnPick != nil {
-			t.Fatalf("preset %s field must be read-only, got kind=%v set=%v pick=%v", title, found.Kind, found.SetStr != nil, found.PickOnPick != nil)
-		}
+	if found == nil {
+		t.Fatal("provider detail must have a Model options row")
+	}
+	if found.Kind != kindAction {
+		t.Fatalf("Model options row kind = %v, want kindAction", found.Kind)
 	}
 }
 

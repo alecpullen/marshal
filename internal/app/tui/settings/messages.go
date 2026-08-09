@@ -34,6 +34,13 @@ type BrowserClosedMsg struct{}
 // "Add a provider…" in a provider picker).
 type OpenConnectMsg struct{}
 
+// OpenModelOptionsForProviderMsg is emitted when the settings browser wants
+// to open the model-options editor for a specific provider's model pairs
+// (the "Model options" action in the provider drill-in).
+type OpenModelOptionsForProviderMsg struct {
+	ProviderName string
+}
+
 type actionResultMsg struct {
 	FieldID string
 	Label   string

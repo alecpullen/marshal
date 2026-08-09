@@ -1486,6 +1486,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// OpenModelOptionsForProviderMsg from the settings browser: close the
+	// browser and open the model-options picker for the named provider.
+	if om, ok := msg.(settings.OpenModelOptionsForProviderMsg); ok {
+		m.dock.CloseNow()
+		m.openModelOptionsForProvider(om.ProviderName)
+		m.refreshViewport()
+		return m, nil
+	}
+
 	// Browser-owned picker and probe/action messages must return to the
 	// browser before the model's command-picker and connect handlers see
 	// them. The browser itself is the dock panel, so it can safely handle
@@ -1568,6 +1577,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// preset names may contain spaces; apply directly instead of
 			// round-tripping through the arg splitter
 			m.switchModelPreset(pm.Value)
+			m.refreshViewport()
+			return m, nil
+		case cmdName == "model-options":
+			// Open the model-options editor for the picked model pair.
+			m.dock.Open(modeloptions.New(m.state.Config, pm.Value))
 			m.refreshViewport()
 			return m, nil
 		case cmdName == "mode" && pm.Value == "sdd":

@@ -104,6 +104,21 @@ func TestBuildSystemPromptDescribesPatchFormat(t *testing.T) {
 	}
 }
 
+func TestNativePatchFormatIncludesChainedExample(t *testing.T) {
+	for _, want := range []string{
+		"create a new file",
+		"empty SEARCH section",
+		"unique",
+		"chain",
+		">>>>>>> REPLACE",
+		"File: internal/app/config/types_test.go",
+	} {
+		if !strings.Contains(nativePatchFormat, want) {
+			t.Errorf("nativePatchFormat missing %q", want)
+		}
+	}
+}
+
 func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
 	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
 	content := msg.Content

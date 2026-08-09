@@ -197,11 +197,13 @@ replacement text
 
 Rules:
 - The SEARCH section must match the file content exactly (including whitespace and indentation).
-- Use one block per file; chain multiple files in the same patch string.
-- For new file creation, use an empty SEARCH section.
+- Use one block per file. To edit multiple files in one call, chain blocks back-to-back in the same patch string.
+- Every SEARCH block must be unique within its file; do not repeat the same SEARCH text for the same file.
+- To create a new file, use an empty SEARCH section.
 - Do not use unified diff syntax.
+- Every block must end with the line >>>>>>> REPLACE.
 
-Example:
+Example (two files chained in one patch):
 
 File: internal/app/config/types.go
 <<<<<<< SEARCH
@@ -209,6 +211,16 @@ File: internal/app/config/types.go
 =======
     DigestModel             string ` + "`toml:\"digest_model\"`" + `
     DigestProvider          string ` + "`toml:\"digest_provider\"`" + `
+>>>>>>> REPLACE
+
+File: internal/app/config/types_test.go
+<<<<<<< SEARCH
+func TestTypes(t *testing.T) {
+=======
+func TestTypes(t *testing.T) {
+    t.Run("digest provider", func(t *testing.T) {
+        // TODO
+    })
 >>>>>>> REPLACE`
 
 func renderRoleAddendum(r rolePrompt, nativeTools bool) string {

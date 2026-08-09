@@ -147,6 +147,23 @@ func TestRegisterAllRequiresWorkspaceRoot(t *testing.T) {
 	}
 }
 
+func TestFileWritePatchDescriptionMentionsCreationAndChaining(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	tool, ok := reg.Lookup("file.write_patch")
+	if !ok {
+		t.Fatal("file.write_patch not registered")
+	}
+	for _, want := range []string{"create", "empty SEARCH", "read before editing", "chain", ">>>>>>> REPLACE"} {
+		if !strings.Contains(tool.Description, want) {
+			t.Errorf("file.write_patch description missing %q: %s", want, tool.Description)
+		}
+	}
+}
+
 func TestResolveWorkspacePathRejectsTraversalAndAbsolutePaths(t *testing.T) {
 	root := t.TempDir()
 

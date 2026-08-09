@@ -248,8 +248,13 @@ type fileWritePatchArgs struct {
 
 func (t *toolSet) fileWritePatchTool() registry.Tool {
 	tool := registry.Tool{
-		Name:        "file.write_patch",
-		Description: "Apply a search/replace patch block format to files in the workspace.",
+		Name: "file.write_patch",
+		Description: "Apply one or more search/replace patch blocks to workspace files. " +
+			"Each block edits one file; chain multiple blocks in a single call to edit several files at once. " +
+			"The SEARCH block must match the current file content exactly. " +
+			"To create a new file, use an empty SEARCH block. " +
+			"Always read before editing a file if you have not already done so this session. " +
+			"Every block must end with >>>>>>> REPLACE.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string","description":` +
 			t.pathDescription("search/replace patch blocks; each block's `File:` header is a file path relative to the workspace") +
 			`}},"required":["patch"],"additionalProperties":false}`),

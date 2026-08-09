@@ -640,6 +640,29 @@ func TestBuildSystemPromptOmitsWorkingDirWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptNativePatchFormatCoversAuditFindings(t *testing.T) {
+	tools := append(dummyTools(), registry.Tool{
+		Name:        "file.write_patch",
+		Risk:        registry.RiskWorkspaceWrite,
+		Description: "Apply search/replace patch blocks to workspace files.",
+	})
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, true, policy.ModeEdit, "", "/tmp/workspace")
+	content := msg.Content
+
+	for _, want := range []string{
+		"create a new file",
+		"empty SEARCH section",
+		"unique",
+		"chain",
+		">>>>>>> REPLACE",
+		"File: internal/app/config/types_test.go",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("native system prompt missing audit guidance %q\n%s", want, content)
+		}
+	}
+}
+
 func TestBuildSystemPromptWithAddendum(t *testing.T) {
 	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.", "")
 	if !strings.Contains(msg.Content, "Be extra careful with diffs.") {

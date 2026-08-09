@@ -119,7 +119,10 @@ func SaveUserConfigSection(path string, cfg Config) error {
 // Default. Shared by SaveProjectConfig and SaveUserConfigSection so both
 // files get identical section-preservation semantics.
 func writeSections(file *configFile, cfg Config, def Config) {
-	file.Profile = &fileProfile{Default: strutil.Ptr(cfg.Profile.Default)}
+	file.Profile = &fileProfile{
+		Default:      strutil.Ptr(cfg.Profile.Default),
+		ActivePreset: strutil.Ptr(cfg.Profile.ActivePreset),
+	}
 
 	file.Agent = &fileAgent{
 		MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),

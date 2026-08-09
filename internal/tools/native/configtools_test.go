@@ -497,10 +497,29 @@ func TestProvidersDeleteRemovesKey(t *testing.T) {
 }
 
 func TestModelsPresetSetRoundTrip(t *testing.T) {
-	testSectionWrite(t, "config.models.preset.set", (*toolSet).configModelsPresetSetTool, `{"name":"fast","provider":"ollama","model":"qwen2.5-coder"}`, func(c config.Config) bool {
-		p, ok := c.Models.Presets["fast"]
+	testSectionWrite(t, "config.models.preset.set", (*toolSet).configModelsPresetSetTool, `{"name":"ollama/qwen2.5-coder","provider":"ollama","model":"qwen2.5-coder"}`, func(c config.Config) bool {
+		p, ok := c.Models.Presets["ollama/qwen2.5-coder"]
 		return ok && p.Provider == "ollama"
 	})
+}
+
+func TestModelsPresetSetRejectsNonCanonicalName(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	ts := toolSet{config: cfg, configPath: cfgPath}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configModelsPresetSetTool())
+	tool, _ := reg.Lookup("config.models.preset.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID:   "1",
+		Name: "config.models.preset.set",
+		Args: json.RawMessage(`{"name":"fast","provider":"ollama","model":"qwen"}`),
+	})
+	if err == nil {
+		t.Fatal("config.models.preset.set must reject non-canonical preset names")
+	}
 }
 
 func TestModelsPresetDeleteRemovesKey(t *testing.T) {

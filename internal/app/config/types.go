@@ -332,7 +332,8 @@ type CommandsConfig struct {
 }
 
 type ProfileConfig struct {
-	Default string `toml:"default"`
+	Default      string `toml:"default"`
+	ActivePreset string `toml:"active_preset"`
 }
 
 // AgentConfig holds the scalar tuning knobs for the agent loop. The legacy

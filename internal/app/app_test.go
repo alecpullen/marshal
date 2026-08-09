@@ -69,17 +69,15 @@ type = "openai_compatible"
 base_url = "http://localhost:11434/v1"
 api_key = "mock-key"
 
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 
 [agent_profiles.mock_profile]
-implementer = "mock_preset"
-planner = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-reviewer = "mock_preset"
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
 `), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -514,17 +512,15 @@ base_url = "http://localhost:11434/v1"
 api_key = "mock-key"
 tool_calling = true
 
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 
 [agent_profiles.mock_profile]
-implementer = "mock_preset"
-planner = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-reviewer = "mock_preset"
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
 `), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -1698,21 +1694,19 @@ type = "openai_compatible"
 base_url = "http://localhost:9999/v1"
 api_key = "mock-key"
 
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 
 [agent_profiles.mock_profile]
-router = "mock_preset"
-knowledge = "mock_preset"
-summarizer = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-planner = "mock_preset"
-implementer = "mock_preset"
-reviewer = "mock_preset"
-security_reviewer = "mock_preset"
+router = "mock/mock-model"
+knowledge = "mock/mock-model"
+summarizer = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+planner = "mock/mock-model"
+implementer = "mock/mock-model"
+reviewer = "mock/mock-model"
+security_reviewer = "mock/mock-model"
 `
 
 	if err := os.WriteFile(filepath.Join(mockRepoDir, ".marshal", "config.toml"), []byte(configToml), 0644); err != nil {
@@ -1925,16 +1919,14 @@ default = "mock_profile"
 type = "openai_compatible"
 base_url = "http://localhost:11434/v1"
 api_key = "mock-key"
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 [agent_profiles.mock_profile]
-implementer = "mock_preset"
-planner = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-reviewer = "mock_preset"
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
 `
 	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -2032,16 +2024,14 @@ default = "mock_profile"
 type = "openai_compatible"
 base_url = "http://localhost:11434/v1"
 api_key = "mock-key"
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 [agent_profiles.mock_profile]
-implementer = "mock_preset"
-planner = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-reviewer = "mock_preset"
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
 `
 	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -2106,16 +2096,14 @@ default = "mock_profile"
 type = "openai_compatible"
 base_url = "http://localhost:11434/v1"
 api_key = "mock-key"
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 [agent_profiles.mock_profile]
-implementer = "mock_preset"
-planner = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-reviewer = "mock_preset"
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
 `
 	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -2172,16 +2160,14 @@ default = "mock_profile"
 type = "openai_compatible"
 base_url = "http://localhost:11434/v1"
 api_key = "mock-key"
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 [agent_profiles.mock_profile]
-implementer = "mock_preset"
-planner = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-reviewer = "mock_preset"
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
 `
 	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -3000,17 +2986,15 @@ type = "openai_compatible"
 base_url = "http://localhost:11434/v1"
 api_key = "mock-key"
 
-[models.presets.mock_preset]
-provider = "mock"
-model = "mock-model"
+[models.presets."mock/mock-model"]
 local_only = true
 
 [agent_profiles.mock_profile]
-implementer = "mock_preset"
-planner = "mock_preset"
-repo_scout = "mock_preset"
-tester = "mock_preset"
-reviewer = "mock_preset"
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
 
 [lsp]
 enabled = true

@@ -33,7 +33,8 @@ type fileCommands struct {
 }
 
 type fileProfile struct {
-	Default *string `toml:"default"`
+	Default      *string `toml:"default"`
+	ActivePreset *string `toml:"active_preset"`
 }
 
 type fileAgent struct {

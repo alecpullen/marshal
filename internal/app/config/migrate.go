@@ -5,18 +5,17 @@ import "marshal/internal/llm/routing"
 // MigrateLegacyAgentModel rewrites a legacy [agent] provider+model pair into
 // a single-model profile and preset. It returns true when it made changes.
 //
-// A legacy config has both a provider and model set and no usable default
-// profile. The migration creates a preset named "<provider>/<model>", creates
-// a single-model profile named "single" that binds every chat role to that
-// preset, and sets cfg.Profile.Default = "single".
+// The provider and model are passed as explicit arguments (read from the raw
+// file mirror in LoadLayers) because the fields no longer exist on AgentConfig.
+// The migration creates a preset named "<provider>/<model>", sets
+// Profile.Default = "single" and Profile.ActivePreset to the preset name so
+// RoutingConfig can synthesize the single-model profile in memory.
 //
 // "No usable default profile" means the name in cfg.Profile.Default does not
 // resolve to an entry in cfg.AgentProfiles — not merely that the string is
 // empty. Default() supplies Profile.Default = "local_balanced", so a config
 // that omits [profile] entirely still arrives here naming a profile nothing
-// defines. Checking only for emptiness would skip those configs, and since
-// the legacy resolution path was deleted the router would then resolve no
-// route at all. That shape is what docs/09-configuration-examples.md shows.
+// defines.
 //
 // Existing presets and profiles are never disturbed.
 func MigrateLegacyAgentModel(cfg *Config, provider, model string) bool {
@@ -64,6 +63,7 @@ func MigrateLegacyAgentModel(cfg *Config, provider, model string) bool {
 	}
 
 	cfg.Profile.Default = "single"
+	cfg.Profile.ActivePreset = presetName
 
 	return true
 }

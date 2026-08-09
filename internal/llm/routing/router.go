@@ -135,6 +135,12 @@ func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, p
 		if !ok {
 			return Route{}, fmt.Errorf("%w: %s", ErrPresetNotFound, presetName)
 		}
+		// Synthesize a default preset only when the provider is actually
+		// configured. A typo in a profile binding (e.g. "ollma/gpt-4o")
+		// should error, not silently route to a non-existent provider.
+		if _, known := r.config.ProviderBaseURLs[provider]; !known {
+			return Route{}, fmt.Errorf("%w: %s", ErrPresetNotFound, presetName)
+		}
 		preset = defaultPreset(provider, model, r.presetProviderBaseURL(provider))
 	}
 	preset.Name = presetName
@@ -161,6 +167,9 @@ func (r *StaticRouter) ResolveExplicitModel(pair string, asRole AgentRole) (Rout
 	}
 	preset, ok := r.config.Presets[pair]
 	if !ok {
+		if _, known := r.config.ProviderBaseURLs[provider]; !known {
+			return Route{}, fmt.Errorf("%w: no preset configured for %q", ErrUnknownProvider, pair)
+		}
 		preset = defaultPreset(provider, model, r.presetProviderBaseURL(provider))
 	}
 	preset.Name = pair

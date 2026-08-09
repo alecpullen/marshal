@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 
-	"marshal/internal/llm/routing"
 	"marshal/internal/trust"
 
 	"github.com/pelletier/go-toml/v2"
@@ -97,16 +96,6 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		legacyProvider, legacyModel = *userFile.Agent.Provider, *userFile.Agent.Model
 	}
 	migrated := MigrateLegacyAgentModel(&cfg, legacyProvider, legacyModel)
-	// Synthesize a single-model profile when the default profile is missing
-	// and the user has configured exactly one provider/model pair via
-	// presets. This keeps the config file limited to provider + model pair
-	// while still giving the router a profile to resolve roles through.
-	if _, ok := cfg.AgentProfiles[cfg.Profile.Default]; !ok && len(cfg.Models.Presets) == 1 {
-		for name := range cfg.Models.Presets {
-			cfg.AgentProfiles[cfg.Profile.Default] = routing.SingleModelProfile(cfg.Profile.Default, name)
-			break
-		}
-	}
 	coercePresetPricing(&cfg)
 	return Layers{Default: def, User: user, Merged: cfg, Migrated: migrated}, nil
 }

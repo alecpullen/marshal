@@ -3855,8 +3855,9 @@ func (m *Model) openSDDCustomPlanPathPicker() {
 }
 
 // applyConnectDone persists the provider and model chosen through the
-// connect overlay. It writes the provider entry to cfg.Providers, sets
-// Agent.Provider/Model, clears the profile default, and saves.
+// connect overlay. It writes the provider entry to cfg.Providers,
+// materializes a preset for the provider/model pair, sets the default profile
+// to the single-model profile name with the new preset as active, and saves.
 func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	if msg.Provider == "" || msg.Model == "" {
 		return
@@ -3894,7 +3895,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		}
 		newCfg.Models.Presets = presets
 	}
-	_, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
+	presetName, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
 		ContextWindow:   msg.ContextWindow,
 		MaxOutputTokens: msg.MaxOutputTokens,
 		ToolCalling:     msg.ToolCalling,
@@ -3905,7 +3906,8 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	}
 
 	newCfg.Profile.Default = singleModelProfileName
-	// The "single" profile is synthesized in memory by config.Load when no
+	newCfg.Profile.ActivePreset = presetName
+	// The "single" profile is synthesized in memory by RoutingConfig when no
 	// explicit agent_profiles entry matches the default profile. Do not
 	// persist it here; that keeps the config file limited to provider + model
 	// pair.
@@ -3974,7 +3976,8 @@ func (m *Model) switchModelPreset(presetName string) {
 	}
 	preset := newCfg.Models.Presets[presetName]
 	newCfg.Profile.Default = singleModelProfileName
-	// In-memory profile synthesis in config.Load handles role bindings.
+	newCfg.Profile.ActivePreset = presetName
+	// In-memory profile synthesis in RoutingConfig handles role bindings.
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {

@@ -845,9 +845,12 @@ max_repo_context_tokens = 48000
 		t.Fatalf("Load returned error: %v", err)
 	}
 
-	preset := cfg.Models.Presets["coder"]
+	// The legacy key "coder" is migrated to "ollama/qwen2.5-coder:14b" by
+	// the merge path. Profile bindings still reference "coder" — the router's
+	// default-preset synthesis handles that at resolve time.
+	preset := cfg.Models.Presets["ollama/qwen2.5-coder:14b"]
 	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" || !preset.LocalOnly {
-		t.Fatalf("preset coder = %#v", preset)
+		t.Fatalf("preset ollama/qwen2.5-coder:14b = %#v", preset)
 	}
 	if preset.ContextWindow != 32768 || preset.MaxOutputTokens != 4096 {
 		t.Fatalf("preset numeric fields = %#v", preset)
@@ -900,12 +903,15 @@ max_repo_context_tokens = 48000
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	if cfg.Models.Presets["coder"].Provider != "lmstudio" || cfg.Models.Presets["coder"].Model != "project" {
-		t.Fatalf("coder preset = %#v", cfg.Models.Presets["coder"])
+	// Legacy keys "coder" and "fast" are migrated to canonical form.
+	if cfg.Models.Presets["lmstudio/project"].Provider != "lmstudio" || cfg.Models.Presets["lmstudio/project"].Model != "project" {
+		t.Fatalf("coder preset (now lmstudio/project) = %#v", cfg.Models.Presets["lmstudio/project"])
 	}
-	if cfg.Models.Presets["fast"].Model != "fast" {
-		t.Fatalf("fast preset missing: %#v", cfg.Models.Presets)
+	if cfg.Models.Presets["ollama/fast"].Model != "fast" {
+		t.Fatalf("fast preset (now ollama/fast) missing: %#v", cfg.Models.Presets)
 	}
+	// Profile bindings still reference the legacy names; the router's
+	// default-preset synthesis resolves them at route time.
 	if cfg.AgentProfiles["local_balanced"].Roles[routing.RoleRepoScout].Preset != "fast" {
 		t.Fatalf("profile = %#v", cfg.AgentProfiles["local_balanced"])
 	}

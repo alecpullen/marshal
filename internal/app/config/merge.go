@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"marshal/internal/llm/routing"
@@ -29,6 +30,7 @@ func merge(cfg *Config, file configFile) error {
 	}
 	if file.Profile != nil {
 		set(&cfg.Profile.Default, file.Profile.Default)
+		set(&cfg.Profile.ActivePreset, file.Profile.ActivePreset)
 	}
 	if file.Agent != nil {
 		set(&cfg.Agent.MaxToolIterations, file.Agent.MaxToolIterations)
@@ -91,6 +93,24 @@ func merge(cfg *Config, file configFile) error {
 		}
 		for name, preset := range file.Models.Presets {
 			preset.Name = name
+			if !routing.IsCanonicalPresetName(name) && preset.Provider != "" && preset.Model != "" {
+				// Migrate a legacy non-canonical key (e.g. "fast") to the
+				// canonical "<provider>/<model>" form. The provider and model
+				// fields come from the TOML [models.presets.fast] section.
+				canonName := preset.Provider + "/" + preset.Model
+				if _, exists := cfg.Models.Presets[canonName]; !exists {
+					cfg.Models.Presets[canonName] = preset
+					continue
+				}
+				// Canonical key already exists (e.g. from a higher-priority
+				// layer); skip the legacy entry rather than overwriting it.
+				continue
+			}
+			// For canonical keys, derive provider/model from the key when the
+			// TOML section omits them (the common pair-only case).
+			if routing.IsCanonicalPresetName(name) && preset.Provider == "" && preset.Model == "" {
+				preset.Provider, preset.Model, _ = strings.Cut(name, "/")
+			}
 			cfg.Models.Presets[name] = preset
 		}
 	}

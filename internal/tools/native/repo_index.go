@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"marshal/internal/app/session"
 	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
+
+const defaultIndexTimeout = 10 * time.Minute
 
 // repoIndexTool builds the repo.index tool. It honours the configured
 // Indexing.Ignore patterns to exclude files from indexing, and respects
@@ -43,13 +47,23 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			}
 		}
 
-		rep, err := index.Run(ctx, index.Deps{
-			DB:       t.db,
-			Root:     t.root,
-			Ignore:   t.config.Indexing.Ignore,
-			MaxBytes: t.config.Indexing.MaxIndexableFileBytes,
-			Embedder: embedder,
-			LSP:      t.lspIndex,
+		runCtx, cancel := context.WithTimeout(ctx, defaultIndexTimeout)
+		defer cancel()
+
+		onProgress := func(msg string) {
+			if t.sessionState != nil {
+				t.sessionState.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
+			}
+		}
+
+		rep, err := index.Run(runCtx, index.Deps{
+			DB:         t.db,
+			Root:       t.root,
+			Ignore:     t.config.Indexing.Ignore,
+			MaxBytes:   t.config.Indexing.MaxIndexableFileBytes,
+			Embedder:   embedder,
+			LSP:        t.lspIndex,
+			OnProgress: onProgress,
 		}, t.projectID)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("index run: %w", err)

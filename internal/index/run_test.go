@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,6 +40,45 @@ func TestRunPrefersLSPSymbols(t *testing.T) {
 		if s.Source != "lsp" {
 			t.Fatalf("expected source=lsp, got %#v", s)
 		}
+	}
+}
+
+func TestRunHonoursContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package p\nfunc F(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, root)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Run(ctx, Deps{DB: database, Root: root}, pid)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestRunEmitsProgress(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package p\nfunc F(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, root)
+
+	var msgs []string
+	_, err := Run(context.Background(), Deps{
+		DB:         database,
+		Root:       root,
+		Embedder:   &fakeEmbedder{model: "m"},
+		OnProgress: func(msg string) { msgs = append(msgs, msg) },
+	}, pid)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatalf("expected progress messages, got none")
 	}
 }
 

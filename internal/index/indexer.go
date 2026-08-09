@@ -19,8 +19,9 @@ type Stats struct {
 
 // Indexer incrementally re-embeds files whose hash or model has changed.
 type Indexer struct {
-	db       *db.DB
-	embedder embedding.Embedder
+	db         *db.DB
+	embedder   embedding.Embedder
+	onProgress func(message string)
 }
 
 // NewIndexer creates an Indexer. A nil embedder makes Reindex a no-op.
@@ -30,7 +31,8 @@ func NewIndexer(database *db.DB, e embedding.Embedder) *Indexer {
 
 // Reindex re-embeds only stale files (changed hash or changed model), purges
 // files no longer present, and skips unchanged files. A nil embedder makes it
-// a no-op.
+// a no-op. Chunks are collected across files and embedded in batches of up to
+// 64 inputs so a single Embed call serves many files.
 func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.ScannedFile, symbolsByFile map[string][]db.Symbol) (Stats, error) {
 	var st Stats
 	if ix.embedder == nil {
@@ -43,7 +45,17 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 		return st, err
 	}
 
+	const maxBatchInputs = 64
+
+	type workItem struct {
+		path    string
+		hash    string
+		chunks  []db.Chunk
+		vectors [][]float32
+	}
+
 	seen := map[string]bool{}
+	var items []workItem
 	for _, sf := range scanned {
 		if sf.ReadErr != nil {
 			continue
@@ -56,7 +68,6 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 		}
 		chunks := Chunk(sf, symbolsByFile[sf.Path])
 		if len(chunks) == 0 {
-			// Nothing to embed; clear any stale chunks for this file.
 			if ok {
 				if err := ix.db.DeleteFileChunks(projectID, sf.Path); err != nil {
 					return st, err
@@ -64,26 +75,12 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 			}
 			continue
 		}
-		texts := make([]string, len(chunks))
-		for i, c := range chunks {
-			texts[i] = c.Content
-		}
-		vecs, err := ix.embedder.Embed(ctx, texts)
-		if err != nil {
-			return st, fmt.Errorf("embed %s: %w", sf.Path, err)
-		}
-		if len(vecs) != len(chunks) {
-			return st, fmt.Errorf("embed %s: %d vecs for %d chunks", sf.Path, len(vecs), len(chunks))
-		}
-		cwv := make([]db.ChunkWithVector, len(chunks))
-		for i, c := range chunks {
-			cwv[i] = db.ChunkWithVector{Chunk: c, Model: model, Dim: len(vecs[i]), Vector: vecs[i]}
-		}
-		if err := ix.db.ReplaceFileChunks(projectID, sf.Path, sf.Hash, cwv); err != nil {
-			return st, err
-		}
-		st.FilesEmbedded++
-		st.ChunksWritten += len(chunks)
+		items = append(items, workItem{
+			path:    sf.Path,
+			hash:    sf.Hash,
+			chunks:  chunks,
+			vectors: make([][]float32, len(chunks)),
+		})
 	}
 
 	for path := range state {
@@ -92,6 +89,65 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 				return st, err
 			}
 			st.FilesPurged++
+		}
+	}
+
+	if len(items) == 0 {
+		return st, nil
+	}
+
+	type chunkRef struct {
+		itemIdx  int
+		chunkIdx int
+		content  string
+	}
+	var refs []chunkRef
+	for i, it := range items {
+		for j, c := range it.chunks {
+			refs = append(refs, chunkRef{itemIdx: i, chunkIdx: j, content: c.Content})
+		}
+	}
+
+	for start := 0; start < len(refs); start += maxBatchInputs {
+		if err := ctx.Err(); err != nil {
+			return st, err
+		}
+		end := start + maxBatchInputs
+		if end > len(refs) {
+			end = len(refs)
+		}
+		batch := refs[start:end]
+		texts := make([]string, len(batch))
+		for i, r := range batch {
+			texts[i] = r.content
+		}
+		vecs, err := ix.embedder.Embed(ctx, texts)
+		if err != nil {
+			return st, fmt.Errorf("embed batch: %w", err)
+		}
+		if len(vecs) != len(batch) {
+			return st, fmt.Errorf("embed batch: %d vectors for %d inputs", len(vecs), len(batch))
+		}
+		for i, r := range batch {
+			items[r.itemIdx].vectors[r.chunkIdx] = vecs[i]
+		}
+		if ix.onProgress != nil {
+			ix.onProgress(fmt.Sprintf("embedded batch %d/%d chunks", end, len(refs)))
+		}
+	}
+
+	for _, it := range items {
+		cwv := make([]db.ChunkWithVector, len(it.chunks))
+		for i, c := range it.chunks {
+			cwv[i] = db.ChunkWithVector{Chunk: c, Model: model, Dim: len(it.vectors[i]), Vector: it.vectors[i]}
+		}
+		if err := ix.db.ReplaceFileChunks(projectID, it.path, it.hash, cwv); err != nil {
+			return st, err
+		}
+		st.FilesEmbedded++
+		st.ChunksWritten += len(it.chunks)
+		if ix.onProgress != nil {
+			ix.onProgress(fmt.Sprintf("embedded %s (%d chunks)", it.path, len(it.chunks)))
 		}
 	}
 	return st, nil

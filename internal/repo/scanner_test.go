@@ -1,12 +1,28 @@
 package repo
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestScanDetailedRespectsContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	scanner := NewScanner(Config{Root: dir})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := scanner.ScanDetailed(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
 
 func TestScannerFindsFiles(t *testing.T) {
 	dir := t.TempDir()
@@ -18,7 +34,7 @@ func TestScannerFindsFiles(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
@@ -44,7 +60,7 @@ func TestNewScannerContinuesOnBadGitignore(t *testing.T) {
 		t.Fatal("expected gitignore to be nil when parse fails")
 	}
 	// Scan must still succeed (the gitignore rules are simply not applied).
-	if _, err := s.ScanDetailed(); err != nil {
+	if _, err := s.ScanDetailed(context.Background()); err != nil {
 		t.Errorf("Scan should succeed when gitignore fails to parse: %v", err)
 	}
 	// Warnings should contain the gitignore error.
@@ -63,11 +79,11 @@ func TestScannerWarningsResetBetweenScanCalls(t *testing.T) {
 		t.Fatal("expected loadErr to be set for malformed gitignore")
 	}
 	// First Scan.
-	if _, err := s.ScanDetailed(); err != nil {
+	if _, err := s.ScanDetailed(context.Background()); err != nil {
 		t.Fatalf("first Scan failed: %v", err)
 	}
 	// Second Scan — without the fix, warnings would duplicate.
-	if _, err := s.ScanDetailed(); err != nil {
+	if _, err := s.ScanDetailed(context.Background()); err != nil {
 		t.Fatalf("second Scan failed: %v", err)
 	}
 	if n := len(s.Warnings()); n != 1 {
@@ -88,7 +104,7 @@ func TestScannerSkipsIgnoredDirs(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
@@ -107,7 +123,7 @@ func TestScannerAppliesConfigIgnore(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir, Ignore: []string{"*_test.go"}})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
@@ -119,7 +135,7 @@ func TestScannerAppliesConfigIgnore(t *testing.T) {
 func TestScannerReturnsErrorForMissingRoot(t *testing.T) {
 	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
 	scanner := NewScanner(Config{Root: missingDir})
-	_, err := scanner.ScanDetailed()
+	_, err := scanner.ScanDetailed(context.Background())
 	if err == nil {
 		t.Fatalf("expected Scan to return an error for missing root, got nil")
 	}
@@ -132,7 +148,7 @@ func TestScannerInvalidIgnorePattern(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir, Ignore: []string{"["}})
-	_, err := scanner.ScanDetailed()
+	_, err := scanner.ScanDetailed(context.Background())
 	if err == nil {
 		t.Fatalf("expected Scan to return an error for invalid ignore pattern, got nil")
 	}
@@ -151,7 +167,7 @@ func TestScannerIgnoresDirectoryPattern(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir, Ignore: []string{"ignored_dir"}})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
@@ -174,7 +190,7 @@ func TestScannerRespectsGitignore(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
@@ -199,7 +215,7 @@ func TestScannerSkipsSymlinkWithReason(t *testing.T) {
 	}
 
 	s := NewScanner(Config{Root: root})
-	scanned, err := s.ScanDetailed()
+	scanned, err := s.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -254,7 +270,7 @@ func TestScanner_SkipsSymlinks(t *testing.T) {
 	}
 
 	s := NewScanner(Config{Root: root})
-	scanned, err := s.ScanDetailed()
+	scanned, err := s.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +288,7 @@ func TestScannerComputesHashesAndLanguages(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
@@ -301,7 +317,7 @@ func TestScanDetailedReturnsContent(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("ScanDetailed failed: %v", err)
 	}
@@ -353,7 +369,7 @@ func TestScanDetailedContinuesOnReadError(t *testing.T) {
 	defer os.Chmod(filepath.Join(dir, "bad.go"), 0644)
 
 	scanner := NewScanner(Config{Root: dir})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("ScanDetailed should not abort on read errors: %v", err)
 	}
@@ -416,7 +432,7 @@ func TestScannerSkipsOversizedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewScanner(Config{Root: dir, MaxIndexableFileBytes: 512})
-	scanned, err := s.ScanDetailed()
+	scanned, err := s.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -452,7 +468,7 @@ func TestScanContinuesOnHashError(t *testing.T) {
 	scanner := NewScanner(Config{Root: dir})
 
 	// ScanDetailed should continue on read errors.
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("ScanDetailed should not abort on read errors: %v", err)
 	}
@@ -498,7 +514,7 @@ func TestScannerSkipsMarshalDir(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(context.Background())
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}

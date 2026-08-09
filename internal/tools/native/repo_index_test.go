@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/tools/registry"
@@ -283,6 +285,87 @@ func (f *failingEmbedder) Embed(context.Context, []string) ([][]float32, error) 
 }
 func (f *failingEmbedder) Model() string { return "broken" }
 func (f *failingEmbedder) Dims() int     { return 0 }
+
+func TestRepoIndexRespectsParentContextTimeout(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	ts, err := newToolSet(Options{
+		WorkspaceRoot: tmp,
+		DB:            dbConn,
+		ProjectID:     projectID,
+	})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	ts.resolveEmbedder = func() (embedding.Embedder, error) {
+		return &fakeEmbedder{model: "m"}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	_, err = ts.repoIndexTool().Handler(ctx, registry.ToolCall{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestRepoIndexEmitsActivityProgress(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	state := session.New(config.Default(), tmp, time.Now(), session.Persistence{})
+	ts, err := newToolSet(Options{
+		WorkspaceRoot: tmp,
+		DB:            dbConn,
+		ProjectID:     projectID,
+		SessionState:  state,
+	})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	ts.resolveEmbedder = func() (embedding.Embedder, error) {
+		return &fakeEmbedder{model: "m"}, nil
+	}
+
+	_, err = ts.repoIndexTool().Handler(context.Background(), registry.ToolCall{})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if state.Activity().Label == "" {
+		t.Fatal("expected a progress activity label to be set")
+	}
+}
 
 func TestRepoIndexEmbedsNotConfigured(t *testing.T) {
 	tmp := t.TempDir()

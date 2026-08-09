@@ -26,7 +26,7 @@ func TestAgentRunToolRegistersAndDispatchesToChild(t *testing.T) {
 		gotChild  *agent.Runner
 		calls     int
 	)
-	factory := func(_ string) (*agent.Runner, *session.State, error) {
+	factory := func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		calls++
 		return &agent.Runner{State: state}, state, nil
 	}
@@ -82,7 +82,7 @@ func TestAgentRunToolRejectsWhenDepthLimitReached(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(2))
 
 	factoryCalls := 0
-	factory := func(_ string) (*agent.Runner, *session.State, error) {
+	factory := func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		factoryCalls++
 		return &agent.Runner{}, nil, nil
 	}
@@ -112,7 +112,7 @@ func TestAgentRunToolRejectsWhenConcurrencyLimitReached(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	state.SetSubagentConcurrency(2)
 
-	factory := func(_ string) (*agent.Runner, *session.State, error) {
+	factory := func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		return &agent.Runner{}, nil, nil
 	}
 	tool := agent.NewSubagentTool(factory, reg, state)
@@ -131,7 +131,7 @@ func TestAgentRunToolRejectsWhenConcurrencyLimitReached(t *testing.T) {
 func TestAgentRunToolRejectsMissingArgs(t *testing.T) {
 	reg := registry.New()
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	tool := agent.NewSubagentTool(func(_ string) (*agent.Runner, *session.State, error) { return &agent.Runner{}, nil, nil }, reg, state)
+	tool := agent.NewSubagentTool(func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) { return &agent.Runner{}, nil, nil }, reg, state)
 
 	cases := []struct {
 		name string

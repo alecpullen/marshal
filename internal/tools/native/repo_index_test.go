@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,6 +235,54 @@ func TestRepoIndexEmbeds(t *testing.T) {
 		t.Fatalf("expected embedded line, got: %s", res.Content)
 	}
 }
+
+func TestRepoIndexProbeFailsFast(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	ts, err := newToolSet(Options{
+		WorkspaceRoot: tmp,
+		DB:            dbConn,
+		ProjectID:     projectID,
+	})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	ts.resolveEmbedder = func() (embedding.Embedder, error) {
+		return &failingEmbedder{}, nil
+	}
+
+	_, err = ts.repoIndexTool().Handler(context.Background(), registry.ToolCall{})
+	if err == nil {
+		t.Fatal("expected probe failure")
+	}
+	if !strings.Contains(err.Error(), "embedding probe failed") {
+		t.Fatalf("expected 'embedding probe failed' error, got %v", err)
+	}
+}
+
+type failingEmbedder struct{}
+
+func (f *failingEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New("connection refused")
+}
+func (f *failingEmbedder) Model() string { return "broken" }
+func (f *failingEmbedder) Dims() int     { return 0 }
 
 func TestRepoIndexEmbedsNotConfigured(t *testing.T) {
 	tmp := t.TempDir()

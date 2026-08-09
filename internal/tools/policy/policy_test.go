@@ -891,6 +891,27 @@ func TestEvaluate_RiskWorkspaceWriteRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestEvaluate_SessionStateToolsAllowed(t *testing.T) {
+	for _, name := range []string{"todo.write", "scratchpad.write", "scratchpad.delete"} {
+		t.Run(name, func(t *testing.T) {
+			reg := registry.New()
+			if err := reg.Register(registry.Tool{Name: name, Risk: registry.RiskWorkspaceWrite, Handler: dummyHandler}); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			pe := NewEngine(&config.Config{}, nil)
+			pe.WithRegistry(reg)
+
+			dec, reason, err := pe.Evaluate(name, nil)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if dec != DecisionAllow {
+				t.Fatalf("%s: got %s (%q), want DecisionAllow", name, dec, reason)
+			}
+		})
+	}
+}
+
 func TestEvaluate_RiskReadOnlyAutoAllows(t *testing.T) {
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{

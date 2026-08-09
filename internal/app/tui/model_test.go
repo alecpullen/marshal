@@ -3333,8 +3333,12 @@ func modelTestState(t *testing.T) *session.State {
 	if cfg.Models.Presets == nil {
 		cfg.Models.Presets = map[string]routing.ModelPreset{}
 	}
-	cfg.Models.Presets["test-a"] = routing.ModelPreset{Name: "test-a", Provider: "ollama", Model: "qwen2.5", LocalOnly: true}
-	cfg.Models.Presets["test-b"] = routing.ModelPreset{Name: "test-b", Provider: "anthropic", Model: "sonnet-5"}
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama":    {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		"anthropic": {Type: "openai_compatible", BaseURL: "https://api.anthropic.com/v1"},
+	}
+	cfg.Models.Presets["ollama/qwen2.5"] = routing.ModelPreset{Name: "ollama/qwen2.5", Provider: "ollama", Model: "qwen2.5", LocalOnly: true}
+	cfg.Models.Presets["anthropic/sonnet-5"] = routing.ModelPreset{Name: "anthropic/sonnet-5", Provider: "anthropic", Model: "sonnet-5"}
 	return session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 }
 
@@ -3354,13 +3358,13 @@ func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 	var reloaded *config.Config
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
-	updated, _ := m.dispatchCommand("/models test-b")
+	updated, _ := m.dispatchCommand("/models anthropic/sonnet-5")
 	m = asModel(t, updated)
 	if m.dock.IsOpen() {
 		t.Fatal("exact preset arg must switch directly, no overlay")
 	}
-	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-b" {
-		t.Fatalf("direct switch should reload with test-b, got %+v", reloaded)
+	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "anthropic/sonnet-5" {
+		t.Fatalf("direct switch should reload with anthropic/sonnet-5, got %+v", reloaded)
 	}
 }
 
@@ -3374,8 +3378,8 @@ func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("model-ID arg must switch directly, no overlay")
 	}
-	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-a" {
-		t.Fatalf("model-ID switch should reload with test-a, got %+v", reloaded)
+	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5" {
+		t.Fatalf("model-ID switch should reload with ollama/qwen2.5, got %+v", reloaded)
 	}
 }
 
@@ -3394,13 +3398,13 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
 	m.openPicker("model", "Switch model", "session only — /settings to persist", m.modelPickerItems(), "")
-	updated, _ := m.Update(picker.PickedMsg{Value: "test-a"})
+	updated, _ := m.Update(picker.PickedMsg{Value: "ollama/qwen2.5"})
 	m = asModel(t, updated)
 	if m.dock.IsOpen() {
 		t.Fatal("pick should close the modal")
 	}
-	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-a" {
-		t.Fatalf("pick should reload with test-a, got %+v", reloaded)
+	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5" {
+		t.Fatalf("pick should reload with ollama/qwen2.5, got %+v", reloaded)
 	}
 }
 
@@ -3754,22 +3758,22 @@ func TestAltMCyclesModelForward(t *testing.T) {
 	}))
 	m.resize(80, 24)
 
-	// Set active route to test-a so cycleModel finds a known index
+	// Set active route to ollama/qwen2.5 so cycleModel finds a known index
 	state.SetActiveRoute(session.RouteInfo{
-		Active: true, Preset: "test-a", Provider: "ollama", Model: "qwen2.5", LocalOnly: true,
+		Active: true, Preset: "ollama/qwen2.5", Provider: "ollama", Model: "qwen2.5", LocalOnly: true,
 	})
 
 	// Alt+M should cycle forward. Sorted order by provider then name:
-	//   index 0: test-b (anthropic)
-	//   index 1: test-a (ollama)
-	// Forward from index 1 → index 0 → test-b
+	//   index 0: anthropic/sonnet-5 (anthropic)
+	//   index 1: ollama/qwen2.5 (ollama)
+	// Forward from index 1 → index 0 → anthropic/sonnet-5
 	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
 
 	if reloaded == nil {
 		t.Fatal("configReloader was not called")
 	}
-	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-b" {
-		t.Fatalf("configReloader preset = %q, want \"test-b\"",
+	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "anthropic/sonnet-5" {
+		t.Fatalf("configReloader preset = %q, want \"anthropic/sonnet-5\"",
 			reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset)
 	}
 	// A confirmation system message should appear
@@ -3788,21 +3792,21 @@ func TestAltShiftMCyclesModelBackward(t *testing.T) {
 	}))
 	m.resize(80, 24)
 
-	// Set active route to test-b (index 0 in sorted order)
+	// Set active route to anthropic/sonnet-5 (index 0 in sorted order)
 	state.SetActiveRoute(session.RouteInfo{
-		Active: true, Preset: "test-b", Provider: "anthropic", Model: "sonnet-5",
+		Active: true, Preset: "anthropic/sonnet-5", Provider: "anthropic", Model: "sonnet-5",
 	})
 
 	// Shift+Alt+M should cycle backward.
-	// Sorted: index 0 = test-b, index 1 = test-a
-	// Backward from index 0 wraps → index 1 → test-a
+	// Sorted: index 0 = anthropic/sonnet-5, index 1 = ollama/qwen2.5
+	// Backward from index 0 wraps → index 1 → ollama/qwen2.5
 	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt | tea.ModShift})
 
 	if reloaded == nil {
 		t.Fatal("configReloader was not called")
 	}
-	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-a" {
-		t.Fatalf("configReloader preset = %q, want \"test-a\"",
+	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5" {
+		t.Fatalf("configReloader preset = %q, want \"ollama/qwen2.5\"",
 			reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset)
 	}
 }
@@ -5348,13 +5352,16 @@ func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 
 func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
-		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.settingsRegistry()
 	m.configReloader = func(config.Config) error { return nil }
 
-	m.switchModelPreset("fast")
+	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
 	if m.setReg != nil {
 		t.Fatal("model switch should invalidate the cached /set registry")
@@ -5363,8 +5370,11 @@ func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 
 func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
-		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.settingsRegistry()
 	m.configReloader = func(cfg config.Config) error {
@@ -5374,7 +5384,7 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 		return errors.New("old runtime cleanup failed")
 	}
 
-	m.switchModelPreset("fast")
+	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
 	if m.setReg != nil {
 		t.Fatal("failed model reload must invalidate the cached /set registry")
@@ -5382,15 +5392,18 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.state.Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("failed model reload must align m.state.Config profile, got %q", m.state.Config.Profile.Default)
 	}
-	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "fast" {
+	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5-coder:7b" {
 		t.Fatal("failed model reload must align m.state.Config.AgentProfiles")
 	}
 }
 
 func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
-		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
@@ -5401,7 +5414,7 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	reloaded := false
 	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
 
-	m.switchModelPreset("fast")
+	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
 	if reloaded {
 		t.Fatal("save failure must not call configReloader")
@@ -5409,7 +5422,7 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	if m.state.Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("save failure must keep the switched profile in session, got %q", m.state.Config.Profile.Default)
 	}
-	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "fast" {
+	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5-coder:7b" {
 		t.Fatal("save failure must keep the switched profile roles in session config")
 	}
 	if !m.configSavePending {
@@ -5426,13 +5439,16 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 
 func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
-		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.state.WorkingDir = t.TempDir()
 	m.configReloader = func(config.Config) error { return nil }
 
-	m.switchModelPreset("fast")
+	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
@@ -5442,13 +5458,16 @@ func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
 
 func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
-		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.state.WorkingDir = t.TempDir()
 	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
 
-	m.switchModelPreset("fast")
+	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
@@ -5458,11 +5477,14 @@ func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 
 func TestSwitchModelPresetBindsEveryRole(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
 	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Name: "fast", Provider: "openai", Model: "gpt-4o"},
+		"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
 	}
 
-	m.switchModelPreset("fast")
+	m.switchModelPreset("openai/gpt-4o")
 
 	profile, ok := m.state.Config.AgentProfiles[m.state.Config.Profile.Default]
 	if !ok {
@@ -5475,16 +5497,19 @@ func TestSwitchModelPresetBindsEveryRole(t *testing.T) {
 
 func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
 	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Name: "fast", Provider: "openai", Model: "gpt-4o"},
+		"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
 	}
 	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{
 		"handcrafted": {Name: "handcrafted", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "openai/gpt-4o"},
 		}},
 	}
 
-	m.switchModelPreset("fast")
+	m.switchModelPreset("openai/gpt-4o")
 
 	if _, ok := m.state.Config.AgentProfiles["handcrafted"]; !ok {
 		t.Error("switching models destroyed a user's existing profile")

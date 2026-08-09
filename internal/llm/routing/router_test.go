@@ -63,21 +63,43 @@ func TestResolveExplicitModelUsesExactPresetKey(t *testing.T) {
 	}
 }
 
-func TestResolveExplicitModelRejectsNonCanonicalKey(t *testing.T) {
+func TestResolveExplicitModelSynthesizesDefaultPreset(t *testing.T) {
 	r := NewStaticRouter(Config{
-		DefaultProfile: "p",
-		RemoteAllowed:  true,
-		Presets: map[string]ModelPreset{
-			"fast": {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
-		},
-		Profiles: map[string]AgentProfile{"p": {Name: "p"}},
+		DefaultProfile:   "p",
+		RemoteAllowed:    true,
+		ProviderBaseURLs: map[string]string{"openai": "https://api.openai.com/v1"},
+		Presets:          map[string]ModelPreset{},
+		Profiles:         map[string]AgentProfile{"p": {Name: "p"}},
 	})
-	_, err := r.ResolveExplicitModel("ollama/qwen2.5-coder:7b", RoleSubtask)
-	if err == nil {
-		t.Fatal("expected error when preset key is not canonical")
+	route, err := r.ResolveExplicitModel("openai/gpt-4o-mini", RoleSubtask)
+	if err != nil {
+		t.Fatalf("ResolveExplicitModel: %v", err)
 	}
-	if !errors.Is(err, ErrUnknownProvider) {
-		t.Fatalf("want ErrUnknownProvider, got %v", err)
+	if route.Preset.Provider != "openai" || route.Preset.Model != "gpt-4o-mini" {
+		t.Fatalf("preset = %s/%s, want openai/gpt-4o-mini", route.Preset.Provider, route.Preset.Model)
+	}
+}
+
+func TestResolvePresetBindingSynthesizesDefaultPreset(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile:   "p",
+		RemoteAllowed:    true,
+		ProviderBaseURLs: map[string]string{"ollama": "http://localhost:11434/v1"},
+		Presets:          map[string]ModelPreset{},
+		Profiles: map[string]AgentProfile{"p": {
+			Name:  "p",
+			Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "ollama/qwen2.5-coder:7b"}},
+		}},
+	})
+	route, err := r.ResolveRole(RoleImplementer)
+	if err != nil {
+		t.Fatalf("ResolveRole: %v", err)
+	}
+	if route.Preset.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("model = %q, want qwen2.5-coder:7b", route.Preset.Model)
+	}
+	if !route.Preset.LocalOnly {
+		t.Fatal("localhost provider should synthesize LocalOnly=true")
 	}
 }
 
@@ -102,28 +124,35 @@ func TestResolveExplicitModelValidPair(t *testing.T) {
 	}
 }
 
-func TestResolveExplicitModelUnknownProvider(t *testing.T) {
-	// A provider with no configured preset must error clearly naming the pair.
-	_, err := testRouter().ResolveExplicitModel("nonexistent/foo", RoleSubtask)
-	if err == nil {
-		t.Fatal("expected error for unknown provider")
+func TestResolveExplicitModelUnknownProviderSynthesizes(t *testing.T) {
+	// A provider with no configured preset now synthesizes a default preset
+	// rather than erroring as unknown. With no base URL the synthesized
+	// preset is treated as local (empty host = localhost), so it resolves.
+	route, err := testRouter().ResolveExplicitModel("nonexistent/foo", RoleSubtask)
+	if err != nil {
+		t.Fatalf("ResolveExplicitModel: %v", err)
 	}
-	if !strings.Contains(err.Error(), "nonexistent/foo") {
-		t.Fatalf("error should name the pair, got: %v", err)
-	}
-	if !errors.Is(err, ErrUnknownProvider) {
-		t.Fatalf("error should wrap ErrUnknownProvider, got: %v", err)
+	if route.Preset.Provider != "nonexistent" || route.Preset.Model != "foo" {
+		t.Fatalf("preset = %s/%s, want nonexistent/foo (synthesized)", route.Preset.Provider, route.Preset.Model)
 	}
 }
 
-func TestResolveExplicitModelInvalidModel(t *testing.T) {
-	// Provider exists but model does not: error names the pair.
-	_, err := testRouter().ResolveExplicitModel("ollama/does-not-exist", RoleSubtask)
-	if err == nil {
-		t.Fatal("expected error for invalid model")
+func TestResolveExplicitModelInvalidModelSynthesizes(t *testing.T) {
+	// A provider with no configured preset for the model now synthesizes a
+	// default preset rather than erroring as unknown.
+	r := NewStaticRouter(Config{
+		DefaultProfile:   "p",
+		RemoteAllowed:    true,
+		ProviderBaseURLs: map[string]string{"ollama": "http://localhost:11434/v1"},
+		Presets:          map[string]ModelPreset{},
+		Profiles:         map[string]AgentProfile{"p": {Name: "p"}},
+	})
+	route, err := r.ResolveExplicitModel("ollama/does-not-exist", RoleSubtask)
+	if err != nil {
+		t.Fatalf("ResolveExplicitModel: %v", err)
 	}
-	if !strings.Contains(err.Error(), "ollama/does-not-exist") {
-		t.Fatalf("error should name the pair, got: %v", err)
+	if route.Preset.Model != "does-not-exist" {
+		t.Fatalf("model = %q, want does-not-exist (synthesized)", route.Preset.Model)
 	}
 }
 

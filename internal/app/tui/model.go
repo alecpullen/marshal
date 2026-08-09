@@ -3945,11 +3945,28 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 // contracts.
 func (m *Model) switchModelPreset(presetName string) {
 	newCfg := m.state.Config
-	preset, ok := newCfg.Models.Presets[presetName]
-	if !ok {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Unknown preset: %s", presetName), session.ContentTypePlain)
+	provider, model, ok := strings.Cut(presetName, "/")
+	if !ok || provider == "" || model == "" {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Invalid preset pair: %s", presetName), session.ContentTypePlain)
 		return
 	}
+	if _, ok := newCfg.Providers[provider]; !ok {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Provider %q is not configured", provider), session.ContentTypePlain)
+		return
+	}
+	// Ensure an override exists if the user explicitly named a preset.
+	if _, ok := newCfg.Models.Presets[presetName]; !ok {
+		if newCfg.Models.Presets == nil {
+			newCfg.Models.Presets = map[string]routing.ModelPreset{}
+		}
+		newCfg.Models.Presets[presetName] = routing.ModelPreset{
+			Name:      presetName,
+			Provider:  provider,
+			Model:     model,
+			LocalOnly: routing.IsLocalProvider(newCfg.Providers[provider].BaseURL),
+		}
+	}
+	preset := newCfg.Models.Presets[presetName]
 	if newCfg.AgentProfiles == nil {
 		newCfg.AgentProfiles = map[string]routing.AgentProfile{}
 	} else {

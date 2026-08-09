@@ -82,8 +82,8 @@ func TestMaterializeIsIdempotentOnName(t *testing.T) {
 func TestMaterializePreservesMatchingLegacyMetadata(t *testing.T) {
 	cfg := config.Default()
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"local-qwen": {
-			Name: "local-qwen", Provider: "ollama", Model: "qwen3",
+		"ollama/qwen3": {
+			Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3",
 			ToolCalling: "native", Pricing: "legacy-pricing",
 		},
 	}
@@ -92,6 +92,18 @@ func TestMaterializePreservesMatchingLegacyMetadata(t *testing.T) {
 	preset := cfg.Models.Presets[name]
 	if preset.ToolCalling != "native" || preset.Pricing != "legacy-pricing" {
 		t.Errorf("canonical preset lost legacy metadata: %+v", preset)
+	}
+}
+
+func TestMaterializeStoresOnlyOverrides(t *testing.T) {
+	cfg := config.Default()
+	mustMaterialize(t, &cfg, "ollama", "qwen3-coder", "http://localhost:11434/v1", Limits{})
+	preset := cfg.Models.Presets["ollama/qwen3-coder"]
+	if preset.Provider != "ollama" || preset.Model != "qwen3-coder" {
+		t.Fatalf("preset identity wrong: %+v", preset)
+	}
+	if !preset.LocalOnly {
+		t.Fatal("localhost preset must be LocalOnly")
 	}
 }
 

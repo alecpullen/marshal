@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"marshal/internal/llm/catalog"
 )
 
 var (
@@ -105,11 +107,37 @@ func IsCanonicalPresetName(name string) bool {
 	return ok && provider != "" && model != "" && !strings.Contains(provider, "/")
 }
 
+// defaultPreset synthesizes a ModelPreset for providerName/modelID from the
+// catalog and provider base URL. It is used when no explicit
+// [models.presets.<provider>/<model>] override exists.
+func defaultPreset(providerName, modelID, baseURL string) ModelPreset {
+	ctx, out := catalog.Lookup(modelID)
+	return ModelPreset{
+		Name:            providerName + "/" + modelID,
+		Provider:        providerName,
+		Model:           modelID,
+		ContextWindow:   ctx,
+		MaxOutputTokens: out,
+		LocalOnly:       IsLocalProvider(baseURL),
+	}
+}
+
+// presetProviderBaseURL returns the configured base URL for a provider name,
+// or "" when the provider is unknown.
+func (r *StaticRouter) presetProviderBaseURL(providerName string) string {
+	return r.config.ProviderBaseURLs[providerName]
+}
+
 func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, profileName string) (Route, error) {
 	preset, ok := r.config.Presets[presetName]
 	if !ok {
-		return Route{}, fmt.Errorf("%w: %s", ErrPresetNotFound, presetName)
+		provider, model, ok := strings.Cut(presetName, "/")
+		if !ok {
+			return Route{}, fmt.Errorf("%w: %s", ErrPresetNotFound, presetName)
+		}
+		preset = defaultPreset(provider, model, r.presetProviderBaseURL(provider))
 	}
+	preset.Name = presetName
 	if !preset.LocalOnly && !r.config.RemoteAllowed {
 		return Route{}, fmt.Errorf("%w: preset %s", ErrRemoteProviderBlocked, presetName)
 	}
@@ -133,7 +161,7 @@ func (r *StaticRouter) ResolveExplicitModel(pair string, asRole AgentRole) (Rout
 	}
 	preset, ok := r.config.Presets[pair]
 	if !ok {
-		return Route{}, fmt.Errorf("%w: no preset configured for %q", ErrUnknownProvider, pair)
+		preset = defaultPreset(provider, model, r.presetProviderBaseURL(provider))
 	}
 	preset.Name = pair
 	if !preset.LocalOnly && !r.config.RemoteAllowed {

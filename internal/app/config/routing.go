@@ -10,12 +10,17 @@ func (c Config) RoutingConfig() routing.Config {
 	for role, agentCfg := range c.Agents {
 		contextBudgets[role] = agentCfg.Context
 	}
+	providerBaseURLs := make(map[string]string, len(c.Providers))
+	for name, p := range c.Providers {
+		providerBaseURLs[name] = p.BaseURL
+	}
 	return routing.Config{
-		DefaultProfile: c.Profile.Default,
-		RemoteAllowed:  c.Privacy.RemoteProvidersAllowed,
-		Presets:        c.Models.Presets,
-		Profiles:       c.AgentProfiles,
-		CustomAgents:   c.CustomAgents,
-		ContextBudgets: contextBudgets,
+		DefaultProfile:   c.Profile.Default,
+		RemoteAllowed:    c.Privacy.RemoteProvidersAllowed,
+		Presets:          c.Models.Presets,
+		Profiles:         c.AgentProfiles,
+		CustomAgents:     c.CustomAgents,
+		ContextBudgets:   contextBudgets,
+		ProviderBaseURLs: providerBaseURLs,
 	}
 }

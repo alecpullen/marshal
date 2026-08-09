@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -50,6 +51,7 @@ func (m *Model) openModelOptionsForProvider(providerName string) {
 		}
 		items = append(items, picker.Item{Label: preset.Model, Value: name})
 	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Label < items[j].Label })
 	if len(items) == 0 {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("No model pairs configured for %q yet. Use /connect or /models to pick one.", providerName), session.ContentTypePlain)
 		return

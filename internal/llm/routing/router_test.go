@@ -103,6 +103,28 @@ func TestResolvePresetBindingSynthesizesDefaultPreset(t *testing.T) {
 	}
 }
 
+func TestResolvePresetBindingRejectsTypoForUnknownProvider(t *testing.T) {
+	// A typo in a profile binding (e.g. "ollma/gpt-4o") should error, not
+	// silently synthesize a preset for a non-existent provider.
+	r := NewStaticRouter(Config{
+		DefaultProfile:   "p",
+		RemoteAllowed:    true,
+		ProviderBaseURLs: map[string]string{"ollama": "http://localhost:11434/v1"},
+		Presets:          map[string]ModelPreset{},
+		Profiles: map[string]AgentProfile{"p": {
+			Name:  "p",
+			Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "ollma/gpt-4o"}},
+		}},
+	})
+	_, err := r.ResolveRole(RoleImplementer)
+	if err == nil {
+		t.Fatal("expected error for typo provider in profile binding")
+	}
+	if !errors.Is(err, ErrPresetNotFound) {
+		t.Fatalf("want ErrPresetNotFound, got %v", err)
+	}
+}
+
 func TestResolveExplicitModelValidPair(t *testing.T) {
 	// A configured preset matching provider/model resolves into a Route
 	// carrying that preset, so pricing/budget resolve as if bound to a role.
@@ -124,16 +146,16 @@ func TestResolveExplicitModelValidPair(t *testing.T) {
 	}
 }
 
-func TestResolveExplicitModelUnknownProviderSynthesizes(t *testing.T) {
-	// A provider with no configured preset now synthesizes a default preset
-	// rather than erroring as unknown. With no base URL the synthesized
-	// preset is treated as local (empty host = localhost), so it resolves.
-	route, err := testRouter().ResolveExplicitModel("nonexistent/foo", RoleSubtask)
-	if err != nil {
-		t.Fatalf("ResolveExplicitModel: %v", err)
+func TestResolveExplicitModelUnknownProviderRejects(t *testing.T) {
+	// A provider with no configured preset and no ProviderBaseURLs entry
+	// is rejected rather than silently synthesized. This catches typos in
+	// profile bindings and explicit model pairs.
+	_, err := testRouter().ResolveExplicitModel("nonexistent/foo", RoleSubtask)
+	if err == nil {
+		t.Fatal("expected error for unknown provider with no base URL")
 	}
-	if route.Preset.Provider != "nonexistent" || route.Preset.Model != "foo" {
-		t.Fatalf("preset = %s/%s, want nonexistent/foo (synthesized)", route.Preset.Provider, route.Preset.Model)
+	if !errors.Is(err, ErrUnknownProvider) {
+		t.Fatalf("want ErrUnknownProvider, got %v", err)
 	}
 }
 

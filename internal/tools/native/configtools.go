@@ -1162,6 +1162,9 @@ func (t *toolSet) configModelsPresetSetTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("decode config.models.preset.set args: %w", err)
 		}
 		scope := args.resolvedScope()
+		if !routing.IsCanonicalPresetName(args.Name) {
+			return registry.ToolResult{}, fmt.Errorf("preset name %q is not a canonical <provider>/<model> key", args.Name)
+		}
 		reason := fmt.Sprintf("config.models.preset.set (%s scope): set preset %q", scope, args.Name)
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
 			existing := cfg.Models.Presets[args.Name]

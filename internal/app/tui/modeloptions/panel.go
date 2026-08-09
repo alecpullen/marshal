@@ -197,16 +197,23 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	}
 
 	wasCommitted := p.fields.Committed()
+	// Capture the old preset before Update commits the edit, so the
+	// ChangedMsg reports the actual before→after transition.
+	var oldPreset routing.ModelPreset
+	if !wasCommitted {
+		oldPreset = p.cfg.Models.Presets[p.presetName]
+	}
 	cmd := p.fields.Update(msg)
 	if !wasCommitted && p.fields.Committed() && p.changed {
 		p.changed = false
 		row := p.fields.CursorRow()
 		if row != nil {
-			preset := p.cfg.Models.Presets[p.presetName]
+			newPreset := p.cfg.Models.Presets[p.presetName]
 			ds := p.descriptors()
 			for _, d := range ds {
 				if d.id == row.ID {
-					oldVal, newVal := d.values(preset)
+					oldVal, _ := d.values(oldPreset)
+					_, newVal := d.values(newPreset)
 					return tea.Batch(cmd, func() tea.Msg {
 						return ChangedMsg{
 							Config:     cloneConfig(p.cfg),

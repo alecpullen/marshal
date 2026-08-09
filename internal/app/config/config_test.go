@@ -846,8 +846,8 @@ max_repo_context_tokens = 48000
 	}
 
 	// The legacy key "coder" is migrated to "ollama/qwen2.5-coder:14b" by
-	// the merge path. Profile bindings still reference "coder" — the router's
-	// default-preset synthesis handles that at resolve time.
+	// the merge path. Profile bindings are rewritten to the canonical key
+	// in the same pass.
 	preset := cfg.Models.Presets["ollama/qwen2.5-coder:14b"]
 	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" || !preset.LocalOnly {
 		t.Fatalf("preset ollama/qwen2.5-coder:14b = %#v", preset)
@@ -856,7 +856,7 @@ max_repo_context_tokens = 48000
 		t.Fatalf("preset numeric fields = %#v", preset)
 	}
 	profile := cfg.AgentProfiles["local_balanced"]
-	if profile.Roles[routing.RoleRepoScout].Preset != "coder" || profile.Roles[routing.RoleImplementer].Preset != "coder" {
+	if profile.Roles[routing.RoleRepoScout].Preset != "ollama/qwen2.5-coder:14b" || profile.Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5-coder:14b" {
 		t.Fatalf("profile roles = %#v", profile.Roles)
 	}
 	budget := cfg.Agents[routing.RoleImplementer].Context
@@ -910,9 +910,9 @@ max_repo_context_tokens = 48000
 	if cfg.Models.Presets["ollama/fast"].Model != "fast" {
 		t.Fatalf("fast preset (now ollama/fast) missing: %#v", cfg.Models.Presets)
 	}
-	// Profile bindings still reference the legacy names; the router's
-	// default-preset synthesis resolves them at route time.
-	if cfg.AgentProfiles["local_balanced"].Roles[routing.RoleRepoScout].Preset != "fast" {
+	// Profile bindings are rewritten to the canonical keys by the merge
+	// path's legacy rename pass.
+	if cfg.AgentProfiles["local_balanced"].Roles[routing.RoleRepoScout].Preset != "ollama/fast" {
 		t.Fatalf("profile = %#v", cfg.AgentProfiles["local_balanced"])
 	}
 	if cfg.Agents[routing.RoleImplementer].Context.MaxRepoContextTokens != 48000 {
@@ -1439,5 +1439,61 @@ func TestSkillsMaxActiveRoundTripsThroughSave(t *testing.T) {
 	}
 	if reloaded.Skills.MaxActive != 5 {
 		t.Fatalf("reloaded MaxActive = %d, want 5", reloaded.Skills.MaxActive)
+	}
+}
+
+func TestLoadLegacyKeyMigrationRewritesProfileBindings(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[models.presets.coder]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+local_only = true
+
+[agent_profiles.dev]
+implementer = "coder"
+repo_scout = "coder"
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	// The legacy key "coder" must be migrated to "ollama/qwen2.5-coder:14b".
+	if _, ok := cfg.Models.Presets["coder"]; ok {
+		t.Fatal("legacy key 'coder' should not exist in presets")
+	}
+	preset := cfg.Models.Presets["ollama/qwen2.5-coder:14b"]
+	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" {
+		t.Fatalf("migrated preset = %#v", preset)
+	}
+	if preset.Name != "ollama/qwen2.5-coder:14b" {
+		t.Fatalf("migrated preset Name = %q, want ollama/qwen2.5-coder:14b", preset.Name)
+	}
+
+	// Profile bindings must be rewritten to the canonical key.
+	profile := cfg.AgentProfiles["dev"]
+	if profile.Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5-coder:14b" {
+		t.Fatalf("implementer binding = %q, want ollama/qwen2.5-coder:14b", profile.Roles[routing.RoleImplementer].Preset)
+	}
+	if profile.Roles[routing.RoleRepoScout].Preset != "ollama/qwen2.5-coder:14b" {
+		t.Fatalf("repo_scout binding = %q, want ollama/qwen2.5-coder:14b", profile.Roles[routing.RoleRepoScout].Preset)
+	}
+
+	// The migrated config must satisfy Resolve("edit") without error.
+	provider, _ := cfg.Providers["ollama"]
+	rc := cfg.RoutingConfig()
+	if rc.ProviderBaseURLs["ollama"] == "" && provider.BaseURL == "" {
+		// No provider configured — add one so the route resolves.
+		cfg.Providers = map[string]ProviderConfig{
+			"ollama": {BaseURL: "http://localhost:11434/v1"},
+		}
+		rc = cfg.RoutingConfig()
+	}
+	router := routing.NewStaticRouter(rc)
+	if _, err := router.Resolve("edit"); err != nil {
+		t.Fatalf("Resolve(edit) after migration: %v", err)
 	}
 }

@@ -95,3 +95,93 @@ func TestRoutingConfigNoSynthesisWithMultiplePresetsAndNoActivePreset(t *testing
 		t.Fatal("should not synthesize profile when multiple presets exist and no ActivePreset")
 	}
 }
+
+func TestRoutingConfigDoesNotMutateAgentProfiles(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.Profile.ActivePreset = "ollama/qwen2.5-coder:7b"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		"openai/gpt-4o":           {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
+	}
+	cfg.Providers = map[string]ProviderConfig{
+		"ollama": {BaseURL: "http://localhost:11434/v1"},
+		"openai": {BaseURL: "https://api.openai.com/v1"},
+	}
+
+	// Before calling RoutingConfig, "single" must not exist.
+	if _, ok := cfg.AgentProfiles["single"]; ok {
+		t.Fatal("precondition: AgentProfiles should not contain 'single'")
+	}
+
+	_ = cfg.RoutingConfig()
+
+	// After calling RoutingConfig, the caller's AgentProfiles must still
+	// not contain "single" — synthesis must not mutate the receiver.
+	if _, ok := cfg.AgentProfiles["single"]; ok {
+		t.Fatal("RoutingConfig must not mutate the caller's AgentProfiles map")
+	}
+}
+
+func TestRoutingConfigInvariantResolveEdit(t *testing.T) {
+	// Every config the TUI persists must satisfy Resolve("edit") without
+	// error. This invariant test simulates a connect → switch cycle to
+	// verify the routing path is never broken by stale state.
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"ollama": {BaseURL: "http://localhost:11434/v1"},
+		"openai": {BaseURL: "https://api.openai.com/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		"openai/gpt-4o":           {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o", LocalOnly: false},
+	}
+	cfg.Privacy.RemoteProvidersAllowed = true
+
+	// Simulate connect to preset1.
+	cfg.Profile.Default = "single"
+	cfg.Profile.ActivePreset = "ollama/qwen2.5-coder:7b"
+	rc1 := cfg.RoutingConfig()
+	router1 := routing.NewStaticRouter(rc1)
+	if _, err := router1.Resolve("edit"); err != nil {
+		t.Fatalf("after connect to preset1, Resolve(edit): %v", err)
+	}
+
+	// Simulate switch to preset2. The caller changes ActivePreset but
+	// does NOT touch AgentProfiles (synthesis handles it). Without
+	// maps.Clone, the first RoutingConfig call would have polluted
+	// AgentProfiles["single"] with preset1, and the second call would
+	// skip synthesis, leaving the stale binding.
+	cfg.Profile.ActivePreset = "openai/gpt-4o"
+	rc2 := cfg.RoutingConfig()
+	router2 := routing.NewStaticRouter(rc2)
+	route, err := router2.Resolve("edit")
+	if err != nil {
+		t.Fatalf("after switch to preset2, Resolve(edit): %v", err)
+	}
+	if route.Preset.Name != "openai/gpt-4o" {
+		t.Fatalf("after switch to preset2, route.Preset.Name = %q, want openai/gpt-4o", route.Preset.Name)
+	}
+}
+
+func TestRoutingConfigStaleActivePresetNotRevived(t *testing.T) {
+	// When ActivePreset points at a preset that no longer exists and
+	// whose provider is not configured, synthesis must not revive it.
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.Profile.ActivePreset = "ollama/deleted-model"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
+	}
+	cfg.Providers = map[string]ProviderConfig{
+		"openai": {BaseURL: "https://api.openai.com/v1"},
+	}
+	// "ollama" provider is NOT configured, so the stale ActivePreset
+	// should not be synthesized.
+
+	rc := cfg.RoutingConfig()
+
+	if _, ok := rc.Profiles["single"]; ok {
+		t.Fatal("synthesis must not revive a stale ActivePreset whose provider is unconfigured")
+	}
+}

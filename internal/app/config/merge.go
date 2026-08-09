@@ -87,6 +87,10 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Providers[name] = pc
 		}
 	}
+	// legacyRenames maps old non-canonical preset keys to their canonical
+	// "<provider>/<model>" form so references in profiles and custom
+	// agents can be rewritten in the same merge pass.
+	legacyRenames := map[string]string{}
 	if file.Models != nil && file.Models.Presets != nil {
 		if cfg.Models.Presets == nil {
 			cfg.Models.Presets = map[string]routing.ModelPreset{}
@@ -98,6 +102,8 @@ func merge(cfg *Config, file configFile) error {
 				// canonical "<provider>/<model>" form. The provider and model
 				// fields come from the TOML [models.presets.fast] section.
 				canonName := preset.Provider + "/" + preset.Model
+				legacyRenames[name] = canonName
+				preset.Name = canonName
 				if _, exists := cfg.Models.Presets[canonName]; !exists {
 					cfg.Models.Presets[canonName] = preset
 					continue
@@ -146,6 +152,12 @@ func merge(cfg *Config, file configFile) error {
 			a.Name = name
 			cfg.CustomAgents[name] = a
 		}
+	}
+	// Rewrite references to renamed presets in agent profiles and custom
+	// agents so they point at the canonical key. This must run after both
+	// the presets and profiles/custom agents have been merged.
+	if len(legacyRenames) > 0 {
+		rewritePresetReferences(cfg, legacyRenames)
 	}
 	if file.Agents != nil {
 		if cfg.Agents == nil {
@@ -387,4 +399,35 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Scratchpad.ProjectionMaxTokens, file.Scratchpad.ProjectionMaxTokens)
 	}
 	return nil
+}
+
+// rewritePresetReferences rewrites preset references in agent profiles and
+// custom agents using the old→canonical rename map. This ensures that
+// migrating a legacy key like "fast" to "ollama/qwen3" also updates
+// [agent_profiles.*] bindings and [custom_agents.*] preset fields that
+// pointed at "fast", so routes resolve correctly after load.
+func rewritePresetReferences(cfg *Config, renames map[string]string) {
+	for name, profile := range cfg.AgentProfiles {
+		changed := false
+		for role, rb := range profile.Roles {
+			if rb.Preset != "" {
+				if canon, ok := renames[rb.Preset]; ok {
+					rb.Preset = canon
+					profile.Roles[role] = rb
+					changed = true
+				}
+			}
+		}
+		if changed {
+			cfg.AgentProfiles[name] = profile
+		}
+	}
+	for name, agent := range cfg.CustomAgents {
+		if agent.Preset != "" {
+			if canon, ok := renames[agent.Preset]; ok {
+				agent.Preset = canon
+				cfg.CustomAgents[name] = agent
+			}
+		}
+	}
 }

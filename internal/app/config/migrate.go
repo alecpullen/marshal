@@ -8,8 +8,9 @@ import "marshal/internal/llm/routing"
 // The provider and model are passed as explicit arguments (read from the raw
 // file mirror in LoadLayers) because the fields no longer exist on AgentConfig.
 // The migration creates a preset named "<provider>/<model>", sets
-// Profile.Default = "single" and Profile.ActivePreset to the preset name so
-// RoutingConfig can synthesize the single-model profile in memory.
+// Profile.Default = "single" and Profile.ActivePreset to the preset name,
+// and inserts a single-model profile into AgentProfiles so the router can
+// resolve every role through it.
 //
 // "No usable default profile" means the name in cfg.Profile.Default does not
 // resolve to an entry in cfg.AgentProfiles — not merely that the string is

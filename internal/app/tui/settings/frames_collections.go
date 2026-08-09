@@ -84,7 +84,9 @@ func providersFrame(s *state) *frame {
 							if e, ok := c.Providers[k]; ok {
 								delete(c.Providers, k)
 								c.Providers[v] = e
-								_ = modelcache.Save(s.dataDir, c)
+								if err := modelcache.Save(s.dataDir, c); err != nil {
+									return fmt.Errorf("rename model cache: %w", err)
+								}
 							}
 						}
 						k = v

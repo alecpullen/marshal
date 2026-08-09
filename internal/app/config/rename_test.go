@@ -62,3 +62,41 @@ func TestRenameProviderRejectsEmptyAndCollision(t *testing.T) {
 		t.Fatal("rename to same name should be a no-op")
 	}
 }
+
+func TestRenameProviderUpdatesPresetName(t *testing.T) {
+	cfg := Config{
+		Providers: map[string]ProviderConfig{"ollama": {}},
+		Models: ModelsConfig{Presets: map[string]routing.ModelPreset{
+			"ollama/qwen": {Name: "ollama/qwen", Provider: "ollama", Model: "qwen2.5-coder:7b"},
+		}},
+	}
+	if err := RenameProvider(&cfg, "ollama", "my-ollama", nil); err != nil {
+		t.Fatalf("RenameProvider: %v", err)
+	}
+	got := cfg.Models.Presets["my-ollama/qwen"]
+	if got.Name != "my-ollama/qwen" {
+		t.Fatalf("preset.Name not updated: got %q, want %q", got.Name, "my-ollama/qwen")
+	}
+}
+
+func TestRenameProviderRejectsPresetCollision(t *testing.T) {
+	// The target provider "new" does not exist, so the provider-level
+	// collision check passes; only the pair-keyed preset "new/gpt" collides.
+	cfg := Config{
+		Providers: map[string]ProviderConfig{"old": {}},
+		Models: ModelsConfig{Presets: map[string]routing.ModelPreset{
+			"old/gpt": {Provider: "old", Model: "gpt-4o"},
+			"new/gpt": {Provider: "new", Model: "gpt-4o"},
+		}},
+	}
+	if err := RenameProvider(&cfg, "old", "new", nil); err == nil {
+		t.Fatal("renaming onto an existing pair-keyed preset should error")
+	}
+	// The original presets must be left untouched on failure.
+	if _, ok := cfg.Models.Presets["old/gpt"]; !ok {
+		t.Fatal("old preset should be preserved on collision")
+	}
+	if _, ok := cfg.Models.Presets["new/gpt"]; !ok {
+		t.Fatal("new preset should be preserved on collision")
+	}
+}

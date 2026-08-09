@@ -1054,15 +1054,14 @@ func nameBase(templateID, baseURL string) string {
 
 // hostBase extracts a clean host from a URL: scheme and path are removed,
 // the port is stripped, and leading "api."/"www." prefixes are removed.
+// u.Hostname() is used (rather than manual port splitting) so IPv6 literals
+// like "[::1]:11434" resolve to "::1" instead of a malformed "[".
 func hostBase(baseURL string) string {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Host == "" {
 		return ""
 	}
-	host := u.Host
-	if i := strings.Index(host, ":"); i >= 0 {
-		host = host[:i]
-	}
+	host := u.Hostname()
 	host = strings.TrimPrefix(host, "api.")
 	host = strings.TrimPrefix(host, "www.")
 	return host

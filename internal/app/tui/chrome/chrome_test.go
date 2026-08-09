@@ -1,6 +1,7 @@
 package chrome
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -63,5 +64,23 @@ func TestClipLinesWindowsAroundFocus(t *testing.T) {
 	}
 	if !strings.Contains(out, "↑") {
 		t.Fatalf("expected ↑ more indicator when scrolled, got:\n%s", out)
+	}
+}
+
+func TestClipLinesNoBlankFirstRowWhenNotScrolled(t *testing.T) {
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("row-%02d", i)
+	}
+	out := ansi.Strip(ClipLines(lines, 0, 8, testTheme))
+	got := strings.Split(out, "\n")
+	if len(got) > 8 {
+		t.Fatalf("must not exceed height 8, got %d lines", len(got))
+	}
+	if strings.TrimSpace(got[0]) == "" {
+		t.Fatalf("first row is blank when focus is at top; want row content:\n%s", out)
+	}
+	if got[0] != "row-00" {
+		t.Fatalf("first row = %q, want row-00", got[0])
 	}
 }

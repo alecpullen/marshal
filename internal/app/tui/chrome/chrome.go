@@ -96,7 +96,8 @@ func ClipLines(lines []string, focusLine, height int, th theme.Theme) string {
 	if start > 0 {
 		out = append(out, more.Render("  ↑ more"))
 	} else {
-		out = append(out, "")
+		// No top indicator needed; reclaim the row for content.
+		inner++
 	}
 	out = append(out, lines[start:start+inner]...)
 	if start+inner < len(lines) {

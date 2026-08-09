@@ -24,6 +24,16 @@ type Indexer struct {
 	onProgress func(message string)
 }
 
+// workItem is a file awaiting embedding. remaining counts the chunks not yet
+// embedded; when it reaches zero the file is persisted to the database.
+type workItem struct {
+	path      string
+	hash      string
+	chunks    []db.Chunk
+	vectors   [][]float32
+	remaining int
+}
+
 // NewIndexer creates an Indexer. A nil embedder makes Reindex a no-op.
 func NewIndexer(database *db.DB, e embedding.Embedder) *Indexer {
 	return &Indexer{db: database, embedder: e}
@@ -47,13 +57,6 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 
 	const maxBatchInputs = 64
 
-	type workItem struct {
-		path    string
-		hash    string
-		chunks  []db.Chunk
-		vectors [][]float32
-	}
-
 	seen := map[string]bool{}
 	var items []workItem
 	for _, sf := range scanned {
@@ -76,10 +79,11 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 			continue
 		}
 		items = append(items, workItem{
-			path:    sf.Path,
-			hash:    sf.Hash,
-			chunks:  chunks,
-			vectors: make([][]float32, len(chunks)),
+			path:      sf.Path,
+			hash:      sf.Hash,
+			chunks:    chunks,
+			vectors:   make([][]float32, len(chunks)),
+			remaining: len(chunks),
 		})
 	}
 
@@ -134,21 +138,38 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 		if ix.onProgress != nil {
 			ix.onProgress(fmt.Sprintf("embedded batch %d/%d chunks", end, len(refs)))
 		}
-	}
-
-	for _, it := range items {
-		cwv := make([]db.ChunkWithVector, len(it.chunks))
-		for i, c := range it.chunks {
-			cwv[i] = db.ChunkWithVector{Chunk: c, Model: model, Dim: len(it.vectors[i]), Vector: it.vectors[i]}
-		}
-		if err := ix.db.ReplaceFileChunks(projectID, it.path, it.hash, cwv); err != nil {
-			return st, err
-		}
-		st.FilesEmbedded++
-		st.ChunksWritten += len(it.chunks)
-		if ix.onProgress != nil {
-			ix.onProgress(fmt.Sprintf("embedded %s (%d chunks)", it.path, len(it.chunks)))
+		// Persist each file as soon as all of its chunks have been embedded,
+		// so a later batch failure does not discard earlier successful work.
+		for _, r := range batch {
+			it := &items[r.itemIdx]
+			it.remaining--
+			if it.remaining == 0 {
+				n, err := ix.persist(projectID, model, it)
+				if err != nil {
+					return st, err
+				}
+				st.FilesEmbedded++
+				st.ChunksWritten += n
+			}
 		}
 	}
 	return st, nil
+}
+
+// persist writes a fully-embedded file's chunks to the database and reports
+// progress. It is called as soon as a file's last chunk is embedded, so a
+// later batch failure does not discard earlier successful work. It returns the
+// number of chunks written.
+func (ix *Indexer) persist(projectID int64, model string, it *workItem) (int, error) {
+	cwv := make([]db.ChunkWithVector, len(it.chunks))
+	for i, c := range it.chunks {
+		cwv[i] = db.ChunkWithVector{Chunk: c, Model: model, Dim: len(it.vectors[i]), Vector: it.vectors[i]}
+	}
+	if err := ix.db.ReplaceFileChunks(projectID, it.path, it.hash, cwv); err != nil {
+		return 0, err
+	}
+	if ix.onProgress != nil {
+		ix.onProgress(fmt.Sprintf("embedded %s (%d chunks)", it.path, len(it.chunks)))
+	}
+	return len(it.chunks), nil
 }

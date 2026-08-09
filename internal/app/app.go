@@ -1427,11 +1427,29 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
 				debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
 				runPass := func(c context.Context) error {
+					cfg := state.Config
+
 					embedder := resolveEmbedderFromConfig(cfg)
-					_, err := index.Run(c, index.Deps{
-						DB: database, Root: workingDir, Ignore: cfg.Indexing.Ignore,
-						MaxBytes: cfg.Indexing.MaxIndexableFileBytes, Embedder: embedder,
-						LSP: lspAdapter,
+					if embedder != nil {
+						probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
+						defer cancel()
+						if _, err := embedding.Probe(probeCtx, embedder); err != nil {
+							return fmt.Errorf("embedding probe failed: %w", err)
+						}
+					}
+
+					passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
+					defer cancel()
+					_, err := index.Run(passCtx, index.Deps{
+						DB:       database,
+						Root:     workingDir,
+						Ignore:   cfg.Indexing.Ignore,
+						MaxBytes: cfg.Indexing.MaxIndexableFileBytes,
+						Embedder: embedder,
+						LSP:      lspAdapter,
+						OnProgress: func(msg string) {
+							state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
+						},
 					}, projectID)
 					return err
 				}

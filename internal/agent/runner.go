@@ -880,7 +880,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
 			toolCallCountThisTurn += len(res.ToolCalls)
-			if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() {
+			if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && inProgress.Reasoning != "" {
 				r.State.LogThinking(session.ThinkingEntry{
 					Text:      inProgress.Reasoning,
 					Duration:  time.Since(inProgress.StartedAt),
@@ -993,7 +993,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		producedValidAction = true
 
-		if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && action.Type != ActionAnswer && action.Type != ActionFinal {
+		if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && inProgress.Reasoning != "" && action.Type != ActionAnswer && action.Type != ActionFinal {
 			r.State.LogThinking(session.ThinkingEntry{
 				Text:      inProgress.Reasoning,
 				Duration:  time.Since(inProgress.StartedAt),

@@ -1223,13 +1223,10 @@ func TestMaxTurnContextTokensUsesConfiguredWhenLarger(t *testing.T) {
 	}
 }
 
-// TestThinkingLoggedWhenProviderStreamsNoReasoning pins the signal that the
-// turn spinner's removal of the "thinking…" label depends on: a model that
-// exposes no reasoning must still leave a thinking marker in the transcript.
-// The test uses a tool_call action (not answer/final) so it exercises the
-// native-tool-call path (first guard at runner.go:671) which logs thinking
-// for every model call regardless of action type.
-func TestThinkingLoggedWhenProviderStreamsNoReasoning(t *testing.T) {
+// TestThinkingNotLoggedWhenProviderStreamsNoReasoning pins that a model
+// exposing no reasoning leaves no KindThinking transcript item. The turn
+// spinner is driven by State.Activity, not the thinking log.
+func TestThinkingNotLoggedWhenProviderStreamsNoReasoning(t *testing.T) {
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
 			`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"test.txt"}}}`,
@@ -1248,20 +1245,10 @@ func TestThinkingLoggedWhenProviderStreamsNoReasoning(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	var thinking []session.TranscriptItem
 	for _, item := range state.Transcript() {
 		if item.Kind == session.KindThinking {
-			thinking = append(thinking, item)
+			t.Fatalf("unexpected KindThinking transcript item with empty reasoning: %+v", item.Thinking)
 		}
-	}
-	if len(thinking) == 0 {
-		t.Fatal("no KindThinking transcript item logged for a turn with no reasoning text")
-	}
-	if got := thinking[0].Thinking.Text; got != "" {
-		t.Errorf("Thinking.Text = %q, want empty", got)
-	}
-	if thinking[0].Thinking.StartedAt.IsZero() {
-		t.Error("Thinking.StartedAt is zero; duration would be measured from 1970")
 	}
 }
 

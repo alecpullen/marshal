@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -29,9 +30,16 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 		}
 
 		var embedder embedding.Embedder
+		var embedErr error
 		if t.resolveEmbedder != nil {
-			if e, err := t.resolveEmbedder(); err == nil {
-				embedder = e
+			embedder, embedErr = t.resolveEmbedder()
+		}
+		if embedErr != nil && !errors.Is(embedErr, routing.ErrEmbeddingNotConfigured) {
+			return registry.ToolResult{}, fmt.Errorf("embedding config: %w", embedErr)
+		}
+		if embedder != nil {
+			if _, err := embedding.Probe(ctx, embedder); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("embedding probe failed: the configured embedding endpoint is unreachable or misconfigured (%w)", err)
 			}
 		}
 

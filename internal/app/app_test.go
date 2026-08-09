@@ -898,11 +898,11 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleSDDImplementer: {Preset: "fast"},
+			routing.RoleSDDImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	planDir := t.TempDir()
@@ -2422,15 +2422,15 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
 			routing.RoleReviewer:    {CustomAgent: "strict"},
 		}},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
 	}
 	cfg.CustomAgents = map[string]routing.CustomAgent{
-		"strict": {Name: "strict", Preset: "fast", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, ApprovalMode: "plan", MaxIterations: 5},
+		"strict": {Name: "strict", Preset: "ollama/gpt-4o-mini", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, ApprovalMode: "plan", MaxIterations: 5},
 	}
 	resolver := newRoutedProviderResolver(cfg, "")
 	reg := registry.New()
@@ -2480,11 +2480,11 @@ func TestPipelineRoleRunnerAutoApprovesInChildSession(t *testing.T) {
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleSDDImplementer: {Preset: "fast"},
+			routing.RoleSDDImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
 	}
 	resolver := newRoutedProviderResolver(cfg, "")
 	reg := registry.New()
@@ -2540,11 +2540,11 @@ func TestSwarmRoleRunnerSharesParentPolicy(t *testing.T) {
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
 	}
 	resolver := newRoutedProviderResolver(cfg, "")
 	reg := registry.New()
@@ -2575,14 +2575,14 @@ func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
 	}
 	cfg.CustomAgents = map[string]routing.CustomAgent{
-		"my-scout": {Name: "my-scout", Preset: "fast"},
+		"my-scout": {Name: "my-scout", Preset: "ollama/gpt-4o-mini"},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -2622,11 +2622,11 @@ func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -2745,11 +2745,11 @@ func TestSubagentFactoryInvalidPairErrors(t *testing.T) {
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
 		}},
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())

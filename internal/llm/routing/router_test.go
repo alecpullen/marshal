@@ -45,6 +45,72 @@ func testRouter() *StaticRouter {
 	})
 }
 
+func TestResolveExplicitModelValidPair(t *testing.T) {
+	// A configured preset matching provider/model resolves into a Route
+	// carrying that preset, so pricing/budget resolve as if bound to a role.
+	route, err := testRouter().ResolveExplicitModel("ollama/qwen2.5-coder:7b", RoleSubtask)
+	if err != nil {
+		t.Fatalf("ResolveExplicitModel: %v", err)
+	}
+	if route.Preset.Provider != "ollama" {
+		t.Fatalf("route.Preset.Provider = %q, want ollama", route.Preset.Provider)
+	}
+	if route.Preset.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("route.Preset.Model = %q, want qwen2.5-coder:7b", route.Preset.Model)
+	}
+	if route.Preset.Name == "" {
+		t.Fatal("route.Preset.Name should be filled in")
+	}
+	if route.Role != RoleSubtask {
+		t.Fatalf("route.Role = %q, want subtask", route.Role)
+	}
+}
+
+func TestResolveExplicitModelUnknownProvider(t *testing.T) {
+	// A provider with no configured preset must error clearly naming the pair.
+	_, err := testRouter().ResolveExplicitModel("nonexistent/foo", RoleSubtask)
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "nonexistent/foo") {
+		t.Fatalf("error should name the pair, got: %v", err)
+	}
+	if !errors.Is(err, ErrUnknownProvider) {
+		t.Fatalf("error should wrap ErrUnknownProvider, got: %v", err)
+	}
+}
+
+func TestResolveExplicitModelInvalidModel(t *testing.T) {
+	// Provider exists but model does not: error names the pair.
+	_, err := testRouter().ResolveExplicitModel("ollama/does-not-exist", RoleSubtask)
+	if err == nil {
+		t.Fatal("expected error for invalid model")
+	}
+	if !strings.Contains(err.Error(), "ollama/does-not-exist") {
+		t.Fatalf("error should name the pair, got: %v", err)
+	}
+}
+
+func TestResolveExplicitModelMalformedPair(t *testing.T) {
+	// Missing model / provider component is an invalid pair.
+	for _, pair := range []string{"ollama", "/model", "ollama/", "/", ""} {
+		if _, err := testRouter().ResolveExplicitModel(pair, RoleSubtask); err == nil {
+			t.Fatalf("expected error for malformed pair %q", pair)
+		}
+	}
+}
+
+func TestResolveExplicitModelRemoteBlocked(t *testing.T) {
+	// A non-local preset under RemoteAllowed=false returns the remote gate.
+	_, err := testRouter().ResolveExplicitModel("openrouter/anthropic/claude-sonnet-4", RoleSubtask)
+	if err == nil {
+		t.Fatal("expected remote-blocked error")
+	}
+	if !errors.Is(err, ErrRemoteProviderBlocked) {
+		t.Fatalf("error should wrap ErrRemoteProviderBlocked, got: %v", err)
+	}
+}
+
 func TestRoleBindingUnmarshalBareString(t *testing.T) {
 	// Test UnmarshalTOML directly with a string value (the path go-toml
 	// takes when decoding inline tables and dotted tables).

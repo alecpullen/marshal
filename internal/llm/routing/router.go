@@ -11,6 +11,9 @@ var (
 	ErrProfileNotFound       = errors.New("routing: profile not found")
 	ErrPresetNotFound        = errors.New("routing: preset not found")
 	ErrRemoteProviderBlocked = errors.New("routing: remote provider blocked")
+	// ErrUnknownProvider is returned when an explicit provider/model pair
+	// names a provider that has no configured preset.
+	ErrUnknownProvider = errors.New("routing: unknown provider")
 
 	errRoleNotConfigured   = errors.New("routing: role not configured")
 	errCustomAgentNotFound = errors.New("routing: custom agent not found")
@@ -112,6 +115,44 @@ func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, p
 		Profile:       profileName,
 		Preset:        preset,
 		ContextBudget: r.config.ContextBudgets[role],
+	}, nil
+}
+
+// ResolveExplicitModel resolves an explicit "provider/model" pair (e.g.
+// "openai/gpt-4o-mini") against the configured presets. It returns a Route
+// whose Preset is the first configured preset matching the pair, so pricing,
+// local-only gating, and context budgets resolve exactly as if the model were
+// bound to a role. It errors clearly (ErrUnknownProvider or ErrPresetNotFound)
+// when no provider or no preset matches the pair, and applies the same
+// remote-provider gate as role resolution.
+func (r *StaticRouter) ResolveExplicitModel(pair string, asRole AgentRole) (Route, error) {
+	provider, model, ok := strings.Cut(pair, "/")
+	if !ok || provider == "" || model == "" {
+		return Route{}, fmt.Errorf("%w: invalid provider/model pair %q", ErrUnknownProvider, pair)
+	}
+	var matched *ModelPreset
+	for name, preset := range r.config.Presets {
+		if preset.Provider == provider && preset.Model == model {
+			p := preset
+			if p.Name == "" {
+				p.Name = name
+			}
+			matched = &p
+			break
+		}
+	}
+	if matched == nil {
+		return Route{}, fmt.Errorf("%w: no preset configured for %q", ErrUnknownProvider, pair)
+	}
+	preset := *matched
+	if !preset.LocalOnly && !r.config.RemoteAllowed {
+		return Route{}, fmt.Errorf("%w: preset %s", ErrRemoteProviderBlocked, pair)
+	}
+	return Route{
+		Role:          asRole,
+		Profile:       r.config.DefaultProfile,
+		Preset:        preset,
+		ContextBudget: r.config.ContextBudgets[asRole],
 	}, nil
 }
 

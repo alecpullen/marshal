@@ -1110,11 +1110,12 @@ const defaultSubtaskIterations = 12
 // appropriate scope. The child session's depth is parent+1 so its own
 // depth guard rejects any attempt to spawn nested subagents.
 //
-// When agentName is non-empty, the factory resolves the named custom agent
-// via the router and applies its overrides (system prompt, tool denylist,
-// max iterations). Both named-agent and ad-hoc paths wire Pricing,
-// UsageObserver, and MetricsObserver so subagent token usage and cost
-// are visible to the parent session.
+// When the request names a custom agent, the factory resolves it via the
+// router and applies its overrides (system prompt, tool denylist, max
+// iterations). An explicit model in the request replaces only the resolved
+// preset's provider/model; all other overrides are retained. Both named-agent
+// and ad-hoc paths wire Pricing, UsageObserver, and MetricsObserver so
+// subagent token usage and cost are visible to the parent session.
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
 	subtaskIters := cfg.Agent.SubtaskIterations
 	if subtaskIters <= 0 {
@@ -1122,7 +1123,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 	}
 	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
 	repoInstructionsForSubagent, _ := loadRepoInstructions(parentState.WorkingDir)
-	return func(agentName string) (*agent.Runner, *session.State, error) {
+	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
 		role := agent.RoleSubtask
@@ -1130,13 +1131,31 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		var addendum string
 		var pricingRates pricing.ModelPricing
 		iters := subtaskIters
-		if agentName != "" && router != nil {
-			route, err := router.ResolveCustomAgent(agentName, agent.RoleSubtask)
+		// An explicit provider/model pair resolves first so invalid pairs
+		// fail clearly before any execution, and so a named agent can replace
+		// only its preset provider/model while keeping its other overrides.
+		var explicitPreset *routing.ModelPreset
+		if req.Model != "" {
+			if router == nil {
+				return nil, nil, fmt.Errorf("agent.run: explicit model %q requested but no router configured", req.Model)
+			}
+			eroute, err := router.ResolveExplicitModel(req.Model, agent.RoleSubtask)
 			if err != nil {
 				return nil, nil, fmt.Errorf("agent.run: %w", err)
 			}
-			model = route.Preset.Model
-			pricingRates = pricing.Lookup(route.Preset)
+			model = eroute.Preset.Model
+			pricingRates = pricing.Lookup(eroute.Preset)
+			explicitPreset = &eroute.Preset
+		}
+		if req.Agent != "" && router != nil {
+			route, err := router.ResolveCustomAgent(req.Agent, agent.RoleSubtask)
+			if err != nil {
+				return nil, nil, fmt.Errorf("agent.run: %w", err)
+			}
+			if explicitPreset == nil {
+				model = route.Preset.Model
+				pricingRates = pricing.Lookup(route.Preset)
+			}
 			if route.CustomAgent != nil {
 				ca := route.CustomAgent
 				addendum = ca.SystemPrompt
@@ -1354,13 +1373,13 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {
-					runner, _, err := rt.CustomAgentFactory(agentName)
+					runner, _, err := rt.CustomAgentFactory(agent.SubagentRequest{Agent: agentName})
 					return runner, err
 				},
 			))
 			tuiOpts = append(tuiOpts, tui.WithSubagentFactory(
 				func(agentName string) (tui.AgentRunner, error) {
-					runner, _, err := rt.CustomAgentFactory(agentName)
+					runner, _, err := rt.CustomAgentFactory(agent.SubagentRequest{Agent: agentName})
 					return runner, err
 				},
 			))

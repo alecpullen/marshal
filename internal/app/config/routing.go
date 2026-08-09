@@ -38,6 +38,16 @@ func (c Config) RoutingConfig() routing.Config {
 	// status bar would never update.
 	if c.Profile.ActivePreset != "" {
 		if p := synthesizeSingleModelProfile(c, profiles); p != nil {
+			// The embedding role is exempt from replacement: a chat
+			// preset can never serve it, so a model switch cannot
+			// stale it, and a user binding (via
+			// [agent_profiles.<name>.roles] or /settings) must
+			// survive synthesis.
+			if existing, ok := profiles[c.Profile.Default]; ok {
+				if b, ok := existing.Roles[routing.RoleEmbedding]; ok {
+					p.Roles[routing.RoleEmbedding] = b
+				}
+			}
 			profiles[c.Profile.Default] = *p
 		}
 	} else if _, ok := profiles[c.Profile.Default]; !ok {

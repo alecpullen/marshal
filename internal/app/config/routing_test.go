@@ -55,6 +55,42 @@ func TestRoutingConfigSynthesizesProfileFromSolePreset(t *testing.T) {
 	}
 }
 
+func TestRoutingConfigPreservesEmbeddingRoleWhenSynthesizing(t *testing.T) {
+	// Regression test: the user binds an embedding preset on the active
+	// "single" profile via config or /settings, but RoutingConfig replaced
+	// the whole profile with a freshly synthesized one whenever
+	// ActivePreset was set, wiping the embedding binding. Since
+	// synthesizeSingleModelProfile excludes the embedding role (a chat
+	// preset cannot embed), ResolveEmbedding then failed and app.go
+	// warned "no embedding role is configured" despite the user's binding.
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.Profile.ActivePreset = "ollama/qwen2.5-coder:7b"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		"ollama/nomic-embed-text": {Name: "ollama/nomic-embed-text", Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
+	}
+	cfg.Providers = map[string]ProviderConfig{
+		"ollama": {BaseURL: "http://localhost:11434/v1"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": {Name: "single", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleEmbedding: {Preset: "ollama/nomic-embed-text"},
+		}},
+	}
+
+	rc := cfg.RoutingConfig()
+
+	router := routing.NewStaticRouter(rc)
+	route, err := router.ResolveEmbedding()
+	if err != nil {
+		t.Fatalf("ResolveEmbedding: %v (embedding binding on the active profile was clobbered by synthesis)", err)
+	}
+	if route.Preset.Name != "ollama/nomic-embed-text" {
+		t.Fatalf("ResolveEmbedding resolved to %q, want ollama/nomic-embed-text", route.Preset.Name)
+	}
+}
+
 func TestRoutingConfigPreservesExistingProfile(t *testing.T) {
 	cfg := Default()
 	cfg.Profile.Default = "mine"

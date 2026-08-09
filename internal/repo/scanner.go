@@ -5,6 +5,7 @@
 package repo
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -82,7 +83,7 @@ func NewScanner(config Config) *Scanner {
 // Unlike WalkDir errors, per-file errors from fn are NOT fatal — they are
 // logged in Warnings() and recorded as ScannedFile.ReadErr so the caller
 // can inspect them without aborting the entire scan.
-func (s *Scanner) walk(fn func(path, rel string) (db.FileIndex, []byte, error)) ([]ScannedFile, error) {
+func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIndex, []byte, error)) ([]ScannedFile, error) {
 	s.warnings = nil
 	root := s.config.Root
 	if s.loadErr != nil {
@@ -91,6 +92,9 @@ func (s *Scanner) walk(fn func(path, rel string) (db.FileIndex, []byte, error)) 
 
 	var results []ScannedFile
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			return fmt.Errorf("walk %s: %w", path, err)
 		}
@@ -177,8 +181,8 @@ func (s *Scanner) walk(fn func(path, rel string) (db.FileIndex, []byte, error)) 
 // content so callers can use it without re-reading from disk.
 // Per-file read failures are non-fatal: the returned ScannedFile will have a
 // nil Content and a non-nil ReadErr. The scan continues to other files.
-func (s *Scanner) ScanDetailed() ([]ScannedFile, error) {
-	return s.walk(func(path, rel string) (db.FileIndex, []byte, error) {
+func (s *Scanner) ScanDetailed(ctx context.Context) ([]ScannedFile, error) {
+	return s.walk(ctx, func(path, rel string) (db.FileIndex, []byte, error) {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return db.FileIndex{

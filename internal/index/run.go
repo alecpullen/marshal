@@ -17,12 +17,13 @@ type LSPSymbols interface {
 }
 
 type Deps struct {
-	DB       *db.DB
-	Root     string
-	Ignore   []string
-	MaxBytes int64
-	Embedder embedding.Embedder // nil => embeddings skipped
-	LSP      LSPSymbols         // nil => LSP symbols not available
+	DB         *db.DB
+	Root       string
+	Ignore     []string
+	MaxBytes   int64
+	Embedder   embedding.Embedder   // nil => embeddings skipped
+	LSP        LSPSymbols           // nil => LSP symbols not available
+	OnProgress func(message string) // nil => no progress reporting
 }
 
 type Report struct {
@@ -40,7 +41,7 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 	rep := Report{LangCounts: map[string]int{}}
 
 	scanner := repo.NewScanner(repo.Config{Root: deps.Root, Ignore: deps.Ignore, MaxIndexableFileBytes: deps.MaxBytes})
-	scanned, err := scanner.ScanDetailed()
+	scanned, err := scanner.ScanDetailed(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("scan repo: %w", err)
 	}
@@ -92,7 +93,9 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 	}
 	rep.Symbols = len(symbols)
 
-	st, err := NewIndexer(deps.DB, deps.Embedder).Reindex(ctx, projectID, scanned, symbolsByFile)
+	ix := NewIndexer(deps.DB, deps.Embedder)
+	ix.onProgress = deps.OnProgress
+	st, err := ix.Reindex(ctx, projectID, scanned, symbolsByFile)
 	if err != nil {
 		rep.Warnings = append(rep.Warnings, "embedding: "+err.Error())
 	}

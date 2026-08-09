@@ -85,6 +85,84 @@ func TestReindexIncremental(t *testing.T) {
 	}
 }
 
+type batchingEmbedder struct {
+	model string
+	calls int
+	sizes []int
+}
+
+func (b *batchingEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	b.calls++
+	b.sizes = append(b.sizes, len(texts))
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{float32(len(texts[i])), 1}
+	}
+	return out, nil
+}
+func (b *batchingEmbedder) Model() string { return b.model }
+func (b *batchingEmbedder) Dims() int     { return 2 }
+
+func symsFor(paths ...string) map[string][]db.Symbol {
+	m := map[string][]db.Symbol{}
+	for _, p := range paths {
+		m[p] = []db.Symbol{{
+			FilePath:  p,
+			Kind:      "function",
+			Name:      "F",
+			Signature: "func F()",
+			LineStart: 1,
+			LineEnd:   1,
+		}}
+	}
+	return m
+}
+
+func TestReindexBatchesAcrossFiles(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+	e := &batchingEmbedder{model: "m"}
+	ix := NewIndexer(database, e)
+
+	files := []repo.ScannedFile{
+		scanned("a.go", "h1", "func A(){}"),
+		scanned("b.go", "h2", "func B(){}"),
+		scanned("c.go", "h3", "func C(){}"),
+	}
+	st, err := ix.Reindex(context.Background(), pid, files, symsFor("a.go", "b.go", "c.go"))
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if st.FilesEmbedded != 3 {
+		t.Fatalf("FilesEmbedded = %d, want 3", st.FilesEmbedded)
+	}
+	if e.calls != 1 {
+		t.Fatalf("expected one batched embed call, got %d", e.calls)
+	}
+	if len(e.sizes) != 1 || e.sizes[0] != 3 {
+		t.Fatalf("expected one batch of 3 inputs, got sizes %v", e.sizes)
+	}
+}
+
+func TestReindexEmitsProgress(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+	e := &fakeEmbedder{model: "m"}
+	ix := NewIndexer(database, e)
+
+	var msgs []string
+	ix.onProgress = func(msg string) { msgs = append(msgs, msg) }
+
+	files := []repo.ScannedFile{scanned("a.go", "h", "func F(){}")}
+	_, err := ix.Reindex(context.Background(), pid, files, syms("a.go"))
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected progress messages")
+	}
+}
+
 func TestReindexNilEmbedderIsNoop(t *testing.T) {
 	database := newTestDB(t)
 	pid := mustCreateProject(t, database, "/tmp/p")

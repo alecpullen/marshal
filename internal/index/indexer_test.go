@@ -2,6 +2,8 @@ package index
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"marshal/internal/db"
@@ -141,6 +143,59 @@ func TestReindexBatchesAcrossFiles(t *testing.T) {
 	}
 	if len(e.sizes) != 1 || e.sizes[0] != 3 {
 		t.Fatalf("expected one batch of 3 inputs, got sizes %v", e.sizes)
+	}
+}
+
+// failAfterEmbedder succeeds for the first call then fails, to exercise the
+// incremental-persistence path where a later batch failure must not discard
+// files already embedded in earlier batches.
+type failAfterEmbedder struct {
+	model string
+	calls int
+}
+
+func (f *failAfterEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	f.calls++
+	if f.calls > 1 {
+		return nil, fmt.Errorf("boom")
+	}
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{float32(len(texts[i])), 1}
+	}
+	return out, nil
+}
+func (f *failAfterEmbedder) Model() string { return f.model }
+func (f *failAfterEmbedder) Dims() int     { return 2 }
+
+func TestReindexPersistsEarlierBatchesOnLaterFailure(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+	e := &failAfterEmbedder{model: "m"}
+	ix := NewIndexer(database, e)
+
+	// a.go fills batch 1 exactly (64 chunks via the 50-line window step);
+	// b.go starts batch 2, which fails. a.go must already be persisted.
+	line := "func A(){}"
+	files := []repo.ScannedFile{
+		scanned("a.go", "h1", strings.Repeat(line+"\n", 64*50)),
+		scanned("b.go", "h2", strings.Repeat(line+"\n", 60)),
+	}
+	_, err := ix.Reindex(context.Background(), pid, files, nil)
+	if err == nil {
+		t.Fatal("expected embed failure on second batch")
+	}
+
+	// The first file must already be persisted despite the overall failure.
+	state, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	if _, ok := state["a.go"]; !ok {
+		t.Fatal("a.go was not persisted before the later batch failed")
+	}
+	if _, ok := state["b.go"]; ok {
+		t.Fatal("b.go should not be persisted (its batch failed)")
 	}
 }
 

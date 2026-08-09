@@ -3880,7 +3880,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		}
 		newCfg.Models.Presets = presets
 	}
-	presetName, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
+	_, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
 		ContextWindow:   msg.ContextWindow,
 		MaxOutputTokens: msg.MaxOutputTokens,
 		ToolCalling:     msg.ToolCalling,
@@ -3890,17 +3890,11 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		return
 	}
 
-	if newCfg.AgentProfiles == nil {
-		newCfg.AgentProfiles = map[string]routing.AgentProfile{}
-	} else {
-		profiles := make(map[string]routing.AgentProfile, len(newCfg.AgentProfiles)+1)
-		for k, v := range newCfg.AgentProfiles {
-			profiles[k] = v
-		}
-		newCfg.AgentProfiles = profiles
-	}
-	newCfg.AgentProfiles[singleModelProfileName] = routing.SingleModelProfile(singleModelProfileName, presetName)
 	newCfg.Profile.Default = singleModelProfileName
+	// The "single" profile is synthesized in memory by config.Load when no
+	// explicit agent_profiles entry matches the default profile. Do not
+	// persist it here; that keeps the config file limited to provider + model
+	// pair.
 
 	// Credentials never go to project config. Write the key to the user
 	// config first; if that fails, configure nothing rather than leaving a
@@ -3965,17 +3959,8 @@ func (m *Model) switchModelPreset(presetName string) {
 		}
 	}
 	preset := newCfg.Models.Presets[presetName]
-	if newCfg.AgentProfiles == nil {
-		newCfg.AgentProfiles = map[string]routing.AgentProfile{}
-	} else {
-		profiles := make(map[string]routing.AgentProfile, len(newCfg.AgentProfiles)+1)
-		for k, v := range newCfg.AgentProfiles {
-			profiles[k] = v
-		}
-		newCfg.AgentProfiles = profiles
-	}
-	newCfg.AgentProfiles[singleModelProfileName] = routing.SingleModelProfile(singleModelProfileName, presetName)
 	newCfg.Profile.Default = singleModelProfileName
+	// In-memory profile synthesis in config.Load handles role bindings.
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {

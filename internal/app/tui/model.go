@@ -159,8 +159,9 @@ type Model struct {
 	// updateCompletionPopups). lastInputForPopups caches the value seen
 	// by updateCompletionPopups so non-key events (mouse, paste, ticks)
 	// don't re-evaluate and clobber the popup's index/offset.
-	// completionSuppressed is set by Esc and cleared when the input value
-	// changes, on accept, or on submit/reset.
+	// completionSuppressed is set by Esc and cleared when the input is
+	// cleared, on accept, or on submit/reset. This keeps the popup dismissed
+	// while editing the same trigger after Esc.
 	cmdPopup             *completionPopup
 	filePopup            *completionPopup
 	setPopup             *completionPopup
@@ -2260,9 +2261,8 @@ func (m *Model) updateCompletionPopups() {
 		return
 	}
 	value := m.input.Value()
-	// Esc dismissed the popup; keep it suppressed until the user clears
-	// the input and starts a fresh trigger. Typing a continuation of the
-	// same trigger (e.g. "/a" after Esc on "/") must not re-show it.
+	// Esc dismissed the popup; keep it suppressed until the input is cleared.
+	// This prevents editing the same trigger from immediately re-showing it.
 	if m.completionSuppressed {
 		if value == "" {
 			m.completionSuppressed = false

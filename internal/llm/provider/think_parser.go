@@ -2,12 +2,11 @@ package provider
 
 import "strings"
 
-// inlineThinkParser extracts  thinking... response blocks from a streaming
-// content channel, emitting the segments as either normal content or
-// reasoning text. Thinking text is buffered until the close tag completes so
-// it is emitted as a single block. Tags that are split across SSE chunks are
-// handled by keeping a small suffix of uncommitted bytes until a complete
-// open or close tag can be resolved.
+// inlineThinkParser extracts explicit <think>...</think> blocks from a
+// streaming content channel, emitting the segments as either normal content
+// or reasoning text. Thinking text is buffered until the close tag completes
+// so it is emitted as a single block. Tags split across SSE chunks are handled
+// by keeping a small suffix of uncommitted bytes until a complete tag resolves.
 type inlineThinkParser struct {
 	inThink  bool
 	pending  strings.Builder // uncommitted bytes (may hold a partial tag)
@@ -26,11 +25,11 @@ func (p *inlineThinkParser) feed(s string) (string, string) {
 
 	for data != "" {
 		if p.inThink {
-			idx := strings.Index(data, " response")
+			idx := strings.Index(data, "</think>")
 			if idx == -1 {
 				// No close tag yet. Buffer everything except a possible
 				// split close-tag prefix.
-				keep := longestTagPrefix(data, " response")
+				keep := longestTagPrefix(data, "</think>")
 				if len(data) > keep {
 					p.thinking.WriteString(data[:len(data)-keep])
 					data = data[len(data)-keep:]
@@ -38,7 +37,7 @@ func (p *inlineThinkParser) feed(s string) (string, string) {
 				break
 			}
 			p.thinking.WriteString(data[:idx])
-			data = data[idx+len(" response"):]
+			data = data[idx+len("</think>"):]
 			p.inThink = false
 			// Emit the buffered thinking as one block.
 			thinking.WriteString(p.thinking.String())
@@ -46,11 +45,11 @@ func (p *inlineThinkParser) feed(s string) (string, string) {
 			continue
 		}
 
-		idx := strings.Index(data, " thinking")
+		idx := strings.Index(data, "<think>")
 		if idx == -1 {
 			// No open tag yet. Emit content except a possible split
 			// open-tag prefix.
-			keep := longestTagPrefix(data, " thinking")
+			keep := longestTagPrefix(data, "<think>")
 			if len(data) > keep {
 				content.WriteString(data[:len(data)-keep])
 				data = data[len(data)-keep:]
@@ -58,7 +57,7 @@ func (p *inlineThinkParser) feed(s string) (string, string) {
 			break
 		}
 		content.WriteString(data[:idx])
-		data = data[idx+len(" thinking"):]
+		data = data[idx+len("<think>"):]
 		p.inThink = true
 	}
 

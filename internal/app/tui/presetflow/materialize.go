@@ -2,7 +2,6 @@ package presetflow
 
 import (
 	"fmt"
-	"sort"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/probe"
@@ -22,29 +21,21 @@ func Materialize(cfg *config.Config, providerName, modelID, baseURL string, lim 
 	if cfg.Models.Presets == nil {
 		cfg.Models.Presets = map[string]routing.ModelPreset{}
 	}
-	preset, exists := cfg.Models.Presets[name]
+	existing, exists := cfg.Models.Presets[name]
 	if exists &&
-		((preset.Provider != "" && preset.Provider != providerName) ||
-			(preset.Model != "" && preset.Model != modelID)) {
-		return "", fmt.Errorf("preset %q is already used by %s/%s", name, preset.Provider, preset.Model)
+		((existing.Provider != "" && existing.Provider != providerName) ||
+			(existing.Model != "" && existing.Model != modelID)) {
+		return "", fmt.Errorf("preset %q is already used by %s/%s", name, existing.Provider, existing.Model)
 	}
+	preset := existing
 	if !exists {
-		keys := make([]string, 0, len(cfg.Models.Presets))
-		for key := range cfg.Models.Presets {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			candidate := cfg.Models.Presets[key]
-			if candidate.Provider == providerName && candidate.Model == modelID {
-				preset = candidate
-				break
-			}
+		preset = routing.ModelPreset{
+			Name:      name,
+			Provider:  providerName,
+			Model:     modelID,
+			LocalOnly: probe.IsLocalhost(baseURL),
 		}
 	}
-	preset.Name = name
-	preset.Provider = providerName
-	preset.Model = modelID
 	if lim.ContextWindow != 0 {
 		preset.ContextWindow = lim.ContextWindow
 	}
@@ -58,7 +49,6 @@ func Materialize(cfg *config.Config, providerName, modelID, baseURL string, lim 
 			preset.ToolCalling = "none"
 		}
 	}
-	preset.LocalOnly = probe.IsLocalhost(baseURL)
 	cfg.Models.Presets[name] = preset
 	return name, nil
 }

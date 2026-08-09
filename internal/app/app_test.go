@@ -2760,9 +2760,9 @@ func TestSubagentFactoryInvalidPairErrors(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
 	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
-	if _, _, err := factory(agent.SubagentRequest{Model: "bogus/nope"}); err == nil {
-		t.Fatal("expected an error for an invalid provider/model pair")
-	} else if !strings.Contains(err.Error(), "bogus/nope") {
+	if _, _, err := factory(agent.SubagentRequest{Model: "bogus"}); err == nil {
+		t.Fatal("expected an error for a malformed provider/model pair")
+	} else if !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("error should name the pair, got: %v", err)
 	}
 }

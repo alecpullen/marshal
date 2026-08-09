@@ -197,10 +197,11 @@ type Route struct {
 }
 
 type Config struct {
-	DefaultProfile string
-	RemoteAllowed  bool
-	Presets        map[string]ModelPreset
-	Profiles       map[string]AgentProfile
-	CustomAgents   map[string]CustomAgent
-	ContextBudgets map[AgentRole]ContextBudget
+	DefaultProfile   string
+	RemoteAllowed    bool
+	Presets          map[string]ModelPreset
+	Profiles         map[string]AgentProfile
+	CustomAgents     map[string]CustomAgent
+	ContextBudgets   map[AgentRole]ContextBudget
+	ProviderBaseURLs map[string]string // provider name -> base URL for default-preset synthesis
 }

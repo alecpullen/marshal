@@ -39,6 +39,16 @@ func RenameProvider(cfg *Config, old, new string, discovered map[string][]schema
 			newName := name
 			if prefix := old + "/"; strings.HasPrefix(name, prefix) {
 				newName = new + "/" + strings.TrimPrefix(name, prefix)
+				// Reject collisions: renaming old/model onto an existing
+				// new/model would silently overwrite one preset. Check the
+				// original map (not the in-progress rebuilt map) so the
+				// result is independent of iteration order.
+				if _, exists := cfg.Models.Presets[newName]; exists {
+					return fmt.Errorf("preset %q already exists", newName)
+				}
+				// Keep the in-memory Name in sync with the rekeyed map key
+				// so routing reports the new name without a reload.
+				preset.Name = newName
 			}
 			renamed[newName] = preset
 		}

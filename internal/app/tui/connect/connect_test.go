@@ -772,6 +772,23 @@ func TestSummaryRenameHintIsProminent(t *testing.T) {
 	}
 }
 
+func TestModelPickerUsesStoredTemplateID(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"work-openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{},
+		SkipToIntroModel: true,
+		ScopedProvider:   "work-openai",
+	})
+	view := m.View(80, 24)
+	for _, want := range []string{"gpt-4o", "gpt-4o-mini", "o3-mini"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("picker view missing catalog model %q", want)
+		}
+	}
+}
+
 // clearCaps delivers a zero-valued capability result for m's current confirm
 // target, clearing the async detectingCaps gate on an Ollama-backed provider
 // without performing a network probe. Callers that pick a model on an

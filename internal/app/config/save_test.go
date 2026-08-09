@@ -883,3 +883,23 @@ func TestSaveUserConfigProviderAPIKeyPreservesOtherProviders(t *testing.T) {
 		}
 	}
 }
+
+func TestSaveProjectConfigPreservesProviderTemplate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"work": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
+	}
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), `template = "openai"`) &&
+		!strings.Contains(string(data), `template = 'openai'`) {
+		t.Fatalf("template field not persisted:\n%s", data)
+	}
+}

@@ -560,7 +560,7 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 		for _, pn := range pnames {
 			candidates := m.discovered[pn]
 			if len(candidates) == 0 {
-				if tpl, ok := provider.Lookup(pn); ok {
+				if tpl, ok := m.providerTemplate(pn); ok {
 					candidates = templateModelsToInfo(tpl.Models)
 				}
 			}
@@ -590,6 +590,11 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 		if len(candidates) == 0 {
 			if cached, ok := m.discovered[providerName]; ok {
 				candidates = cached
+			}
+		}
+		if len(candidates) == 0 {
+			if tpl, ok := m.providerTemplate(providerName); ok {
+				candidates = templateModelsToInfo(tpl.Models)
 			}
 		}
 		if len(candidates) == 0 {
@@ -680,15 +685,17 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 	if !ok {
 		if value == "custom" || strings.HasPrefix(value, "@ai-sdk/") {
 			m.template = provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"}
+			m.providerCfg = config.ProviderConfig{Type: "openai_compatible", Template: "custom"}
 			enterBaseURLStep(m)
 			return m, nil
 		}
 		m.template = provider.ProviderTemplate{ID: value, Type: "openai_compatible"}
+		m.providerCfg = config.ProviderConfig{Type: "openai_compatible", Template: value}
 		enterBaseURLStep(m)
 		return m, nil
 	}
 	m.template = tpl
-	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling}
+	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling, Template: tpl.ID}
 	if tpl.BaseURL == "" {
 		enterBaseURLStep(m)
 		return m, nil
@@ -996,7 +1003,7 @@ func (m *Model) refreshCmd() tea.Cmd {
 			}
 		}
 		for pn := range m.cfg.Providers {
-			if tpl, ok := provider.Lookup(pn); ok && len(tpl.Models) > 0 {
+			if tpl, ok := m.providerTemplate(pn); ok && len(tpl.Models) > 0 {
 				names[pn] = struct{}{}
 			}
 		}
@@ -1059,6 +1066,21 @@ func hostBase(baseURL string) string {
 	host = strings.TrimPrefix(host, "api.")
 	host = strings.TrimPrefix(host, "www.")
 	return host
+}
+
+// providerTemplate looks up the catalog template for a configured provider.
+// It prefers the stored template ID so renamed providers still resolve to
+// their original catalog models.
+func (m *Model) providerTemplate(pn string) (provider.ProviderTemplate, bool) {
+	pc, ok := m.cfg.Providers[pn]
+	if !ok {
+		return provider.ProviderTemplate{}, false
+	}
+	id := pn
+	if pc.Template != "" {
+		id = pc.Template
+	}
+	return provider.Lookup(id)
 }
 
 func orDefault(v, def string) string {

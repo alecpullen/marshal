@@ -2672,7 +2672,11 @@ func TestSubagentFactoryExplicitModelOverridesNamedAgent(t *testing.T) {
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
 	reg := registry.New()
-	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	stub := func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+		return registry.ToolResult{}, nil
+	}
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: stub})
+	_ = reg.Register(registry.Tool{Name: "web.fetch", Risk: registry.RiskNetwork, Handler: stub})
 	pol := policy.NewEngine(&cfg, nil)
 	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
 	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout", Model: "other/x"})
@@ -2687,6 +2691,15 @@ func TestSubagentFactoryExplicitModelOverridesNamedAgent(t *testing.T) {
 	}
 	if child.MaxToolIterations != 7 {
 		t.Fatalf("child.MaxToolIterations = %d, want 7 (agent override)", child.MaxToolIterations)
+	}
+	if child.Registry == nil {
+		t.Fatal("child.Registry should be set")
+	}
+	if _, ok := child.Registry.Lookup("web.fetch"); ok {
+		t.Fatal("child registry must apply the agent's tool denylist (web.fetch excluded)")
+	}
+	if _, ok := child.Registry.Lookup("file.read"); !ok {
+		t.Fatal("child registry should retain non-denylisted tools (file.read)")
 	}
 }
 

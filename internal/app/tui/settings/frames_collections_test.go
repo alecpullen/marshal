@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
@@ -121,6 +122,54 @@ func TestProvidersAddAndEditType(t *testing.T) {
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Providers["ollama"].Type != "anthropic" {
 		t.Fatalf("type edit should apply immediately, got %q", s.cfg.Providers["ollama"].Type)
+	}
+}
+
+func TestProviderRenameCascadesToPresetsAndDiscovered(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen": {Name: "ollama/qwen", Provider: "ollama", Model: "qwen2.5-coder:7b"},
+		"other/gpt":   {Name: "other/gpt", Provider: "other", Model: "gpt-4o"},
+	}
+	st := newState(cfg)
+	st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}
+
+	drill := providersFrame(st).List.Rows()[0]
+	detail := drill.Build()
+
+	var nameRow *field
+	for _, r := range detail.List.Rows() {
+		if r.Title == "Name" {
+			nameRow = r
+			break
+		}
+	}
+	if nameRow == nil {
+		t.Fatal("provider detail must have a Name row")
+	}
+	if err := nameRow.SetStr("my-ollama"); err != nil {
+		t.Fatalf("rename err = %v", err)
+	}
+	if _, ok := st.cfg.Providers["ollama"]; ok {
+		t.Fatal("old provider key should be deleted")
+	}
+	if _, ok := st.cfg.Providers["my-ollama"]; !ok {
+		t.Fatal("new provider key should exist")
+	}
+	if st.cfg.Models.Presets["my-ollama/qwen"].Provider != "my-ollama" {
+		t.Fatalf("preset provider not updated: %+v", st.cfg.Models.Presets["my-ollama/qwen"])
+	}
+	if _, ok := st.cfg.Models.Presets["ollama/qwen"]; ok {
+		t.Fatal("old pair-keyed preset should be renamed")
+	}
+	if models, ok := st.discovered["my-ollama"]; !ok || len(models) != 1 {
+		t.Fatal("discovered map should be renamed")
+	}
+	if _, ok := st.discovered["ollama"]; ok {
+		t.Fatal("old discovered entry should be deleted")
 	}
 }
 

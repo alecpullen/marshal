@@ -439,11 +439,11 @@ func TestChatStreamingReasoningContentEmitsThinkingDelta(t *testing.T) {
 
 func TestInlineThinkParserExtractsThinkingAndContent(t *testing.T) {
 	p := inlineThinkParser{}
-	c1, th1 := p.feed(" thinkingone ")
+	c1, th1 := p.feed("<think>one ")
 	if c1 != "" || th1 != "" {
 		t.Fatalf("partial open tag should emit nothing, got content=%q thinking=%q", c1, th1)
 	}
-	c2, th2 := p.feed("two responseanswer")
+	c2, th2 := p.feed("two</think>answer")
 	if th2 != "one two" {
 		t.Fatalf("thinking = %q, want %q", th2, "one two")
 	}
@@ -458,11 +458,11 @@ func TestInlineThinkParserExtractsThinkingAndContent(t *testing.T) {
 
 func TestInlineThinkParserHandlesSplitCloseTag(t *testing.T) {
 	p := inlineThinkParser{}
-	_, th1 := p.feed(" thinkingreasoning respon")
+	_, th1 := p.feed("<think>reasoning</thin")
 	if th1 != "" {
 		t.Fatalf("partial close tag should not emit thinking, got %q", th1)
 	}
-	c2, th2 := p.feed("seout")
+	c2, th2 := p.feed("k>out")
 	if th2 != "reasoning" {
 		t.Fatalf("thinking = %q, want %q", th2, "reasoning")
 	}
@@ -471,14 +471,24 @@ func TestInlineThinkParserHandlesSplitCloseTag(t *testing.T) {
 	}
 }
 
+func TestInlineThinkParserLeavesOrdinaryProseUntouched(t *testing.T) {
+	p := inlineThinkParser{}
+	content, thinking := p.feed("I was thinking about the response.")
+	content2, thinking2 := p.flush()
+	if content+content2 != "I was thinking about the response." || thinking+thinking2 != "" {
+		t.Fatalf("ordinary prose parsed as thinking: content=%q thinking=%q", content+content2, thinking+thinking2)
+	}
+}
+
 func TestChatStreamingInlineThinkTagEmitsThinkingDelta(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(
-			"data: {\"choices\":[{\"delta\":{\"content\":\" thinking\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":\"<thi\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"content\":\"nk>\"}}]}\n\n" +
 				"data: {\"choices\":[{\"delta\":{\"content\":\"step one\"}}]}\n\n" +
-				"data: {\"choices\":[{\"delta\":{\"content\":\" responsethe answer\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"content\":\"</think>the answer\"}}]}\n\n" +
 				"data: [DONE]\n\n",
 		))
 	}))

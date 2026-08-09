@@ -112,6 +112,84 @@ func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	}
 }
 
+// TestQuestionFinalizeSingleChoice verifies a listed single-choice option
+// submits directly.
+func TestQuestionFinalizeSingleChoice(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
+	}
+	qm := newQuestionModel(q, 80)
+	*qm.selects[0] = "green"
+	qm.form.State = huh.StateCompleted
+	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answers := qm.Answers()
+	if len(answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(answers))
+	}
+	if answers[0].Answer != "green" {
+		t.Fatalf("single-choice answer = %q, want green", answers[0].Answer)
+	}
+}
+
+// TestQuestionFinalizeMultiChoice verifies a multi-select submits the joined
+// selected values.
+func TestQuestionFinalizeMultiChoice(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick some:", Options: []string{"a", "b", "c"}, Multi: true}},
+	}
+	qm := newQuestionModel(q, 80)
+	*qm.multis[0] = []string{"a", "c"}
+	qm.form.State = huh.StateCompleted
+	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answers := qm.Answers()
+	if len(answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(answers))
+	}
+	if answers[0].Answer != "a, c" {
+		t.Fatalf("multi-choice answer = %q, want \"a, c\"", answers[0].Answer)
+	}
+}
+
+// TestQuestionFinalizeOtherWithText verifies the Other sentinel uses the
+// trimmed custom text.
+func TestQuestionFinalizeOtherWithText(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}, AllowOther: true}},
+	}
+	qm := newQuestionModel(q, 80)
+	*qm.selects[0] = questionOtherSentinel
+	*qm.others[0] = "  magenta  "
+	qm.form.State = huh.StateCompleted
+	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answers := qm.Answers()
+	if len(answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(answers))
+	}
+	if answers[0].Answer != "magenta" {
+		t.Fatalf("Other answer = %q, want magenta (trimmed)", answers[0].Answer)
+	}
+}
+
+// TestQuestionFinalizeOtherBlankStaysUnanswered verifies the Other sentinel
+// with blank custom text does NOT submit the sentinel.
+func TestQuestionFinalizeOtherBlankStaysUnanswered(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}, AllowOther: true}},
+	}
+	qm := newQuestionModel(q, 80)
+	*qm.selects[0] = questionOtherSentinel
+	*qm.others[0] = "   "
+	qm.form.State = huh.StateCompleted
+	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answers := qm.Answers()
+	if len(answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(answers))
+	}
+	if answers[0].Answer != session.AnswerUnanswered {
+		t.Fatalf("blank Other should leave the answer unanswered, got %q", answers[0].Answer)
+	}
+}
+
 func TestQuestionModelViewUsesGutter(t *testing.T) {
 	q := &session.PendingQuestion{
 		Questions: []session.Question{{Question: "What is your favorite color?", Options: []string{"red", "green", "blue"}}},

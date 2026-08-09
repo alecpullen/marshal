@@ -1105,6 +1105,44 @@ func TestDedentPreservesRelativeIndent(t *testing.T) {
 	}
 }
 
+// TestSubagentCardShowsProviderModel verifies that a subagent card renders
+// the resolved model and provider (e.g. "qwen2.5-coder:14b @ ollama") on
+// both running and completed cards, so the user can see what model actually
+// ran a subagent. A card with no metadata must not render a bare separator.
+func TestSubagentCardShowsProviderModel(t *testing.T) {
+	running := session.SubagentView{
+		Label:     "explore repo",
+		Status:    session.SubagentRunning,
+		Model:     "qwen2.5-coder:14b",
+		Provider:  "ollama",
+		StartedAt: time.Now().Add(-5 * time.Second),
+	}
+	got := stripANSI(renderSubagentCard(running, false, "⠋", 100))
+	if !strings.Contains(got, "qwen2.5-coder:14b @ ollama") {
+		t.Errorf("running card missing model @ provider:\n%s", got)
+	}
+
+	done := session.SubagentView{
+		Label:     "explore repo",
+		Status:    session.SubagentDone,
+		Model:     "qwen2.5-coder:14b",
+		Provider:  "ollama",
+		StartedAt: time.Now().Add(-2 * time.Minute),
+		EndedAt:   time.Now(),
+	}
+	gotDone := stripANSI(renderSubagentCard(done, false, "⠋", 100))
+	if !strings.Contains(gotDone, "qwen2.5-coder:14b @ ollama") {
+		t.Errorf("completed card missing model @ provider:\n%s", gotDone)
+	}
+
+	// A childless, metadata-less card must not render a dangling separator.
+	plain := session.SubagentView{Label: "no meta", Status: session.SubagentDone}
+	gotPlain := stripANSI(renderSubagentCard(plain, false, "⠋", 100))
+	if strings.Contains(gotPlain, "· ·") {
+		t.Errorf("metadata-less card rendered dangling separators:\n%q", gotPlain)
+	}
+}
+
 func TestRunningSubagentCardShowsCurrentTool(t *testing.T) {
 	v := session.SubagentView{
 		Label:       "sdd_implementer · task 3 — Add retry helper",

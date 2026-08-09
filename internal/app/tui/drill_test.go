@@ -17,6 +17,70 @@ func newChildState(t *testing.T) *session.State {
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 }
 
+// TestClickRunningCardDrillsInAndBack verifies a click on a running subagent
+// card drills into the live child transcript, shows a later child update,
+// and returns to the parent on Esc — the live regular-card drill-down path.
+func TestClickRunningCardDrillsInAndBack(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	m.state.RegisterSubagent("explore repo", child)
+	m.resize(80, 24)
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	// Locate the subagent card's click region.
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.subagent != nil && r.target.subagent.Label == "explore repo" {
+			region, found = r, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected a click region for the running subagent card")
+	}
+
+	top := m.scrollHintRows()
+	y := top + region.startLine - m.viewport.YOffset()
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+	if len(mm.viewStack) != 1 {
+		t.Fatalf("click should drill into the subagent, viewStack len = %d", len(mm.viewStack))
+	}
+
+	mm.lastTranscriptHash = 0
+	mm.refreshViewport()
+	if content := stripANSI(mm.viewport.GetContent()); !strings.Contains(content, "child says hi") {
+		t.Fatalf("drilled view should show the child transcript:\n%s", content)
+	}
+
+	// A later child update is reflected while drilled in.
+	child.AddMessage(session.RoleAssistant, "child second update", session.ContentTypePlain)
+	mm.lastTranscriptHash = 0
+	mm.refreshViewport()
+	if content := stripANSI(mm.viewport.GetContent()); !strings.Contains(content, "child second update") {
+		t.Fatalf("drilled view should show the later child update:\n%s", content)
+	}
+
+	// Esc returns to the parent.
+	mm2, _, handled := mm.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !handled {
+		t.Fatal("esc must be handled while drilled")
+	}
+	parent := asModel(t, mm2)
+	if len(parent.viewStack) != 0 {
+		t.Fatalf("esc should pop the drill stack, len = %d", len(parent.viewStack))
+	}
+	parent.lastTranscriptHash = 0
+	parent.refreshViewport()
+	if content := stripANSI(parent.viewport.GetContent()); !strings.Contains(content, "parent normal text") {
+		t.Fatalf("after popping, the parent transcript should be restored:\n%s", content)
+	}
+}
+
 func TestSubagentCardHasClickTarget(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)

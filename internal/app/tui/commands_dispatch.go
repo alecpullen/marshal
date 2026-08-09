@@ -53,7 +53,7 @@ func init() {
 			return m, nil
 		},
 		"skills": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.dock.Open(skills.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
+			m.dock.Open(skills.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state, m.skillIndex))
 			m.refreshViewport()
 			return m, nil
 		},

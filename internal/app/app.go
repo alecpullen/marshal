@@ -1356,6 +1356,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
+		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
 		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
 			rt.mu.Lock()
 			defer rt.mu.Unlock()

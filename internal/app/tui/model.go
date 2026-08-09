@@ -56,6 +56,7 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
+	"marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -145,6 +146,7 @@ type Model struct {
 	memoryProject int64
 	homeDir       string
 	workDir       string
+	skillIndex    *skills.Index
 	cmdRegistry   *commands.Registry
 	agentCancel   context.CancelFunc
 	approvalMode  policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
@@ -443,6 +445,15 @@ func WithHomeDir(homeDir string) Option {
 func WithWorkingDir(workDir string) Option {
 	return func(m *Model) {
 		m.workDir = workDir
+	}
+}
+
+// WithSkillIndex hands the runtime skill index to the TUI so panels (the
+// skills panel in particular) can load skills the runtime has already
+// loaded, rather than re-reading them from disk.
+func WithSkillIndex(idx *skills.Index) Option {
+	return func(m *Model) {
+		m.skillIndex = idx
 	}
 }
 

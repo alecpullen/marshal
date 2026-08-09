@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,55 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/skills"
 )
+
+func TestLoadResultRoutesErrorToActiveListAndSetsStatusOnSuccess(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	state := session.New(config.Default(), work, time.Now(), session.Persistence{})
+
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{
+		Name:        "debug",
+		Description: "debugging skill",
+		Body:        "# Debug\n\nSteps.\n",
+	})
+
+	p := NewPanel(home, work, true, state, idx)
+	debugSkill, _ := idx.Load("debug")
+	p.stack = append(p.stack, p.detailFrame(skills.ScopedSkill{Skill: debugSkill, Scope: scopeGlobal}))
+
+	// Simulate a failed load while drilled into the detail frame.
+	p.Update(loadResultMsg{Err: fmt.Errorf("boom")})
+	if got := p.ActiveList().ErrMsg; got != "boom" {
+		t.Fatalf("active list error = %q, want %q", got, "boom")
+	}
+
+	// Simulate a successful load.
+	p.Update(loadResultMsg{Name: "debug"})
+	if p.status != "loaded debug" {
+		t.Fatalf("status = %q, want %q", p.status, "loaded debug")
+	}
+	if p.ActiveList().ErrMsg != "" {
+		t.Fatalf("error not cleared after success: %q", p.ActiveList().ErrMsg)
+	}
+}
+
+func TestPanelUsesRuntimeSkillIndexForLoad(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	state := session.New(config.Default(), work, time.Now(), session.Persistence{})
+
+	runtimeIdx := skills.NewIndex()
+	runtimeIdx.Set("runtime-skill", skills.Skill{
+		Name:        "runtime-skill",
+		Description: "only in runtime index",
+		Body:        "# Runtime\n",
+	})
+
+	// Do not install the skill on disk; the panel should still find it via the runtime index.
+	p := NewPanel(home, work, true, state, runtimeIdx)
+	if _, ok := p.activeIndex().Load("runtime-skill"); !ok {
+		t.Fatal("activeIndex did not return the runtime index")
+	}
+}
 
 func TestPanelRootList(t *testing.T) {
 	home := t.TempDir()
@@ -34,7 +84,7 @@ description = "debugging skill"
 	}
 
 	state := session.New(config.Config{}, work, time.Now(), session.Persistence{})
-	p := NewPanel(home, work, true, state)
+	p := NewPanel(home, work, true, state, nil)
 
 	rows := settings.FieldListRows(p.list)
 	if len(rows) == 0 {
@@ -55,7 +105,7 @@ func TestPanelProjectScopeDisabled(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
 	state := session.New(config.Config{}, work, time.Now(), session.Persistence{})
-	p := NewPanel(home, work, false, state)
+	p := NewPanel(home, work, false, state, nil)
 
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open install frame
 	// The install frame should only list "global" in the scope enum.
@@ -66,7 +116,7 @@ func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
 	state := session.New(config.Config{}, work, time.Now(), session.Persistence{})
-	p := NewPanel(home, work, true, state)
+	p := NewPanel(home, work, true, state, nil)
 
 	// With no skills installed, the only selectable row is "＋ Install skill".
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -92,7 +142,7 @@ func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 // this panel emits must be claimed via dock.MessageOwner, or its Update case
 // is dead code and the action completes on disk with no visible effect.
 func TestPanelOwnsAsyncResults(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil, nil)
 	for _, msg := range []tea.Msg{
 		loadResultMsg{},
 		installResultMsg{},
@@ -110,7 +160,7 @@ func TestPanelOwnsAsyncResults(t *testing.T) {
 // TestInstallWithEmptySourceReportsError pins that an empty source surfaces an
 // error rather than silently returning a nil command.
 func TestInstallWithEmptySourceReportsError(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil, nil)
 	p.stack = append(p.stack, p.installFrame())
 	p.installSource = "   "
 
@@ -154,7 +204,7 @@ func newAutoloadPanel(t *testing.T) (*Panel, string) {
 		t.Fatal(err)
 	}
 	state := session.New(config.Default(), work, time.Now(), session.Persistence{})
-	return NewPanel(home, work, true, state), home
+	return NewPanel(home, work, true, state, nil), home
 }
 
 func fieldByID(t *testing.T, fields []*settings.Field, id string) *settings.Field {

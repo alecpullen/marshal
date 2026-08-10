@@ -146,6 +146,9 @@ func TestRegistryPermissionWaitsForDecision(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -178,6 +181,9 @@ func TestRegistryQuestionRoundTrip(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -201,6 +207,9 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -344,6 +353,83 @@ func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
 		t.Fatalf("ResolvePermission after cancel: %v", err)
 	}
+}
+
+func TestRegistryLateRequestFromCancelledTurnIsRejected(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Force a cancel in the window between a request's generation capture
+	// and its registration, so the request belongs to the cancelled turn
+	// but registers after the drain has already run.
+	// The hook stays set for the lifetime of this test's registry (each
+	// test gets a fresh Registry), so there is no concurrent write while
+	// the child goroutine reads it.
+	r.testHookBeforeRegister = func() {
+		r.cancelSession("s-1")
+	}
+
+	// The late permission must be denied immediately, not parked forever
+	// on the fresh (post-cancel) context.
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger permission: %v", err)
+	}
+	waitFor(t, 2*time.Second, "late permission drained", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return !ok
+	})
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve late permission: want ErrGone, got %v", err)
+	}
+
+	// Same for a late question.
+	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
+		t.Fatalf("trigger question: %v", err)
+	}
+	waitFor(t, 2*time.Second, "late question drained", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return !ok
+	})
+	if err := r.ResolveQuestion("q-1", Answers{Declined: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve late question: want ErrGone, got %v", err)
+	}
+}
+
+func TestRegistryUntrackedSessionRequestIsRejected(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// A permission keyed to an untracked session must be denied
+	// immediately rather than waiting forever with no drain path.
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger permission: %v", err)
+	}
+	waitFor(t, 2*time.Second, "untracked permission drained", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return !ok
+	})
+
+	// Same for a question.
+	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
+		t.Fatalf("trigger question: %v", err)
+	}
+	waitFor(t, 2*time.Second, "untracked question drained", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return !ok
+	})
 }
 
 func TestRegistryDrainSessionUnblocksWaiters(t *testing.T) {

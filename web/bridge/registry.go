@@ -41,6 +41,11 @@ type sessionInfo struct {
 	// Busy is true while a turn is in flight (prompt sent, no turn end
 	// observed). A child restart marks it interrupted (Busy=false).
 	Busy bool `json:"busy"`
+	// ctx is cancelled (via cancel) when the session is cancelled,
+	// deleted, or its SSE subscriber disconnects, draining any pending
+	// permission/question waits for it. Not serialized.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Registry tracks active sessions and brokers the child-initiated
@@ -63,9 +68,11 @@ type Registry struct {
 
 	permMu      sync.Mutex
 	permissions map[string]chan Decision
+	permSession map[string]string // toolCallId -> issuing sessionId
 
-	quesMu    sync.Mutex
-	questions map[string]chan Answers
+	quesMu      sync.Mutex
+	questions   map[string]chan Answers
+	quesSession map[string]string // questionId -> issuing sessionId
 }
 
 // NewRegistry wires a Registry onto a started Child, installing the
@@ -75,7 +82,9 @@ func NewRegistry(child *Child) *Registry {
 		child:       child,
 		sessions:    make(map[string]*sessionInfo),
 		permissions: make(map[string]chan Decision),
+		permSession: make(map[string]string),
 		questions:   make(map[string]chan Answers),
+		quesSession: make(map[string]string),
 	}
 	child.OnRequest = r.handleChildRequest
 	prevOnRestart := child.OnRestart
@@ -115,9 +124,7 @@ func (r *Registry) New(ctx context.Context, cwd, sessionId string) (string, erro
 	if out.SessionID == "" {
 		return "", errors.New("bridge: session/new returned empty sessionId")
 	}
-	r.mu.Lock()
-	r.sessions[out.SessionID] = &sessionInfo{Cwd: cwd}
-	r.mu.Unlock()
+	r.track(out.SessionID, cwd)
 	return out.SessionID, nil
 }
 
@@ -127,14 +134,21 @@ func (r *Registry) Load(ctx context.Context, cwd, id string) error {
 	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id}); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	r.sessions[id] = &sessionInfo{Cwd: cwd}
-	r.mu.Unlock()
+	r.track(id, cwd)
 	return nil
 }
 
+// track registers a session with a fresh cancel context so pending
+// permission/question waits can be drained on cancel/delete/disconnect.
+func (r *Registry) track(id, cwd string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r.mu.Lock()
+	r.sessions[id] = &sessionInfo{Cwd: cwd, ctx: ctx, cancel: cancel}
+	r.mu.Unlock()
+}
+
 // Delete removes the session record (session/delete) and stops tracking
-// it.
+// it, draining any pending waits for it.
 func (r *Registry) Delete(ctx context.Context, id string) error {
 	info, ok := r.lookup(id)
 	if !ok {
@@ -143,6 +157,7 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 	if _, err := r.child.Request(ctx, "session/delete", sessionParams{Cwd: info.Cwd, SessionID: id}); err != nil {
 		return err
 	}
+	r.cancelSession(id)
 	r.mu.Lock()
 	delete(r.sessions, id)
 	r.mu.Unlock()
@@ -178,11 +193,13 @@ func (r *Registry) Prompt(ctx context.Context, id, text string) error {
 	return nil
 }
 
-// Cancel interrupts the in-flight turn (session/cancel notification).
+// Cancel interrupts the in-flight turn (session/cancel notification)
+// and drains any pending permission/question waits for the session.
 func (r *Registry) Cancel(ctx context.Context, id string) error {
 	if _, ok := r.lookup(id); !ok {
 		return ErrUnknownSession
 	}
+	r.cancelSession(id)
 	return r.child.Notify("session/cancel", map[string]string{"sessionId": id})
 }
 
@@ -223,6 +240,7 @@ func (r *Registry) ResolvePermission(toolCallId string, d Decision) error {
 	ch, ok := r.permissions[toolCallId]
 	if ok {
 		delete(r.permissions, toolCallId)
+		delete(r.permSession, toolCallId)
 	}
 	r.permMu.Unlock()
 	if !ok {
@@ -239,6 +257,7 @@ func (r *Registry) ResolveQuestion(questionId string, a Answers) error {
 	ch, ok := r.questions[questionId]
 	if ok {
 		delete(r.questions, questionId)
+		delete(r.quesSession, questionId)
 	}
 	r.quesMu.Unlock()
 	if !ok {
@@ -249,8 +268,8 @@ func (r *Registry) ResolveQuestion(questionId string, a Answers) error {
 }
 
 // handleChildRequest is installed as the Child's OnRequest. It brokers
-// permission and question requests to the HTTP layer with a bounded
-// wait; unknown methods get a JSON-RPC method-not-found error.
+// permission and question requests to the HTTP layer; unknown methods
+// get a JSON-RPC method-not-found error.
 func (r *Registry) handleChildRequest(id int, method string, params json.RawMessage) (any, error) {
 	switch method {
 	case "session/request_permission":
@@ -264,6 +283,7 @@ func (r *Registry) handleChildRequest(id int, method string, params json.RawMess
 
 func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	var req struct {
+		SessionID  string `json:"sessionId"`
 		ToolCallID string `json:"toolCallId"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.ToolCallID == "" {
@@ -272,15 +292,20 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	ch := make(chan Decision, 1)
 	r.permMu.Lock()
 	r.permissions[req.ToolCallID] = ch
+	r.permSession[req.ToolCallID] = req.SessionID
 	r.permMu.Unlock()
 	r.emitEvent("", map[string]any{"type": "permission_request", "toolCallId": req.ToolCallID, "params": params})
 
-	// No wall-clock timeout: the wait ends when the HTTP layer resolves the
-	// permission, or when clearPending drains it (on child restart) with a
-	// deny. Browsers can still explicitly deny.
+	// No wall-clock timeout: the wait ends when the HTTP layer resolves
+	// the permission, when the issuing session is cancelled/deleted or its
+	// SSE subscriber disconnects (drainSession), or when clearPending
+	// drains it on child restart — all with a deny. Browsers can still
+	// explicitly deny.
 	select {
 	case d := <-ch:
 		return map[string]any{"approved": d.Approved, "edited": d.Edited}, nil
+	case <-r.sessionCtx(req.SessionID).Done():
+		return map[string]any{"approved": false}, nil
 	}
 }
 
@@ -295,19 +320,83 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	ch := make(chan Answers, 1)
 	r.quesMu.Lock()
 	r.questions[req.QuestionID] = ch
+	r.quesSession[req.QuestionID] = req.SessionID
 	r.quesMu.Unlock()
 	r.emitEvent(req.SessionID, map[string]any{"type": "question_request", "questionId": req.QuestionID, "params": params})
 
-	// No wall-clock timeout: the wait ends when the HTTP layer answers, or
-	// when clearPending drains it (on child restart) with a decline. Browsers
-	// can still explicitly decline.
+	// No wall-clock timeout: the wait ends when the HTTP layer answers,
+	// when the issuing session is cancelled/deleted or its SSE subscriber
+	// disconnects (drainSession), or when clearPending drains it on child
+	// restart — all with a decline. Browsers can still explicitly decline.
 	select {
 	case a := <-ch:
 		if a.Declined {
 			return map[string]any{"declined": true}, nil
 		}
 		return map[string]any{"answers": a.Answers}, nil
+	case <-r.sessionCtx(req.SessionID).Done():
+		return map[string]any{"declined": true}, nil
 	}
+}
+
+// sessionCtx returns the cancel-scoped context for a session, or a
+// background context when the session is not tracked. Pending waits
+// select on it so a session cancel/delete or subscriber disconnect
+// drains them.
+func (r *Registry) sessionCtx(id string) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if info, ok := r.sessions[id]; ok && info.ctx != nil {
+		return info.ctx
+	}
+	return context.Background()
+}
+
+// cancelSession cancels the session's pending-wait context and drains
+// its pending permission/question waits with deny/decline.
+func (r *Registry) cancelSession(id string) {
+	r.mu.Lock()
+	if info, ok := r.sessions[id]; ok && info.cancel != nil {
+		info.cancel()
+	}
+	r.mu.Unlock()
+	r.drainSession(id)
+}
+
+// DrainSession drains the pending permission/question waits belonging to
+// a session with deny/decline. It is invoked on session cancel/delete and
+// wired to the event log's OnUnsubscribe so an SSE client disconnect for
+// a session also unblocks its pending waits instead of leaking them.
+func (r *Registry) DrainSession(id string) {
+	r.drainSession(id)
+}
+
+// drainSession unblocks every pending permission/question wait whose
+// issuing session is id, with deny/decline, and removes the entries.
+func (r *Registry) drainSession(id string) {
+	r.permMu.Lock()
+	for toolCallID, sid := range r.permSession {
+		if sid == id {
+			if ch, ok := r.permissions[toolCallID]; ok {
+				ch <- Decision{Approved: false}
+				delete(r.permissions, toolCallID)
+			}
+			delete(r.permSession, toolCallID)
+		}
+	}
+	r.permMu.Unlock()
+
+	r.quesMu.Lock()
+	for questionID, sid := range r.quesSession {
+		if sid == id {
+			if ch, ok := r.questions[questionID]; ok {
+				ch <- Answers{Declined: true}
+				delete(r.questions, questionID)
+			}
+			delete(r.quesSession, questionID)
+		}
+	}
+	r.quesMu.Unlock()
 }
 
 // resumeAll runs on child restart: fail any pending permission/question
@@ -344,6 +433,7 @@ func (r *Registry) clearPending() {
 		ch <- Decision{Approved: false}
 		delete(r.permissions, id)
 	}
+	r.permSession = make(map[string]string)
 	r.permMu.Unlock()
 
 	r.quesMu.Lock()
@@ -351,6 +441,7 @@ func (r *Registry) clearPending() {
 		ch <- Answers{Declined: true}
 		delete(r.questions, id)
 	}
+	r.quesSession = make(map[string]string)
 	r.quesMu.Unlock()
 }
 

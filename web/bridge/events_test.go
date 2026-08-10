@@ -266,8 +266,9 @@ func TestEventLogAttach(t *testing.T) {
 		t.Fatal("previous OnNotification hook not chained")
 	}
 
-	// A permission request has no sessionId on the wire; it must be
-	// broadcast to subscribers, and the previous OnEvent hook chained.
+	// A permission request is broadcast to every session's subscribers
+	// (it carries a sessionId but is emitted with an empty session id so
+	// all SSE streams see it), and the previous OnEvent hook chained.
 	if _, err := c.Request(ctx, "test/ask_permission", nil); err != nil {
 		t.Fatalf("test/ask_permission: %v", err)
 	}

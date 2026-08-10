@@ -39,7 +39,10 @@ type PermissionClient interface {
 // PermissionRequest is the JSON-RPC payload for `session/request_permission`.
 // The fields mirror session.PendingToolCall; we keep them in a dedicated
 // type so the wire shape does not depend on session-package internals.
+// SessionID lets the bridge key the pending permission to its issuing
+// session, so a session cancel or client disconnect can drain it.
 type PermissionRequest struct {
+	SessionID  string `json:"sessionId"`
 	ToolCallID string `json:"toolCallId"`
 	ToolName   string `json:"toolName"`
 	Command    string `json:"command,omitempty"`
@@ -80,7 +83,7 @@ func NewPermissionBridge(client PermissionClient) *PermissionBridge {
 // mode.request elevation). On context cancel the ResponseChan is left
 // untouched (the runner's own select on ResponseChan vs ctx.Done decides
 // what to do with the abandoned pending call).
-func (b *PermissionBridge) Request(ctx context.Context, pending *session.PendingToolCall) (session.UserApprovalDecision, error) {
+func (b *PermissionBridge) Request(ctx context.Context, sessionID string, pending *session.PendingToolCall) (session.UserApprovalDecision, error) {
 	if pending == nil {
 		return session.UserApprovalDecision{}, ErrNilPending
 	}
@@ -88,6 +91,7 @@ func (b *PermissionBridge) Request(ctx context.Context, pending *session.Pending
 		return session.UserApprovalDecision{}, ErrPendingMissingResponseChan
 	}
 	req := PermissionRequest{
+		SessionID:  sessionID,
 		ToolCallID: pending.ID,
 		ToolName:   pending.Name,
 		Command:    pending.Command,

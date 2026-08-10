@@ -492,7 +492,7 @@ func (m *TurnManager) runTurn(
 					"session", sessionID, "approval", pa.ID)
 			} else {
 				go func() {
-					decision, err := m.bridge.Request(turnCtx, pa)
+					decision, err := m.bridge.Request(turnCtx, sessionID, pa)
 					if err != nil {
 						slotCancel()
 						subCancel()

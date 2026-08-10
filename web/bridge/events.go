@@ -61,6 +61,13 @@ type EventLog struct {
 	// Defaults to 25s; tests may shorten it.
 	HeartbeatInterval time.Duration
 
+	// OnUnsubscribe, if set, is invoked with the session id whenever a
+	// subscriber for that session disconnects (its unsubscribe func runs).
+	// The web bridge wires it to Registry.DrainSession so an SSE client
+	// disconnect drains that session's pending permission/question waits
+	// instead of leaking them.
+	OnUnsubscribe func(sessionID string)
+
 	mu       sync.Mutex
 	sessions map[string]*sessionLog
 	subs     map[*subscriber]struct{}
@@ -174,6 +181,9 @@ func (l *EventLog) Subscribe(sessionID string) (<-chan Event, func()) {
 			delete(l.subs, s)
 			close(s.ch)
 			l.mu.Unlock()
+			if l.OnUnsubscribe != nil {
+				l.OnUnsubscribe(s.sessionID)
+			}
 		})
 	}
 	return s.ch, unsub
@@ -242,6 +252,15 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 		_, _ = l.Append(sessionID, payload)
 		if prevOnEvent != nil {
 			prevOnEvent(sessionID, payload)
+		}
+	}
+	// An SSE client disconnect for a session drains that session's pending
+	// permission/question waits so they do not leak. Chained, not replaced.
+	prevOnUnsub := l.OnUnsubscribe
+	l.OnUnsubscribe = func(sessionID string) {
+		reg.DrainSession(sessionID)
+		if prevOnUnsub != nil {
+			prevOnUnsub(sessionID)
 		}
 	}
 }

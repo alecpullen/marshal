@@ -228,6 +228,118 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	}
 }
 
+func TestRegistryCancelDrainsPendingPermission(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return ok
+	})
+
+	// Cancelling the issuing session must drain the pending permission.
+	if err := r.Cancel(ctx, "s-1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitFor(t, 2*time.Second, "permission drained on cancel", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return !ok
+	})
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve after cancel: want ErrGone, got %v", err)
+	}
+}
+
+func TestRegistryCancelDrainsPendingQuestion(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending question", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return ok
+	})
+
+	if err := r.Cancel(ctx, "s-1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitFor(t, 2*time.Second, "question drained on cancel", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return !ok
+	})
+	if err := r.ResolveQuestion("q-1", Answers{Declined: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve after cancel: want ErrGone, got %v", err)
+	}
+}
+
+func TestRegistryDrainSessionUnblocksWaiters(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger permission: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
+		t.Fatalf("trigger question: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return ok
+	})
+	waitFor(t, 2*time.Second, "pending question", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return ok
+	})
+
+	// DrainSession (as wired to the SSE OnUnsubscribe hook) must unblock
+	// both waiters and remove the entries.
+	r.DrainSession("s-1")
+	r.permMu.Lock()
+	_, permOK := r.permissions["tc-1"]
+	r.permMu.Unlock()
+	r.quesMu.Lock()
+	_, quesOK := r.questions["q-1"]
+	r.quesMu.Unlock()
+	if permOK || quesOK {
+		t.Fatal("DrainSession left stale pending entries")
+	}
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve permission after drain: want ErrGone, got %v", err)
+	}
+	if err := r.ResolveQuestion("q-1", Answers{Declined: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve question after drain: want ErrGone, got %v", err)
+	}
+}
+
 func TestRegistryRestartResumesSessions(t *testing.T) {
 	r, c := newTestRegistry(t, "registry-die")
 	ctx, cancel := testContext(t)

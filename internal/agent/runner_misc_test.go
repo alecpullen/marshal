@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1249,6 +1250,21 @@ func TestThinkingNotLoggedWhenProviderStreamsNoReasoning(t *testing.T) {
 		if item.Kind == session.KindThinking {
 			t.Fatalf("unexpected KindThinking transcript item with empty reasoning: %+v", item.Thinking)
 		}
+	}
+}
+
+func TestChangedFilesForToolFileWrite(t *testing.T) {
+	got := changedFilesForTool("file.write", map[string]interface{}{"path": "a.go", "content": "x"})
+	if !reflect.DeepEqual(got, []string{"a.go"}) {
+		t.Fatalf("file.write changed files = %#v, want [a.go]", got)
+	}
+	// Missing/empty path -> nil.
+	if got := changedFilesForTool("file.write", map[string]interface{}{}); got != nil {
+		t.Fatalf("file.write with no path = %#v, want nil", got)
+	}
+	// Other tools unchanged.
+	if got := changedFilesForTool("file.read", map[string]interface{}{"path": "a.go"}); got != nil {
+		t.Fatalf("file.read changed files = %#v, want nil", got)
 	}
 }
 

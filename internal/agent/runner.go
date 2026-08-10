@@ -1268,6 +1268,12 @@ func (r *Runner) Chat(ctx context.Context, messages []schema.ChatMessage) (schem
 }
 
 func changedFilesForTool(toolName string, argsMap map[string]interface{}) []string {
+	if toolName == "file.write" {
+		if path, ok := argsMap["path"].(string); ok && path != "" {
+			return []string{path}
+		}
+		return nil
+	}
 	if toolName != "file.write_patch" {
 		return nil
 	}

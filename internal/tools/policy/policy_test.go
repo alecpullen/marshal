@@ -409,6 +409,35 @@ func TestPolicyEngine_F4PermissionRuleAsk(t *testing.T) {
 	}
 }
 
+func TestPolicyEngine_FileWriteSubjectDerivation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "file.write", Pattern: "secrets/**", Action: "deny"},
+	}
+	pe := NewEngine(&cfg, []string{})
+
+	// A file.write targeting a denied path is denied.
+	dec, reason, err := pe.Evaluate("file.write", map[string]interface{}{"path": "secrets/key.txt", "content": "x"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("secrets/** file.write should be denied, got %v", dec)
+	}
+	if reason == "" {
+		t.Error("deny should have a reason")
+	}
+
+	// A file.write targeting an allowed path is not denied by the rule.
+	dec, _, err = pe.Evaluate("file.write", map[string]interface{}{"path": "public.txt", "content": "x"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec == DecisionDeny {
+		t.Errorf("public.txt file.write should not be denied, got %v", dec)
+	}
+}
+
 func TestPolicyEngine_F4PermissionRuleDeny(t *testing.T) {
 	cfg := config.Default()
 	cfg.Permissions.Rules = []config.PermissionRule{

@@ -12,7 +12,6 @@ import (
 	"marshal/internal/tools/patch"
 )
 
-
 // applyPatchOp applies a SEARCH/REPLACE patch to a file in dir. It uses the
 // existing patch engine's ValidatePatch to check uniqueness, then ApplyPatch
 // to perform the replacement.

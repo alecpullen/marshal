@@ -63,6 +63,7 @@ func (c Config) RoutingConfig() routing.Config {
 		CustomAgents:     c.CustomAgents,
 		ContextBudgets:   contextBudgets,
 		ProviderBaseURLs: providerBaseURLs,
+		EmbeddingPreset:  c.Indexing.EmbeddingPreset,
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -1247,7 +1248,12 @@ func (t *toolSet) configAgentProfilesSetTool() registry.Tool {
 		scope := args.resolvedScope()
 		reason := fmt.Sprintf("config.agent_profiles.set (%s scope): set agent profile %q", scope, args.Name)
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			// Overlay, don't replace: omitted roles are preserved (the tool
+			// description promises this). Seed from the existing profile.
 			roles := map[routing.AgentRole]routing.RoleBinding{}
+			if existing, ok := cfg.AgentProfiles[args.Name]; ok {
+				maps.Copy(roles, existing.Roles)
+			}
 			for roleKey, roleVal := range args.Roles {
 				role := routing.AgentRole(roleKey)
 				var rb routing.RoleBinding

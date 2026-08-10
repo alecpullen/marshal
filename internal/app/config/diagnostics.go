@@ -126,7 +126,8 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		}
 	}
 
-	// 7: legacy agent.provider + agent.model (deprecated)
+	// 7: legacy settings migrated at load (agent.provider/agent.model, and
+	// the per-profile embedding role binding)
 	if layers.Migrated {
 		path := "agent.provider"
 		p := layers.ProvenanceOf(path)
@@ -134,7 +135,7 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		ds = append(ds, Diagnostic{
 			Severity: SeverityWarning,
 			Path:     path,
-			Message:  "agent.provider and agent.model are deprecated; migrated to a single-model profile for this session. The next config save will rewrite these settings.",
+			Message:  "legacy settings were migrated for this session (agent.provider/agent.model, or the per-profile embedding role binding). The next config save will rewrite these settings.",
 			Source:   source,
 		})
 	}

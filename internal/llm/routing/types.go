@@ -204,4 +204,9 @@ type Config struct {
 	CustomAgents     map[string]CustomAgent
 	ContextBudgets   map[AgentRole]ContextBudget
 	ProviderBaseURLs map[string]string // provider name -> base URL for default-preset synthesis
+	// EmbeddingPreset names the preset used for embeddings, from
+	// [indexing] embedding_preset. Preferred over the legacy per-profile
+	// embedding role binding, which ResolveEmbedding still consults as a
+	// fallback for configs built without the load-time migration.
+	EmbeddingPreset string
 }

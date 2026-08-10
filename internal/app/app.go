@@ -1426,12 +1426,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 
 			// Surface a hint when embedding indexing is enabled but no
-			// embedding role is bound in the active profile — semantic search
-			// will report "unavailable" until the role is set.
+			// embedding preset is configured — semantic search will report
+			// "unavailable" until one is set.
 			if cfg.Indexing.UseEmbeddings && !embeddingConfigured {
-				msg := "Semantic search is enabled (indexing.use_embeddings) but no embedding role is configured in the active agent profile. " +
-					"Bind one with: [agent_profiles.<profile>.roles] embedding = '<preset>' — or via /settings → Profiles."
-				logger.Warn("embedding role not configured while use_embeddings is enabled")
+				msg := "Semantic search is enabled (indexing.use_embeddings) but no embedding preset is configured. " +
+					"Set one with: [indexing] embedding_preset = '<provider>/<model>' — or via /settings → Indexing."
+				logger.Warn("embedding preset not configured while use_embeddings is enabled")
 				state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 			}
 
@@ -1688,7 +1688,7 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) ProgramR
 // completion popup. Returns nil on any error (no DB, no rows, query
 // failure) so callers can treat absence as "skip the eager seed".
 // resolveEmbedderFromConfig constructs an embedding.Embedder from the
-// routing config, or returns nil when no embedding role is configured.
+// routing config, or returns nil when no embedding preset is configured.
 // This mirrors the native tool set's resolveEmbedder closure.
 func resolveEmbedderFromConfig(cfg config.Config) embedding.Embedder {
 	router := routing.NewStaticRouter(cfg.RoutingConfig())

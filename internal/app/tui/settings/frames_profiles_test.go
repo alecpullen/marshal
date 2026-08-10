@@ -63,9 +63,10 @@ func TestProfileEntryHasOneRowPerRole(t *testing.T) {
 	}
 	detail := localRow.Build()
 	detailRows := detail.List.Rows()
-	// Base model + Fast model + Embeddings + a roles header + every
-	// dispatchable role except implementer (surfaced as Base model).
-	wantRows := 4 + (len(routing.AllRoles) - 1)
+	// Base model + Fast model + a roles header + every dispatchable role
+	// except implementer (surfaced as Base model). The embedding preset
+	// moved to the Indexing frame ([indexing] embedding_preset).
+	wantRows := 3 + (len(routing.AllRoles) - 1)
 	if len(detailRows) != wantRows {
 		t.Fatalf("profile detail should have %d rows, got %d", wantRows, len(detailRows))
 	}

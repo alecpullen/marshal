@@ -810,6 +810,70 @@ func TestResolveEmbeddingRemoteBlocked(t *testing.T) {
 	}
 }
 
+func TestResolveEmbeddingStructuralField(t *testing.T) {
+	cfg := Config{
+		DefaultProfile:   "local",
+		RemoteAllowed:    false,
+		EmbeddingPreset:  "ollama/nomic-embed-text",
+		Presets:          map[string]ModelPreset{"ollama/nomic-embed-text": {Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true}},
+		Profiles:         map[string]AgentProfile{"local": {Name: "local", Roles: map[AgentRole]RoleBinding{}}},
+		ProviderBaseURLs: map[string]string{"ollama": "http://localhost:11434/v1"},
+	}
+	route, err := NewStaticRouter(cfg).ResolveEmbedding()
+	if err != nil {
+		t.Fatalf("ResolveEmbedding: %v", err)
+	}
+	if route.Preset.Name != "ollama/nomic-embed-text" {
+		t.Fatalf("preset = %q, want ollama/nomic-embed-text", route.Preset.Name)
+	}
+}
+
+func TestResolveEmbeddingStructuralFieldBeatsLegacyBinding(t *testing.T) {
+	cfg := Config{
+		DefaultProfile:  "local",
+		RemoteAllowed:   false,
+		EmbeddingPreset: "ollama/structural",
+		Presets: map[string]ModelPreset{
+			"ollama/structural": {Provider: "ollama", Model: "structural", LocalOnly: true},
+			"ollama/legacy":     {Provider: "ollama", Model: "legacy", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"local": {Name: "local", Roles: map[AgentRole]RoleBinding{RoleEmbedding: {Preset: "ollama/legacy"}}},
+		},
+	}
+	route, err := NewStaticRouter(cfg).ResolveEmbedding()
+	if err != nil {
+		t.Fatalf("ResolveEmbedding: %v", err)
+	}
+	if route.Preset.Name != "ollama/structural" {
+		t.Fatalf("preset = %q, want the structural field to win over the legacy binding", route.Preset.Name)
+	}
+}
+
+func TestResolveEmbeddingStructuralFieldMissingPreset(t *testing.T) {
+	cfg := Config{
+		DefaultProfile:  "local",
+		EmbeddingPreset: "ollama/typo",
+		Profiles:        map[string]AgentProfile{"local": {Name: "local", Roles: map[AgentRole]RoleBinding{}}},
+	}
+	if _, err := NewStaticRouter(cfg).ResolveEmbedding(); !errors.Is(err, ErrPresetNotFound) {
+		t.Fatalf("want ErrPresetNotFound for a missing structural preset, got %v", err)
+	}
+}
+
+func TestResolveEmbeddingStructuralFieldRemoteBlocked(t *testing.T) {
+	cfg := Config{
+		DefaultProfile:  "local",
+		RemoteAllowed:   false,
+		EmbeddingPreset: "openai/text-embedding-3-small",
+		Presets:         map[string]ModelPreset{"openai/text-embedding-3-small": {Provider: "openai", Model: "text-embedding-3-small", LocalOnly: false}},
+		Profiles:        map[string]AgentProfile{"local": {Name: "local", Roles: map[AgentRole]RoleBinding{}}},
+	}
+	if _, err := NewStaticRouter(cfg).ResolveEmbedding(); !errors.Is(err, ErrRemoteProviderBlocked) {
+		t.Fatalf("want ErrRemoteProviderBlocked for a remote structural preset, got %v", err)
+	}
+}
+
 func TestRoleEmbeddingExcludedFromAllRoles(t *testing.T) {
 	for _, role := range AllRoles {
 		if role == RoleEmbedding {

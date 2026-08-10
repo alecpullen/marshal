@@ -67,6 +67,7 @@ type fileIndexing struct {
 	MaxSearchableFileBytes *int64   `toml:"max_searchable_file_bytes"`
 	Watch                  *bool    `toml:"watch"`
 	WatchDebounceMs        *int     `toml:"watch_debounce_ms"`
+	EmbeddingPreset        *string  `toml:"embedding_preset"`
 }
 
 type fileSkills struct {

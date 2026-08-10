@@ -792,6 +792,20 @@ func TestCompletedToolCallExpandsResultContent(t *testing.T) {
 	}
 }
 
+func TestCompletedFailedDiffToolShowsFailureDetailsWhenExpanded(t *testing.T) {
+	exitCode := 2
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:        "file.write_patch",
+		Error:           "patch rejected",
+		Args:            []byte(`{"path":"a.go"}`),
+		CommandExitCode: &exitCode,
+		ResultContent:   "patch output",
+	}, true, 80))
+	if !strings.Contains(out, "exit code: 2") || !strings.Contains(out, `args: {"path":"a.go"}`) {
+		t.Fatalf("expanded failed diff tool must show failure details:\n%s", out)
+	}
+}
+
 func TestCompletedToolCallCapsExpandedResultContent(t *testing.T) {
 	var lines []string
 	for i := 0; i < 20; i++ {

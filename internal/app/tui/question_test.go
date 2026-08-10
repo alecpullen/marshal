@@ -129,6 +129,18 @@ func TestQuestionFinalizeSingleChoice(t *testing.T) {
 	if answers[0].Answer != "green" {
 		t.Fatalf("single-choice answer = %q, want green", answers[0].Answer)
 	}
+	if qm.others[0] != nil {
+		t.Fatal("question without AllowOther should not create a custom-answer input")
+	}
+}
+
+func TestBuildQuestionOptionsRespectsAllowOther(t *testing.T) {
+	if got := buildQuestionOptions([]string{"red"}, false); len(got) != 1 {
+		t.Fatalf("disallowed Other option count = %d, want 1", len(got))
+	}
+	if got := buildQuestionOptions([]string{"red"}, true); len(got) != 2 {
+		t.Fatalf("allowed Other option count = %d, want 2", len(got))
+	}
 }
 
 // TestQuestionFinalizeMultiChoice verifies a multi-select submits the joined

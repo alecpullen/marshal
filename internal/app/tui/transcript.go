@@ -889,6 +889,18 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 			b.WriteString("\n")
 		}
 	}
+	if expanded && event.Error != "" && isDiffTool(event.ToolName) {
+		if event.CommandExitCode != nil {
+			b.WriteString(nestedRail())
+			b.WriteString(dimStyle().Render(fmt.Sprintf("exit code: %d", *event.CommandExitCode)))
+			b.WriteString("\n")
+		}
+		if len(event.Args) > 0 {
+			b.WriteString(nestedRail())
+			b.WriteString(dimStyle().Render("args: " + string(event.Args)))
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 

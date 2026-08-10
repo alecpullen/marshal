@@ -16,12 +16,21 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
 // Session event types (F21). Defined next to the owning service per F19
 // R4. Type strings are opaque identifiers agreed between the session
 // publisher and the ACP / external subscribers.
+const (
+	// subagentReportCap limits how much of an agent.run result is
+	// persisted into turn_tool_audit for cross-turn replay. The cap
+	// keeps history bounded while still preserving useful subagent
+	// findings.
+	subagentReportCap = 4000
+)
+
 const (
 	EventMessageAdded           = "message_added"
 	EventThinkingChanged        = "thinking_changed"
@@ -1188,13 +1197,17 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 	// summary string and the (ok) marker are filled in here so the
 	// ledger stays a one-line summary, while auditLog retains the full
 	// event for inspection.
-	s.toolAuditThisTurn = append(s.toolAuditThisTurn, db.ToolAuditEntry{
+	entry := db.ToolAuditEntry{
 		Seq:     len(s.toolAuditThisTurn) + 1,
 		Tool:    event.ToolName,
 		Summary: ledgerSummaryFor(event),
 		Ok:      event.Error == "" && event.Approval != registry.ApprovalDenied,
 		Tokens:  estimateAuditTokens(event),
-	})
+	}
+	if event.ToolName == "agent.run" {
+		entry.Content = strutil.Truncate(event.ResultContent, subagentReportCap, false)
+	}
+	s.toolAuditThisTurn = append(s.toolAuditThisTurn, entry)
 	published := event
 	s.mu.Unlock()
 

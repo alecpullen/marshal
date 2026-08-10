@@ -59,6 +59,23 @@ func pumpWorkspaceEvents(ch <-chan pubsub.Event[session.WorkspaceEvent]) tea.Cmd
 	}
 }
 
+// pumpSubagentEvents reads from the model's persistent subagent
+// subscription and returns a tea.Cmd that blocks until the next
+// SubagentEvent lands, then returns a subagentMsg. Re-arming reads from
+// the same channel so card updates do not accumulate stale subscribers.
+func pumpSubagentEvents(ch <-chan pubsub.Event[session.SubagentEvent]) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return subagentMsg{view: ev.Payload.View}
+	}
+}
+
 // railBaseRefCmd shells out to git rev-parse off the UI thread and returns
 // the result as a railBaseRefMsg. dir is the workspace active root.
 func railBaseRefCmd(dir string) tea.Cmd {

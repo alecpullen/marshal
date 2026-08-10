@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -64,6 +65,9 @@ func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
 	}
 	if snap.ToolRegistry != nil {
 		m.toolRegistry = snap.ToolRegistry
+	}
+	if snap.ReviewDispatcher != nil {
+		m.reviewDispatcher = snap.ReviewDispatcher
 	}
 
 	// Drop per-message UI state that belongs to the old session.
@@ -240,6 +244,27 @@ func init() {
 			m.dock.Open(docpanel.New(doc, m.state))
 			m.refreshViewport()
 			return m, nil
+		},
+		"review": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			if m.busy {
+				return m, nil
+			}
+			if m.reviewDispatcher == nil {
+				m.state.AddMessage(session.RoleSystem, "Review subagent is not available in this build.", session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+			if err := m.state.BeginWork(); err != nil {
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start review: %v", err), session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+			m.busy = true
+			m.turnStartedAt = m.now()
+			agentCtx, cancel := context.WithCancel(m.ctx)
+			m.agentCancel = cancel
+			focus := strings.TrimSpace(strings.Join(args, " "))
+			return *m, tea.Batch(runReviewCmd(agentCtx, m.state, m.reviewDispatcher, focus), tickCmd(), spinnerTickCmd())
 		},
 		"connect": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openConnect("/")

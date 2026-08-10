@@ -103,6 +103,50 @@ func TestBuildHistoryMessagesDropsOldestBeyondBudget(t *testing.T) {
 	}
 }
 
+func TestBuildHistoryMessagesReplaysAgentRunContent(t *testing.T) {
+	prior := []session.Message{
+		{Role: session.RoleUser, Content: "review this", ContentType: session.ContentTypePlain},
+		{Role: session.RoleAssistant, Content: "Done.", ContentType: session.ContentTypeMarkdown, Final: true, ToolCallCount: 1, DBID: 7},
+	}
+	audits := map[int64][]db.ToolAuditEntry{
+		7: {
+			{Seq: 1, Tool: "agent.run", Summary: "review", Ok: true, Tokens: 120, Content: "Looks good."},
+		},
+	}
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits)
+	if len(msgs) != 4 {
+		t.Fatalf("got %d messages, want 4 (user + ledger + report + answer): %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != schema.RoleUser {
+		t.Fatalf("msgs[0] = %+v, want user", msgs[0])
+	}
+	if msgs[1].Role != schema.RoleSystem || !strings.Contains(msgs[1].Content, "tool activity") {
+		t.Fatalf("msgs[1] = %+v, want ledger line", msgs[1])
+	}
+	if msgs[2].Role != schema.RoleSystem || !strings.Contains(msgs[2].Content, "Subagent report (review): Looks good.") {
+		t.Fatalf("msgs[2] = %+v, want subagent report", msgs[2])
+	}
+	if msgs[3].Role != schema.RoleAssistant || msgs[3].Content != "Done." {
+		t.Fatalf("msgs[3] = %+v, want assistant answer", msgs[3])
+	}
+}
+
+func TestBuildHistoryMessagesAgentRunWithoutContentOmitsReport(t *testing.T) {
+	prior := []session.Message{
+		{Role: session.RoleUser, Content: "review this", ContentType: session.ContentTypePlain},
+		{Role: session.RoleAssistant, Content: "Done.", ContentType: session.ContentTypeMarkdown, Final: true, ToolCallCount: 1, DBID: 7},
+	}
+	audits := map[int64][]db.ToolAuditEntry{
+		7: {
+			{Seq: 1, Tool: "agent.run", Summary: "review", Ok: true, Tokens: 120},
+		},
+	}
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits)
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3 (user + ledger + answer): %+v", len(msgs), msgs)
+	}
+}
+
 func TestBuildHistoryMessagesFiltersByGenerationBoundary(t *testing.T) {
 	prior := []session.Message{
 		{ID: 1, Role: session.RoleUser, Content: "pre-boundary question", ContentType: session.ContentTypePlain},

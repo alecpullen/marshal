@@ -578,7 +578,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	messages := []schema.ChatMessage{
-		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir),
+		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config)),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
 	messages = r.appendSkillBodies(messages)
@@ -636,7 +636,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			r.State.SetContextPack(updatedPack)
 			r.contextPackMsgIndex = -1
 			r.emittedSkills = nil
-			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir)}
+			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config))}
 			messages = r.setContextPackMessage(messages, updatedPack)
 			messages = r.appendSkillBodies(messages)
 			if r.role() == RoleGeneral {
@@ -736,7 +736,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		currentSkills := r.State.ActiveSkills()
 		if skillsChanged(lastRenderedSkills, currentSkills) {
-			messages[0] = BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir)
+			messages[0] = BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config))
 			lastRenderedSkills = currentSkills
 		}
 

@@ -541,7 +541,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	if err := reg.Register(agent.NewSubagentTool(
-		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID),
+		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID),
 		reg,
 		state,
 	)); err != nil {
@@ -746,7 +746,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		desktopCloser = closer
 	}
 
-	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID)
+	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID)
 	pipelineFactory := func(planPath string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath)
 	}
@@ -1118,24 +1118,27 @@ const defaultSubtaskIterations = 12
 // preset's provider/model; all other overrides are retained. Both named-agent
 // and ad-hoc paths wire Pricing, UsageObserver, and MetricsObserver so
 // subagent token usage and cost are visible to the parent session.
-func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
+func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
 	subtaskIters := cfg.Agent.SubtaskIterations
 	if subtaskIters <= 0 {
 		subtaskIters = defaultSubtaskIterations
 	}
 	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
 	repoInstructionsForSubagent, _ := loadRepoInstructions(parentState.WorkingDir)
+	writeLock := &swarm.WriteLock{}
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
 		role := agent.RoleSubtask
 		model := defaultModel
+		childProvider := parentProvider
 		var addendum string
 		var pricingRates pricing.ModelPricing
 		iters := subtaskIters
 		// An explicit provider/model pair resolves first so invalid pairs
 		// fail clearly before any execution, and so a named agent can replace
 		// only its preset provider/model while keeping its other overrides.
+		var targetRoute routing.Route
 		if req.Model != "" {
 			if router == nil {
 				return nil, nil, fmt.Errorf("agent.run: explicit model %q requested but no router configured", req.Model)
@@ -1146,6 +1149,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			}
 			model = eroute.Preset.Model
 			pricingRates = pricing.Lookup(eroute.Preset)
+			targetRoute = eroute
 		}
 		if req.Agent != "" && router != nil {
 			route, err := router.ResolveCustomAgent(req.Agent, agent.RoleSubtask)
@@ -1155,6 +1159,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			if req.Model == "" {
 				model = route.Preset.Model
 				pricingRates = pricing.Lookup(route.Preset)
+				targetRoute = route
 			}
 			if route.CustomAgent != nil {
 				ca := route.CustomAgent
@@ -1167,13 +1172,25 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 				}
 			}
 		}
-		child := agent.NewRunner(parentProvider, roReg, pol, childState, model)
+		if targetRoute.Preset.Provider != "" && (parentProvider == nil || targetRoute.Preset.Provider != parentProvider.Name()) {
+			// In tests resolver may be nil; keep the parent provider so
+			// unit tests that only inspect model/pricing still work.
+			if resolver != nil {
+				p, err := resolver.providerFor(targetRoute)
+				if err != nil {
+					return nil, nil, fmt.Errorf("agent.run: model %q: %w", model, err)
+				}
+				childProvider = p
+			}
+		}
+		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
 		child.Role = role
 		child.MaxToolIterations = iters
 		child.NativeTools = true
 		child.SystemPromptAddendum = composeAddendum(repoInstructionsForSubagent, addendum)
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
+		child.WriteGate = writeLock
 		// Fold the child's token usage into the parent session's running
 		// total so /context and the session usage view include subagent
 		// work. The child session is separate; this is additive to the
@@ -1319,6 +1336,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
 		workspaceBroker := must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker)
+		subagentBroker := must[*pubsub.Broker[session.SubagentEvent]](rt.SubagentBroker)
 		state := rt.State
 		logger := rt.Logger
 
@@ -1367,6 +1385,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// failed, or the worktree footer/rail never updates until a busy-tick.
 		// The broker is created in runtime.go regardless of provider state.
 		tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
+		tuiOpts = append(tuiOpts, tui.WithSubagentBroker(ctx, subagentBroker))
 		if state.ProviderError() == nil {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
@@ -1385,6 +1404,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				func(agentName string) (tui.AgentRunner, error) {
 					runner, _, err := rt.CustomAgentFactory(agent.SubagentRequest{Agent: agentName})
 					return runner, err
+				},
+			))
+			tuiOpts = append(tuiOpts, tui.WithReviewDispatcher(
+				func(ctx context.Context, focus string) error {
+					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus)
 				},
 			))
 		}
@@ -1410,6 +1434,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				PipelineFactory:   pipelineFactory,
 				PlanAuthorFactory: planAuthorFactory,
 				ToolRegistry:      toolReg,
+				ReviewDispatcher: func(ctx context.Context, focus string) error {
+					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus)
+				},
 			}, nil
 		})))
 

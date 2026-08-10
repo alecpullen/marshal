@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,42 @@ import (
 // is exercised end-to-end in a separate db_test; here we just verify
 // the buffer plumbing so the network effect of the flush hook is
 // locked down.
+func TestLogToolCallCapturesAgentRunContent(t *testing.T) {
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	s.LogToolCall(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "review",
+		ResultContent: "Looks good.",
+		Approval:      registry.ApprovalApproved,
+	})
+	if len(s.toolAuditThisTurn) != 1 {
+		t.Fatalf("expected one buffered entry, got %d", len(s.toolAuditThisTurn))
+	}
+	if s.toolAuditThisTurn[0].Content != "Looks good." {
+		t.Fatalf("content = %q, want Looks good.", s.toolAuditThisTurn[0].Content)
+	}
+}
+
+func TestLogToolCallCapsAgentRunContent(t *testing.T) {
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	long := strings.Repeat("x", subagentReportCap+100)
+	s.LogToolCall(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "review",
+		ResultContent: long,
+		Approval:      registry.ApprovalApproved,
+	})
+	if len(s.toolAuditThisTurn) != 1 {
+		t.Fatalf("expected one buffered entry, got %d", len(s.toolAuditThisTurn))
+	}
+	if len(s.toolAuditThisTurn[0].Content) > subagentReportCap {
+		t.Fatalf("content length %d exceeds cap %d", len(s.toolAuditThisTurn[0].Content), subagentReportCap)
+	}
+	if !strings.HasPrefix(s.toolAuditThisTurn[0].Content, "xxxx") {
+		t.Fatal("truncation removed the wrong end")
+	}
+}
+
 func TestLogToolCallPersistsLedgerOnAssistantFinal(t *testing.T) {
 	cfg := config.Default()
 	cfg.Scratchpad = config.ScratchpadConfig{

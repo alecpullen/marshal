@@ -80,7 +80,7 @@ func (p *blockingProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 
 // delayedProvider succeeds after a fixed delay, or errors if ctx is
 // cancelled first. Used to prove chatOnce's timeout is governed by
-// ChatTimeout, independent of ApprovalTimeout.
+// ChatTimeout, independent of any approval/question ceiling.
 type delayedProvider struct {
 	delay time.Duration
 }

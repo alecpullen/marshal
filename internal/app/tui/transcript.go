@@ -350,6 +350,24 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	return b.String()
 }
 
+// renderReconnectNotice renders the live "connection lost — retrying"
+// activity row as a single warning-styled line: spinner glyph + label,
+// wrapped/truncated to the content width. It mirrors renderThinkingBox's
+// gutter so the row lines up with every other transcript item.
+func renderReconnectNotice(label, spinnerFrame string, width int) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	cw := contentWidth(width)
+	var b strings.Builder
+	header := spinnerLabel(spinnerFrame, label)
+	b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
+	b.WriteString(warningStyle().Render(ansi.Wrap(header, cw, "")))
+	b.WriteString("\n")
+	return b.String()
+}
+
 // renderThinkingSummary renders a finished message's captured reasoning,
 // either collapsed to one line or, when expanded, as a full boxed panel
 // matching renderThinkingBox's style.

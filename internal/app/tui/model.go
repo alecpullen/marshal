@@ -120,6 +120,11 @@ const (
 	minTerminalHeight = 24
 
 	successPulseDuration = 2 * time.Second
+	// providerErrorBannerDuration bounds how long a failed turn's provider
+	// error banner stays up before auto-dismissing, so a stale failure does
+	// not sit under the transcript forever. Cleared earlier still on the
+	// next prompt's turn start.
+	providerErrorBannerDuration = 30 * time.Second
 
 	// settingsBusyMessage is shown when runtime work makes a settings change
 	// unsafe to persist.
@@ -343,10 +348,11 @@ type Model struct {
 	// pinned turn spinner's elapsed clock. Zero while idle. Distinct from
 	// session.Activity.StartedAt, which is per-phase and resets between
 	// phases — the spinner must survive those gaps.
-	turnStartedAt  time.Time
-	successPulse   bool
-	successPulseAt time.Time
-	now            func() time.Time
+	turnStartedAt      time.Time
+	successPulse       bool
+	successPulseAt     time.Time
+	providerErrShownAt time.Time
+	now                func() time.Time
 
 	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
 	// todosDismissed hides the all-done summary from the next turn
@@ -731,6 +737,7 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 // failure is adopted so the session becomes usable without a restart.
 func (m *Model) afterRuntimeReload() {
 	m.state.SetProviderError(nil)
+	m.providerErrShownAt = time.Time{}
 	m.adoptRunner()
 }
 
@@ -2833,6 +2840,9 @@ func (m *Model) refreshViewport() {
 	if inProgress.Active && inProgress.Reasoning != "" {
 		addBlock(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()), nil)
 	}
+	if act := transcriptState.Activity(); act.Kind == session.ActivityReconnecting && act.Label != "" {
+		addBlock(renderReconnectNotice(act.Label, m.activeSpinnerFrame(session.ActivityReconnecting), m.viewport.Width()), nil)
+	}
 	// Use the same transcriptState that was computed for the drilled-in
 	// child (or the parent when not drilling). The previous code read
 	// m.state.ActiveToolCall(), which always used the parent session
@@ -2993,6 +3003,11 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 		m.refreshViewport()
 		return *m, nil
 	}
+	// Optimistic dismissal: a fresh prompt means the user is trying again, so
+	// clear any stale provider error from an earlier failed turn. If this turn
+	// also fails, handleAgentFinished re-sets it.
+	m.state.SetProviderError(nil)
+	m.providerErrShownAt = time.Time{}
 	m.busy = true
 	m.turnStartedAt = m.now()
 	agentCtx, cancel := context.WithCancel(m.ctx)
@@ -3268,6 +3283,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.queuedCount = 0
 		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
 		m.state.SetProviderError(nil)
+		m.providerErrShownAt = time.Time{}
 		m.cancelling = false
 	}
 	m.busy = false
@@ -3290,11 +3306,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 			}
 		}
 		m.state.SetProviderError(msg.err)
+		m.providerErrShownAt = m.now()
 		m.successPulse = false
 	} else if msg.err == nil {
 		// A completed turn proves the provider is reachable again — clear
 		// any stale error banner from an earlier failed turn.
 		m.state.SetProviderError(nil)
+		m.providerErrShownAt = time.Time{}
 		m.successPulse = true
 		m.successPulseAt = m.now()
 		// After a successful Plan mode turn, hint that the approved plan can
@@ -3325,12 +3343,14 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	if msg.err != nil {
 		m.state.SetProviderError(msg.err)
+		m.providerErrShownAt = m.now()
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Plan authoring failed: %v", msg.err), session.ContentTypePlain)
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
 	}
 	m.state.SetProviderError(nil)
+	m.providerErrShownAt = time.Time{}
 	m.dock.Open(sddreview.New(msg.result))
 	m.updateViewportHeight()
 	m.refreshViewport()
@@ -3409,7 +3429,13 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 	if !m.busy && m.successPulse && m.now().Sub(m.successPulseAt) >= successPulseDuration {
 		m.successPulse = false
 	}
-	if !m.busy && !m.successPulse {
+	errPending := m.state.ProviderError() != nil && !m.providerErrShownAt.IsZero()
+	if errPending && m.now().Sub(m.providerErrShownAt) >= providerErrorBannerDuration {
+		m.state.SetProviderError(nil)
+		m.providerErrShownAt = time.Time{}
+		errPending = false
+	}
+	if !m.busy && !m.successPulse && !errPending {
 		return m, nil
 	}
 	m.updateViewportHeight()
@@ -3966,6 +3992,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		// The banner itself tells the user to run /connect; a successful
 		// switch must clear it even when no runtime reloader is wired.
 		m.state.SetProviderError(nil)
+		m.providerErrShownAt = time.Time{}
 		m.state.AddMessage(session.RoleSystem,
 			fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 	}

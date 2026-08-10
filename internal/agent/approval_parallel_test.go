@@ -48,7 +48,11 @@ func TestParallelReadOnlyApprovalsAreSerialized(t *testing.T) {
 	})
 
 	r := NewRunner(nil, reg, pol, state, "test-model")
-	r.ApprovalTimeout = 200 * time.Millisecond // fail fast if an approval is lost
+	// With no wall-clock approval timeout, a genuinely lost approval would
+	// park a goroutine forever. Bounding the test's own context makes a lost
+	// approval cancel the run instead of hanging the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	// Answer every pending approval as it appears. We track the last tool we
 	// answered so a stale read of the same PendingToolCall does not count as a
@@ -76,7 +80,7 @@ func TestParallelReadOnlyApprovalsAreSerialized(t *testing.T) {
 		{Type: ActionToolCall, Tool: "readonly.a", Args: json.RawMessage(`{}`)},
 		{Type: ActionToolCall, Tool: "readonly.b", Args: json.RawMessage(`{}`)},
 	}
-	msgs, err := r.executeActions(context.Background(), actions)
+	msgs, err := r.executeActions(ctx, actions)
 	<-done
 	if err != nil {
 		t.Fatalf("executeActions error: %v", err)

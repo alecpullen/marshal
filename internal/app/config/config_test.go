@@ -413,6 +413,7 @@ provider = "ollama"
 model = "qwen3-coder"
 max_tool_iterations = 32
 max_retries = 5
+reconnect_max_wait_seconds = 180
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -428,6 +429,9 @@ max_retries = 5
 	if cfg.Agent.MaxRetries != 5 {
 		t.Fatalf("Agent.MaxRetries = %d, want 5", cfg.Agent.MaxRetries)
 	}
+	if cfg.Agent.ReconnectMaxWaitSeconds != 180 {
+		t.Fatalf("Agent.ReconnectMaxWaitSeconds = %d, want 180", cfg.Agent.ReconnectMaxWaitSeconds)
+	}
 }
 
 func TestDefaultAgentLimitsAreZero(t *testing.T) {
@@ -437,6 +441,9 @@ func TestDefaultAgentLimitsAreZero(t *testing.T) {
 	}
 	if cfg.Agent.MaxRetries != 0 {
 		t.Fatalf("Agent.MaxRetries = %d, want 0 (runner default applies)", cfg.Agent.MaxRetries)
+	}
+	if cfg.Agent.ReconnectMaxWaitSeconds != 0 {
+		t.Fatalf("Agent.ReconnectMaxWaitSeconds = %d, want 0 (runner default applies)", cfg.Agent.ReconnectMaxWaitSeconds)
 	}
 }
 

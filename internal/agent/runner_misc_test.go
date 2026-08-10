@@ -633,22 +633,21 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	}
 }
 
-// TestChatOnceNotBoundByApprovalTimeout is the regression test for the
-// timeout conflation bug: a short ApprovalTimeout (the TUI approval/question
-// wait ceiling) must not cut off a slower-but-working chat completion.
-// ChatTimeout is the only field that should bound chatOnce.
-func TestChatOnceNotBoundByApprovalTimeout(t *testing.T) {
+// TestChatOnceBoundedByChatTimeout is the regression test for the timeout
+// conflation bug: a short approval/question wait ceiling must never cut off
+// a slower-but-working chat completion. ChatTimeout is the only field that
+// should bound chatOnce.
+func TestChatOnceBoundedByChatTimeout(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	prov := &delayedProvider{delay: 100 * time.Millisecond}
 	runner := NewRunner(prov, reg, pol, state, "test-model")
-	runner.ApprovalTimeout = 10 * time.Millisecond
 	runner.ChatTimeout = 500 * time.Millisecond
 
 	_, err := runner.chatOnce(context.Background(), prov, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
 	if err != nil {
-		t.Fatalf("chatOnce err = %v, want success despite tiny ApprovalTimeout", err)
+		t.Fatalf("chatOnce err = %v, want success within ChatTimeout", err)
 	}
 }
 

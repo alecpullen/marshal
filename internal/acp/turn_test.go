@@ -1451,22 +1451,37 @@ func TestPromptTurnQuestionClientErrorAnswersUnanswered(t *testing.T) {
 	}
 }
 
-// blockingQuestionClient never answers; it blocks until the context is
-// cancelled, exercising the questionWait timeout path.
-type blockingQuestionClient struct{}
-
-func (blockingQuestionClient) RequestQuestion(ctx context.Context, req QuestionRequest) (QuestionResponse, error) {
-	<-ctx.Done()
-	return QuestionResponse{}, ctx.Err()
+// controllableQuestionClient is a QuestionClient the test drives directly.
+// RequestQuestion blocks until the test supplies a response or the context
+// is cancelled, so a turn can be observed sitting on an unanswered question
+// indefinitely (no local timer).
+type controllableQuestionClient struct {
+	requests  chan QuestionRequest
+	responses chan QuestionResponse
 }
 
-func TestPromptTurnQuestionTimeoutAnswersUnanswered(t *testing.T) {
-	defer func(orig time.Duration) { questionWait = orig }(questionWait)
-	questionWait = 50 * time.Millisecond
+func newControllableQuestionClient() *controllableQuestionClient {
+	return &controllableQuestionClient{
+		requests:  make(chan QuestionRequest, 1),
+		responses: make(chan QuestionResponse, 1),
+	}
+}
 
+func (c *controllableQuestionClient) RequestQuestion(ctx context.Context, req QuestionRequest) (QuestionResponse, error) {
+	c.requests <- req
+	select {
+	case resp := <-c.responses:
+		return resp, nil
+	case <-ctx.Done():
+		return QuestionResponse{}, ctx.Err()
+	}
+}
+
+func TestPromptTurnQuestionWaitsForClient(t *testing.T) {
 	broker := pubsub.NewBroker[session.Event]()
 	answersCh := make(chan []session.Answer, 1)
-	var gotAnswers []session.Answer
+	gotAnswers := make(chan []session.Answer, 1)
+	client := newControllableQuestionClient()
 	manager := NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
@@ -1479,25 +1494,129 @@ func TestPromptTurnQuestionTimeoutAnswersUnanswered(t *testing.T) {
 					}
 					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pending})
 					select {
-					case gotAnswers = <-answersCh:
+					case a := <-answersCh:
+						gotAnswers <- a
 						return nil
 					case <-ctx.Done():
 						return ctx.Err()
-					case <-time.After(5 * time.Second):
-						return errors.New("timed out waiting for answers")
 					}
 				}),
 				Events: broker,
 			}, true
 		},
 		Notify:    func(method string, params any) error { return nil },
-		Questions: blockingQuestionClient{},
+		Questions: client,
 	})
-	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_qt","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_qt","prompt":[{"type":"text","text":"hi"}]}`))
+		done <- err
+	}()
+
+	// Wait for the bridge to dispatch the question to the client.
+	var req QuestionRequest
+	select {
+	case req = <-client.requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("question never reached the client")
+	}
+	if req.SessionID != "sess_qt" || len(req.Questions) != 1 {
+		t.Fatalf("question request = %#v", req)
+	}
+
+	// No local timer fires: well past the old 30s budget (scaled to ~200ms
+	// for test speed) the turn must still be waiting, not answered.
+	select {
+	case <-done:
+		t.Fatal("turn resolved before the client answered")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Now answer via the normal path: the answers must reach the runner.
+	client.responses <- QuestionResponse{
+		Answers: []session.Answer{{Question: "pick", Answer: "blue"}},
+	}
+	select {
+	case a := <-gotAnswers:
+		if len(a) != 1 || a[0].Answer != "blue" {
+			t.Fatalf("answers = %#v, want one answer %q", a, "blue")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("answers never reached the runner")
+	}
+	if err := <-done; err != nil {
 		t.Fatalf("PromptTurn() error = %v", err)
 	}
-	if len(gotAnswers) != 1 || gotAnswers[0].Answer != session.AnswerUnanswered {
-		t.Fatalf("answers = %#v, want Unanswered sentinel after timeout", gotAnswers)
+}
+
+func TestPromptTurnQuestionResolvesOnCancel(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	answersCh := make(chan []session.Answer, 1)
+	gotAnswers := make(chan []session.Answer, 1)
+	client := newControllableQuestionClient()
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingQuestion{
+						Questions:    []session.Question{{Question: "pick"}},
+						ResponseChan: answersCh,
+					}
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pending})
+					select {
+					case a := <-answersCh:
+						gotAnswers <- a
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: client,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_qc","prompt":[{"type":"text","text":"hi"}]}`))
+		done <- err
+	}()
+
+	// Wait for the question to reach the client, then cancel the turn: the
+	// pending question must resolve (as Unanswered) via ctx cancellation, not
+	// a timer. The runner itself returns via ctx.Done() without reading the
+	// answer, but the forwarder's question bridge must still respond to the
+	// pending question so nothing is left parked.
+	select {
+	case <-client.requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("question never reached the client")
+	}
+	if _, err := manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_qc"}`)); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+
+	select {
+	case a := <-answersCh:
+		if len(a) != 1 || a[0].Answer != session.AnswerUnanswered {
+			t.Fatalf("answers = %#v, want Unanswered sentinel on cancel", a)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending question never resolved on cancel")
+	}
+	// The runner may finish via ctx cancellation or via the resolved
+	// (Unanswered) answer racing the cancel — either is fine. The guarantee
+	// being pinned is that the pending question resolves promptly on cancel
+	// rather than sitting until a local timer.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not complete after cancel")
 	}
 }
 

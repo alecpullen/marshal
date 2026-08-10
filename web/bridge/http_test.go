@@ -21,7 +21,6 @@ func newTestServer(t *testing.T, token string) (*Server, *Registry, *EventLog, *
 	t.Helper()
 	c := newTestChild(t, "registry")
 	r := NewRegistry(c)
-	r.PendingTimeout = 300 * time.Millisecond
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)

@@ -17,12 +17,13 @@ import (
 	"marshal/internal/llm/schema"
 )
 
-// reconnectMaxWait bounds the total time the wait-for-connectivity loop
-// will spend waiting for a dropped connection to come back before giving
-// up and failing the turn with the last network error. Two minutes covers
-// typical Wi-Fi roams, VPN reconnects, and sleep/wake cycles without
-// hanging a turn forever when the outage is real.
-const reconnectMaxWait = 2 * time.Minute
+// defaultReconnectMaxWait bounds the total time the wait-for-connectivity
+// loop will spend waiting for a dropped connection to come back before
+// giving up and failing the turn with the last network error. Two minutes
+// covers typical Wi-Fi roams, VPN reconnects, and sleep/wake cycles without
+// hanging a turn forever when the outage is real. ReconnectMaxWait on the
+// Runner overrides it.
+const defaultReconnectMaxWait = 2 * time.Minute
 
 // reconnectBackoff returns the delay before the i-th reconnect attempt
 // (0-based): 1s, 2s, 5s, then 10s capped. Long enough to ride out a
@@ -87,14 +88,16 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 		if len(res.Text) > len(best.Text) {
 			best = res
 		}
-		if isNetworkError(err) {
+		if isReconnectEligible(ctx, err) {
 			// A dropped connection is not a request problem: retrying the
 			// normal ladder burns the whole budget in ~150ms, long before a
 			// real network blip (Wi-Fi roam, VPN reconnect, sleep/wake)
 			// heals. Wait for connectivity instead, resending the same
 			// request until it succeeds, the outage outlasts
-			// reconnectMaxWait, or the provider answers with a non-network
-			// error (which falls through to the normal ladder below).
+			// effectiveReconnectMaxWait, or the provider answers with a
+			// non-network error (which falls through to the normal ladder
+			// below). A per-request DeadlineExceeded with a live parent ctx
+			// (device sleep, stalled stream) is also reconnect-eligible.
 			res, err = r.waitForConnectivity(ctx, p, model, messages, responseFormat, includeNativeTools, err, &best)
 			if err == nil {
 				return res, nil
@@ -123,15 +126,16 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 
 // waitForConnectivity resends the same chat request while the provider is
 // unreachable, backing off 1s/2s/5s/10s(capped) between attempts, for up
-// to reconnectMaxWait in total. It publishes an ActivityReconnecting
-// status while waiting so the user sees "connection lost — retrying"
-// instead of a stalled turn. It returns success, the last network error
-// when the cap is reached, ctx cancellation when the user aborts, or the
-// provider's first non-network error once connectivity is back.
+// to effectiveReconnectMaxWait in total. It publishes an
+// ActivityReconnecting status while waiting so the user sees "connection
+// lost — retrying" instead of a stalled turn. It returns success, the last
+// network error when the cap is reached, ctx cancellation when the user
+// aborts, or the provider's first non-network error once connectivity is
+// back.
 func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool, firstErr error, best *chatResult) (chatResult, error) {
 	started := r.Now()
 	if r.State != nil {
-		r.State.Logger().Warn("provider connection lost; waiting for connectivity", "error", firstErr, "max_wait", reconnectMaxWait)
+		r.State.Logger().Warn("provider connection lost; waiting for connectivity", "error", firstErr, "max_wait", r.effectiveReconnectMaxWait())
 	}
 	for attempt := 0; ; attempt++ {
 		delay := reconnectBackoff(attempt)
@@ -155,11 +159,13 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 		if len(res.Text) > len(best.Text) {
 			*best = res
 		}
-		if !isNetworkError(err) {
-			// The network is back; this is a provider answer, not a drop.
+		if !isReconnectEligible(ctx, err) {
+			// The network is back; this is a provider answer, not a drop. A
+			// DeadlineExceeded here means a fresh per-request timeout fired
+			// during this retry — still down, so keep waiting.
 			return res, err
 		}
-		if r.Now().Sub(started)+reconnectBackoff(attempt+1) > reconnectMaxWait {
+		if r.Now().Sub(started)+reconnectBackoff(attempt+1) > r.effectiveReconnectMaxWait() {
 			if r.State != nil {
 				r.State.Logger().Warn("provider connection did not recover; failing turn", "waited", r.Now().Sub(started).Round(time.Second), "error", err)
 			}
@@ -235,6 +241,19 @@ func isNetworkError(err error) bool {
 	return false
 }
 
+// isReconnectEligible reports whether err should route into
+// waitForConnectivity: a network drop, or the per-request chat timeout
+// firing while the parent ctx is still alive (device sleep, stalled
+// stream — chatOnce's WithTimeout at chatOnce:273 fired, not a user
+// cancel). A DeadlineExceeded with a done parent ctx is a turn/esc cancel
+// and is not reconnect-eligible.
+func isReconnectEligible(ctx context.Context, err error) bool {
+	if isNetworkError(err) {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
+}
+
 // isRetryableChatError classifies errors so the retry loop stops wasting
 // requests on failures that cannot succeed. Non-retryable errors are:
 //   - context cancellation/timeout (the user asked to stop or we ran out of time)
@@ -257,15 +276,24 @@ func isRetryableChatError(err error) bool {
 }
 
 // effectiveChatTimeout returns the per-request timeout for the model call
-// itself, falling back to a sensible default if r.ChatTimeout is zero. This
-// is deliberately independent of ApprovalTimeout: a runner configured with a
-// short approval-wait ceiling (e.g. for SDD/swarm subagents) must not have
-// that same ceiling silently truncate a slow-but-working chat completion.
+// itself, falling back to a sensible default if r.ChatTimeout is zero. It
+// is deliberately independent of approvals and questions, which carry no
+// wall-clock timeout — a runner must not have its chat completion silently
+// truncated by a separate approval ceiling.
 func (r *Runner) effectiveChatTimeout() time.Duration {
 	if r.ChatTimeout > 0 {
 		return r.ChatTimeout
 	}
 	return defaultChatTimeout
+}
+
+// effectiveReconnectMaxWait returns the reconnect cap to use, falling back
+// to defaultReconnectMaxWait if r.ReconnectMaxWait is zero.
+func (r *Runner) effectiveReconnectMaxWait() time.Duration {
+	if r.ReconnectMaxWait > 0 {
+		return r.ReconnectMaxWait
+	}
+	return defaultReconnectMaxWait
 }
 
 func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {

@@ -123,29 +123,94 @@ func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
 	_ = task
 }
 
-func TestRequestApprovalTimeout(t *testing.T) {
+func TestRequestApprovalWaitsForDecision(t *testing.T) {
 	state := newTestState(t)
 	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	r.ApprovalTimeout = 10 * time.Millisecond
 
-	ctx := context.Background()
-	// Tool that will never get a response — the channel has a buffer of 1 but
-	// nobody sends on it. The timeout arm should fire.
-	_, _, err := r.requestApproval(ctx, registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason")
-	if !errors.Is(err, ErrRequestTimedOut) {
-		t.Fatalf("requestApproval err = %v, want ErrRequestTimedOut", err)
+	type result struct {
+		approved bool
+		edited   string
+		err      error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		approved, edited, err := r.requestApproval(context.Background(), registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason")
+		resCh <- result{approved, edited, err}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for state.PendingApproval() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("PendingApproval never appeared")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// With no wall-clock timeout, the runner must still be waiting well
+	// past any plausible legacy deadline.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case res := <-resCh:
+		t.Fatalf("requestApproval returned before a decision: %+v", res)
+	default:
+	}
+
+	state.PendingApproval().ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: "edited"}
+	select {
+	case res := <-resCh:
+		if res.err != nil {
+			t.Fatalf("requestApproval err = %v, want nil", res.err)
+		}
+		if !res.approved || res.edited != "edited" {
+			t.Fatalf("approved = %v, edited = %q, want true and %q", res.approved, res.edited, "edited")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestApproval did not return after Respond")
 	}
 	if state.PendingApproval() != nil {
-		t.Fatal("PendingApproval should be nil after timeout")
+		t.Fatal("PendingApproval should be nil after a decision")
+	}
+}
+
+func TestRequestApprovalContextCancel(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resCh := make(chan error, 1)
+	go func() {
+		_, _, err := r.requestApproval(ctx, registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason")
+		resCh <- err
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for state.PendingApproval() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("PendingApproval never appeared")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancel()
+	select {
+	case err := <-resCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("requestApproval err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestApproval did not unblock on context cancel")
+	}
+	if state.PendingApproval() != nil {
+		t.Fatal("PendingApproval should be nil after cancel")
 	}
 }
 
 func TestRequestQuestionsWaitsForAnswer(t *testing.T) {
 	state := newTestState(t)
 	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	// Even with a tiny ApprovalTimeout, questions must wait for the
-	// user — a person reading a question is not a hung request.
-	r.ApprovalTimeout = 10 * time.Millisecond
 
 	type result struct {
 		answers []session.Answer

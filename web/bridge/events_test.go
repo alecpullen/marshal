@@ -151,6 +151,37 @@ func TestEventLogEmptySessionBroadcasts(t *testing.T) {
 	}
 }
 
+func TestEventLogOnUnsubscribeLastSubscriber(t *testing.T) {
+	l := NewEventLog()
+	var fired []string
+	l.OnUnsubscribe = func(sessionID string) { fired = append(fired, sessionID) }
+
+	_, unsub1 := l.Subscribe("s1")
+	_, unsub2 := l.Subscribe("s1")
+	_, unsubOther := l.Subscribe("s2")
+
+	// Disconnecting one of two subscribers for s1 must not fire.
+	unsub1()
+	if len(fired) != 0 {
+		t.Fatalf("OnUnsubscribe fired on non-last subscriber: %v", fired)
+	}
+	// Disconnecting the other session's only subscriber fires for s2.
+	unsubOther()
+	if len(fired) != 1 || fired[0] != "s2" {
+		t.Fatalf("OnUnsubscribe = %v, want [s2]", fired)
+	}
+	// Disconnecting the last s1 subscriber fires for s1.
+	unsub2()
+	if len(fired) != 2 || fired[1] != "s1" {
+		t.Fatalf("OnUnsubscribe = %v, want [s2 s1]", fired)
+	}
+	// Idempotent unsub does not fire again.
+	unsub2()
+	if len(fired) != 2 {
+		t.Fatalf("idempotent unsub fired again: %v", fired)
+	}
+}
+
 func TestEventLogSlowSubscriber(t *testing.T) {
 	l := NewEventLog()
 	ch, unsub := l.Subscribe("s1")
@@ -266,9 +297,9 @@ func TestEventLogAttach(t *testing.T) {
 		t.Fatal("previous OnNotification hook not chained")
 	}
 
-	// A permission request is broadcast to every session's subscribers
-	// (it carries a sessionId but is emitted with an empty session id so
-	// all SSE streams see it), and the previous OnEvent hook chained.
+	// A permission request is emitted with its issuing session id, so it
+	// reaches that session's subscribers, and the previous OnEvent hook
+	// chained.
 	if _, err := c.Request(ctx, "test/ask_permission", nil); err != nil {
 		t.Fatalf("test/ask_permission: %v", err)
 	}

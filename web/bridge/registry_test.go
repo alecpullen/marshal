@@ -293,6 +293,59 @@ func TestRegistryCancelDrainsPendingQuestion(t *testing.T) {
 	}
 }
 
+func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Trigger a permission, then cancel the session: the pending wait is
+	// drained with a deny.
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return ok
+	})
+	if err := r.Cancel(ctx, "s-1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitFor(t, 2*time.Second, "permission drained on cancel", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return !ok
+	})
+
+	// A later permission request for the same session must NOT be
+	// immediately denied: the cancel replaced the session context.
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger after cancel: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending permission after cancel", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return ok
+	})
+	// It must still be parked (not auto-denied) and resolvable.
+	time.Sleep(100 * time.Millisecond)
+	r.permMu.Lock()
+	_, stillPending := r.permissions["tc-1"]
+	r.permMu.Unlock()
+	if !stillPending {
+		t.Fatal("permission after cancel was auto-denied (poisoned context)")
+	}
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
+		t.Fatalf("ResolvePermission after cancel: %v", err)
+	}
+}
+
 func TestRegistryDrainSessionUnblocksWaiters(t *testing.T) {
 	r, _ := newTestRegistry(t, "registry")
 	ctx, cancel := testContext(t)

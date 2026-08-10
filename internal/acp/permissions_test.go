@@ -31,7 +31,7 @@ func TestPermissionApprovalResolvesPendingToolCall(t *testing.T) {
 	pending := &session.PendingToolCall{Name: "shell.run", Command: "date", ResponseChan: response}
 	client := &fakePermissionClient{decision: PermissionDecision{Approved: true}}
 	bridge := NewPermissionBridge(client)
-	if _, err := bridge.Request(context.Background(), pending); err != nil {
+	if _, err := bridge.Request(context.Background(), "sess_test", pending); err != nil {
 		t.Fatalf("Request() error = %v", err)
 	}
 	select {
@@ -44,6 +44,9 @@ func TestPermissionApprovalResolvesPendingToolCall(t *testing.T) {
 	}
 	if client.calls != 1 {
 		t.Fatalf("client.calls = %d, want 1", client.calls)
+	}
+	if client.gotReq.SessionID != "sess_test" {
+		t.Fatalf("client.gotReq.SessionID = %q, want sess_test", client.gotReq.SessionID)
 	}
 	if client.gotReq.ToolName != "shell.run" {
 		t.Fatalf("client.gotReq.ToolName = %q, want shell.run", client.gotReq.ToolName)
@@ -58,7 +61,7 @@ func TestPermissionDenialResolvesPendingToolCall(t *testing.T) {
 	pending := &session.PendingToolCall{Name: "shell.run", Command: "rm -rf /", ResponseChan: response}
 	client := &fakePermissionClient{decision: PermissionDecision{Approved: false}}
 	bridge := NewPermissionBridge(client)
-	if _, err := bridge.Request(context.Background(), pending); err != nil {
+	if _, err := bridge.Request(context.Background(), "sess_test", pending); err != nil {
 		t.Fatalf("Request() error = %v", err)
 	}
 	select {
@@ -76,7 +79,7 @@ func TestPermissionEditedCommandPropagatesToDecision(t *testing.T) {
 	pending := &session.PendingToolCall{Name: "shell.run", Command: "rm foo", ResponseChan: response}
 	client := &fakePermissionClient{decision: PermissionDecision{Approved: true, Edited: "rm foo.bak"}}
 	bridge := NewPermissionBridge(client)
-	if _, err := bridge.Request(context.Background(), pending); err != nil {
+	if _, err := bridge.Request(context.Background(), "sess_test", pending); err != nil {
 		t.Fatalf("Request() error = %v", err)
 	}
 	select {
@@ -103,7 +106,7 @@ func TestPermissionRequestContextCancelGuardsResponseChan(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- func() error {
-			_, err := bridge.Request(ctx, pending)
+			_, err := bridge.Request(ctx, "sess_test", pending)
 			return err
 		}()
 	}()

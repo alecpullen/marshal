@@ -150,7 +150,7 @@ func handleRegistryMode(req *struct {
 			"result":  map[string]any{},
 		})
 		method := "session/request_permission"
-		params := map[string]any{"toolCallId": "tc-1", "toolName": "shell.run"}
+		params := map[string]any{"sessionId": "s-1", "toolCallId": "tc-1", "toolName": "shell.run"}
 		if req.Method == "test/ask_question" {
 			method = "session/request_question"
 			params = map[string]any{

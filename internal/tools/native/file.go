@@ -331,6 +331,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			}
 			data, err := os.ReadFile(path)
 			var original string
+			fileExists := err == nil
 			if err != nil {
 				if !os.IsNotExist(err) {
 					return registry.ToolResult{}, err
@@ -361,10 +362,14 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				Path:    fp.Path,
 				Content: original,
 				Mode:    mode,
+				Exists:  fileExists,
 			})
 
 			patched := patch.ApplyPatch(original, fp)
 			if strings.Contains(original, "\r\n") {
+				// Normalize safely: collapse existing CRLF to LF first so a
+				// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
+				patched = strings.ReplaceAll(patched, "\r\n", "\n")
 				patched = strings.ReplaceAll(patched, "\n", "\r\n")
 			}
 
@@ -526,6 +531,9 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 
 		content := args.Content
 		if strings.Contains(original, "\r\n") {
+			// Normalize safely: collapse existing CRLF to LF first so a
+			// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
+			content = strings.ReplaceAll(content, "\r\n", "\n")
 			content = strings.ReplaceAll(content, "\n", "\r\n")
 		}
 
@@ -543,6 +551,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 				Path:    args.Path,
 				Content: original,
 				Mode:    mode,
+				Exists:  exists,
 			}})
 		}
 

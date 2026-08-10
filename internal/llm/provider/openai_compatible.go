@@ -442,6 +442,19 @@ func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 		return
 	}
 	choice := parsed.Choices[0]
+	// Reasoning arrives in one of several shapes: reasoning_content
+	// (DeepSeek/vLLM), a plain reasoning string, or structured
+	// reasoning_details entries (OpenRouter). Endpoints emit one shape
+	// at a time in practice; concatenation is harmless and keeps the
+	// code branchless. reasoning_details entries with empty Text (e.g.
+	// encrypted summaries) contribute nothing.
+	reasoning := choice.Message.ReasoningContent + choice.Message.Reasoning
+	for _, d := range choice.Message.ReasoningDetails {
+		reasoning += d.Text
+	}
+	if reasoning != "" {
+		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: reasoning}
+	}
 	if choice.Message.Content != "" {
 		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: choice.Message.Content}
 	}

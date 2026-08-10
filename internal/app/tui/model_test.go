@@ -1082,7 +1082,7 @@ func TestTUIRollbackFlow(t *testing.T) {
 	tmpDir := t.TempDir()
 	state := session.New(config.Default(), tmpDir, time.Unix(100, 0), session.Persistence{})
 	state.StoreBackup([]session.BackupFile{
-		{Path: "app.go", Content: "original content"},
+		{Path: "app.go", Content: "original content", Exists: true},
 	})
 
 	model := New(state)

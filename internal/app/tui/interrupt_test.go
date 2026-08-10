@@ -88,7 +88,7 @@ func TestCtrlCQuitsImmediatelyWhenIdle(t *testing.T) {
 // working tree on that single keystroke.
 func TestRollbackRequiresConfirmation(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	state.StoreBackup([]session.BackupFile{{Path: "app.go", Content: "original"}})
+	state.StoreBackup([]session.BackupFile{{Path: "app.go", Content: "original", Exists: true}})
 	m := New(state)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})

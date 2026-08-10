@@ -16,6 +16,14 @@ type chatMessageBody struct {
 	Content    string         `json:"content"`
 	ToolCalls  []toolCallBody `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+	// Reasoning fields for non-streaming responses, mirroring the streaming
+	// delta conventions: reasoning_content (DeepSeek/vLLM), a plain reasoning
+	// string, or structured reasoning_details entries (OpenRouter).
+	ReasoningContent string `json:"reasoning_content"`
+	Reasoning        string `json:"reasoning"`
+	ReasoningDetails []struct {
+		Text string `json:"text"`
+	} `json:"reasoning_details"`
 }
 
 type streamOptions struct {

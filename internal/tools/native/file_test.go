@@ -640,6 +640,67 @@ func TestFileWriteOverwritesExistingAfterRead(t *testing.T) {
 	}
 }
 
+// TestFileWritePreservesCRLFWithoutCorruption pins that writing to a CRLF
+// file converts LF to CRLF without turning existing CRLF sequences into
+// CRCRLF.
+func TestFileWritePreservesCRLFWithoutCorruption(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	orig := "package main\r\n\r\nfunc main() {\r\n\tprintln(\"hello\")\r\n}\r\n"
+	if err := os.WriteFile(filePath, []byte(orig), 0755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+		SessionState:  state,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Read first to satisfy the stale-file contract.
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"app.go"}`); err != nil {
+		t.Fatalf("file.read: %v", err)
+	}
+
+	// Content already contains a CRLF sequence; a naive LF->CRLF conversion
+	// would turn it into CRCRLF.
+	newContent := "package main\r\n\r\nfunc main() {\r\n\tprintln(\"patched\")\r\n}\r\n"
+	argsJSON, err := json.Marshal(map[string]string{"path": "app.go", "content": newContent})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	if _, err := invokeTool(t, reg, "file.write", string(argsJSON)); err != nil {
+		t.Fatalf("file.write: %v", err)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if strings.Contains(string(data), "\r\r\n") {
+		t.Fatalf("CRLF corrupted into CRCRLF: %q", string(data))
+	}
+	if !strings.Contains(string(data), "\r\n") {
+		t.Fatalf("expected CRLF line endings preserved, got %q", string(data))
+	}
+}
+
 func TestFileWriteRequiresReadBeforeOverwrite(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "app.go")

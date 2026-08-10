@@ -77,6 +77,7 @@ func DefaultCapabilities() schema.ProviderCapabilities {
 		ToolCalling:      false,
 		JSONMode:         true,
 		StructuredOutput: true,
+		Reasoning:        true,
 	}
 }
 
@@ -201,18 +202,27 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 	if req.Stream {
 		streamOpts = &streamOptions{IncludeUsage: true}
 	}
+	// reasoning_effort: pass through low/medium/high verbatim. "off" and ""
+	// are omitted — chat-completions reasoning models have no wire-level off,
+	// so the field is simply not sent (documented on the preset field).
+	reasoningEffort := ""
+	switch req.Thinking {
+	case "low", "medium", "high":
+		reasoningEffort = req.Thinking
+	}
 	return json.Marshal(chatCompletionRequestBody{
-		Model:          req.Model,
-		Messages:       messages,
-		Stream:         req.Stream,
-		Temperature:    req.Temperature,
-		TopP:           req.TopP,
-		MaxTokens:      req.MaxTokens,
-		Stop:           req.Stop,
-		ResponseFormat: req.ResponseFormat,
-		Tools:          tools,
-		ToolChoice:     req.ToolChoice,
-		StreamOptions:  streamOpts,
+		Model:           req.Model,
+		Messages:        messages,
+		Stream:          req.Stream,
+		Temperature:     req.Temperature,
+		TopP:            req.TopP,
+		MaxTokens:       req.MaxTokens,
+		Stop:            req.Stop,
+		ResponseFormat:  req.ResponseFormat,
+		Tools:           tools,
+		ToolChoice:      req.ToolChoice,
+		StreamOptions:   streamOpts,
+		ReasoningEffort: reasoningEffort,
 	})
 }
 
@@ -357,8 +367,18 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			continue
 		}
 		choice := chunk.Choices[0]
-		if choice.Delta.ReasoningContent != "" {
-			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: choice.Delta.ReasoningContent}
+		// Reasoning arrives in one of several shapes: reasoning_content
+		// (DeepSeek/vLLM), a plain reasoning string, or structured
+		// reasoning_details entries (OpenRouter). Endpoints emit one shape
+		// at a time in practice; concatenation is harmless and keeps the
+		// code branchless. reasoning_details entries with empty Text (e.g.
+		// encrypted summaries) contribute nothing.
+		reasoning := choice.Delta.ReasoningContent + choice.Delta.Reasoning
+		for _, d := range choice.Delta.ReasoningDetails {
+			reasoning += d.Text
+		}
+		if reasoning != "" {
+			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: reasoning}
 		}
 		if choice.Delta.Content != "" {
 			content, thinking := thinkParser.feed(choice.Delta.Content)

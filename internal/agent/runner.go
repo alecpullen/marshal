@@ -538,6 +538,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	} else {
 		r.turnRequestOptions.contextWindow = nil
 	}
+	r.turnRequestOptions.thinking = route.Preset.Thinking
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
 	}()

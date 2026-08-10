@@ -1251,6 +1251,54 @@ func TestThinkingNotLoggedWhenProviderStreamsNoReasoning(t *testing.T) {
 	}
 }
 
+func TestThinkingGatedOnProviderCapability(t *testing.T) {
+	// A preset thinking value must be sent only when the provider reports a
+	// reasoning capability; otherwise it is dropped before the wire request.
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+		ProviderCaps: schema.ProviderCapabilities{
+			Reasoning: true,
+		},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "reasoning", Thinking: "high"},
+	}}
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.Requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if p.Requests[0].Thinking != "high" {
+		t.Fatalf("request Thinking = %q, want high (provider reports reasoning)", p.Requests[0].Thinking)
+	}
+
+	// Same preset, but the provider reports no reasoning capability: the
+	// thinking value must be dropped.
+	p2 := &agenttest.ScriptedProvider{
+		Responses:    []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+		ProviderCaps: schema.ProviderCapabilities{},
+	}
+	runner2 := NewRunner(p2, reg, pol, newTestState(t), "test-model")
+	runner2.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "plain", Thinking: "high"},
+	}}
+	if err := runner2.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p2.Requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if p2.Requests[0].Thinking != "" {
+		t.Fatalf("request Thinking = %q, want empty (provider lacks reasoning capability)", p2.Requests[0].Thinking)
+	}
+}
+
 func TestLengthTruncatedJSONActionIsRefusedNotExecuted(t *testing.T) {
 	executed := false
 	p := &agenttest.ScriptedProvider{

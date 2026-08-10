@@ -115,6 +115,12 @@ type ModelPreset struct {
 	MaxOutputTokens int    `toml:"max_output_tokens"`
 	ToolCalling     string `toml:"tool_calling"`
 	LocalOnly       bool   `toml:"local_only"`
+	// Thinking controls reasoning effort: "" = provider default (nothing is
+	// sent on the wire), "off" disables thinking where the provider allows
+	// it, "low"/"medium"/"high" map to reasoning_effort on OpenAI-compatible
+	// endpoints and to budget_tokens on Anthropic. Ignored when the provider
+	// reports no reasoning capability.
+	Thinking string `toml:"thinking,omitempty"`
 	// Pricing is an optional per-preset override for the built-in pricing
 	// table in the pricing package. Nil means "use the built-in table by
 	// Model name (or zero if the model is unpriced)". Set to a non-nil

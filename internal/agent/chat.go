@@ -55,6 +55,7 @@ type chatResult struct {
 type turnRequestOptions struct {
 	maxTokens     *int
 	contextWindow *int
+	thinking      string
 }
 
 func intPtr(v int) *int { return &v }
@@ -311,6 +312,13 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	// so that per-turn mutations (e.g. JSON-mode escalation after parse
 	// failures) do not leak across RunTask calls on the same *Runner.
 
+	// Gate the thinking effort on the provider's reasoning capability: a
+	// preset thinking value must not be sent to a backend that does not
+	// accept it.
+	thinking := r.turnRequestOptions.thinking
+	if thinking != "" && !p.Capabilities(ctx).Reasoning {
+		thinking = ""
+	}
 	events, err := p.Chat(ctx, schema.ChatRequest{
 		Model:          model,
 		Messages:       messages,
@@ -319,6 +327,7 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		ContextWindow:  r.turnRequestOptions.contextWindow,
 		ResponseFormat: responseFormat,
 		Tools:          tools,
+		Thinking:       thinking,
 	})
 	if err != nil {
 		return chatResult{}, err

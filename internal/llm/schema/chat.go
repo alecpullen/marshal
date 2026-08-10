@@ -64,4 +64,10 @@ type ChatRequest struct {
 	ResponseFormat *ResponseFormat
 	Tools          []ToolDefinition
 	ToolChoice     string
+	// Thinking controls reasoning effort: "" = provider default (nothing is
+	// sent on the wire), "off" disables thinking where the provider allows
+	// it, "low"/"medium"/"high" map to reasoning_effort on OpenAI-compatible
+	// endpoints and to budget_tokens on Anthropic. Ignored when the provider
+	// reports no reasoning capability.
+	Thinking string
 }

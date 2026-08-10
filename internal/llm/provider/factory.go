@@ -53,6 +53,10 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		}
 		caps := DefaultCapabilities()
 		caps.ToolCalling = pc.ToolCalling
+		// Ollama's think toggle is a different mechanism than the
+		// reasoning_effort/budget_tokens control; report no reasoning
+		// capability so the thinking preset field is not sent on the wire.
+		caps.Reasoning = false
 		keepAlive := pc.KeepAlive
 		if keepAlive == "" {
 			keepAlive = defaultOllamaKeepAlive

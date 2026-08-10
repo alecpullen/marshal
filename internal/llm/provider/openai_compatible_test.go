@@ -437,6 +437,87 @@ func TestChatStreamingReasoningContentEmitsThinkingDelta(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+func TestChatStreamingOpenRouterReasoningFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"reasoning\":\"pondering\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"text\":\"step one\"},{\"text\":\"step two\"}]}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev1, ok := recvEvent(t, events)
+	if !ok {
+		t.Fatal("channel closed before first event")
+	}
+	if ev1.Type != schema.ChatEventDelta || ev1.Kind != schema.DeltaThinking || ev1.Delta != "pondering" {
+		t.Fatalf("event 1 = %+v, want thinking delta %q", ev1, "pondering")
+	}
+
+	ev2, ok := recvEvent(t, events)
+	if !ok {
+		t.Fatal("channel closed before second event")
+	}
+	if ev2.Type != schema.ChatEventDelta || ev2.Kind != schema.DeltaThinking || ev2.Delta != "step onestep two" {
+		t.Fatalf("event 2 = %+v, want concatenated reasoning_details %q", ev2, "step onestep two")
+	}
+
+	ev3, ok := recvEvent(t, events)
+	if !ok {
+		t.Fatal("channel closed before third event")
+	}
+	if ev3.Type != schema.ChatEventDelta || ev3.Kind != schema.DeltaAnswer || ev3.Delta != "answer" {
+		t.Fatalf("event 3 = %+v, want answer delta %q", ev3, "answer")
+	}
+
+	ev4, ok := recvEvent(t, events)
+	if !ok || ev4.Type != schema.ChatEventDone {
+		t.Fatalf("event 4 = %+v ok=%v, want Done", ev4, ok)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestChatStreamingNoReasoningEmitsNoThinkingDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev1, ok := recvEvent(t, events)
+	if !ok {
+		t.Fatal("channel closed before first event")
+	}
+	if ev1.Type != schema.ChatEventDelta || ev1.Kind != schema.DeltaAnswer || ev1.Delta != "answer" {
+		t.Fatalf("event 1 = %+v, want answer delta %q", ev1, "answer")
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventDone {
+		t.Fatalf("event 2 = %+v ok=%v, want Done", ev2, ok)
+	}
+	assertChannelClosed(t, events)
+}
+
 func TestInlineThinkParserExtractsThinkingAndContent(t *testing.T) {
 	p := inlineThinkParser{}
 	c1, th1 := p.feed("<think>one ")
@@ -545,6 +626,47 @@ func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
 	}
 	if string(raw) != `{"type":"json_object"}` {
 		t.Fatalf("response_format = %s, want {\"type\":\"json_object\"}", string(raw))
+	}
+}
+
+func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
+	base := schema.ChatRequest{
+		Model:    "test-model",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	}
+
+	// "high" passes through verbatim.
+	body, err := buildChatRequestBody(base)
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	base.Thinking = "high"
+	body, err = buildChatRequestBody(base)
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if string(parsed["reasoning_effort"]) != `"high"` {
+		t.Fatalf("reasoning_effort = %s, want \"high\"", string(parsed["reasoning_effort"]))
+	}
+
+	// "off" and "" omit the key.
+	for _, thinking := range []string{"off", ""} {
+		base.Thinking = thinking
+		body, err = buildChatRequestBody(base)
+		if err != nil {
+			t.Fatalf("buildChatRequestBody(%q): %v", thinking, err)
+		}
+		var fresh map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fresh); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		if _, ok := fresh["reasoning_effort"]; ok {
+			t.Fatalf("reasoning_effort present for thinking=%q: %s", thinking, string(fresh["reasoning_effort"]))
+		}
 	}
 }
 

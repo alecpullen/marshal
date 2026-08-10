@@ -771,6 +771,43 @@ func TestSaveSidePanelRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPresetThinkingRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	cfg := Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3", Thinking: "medium"},
+	}
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: filepath.Join(dir, "no-home"), WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := loaded.Models.Presets["ollama/qwen3"].Thinking; got != "medium" {
+		t.Fatalf("preset thinking = %q, want medium", got)
+	}
+
+	// Empty thinking must be omitted from the saved TOML (omitempty).
+	p := cfg.Models.Presets["ollama/qwen3"]
+	p.Thinking = ""
+	cfg.Models.Presets["ollama/qwen3"] = p
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("save (empty): %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if bytes.Contains(raw, []byte("thinking")) {
+		t.Fatalf("saved TOML contains thinking for empty value:\n%s", raw)
+	}
+}
+
 func TestPresetPricingRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	path := tmp + "/.marshal/config.toml"

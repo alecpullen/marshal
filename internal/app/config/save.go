@@ -315,6 +315,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 				MaxOutputTokens: p.MaxOutputTokens,
 				ToolCalling:     p.ToolCalling,
 				LocalOnly:       p.LocalOnly,
+				Thinking:        p.Thinking,
 				Pricing:         p.Pricing,
 			}
 			preset.Name = name

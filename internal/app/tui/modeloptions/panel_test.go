@@ -126,6 +126,42 @@ func TestPanelRejectsNegativeValues(t *testing.T) {
 	}
 }
 
+func TestPanelThinkingDescriptor(t *testing.T) {
+	cfg := testConfig()
+	p := New(cfg, "active")
+
+	// Find the thinking descriptor.
+	var d *descriptor
+	for i := range p.descriptors() {
+		if p.descriptors()[i].id == "thinking" {
+			d = &p.descriptors()[i]
+			break
+		}
+	}
+	if d == nil {
+		t.Fatal("thinking descriptor not found")
+	}
+	if d.getStr(cfg.Models.Presets["active"]) != "default" {
+		t.Fatalf("empty Thinking should read as 'default', got %q", d.getStr(cfg.Models.Presets["active"]))
+	}
+
+	// Set "high".
+	m := cfg.Models.Presets["active"]
+	d.setStr(&m, "high")
+	if m.Thinking != "high" {
+		t.Fatalf("setStr(high) -> Thinking = %q, want high", m.Thinking)
+	}
+	if d.getStr(m) != "high" {
+		t.Fatalf("getStr after high = %q, want high", d.getStr(m))
+	}
+
+	// Set "default" maps back to "".
+	d.setStr(&m, "default")
+	if m.Thinking != "" {
+		t.Fatalf("setStr(default) -> Thinking = %q, want empty", m.Thinking)
+	}
+}
+
 func TestPanelEscClosesAtRoot(t *testing.T) {
 	cfg := testConfig()
 	p := New(cfg, "active")

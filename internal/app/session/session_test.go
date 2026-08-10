@@ -231,7 +231,7 @@ func TestStateBackups(t *testing.T) {
 	}
 
 	backups := []BackupFile{
-		{Path: "test.txt", Content: "original content", Mode: 0755},
+		{Path: "test.txt", Content: "original content", Mode: 0755, Exists: true},
 	}
 	state.StoreBackup(backups)
 

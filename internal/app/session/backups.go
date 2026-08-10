@@ -11,6 +11,9 @@ type BackupFile struct {
 	Path    string
 	Content string
 	Mode    os.FileMode
+	// Exists records whether the file existed before the write. When false,
+	// rollback removes the file rather than restoring empty content.
+	Exists bool
 }
 
 func (s *State) StoreBackup(backups []BackupFile) {
@@ -64,7 +67,15 @@ func (s *State) RollbackBackup() error {
 	var firstErr error
 	for _, bf := range backups {
 		path := filepath.Join(s.WorkingDir, bf.Path)
-		if err := os.WriteFile(path, []byte(bf.Content), bf.Mode); err != nil {
+		var err error
+		if bf.Exists {
+			err = os.WriteFile(path, []byte(bf.Content), bf.Mode)
+		} else {
+			// The file did not exist before the write; roll back by removing
+			// it rather than restoring empty content.
+			err = os.Remove(path)
+		}
+		if err != nil {
 			// Keep going: stopping here would strand the remaining files for
 			// no benefit, and the caller needs the full picture either way.
 			failed = append(failed, bf.Path)

@@ -28,8 +28,8 @@ func TestRollbackPartialFailureKeepsBackup(t *testing.T) {
 	}
 
 	s.StoreBackup([]BackupFile{
-		{Path: "ok.go", Content: "original", Mode: 0o644},
-		{Path: "blocked", Content: "original", Mode: 0o644},
+		{Path: "ok.go", Content: "original", Mode: 0o644, Exists: true},
+		{Path: "blocked", Content: "original", Mode: 0o644, Exists: true},
 	})
 
 	err := s.RollbackBackup()
@@ -70,6 +70,44 @@ func TestRollbackPartialFailureKeepsBackup(t *testing.T) {
 	}
 }
 
+// TestRollbackRemovesNewlyCreatedFiles pins the behavior that a file created
+// by a write (backed up with Exists=false) is removed on rollback rather than
+// restored as empty content.
+func TestRollbackRemovesNewlyCreatedFiles(t *testing.T) {
+	dir := t.TempDir()
+	s := New(config.Config{}, dir, time.Now(), Persistence{})
+
+	// A pre-existing file and a newly created file in the same backup.
+	if err := os.WriteFile(filepath.Join(dir, "existing.go"), []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.go"), []byte("created"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.StoreBackup([]BackupFile{
+		{Path: "existing.go", Content: "original", Mode: 0o644, Exists: true},
+		{Path: "new.go", Content: "", Mode: 0o644, Exists: false},
+	})
+
+	if err := s.RollbackBackup(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	// The pre-existing file is restored to its original content.
+	got, err := os.ReadFile(filepath.Join(dir, "existing.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Errorf("existing file = %q, want %q", got, "original")
+	}
+
+	// The newly created file is removed entirely.
+	if _, err := os.Stat(filepath.Join(dir, "new.go")); !os.IsNotExist(err) {
+		t.Errorf("newly created file should have been removed on rollback, stat err = %v", err)
+	}
+}
+
 // TestRollbackSuccessClearsBackup pins the happy path: the backup is consumed
 // only once every file is safely back.
 func TestRollbackSuccessClearsBackup(t *testing.T) {
@@ -79,7 +117,7 @@ func TestRollbackSuccessClearsBackup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("modified"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s.StoreBackup([]BackupFile{{Path: "a.go", Content: "original", Mode: 0o644}})
+	s.StoreBackup([]BackupFile{{Path: "a.go", Content: "original", Mode: 0o644, Exists: true}})
 
 	if err := s.RollbackBackup(); err != nil {
 		t.Fatalf("rollback: %v", err)

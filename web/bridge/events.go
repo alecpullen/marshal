@@ -61,16 +61,20 @@ type EventLog struct {
 	// Defaults to 25s; tests may shorten it.
 	HeartbeatInterval time.Duration
 
-	// OnUnsubscribe, if set, is invoked with the session id whenever a
-	// subscriber for that session disconnects (its unsubscribe func runs).
-	// The web bridge wires it to Registry.DrainSession so an SSE client
+	// OnUnsubscribe, if set, is invoked with the session id when the
+	// LAST subscriber for that session disconnects (its unsubscribe func
+	// runs and no other subscriber for the session remains). The web
+	// bridge wires it to Registry.DrainSession so an SSE client
 	// disconnect drains that session's pending permission/question waits
-	// instead of leaking them.
+	// instead of leaking them — but only when no client is still
+	// connected, so a duplicate tab or reconnect does not deny pending
+	// requests for active clients.
 	OnUnsubscribe func(sessionID string)
 
 	mu       sync.Mutex
 	sessions map[string]*sessionLog
 	subs     map[*subscriber]struct{}
+	subCount map[string]int // sessionID -> number of live subscribers
 }
 
 // NewEventLog returns an EventLog with the default heartbeat interval.
@@ -79,6 +83,7 @@ func NewEventLog() *EventLog {
 		HeartbeatInterval: 25 * time.Second,
 		sessions:          make(map[string]*sessionLog),
 		subs:              make(map[*subscriber]struct{}),
+		subCount:          make(map[string]int),
 	}
 }
 
@@ -173,6 +178,7 @@ func (l *EventLog) Subscribe(sessionID string) (<-chan Event, func()) {
 	s := &subscriber{sessionID: sessionID, ch: make(chan Event, subBuf)}
 	l.mu.Lock()
 	l.subs[s] = struct{}{}
+	l.subCount[sessionID]++
 	l.mu.Unlock()
 	var once sync.Once
 	unsub := func() {
@@ -180,9 +186,18 @@ func (l *EventLog) Subscribe(sessionID string) (<-chan Event, func()) {
 			l.mu.Lock()
 			delete(l.subs, s)
 			close(s.ch)
+			last := false
+			l.subCount[sessionID]--
+			if l.subCount[sessionID] <= 0 {
+				delete(l.subCount, sessionID)
+				last = true
+			}
 			l.mu.Unlock()
-			if l.OnUnsubscribe != nil {
-				l.OnUnsubscribe(s.sessionID)
+			// Only drain when this was the last subscriber for the
+			// session, so a duplicate tab or reconnect does not deny
+			// pending requests for still-connected clients.
+			if last && l.OnUnsubscribe != nil {
+				l.OnUnsubscribe(sessionID)
 			}
 		})
 	}
@@ -254,8 +269,9 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 			prevOnEvent(sessionID, payload)
 		}
 	}
-	// An SSE client disconnect for a session drains that session's pending
-	// permission/question waits so they do not leak. Chained, not replaced.
+	// When the last SSE client for a session disconnects, drain that
+	// session's pending permission/question waits so they do not leak.
+	// Chained, not replaced.
 	prevOnUnsub := l.OnUnsubscribe
 	l.OnUnsubscribe = func(sessionID string) {
 		reg.DrainSession(sessionID)

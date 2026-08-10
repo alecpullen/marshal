@@ -41,9 +41,11 @@ type sessionInfo struct {
 	// Busy is true while a turn is in flight (prompt sent, no turn end
 	// observed). A child restart marks it interrupted (Busy=false).
 	Busy bool `json:"busy"`
-	// ctx is cancelled (via cancel) when the session is cancelled,
-	// deleted, or its SSE subscriber disconnects, draining any pending
-	// permission/question waits for it. Not serialized.
+	// ctx is cancelled (via cancel) when the session is cancelled or
+	// deleted, draining any pending permission/question waits for it.
+	// cancelSession replaces it with a fresh context afterwards so a
+	// cancel does not poison later turns' permission/question requests.
+	// Not serialized.
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -294,7 +296,16 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	r.permissions[req.ToolCallID] = ch
 	r.permSession[req.ToolCallID] = req.SessionID
 	r.permMu.Unlock()
-	r.emitEvent("", map[string]any{"type": "permission_request", "toolCallId": req.ToolCallID, "params": params})
+	// Clean up the pending entry on every exit path (resolve, session
+	// cancel/delete, subscriber disconnect, child restart) so a waiter
+	// that returns via the session context cannot leak its map entry.
+	defer func() {
+		r.permMu.Lock()
+		delete(r.permissions, req.ToolCallID)
+		delete(r.permSession, req.ToolCallID)
+		r.permMu.Unlock()
+	}()
+	r.emitEvent(req.SessionID, map[string]any{"type": "permission_request", "toolCallId": req.ToolCallID, "params": params})
 
 	// No wall-clock timeout: the wait ends when the HTTP layer resolves
 	// the permission, when the issuing session is cancelled/deleted or its
@@ -322,6 +333,15 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	r.questions[req.QuestionID] = ch
 	r.quesSession[req.QuestionID] = req.SessionID
 	r.quesMu.Unlock()
+	// Clean up the pending entry on every exit path (resolve, session
+	// cancel/delete, subscriber disconnect, child restart) so a waiter
+	// that returns via the session context cannot leak its map entry.
+	defer func() {
+		r.quesMu.Lock()
+		delete(r.questions, req.QuestionID)
+		delete(r.quesSession, req.QuestionID)
+		r.quesMu.Unlock()
+	}()
 	r.emitEvent(req.SessionID, map[string]any{"type": "question_request", "questionId": req.QuestionID, "params": params})
 
 	// No wall-clock timeout: the wait ends when the HTTP layer answers,
@@ -358,6 +378,11 @@ func (r *Registry) cancelSession(id string) {
 	r.mu.Lock()
 	if info, ok := r.sessions[id]; ok && info.cancel != nil {
 		info.cancel()
+		// Replace the cancelled context so a later turn's permission or
+		// question requests for this session are not immediately denied.
+		// Pending waits registered before the cancel already hold the old
+		// (cancelled) ctx and are drained via drainSession below.
+		info.ctx, info.cancel = context.WithCancel(context.Background())
 	}
 	r.mu.Unlock()
 	r.drainSession(id)
@@ -366,7 +391,10 @@ func (r *Registry) cancelSession(id string) {
 // DrainSession drains the pending permission/question waits belonging to
 // a session with deny/decline. It is invoked on session cancel/delete and
 // wired to the event log's OnUnsubscribe so an SSE client disconnect for
-// a session also unblocks its pending waits instead of leaking them.
+// a session also unblocks its pending waits instead of leaking them. The
+// event log only fires OnUnsubscribe when the last subscriber for the
+// session disconnects, so a duplicate tab or reconnect does not deny
+// pending requests for still-connected clients.
 func (r *Registry) DrainSession(id string) {
 	r.drainSession(id)
 }

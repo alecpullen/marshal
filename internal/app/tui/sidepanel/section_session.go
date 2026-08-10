@@ -50,12 +50,31 @@ func shortDuration(d time.Duration) string {
 	}
 }
 
+// budgetLabel renders the tool-budget row: "tools 7 · no cap" when Max is 0
+// (unlimited), "tools 7/100" when a cap is set. Empty when no tools have run.
+func budgetLabel(d Data) string {
+	if d.State == nil {
+		return ""
+	}
+	b := d.State.ToolBudget()
+	if b.Used <= 0 {
+		return ""
+	}
+	if b.Max > 0 {
+		return fmt.Sprintf(" tools %d/%d", b.Used, b.Max)
+	}
+	return fmt.Sprintf(" tools %d · no cap", b.Used)
+}
+
 func (SessionSection) Render(d Data, width, maxRows int) []string {
 	turns, in, out, elapsed := sessionTotals(d)
 	rows := []string{
 		ansi.Truncate(fmt.Sprintf(" turn %d · %s", turns, shortDuration(elapsed)), width, "…"),
 		ansi.Truncate(fmt.Sprintf(" %s in · %s out",
 			strutil.CompactTokens(in), strutil.CompactTokens(out)), width, "…"),
+	}
+	if label := budgetLabel(d); label != "" {
+		rows = append(rows, ansi.Truncate(label, width, "…"))
 	}
 	if maxRows > 0 && len(rows) > maxRows {
 		rows = rows[:maxRows]
@@ -65,7 +84,11 @@ func (SessionSection) Render(d Data, width, maxRows int) []string {
 
 func (SessionSection) OneLine(d Data, width int) string {
 	turns, in, out, elapsed := sessionTotals(d)
-	return ansi.Truncate(fmt.Sprintf("turn %d · %s · %s/%s",
+	line := fmt.Sprintf("turn %d · %s · %s/%s",
 		turns, shortDuration(elapsed),
-		strutil.CompactTokens(in), strutil.CompactTokens(out)), width, "…")
+		strutil.CompactTokens(in), strutil.CompactTokens(out))
+	if label := budgetLabel(d); label != "" {
+		line += " ·" + label
+	}
+	return ansi.Truncate(line, width, "…")
 }

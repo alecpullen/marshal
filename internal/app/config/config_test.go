@@ -437,7 +437,7 @@ reconnect_max_wait_seconds = 180
 func TestDefaultAgentLimitsAreZero(t *testing.T) {
 	cfg := Default()
 	if cfg.Agent.MaxToolIterations != 0 {
-		t.Fatalf("Agent.MaxToolIterations = %d, want 0 (runner default applies)", cfg.Agent.MaxToolIterations)
+		t.Fatalf("Agent.MaxToolIterations = %d, want 0 (unlimited)", cfg.Agent.MaxToolIterations)
 	}
 	if cfg.Agent.MaxRetries != 0 {
 		t.Fatalf("Agent.MaxRetries = %d, want 0 (runner default applies)", cfg.Agent.MaxRetries)

@@ -631,9 +631,10 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	decoding := resolveActionDecoding(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
 	runner.NativeTools = decoding.Native
 	runner.ResponseFormat = decoding.ResponseFormat
-	if cfg.Agent.MaxToolIterations > 0 {
-		runner.MaxToolIterations = cfg.Agent.MaxToolIterations
-	}
+	// 0 means unlimited (the default); budget.go honors base <= 0 as no
+	// ceiling. Pass it through unconditionally so the config can also
+	// re-disable a cap after one was set.
+	runner.MaxToolIterations = cfg.Agent.MaxToolIterations
 	if cfg.Agent.MaxRetries > 0 {
 		runner.MaxRetries = cfg.Agent.MaxRetries
 	}

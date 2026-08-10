@@ -272,7 +272,8 @@ type Model struct {
 	// completes. Never queried during render.
 	railTurns []db.TurnMetricsRow
 	// railBaseRef is the commit the changed-files section diffs against,
-	// captured once at session start.
+	// rebased when the workspace changes and after each completed turn
+	// (see handleWorkspaceMsg/handleAgentFinished).
 	railBaseRef string
 	// railChanged is the changed-files cache, refreshed on turn boundaries.
 	railChanged []sidepanel.ChangedFile
@@ -1106,7 +1107,7 @@ func New(state *session.State, opts ...Option) Model {
 
 	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
-	m.railBaseRef = gitinfo.HeadSHA(state.WorkingDir)
+	m.railBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
 
 	m.histIdx = -1
 	if state.Config.History.Enabled {
@@ -1216,7 +1217,7 @@ func (m *Model) refreshRailChanged() {
 	if !m.railEnabled() {
 		return
 	}
-	m.railChanged = changedfiles.Read(m.state.WorkingDir, m.railBaseRef)
+	m.railChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.railBaseRef)
 }
 
 // rebuildRail constructs the side rail from the full section list, filtering
@@ -1469,7 +1470,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, railBaseRefMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -3308,7 +3309,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.updateViewportHeight()
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
-	return m, tea.Sequence(tickCmd(), flushCmd)
+	// Rebase the changed-files rail onto the active root's HEAD so committed
+	// agent work stops inflating the diff; the railBaseRefMsg handler sets the
+	// new base and refreshes the cache after the next tick.
+	return m, tea.Sequence(tickCmd(), flushCmd, railBaseRefCmd(m.state.Workspace().ActiveRoot))
 }
 
 // handlePlanAuthorFinished handles the completion of an authoring turn. On
@@ -3366,16 +3370,33 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 
 // handleWorkspaceMsg handles a workspaceMsg: the session's active root
 // changed, so re-read git info for the new root immediately rather than
-// waiting for the 5s tick, then re-arm the pump.
+// waiting for the 5s tick, then re-arm the pump. It also returns a
+// railBaseRefCmd so the changed-files rail rebases onto the new root's HEAD
+// off the UI thread.
 func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
+	var baseCmd tea.Cmd
 	if msg.activeRoot != "" {
 		m.gitInfo = gitinfo.Read(msg.activeRoot)
 		m.lastGitRead = m.now()
+		baseCmd = railBaseRefCmd(msg.activeRoot)
 	}
 	if m.workspaceEvents == nil {
-		return m, nil
+		return m, baseCmd
 	}
-	return m, pumpWorkspaceEvents(m.workspaceEvents)
+	return m, tea.Batch(pumpWorkspaceEvents(m.workspaceEvents), baseCmd)
+}
+
+// handleRailBaseRef handles a railBaseRefMsg: a freshly-read HEAD SHA for
+// the changed-files rail. It rebases the base ref and refreshes the cache.
+// refreshRailChanged runs two git diff subprocesses synchronously here; that
+// matches the existing turn-boundary behavior and happens at most once per
+// workspace change, so it is acceptable on the UI thread.
+func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
+	if msg.ref != "" {
+		m.railBaseRef = msg.ref
+	}
+	m.refreshRailChanged()
+	return m, nil
 }
 
 // handleAgentTick handles an agentTickMsg, shared by Update and
@@ -3427,6 +3448,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSteering(msg)
 	case workspaceMsg:
 		return m.handleWorkspaceMsg(msg)
+	case railBaseRefMsg:
+		return m.handleRailBaseRef(msg)
 	case agentTickMsg:
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:

@@ -1365,6 +1365,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			return ctx, rt.Runner
 		}))
+		// Workspace events must flow even when the initial provider build
+		// failed, or the worktree footer/rail never updates until a busy-tick.
+		// The broker is created in runtime.go regardless of provider state.
+		tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
 		if state.ProviderError() == nil {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
@@ -1372,7 +1376,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
-			tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {

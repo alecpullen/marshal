@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -523,6 +524,79 @@ func TestWorkspaceMsgUpdatesGitInfoWhenDockOpen(t *testing.T) {
 	}
 	if m.gitInfo.Branch != "pipeline/feature" {
 		t.Errorf("gitInfo.Branch = %q, want pipeline/feature", m.gitInfo.Branch)
+	}
+}
+
+// initRailTestRepo builds a real git repo in dir with one committed file and
+// returns the base commit SHA. Mirrors the inline pattern in
+// changedfiles_test.go without exporting from that package.
+func initRailTestRepo(t *testing.T, dir string) string {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", dir},
+		{"-C", dir, "config", "user.email", "test@example.com"},
+		{"-C", dir, "config", "user.name", "test"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "init"}} {
+		cmdArgs := append([]string{"-C", dir}, args...)
+		if out, err := exec.Command("git", cmdArgs...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	return string(out[:len(out)-1])
+}
+
+func TestRefreshRailChangedUsesActiveRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	base := initRailTestRepo(t, dir)
+
+	// Create a linked worktree on a new branch.
+	wt := filepath.Join(dir, "wt")
+	if out, err := exec.Command("git", "-C", dir, "worktree", "add", "-b", "feat-x", wt).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+
+	// Modify a file only in the worktree.
+	if err := os.WriteFile(filepath.Join(wt, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatalf("write worktree a.txt: %v", err)
+	}
+	// Modify a file only in the main checkout.
+	if err := os.WriteFile(filepath.Join(dir, "main-only.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("write main-only.txt: %v", err)
+	}
+
+	m := newTestModel(t)
+	m.railWidth = 40 // enable the rail
+	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: wt, Branch: "feat-x"})
+	m.railBaseRef = base
+
+	m.refreshRailChanged()
+
+	found := false
+	for _, f := range m.railChanged {
+		if f.Path == "a.txt" {
+			found = true
+		}
+		if f.Path == "main-only.txt" {
+			t.Errorf("railChanged includes main-checkout file %q, want only worktree changes", f.Path)
+		}
+	}
+	if !found {
+		t.Errorf("railChanged missing worktree-modified a.txt: %+v", m.railChanged)
 	}
 }
 

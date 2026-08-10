@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
+	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
@@ -47,6 +48,8 @@ func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.state = snap.State
+	m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
+	m.lastGitRead = m.now()
 	if snap.Runner != nil {
 		m.runner = snap.Runner
 	}
@@ -74,7 +77,7 @@ func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
 
 	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount), session.ContentTypePlain)
 	m.refreshViewport()
-	return m, nil
+	return m, railBaseRefCmd(m.state.Workspace().ActiveRoot)
 }
 
 func init() {

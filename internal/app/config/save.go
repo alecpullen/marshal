@@ -128,6 +128,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),
 		MaxRetries:               strutil.Ptr(cfg.Agent.MaxRetries),
 		MaxTurnContextTokens:     strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
+		ReconnectMaxWaitSeconds:  strutil.Ptr(cfg.Agent.ReconnectMaxWaitSeconds),
 		MaxToolResultChars:       strutil.Ptr(cfg.Agent.MaxToolResultChars),
 		MaxStructuredOutputChars: strutil.Ptr(cfg.Agent.MaxStructuredOutputChars),
 		PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),

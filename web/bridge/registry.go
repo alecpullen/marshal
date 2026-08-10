@@ -48,12 +48,6 @@ type sessionInfo struct {
 type Registry struct {
 	child *Child
 
-	// PendingTimeout bounds how long a permission/question request from
-	// the child waits for an HTTP response before the registry answers
-	// declined/denied to ACP. Defaults to 30s (matching the
-	// CancelAndWait bound in internal/acp/turn.go); injectable for tests.
-	PendingTimeout time.Duration
-
 	// OnEvent, if set, is invoked with bridge-originated events for a
 	// session (e.g. "bridge_restarted"). Task 3's event bus consumes it.
 	OnEvent func(sessionId string, payload any)
@@ -78,11 +72,10 @@ type Registry struct {
 // OnRequest and OnRestart hooks.
 func NewRegistry(child *Child) *Registry {
 	r := &Registry{
-		child:          child,
-		PendingTimeout: 30 * time.Second,
-		sessions:       make(map[string]*sessionInfo),
-		permissions:    make(map[string]chan Decision),
-		questions:      make(map[string]chan Answers),
+		child:       child,
+		sessions:    make(map[string]*sessionInfo),
+		permissions: make(map[string]chan Decision),
+		questions:   make(map[string]chan Answers),
 	}
 	child.OnRequest = r.handleChildRequest
 	prevOnRestart := child.OnRestart
@@ -282,14 +275,12 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	r.permMu.Unlock()
 	r.emitEvent("", map[string]any{"type": "permission_request", "toolCallId": req.ToolCallID, "params": params})
 
+	// No wall-clock timeout: the wait ends when the HTTP layer resolves the
+	// permission, or when clearPending drains it (on child restart) with a
+	// deny. Browsers can still explicitly deny.
 	select {
 	case d := <-ch:
 		return map[string]any{"approved": d.Approved, "edited": d.Edited}, nil
-	case <-time.After(r.PendingTimeout):
-		r.permMu.Lock()
-		delete(r.permissions, req.ToolCallID)
-		r.permMu.Unlock()
-		return map[string]any{"approved": false}, nil
 	}
 }
 
@@ -307,17 +298,15 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	r.quesMu.Unlock()
 	r.emitEvent(req.SessionID, map[string]any{"type": "question_request", "questionId": req.QuestionID, "params": params})
 
+	// No wall-clock timeout: the wait ends when the HTTP layer answers, or
+	// when clearPending drains it (on child restart) with a decline. Browsers
+	// can still explicitly decline.
 	select {
 	case a := <-ch:
 		if a.Declined {
 			return map[string]any{"declined": true}, nil
 		}
 		return map[string]any{"answers": a.Answers}, nil
-	case <-time.After(r.PendingTimeout):
-		r.quesMu.Lock()
-		delete(r.questions, req.QuestionID)
-		r.quesMu.Unlock()
-		return map[string]any{"declined": true}, nil
 	}
 }
 

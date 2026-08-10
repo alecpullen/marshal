@@ -828,6 +828,25 @@ func TestScrollWorksWhileQuestionPending(t *testing.T) {
 	}
 }
 
+func TestReconnectingActivityRendersInViewport(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetActivity(session.Activity{
+		Kind:      session.ActivityReconnecting,
+		Label:     "connection lost — retrying in 5s",
+		StartedAt: time.Unix(200, 0), // >200ms ago so the spinner glyph shows
+	})
+	m.busy = true
+	m.refreshViewport()
+
+	plain := stripANSI(m.viewport.View())
+	if !strings.Contains(plain, "connection lost — retrying in 5s") {
+		t.Fatalf("reconnect label missing from viewport:\n%s", plain)
+	}
+	if !strings.Contains(plain, "connection lost") {
+		t.Fatalf("reconnect notice text missing:\n%s", plain)
+	}
+}
+
 func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	message := "This transcript line should be wide enough to wrap differently after resizing from a wide terminal down to a narrow terminal."

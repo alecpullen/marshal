@@ -105,13 +105,6 @@ type Option func(*options)
 
 var (
 	shutdownKnowledgeTimeout = 5 * time.Second
-
-	// agentApprovalTimeout is the ceiling for approval/question requests on
-	// interactive, swarm, and SDD runners. It bounds only the TUI wait, not
-	// the model chat call itself — see agent.Runner.ChatTimeout, which is
-	// left unset here so those runners get agent.Runner's own longer
-	// default, appropriate for large-context cloud models.
-	agentApprovalTimeout = 60 * time.Second
 )
 
 func WithNow(now func() time.Time) Option {
@@ -652,8 +645,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	runner.PlanFirst = cfg.Agent.PlanFirst
 	runner.SuppressParseRepairFeedback = !cfg.Agent.ParseRepairFeedbackEnabled()
-	if runner.ApprovalTimeout == 0 {
-		runner.ApprovalTimeout = agentApprovalTimeout
+	if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
+		runner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
 	}
 
 	// T17: wire rollover controller into the runner when enabled.
@@ -805,11 +798,11 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	pol := s.pol
 	if s.childSession {
 		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1))
-		// No UI watches a child session's pending approvals: an interactive
-		// Confirm would wait out ApprovalTimeout and fail the turn with
-		// "agent: request timed out". Unattended runners therefore evaluate
-		// under an auto-approving clone of the shared engine (guardrails and
-		// the git-push floor still apply), leaving the parent mode intact.
+		// No UI watches a child session's pending approvals, so an
+		// unattended runner's approval could sit unanswered indefinitely.
+		// Unattended runners therefore evaluate under an auto-approving
+		// clone of the shared engine (guardrails and the git-push floor
+		// still apply), leaving the parent mode intact.
 		pol = s.pol.Clone()
 		pol.SetApprovalMode(policy.ModeAuto)
 	}
@@ -820,7 +813,9 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	r.MemoryProvider = s.memory
 	r.ProjectID = s.projectID
 	r.MetricsObserver = s.metricsObserver
-	r.ApprovalTimeout = agentApprovalTimeout
+	if s.cfg.Agent.ReconnectMaxWaitSeconds > 0 {
+		r.ReconnectMaxWait = time.Duration(s.cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
+	}
 	// Role prompts embed the shared plan, so skip the per-turn
 	// classify/plan pass (class "question" bypasses planning).
 	r.SetForceClass("question")
@@ -1012,7 +1007,9 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		childRunner.SkillIndex = skillIndex
 		childRunner.MemoryProvider = &dbMemoryProvider{db: database}
 		childRunner.ProjectID = projectID
-		childRunner.ApprovalTimeout = agentApprovalTimeout
+		if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
+			childRunner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
+		}
 		childRunner.SetForceClass("question")
 		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(context.Background()))
 		childRunner.NativeTools = decoding.Native

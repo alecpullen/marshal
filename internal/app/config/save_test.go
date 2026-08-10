@@ -142,6 +142,7 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	cfg.Profile.Default = "local_balanced"
 	cfg.Agent.MaxToolIterations = 8
 	cfg.Agent.MaxRetries = 2
+	cfg.Agent.ReconnectMaxWaitSeconds = 300
 	cfg.Tools.Shell.DefaultTimeoutSeconds = 45
 	cfg.Tools.Shell.MaxOutputBytes = 98765
 	cfg.Tools.Shell.AllowNetwork = true
@@ -176,7 +177,8 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if loaded.Agent.MaxToolIterations != 8 || loaded.Agent.MaxRetries != 2 {
+	if loaded.Agent.MaxToolIterations != 8 || loaded.Agent.MaxRetries != 2 ||
+		loaded.Agent.ReconnectMaxWaitSeconds != 300 {
 		t.Fatalf("agent settings = %+v", loaded.Agent)
 	}
 	shell := loaded.Tools.Shell

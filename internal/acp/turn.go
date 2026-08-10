@@ -541,9 +541,10 @@ func (m *TurnManager) runTurn(
 				pending.Respond(session.UnansweredAnswers(pending.Questions))
 			} else {
 				go func() {
-					qctx, cancel := context.WithTimeout(turnCtx, questionWait)
-					defer cancel()
-					if err := m.qbridge.Ask(qctx, sessionID, pending); err != nil {
+					// No wall-clock question timeout: the wait ends on client
+					// disconnect / session shutdown (turnCtx cancellation) or
+					// a bridge error, which still answers Unanswered.
+					if err := m.qbridge.Ask(turnCtx, sessionID, pending); err != nil {
 						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
 							"session", sessionID, "err", err)
 						pending.Respond(session.UnansweredAnswers(pending.Questions))
@@ -1167,12 +1168,6 @@ func (m *TurnManager) Cancel(ctx context.Context, params json.RawMessage) (any, 
 // cancelWait is the fallback timeout for CancelAndWait. Exported as a
 // package-level var so tests can override it without slowing the suite.
 var cancelWait = 30 * time.Second
-
-// questionWait bounds how long a turn blocks waiting for a client to answer
-// a question. On expiry the question resolves to the Unanswered sentinel so
-// a dead client can never wedge a turn. Package-level var so tests can
-// override it without slowing the suite.
-var questionWait = 30 * time.Second
 
 // CancelAndWait cancels the active turn for the named session and blocks
 // until the runner has fully completed. Returns nil if no turn is active

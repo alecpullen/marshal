@@ -272,11 +272,50 @@ func TestChatWithRetryReconnectGivesUpAfterCap(t *testing.T) {
 	}
 	// The loop gives up once the next backoff would push total waiting past
 	// the cap, so the observed wait lands within one backoff step under it.
-	if elapsed := now.Sub(started); elapsed < reconnectMaxWait-10*time.Second {
-		t.Fatalf("gave up after %v, well before the %v cap", elapsed, reconnectMaxWait)
+	if elapsed := now.Sub(started); elapsed < defaultReconnectMaxWait-10*time.Second {
+		t.Fatalf("gave up after %v, well before the %v cap", elapsed, defaultReconnectMaxWait)
 	}
 	if p.calls < 5 {
 		t.Fatalf("expected several reconnect attempts over ~2m, got %d", p.calls)
+	}
+}
+
+// TestReconnectMaxWaitConfigurable verifies a Runner.ReconnectMaxWait
+// override bounds the reconnect loop instead of the built-in default: with
+// the field set small (via the suite's fake clock) the loop must give up at
+// the configured cap, not the 2-minute default.
+func TestReconnectMaxWaitConfigurable(t *testing.T) {
+	drop := &url.Error{Op: "Post", URL: "http://provider", Err: syscall.ECONNRESET}
+	p := &partialThenErrorProvider{partial: "", err: drop}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxRetries = 0
+	r.ReconnectMaxWait = 7 * time.Second
+
+	now := time.Unix(1000, 0)
+	r.Now = func() time.Time { return now }
+	r.Sleep = func(ctx context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return ctx.Err()
+	}
+
+	started := now
+	_, err := r.chatWithRetry(context.Background(), p, "test-model",
+		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("expected error after configured reconnect cap, got nil")
+	}
+	if !isNetworkError(err) {
+		t.Fatalf("expected the underlying network error, got %v", err)
+	}
+	elapsed := now.Sub(started)
+	// The configured cap is far below the 2-minute default, so the observed
+	// wait must track it, not defaultReconnectMaxWait.
+	if elapsed >= defaultReconnectMaxWait {
+		t.Fatalf("reconnect ran %v, ignoring the %v configured cap", elapsed, r.ReconnectMaxWait)
+	}
+	if elapsed < r.ReconnectMaxWait-10*time.Second {
+		t.Fatalf("gave up after %v, well before the %v configured cap", elapsed, r.ReconnectMaxWait)
 	}
 }
 
@@ -301,5 +340,108 @@ func TestChatWithRetryReconnectEscalatesToRetryLadder(t *testing.T) {
 	}
 	if p.Calls != 2 {
 		t.Fatalf("expected 2 calls (drop + 400), got %d", p.Calls)
+	}
+}
+
+// deadlineThenSuccessProvider blocks its first Chat call until the (per-request)
+// ctx deadline fires, returning that DeadlineExceeded; subsequent calls succeed.
+// This mirrors a device sleep or stalled stream: chatOnce's WithTimeout fires,
+// the parent ctx is still alive, and the request must be reconnected rather
+// than failed.
+type deadlineThenSuccessProvider struct {
+	calls int
+}
+
+func (p *deadlineThenSuccessProvider) Name() string { return "deadline-then-success" }
+
+func (p *deadlineThenSuccessProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) {
+	return nil, nil
+}
+
+func (p *deadlineThenSuccessProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
+}
+
+func (p *deadlineThenSuccessProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	p.calls++
+	events := make(chan schema.ChatEvent, 1)
+	go func() {
+		defer close(events)
+		if p.calls == 1 {
+			<-ctx.Done()
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: ctx.Err()}
+			return
+		}
+		events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: "stop"}
+	}()
+	return events, nil
+}
+
+// TestChatWithRetryReconnectOnPerRequestDeadline pins that a per-request
+// DeadlineExceeded (parent ctx alive) is reconnect-eligible: the request is
+// resent via waitForConnectivity and the eventual success wins, with the
+// ActivityReconnecting status surfaced meanwhile.
+func TestChatWithRetryReconnectOnPerRequestDeadline(t *testing.T) {
+	p := &deadlineThenSuccessProvider{}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxRetries = 0
+	r.ChatTimeout = 50 * time.Millisecond
+
+	seen := make(chan session.Activity, 4)
+	r.Sleep = func(ctx context.Context, d time.Duration) error {
+		seen <- state.Activity()
+		return ctx.Err()
+	}
+
+	_, err := r.chatWithRetry(context.Background(), p, "test-model",
+		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("expected recovery via reconnect after per-request deadline, got %v", err)
+	}
+	if p.calls != 2 {
+		t.Fatalf("expected 2 calls (deadline + success), got %d", p.calls)
+	}
+	select {
+	case a := <-seen:
+		if a.Kind != session.ActivityReconnecting {
+			t.Fatalf("activity kind during reconnect = %q, want %q", a.Kind, session.ActivityReconnecting)
+		}
+	default:
+		t.Fatal("reconnect path never ran — no ActivityReconnecting surfaced")
+	}
+}
+
+// TestChatWithRetryParentCancelNotReconnectEligible pins the ctx.Err()==nil
+// guard in isReconnectEligible: a DeadlineExceeded while the parent ctx is
+// already cancelled is a user/turn cancel, not a reconnect — the turn must
+// fail immediately with no reconnect wait.
+func TestChatWithRetryParentCancelNotReconnectEligible(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // parent already cancelled before the call
+
+	p := &deadlineThenSuccessProvider{}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxRetries = 0
+	r.ChatTimeout = 50 * time.Millisecond
+
+	// A Sleep that would record a reconnect attempt, proving none happens.
+	slept := false
+	r.Sleep = func(ctx context.Context, d time.Duration) error {
+		slept = true
+		return ctx.Err()
+	}
+
+	_, err := r.chatWithRetry(ctx, p, "test-model",
+		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if slept {
+		t.Fatal("reconnect wait ran for a cancelled parent ctx — DeadlineExceeded must not be reconnect-eligible here")
+	}
+	if p.calls != 1 {
+		t.Fatalf("expected 1 call, got %d", p.calls)
 	}
 }

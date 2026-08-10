@@ -344,6 +344,10 @@ type AgentConfig struct {
 	MaxToolIterations    int `toml:"max_tool_iterations"`
 	MaxRetries           int `toml:"max_retries"`
 	MaxTurnContextTokens int `toml:"max_turn_context_tokens"`
+	// ReconnectMaxWaitSeconds bounds how long a dropped provider connection
+	// is retried before the turn fails. 0 = built-in default (2 minutes).
+	// Raise this for sleep/wake-heavy environments.
+	ReconnectMaxWaitSeconds int `toml:"reconnect_max_wait_seconds"`
 	// MaxToolResultChars caps a single tool result's characters before it
 	// reaches the model. 0 = derive from the turn's context threshold
 	// (~5% of the token budget), which is what large-window models want.

@@ -166,6 +166,71 @@ func TestRunTaskDoesNotSalvageCancellation(t *testing.T) {
 	}
 }
 
+// TestMidStreamDeadlineExceededSalvagesPartial pins that a stream exhausted by
+// the per-request deadline (device sleep/wake, reconnect cap reached) salvages
+// the partial model output, since it is real text the user paid for — unlike a
+// user-initiated cancel, which is never salvaged.
+func TestMidStreamDeadlineExceededSalvagesPartial(t *testing.T) {
+	complete := `{"rationale":"r","action":{"type":"answer","content":"partial but real"}}`
+	// Always fail with DeadlineExceeded; a tiny ReconnectMaxWait makes the
+	// reconnect loop give up almost immediately so the test stays fast.
+	p := &partialThenErrorProvider{partial: complete, err: context.DeadlineExceeded}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.ReconnectMaxWait = time.Millisecond
+	runner.MaxRetries = 0
+	// Make the reconnect backoff instant so the loop hits the cap without a
+	// real 1s first sleep.
+	runner.Sleep = func(ctx context.Context, d time.Duration) error { return ctx.Err() }
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run failed instead of salvaging the partial deadline-exhausted response: %v", err)
+	}
+
+	var sawPartial, sawRecovery bool
+	for _, m := range state.Messages() {
+		if strings.Contains(m.Content, "partial but real") {
+			sawPartial = true
+		}
+		if strings.Contains(m.Content, "Recovered from a provider stream error") {
+			sawRecovery = true
+		}
+	}
+	if !sawPartial {
+		t.Error("partial deadline-exhausted text was not salvaged to the transcript")
+	}
+	if !sawRecovery {
+		t.Error("no system notice recorded; a silent recovery hides provider trouble")
+	}
+}
+
+// TestMidStreamCancelStillVetoesSalvage pins that a user-initiated cancel
+// (context.Canceled) still discards partial output — the salvage change must
+// only relax the deadline case.
+func TestMidStreamCancelStillVetoesSalvage(t *testing.T) {
+	complete := `{"rationale":"r","action":{"type":"answer","content":"partial"}}`
+	p := &partialThenErrorProvider{partial: complete, err: context.Canceled}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "do the thing"); err == nil {
+		t.Fatal("Run salvaged a cancelled stream; cancellation must still stop the turn")
+	}
+	var sawPartial bool
+	for _, m := range state.Messages() {
+		if strings.Contains(m.Content, "partial") {
+			sawPartial = true
+		}
+	}
+	if sawPartial {
+		t.Error("cancelled stream partial text was salvaged; cancellation must discard it")
+	}
+}
+
 // TestAuditEventsCarryFinishReason pins the instrumentation that makes
 // truncated tool arguments diagnosable: a patch that fails to parse looks
 // identical whether the model wrote it badly or the provider cut it off at the

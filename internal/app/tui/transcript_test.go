@@ -89,6 +89,26 @@ func TestRenderAgentProseDoesNotAddBlankTrailingLine(t *testing.T) {
 	}
 }
 
+func TestRenderReconnectNoticeUsesGutter(t *testing.T) {
+	out := renderReconnectNotice("connection lost — retrying in 5s", "⠋", 80)
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " · ") {
+		t.Fatalf("reconnect notice missing · gutter:\n%s", out)
+	}
+	if !strings.Contains(plain, "⠋") || !strings.Contains(plain, "connection lost — retrying in 5s") {
+		t.Fatalf("reconnect notice missing spinner or label:\n%s", out)
+	}
+	if strings.HasSuffix(out, "\n\n") {
+		t.Fatalf("reconnect notice should not add a blank trailing line:\n%q", out)
+	}
+}
+
+func TestRenderReconnectNoticeEmptyLabelReturnsNothing(t *testing.T) {
+	if out := renderReconnectNotice("", "⠋", 80); out != "" {
+		t.Fatalf("empty label should render nothing, got %q", out)
+	}
+}
+
 func TestRenderThinkingBoxUsesGutter(t *testing.T) {
 	out := renderThinkingBox("checking the auth flow", "⠋", 80)
 	plain := stripANSI(out)

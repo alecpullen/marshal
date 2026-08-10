@@ -20,7 +20,6 @@ func newTestRegistry(t *testing.T, mode string) (*Registry, *Child) {
 	}
 	t.Cleanup(c.Stop)
 	r := NewRegistry(c)
-	r.PendingTimeout = 300 * time.Millisecond
 	return r, c
 }
 
@@ -142,7 +141,7 @@ func TestRegistryPermissionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRegistryPermissionTimeout(t *testing.T) {
+func TestRegistryPermissionWaitsForDecision(t *testing.T) {
 	r, _ := newTestRegistry(t, "registry")
 	ctx, cancel := testContext(t)
 	defer cancel()
@@ -156,13 +155,18 @@ func TestRegistryPermissionTimeout(t *testing.T) {
 		_, ok := r.permissions["tc-1"]
 		return ok
 	})
-	// No resolve: the 300ms injected timeout must fire and clean up.
-	waitFor(t, 2*time.Second, "timeout cleanup", func() bool {
-		r.permMu.Lock()
-		defer r.permMu.Unlock()
-		_, ok := r.permissions["tc-1"]
-		return !ok
-	})
+	// No wall-clock timeout: the pending permission must still be parked
+	// well past the old 300ms budget.
+	time.Sleep(200 * time.Millisecond)
+	r.permMu.Lock()
+	_, stillPending := r.permissions["tc-1"]
+	r.permMu.Unlock()
+	if !stillPending {
+		t.Fatal("pending permission was dropped without a decision")
+	}
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
+		t.Fatalf("ResolvePermission: %v", err)
+	}
 	// A late resolve now reports ErrGone.
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
 		t.Fatalf("late resolve: want ErrGone, got %v", err)
@@ -192,7 +196,7 @@ func TestRegistryQuestionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRegistryQuestionTimeout(t *testing.T) {
+func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	r, _ := newTestRegistry(t, "registry")
 	ctx, cancel := testContext(t)
 	defer cancel()
@@ -206,13 +210,20 @@ func TestRegistryQuestionTimeout(t *testing.T) {
 		_, ok := r.questions["q-1"]
 		return ok
 	})
-	waitFor(t, 2*time.Second, "timeout cleanup", func() bool {
-		r.quesMu.Lock()
-		defer r.quesMu.Unlock()
-		_, ok := r.questions["q-1"]
-		return !ok
-	})
-	if err := r.ResolveQuestion("q-1", Answers{Declined: true}); !errors.Is(err, ErrGone) {
+	// No wall-clock timeout: the pending question must still be parked
+	// well past the old 300ms budget.
+	time.Sleep(200 * time.Millisecond)
+	r.quesMu.Lock()
+	_, stillPending := r.questions["q-1"]
+	r.quesMu.Unlock()
+	if !stillPending {
+		t.Fatal("pending question was dropped without an answer")
+	}
+	ans := Answers{Answers: []session.Answer{{Question: "proceed?", Answer: "yes"}}}
+	if err := r.ResolveQuestion("q-1", ans); err != nil {
+		t.Fatalf("ResolveQuestion: %v", err)
+	}
+	if err := r.ResolveQuestion("q-1", ans); !errors.Is(err, ErrGone) {
 		t.Fatalf("late resolve: want ErrGone, got %v", err)
 	}
 }

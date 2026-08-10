@@ -48,15 +48,6 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
 
-// ErrRequestTimedOut is returned by requestApproval when the TUI (or bridge
-// channel) does not respond within ApprovalTimeout. It prevents a goroutine
-// leak when the TUI exits without sending a decision. requestQuestions has
-// no such timeout — see its doc comment.
-var ErrRequestTimedOut = errors.New("agent: request timed out")
-
-// defaultApprovalTimeout is the fallback used when ApprovalTimeout is unset.
-const defaultApprovalTimeout = 5 * time.Minute
-
 // defaultChatTimeout is the fallback used when ChatTimeout is unset —
 // notably by the ad-hoc agent.run subagent path, which never sets either
 // timeout field explicitly.
@@ -164,8 +155,8 @@ type MemoryProvider interface {
 //   - A *Runner IS safe for sequential re-use: after one RunTask returns,
 //     the next call starts from a clean per-turn state. Fields that persist
 //     across calls (Provider, Registry, Policy, State, Model, RouteResolver,
-//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, ApprovalTimeout,
-//     ChatTimeout, ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
+//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, ChatTimeout,
+//     ReconnectMaxWait, ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
 //     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
 //     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
 //     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
@@ -203,15 +194,16 @@ type Runner struct {
 	MaxToolIterations    int
 	MaxRetries           int
 	MaxTurnContextTokens int
-	// ApprovalTimeout bounds requestApproval's wait for a TUI decision. It
-	// has no bearing on model chat calls — see ChatTimeout.
-	ApprovalTimeout time.Duration
 	// ChatTimeout bounds chatOnce's per-request context deadline for the
-	// model call itself. It is deliberately separate from ApprovalTimeout:
-	// a short approval-wait ceiling (e.g. 60s, appropriate for a human
-	// glancing at a prompt) must never cut off a slower-but-working
-	// completion from a large-context cloud model.
-	ChatTimeout        time.Duration
+	// model call itself. It is deliberately separate from approvals and
+	// questions, which carry no wall-clock timeout: a short chat ceiling
+	// must never cut off a slower-but-working completion from a
+	// large-context cloud model.
+	ChatTimeout time.Duration
+	// ReconnectMaxWait bounds the total time waitForConnectivity will
+	// spend resending a dropped chat request before failing the turn.
+	// Zero uses defaultReconnectMaxWait.
+	ReconnectMaxWait   time.Duration
 	ResponseFormat     *schema.ResponseFormat
 	NativeTools        bool
 	MaxParallelActions int
@@ -440,8 +432,8 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MaxToolIterations = other.MaxToolIterations
 	r.MaxRetries = other.MaxRetries
 	r.MaxTurnContextTokens = other.MaxTurnContextTokens
-	r.ApprovalTimeout = other.ApprovalTimeout
 	r.ChatTimeout = other.ChatTimeout
+	r.ReconnectMaxWait = other.ReconnectMaxWait
 	r.ResponseFormat = other.ResponseFormat
 	r.NativeTools = other.NativeTools
 	r.MaxParallelActions = other.MaxParallelActions
@@ -788,8 +780,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// it does not, the parse-failure ladder handles it. Failing here
 			// instead threw away work the model had already done.
 			//
-			// Cancellation is never salvaged: the user asked to stop.
-			if strings.TrimSpace(res.Text) == "" || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Cancellation is never salvaged: the user asked to stop. A
+			// deadline-exhausted stream (sleep/wake, reconnect cap reached)
+			// IS salvage-eligible: the partial text is real model output
+			// the user paid for, so only user-initiated cancellation
+			// discards it.
+			if strings.TrimSpace(res.Text) == "" || errors.Is(err, context.Canceled) {
 				return task, r.fail(task, err)
 			}
 			r.withStats(func(s *turnStats) { s.m.StreamRecoveries++ })

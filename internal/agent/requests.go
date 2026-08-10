@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/strutil"
@@ -16,7 +15,9 @@ import (
 // session.PendingToolCall) resolves the pending approval, or ctx is
 // cancelled. It follows the exact protocol internal/app/tui/model.go already
 // implements for Milestone F/G: set PendingApproval, wait on ResponseChan,
-// clear PendingApproval.
+// clear PendingApproval. The wait ends only on a decision, ctx
+// cancellation (turn cancel/shutdown), or State.ResolvePendingForShutdown —
+// there is no wall-clock timeout.
 func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, reason string) (approved bool, edited string, err error) {
 	command, _ := argsMap["command"].(string)
 	if command == "" {
@@ -48,7 +49,6 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	label := fmt.Sprintf("waiting for approval: %s", command)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
 
-	timeout := r.effectiveApprovalTimeout()
 	select {
 	case decision := <-tc.ResponseChan:
 		r.State.SetPendingApproval(nil)
@@ -58,10 +58,6 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		r.State.SetPendingApproval(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return false, "", ctx.Err()
-	case <-time.After(timeout):
-		r.State.SetPendingApproval(nil)
-		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		return false, "", ErrRequestTimedOut
 	}
 }
 
@@ -79,10 +75,10 @@ func (r *Runner) requestAnswer(ctx context.Context, question string) (string, er
 // requestQuestions blocks on the TUI for one or more structured Answers.
 // It produces the same shape the native question.ask tool produces.
 //
-// Unlike requestApproval there is no wall-clock timeout here: a user
-// reading and answering a question is not a hung request, and failing the
-// turn after a few minutes punishes them for thinking. The wait still ends
-// on ctx cancellation (turn cancel/shutdown) and on
+// Neither questions nor approvals carry a wall-clock timeout: a user
+// reading and answering a prompt is not a hung request, and failing the
+// turn after a few minutes punishes them for thinking. The wait ends on a
+// decision, on ctx cancellation (turn cancel/shutdown), and on
 // State.ResolvePendingForShutdown, which answers every pending question
 // with Unanswered.
 func (r *Runner) requestQuestions(ctx context.Context, questions []session.Question) ([]session.Answer, error) {
@@ -105,15 +101,6 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return nil, ctx.Err()
 	}
-}
-
-// effectiveApprovalTimeout returns the approval-wait timeout to use, falling
-// back to a sensible default if r.ApprovalTimeout is zero.
-func (r *Runner) effectiveApprovalTimeout() time.Duration {
-	if r.ApprovalTimeout > 0 {
-		return r.ApprovalTimeout
-	}
-	return defaultApprovalTimeout
 }
 
 // buildQuestionLabel returns a human-readable activity label that includes a

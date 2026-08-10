@@ -3,6 +3,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 )
@@ -55,5 +56,16 @@ func pumpWorkspaceEvents(ch <-chan pubsub.Event[session.WorkspaceEvent]) tea.Cmd
 			return nil
 		}
 		return workspaceMsg{activeRoot: ev.Payload.Workspace.ActiveRoot}
+	}
+}
+
+// railBaseRefCmd shells out to git rev-parse off the UI thread and returns
+// the result as a railBaseRefMsg. dir is the workspace active root.
+func railBaseRefCmd(dir string) tea.Cmd {
+	if dir == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		return railBaseRefMsg{ref: gitinfo.HeadSHA(dir)}
 	}
 }

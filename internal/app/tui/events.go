@@ -22,3 +22,9 @@ type steeringMsg struct {
 type workspaceMsg struct {
 	activeRoot string
 }
+
+// railBaseRefMsg carries a freshly-read HEAD SHA for the changed-files rail.
+// Emitted by railBaseRefCmd so the git subprocess stays off the UI thread.
+type railBaseRefMsg struct {
+	ref string
+}

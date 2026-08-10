@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
+	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/presetflow"
@@ -1625,6 +1627,103 @@ func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
 	}
 }
 
+// collectRailBaseRefs executes a cmd chain (which may be a tea.Sequence or
+// tea.Batch) and returns every railBaseRefMsg it produces. The sequence msg
+// type is unexported, so it is unwrapped via reflection.
+func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
+	t.Helper()
+	var refs []railBaseRefMsg
+	var walk func(c tea.Cmd)
+	walk = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		msg := c()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				walk(sub)
+			}
+			return
+		}
+		// tea.Sequence returns an unexported sequenceMsg []Cmd (Cmd is
+		// func() tea.Msg); unwrap via reflection so we can collect the
+		// railBaseRefCmd inside it.
+		rv := reflect.ValueOf(msg)
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Func {
+			for i := 0; i < rv.Len(); i++ {
+				if sub, ok := rv.Index(i).Interface().(tea.Cmd); ok {
+					walk(sub)
+				}
+			}
+			return
+		}
+		if rb, ok := msg.(railBaseRefMsg); ok {
+			refs = append(refs, rb)
+		}
+	}
+	walk(cmd)
+	return refs
+}
+
+func TestAgentFinishedAdvancesRailBaseRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initRailTestRepo(t, dir)
+
+	m := newTestModel(t)
+	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
+	m.busy = true
+
+	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = mm
+	if m.busy {
+		t.Fatal("busy should be cleared after agentFinishedMsg")
+	}
+	refs := collectRailBaseRefs(t, cmd)
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 railBaseRefMsg from the cmd chain, got %d", len(refs))
+	}
+	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	if refs[0].ref != string(want[:len(want)-1]) {
+		t.Errorf("railBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+	}
+}
+
+func TestAgentFinishedAdvancesRailBaseRefWhenCancelled(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initRailTestRepo(t, dir)
+
+	m := newTestModel(t)
+	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
+	m.busy = true
+	m.cancelling = true
+
+	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: context.Canceled})
+	m = mm
+	if m.cancelling {
+		t.Fatal("cancelling flag should be cleared after agentFinishedMsg")
+	}
+	refs := collectRailBaseRefs(t, cmd)
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 railBaseRefMsg from the cancelled cmd chain, got %d", len(refs))
+	}
+	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	if refs[0].ref != string(want[:len(want)-1]) {
+		t.Errorf("railBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+	}
+}
+
 func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	block := make(chan struct{})
 	runner := &blockingAgentRunner{block: block}
@@ -2343,6 +2442,59 @@ func TestSlashCommandClearMessages(t *testing.T) {
 		if strings.Contains(seg.text, "ctx ") || strings.Contains(seg.text, "turn ") {
 			t.Errorf("expected footer counters cleared, got segment: %s", seg.text)
 		}
+	}
+}
+
+func TestNewSessionRereadsGitInfo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initRailTestRepo(t, dir)
+	// Move to a feature branch so the branch name is distinctive.
+	if out, err := exec.Command("git", "-C", dir, "checkout", "-b", "feat-new").CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b: %v\n%s", err, out)
+	}
+
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	newState := session.New(config.Default(), dir, time.Unix(200, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	swapper := &fakeSessionSwapper{newState: newState}
+	model := New(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	// Pre-set stale git info.
+	model.gitInfo = gitinfo.Info{Branch: "old", InRepo: true}
+	model.lastGitRead = time.Unix(50, 0)
+
+	model.input.SetValue("/new")
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := updated.(*Model)
+
+	if !swapper.called {
+		t.Fatal("expected session swapper to be called")
+	}
+	if m.gitInfo.Branch != "feat-new" {
+		t.Errorf("gitInfo.Branch = %q, want feat-new after /new", m.gitInfo.Branch)
+	}
+	if m.lastGitRead.Before(time.Unix(50, 0)) {
+		t.Errorf("lastGitRead = %v, want refreshed after /new", m.lastGitRead)
+	}
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd (railBaseRefCmd) from /new")
+	}
+	msg := cmd()
+	rb, ok := msg.(railBaseRefMsg)
+	if !ok {
+		t.Fatalf("cmd() returned %T, want railBaseRefMsg", msg)
+	}
+	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	if rb.ref != string(want[:len(want)-1]) {
+		t.Errorf("railBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
 	}
 }
 

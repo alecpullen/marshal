@@ -927,6 +927,11 @@ func subjectsForTool(toolName string, args map[string]interface{}, normCmd strin
 			}
 		}
 		return nil
+	case "file.write":
+		if path, ok := args["path"].(string); ok && path != "" {
+			return []string{path}
+		}
+		return nil
 	default:
 		return []string{toolName}
 	}

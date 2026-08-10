@@ -96,11 +96,33 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 			// Deferred tools are never exposed to the fallback child.
 		case tool.Name == "file.write_patch":
 			_ = view.Register(fallbackWriterPatchTool(tool, allowedSet))
+		case tool.Name == "file.write":
+			_ = view.Register(fallbackWriterFileWriteTool(tool, allowedSet))
 		default:
 			_ = view.Register(tool)
 		}
 	}
 	return view
+}
+
+// fallbackWriterFileWriteTool narrows file.write to the declared allowlist,
+// mirroring fallbackWriterPatchTool. Without this the whole-file write tool
+// would bypass the fallback agent's path guard entirely.
+func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
+	original := tool.Handler
+	filtered := tool
+	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
+		var args struct {
+			Path string `json:"path"`
+		}
+		_ = json.Unmarshal(call.Args, &args)
+		cleaned := cleanScopePath(args.Path)
+		if !pathInAllowlist(cleaned, allowed) {
+			return ToolResult{}, fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", args.Path)
+		}
+		return original(ctx, call)
+	}
+	return filtered
 }
 
 func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {

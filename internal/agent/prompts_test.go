@@ -68,6 +68,17 @@ func TestBaseRulesGuideQuestionToolUsage(t *testing.T) {
 	}
 }
 
+func TestBaseRulesForbidShellFileWrites(t *testing.T) {
+	for _, want := range []string{
+		"file.write or file.write_patch",
+		"never via shell redirection, heredocs, or tee",
+	} {
+		if !strings.Contains(baseRules, want) {
+			t.Errorf("baseRules missing shell-write rule %q", want)
+		}
+	}
+}
+
 func TestBuildSystemPromptPlannerHasCorrectAllowedActions(t *testing.T) {
 	msg := BuildSystemPrompt(RolePlanner, dummyTools(), nil, nil, false)
 	content := msg.Content
@@ -112,6 +123,7 @@ func TestNativePatchFormatIncludesChainedExample(t *testing.T) {
 		"chain",
 		">>>>>>> REPLACE",
 		"File: internal/app/config/types_test.go",
+		"prefer the file.write tool",
 	} {
 		if !strings.Contains(nativePatchFormat, want) {
 			t.Errorf("nativePatchFormat missing %q", want)

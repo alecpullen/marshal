@@ -1,6 +1,7 @@
 package native
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -537,5 +538,197 @@ func TestWritePatch_ChangedOnDiskErrorIncludesCurrentContent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "v1-modified-on-disk") {
 		t.Fatalf("error should include the current file content so the model can retry without a separate read, got: %v", err)
+	}
+}
+
+func TestFileWriteCreatesNewFile(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	res, err := invokeTool(t, reg, "file.write", `{"path":"new.txt","content":"hello\nworld\n"}`)
+	if err != nil {
+		t.Fatalf("file.write: %v", err)
+	}
+	if !reflect.DeepEqual(res.FilesChanged, []string{"new.txt"}) {
+		t.Fatalf("FilesChanged = %#v, want [new.txt]", res.FilesChanged)
+	}
+	if !strings.Contains(res.Content, "new.txt") {
+		t.Fatalf("diff content should reference the file, got %q", res.Content)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "new.txt"))
+	if err != nil {
+		t.Fatalf("read created file: %v", err)
+	}
+	if string(data) != "hello\nworld\n" {
+		t.Fatalf("content = %q, want %q", string(data), "hello\nworld\n")
+	}
+}
+
+func TestFileWriteOverwritesExistingAfterRead(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	orig := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(filePath, []byte(orig), 0755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+		SessionState:  state,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Read first to satisfy the stale-file contract.
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"app.go"}`); err != nil {
+		t.Fatalf("file.read: %v", err)
+	}
+
+	newContent := "package main\n\nfunc main() { println(\"new\") }\n"
+	argsJSON, err := json.Marshal(map[string]string{"path": "app.go", "content": newContent})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	res, err := invokeTool(t, reg, "file.write", string(argsJSON))
+	if err != nil {
+		t.Fatalf("file.write: %v", err)
+	}
+	if !reflect.DeepEqual(res.FilesChanged, []string{"app.go"}) {
+		t.Fatalf("FilesChanged = %#v, want [app.go]", res.FilesChanged)
+	}
+
+	// Backup holds the old content and mode.
+	if !state.HasBackup() {
+		t.Fatal("expected a backup after file.write")
+	}
+	backup := state.Backup()
+	if len(backup) != 1 || backup[0].Path != "app.go" || backup[0].Content != orig || backup[0].Mode != 0755 {
+		t.Fatalf("unexpected backup: %#v", backup)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != newContent {
+		t.Fatalf("content = %q, want %q", string(data), newContent)
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode() != 0755 {
+		t.Fatalf("mode = %v, want 0755 preserved", info.Mode())
+	}
+}
+
+func TestFileWriteRequiresReadBeforeOverwrite(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	if err := os.WriteFile(filePath, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err = invokeTool(t, reg, "file.write", `{"path":"app.go","content":"package main\n"}`)
+	if err == nil {
+		t.Fatal("expected error for overwriting a file never read this session")
+	}
+	if !strings.Contains(err.Error(), "never read this session") {
+		t.Fatalf("error should mention 'never read this session', got: %v", err)
+	}
+}
+
+func TestFileWriteRejectsStaleRead(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "test.txt")
+	if err := os.WriteFile(filePath, []byte("v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"test.txt"}`); err != nil {
+		t.Fatalf("file.read: %v", err)
+	}
+	// Modify the file after the read.
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(filePath, []byte("v1-modified\n"), 0644); err != nil {
+		t.Fatalf("WriteFile (modify): %v", err)
+	}
+
+	_, err = invokeTool(t, reg, "file.write", `{"path":"test.txt","content":"v2\n"}`)
+	if err == nil {
+		t.Fatal("expected error for stale read")
+	}
+	if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should mention 'changed on disk', got: %v", err)
+	}
+}
+
+func TestFileWriteRejectsPathEscapingRoot(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	_, err := invokeTool(t, reg, "file.write", `{"path":"../escape.txt","content":"x"}`)
+	if err == nil {
+		t.Fatal("expected error for path escaping the root")
 	}
 }

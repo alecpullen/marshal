@@ -426,3 +426,138 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 	}
 	return tool
 }
+
+type fileWriteArgs struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// fileWriteTool creates or overwrites a whole file with the exact content
+// provided. It shares file.write_patch's plumbing: root resolution, the
+// stale-file guard, backups, diff generation, diagnostics, and changed-files
+// tracking. New files skip the stale/read guard (no on-disk version to be
+// stale against); existing files must have been read this session.
+func (t *toolSet) fileWriteTool() registry.Tool {
+	tool := registry.Tool{
+		Name: "file.write",
+		Description: "Create a new file or overwrite an existing file with the exact content provided. " +
+			"Prefer this over file.write_patch when writing a whole new file or replacing most of a file's content; " +
+			"use file.write_patch for targeted edits. " +
+			"Never write files via shell.run redirection or heredocs — those bypass diff review and rollback. " +
+			"Always read before overwriting an existing file.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
+			t.pathDescription("file path relative to the workspace") +
+			`},"content":{"type":"string","description":"exact file content to write"}},"required":["path","content"],"additionalProperties":false}`),
+		Risk: registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		args, err := decodeArgs[fileWriteArgs](tool, call.Args)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+
+		path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.additionalRoots, args.Path)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+
+		// Read the current on-disk state (if any) and enforce the stale-file
+		// contract for existing files.
+		data, readErr := os.ReadFile(path)
+		var original string
+		exists := readErr == nil
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return registry.ToolResult{}, fmt.Errorf("read file %s: %w", args.Path, readErr)
+		}
+		if exists {
+			original = string(data)
+			if t.fileTracker != nil {
+				lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+				if lrErr != nil {
+					return registry.ToolResult{}, fmt.Errorf(
+						"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
+				}
+				info, statErr := os.Stat(path)
+				if statErr != nil {
+					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", args.Path, statErr)
+				}
+				if hasRead && info.ModTime().After(lastRead) {
+					return registry.ToolResult{}, changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}})
+				}
+				if !hasRead {
+					return registry.ToolResult{}, fmt.Errorf(
+						"file %s was never read this session; read it before editing", args.Path)
+				}
+			}
+		}
+
+		info, err := os.Stat(path)
+		var mode os.FileMode = 0644
+		if err == nil {
+			mode = info.Mode()
+		}
+
+		// Synthesize a whole-file patch so the in-session diff looks identical
+		// to a patch write: empty SEARCH for a new file, whole-file SEARCH
+		// otherwise.
+		fp := patch.FilePatch{Path: args.Path}
+		if exists {
+			fp.Chunks = []patch.PatchChunk{{Search: original, Replace: args.Content}}
+		} else {
+			fp.Chunks = []patch.PatchChunk{{Search: "", Replace: args.Content}}
+		}
+
+		var diff string
+		if d, dErr := patch.GenerateDiff(args.Path, original, fp); dErr == nil {
+			diff = d
+		}
+
+		// TOCTOU re-check for existing files: verify the file hasn't changed
+		// between the read above and this write.
+		if t.fileTracker != nil && exists {
+			lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+			if lrErr == nil && hasRead {
+				writeStat, statErr := os.Stat(path)
+				if statErr == nil && writeStat.ModTime().After(lastRead) {
+					return registry.ToolResult{}, changedOnDiskError(path, fp)
+				}
+			}
+		}
+
+		content := args.Content
+		if strings.Contains(original, "\r\n") {
+			content = strings.ReplaceAll(content, "\n", "\r\n")
+		}
+
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", args.Path, err)
+		}
+
+		if t.fileTracker != nil {
+			_ = t.fileTracker.RecordWrite(path, time.Now())
+			_ = t.fileTracker.RecordRead(path, time.Now())
+		}
+
+		if t.sessionState != nil {
+			t.sessionState.StoreBackup([]session.BackupFile{{
+				Path:    args.Path,
+				Content: original,
+				Mode:    mode,
+			}})
+		}
+
+		result := registry.ToolResult{
+			Summary:      fmt.Sprintf("Wrote %s", args.Path),
+			Content:      diff,
+			FilesChanged: []string{args.Path},
+		}
+		if t.diagnostics != nil {
+			diag, _ := t.diagnostics.Check([]string{args.Path}, languageOf([]string{args.Path}))
+			if diag != "" {
+				result.Content += "\n\n" + diag
+			}
+		}
+		return result, nil
+	}
+	return tool
+}

@@ -27,6 +27,8 @@ func categorize(toolName string) toolCategory {
 		return catShell
 	case "file.write_patch":
 		return catPatch
+	case "file.write":
+		return catWrite
 	default:
 		return catOther
 	}

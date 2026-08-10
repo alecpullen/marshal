@@ -258,6 +258,38 @@ func TestPlanWriterViewRejectsSourceAndSecondPlanWrites(t *testing.T) {
 	}
 }
 
+func TestFallbackWriterViewNarrowsFileWrite(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.write", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write): %v", err)
+	}
+	view := FallbackWriterView(src, []string{"internal/foo"})
+
+	if _, ok := view.Lookup("file.write"); !ok {
+		t.Fatal("fallback view must retain file.write")
+	}
+	for _, args := range []string{
+		`{"path":"internal/foo/x.go","content":"x"}`,
+		`{"path":"internal/foo/sub/y.go","content":"y"}`,
+		`{"path":"internal/foo","content":"z"}`,
+	} {
+		if _, err := view.Dispatch(context.Background(), ToolCall{Name: "file.write", Args: json.RawMessage(args)}); err != nil {
+			t.Errorf("write to allowed path was rejected: %v\nargs: %s", err, args)
+		}
+	}
+	for _, args := range []string{
+		`{"path":"internal/other/y.go","content":"y"}`,
+		`{"path":"cmd/server/main.go","content":"m"}`,
+		// Path traversal must not bypass the declared scope.
+		`{"path":"internal/foo/../other/z.go","content":"z"}`,
+		`{"path":"./internal/foo/../other.go","content":"o"}`,
+	} {
+		if _, err := view.Dispatch(context.Background(), ToolCall{Name: "file.write", Args: json.RawMessage(args)}); err == nil {
+			t.Errorf("write outside allowlist was accepted: %s", args)
+		}
+	}
+}
+
 func TestFallbackWriterViewNarrowsFileWritePatch(t *testing.T) {
 	src := New()
 	if err := src.Register(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler}); err != nil {

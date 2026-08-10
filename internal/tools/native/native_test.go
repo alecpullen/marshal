@@ -23,6 +23,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"file.read":          registry.RiskReadOnly,
 		"file.page":          registry.RiskReadOnly,
 		"file.write_patch":   registry.RiskWorkspaceWrite,
+		"file.write":         registry.RiskWorkspaceWrite,
 		"repo.search":        registry.RiskReadOnly,
 		"repo.index":         registry.RiskReadOnly,
 		"repo.map":           registry.RiskReadOnly,
@@ -174,7 +175,7 @@ func TestShellRunDescriptionMentionsWorkspaceCwdAndNativeSearch(t *testing.T) {
 	if !ok {
 		t.Fatal("shell.run not registered")
 	}
-	for _, want := range []string{"workspace root", "current working directory", "repo.search", "symbols.find", "file.read"} {
+	for _, want := range []string{"workspace root", "current working directory", "repo.search", "symbols.find", "file.read", "Never use shell.run to create or modify files"} {
 		if !strings.Contains(tool.Description, want) {
 			t.Errorf("shell.run description missing %q: %s", want, tool.Description)
 		}

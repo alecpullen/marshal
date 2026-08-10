@@ -192,13 +192,14 @@ func (l *EventLog) Subscribe(sessionID string) (<-chan Event, func()) {
 				delete(l.subCount, sessionID)
 				last = true
 			}
-			l.mu.Unlock()
-			// Only drain when this was the last subscriber for the
-			// session, so a duplicate tab or reconnect does not deny
-			// pending requests for still-connected clients.
+			// Invoke the callback while holding the same lock as the
+			// subscriber-count decision. This prevents a reconnect from
+			// interleaving between the last-subscriber check and draining
+			// the session. The bridge callback does not call EventLog.
 			if last && l.OnUnsubscribe != nil {
 				l.OnUnsubscribe(sessionID)
 			}
+			l.mu.Unlock()
 		})
 	}
 	return s.ch, unsub

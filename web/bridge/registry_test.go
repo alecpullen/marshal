@@ -331,27 +331,32 @@ func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
 		return !ok
 	})
 
-	// A later permission request for the same session must NOT be
-	// immediately denied: the cancel replaced the session context.
+	// A request arriving after cancellation but before the next prompt
+	// belongs to the cancelled turn and must be rejected.
 	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
 		t.Fatalf("trigger after cancel: %v", err)
 	}
-	waitFor(t, 2*time.Second, "pending permission after cancel", func() bool {
+	waitFor(t, 2*time.Second, "permission rejected after cancel", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return !ok
+	})
+
+	// Starting a new prompt opens a new generation; requests from that
+	// turn are allowed to wait for the HTTP response.
+	r.beginTurn("s-1")
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger in next turn: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending permission in next turn", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
 		_, ok := r.permissions["tc-1"]
 		return ok
 	})
-	// It must still be parked (not auto-denied) and resolvable.
-	time.Sleep(100 * time.Millisecond)
-	r.permMu.Lock()
-	_, stillPending := r.permissions["tc-1"]
-	r.permMu.Unlock()
-	if !stillPending {
-		t.Fatal("permission after cancel was auto-denied (poisoned context)")
-	}
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
-		t.Fatalf("ResolvePermission after cancel: %v", err)
+		t.Fatalf("ResolvePermission after next turn: %v", err)
 	}
 }
 

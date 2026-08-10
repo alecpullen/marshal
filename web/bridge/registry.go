@@ -45,6 +45,9 @@ type sessionInfo struct {
 	// registers after a cancel can detect that it belongs to the
 	// cancelled turn (see awaitPermission/awaitQuestion). Not serialized.
 	gen uint64
+	// accepting is true only while a prompt turn is active. Requests that
+	// arrive after cancellation and before the next prompt are stale.
+	accepting bool
 	// ctx is cancelled (via cancel) when the session is cancelled or
 	// deleted, draining any pending permission/question waits for it.
 	// cancelSession replaces it with a fresh context afterwards so a
@@ -154,7 +157,7 @@ func (r *Registry) Load(ctx context.Context, cwd, id string) error {
 func (r *Registry) track(id, cwd string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
-	r.sessions[id] = &sessionInfo{Cwd: cwd, ctx: ctx, cancel: cancel}
+	r.sessions[id] = &sessionInfo{Cwd: cwd, ctx: ctx, cancel: cancel, accepting: true}
 	r.mu.Unlock()
 }
 
@@ -189,9 +192,9 @@ func (r *Registry) Prompt(ctx context.Context, id, text string) error {
 		"sessionId": id,
 		"prompt":    []map[string]string{{"type": "text", "text": text}},
 	}
-	r.setBusy(id, true)
+	r.beginTurn(id)
 	res, err := r.child.Request(ctx, "session/prompt", params)
-	r.setBusy(id, false)
+	r.endTurn(id)
 	if err != nil {
 		r.emitEvent(id, map[string]any{"type": "turn_end", "error": err.Error()})
 		return err
@@ -303,7 +306,7 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	// A permission must be keyed to a tracked session with a non-empty
 	// id; otherwise it could never be drained by session cancellation
 	// and would wait forever. Reject malformed requests immediately.
-	if !r.sessionTracked(req.SessionID) {
+	if !r.sessionAccepting(req.SessionID) {
 		return map[string]any{"approved": false}, nil
 	}
 	// Capture the session's generation before registering so a request
@@ -331,7 +334,7 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	// generation capture above and this registration, the drain already
 	// ran and this request would otherwise wait forever on the fresh
 	// context. Detect the bumped generation and deny immediately.
-	if r.sessionGen(req.SessionID) != gen {
+	if currentGen, accepting := r.sessionState(req.SessionID); currentGen != gen || !accepting {
 		return map[string]any{"approved": false}, nil
 	}
 	r.emitEvent(req.SessionID, map[string]any{"type": "permission_request", "toolCallId": req.ToolCallID, "params": params})
@@ -360,7 +363,7 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	// A question must be keyed to a tracked session with a non-empty id;
 	// otherwise it could never be drained by session cancellation and
 	// would wait forever. Reject malformed requests immediately.
-	if !r.sessionTracked(req.SessionID) {
+	if !r.sessionAccepting(req.SessionID) {
 		return map[string]any{"declined": true}, nil
 	}
 	// Capture the session's generation before registering so a request
@@ -388,7 +391,7 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	// generation capture above and this registration, the drain already
 	// ran and this request would otherwise wait forever on the fresh
 	// context. Detect the bumped generation and decline immediately.
-	if r.sessionGen(req.SessionID) != gen {
+	if currentGen, accepting := r.sessionState(req.SessionID); currentGen != gen || !accepting {
 		return map[string]any{"declined": true}, nil
 	}
 	r.emitEvent(req.SessionID, map[string]any{"type": "question_request", "questionId": req.QuestionID, "params": params})
@@ -424,12 +427,40 @@ func (r *Registry) sessionTracked(id string) bool {
 // request registering after a cancel can detect that it belongs to a
 // cancelled turn.
 func (r *Registry) sessionGen(id string) uint64 {
+	gen, _ := r.sessionState(id)
+	return gen
+}
+
+func (r *Registry) sessionState(id string) (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if info, ok := r.sessions[id]; ok {
-		return info.gen
+		return info.gen, info.accepting
 	}
-	return 0
+	return 0, false
+}
+
+func (r *Registry) sessionAccepting(id string) bool {
+	_, accepting := r.sessionState(id)
+	return accepting
+}
+
+func (r *Registry) beginTurn(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if info, ok := r.sessions[id]; ok {
+		info.accepting = true
+		info.Busy = true
+	}
+}
+
+func (r *Registry) endTurn(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if info, ok := r.sessions[id]; ok {
+		info.accepting = false
+		info.Busy = false
+	}
 }
 
 // sessionCtx returns the cancel-scoped context for a session, or a
@@ -452,6 +483,7 @@ func (r *Registry) sessionCtx(id string) context.Context {
 func (r *Registry) cancelSession(id string) {
 	r.mu.Lock()
 	if info, ok := r.sessions[id]; ok && info.cancel != nil {
+		info.accepting = false
 		info.cancel()
 		// Bump the generation so a request from the cancelled turn that
 		// registers after the drain below can detect it is stale (see the

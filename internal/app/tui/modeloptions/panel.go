@@ -175,6 +175,24 @@ func (p *Panel) descriptors() []descriptor {
 			getBool:     func(m routing.ModelPreset) bool { return m.LocalOnly },
 			setBool:     func(m *routing.ModelPreset, v bool) { m.LocalOnly = v },
 		},
+		{
+			id:          "thinking",
+			title:       "Thinking effort",
+			description: "Reasoning effort for thinking-capable models; default leaves the wire untouched.",
+			enumOpts:    []string{"default", "off", "low", "medium", "high"},
+			getStr: func(m routing.ModelPreset) string {
+				if m.Thinking == "" {
+					return "default"
+				}
+				return m.Thinking
+			},
+			setStr: func(m *routing.ModelPreset, v string) {
+				if v == "default" {
+					v = ""
+				}
+				m.Thinking = v
+			},
+		},
 	}
 }
 

@@ -43,17 +43,18 @@ type tokenDetails struct {
 }
 
 type chatCompletionRequestBody struct {
-	Model          string                 `json:"model"`
-	Messages       []chatMessageBody      `json:"messages"`
-	Stream         bool                   `json:"stream"`
-	Temperature    *float64               `json:"temperature,omitempty"`
-	TopP           *float64               `json:"top_p,omitempty"`
-	MaxTokens      *int                   `json:"max_tokens,omitempty"`
-	Stop           []string               `json:"stop,omitempty"`
-	ResponseFormat *schema.ResponseFormat `json:"response_format,omitempty"`
-	Tools          []toolDefinitionBody   `json:"tools,omitempty"`
-	ToolChoice     string                 `json:"tool_choice,omitempty"`
-	StreamOptions  *streamOptions         `json:"stream_options,omitempty"`
+	Model           string                 `json:"model"`
+	Messages        []chatMessageBody      `json:"messages"`
+	Stream          bool                   `json:"stream"`
+	Temperature     *float64               `json:"temperature,omitempty"`
+	TopP            *float64               `json:"top_p,omitempty"`
+	MaxTokens       *int                   `json:"max_tokens,omitempty"`
+	Stop            []string               `json:"stop,omitempty"`
+	ResponseFormat  *schema.ResponseFormat `json:"response_format,omitempty"`
+	Tools           []toolDefinitionBody   `json:"tools,omitempty"`
+	ToolChoice      string                 `json:"tool_choice,omitempty"`
+	StreamOptions   *streamOptions         `json:"stream_options,omitempty"`
+	ReasoningEffort string                 `json:"reasoning_effort,omitempty"`
 }
 
 type toolDefinitionBody struct {
@@ -82,9 +83,15 @@ type toolCallBody struct {
 type chatCompletionChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string         `json:"content"`
-			ReasoningContent string         `json:"reasoning_content"`
-			ToolCalls        []toolCallBody `json:"tool_calls"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			// OpenRouter conventions: a plain reasoning string, or
+			// structured reasoning_details entries carrying text.
+			Reasoning        string `json:"reasoning"`
+			ReasoningDetails []struct {
+				Text string `json:"text"`
+			} `json:"reasoning_details"`
+			ToolCalls []toolCallBody `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`

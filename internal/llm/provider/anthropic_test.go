@@ -372,3 +372,52 @@ func TestAnthropicChatHTTPError(t *testing.T) {
 		t.Fatalf("StatusCode = %d, want 401", pe.StatusCode)
 	}
 }
+
+func TestAnthropicThinkingBudgetMapping(t *testing.T) {
+	base := schema.ChatRequest{
+		Model:    "claude-sonnet-4-5",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	}
+	// Provider-level thinking_budget is 4096; the preset effort overrides it.
+	p := &Anthropic{name: "test", thinkingBudget: 4096}
+
+	parseThinking := func(t *testing.T, req schema.ChatRequest) (budget int, present bool) {
+		t.Helper()
+		body, err := p.buildChatRequestBody(req)
+		if err != nil {
+			t.Fatalf("buildChatRequestBody: %v", err)
+		}
+		var parsed struct {
+			Thinking *struct {
+				Type         string `json:"type"`
+				BudgetTokens int    `json:"budget_tokens"`
+			} `json:"thinking"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		if parsed.Thinking == nil {
+			return 0, false
+		}
+		return parsed.Thinking.BudgetTokens, true
+	}
+
+	// "medium" -> 4096 even though provider budget is also 4096.
+	if b, ok := parseThinking(t, base); !ok || b != 4096 {
+		t.Fatalf("default (provider budget) thinking = (%d, %v), want (4096, true)", b, ok)
+	}
+	req := base
+	req.Thinking = "medium"
+	if b, ok := parseThinking(t, req); !ok || b != 4096 {
+		t.Fatalf("medium thinking = (%d, %v), want (4096, true)", b, ok)
+	}
+	req.Thinking = "high"
+	if b, ok := parseThinking(t, req); !ok || b != 16384 {
+		t.Fatalf("high thinking = (%d, %v), want (16384, true)", b, ok)
+	}
+	// "off" -> no thinking block even with a provider budget configured.
+	req.Thinking = "off"
+	if _, ok := parseThinking(t, req); ok {
+		t.Fatal("off thinking must not emit a thinking block")
+	}
+}

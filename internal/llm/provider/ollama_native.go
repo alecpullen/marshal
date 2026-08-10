@@ -46,6 +46,10 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 		client = &http.Client{}
 	}
 	caps := DefaultCapabilities()
+	// Ollama's think toggle is a different mechanism than the
+	// reasoning_effort/budget_tokens control; report no reasoning capability
+	// so the thinking preset field is not sent on the wire.
+	caps.Reasoning = false
 	if opts.Capabilities != nil {
 		caps = *opts.Capabilities
 	}

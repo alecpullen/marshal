@@ -45,7 +45,7 @@ func NewAnthropic(opts Options) (*Anthropic, error) {
 	if client == nil {
 		client = &http.Client{}
 	}
-	caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false}
+	caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false, Reasoning: true}
 	if opts.Capabilities != nil {
 		caps = *opts.Capabilities
 	}
@@ -271,12 +271,29 @@ func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error)
 	if req.MaxTokens != nil {
 		maxTokens = *req.MaxTokens
 	}
+	// The preset thinking effort overrides the provider-level thinking_budget.
+	// Mapping: off -> 0 (no thinking block), low -> 1024 (Anthropic's minimum
+	// budget), medium -> 4096, high -> 16384. "" leaves the provider budget
+	// unchanged.
 	var thinking *anthropicThinking
-	if p.thinkingBudget > 0 {
-		if maxTokens <= p.thinkingBudget {
-			maxTokens = p.thinkingBudget + 4096
+	budget := p.thinkingBudget
+	if req.Thinking != "" {
+		switch req.Thinking {
+		case "off":
+			budget = 0
+		case "low":
+			budget = 1024
+		case "medium":
+			budget = 4096
+		case "high":
+			budget = 16384
 		}
-		thinking = &anthropicThinking{Type: "enabled", BudgetTokens: p.thinkingBudget}
+	}
+	if budget > 0 {
+		if maxTokens <= budget {
+			maxTokens = budget + 4096
+		}
+		thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
 	}
 
 	var toolChoice *anthropicToolChoice

@@ -6470,14 +6470,14 @@ func TestGitInfoRefreshThrottled(t *testing.T) {
 
 func TestDispatchPromptCommandStartsAgentRun(t *testing.T) {
 	reg := commands.New()
-	if err := reg.Register(commands.Command{Name: "review", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
+	if err := reg.Register(commands.Command{Name: "revcheck", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m := New(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
 	m.resize(80, 24)
 
-	updated, cmd := m.dispatchCommand("/review main.go")
+	updated, cmd := m.dispatchCommand("/revcheck main.go")
 	m = asModel(t, updated)
 
 	if !m.busy {
@@ -6511,14 +6511,14 @@ func TestDispatchPromptCommandStartsAgentRun(t *testing.T) {
 
 func TestDispatchPromptCommandBusySteers(t *testing.T) {
 	reg := commands.New()
-	if err := reg.Register(commands.Command{Name: "review", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
+	if err := reg.Register(commands.Command{Name: "revcheck", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
 		t.Fatal(err)
 	}
 	m := New(modelTestState(t), WithCommandRegistry(reg))
 	m.resize(80, 24)
 	m.busy = true
 
-	updated, _ := m.dispatchCommand("/review")
+	updated, _ := m.dispatchCommand("/revcheck")
 	m = asModel(t, updated)
 
 	followUp, ok := m.popOldestSteering()
@@ -6568,6 +6568,103 @@ func TestDispatchPromptCommandPreservesQuotedArgs(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runner was not invoked")
+	}
+}
+
+func TestDispatchReviewCommandWhileBusyIsRefused(t *testing.T) {
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := New(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus string) error {
+		return nil
+	}))
+	m.resize(80, 24)
+	m.busy = true
+
+	updated, cmd := m.dispatchCommand("/review main.go")
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatal("/review while busy should not return a command")
+	}
+	if !m.busy {
+		t.Fatal("busy should remain true")
+	}
+}
+
+func TestDispatchReviewCommandNilDispatcherShowsError(t *testing.T) {
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := New(modelTestState(t), WithCommandRegistry(reg))
+	m.resize(80, 24)
+
+	updated, cmd := m.dispatchCommand("/review main.go")
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatal("/review with nil dispatcher should not return a command")
+	}
+	if m.busy {
+		t.Fatal("busy should remain false")
+	}
+	msgs := m.state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected error message for nil dispatcher")
+	}
+	if !strings.Contains(msgs[len(msgs)-1].Content, "not available") {
+		t.Fatalf("message = %q, want availability error", msgs[len(msgs)-1].Content)
+	}
+}
+
+func TestDispatchReviewCommandStartsSubagent(t *testing.T) {
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatal(err)
+	}
+	dispatched := make(chan string, 1)
+	m := New(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus string) error {
+		dispatched <- focus
+		return nil
+	}))
+	m.resize(80, 24)
+
+	updated, cmd := m.dispatchCommand("/review main.go")
+	m = asModel(t, updated)
+
+	if !m.busy {
+		t.Fatal("/review should set busy")
+	}
+	if cmd == nil {
+		t.Fatal("dispatchCommand should return a cmd")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
+	}
+
+	var finished *agentFinishedMsg
+	for _, sub := range batch {
+		if msg, ok := sub().(agentFinishedMsg); ok {
+			finished = &msg
+		}
+	}
+	if finished == nil {
+		t.Fatal("expected agentFinishedMsg from batch")
+	}
+	if finished.err != nil {
+		t.Fatalf("agentFinishedMsg.err = %v", finished.err)
+	}
+
+	select {
+	case focus := <-dispatched:
+		if focus != "main.go" {
+			t.Fatalf("focus = %q, want main.go", focus)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dispatcher was not invoked")
 	}
 }
 
@@ -7119,6 +7216,89 @@ func (r *recordingPipelineRunner) SetForceClass(string)                   {}
 func (r *recordingPipelineRunner) SetPolicyRules([]config.PermissionRule) {}
 func (r *recordingPipelineRunner) SetApprovalMode(policy.ApprovalMode)    {}
 func (r *recordingPipelineRunner) AnswerGate(answer string)               { r.answer = answer }
+
+func TestSubagentBrokerPublishesRefreshMessage(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	broker := pubsub.NewBroker[session.SubagentEvent]()
+	m := New(state, WithSubagentBroker(context.Background(), broker))
+	m.resize(80, 24)
+
+	// Publish a subagent event; the pump should turn it into a subagentMsg.
+	broker.Publish("subagent", session.SubagentEvent{View: session.SubagentView{Label: "review"}})
+
+	cmd := pumpSubagentEvents(m.subagentEvents)
+	if cmd == nil {
+		t.Fatal("pumpSubagentEvents returned nil")
+	}
+	msg := cmd()
+	sm, ok := msg.(subagentMsg)
+	if !ok {
+		t.Fatalf("pump returned %T, want subagentMsg", msg)
+	}
+	if sm.view.Label != "review" {
+		t.Fatalf("view label = %q, want review", sm.view.Label)
+	}
+}
+
+func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{})
+	before := m.lastTranscriptHash
+
+	updated, _ := m.handleSubagentMsg(subagentMsg{view: session.SubagentView{Label: "review"}})
+	if updated.lastTranscriptHash == before {
+		t.Fatal("handleSubagentMsg should refresh the viewport")
+	}
+}
+
+func TestActiveAgentRunRowSuppressedWhenSubagentCardRunning(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	// Register a running subagent card.
+	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.RegisterSubagentWithMeta("review · main.go", child, session.SubagentMeta{})
+
+	// Set an active agent.run tool call on the parent.
+	state.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "agent.run",
+		Args:      "review main.go",
+		StartedAt: time.Now(),
+	})
+
+	m.refreshViewport()
+	content := m.viewport.View()
+
+	// The active tool-call row should be suppressed because the subagent
+	// card is already rendering the running child.
+	if strings.Count(content, "agent.run") > 1 {
+		t.Fatalf("viewport should show exactly one agent.run reference (the card), got %d\n%s", strings.Count(content, "agent.run"), content)
+	}
+}
+
+func TestActiveAgentRunRowRenderedWhenNoRunningCard(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	state.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "agent.run",
+		Args:      "review main.go",
+		StartedAt: time.Now(),
+	})
+
+	m.refreshViewport()
+	content := m.viewport.View()
+
+	if !strings.Contains(content, "Run subagent") {
+		t.Fatalf("viewport should render the active agent.run row when no card exists:\n%s", content)
+	}
+}
 
 func TestGateOpensPanelNotATranscriptMessage(t *testing.T) {
 	m := newTestModelInRepo(t)

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
@@ -621,14 +623,14 @@ func TestBuildSystemPromptWithModeDefaultAdvertisesModeRequest(t *testing.T) {
 }
 
 func TestBuildSystemPromptIncludesScratchpadAddendumForNativeTools(t *testing.T) {
-	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, true, policy.ModeAuto, "", "")
+	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, true, policy.ModeAuto, "", "", "")
 	if !strings.Contains(prompt.Content, "scratchpad.write") {
 		t.Fatal("expected scratchpad addendum when nativeTools is true")
 	}
 }
 
 func TestBuildSystemPromptOmitsScratchpadAddendumForJSONTools(t *testing.T) {
-	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, false, policy.ModeAuto, "", "")
+	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, false, policy.ModeAuto, "", "", "")
 	if strings.Contains(prompt.Content, "scratchpad.write") {
 		t.Fatal("expected no scratchpad addendum when nativeTools is false")
 	}
@@ -636,7 +638,7 @@ func TestBuildSystemPromptOmitsScratchpadAddendumForJSONTools(t *testing.T) {
 
 func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
 	wantDir := "/Users/alecpullen/projects/marshal"
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", wantDir)
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", wantDir, "")
 	if !strings.Contains(msg.Content, wantDir) {
 		t.Fatalf("system prompt missing working dir %q\n%s", wantDir, msg.Content)
 	}
@@ -646,7 +648,7 @@ func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
 }
 
 func TestBuildSystemPromptOmitsWorkingDirWhenEmpty(t *testing.T) {
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", "")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", "", "")
 	if strings.Contains(msg.Content, "The workspace root is") {
 		t.Errorf("empty workingDir should not inject workspace root line\n%s", msg.Content)
 	}
@@ -658,7 +660,7 @@ func TestBuildSystemPromptNativePatchFormatCoversAuditFindings(t *testing.T) {
 		Risk:        registry.RiskWorkspaceWrite,
 		Description: "Apply search/replace patch blocks to workspace files.",
 	})
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, true, policy.ModeEdit, "", "/tmp/workspace")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, true, policy.ModeEdit, "", "/tmp/workspace", "")
 	content := msg.Content
 
 	for _, want := range []string{
@@ -676,7 +678,7 @@ func TestBuildSystemPromptNativePatchFormatCoversAuditFindings(t *testing.T) {
 }
 
 func TestBuildSystemPromptWithAddendum(t *testing.T) {
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.", "")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.", "", "")
 	if !strings.Contains(msg.Content, "Be extra careful with diffs.") {
 		t.Fatalf("addendum missing from prompt:\n%s", msg.Content)
 	}
@@ -694,6 +696,13 @@ func TestBaseRulesEncourageEarlyFinal(t *testing.T) {
 		if !strings.Contains(baseRules, want) {
 			t.Errorf("baseRules missing %q", want)
 		}
+	}
+}
+
+func TestBaseRulesNudgesReviewerSubagent(t *testing.T) {
+	want := "dispatch a reviewer subagent with agent.run instead of reviewing inline"
+	if !strings.Contains(baseRules, want) {
+		t.Errorf("baseRules missing reviewer subagent nudge %q", want)
 	}
 }
 
@@ -884,5 +893,60 @@ func TestSkillDirectiveMentionsAgentRun(t *testing.T) {
 	}
 	if !strings.Contains(msg.Content, "dispatch or spawn a subagent") {
 		t.Fatalf("system prompt should mention dispatching/spawning subagents:\n%s", msg.Content)
+	}
+}
+
+func TestRenderAgentRosterEmpty(t *testing.T) {
+	if got := RenderAgentRoster(config.Default()); got != "" {
+		t.Fatalf("empty roster = %q, want empty", got)
+	}
+}
+
+func TestRenderAgentRosterListsPresetsAndCustomAgents(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"reviewer": {Name: "reviewer", Preset: "openai/gpt-4o-mini", SystemPrompt: "Read-only reviewer"},
+	}
+	got := RenderAgentRoster(cfg)
+	for _, want := range []string{
+		"Custom agents:",
+		"reviewer (openai/gpt-4o-mini)",
+		"Read-only reviewer",
+		"Model presets (valid provider/model pairs):",
+		"openai/gpt-4o-mini",
+		"model must name one of these provider/model pairs",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("roster missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestBuildSystemPromptIncludesRosterWhenAgentRunAvailable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	tools := []registry.Tool{{Name: "agent.run", Risk: registry.RiskWorkspaceWrite, Description: "Dispatch a subagent."}}
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, false, policy.ModeEdit, "", "", RenderAgentRoster(cfg))
+	if !strings.Contains(msg.Content, "## Agents and models") {
+		t.Fatalf("system prompt missing roster section:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "openai/gpt-4o-mini") {
+		t.Fatalf("roster missing preset pair:\n%s", msg.Content)
+	}
+}
+
+func TestBuildSystemPromptOmitsRosterWithoutAgentRun(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", "", RenderAgentRoster(cfg))
+	if strings.Contains(msg.Content, "## Agents and models") {
+		t.Fatalf("roster should not appear without agent.run:\n%s", msg.Content)
 	}
 }

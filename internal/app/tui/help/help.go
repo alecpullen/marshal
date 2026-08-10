@@ -46,6 +46,9 @@ type FooterHints struct {
 	// RunActive is true when a subagent is running, so the Ctrl+F drill-in
 	// hint is actionable.
 	RunActive bool
+	// DrilledRunActive is true when the user is drilled into a running
+	// subagent, so the Ctrl+X stop-agent hint is actionable.
+	DrilledRunActive bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -90,6 +93,9 @@ func Footer(h FooterHints) string {
 		)
 		if h.RunActive {
 			segs = append(segs, pair("Ctrl+F", "inspect agent"))
+		}
+		if h.DrilledRunActive {
+			segs = append(segs, pair("Ctrl+X", "stop agent"))
 		}
 	} else {
 		segs = append(segs,

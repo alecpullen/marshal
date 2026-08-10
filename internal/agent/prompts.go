@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -114,6 +115,55 @@ Tool results from earlier in the conversation are in the transcript and context 
 	return b.String()
 }
 
+// hasAgentRunTool reports whether the tool list includes agent.run.
+func hasAgentRunTool(tools []registry.Tool) bool {
+	for _, t := range tools {
+		if t.Name == "agent.run" {
+			return true
+		}
+	}
+	return false
+}
+
+// RenderAgentRoster returns a human-readable listing of the configured
+// custom agents and model presets for injection into the system prompt
+// when agent.run is available. The provider/model pairs are exactly what
+// the model may pass in the agent.run model argument. Returns an empty
+// string when there is nothing to list.
+func RenderAgentRoster(cfg config.Config) string {
+	if len(cfg.CustomAgents) == 0 && len(cfg.Models.Presets) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	if len(cfg.CustomAgents) > 0 {
+		b.WriteString("Custom agents:\n")
+		for name, agent := range cfg.CustomAgents {
+			preset := agent.Preset
+			if p, ok := cfg.Models.Presets[preset]; ok && p.Provider != "" && p.Model != "" {
+				preset = fmt.Sprintf("%s/%s", p.Provider, p.Model)
+			}
+			b.WriteString(fmt.Sprintf("- %s (%s)", name, preset))
+			if agent.SystemPrompt != "" {
+				desc := agent.SystemPrompt
+				if len(desc) > 120 {
+					desc = desc[:120] + "..."
+				}
+				b.WriteString(fmt.Sprintf(" — %s", desc))
+			}
+			b.WriteString("\n")
+		}
+	}
+	if len(cfg.Models.Presets) > 0 {
+		b.WriteString("Model presets (valid provider/model pairs):\n")
+		for _, p := range cfg.Models.Presets {
+			b.WriteString(fmt.Sprintf("- %s/%s\n", p.Provider, p.Model))
+		}
+	}
+	b.WriteString("model must name one of these provider/model pairs; the provider must be configured.")
+	return b.String()
+}
+
 const baseRules = `Rules:
 - Prefer small, verifiable changes over large refactors.
 - Never invent file contents; read before editing.
@@ -127,7 +177,8 @@ const baseRules = `Rules:
 - Summarise results clearly.
 - Use fact-gathering tools only to obtain facts you don't already have in the transcript or context pack. This does not apply to skill.load: skills carry method, not facts, and are worth loading before you have gathered anything.
 - Once the requested change is made and validated, produce a final answer — do not keep exploring.
-- Stop after validation succeeds; do not re-verify work that already passed.`
+- Stop after validation succeeds; do not re-verify work that already passed.
+- When the user asks for a review of code or completed work, dispatch a reviewer subagent with agent.run instead of reviewing inline, unless the change is trivially small.`
 
 // skillDirective introduces the skill roster. Listing skills is not enough
 // on its own — models treat a bare inventory as reference material and wait
@@ -283,7 +334,7 @@ func modeDirective(mode policy.ApprovalMode) string {
 }
 
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "")
+	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "", "")
 }
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
@@ -291,27 +342,29 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 // runner passes the registry's ListDeferred() so the agent can see what
 // it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "")
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "", "")
 }
 
 // BuildSystemPromptWithMode is BuildSystemPromptWithDeferred with an
 // explicit approval mode. The runner calls this to inject the per-mode
 // directive into the system prompt.
 func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, "", "")
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, "", "", "")
 }
 
 // BuildSystemPromptWithAddendum is BuildSystemPromptWithMode plus a
 // custom-agent system-prompt addendum appended after the role addendum.
-func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum, workingDir)
+// roster is the rendered agent/model roster used when agent.run is
+// available so the model knows which provider/model pairs are valid.
+func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum, workingDir, roster)
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
 // runner to advertise MCP tools the agent hasn't loaded yet but may want
 // to opt into). Tests that pass nil get the old behavior with no
 // announcement appended.
-func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string) schema.ChatMessage {
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
@@ -370,6 +423,12 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 			}
 			b.WriteString(fmt.Sprintf("- `%s` — %s\n", skill.Name, skill.Description))
 		}
+		b.WriteString("\n")
+	}
+
+	if hasAgentRunTool(tools) && roster != "" {
+		b.WriteString("\n## Agents and models\n")
+		b.WriteString(roster)
 		b.WriteString("\n")
 	}
 

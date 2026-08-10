@@ -119,9 +119,10 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.completionSuppressed = true
 			return *m, nil, true
 		}
-		// While drilled into a subagent, esc pops back to the parent
-		// transcript rather than cancelling the in-flight turn. Use
-		// ctrl+c (once to interrupt, twice to quit) to stop work.
+		// While drilled into a subagent, Esc pops back to the parent
+		// transcript rather than cancelling the in-flight turn. Ctrl+X
+		// while drilled into a running subagent stops that subagent;
+		// Ctrl+C cancels the whole turn.
 		if m.popDrill() {
 			m.refreshViewport()
 			return *m, nil, true
@@ -318,6 +319,17 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.cycleModel(false)
 		return *m, nil, true
 	case "ctrl+x":
+		// If the user is drilled into a running subagent, Ctrl+X stops
+		// that specific subagent instead of touching the steering queue.
+		// Esc still pops the drill; Ctrl+C cancels the whole turn.
+		if m.busy && len(m.viewStack) > 0 {
+			if top := m.viewStack[len(m.viewStack)-1]; top.Status == session.SubagentRunning {
+				if m.state.CancelSubagent(top.ID) {
+					m.refreshViewport()
+					return *m, nil, true
+				}
+			}
+		}
 		// F16 R3: clear the steering queue while the agent is
 		// working. Out-of-band so /clear semantics don't collide.
 		if m.busy {

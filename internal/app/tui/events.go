@@ -1,5 +1,7 @@
 package tui
 
+import "marshal/internal/app/session"
+
 // jobCountMsg is the tea.Msg the job broker pump emits when a JobEvent
 // arrives. Handling it sets the model's cached job count so the status
 // line renders without polling session.State.
@@ -21,6 +23,13 @@ type steeringMsg struct {
 // then re-arms the pump.
 type workspaceMsg struct {
 	activeRoot string
+}
+
+// subagentMsg is the tea.Msg the subagent broker pump emits when a
+// subagent is registered or changes status. Handling it refreshes the
+// transcript viewport so card state re-renders without polling.
+type subagentMsg struct {
+	view session.SubagentView
 }
 
 // railBaseRefMsg carries a freshly-read HEAD SHA for the changed-files rail.

@@ -19,11 +19,13 @@ type chatMessageBody struct {
 	// Reasoning fields for non-streaming responses, mirroring the streaming
 	// delta conventions: reasoning_content (DeepSeek/vLLM), a plain reasoning
 	// string, or structured reasoning_details entries (OpenRouter).
-	ReasoningContent string `json:"reasoning_content"`
-	Reasoning        string `json:"reasoning"`
+	// omitempty keeps them out of outgoing request messages, which reuse this
+	// type; they are only ever populated when decoding a response.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Reasoning        string `json:"reasoning,omitempty"`
 	ReasoningDetails []struct {
 		Text string `json:"text"`
-	} `json:"reasoning_details"`
+	} `json:"reasoning_details,omitempty"`
 }
 
 type streamOptions struct {

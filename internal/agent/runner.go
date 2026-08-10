@@ -28,7 +28,11 @@ import (
 )
 
 const (
-	DefaultMaxToolIterations    = 100
+	// DefaultMaxToolIterations is 0: no tool ceiling unless the user sets
+	// agent.max_tool_iterations. turnBudget treats base <= 0 as unlimited;
+	// the overhead ceiling (maxOverheadTurns) and the progressTracker loop
+	// detector remain the guardrails.
+	DefaultMaxToolIterations    = 0
 	DefaultMaxRetries           = 2
 	DefaultMaxParallelActions   = 4
 	DefaultMaxTurnContextTokens = 60000

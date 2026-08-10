@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/db"
 )
 
@@ -86,5 +88,42 @@ func TestSessionSectionOneLine(t *testing.T) {
 	}
 	if len([]rune(got)) > 24 {
 		t.Errorf("one-line width = %d, want <= 24", len([]rune(got)))
+	}
+}
+
+func TestSessionSectionBudgetRow(t *testing.T) {
+	s := SessionSection{}
+	base := sessionData(time.Now())
+
+	// No budget used -> no tools row.
+	rows := s.Render(base, 24, 0)
+	joined := StripANSI(strings.Join(rows, "\n"))
+	if strings.Contains(joined, "tools") {
+		t.Fatalf("no tools row expected with zero budget, got %q", joined)
+	}
+
+	// Unlimited budget (Max 0) with tools used.
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	st.SetToolBudget(session.ToolBudget{Used: 7, Max: 0})
+	d := base
+	d.State = st
+	rows = s.Render(d, 24, 0)
+	joined = StripANSI(strings.Join(rows, "\n"))
+	if !strings.Contains(joined, "tools 7 · no cap") {
+		t.Fatalf("want 'tools 7 · no cap', got %q", joined)
+	}
+
+	// Capped budget.
+	st.SetToolBudget(session.ToolBudget{Used: 7, Max: 100})
+	rows = s.Render(d, 24, 0)
+	joined = StripANSI(strings.Join(rows, "\n"))
+	if !strings.Contains(joined, "tools 7/100") {
+		t.Fatalf("want 'tools 7/100', got %q", joined)
+	}
+
+	// One-line summary carries the suffix too.
+	one := StripANSI(s.OneLine(d, 40))
+	if !strings.Contains(one, "tools 7/100") {
+		t.Fatalf("one-line summary missing budget, got %q", one)
 	}
 }

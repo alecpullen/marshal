@@ -35,10 +35,10 @@ func agentFrame(s *state) *frame {
 				GetStr:   func() string { return presetTitle }},
 			func() *field {
 				f := intField("agent.max_tool_iterations", "Max tool iterations",
-					func() int { return s.cfg.Agent.MaxToolIterations }, 1,
+					func() int { return s.cfg.Agent.MaxToolIterations }, 0,
 					func(v int) { s.cfg.Agent.MaxToolIterations = v })
 				f.TomlPath = "agent.max_tool_iterations"
-				f.Desc = "max tool calls per agent turn"
+				f.Desc = "max tool calls per agent turn · 0 = unlimited (default)"
 				return f
 			}(),
 			func() *field {

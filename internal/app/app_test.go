@@ -377,6 +377,32 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	}
 }
 
+func TestBuildAgentRunnerPassesMaxToolIterationsThrough(t *testing.T) {
+	ctx := context.Background()
+
+	// 0 (default) -> runner gets 0 (unlimited).
+	cfg := nativeToolAgentConfig("test-provider")
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.MaxToolIterations != 0 {
+		t.Fatalf("MaxToolIterations = %d, want 0 (unlimited default)", runner.MaxToolIterations)
+	}
+
+	// Explicit cap -> runner gets it.
+	cfg.Agent.MaxToolIterations = 50
+	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, _, _, _, _, _, _, _, err = buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.MaxToolIterations != 50 {
+		t.Fatalf("MaxToolIterations = %d, want 50", runner.MaxToolIterations)
+	}
+}
+
 func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("non-native-provider")

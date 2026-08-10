@@ -377,6 +377,9 @@ func TestHTTPResolvePermission(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if _, err := c.Request(ctx, "test/ask_permission", nil); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -408,6 +411,9 @@ func TestHTTPResolveQuestion(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if _, err := c.Request(ctx, "test/ask_question", nil); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}

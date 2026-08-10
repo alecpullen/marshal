@@ -41,6 +41,10 @@ type sessionInfo struct {
 	// Busy is true while a turn is in flight (prompt sent, no turn end
 	// observed). A child restart marks it interrupted (Busy=false).
 	Busy bool `json:"busy"`
+	// gen is bumped on each cancel so a permission/question request that
+	// registers after a cancel can detect that it belongs to the
+	// cancelled turn (see awaitPermission/awaitQuestion). Not serialized.
+	gen uint64
 	// ctx is cancelled (via cancel) when the session is cancelled or
 	// deleted, draining any pending permission/question waits for it.
 	// cancelSession replaces it with a fresh context afterwards so a
@@ -58,6 +62,11 @@ type Registry struct {
 	// OnEvent, if set, is invoked with bridge-originated events for a
 	// session (e.g. "bridge_restarted"). Task 3's event bus consumes it.
 	OnEvent func(sessionId string, payload any)
+
+	// testHookBeforeRegister, when non-nil, is invoked between a pending
+	// request's generation capture and its registration. Tests use it to
+	// force a cancel in the late-registration race window.
+	testHookBeforeRegister func()
 
 	// RootCwd is the default working directory for the HTTP load
 	// endpoint when the request body omits cwd. The binary wiring
@@ -291,6 +300,19 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	if err := json.Unmarshal(params, &req); err != nil || req.ToolCallID == "" {
 		return map[string]any{"approved": false}, nil
 	}
+	// A permission must be keyed to a tracked session with a non-empty
+	// id; otherwise it could never be drained by session cancellation
+	// and would wait forever. Reject malformed requests immediately.
+	if !r.sessionTracked(req.SessionID) {
+		return map[string]any{"approved": false}, nil
+	}
+	// Capture the session's generation before registering so a request
+	// that arrives from a turn already being cancelled can be detected
+	// as stale after registration (see the re-check below).
+	gen := r.sessionGen(req.SessionID)
+	if r.testHookBeforeRegister != nil {
+		r.testHookBeforeRegister()
+	}
 	ch := make(chan Decision, 1)
 	r.permMu.Lock()
 	r.permissions[req.ToolCallID] = ch
@@ -305,6 +327,13 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 		delete(r.permSession, req.ToolCallID)
 		r.permMu.Unlock()
 	}()
+	// Late-registration guard: if the session was cancelled between the
+	// generation capture above and this registration, the drain already
+	// ran and this request would otherwise wait forever on the fresh
+	// context. Detect the bumped generation and deny immediately.
+	if r.sessionGen(req.SessionID) != gen {
+		return map[string]any{"approved": false}, nil
+	}
 	r.emitEvent(req.SessionID, map[string]any{"type": "permission_request", "toolCallId": req.ToolCallID, "params": params})
 
 	// No wall-clock timeout: the wait ends when the HTTP layer resolves
@@ -328,6 +357,19 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	if err := json.Unmarshal(params, &req); err != nil || req.QuestionID == "" {
 		return map[string]any{"declined": true}, nil
 	}
+	// A question must be keyed to a tracked session with a non-empty id;
+	// otherwise it could never be drained by session cancellation and
+	// would wait forever. Reject malformed requests immediately.
+	if !r.sessionTracked(req.SessionID) {
+		return map[string]any{"declined": true}, nil
+	}
+	// Capture the session's generation before registering so a request
+	// that arrives from a turn already being cancelled can be detected
+	// as stale after registration (see the re-check below).
+	gen := r.sessionGen(req.SessionID)
+	if r.testHookBeforeRegister != nil {
+		r.testHookBeforeRegister()
+	}
 	ch := make(chan Answers, 1)
 	r.quesMu.Lock()
 	r.questions[req.QuestionID] = ch
@@ -342,6 +384,13 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 		delete(r.quesSession, req.QuestionID)
 		r.quesMu.Unlock()
 	}()
+	// Late-registration guard: if the session was cancelled between the
+	// generation capture above and this registration, the drain already
+	// ran and this request would otherwise wait forever on the fresh
+	// context. Detect the bumped generation and decline immediately.
+	if r.sessionGen(req.SessionID) != gen {
+		return map[string]any{"declined": true}, nil
+	}
 	r.emitEvent(req.SessionID, map[string]any{"type": "question_request", "questionId": req.QuestionID, "params": params})
 
 	// No wall-clock timeout: the wait ends when the HTTP layer answers,
@@ -359,10 +408,35 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	}
 }
 
+// sessionTracked reports whether id is a non-empty, tracked session.
+func (r *Registry) sessionTracked(id string) bool {
+	if id == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.sessions[id]
+	return ok
+}
+
+// sessionGen returns the session's current generation, or 0 when the
+// session is not tracked. cancelSession bumps the generation so a
+// request registering after a cancel can detect that it belongs to a
+// cancelled turn.
+func (r *Registry) sessionGen(id string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if info, ok := r.sessions[id]; ok {
+		return info.gen
+	}
+	return 0
+}
+
 // sessionCtx returns the cancel-scoped context for a session, or a
 // background context when the session is not tracked. Pending waits
 // select on it so a session cancel/delete or subscriber disconnect
-// drains them.
+// drains them. The await paths guarantee the session is tracked before
+// reaching the select, so the background fallback is defensive only.
 func (r *Registry) sessionCtx(id string) context.Context {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -372,12 +446,17 @@ func (r *Registry) sessionCtx(id string) context.Context {
 	return context.Background()
 }
 
-// cancelSession cancels the session's pending-wait context and drains
-// its pending permission/question waits with deny/decline.
+// cancelSession cancels the session's pending-wait context, bumps its
+// generation, and drains its pending permission/question waits with
+// deny/decline.
 func (r *Registry) cancelSession(id string) {
 	r.mu.Lock()
 	if info, ok := r.sessions[id]; ok && info.cancel != nil {
 		info.cancel()
+		// Bump the generation so a request from the cancelled turn that
+		// registers after the drain below can detect it is stale (see the
+		// late-registration guard in awaitPermission/awaitQuestion).
+		info.gen++
 		// Replace the cancelled context so a later turn's permission or
 		// question requests for this session are not immediately denied.
 		// Pending waits registered before the cancel already hold the old

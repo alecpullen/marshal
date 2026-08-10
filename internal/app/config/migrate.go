@@ -68,3 +68,39 @@ func MigrateLegacyAgentModel(cfg *Config, provider, model string) bool {
 
 	return true
 }
+
+// MigrateEmbeddingRoleBinding moves the legacy per-profile embedding role
+// binding ([agent_profiles.<name>.roles] embedding = "<preset>") to the
+// structural [indexing] embedding_preset field. The role binding sat on the
+// active profile, so profile synthesis, /models and /connect (which force
+// Profile.Default = "single"), and the config.agent_profiles.set tool could
+// all silently drop it. Returns true when it changed anything.
+//
+// Like MigrateLegacyAgentModel this runs in memory at load; the legacy key
+// disappears from the file on the next config save. When several profiles
+// bind embedding, the active profile's binding wins (it was the one actually
+// in effect); an existing embedding_preset always wins over any binding. A
+// binding that names a CustomAgent (rather than a Preset) is stripped but
+// does not set EmbeddingPreset — a custom agent cannot embed.
+func MigrateEmbeddingRoleBinding(cfg *Config) bool {
+	var active string
+	changed := false
+	for name, profile := range cfg.AgentProfiles {
+		b, ok := profile.Roles[routing.RoleEmbedding]
+		if !ok {
+			continue
+		}
+		if name == cfg.Profile.Default {
+			active = b.Preset
+		} else if active == "" {
+			active = b.Preset
+		}
+		delete(profile.Roles, routing.RoleEmbedding)
+		cfg.AgentProfiles[name] = profile
+		changed = true
+	}
+	if cfg.Indexing.EmbeddingPreset == "" && active != "" {
+		cfg.Indexing.EmbeddingPreset = active
+	}
+	return changed
+}

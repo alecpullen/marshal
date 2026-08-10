@@ -211,6 +211,7 @@ func TestTomlPathAliasesResolve(t *testing.T) {
 		{"privacy.include_gitignored", "privacy.include_gitignored_files"},
 		{"indexing.treesitter", "indexing.use_treesitter"},
 		{"indexing.embeddings", "indexing.use_embeddings"},
+		{"indexing.embedding_preset", "indexing.embedding_preset"},
 		{"indexing.summarise", "indexing.summarise_files"},
 		{"commands.test", "commands.test"},
 	}

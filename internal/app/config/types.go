@@ -418,6 +418,12 @@ type IndexingConfig struct {
 	MaxSearchableFileBytes int64    `toml:"max_searchable_file_bytes"`
 	Watch                  *bool    `toml:"watch"`             // nil = auto (on iff embedding configured)
 	WatchDebounceMs        int      `toml:"watch_debounce_ms"` // default 1000
+	// EmbeddingPreset names the preset ("<provider>/<model>") used to embed
+	// code for semantic search. Empty disables embeddings. This replaced the
+	// legacy [agent_profiles.<profile>.roles] embedding role binding, which
+	// profile synthesis and model switches could silently drop;
+	// MigrateEmbeddingRoleBinding moves old bindings here at load.
+	EmbeddingPreset string `toml:"embedding_preset"`
 }
 
 // ProviderConfig is one [providers.<name>] entry. Type selects the wire

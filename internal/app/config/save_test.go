@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -362,6 +363,46 @@ use_treesitter = true
 	}
 	if !loaded.Indexing.UseTreesitter {
 		t.Fatal("indexing.use_treesitter was not preserved")
+	}
+}
+
+func TestSaveProjectConfigEmbeddingPresetRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// An empty value on an otherwise-default config must not emit the key
+	// into the saved TOML (the whole [indexing] table is omitted).
+	emptyCfg := Default()
+	if err := SaveProjectConfig(path, emptyCfg); err != nil {
+		t.Fatalf("SaveProjectConfig (empty) failed: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if bytes.Contains(raw, []byte("embedding_preset")) {
+		t.Fatalf("saved TOML contains embedding_preset for empty value:\n%s", raw)
+	}
+
+	// A non-empty value round-trips through save/load.
+	cfg, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	cfg.Indexing.EmbeddingPreset = "ollama/nomic-embed-text"
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Indexing.EmbeddingPreset != "ollama/nomic-embed-text" {
+		t.Fatalf("embedding_preset = %q, want %q", loaded.Indexing.EmbeddingPreset, "ollama/nomic-embed-text")
 	}
 }
 

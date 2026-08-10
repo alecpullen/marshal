@@ -55,6 +55,34 @@ func TestRoutingConfigSynthesizesProfileFromSolePreset(t *testing.T) {
 	}
 }
 
+func TestRoutingConfigEmbeddingPresetFlowsThrough(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.Profile.ActivePreset = "ollama/qwen2.5-coder:7b"
+	cfg.Indexing.EmbeddingPreset = "ollama/nomic-embed-text"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		"ollama/nomic-embed-text": {Name: "ollama/nomic-embed-text", Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
+	}
+	cfg.Providers = map[string]ProviderConfig{
+		"ollama": {BaseURL: "http://localhost:11434/v1"},
+	}
+
+	rc := cfg.RoutingConfig()
+	if rc.EmbeddingPreset != "ollama/nomic-embed-text" {
+		t.Fatalf("routing.Config.EmbeddingPreset = %q, want ollama/nomic-embed-text", rc.EmbeddingPreset)
+	}
+
+	router := routing.NewStaticRouter(rc)
+	route, err := router.ResolveEmbedding()
+	if err != nil {
+		t.Fatalf("ResolveEmbedding: %v", err)
+	}
+	if route.Preset.Name != "ollama/nomic-embed-text" {
+		t.Fatalf("ResolveEmbedding resolved to %q, want ollama/nomic-embed-text", route.Preset.Name)
+	}
+}
+
 func TestRoutingConfigPreservesEmbeddingRoleWhenSynthesizing(t *testing.T) {
 	// Regression test: the user binds an embedding preset on the active
 	// "single" profile via config or /settings, but RoutingConfig replaced

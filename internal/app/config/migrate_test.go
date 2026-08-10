@@ -206,3 +206,98 @@ func TestMigratePreservesExistingPresets(t *testing.T) {
 		t.Error("migration dropped an existing preset")
 	}
 }
+
+func TestMigrateEmbeddingRoleBindingActiveProfile(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": {Name: "single", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleEmbedding: {Preset: "ollama/nomic-embed-text"},
+		}},
+		"other": {Name: "other", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleEmbedding: {Preset: "ollama/other-embed"},
+		}},
+	}
+
+	if !MigrateEmbeddingRoleBinding(&cfg) {
+		t.Fatal("migration reported no change")
+	}
+	if cfg.Indexing.EmbeddingPreset != "ollama/nomic-embed-text" {
+		t.Errorf("EmbeddingPreset = %q, want active profile's binding", cfg.Indexing.EmbeddingPreset)
+	}
+	for name, p := range cfg.AgentProfiles {
+		if _, ok := p.Roles[routing.RoleEmbedding]; ok {
+			t.Errorf("profile %q still has the embedding role binding", name)
+		}
+	}
+}
+
+func TestMigrateEmbeddingRoleBindingNonActiveProfile(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "local_balanced"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{}},
+		"single": {Name: "single", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleEmbedding: {Preset: "ollama/nomic-embed-text"},
+		}},
+	}
+
+	if !MigrateEmbeddingRoleBinding(&cfg) {
+		t.Fatal("migration reported no change")
+	}
+	if cfg.Indexing.EmbeddingPreset != "ollama/nomic-embed-text" {
+		t.Errorf("EmbeddingPreset = %q, want the non-active profile's binding", cfg.Indexing.EmbeddingPreset)
+	}
+}
+
+func TestMigrateEmbeddingRoleBindingExistingFieldWins(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.Indexing.EmbeddingPreset = "ollama/already-set"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": {Name: "single", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleEmbedding: {Preset: "ollama/binding"},
+		}},
+	}
+
+	if !MigrateEmbeddingRoleBinding(&cfg) {
+		t.Fatal("migration reported no change (the binding was stripped)")
+	}
+	if cfg.Indexing.EmbeddingPreset != "ollama/already-set" {
+		t.Errorf("EmbeddingPreset = %q, want the pre-existing field value to win", cfg.Indexing.EmbeddingPreset)
+	}
+	if _, ok := cfg.AgentProfiles["single"].Roles[routing.RoleEmbedding]; ok {
+		t.Error("embedding role binding was not stripped")
+	}
+}
+
+func TestMigrateEmbeddingRoleBindingNoBindings(t *testing.T) {
+	cfg := Default()
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": {Name: "single", Roles: map[routing.AgentRole]routing.RoleBinding{}},
+	}
+
+	if MigrateEmbeddingRoleBinding(&cfg) {
+		t.Error("migration reported a change with no bindings present")
+	}
+}
+
+func TestMigrateEmbeddingRoleBindingCustomAgent(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": {Name: "single", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleEmbedding: {CustomAgent: "my-agent"},
+		}},
+	}
+
+	if !MigrateEmbeddingRoleBinding(&cfg) {
+		t.Fatal("migration reported no change (the binding was stripped)")
+	}
+	if cfg.Indexing.EmbeddingPreset != "" {
+		t.Errorf("EmbeddingPreset = %q, want empty (a custom agent cannot embed)", cfg.Indexing.EmbeddingPreset)
+	}
+	if _, ok := cfg.AgentProfiles["single"].Roles[routing.RoleEmbedding]; ok {
+		t.Error("embedding role binding was not stripped")
+	}
+}

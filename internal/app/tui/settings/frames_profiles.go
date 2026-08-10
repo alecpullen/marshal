@@ -70,7 +70,6 @@ var roleTitles = map[routing.AgentRole]string{
 	routing.RoleSDDImplementer:    "SDD implementer",
 	routing.RoleSDDReviewer:       "SDD reviewer",
 	routing.RoleSDDBranchReviewer: "SDD branch reviewer",
-	routing.RoleEmbedding:         "Embeddings",
 }
 
 func roleTitle(role routing.AgentRole) string {
@@ -178,13 +177,15 @@ func setRoleBinding(s *state, profile string, role routing.AgentRole, preset str
 	s.cfg.AgentProfiles[profile] = p
 }
 
-// profileFields builds the profile drill-in: the two fallback sources and
-// the embedding slot up top, then a header, then every dispatchable role.
+// profileFields builds the profile drill-in: the two fallback sources (Base
+// and Fast model), then a header, then every dispatchable role. The
+// embedding preset moved to [indexing] embedding_preset (see the Indexing
+// frame); the router still consults a legacy per-profile embedding role
+// binding as a fallback, but it is no longer surfaced here.
 func profileFields(s *state, profile string) []*field {
 	fields := []*field{
 		baseModelField(s, profile),
 		fastModelField(s, profile),
-		roleModelField(s, profile, routing.RoleEmbedding),
 		{ID: "profiles." + profile + ".__roles_header", Title: "roles", Kind: kindHeader, Desc: "dispatchable roles — each inherits its model from the slots above"},
 	}
 	return append(fields, profileRoleFields(s, profile)...)
@@ -251,11 +252,6 @@ func roleModelField(s *state, profile string, role routing.AgentRole) *field {
 	if routing.FastRoles[role] {
 		desc = "model for the " + roleTitle(role) + " role · unset inherits from Fast model, then Base model"
 	}
-	if role == routing.RoleEmbedding {
-		// ResolveEmbedding has no fallback: unset means the feature is off,
-		// not that a default kicks in.
-		desc = "model used to embed code for semantic search · unset disables embeddings"
-	}
 
 	return &field{
 		ID:       "profiles." + profile + "." + string(role),
@@ -268,9 +264,6 @@ func roleModelField(s *state, profile string, role routing.AgentRole) *field {
 		Display: func() (string, string) {
 			if own := get(); own != "" {
 				return presetModel(s, own), "● override"
-			}
-			if role == routing.RoleEmbedding {
-				return "", "off"
 			}
 			binding, from, ok := s.cfg.AgentProfiles[profile].EffectiveBinding(role)
 			if !ok {
@@ -339,9 +332,6 @@ func limitDetail(mi schema.ModelInfo) string {
 // unsetLabel names what the role would fall back to, so "unset" reads as a
 // choice rather than a hole.
 func unsetLabel(s *state, profile string, role routing.AgentRole) string {
-	if role == routing.RoleEmbedding {
-		return "(unset — disables embeddings)"
-	}
 	if routing.FastRoles[role] && getRoleBinding(s, profile, routing.RoleFast) != "" {
 		return "(unset — inherit from Fast model)"
 	}

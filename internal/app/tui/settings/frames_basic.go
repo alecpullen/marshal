@@ -1,8 +1,11 @@
 package settings
 
 import (
+	"fmt"
 	"strconv"
 	"time"
+
+	"marshal/internal/app/tui/picker"
 )
 
 func privacyFrame(s *state) *frame {
@@ -113,6 +116,56 @@ func indexingFrame(s *state) *frame {
 				Desc:     "enable embedding-based semantic search",
 				GetBool:  func() bool { return s.cfg.Indexing.UseEmbeddings },
 				SetBool:  func(v bool) { s.cfg.Indexing.UseEmbeddings = v }},
+			func() *field {
+				f := &field{
+					ID:       "indexing.embedding_preset",
+					Title:    "Embedding preset",
+					Kind:     kindPicker,
+					TomlPath: "indexing.embedding_preset",
+					Desc:     "preset used to embed code for semantic search · unset disables embeddings",
+					Keywords: []string{"embedding", "semantic", "search", "vector"},
+					GetStr:   func() string { return s.cfg.Indexing.EmbeddingPreset },
+					Display: func() (string, string) {
+						if s.cfg.Indexing.EmbeddingPreset == "" {
+							return "", "(unset — embeddings off)"
+						}
+						return s.cfg.Indexing.EmbeddingPreset, ""
+					},
+					PickOptions: func() []picker.Item {
+						names := sortedKeys(s.cfg.Models.Presets)
+						if len(names) == 0 {
+							return []picker.Item{{Label: "Add a preset first in Model Presets", Value: "__none__", Badge: "required"}}
+						}
+						current := s.cfg.Indexing.EmbeddingPreset
+						items := make([]picker.Item, 0, len(names)+1)
+						for _, n := range names {
+							p := s.cfg.Models.Presets[n]
+							badge := ""
+							if n == current {
+								badge = "● now"
+							}
+							items = append(items, picker.Item{Label: n, Detail: p.Provider + "/" + p.Model, Badge: badge, Value: n})
+						}
+						items = append(items, picker.Item{Label: "(unset — embeddings off)", Value: unsetRoleValue, Badge: "clear"})
+						return items
+					},
+					PickOnPick: func(v string) error {
+						switch v {
+						case "__none__":
+							return fmt.Errorf("add a preset first in the Model Presets section")
+						case unsetRoleValue:
+							s.cfg.Indexing.EmbeddingPreset = ""
+							return nil
+						}
+						if _, ok := s.cfg.Models.Presets[v]; !ok {
+							return fmt.Errorf("unknown preset %q", v)
+						}
+						s.cfg.Indexing.EmbeddingPreset = v
+						return nil
+					},
+				}
+				return f
+			}(),
 			{ID: "indexing.summarise", Title: "Summarise files", Kind: kindToggle,
 				TomlPath: "indexing.summarise_files",
 				Desc:     "generate file summaries during indexing",

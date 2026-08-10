@@ -201,6 +201,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			MaxSearchableFileBytes: strutil.Ptr(cfg.Indexing.MaxSearchableFileBytes),
 			Watch:                  cfg.Indexing.Watch,
 			WatchDebounceMs:        strutil.Ptr(cfg.Indexing.WatchDebounceMs),
+			EmbeddingPreset:        strutil.Ptr(cfg.Indexing.EmbeddingPreset),
 		}
 	}
 	if !reflect.DeepEqual(cfg.Skills, def.Skills) {

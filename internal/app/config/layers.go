@@ -96,6 +96,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		legacyProvider, legacyModel = *userFile.Agent.Provider, *userFile.Agent.Model
 	}
 	migrated := MigrateLegacyAgentModel(&cfg, legacyProvider, legacyModel)
+	migrated = MigrateEmbeddingRoleBinding(&cfg) || migrated
 	coercePresetPricing(&cfg)
 	return Layers{Default: def, User: user, Merged: cfg, Migrated: migrated}, nil
 }

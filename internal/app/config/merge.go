@@ -68,6 +68,7 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Indexing.Watch = file.Indexing.Watch
 		}
 		set(&cfg.Indexing.WatchDebounceMs, file.Indexing.WatchDebounceMs)
+		set(&cfg.Indexing.EmbeddingPreset, file.Indexing.EmbeddingPreset)
 	}
 	if file.Providers != nil {
 		if cfg.Providers == nil {

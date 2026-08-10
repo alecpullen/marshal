@@ -16,6 +16,53 @@ func kp(s string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r[0], Text: s}
 }
 
+func TestIndexingFrameEmbeddingPresetPicker(t *testing.T) {
+	s := newState(config.Default())
+	s.cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/nomic-embed-text": {Name: "ollama/nomic-embed-text", Provider: "ollama", Model: "nomic-embed-text"},
+	}
+	ps := newPaneStack(indexingFrame(s))
+	ps.SetSize(60, 20)
+
+	// Navigate to the Embedding preset row.
+	for ps.Top().List.CursorRow().Title != "Embedding preset" {
+		ps.Update(kp("j"))
+	}
+	row := ps.Top().List.CursorRow()
+	if row == nil {
+		t.Fatal("expected an Embedding preset row")
+	}
+	if row.ID != "indexing.embedding_preset" {
+		t.Fatalf("expected id indexing.embedding_preset, got %q", row.ID)
+	}
+	if row.TomlPath != "indexing.embedding_preset" {
+		t.Fatalf("expected tomlPath indexing.embedding_preset, got %q", row.TomlPath)
+	}
+	// Empty value renders "(unset — embeddings off)".
+	if value, badge := row.Display(); value != "" || badge != "(unset — embeddings off)" {
+		t.Fatalf("empty Display = (%q, %q), want ('', '(unset — embeddings off)')", value, badge)
+	}
+
+	// Pick a preset.
+	if err := row.PickOnPick("ollama/nomic-embed-text"); err != nil {
+		t.Fatalf("PickOnPick: %v", err)
+	}
+	if s.cfg.Indexing.EmbeddingPreset != "ollama/nomic-embed-text" {
+		t.Fatalf("EmbeddingPreset = %q, want ollama/nomic-embed-text", s.cfg.Indexing.EmbeddingPreset)
+	}
+	if value, _ := row.Display(); value != "ollama/nomic-embed-text" {
+		t.Fatalf("set Display value = %q, want ollama/nomic-embed-text", value)
+	}
+
+	// Clear via the unset sentinel.
+	if err := row.PickOnPick(unsetRoleValue); err != nil {
+		t.Fatalf("PickOnPick(unset): %v", err)
+	}
+	if s.cfg.Indexing.EmbeddingPreset != "" {
+		t.Fatalf("EmbeddingPreset after unset = %q, want empty", s.cfg.Indexing.EmbeddingPreset)
+	}
+}
+
 func TestPrivacyFrameTogglesRemoteProviders(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(privacyFrame(s))

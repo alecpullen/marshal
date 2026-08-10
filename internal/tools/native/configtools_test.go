@@ -568,6 +568,43 @@ func TestAgentProfilesSetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentProfilesSetOverlaysRoles(t *testing.T) {
+	// Regression: setting one role must not wipe the profile's other roles.
+	// The tool description promises "Omitted fields are preserved".
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": {Name: "single", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "ollama/impl"},
+			routing.RoleFast:        {Preset: "ollama/fast"},
+		}},
+	}
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configAgentProfilesSetTool())
+	tool, _ := reg.Lookup("config.agent_profiles.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.agent_profiles.set", Args: json.RawMessage(`{"name":"single","roles":{"planner":"ollama/plan"}}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	ap, ok := reloaded.AgentProfiles["single"]
+	if !ok {
+		t.Fatal("agent profile not found")
+	}
+	if ap.Roles[routing.RoleImplementer].Preset != "ollama/impl" {
+		t.Errorf("implementer role was dropped: %+v", ap.Roles)
+	}
+	if ap.Roles[routing.RoleFast].Preset != "ollama/fast" {
+		t.Errorf("fast role was dropped: %+v", ap.Roles)
+	}
+	if ap.Roles[routing.RolePlanner].Preset != "ollama/plan" {
+		t.Errorf("planner role not set: %+v", ap.Roles)
+	}
+}
+
 func TestAgentProfilesDeleteRemovesKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")

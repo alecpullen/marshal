@@ -47,12 +47,22 @@ func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 	return r.resolveProfileRole(role)
 }
 
-// ResolveEmbedding resolves the embedding provider+model from the active
-// profile's embedding role. Unlike ResolveRole it has NO implementer fallback
-// — a chat model cannot produce vectors. Returns ErrEmbeddingNotConfigured
-// when the role is unset (or no profile exists), and ErrRemoteProviderBlocked
-// when the resolved preset is remote under remote_providers_allowed = false.
+// ResolveEmbedding resolves the embedding provider+model. It prefers the
+// structural [indexing] embedding_preset (r.config.EmbeddingPreset), falling
+// back to the active profile's legacy embedding role binding for configs
+// built without the load-time migration. Unlike ResolveRole it has NO
+// implementer fallback — a chat model cannot produce vectors. Returns
+// ErrEmbeddingNotConfigured when neither source is set (or no profile
+// exists), and ErrRemoteProviderBlocked when the resolved preset is remote
+// under remote_providers_allowed = false.
 func (r *StaticRouter) ResolveEmbedding() (Route, error) {
+	if r.config.EmbeddingPreset != "" {
+		// Structural [indexing] embedding_preset — resolve directly. A
+		// missing preset name surfaces ErrPresetNotFound (not the friendly
+		// "not configured"), so a typo is visible.
+		return r.resolvePresetBinding(r.config.EmbeddingPreset, RoleEmbedding, r.config.DefaultProfile)
+	}
+	// Legacy fallback: per-profile embedding role binding.
 	route, err := r.resolveProfileRole(RoleEmbedding)
 	if err != nil {
 		if isNoConfiguredRoute(err) {

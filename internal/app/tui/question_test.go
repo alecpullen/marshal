@@ -166,7 +166,7 @@ func TestQuestionFinalizeMultiChoice(t *testing.T) {
 // trimmed custom text.
 func TestQuestionFinalizeOtherWithText(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}, AllowOther: true}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = questionOtherSentinel
@@ -186,7 +186,7 @@ func TestQuestionFinalizeOtherWithText(t *testing.T) {
 // with blank custom text does NOT submit the sentinel.
 func TestQuestionFinalizeOtherBlankStaysUnanswered(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}, AllowOther: true}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = questionOtherSentinel

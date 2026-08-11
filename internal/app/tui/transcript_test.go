@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
@@ -1143,6 +1144,25 @@ func TestDedentPreservesRelativeIndent(t *testing.T) {
 // the resolved model and provider (e.g. "qwen2.5-coder:14b @ ollama") on
 // both running and completed cards, so the user can see what model actually
 // ran a subagent. A card with no metadata must not render a bare separator.
+func TestSubagentCardRendersTokenCount(t *testing.T) {
+	done := session.SubagentView{
+		Label:      "explore repo",
+		Status:     session.SubagentDone,
+		ToolCalls:  3,
+		TokensUsed: 1234,
+	}
+	out := stripANSI(renderSubagentCard(done, false, "", 100))
+	if !strings.Contains(out, "1k tok") {
+		t.Fatalf("card should render compact token count, got:\n%s", out)
+	}
+
+	zero := session.SubagentView{Label: "explore repo", Status: session.SubagentDone}
+	outZero := stripANSI(renderSubagentCard(zero, false, "", 100))
+	if strings.Contains(outZero, "tok") {
+		t.Fatalf("card with zero tokens should not mention tokens, got:\n%s", outZero)
+	}
+}
+
 func TestSubagentCardShowsProviderModel(t *testing.T) {
 	running := session.SubagentView{
 		Label:     "explore repo",
@@ -1174,6 +1194,56 @@ func TestSubagentCardShowsProviderModel(t *testing.T) {
 	gotPlain := stripANSI(renderSubagentCard(plain, false, "⠋", 100))
 	if strings.Contains(gotPlain, " · ") {
 		t.Errorf("metadata-less card rendered dangling separators:\n%q", gotPlain)
+	}
+}
+
+func TestRunningSubagentCardRendersReasoningTail(t *testing.T) {
+	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	child.BeginStreaming()
+	child.AppendThinking("line one\nline two\nline three")
+	v := session.SubagentView{
+		Label:     "explore repo",
+		Status:    session.SubagentRunning,
+		StartedAt: time.Now(),
+		Child:     child,
+	}
+	got := stripANSI(renderSubagentCard(v, false, "⠋", 100))
+	for _, want := range []string{"line one", "line two", "line three"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("card missing tail line %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunningSubagentCardRendersAuditTailWhenNoReasoning(t *testing.T) {
+	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	child.LogToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "read a.go"})
+	child.LogToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "read b.go"})
+	v := session.SubagentView{
+		Label:     "explore repo",
+		Status:    session.SubagentRunning,
+		StartedAt: time.Now(),
+		Child:     child,
+	}
+	got := stripANSI(renderSubagentCard(v, false, "⠋", 100))
+	if !strings.Contains(got, "read a.go") || !strings.Contains(got, "read b.go") {
+		t.Fatalf("card should render recent audit summaries, got:\n%s", got)
+	}
+}
+
+func TestDoneSubagentCardOmitsTail(t *testing.T) {
+	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	child.BeginStreaming()
+	child.AppendThinking("still running")
+	v := session.SubagentView{
+		Label:     "explore repo",
+		Status:    session.SubagentDone,
+		StartedAt: time.Now(),
+		Child:     child,
+	}
+	got := stripANSI(renderSubagentCard(v, false, "", 100))
+	if strings.Contains(got, "still running") {
+		t.Fatalf("done card should not render live tail:\n%s", got)
 	}
 }
 

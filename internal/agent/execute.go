@@ -463,9 +463,71 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 	r.invalidArgsThisRound = 0
 	r.trackerMu.Unlock()
 	msgs := make([]schema.ChatMessage, 0, len(calls))
+
+	// agent.run calls are dispatched concurrently when a batch contains
+	// consecutive runs. ask_user / question.ask stay sequential because
+	// they share single-session state slots. Non-agent-run tools run
+	// sequentially in their natural order.
+	type runSlot struct {
+		idx  int
+		call schema.ToolCall
+	}
+	var runBatch []runSlot
+	flushRunBatch := func() error {
+		if len(runBatch) == 0 {
+			return nil
+		}
+		if len(runBatch) == 1 {
+			call := runBatch[0].call
+			resultMsgs, err := r.executeToolCall(ctx, ModelAction{
+				Type:       ActionToolCall,
+				Tool:       call.Name,
+				Args:       call.Args,
+				ToolCallID: call.ID,
+			})
+			if err != nil {
+				return err
+			}
+			msgs = append(msgs, resultMsgs...)
+			runBatch = runBatch[:0]
+			return nil
+		}
+		results := make([][]schema.ChatMessage, len(runBatch))
+		errs := make([]error, len(runBatch))
+		var wg sync.WaitGroup
+		wg.Add(len(runBatch))
+		for _, slot := range runBatch {
+			slot := slot
+			go func() {
+				defer wg.Done()
+				res, err := r.executeToolCall(ctx, ModelAction{
+					Type:       ActionToolCall,
+					Tool:       slot.call.Name,
+					Args:       slot.call.Args,
+					ToolCallID: slot.call.ID,
+				})
+				results[slot.idx] = res
+				errs[slot.idx] = err
+			}()
+		}
+		wg.Wait()
+		var firstErr error
+		for i := range runBatch {
+			if errs[i] != nil && firstErr == nil {
+				firstErr = errs[i]
+			}
+			msgs = append(msgs, results[i]...)
+		}
+		runBatch = runBatch[:0]
+		return firstErr
+	}
+
 	for _, call := range calls {
 		call.Name = normalizeToolName(r.Registry, call.Name)
 		if call.Name == "ask_user" {
+			if err := flushRunBatch(); err != nil {
+				return nil, err
+			}
 			msg, err := r.executeNativeAskUser(ctx, call)
 			if err != nil {
 				return nil, err
@@ -474,12 +536,22 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			continue
 		}
 		if call.Name == "question.ask" {
+			if err := flushRunBatch(); err != nil {
+				return nil, err
+			}
 			msg, err := r.executeNativeQuestionAsk(ctx, call)
 			if err != nil {
 				return nil, err
 			}
 			msgs = append(msgs, msg)
 			continue
+		}
+		if call.Name == "agent.run" {
+			runBatch = append(runBatch, runSlot{idx: len(runBatch), call: call})
+			continue
+		}
+		if err := flushRunBatch(); err != nil {
+			return nil, err
 		}
 		resultMsgs, err := r.executeToolCall(ctx, ModelAction{
 			Type:       ActionToolCall,
@@ -491,6 +563,9 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			return nil, err
 		}
 		msgs = append(msgs, resultMsgs...)
+	}
+	if err := flushRunBatch(); err != nil {
+		return nil, err
 	}
 	return msgs, nil
 }

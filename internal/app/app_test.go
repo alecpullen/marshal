@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -2387,6 +2388,107 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 }
 
+type namedScriptedProvider struct {
+	*agenttest.ScriptedProvider
+	providerName string
+}
+
+func (p *namedScriptedProvider) Name() string { return p.providerName }
+
+func TestBuildSubagentFactoryCrossProvider(t *testing.T) {
+	parent := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "parent"}
+	other := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "other"}
+
+	cfg := config.Default()
+	cfg.Project.Name = "cross-provider-test"
+	cfg.Profile.Default = "cross"
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"parent": {Type: "openai_compatible", BaseURL: "http://parent/v1", APIKey: "parent-key"},
+		"other":  {Type: "openai_compatible", BaseURL: "http://other/v1", APIKey: "other-key"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"parent/parent-model": {Provider: "parent", Model: "parent-model"},
+		"other/other-model":   {Provider: "other", Model: "other-model"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"cross": {
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "parent/parent-model"},
+			},
+		},
+	}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	pol := policy.NewEngine(&cfg, nil)
+	resolver := newRoutedProviderResolver(cfg, "")
+	resolver.providers["parent"] = parent
+	resolver.providers["other"] = other
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+
+	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, resolver, nil, 0)
+
+	// Same provider keeps the parent instance.
+	child, _, err := factory(agent.SubagentRequest{Model: "parent/parent-model"})
+	if err != nil {
+		t.Fatalf("same-provider factory error = %v", err)
+	}
+	if child.Provider != parent {
+		t.Fatal("same-provider request should keep parent provider instance")
+	}
+
+	// Cross-provider resolves to the other provider instance.
+	child, _, err = factory(agent.SubagentRequest{Model: "other/other-model"})
+	if err != nil {
+		t.Fatalf("cross-provider factory error = %v", err)
+	}
+	if child.Provider != other {
+		t.Fatalf("cross-provider request got provider %v, want other", child.Provider)
+	}
+	if child.Provider.Name() != "other" {
+		t.Fatalf("provider name = %q, want other", child.Provider.Name())
+	}
+
+	// Unconfigured provider pair returns a clear error.
+	_, _, err = factory(agent.SubagentRequest{Model: "missing/missing-model"})
+	if err == nil {
+		t.Fatal("expected error for unconfigured provider")
+	}
+	if !strings.Contains(err.Error(), "routing provider") && !strings.Contains(err.Error(), "model") {
+		t.Fatalf("error = %v, want provider/model rejection", err)
+	}
+}
+
+func TestBuildSubagentFactoryCrossProviderFallsBackToParentWhenResolverNil(t *testing.T) {
+	cfg := config.Default()
+	cfg.Project.Name = "cross-provider-nil-test"
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"other": {Type: "openai_compatible", BaseURL: "http://other/v1", APIKey: "other-key"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"other/other-model": {Provider: "other", Model: "other-model"},
+	}
+	parent := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "parent"}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	pol := policy.NewEngine(&cfg, nil)
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+
+	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, nil, nil, 0)
+	// With a nil resolver and a cross-provider pair, routing still resolves
+	// but the factory keeps the parent provider instead of calling the resolver.
+	child, _, err := factory(agent.SubagentRequest{Model: "other/other-model"})
+	if err != nil {
+		t.Fatalf("nil resolver factory error = %v", err)
+	}
+	if child.Provider != parent {
+		t.Fatal("nil resolver should keep parent provider")
+	}
+}
+
 // (onboarding tests removed — onboarding is deleted)
 
 func TestRunOpensConnectOnFirstRun(t *testing.T) {
@@ -2602,7 +2704,7 @@ func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
 	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2646,7 +2748,7 @@ func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
 	child, _, err := factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2689,7 +2791,7 @@ func TestSubagentFactoryExplicitModelOverridesNamedAgent(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: stub})
 	_ = reg.Register(registry.Tool{Name: "web.fetch", Risk: registry.RiskNetwork, Handler: stub})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
 	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout", Model: "other/x"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2737,7 +2839,7 @@ func TestSubagentFactoryExplicitModelAdHoc(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
 	child, _, err := factory(agent.SubagentRequest{Model: "ollama/qwen2.5-coder:32b"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2769,11 +2871,132 @@ func TestSubagentFactoryInvalidPairErrors(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
 	if _, _, err := factory(agent.SubagentRequest{Model: "bogus"}); err == nil {
 		t.Fatal("expected an error for a malformed provider/model pair")
 	} else if !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("error should name the pair, got: %v", err)
+	}
+}
+
+// namedProvider is a minimal provider implementation used by cross-provider
+// subagent tests to assert the factory switches providers.
+type namedProvider struct{ name string }
+
+func (p namedProvider) Name() string { return p.name }
+func (p namedProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) {
+	return nil, nil
+}
+func (p namedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	return nil, errors.New("not implemented")
+}
+func (p namedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
+}
+
+func TestSubagentFactoryCrossProviderSwitchesProvider(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+		"other":  {Type: "openai_compatible", BaseURL: "http://localhost:11435/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"other/x":            {Provider: "other", Model: "x", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
+		}},
+	}
+	parentProvider := namedProvider{name: "ollama"}
+	resolver := newRoutedProviderResolver(cfg, "")
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1)
+	child, _, err := factory(agent.SubagentRequest{Model: "other/x"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Provider == nil {
+		t.Fatal("child.Provider is nil")
+	}
+	if child.Provider.Name() != "other" {
+		t.Fatalf("child.Provider.Name() = %q, want other", child.Provider.Name())
+	}
+	if child.Model != "x" {
+		t.Fatalf("child.Model = %q, want x", child.Model)
+	}
+}
+
+func TestSubagentFactoryCrossProviderUnconfiguredErrors(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"other/x":            {Provider: "other", Model: "x", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
+		}},
+	}
+	parentProvider := namedProvider{name: "ollama"}
+	resolver := newRoutedProviderResolver(cfg, "")
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1)
+	_, _, err := factory(agent.SubagentRequest{Model: "other/x"})
+	if err == nil {
+		t.Fatal("expected error for unconfigured provider")
+	}
+	if !strings.Contains(err.Error(), "other") {
+		t.Fatalf("error should mention provider, got: %v", err)
+	}
+}
+
+func TestSubagentFactorySameProviderKeepsParentInstance(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/gpt-4o-mini":       {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+		"ollama/qwen2.5-coder:32b": {Provider: "ollama", Model: "qwen2.5-coder:32b", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
+		}},
+	}
+	parentProvider := namedProvider{name: "ollama"}
+	resolver := newRoutedProviderResolver(cfg, "")
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1)
+	child, _, err := factory(agent.SubagentRequest{Model: "ollama/qwen2.5-coder:32b"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Provider.Name() != parentProvider.Name() {
+		t.Fatal("same-provider child should reuse the parent provider instance")
 	}
 }
 

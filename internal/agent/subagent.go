@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"marshal/internal/app/session"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
 
@@ -113,7 +114,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 	}
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.",
+		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Multiple agent.run calls in a single response run in parallel (max 2 in flight); sibling writes are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.",
 		Schema: json.RawMessage(
 			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
@@ -149,7 +150,17 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 			meta.Provider = child.Provider.Name()
 		}
 		view := state.RegisterSubagentWithMeta(args.Description, childState, meta)
-		summary, err := cfg.exec(ctx, child, args.Prompt)
+		childCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		state.SetSubagentCancel(view.ID, cancel)
+		prev := child.UsageObserver
+		child.UsageObserver = func(u schema.TokenUsage) {
+			if prev != nil {
+				prev(u)
+			}
+			state.AddSubagentTokens(view.ID, u.PromptTokens+u.CompletionTokens)
+		}
+		summary, err := cfg.exec(childCtx, child, args.Prompt)
 		state.FinishSubagent(view.ID, summary, err)
 		if err != nil {
 			return registry.ToolResult{}, err

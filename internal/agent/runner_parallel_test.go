@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -357,6 +358,233 @@ func TestSerialBatchContinuesAfterError(t *testing.T) {
 	}
 	if !foundErr {
 		t.Fatal("expected an error message for the failed serial tool")
+	}
+}
+
+// TestParallelAgentRunDispatchesConcurrently proves that two agent.run
+// calls in a single native batch overlap, preserve result order, and that
+// a third call hits the concurrency guard.
+func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
+	reg := registry.New()
+	state := newTestState(t)
+
+	gate := make(chan struct{})
+	var enteredMu sync.Mutex
+	var entered []string
+	var exited []string
+
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		return &Runner{State: state}, state, nil
+	}
+	exec := func(ctx context.Context, child *Runner, prompt string) (string, error) {
+		enteredMu.Lock()
+		entered = append(entered, prompt)
+		enteredMu.Unlock()
+		<-gate
+		enteredMu.Lock()
+		exited = append(exited, prompt)
+		enteredMu.Unlock()
+		return "done: " + prompt, nil
+	}
+
+	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("register agent.run: %v", err)
+	}
+
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"", ""},
+		ToolCalls: [][]schema.ToolCall{
+			{
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"alpha","description":"alpha"}`)},
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"beta","description":"beta"}`)},
+			},
+			nil,
+		},
+		FinishReasons: []string{"tool_calls", "stop"},
+		ProviderCaps:  schema.ProviderCapabilities{ToolCalling: true},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- r.Run(context.Background(), "run two parallel subagents")
+	}()
+
+	// Wait until both subagents have entered exec, proving concurrency.
+	for {
+		enteredMu.Lock()
+		n := len(entered)
+		enteredMu.Unlock()
+		if n >= 2 {
+			break
+		}
+		select {
+		case err := <-runErr:
+			t.Fatalf("Run finished early with %d entered: %v", n, err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	close(gate)
+	if err := <-runErr; err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	enteredMu.Lock()
+	defer enteredMu.Unlock()
+	if len(entered) != 2 {
+		t.Fatalf("entered = %d, want 2", len(entered))
+	}
+
+	// Verify the tool-result messages sent back to the model preserve
+	// the original call order.
+	if len(p.Requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
+	}
+	var resultOrder []string
+	for _, m := range p.Requests[1].Messages {
+		if strings.Contains(m.Content, "done: alpha") {
+			resultOrder = append(resultOrder, "alpha")
+		}
+		if strings.Contains(m.Content, "done: beta") {
+			resultOrder = append(resultOrder, "beta")
+		}
+	}
+	if len(resultOrder) != 2 || resultOrder[0] != "alpha" || resultOrder[1] != "beta" {
+		t.Fatalf("result order = %v, want [alpha beta]", resultOrder)
+	}
+	if len(exited) != 2 {
+		t.Fatalf("exited = %d, want 2", len(exited))
+	}
+}
+
+// TestParallelAgentRunPreservesSiblingsOnError verifies that when one of
+// two concurrent agent.run calls fails, the sibling's result is still
+// recorded and the turn completes.
+func TestParallelAgentRunPreservesSiblingsOnError(t *testing.T) {
+	reg := registry.New()
+	state := newTestState(t)
+
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		return &Runner{State: state}, state, nil
+	}
+	exec := func(ctx context.Context, child *Runner, prompt string) (string, error) {
+		if prompt == "fail" {
+			return "", errors.New("boom")
+		}
+		return "ok: " + prompt, nil
+	}
+
+	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("register agent.run: %v", err)
+	}
+
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"", ""},
+		ToolCalls: [][]schema.ToolCall{
+			{
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"ok","description":"ok"}`)},
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"fail","description":"fail"}`)},
+			},
+			nil,
+		},
+		FinishReasons: []string{"tool_calls", "stop"},
+		ProviderCaps:  schema.ProviderCapabilities{ToolCalling: true},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+
+	if err := r.Run(context.Background(), "run parallel subagents one fails"); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// The successful result should appear in the tool-result messages sent
+	// back to the model; the failed one should produce a tool-error message.
+	if len(p.Requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
+	}
+	foundOK, foundErr := false, false
+	for _, m := range p.Requests[1].Messages {
+		if strings.Contains(m.Content, "ok: ok") {
+			foundOK = true
+		}
+		if strings.Contains(m.Content, "boom") {
+			foundErr = true
+		}
+	}
+	if !foundOK {
+		t.Fatal("successful sibling result missing from tool results")
+	}
+	if !foundErr {
+		t.Fatal("failed sibling error missing from tool results")
+	}
+}
+
+// TestParallelAgentRunConcurrencyLimitRejectsThird verifies that a batch
+// of three agent.run calls runs the first two in parallel and returns a
+// concurrency-limit error for the third.
+func TestParallelAgentRunConcurrencyLimitRejectsThird(t *testing.T) {
+	reg := registry.New()
+	state := newTestState(t)
+
+	gate := make(chan struct{})
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		return &Runner{State: state}, state, nil
+	}
+	exec := func(ctx context.Context, child *Runner, prompt string) (string, error) {
+		<-gate
+		return "done: " + prompt, nil
+	}
+
+	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("register agent.run: %v", err)
+	}
+
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"", ""},
+		ToolCalls: [][]schema.ToolCall{
+			{
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"one","description":"one"}`)},
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"two","description":"two"}`)},
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"three","description":"three"}`)},
+			},
+			nil,
+		},
+		FinishReasons: []string{"tool_calls", "stop"},
+		ProviderCaps:  schema.ProviderCapabilities{ToolCalling: true},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- r.Run(context.Background(), "run three parallel subagents")
+	}()
+
+	// Wait briefly to let the dispatcher reach the third call.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	if err := <-runErr; err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// The third call's concurrency-limit error should appear in the tool
+	// result messages sent back to the model after the first batch.
+	if len(p.Requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
+	}
+	foundConcurrencyErr := false
+	for _, m := range p.Requests[1].Messages {
+		if strings.Contains(m.Content, "concurrency limit") {
+			foundConcurrencyErr = true
+		}
+	}
+	if !foundConcurrencyErr {
+		t.Fatal("expected concurrency-limit error message for third agent.run")
 	}
 }
 

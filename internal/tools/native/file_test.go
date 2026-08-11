@@ -567,6 +567,26 @@ func TestFileWriteCreatesNewFile(t *testing.T) {
 	}
 }
 
+func TestFileWriteWithoutTrackerRejectsExistingFile(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	if err := os.WriteFile(filePath, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "file.write", `{"path":"app.go","content":"package main\n"}`)
+	if err == nil {
+		t.Fatal("expected error overwriting existing file without tracker")
+	}
+	if !strings.Contains(err.Error(), "requires a tracker-backed session") {
+		t.Fatalf("error should mention tracker-backed session, got: %v", err)
+	}
+}
+
 func TestFileWriteOverwritesExistingAfterRead(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "app.go")
@@ -698,6 +718,59 @@ func TestFileWritePreservesCRLFWithoutCorruption(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "\r\n") {
 		t.Fatalf("expected CRLF line endings preserved, got %q", string(data))
+	}
+}
+
+func TestFileWriteCRLFDiffMatchesOnDiskBytes(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	orig := "line one\r\nline two\r\n"
+	if err := os.WriteFile(filePath, []byte(orig), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"app.go"}`); err != nil {
+		t.Fatalf("file.read: %v", err)
+	}
+
+	// Propose LF-only content to a CRLF file; the tool normalizes it to
+	// CRLF on write and the returned diff should reflect the bytes that
+	// are actually written.
+	res, err := invokeTool(t, reg, "file.write", `{"path":"app.go","content":"line one\nline three\n"}`)
+	if err != nil {
+		t.Fatalf("file.write: %v", err)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	written := string(data)
+	if !strings.Contains(written, "\r\n") {
+		t.Fatalf("expected CRLF on disk, got %q", written)
+	}
+	if strings.Contains(res.Content, "line one\nline three\n") && !strings.Contains(res.Content, "line one\r\nline three\r\n") {
+		t.Fatalf("diff shows LF content %q instead of CRLF bytes %q", res.Content, written)
 	}
 }
 

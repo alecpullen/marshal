@@ -95,7 +95,12 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 		}
 		view = d.State.RegisterSubagentWithMeta(fmt.Sprintf("%s · %s", role, label), runner.State, meta)
 	}
-	task, err := runner.RunTask(ctx, prompt)
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if registered {
+		d.State.SetSubagentCancel(view.ID, cancel)
+	}
+	task, err := runner.RunTask(childCtx, prompt)
 	if err != nil {
 		if registered {
 			d.State.FinishSubagent(view.ID, "", err)

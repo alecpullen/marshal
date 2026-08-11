@@ -476,23 +476,25 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 		}
 		if exists {
 			original = string(data)
-			if t.fileTracker != nil {
-				lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
-				if lrErr != nil {
-					return registry.ToolResult{}, fmt.Errorf(
-						"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
-				}
-				info, statErr := os.Stat(path)
-				if statErr != nil {
-					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", args.Path, statErr)
-				}
-				if hasRead && info.ModTime().After(lastRead) {
-					return registry.ToolResult{}, changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}})
-				}
-				if !hasRead {
-					return registry.ToolResult{}, fmt.Errorf(
-						"file %s was never read this session; read it before editing", args.Path)
-				}
+			if t.fileTracker == nil {
+				return registry.ToolResult{}, fmt.Errorf(
+					"file %s already exists; file.write requires a tracker-backed session to overwrite an existing file", args.Path)
+			}
+			lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+			if lrErr != nil {
+				return registry.ToolResult{}, fmt.Errorf(
+					"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", args.Path, statErr)
+			}
+			if hasRead && info.ModTime().After(lastRead) {
+				return registry.ToolResult{}, changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}})
+			}
+			if !hasRead {
+				return registry.ToolResult{}, fmt.Errorf(
+					"file %s was never read this session; read it before editing", args.Path)
 			}
 		}
 
@@ -512,8 +514,25 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			fp.Chunks = []patch.PatchChunk{{Search: "", Replace: args.Content}}
 		}
 
+		content := args.Content
+		if strings.Contains(original, "\r\n") {
+			// Normalize safely: collapse existing CRLF to LF first so a
+			// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
+			content = strings.ReplaceAll(content, "\r\n", "\n")
+			content = strings.ReplaceAll(content, "\n", "\r\n")
+		}
+
+		// Generate the diff using the content that will actually be
+		// written, so the displayed diff matches the on-disk bytes. The
+		// whole-file patch is synthesized from the normalized content.
+		writeFP := patch.FilePatch{Path: args.Path}
+		if exists {
+			writeFP.Chunks = []patch.PatchChunk{{Search: original, Replace: content}}
+		} else {
+			writeFP.Chunks = []patch.PatchChunk{{Search: "", Replace: content}}
+		}
 		var diff string
-		if d, dErr := patch.GenerateDiff(args.Path, original, fp); dErr == nil {
+		if d, dErr := patch.GenerateDiff(args.Path, original, writeFP); dErr == nil {
 			diff = d
 		}
 
@@ -527,14 +546,6 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 					return registry.ToolResult{}, changedOnDiskError(path, fp)
 				}
 			}
-		}
-
-		content := args.Content
-		if strings.Contains(original, "\r\n") {
-			// Normalize safely: collapse existing CRLF to LF first so a
-			// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
-			content = strings.ReplaceAll(content, "\r\n", "\n")
-			content = strings.ReplaceAll(content, "\n", "\r\n")
 		}
 
 		if err := os.WriteFile(path, []byte(content), mode); err != nil {

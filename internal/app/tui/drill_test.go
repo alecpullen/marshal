@@ -187,6 +187,47 @@ func TestEscPopsDrillInsteadOfCancelling(t *testing.T) {
 	}
 }
 
+func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.state.PushSteering("queued message")
+	m.queuedCount = 1
+
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+	cancelled := false
+	m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+	m.drillIntoSubagent(view)
+
+	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if !handled {
+		t.Fatal("ctrl+x must be handled while drilled into a running subagent")
+	}
+	if !cancelled {
+		t.Fatal("ctrl+x did not cancel the drilled subagent")
+	}
+	m = mm.(Model)
+	if len(m.state.SteeringQueue()) != 1 {
+		t.Fatal("ctrl+x while drilled must NOT clear the steering queue")
+	}
+}
+
+func TestCtrlXUndrilledClearsSteeringQueue(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.state.PushSteering("queued message")
+	m.queuedCount = 1
+
+	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if !handled {
+		t.Fatal("ctrl+x must be handled while busy and undrilled")
+	}
+	m = mm.(Model)
+	if len(m.state.SteeringQueue()) != 0 {
+		t.Fatal("ctrl+x while undrilled must clear the steering queue")
+	}
+}
+
 func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)

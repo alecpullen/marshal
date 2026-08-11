@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +45,11 @@ type SubagentView struct {
 	// the completed card (and the drilled-in view header) can show it.
 	Summary string
 
+	// TokensUsed is the running total of prompt + completion tokens
+	// observed from the child runner. It is updated while the subagent is
+	// running and retained on the completed card.
+	TokensUsed int
+
 	// Role, Provider, Model, and Fallback record the dispatched agent's
 	// route provenance so the TUI can display what model is actually
 	// running (or ran) each subagent. Populated by the pipeline
@@ -52,6 +58,11 @@ type SubagentView struct {
 	Provider string
 	Model    string
 	Fallback bool
+
+	// Cancel is the per-child context cancel function. It is stored on
+	// the view so a drilled-in user can stop a running subagent without
+	// cancelling the whole parent turn.
+	Cancel context.CancelFunc
 }
 
 // SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
@@ -126,6 +137,63 @@ func (s *State) RegisterSubagentWithMeta(label string, child *State, meta Subage
 	return v
 }
 
+// SetSubagentCancel stores the cancel function for a running subagent
+// so the TUI can interrupt that specific child.
+func (s *State) SetSubagentCancel(id int64, cancel context.CancelFunc) {
+	s.mu.Lock()
+	for i := range s.subagents {
+		if s.subagents[i].ID == id {
+			s.subagents[i].Cancel = cancel
+			break
+		}
+	}
+	s.mu.Unlock()
+}
+
+// CancelSubagent cancels the context of a running subagent with the
+// given view ID. It returns true if a running subagent was found and a
+// cancel function existed. The subagent handler is responsible for
+// finishing the view when the child returns.
+func (s *State) CancelSubagent(id int64) bool {
+	s.mu.Lock()
+	var cancel context.CancelFunc
+	found := false
+	for i := range s.subagents {
+		if s.subagents[i].ID == id && s.subagents[i].Status == SubagentRunning {
+			cancel = s.subagents[i].Cancel
+			found = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if found && cancel != nil {
+		cancel()
+		return true
+	}
+	return false
+}
+
+// AddSubagentTokens increments the token counter for a running subagent
+// and republishes the updated view.
+func (s *State) AddSubagentTokens(id int64, n int) {
+	s.mu.Lock()
+	var updated SubagentView
+	found := false
+	for i := range s.subagents {
+		if s.subagents[i].ID == id {
+			s.subagents[i].TokensUsed += n
+			updated = s.subagents[i]
+			found = true
+			break
+		}
+	}
+	broker := s.subagentBroker
+	s.mu.Unlock()
+	if found && broker != nil {
+		broker.Publish("subagent", SubagentEvent{View: updated})
+	}
+}
+
 // err != nil), records its end time and final summary, and republishes so
 // the card flips from the running spinner to its terminal state.
 func (s *State) FinishSubagent(id int64, summary string, err error) {
@@ -162,6 +230,19 @@ func (s *State) Subagents() []SubagentView {
 	out := make([]SubagentView, len(s.subagents))
 	copy(out, s.subagents)
 	return out
+}
+
+// HasRunningSubagent reports whether any subagent is currently in the
+// SubagentRunning state.
+func (s *State) HasRunningSubagent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.subagents {
+		if v.Status == SubagentRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // Subagent returns the view with the given ID, or false if unknown.

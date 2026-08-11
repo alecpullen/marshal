@@ -564,6 +564,9 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 	if v.Fallback {
 		head += dimSeparator + mutedStyle().Render("(fallback)")
 	}
+	if v.TokensUsed > 0 {
+		head += dimSeparator + strutil.CompactTokens(v.TokensUsed) + " tok"
+	}
 	if v.ToolCalls > 0 {
 		head += dimSeparator + fmt.Sprintf("%d tool calls", v.ToolCalls)
 	}
@@ -595,6 +598,16 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 		b.WriteString(style.Render(hl))
 		b.WriteString("\n")
 	}
+	if v.Status == session.SubagentRunning && v.Child != nil {
+		for _, line := range subagentTailLines(v.Child, 5) {
+			wrapped := ansi.Wrap(line, cw, "")
+			for _, wl := range strings.Split(wrapped, "\n") {
+				b.WriteString(continuation())
+				b.WriteString(dimStyle().Render(wl))
+				b.WriteString("\n")
+			}
+		}
+	}
 	if expanded && v.Summary != "" {
 		wrapped := ansi.Wrap(v.Summary, cw, "")
 		for _, line := range strings.Split(wrapped, "\n") {
@@ -604,6 +617,34 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 		}
 	}
 	return b.String()
+}
+
+// subagentTailLines returns up to n dim continuation lines summarising
+// what a running subagent is currently doing. It prefers the trailing end
+// of streamed reasoning, then recent audit-log result summaries.
+func subagentTailLines(child *session.State, n int) []string {
+	if child == nil || n <= 0 {
+		return nil
+	}
+	ip := child.InProgress()
+	if ip.Reasoning != "" {
+		lines := strings.Split(strings.TrimSpace(ip.Reasoning), "\n")
+		if len(lines) > n {
+			lines = lines[len(lines)-n:]
+		}
+		return lines
+	}
+	log := child.AuditLog()
+	if len(log) == 0 {
+		return nil
+	}
+	var out []string
+	for i := len(log) - 1; i >= 0 && len(out) < n; i-- {
+		if log[i].ResultSummary != "" {
+			out = append([]string{log[i].ResultSummary}, out...)
+		}
+	}
+	return out
 }
 
 func renderSkillTag(name string, width int) string {

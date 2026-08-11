@@ -79,6 +79,7 @@ type Runtime struct {
 	SteeringBroker    BrokerCloser
 	EventBroker       BrokerCloser
 	WorkspaceBroker   BrokerCloser
+	SubagentBroker    BrokerCloser
 	MCPManager        MCPCloser
 	Snapshot          SnapshotCloser
 	Logger            *slog.Logger
@@ -290,6 +291,11 @@ func (rt *Runtime) Close(ctx context.Context) error {
 		// 5.5. workspace broker.
 		if rt.WorkspaceBroker != nil {
 			rt.WorkspaceBroker.Close()
+		}
+
+		// 5.6. subagent broker.
+		if rt.SubagentBroker != nil {
+			rt.SubagentBroker.Close()
 		}
 
 		// 5b. rollover close — end the live generation with session_end.
@@ -551,9 +557,11 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
 	eventBroker := pubsub.NewBroker[session.Event]()
 	workspaceBroker := pubsub.NewBroker[session.WorkspaceEvent]()
+	subagentBroker := pubsub.NewBroker[session.SubagentEvent]()
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 	state.SetWorkspaceBroker(workspaceBroker)
+	state.SetSubagentBroker(subagentBroker)
 
 	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
@@ -593,6 +601,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		SteeringBroker:     steeringBroker,
 		EventBroker:        eventBroker,
 		WorkspaceBroker:    workspaceBroker,
+		SubagentBroker:     subagentBroker,
 		JobManager:         jobMgr,
 		DesktopCloser:      desktopCloser,
 		CustomAgentFactory: subagentFactory,
@@ -702,6 +711,9 @@ func (rt *Runtime) NewSession() (*session.State, *agent.Runner, *swarm.Orchestra
 	}
 	if rt.WorkspaceBroker != nil {
 		newState.SetWorkspaceBroker(must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker))
+	}
+	if rt.SubagentBroker != nil {
+		newState.SetSubagentBroker(must[*pubsub.Broker[session.SubagentEvent]](rt.SubagentBroker))
 	}
 	autoloadSkills(rt.Config, rt.SkillIndex, newState, rt.Logger)
 

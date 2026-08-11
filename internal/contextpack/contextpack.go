@@ -11,6 +11,7 @@ const (
 	SectionMemory      SectionKind = "memory"
 	SectionPlan        SectionKind = "plan"
 	SectionScratchpad  SectionKind = "scratchpad"
+	SectionTodos       SectionKind = "todos"
 	SectionFileSnippet SectionKind = "file_snippet"
 	SectionToolOutput  SectionKind = "tool_output"
 	SectionSemantic    SectionKind = "semantic"
@@ -62,6 +63,14 @@ type ScratchpadEntry struct {
 	Content string
 	Format  string
 	Updated int64 // unix timestamp in milliseconds
+}
+
+// TodoItem is contextpack's own view of a todo entry — just enough to
+// render a projection section. Declared here (not imported from
+// internal/db) to avoid a circular dependency.
+type TodoItem struct {
+	Content string
+	Status  string
 }
 
 func (p Pack) IsEmpty() bool {

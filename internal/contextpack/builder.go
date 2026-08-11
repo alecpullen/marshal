@@ -310,6 +310,50 @@ func MergeScratchpad(pack Pack, entries []ScratchpadEntry, maxTokens, projection
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 
+func newTodosSection(todos []TodoItem) (Section, bool) {
+	if len(todos) == 0 {
+		return Section{}, false
+	}
+	var lines []string
+	for _, item := range todos {
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		var marker string
+		switch item.Status {
+		case "completed":
+			marker = "x"
+		case "in_progress":
+			marker = "~"
+		default:
+			marker = " "
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s", marker, content))
+	}
+	if len(lines) == 0 {
+		return Section{}, false
+	}
+	return Section{
+		Kind:     SectionTodos,
+		Title:    "Current Todos",
+		Priority: 45,
+		Content:  strings.Join(lines, "\n"),
+	}, true
+}
+
+// MergeTodos replaces any existing todos section with a projection of
+// the session's current todo list, inserted before file-snippet/
+// tool-output sections, then rebudgets. Empty todos removes the
+// section. todo.write is full-replace, so the model must see the
+// current list every turn or a follow-up write obliterates it.
+func MergeTodos(pack Pack, todos []TodoItem, maxTokens int, now func() time.Time) Pack {
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
+	sec, ok := newTodosSection(todos)
+	sections := replaceSection(pack.Sections, SectionTodos, sec, ok, SectionFileSnippet, SectionToolOutput)
+	return buildPackFromSections(sections, maxTokens, generatedAt)
+}
+
 // MergeSemanticContext replaces any existing semantic section with one built
 // from snippets, inserted before file-snippet/tool-output sections, then
 // rebudgets within maxTokens. Empty snippets removes the section.

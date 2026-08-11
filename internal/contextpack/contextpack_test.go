@@ -643,3 +643,137 @@ func TestNewScratchpadSectionTruncatesProjection(t *testing.T) {
 		t.Fatalf("expected truncation indicator, got:\n%s", sec.Content)
 	}
 }
+
+func TestMergeTodosEmptyIsNoOp(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+		},
+	}
+	got := MergeTodos(pack, nil, DefaultMaxTokens, nil)
+	for _, s := range got.Sections {
+		if s.Kind == SectionTodos {
+			t.Fatal("empty todos should not add a section")
+		}
+	}
+	if len(got.Sections) != 1 {
+		t.Fatalf("section count = %d, want 1", len(got.Sections))
+	}
+}
+
+func TestMergeTodosInsertsSection(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+		},
+	}
+	todos := []TodoItem{
+		{Content: "step one", Status: "completed"},
+		{Content: "step two", Status: "in_progress"},
+		{Content: "step three", Status: "pending"},
+	}
+	got := MergeTodos(pack, todos, DefaultMaxTokens, nil)
+	found := false
+	for _, s := range got.Sections {
+		if s.Kind == SectionTodos {
+			found = true
+			if !strings.Contains(s.Content, "[x] step one") {
+				t.Fatalf("missing completed marker: %q", s.Content)
+			}
+			if !strings.Contains(s.Content, "[~] step two") {
+				t.Fatalf("missing in-progress marker: %q", s.Content)
+			}
+			if !strings.Contains(s.Content, "[ ] step three") {
+				t.Fatalf("missing pending marker: %q", s.Content)
+			}
+			if s.Priority != 45 {
+				t.Fatalf("priority = %d, want 45", s.Priority)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a todos section")
+	}
+}
+
+func TestMergeTodosReplacesExisting(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionTodos, Title: "Current Todos", Content: "- [x] old", Priority: 45, EstimatedTokens: 1},
+		},
+	}
+	todos := []TodoItem{{Content: "new", Status: "pending"}}
+	got := MergeTodos(pack, todos, DefaultMaxTokens, nil)
+	count := 0
+	for _, s := range got.Sections {
+		if s.Kind == SectionTodos {
+			count++
+			if !strings.Contains(s.Content, "new") {
+				t.Fatalf("expected new content, got %q", s.Content)
+			}
+			if strings.Contains(s.Content, "old") {
+				t.Fatal("old content should have been replaced")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("todos section count = %d, want 1", count)
+	}
+}
+
+func TestMergeTodosInsertsBeforeFileSnippets(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+			{Kind: SectionFileSnippet, Title: "app.go", Content: "package app", EstimatedTokens: 3},
+		},
+	}
+	todos := []TodoItem{{Content: "task", Status: "pending"}}
+	got := MergeTodos(pack, todos, DefaultMaxTokens, nil)
+	todosIdx := -1
+	snippetIdx := -1
+	for i, s := range got.Sections {
+		if s.Kind == SectionTodos {
+			todosIdx = i
+		}
+		if s.Kind == SectionFileSnippet {
+			snippetIdx = i
+		}
+	}
+	if todosIdx == -1 {
+		t.Fatal("todos section not found")
+	}
+	if snippetIdx == -1 {
+		t.Fatal("file snippet section not found")
+	}
+	if todosIdx >= snippetIdx {
+		t.Fatalf("todos at %d should be before file snippet at %d", todosIdx, snippetIdx)
+	}
+}
+
+func TestMergeTodosEmptyRemovesSection(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionTodos, Title: "Current Todos", Content: "- [x] old", Priority: 45, EstimatedTokens: 1},
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+		},
+	}
+	got := MergeTodos(pack, nil, DefaultMaxTokens, nil)
+	for _, s := range got.Sections {
+		if s.Kind == SectionTodos {
+			t.Fatal("empty todos should remove the todos section")
+		}
+	}
+}
+
+func TestMergeTodosSkipsEmptyContent(t *testing.T) {
+	pack := Pack{}
+	todos := []TodoItem{
+		{Content: "   ", Status: "pending"},
+		{Content: "", Status: "completed"},
+	}
+	got := MergeTodos(pack, todos, DefaultMaxTokens, nil)
+	if len(got.Sections) != 0 {
+		t.Fatalf("expected no section when all items are empty, got %#v", got.Sections)
+	}
+}

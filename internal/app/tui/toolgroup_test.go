@@ -265,3 +265,28 @@ func TestToolGroupUsesCategoryGlyph(t *testing.T) {
 		t.Fatalf("file.read group should use the ≡ gutter: %q", out)
 	}
 }
+
+func TestRenderToolGroupContinuationLinesIndented(t *testing.T) {
+	events := []registry.AuditEvent{
+		{ToolName: "file.read", ResultSummary: "read a very long file path that forces the bullet to wrap",
+			Args: json.RawMessage(`{"path":"internal/app/tui/transcript_render_pipeline_quite_long_implementation.go"}`)},
+		{ToolName: "file.read", ResultSummary: "ok",
+			Args: json.RawMessage(`{"path":"internal/app/tui/another_rather_long_runner_implementation_file.go"}`)},
+	}
+	out := stripANSI(renderToolGroup(events, false, 40))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected a wrapped multi-line group, got %d line(s):\n%s", len(lines), out)
+	}
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		if r := []rune(line); r[0] != ' ' {
+			t.Fatalf("line starts with a non-space rune %q: %q", string(r[0]), line)
+		}
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}

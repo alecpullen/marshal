@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -11,12 +12,15 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// assertGutterContract checks the first content line of rendered output obeys
-// the transcript's indentation contract: text begins at column gutterWidth,
-// and the columns before it hold either a glyph gutter (" X ") or plain
-// padding. The glyph itself sits at column 1.
+// assertGutterContract checks rendered output obeys the transcript's
+// indentation contract: the first content line carries the " X "-shaped
+// gutter with text at column gutterWidth, and EVERY content line stays out
+// of column 0 — nested-rail lines (3 spaces + ▍), bullet lines ("  – "),
+// and indented continuations all satisfy this; only an un-indented wrapped
+// line violates it.
 func assertGutterContract(t *testing.T, rendered string) {
 	t.Helper()
+	seenFirst := false
 	for _, line := range strings.Split(stripANSI(rendered), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -26,15 +30,23 @@ func assertGutterContract(t *testing.T, rendered string) {
 		if len(r) <= gutterWidth {
 			t.Fatalf("line shorter than the gutter: %q", line)
 		}
-		if r[0] != ' ' || r[gutterWidth-1] != ' ' {
+		if r[0] != ' ' {
+			t.Errorf("line starts in column 0: %q", line)
+		}
+		if seenFirst {
+			continue
+		}
+		seenFirst = true
+		if r[gutterWidth-1] != ' ' {
 			t.Errorf("gutter %q is not \" X \"-shaped in %q", string(r[:gutterWidth]), line)
 		}
 		if r[gutterWidth] == ' ' {
 			t.Errorf("text does not begin at column %d in %q", gutterWidth, line)
 		}
-		return
 	}
-	t.Fatalf("rendered output had no content lines")
+	if !seenFirst {
+		t.Fatalf("rendered output had no content lines")
+	}
 }
 
 // TestTranscriptIndentContract pins P-01: every top-level transcript item
@@ -63,6 +75,12 @@ func TestTranscriptIndentContract(t *testing.T) {
 		}, false, width)},
 		{"thinking summary", renderThinkingSummary("reasoned", time.Second, false, width)},
 		{"agent markdown", renderAgentMarkdown("plain paragraph", width)},
+		{"tool group with wrapped bullets", renderToolGroup([]registry.AuditEvent{
+			{ToolName: "file.read", ResultSummary: "read the entire contents of this very long file to understand the structure",
+				Args: json.RawMessage(`{"path":"internal/app/tui/transcript_render_pipeline_quite_long.go"}`)},
+			{ToolName: "file.read", ResultSummary: "ok",
+				Args: json.RawMessage(`{"path":"internal/app/tui/another_rather_long_runner_implementation_file.go"}`)},
+		}, false, width)},
 	}
 
 	for _, tc := range cases {

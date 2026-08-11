@@ -373,9 +373,15 @@ func renderReconnectNotice(label, spinnerFrame string, width int) string {
 	cw := contentWidth(width)
 	var b strings.Builder
 	header := spinnerLabel(spinnerFrame, label)
-	b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
-	b.WriteString(warningStyle().Render(ansi.Wrap(header, cw, "")))
-	b.WriteString("\n")
+	for i, hl := range strings.Split(ansi.Wrap(header, cw, ""), "\n") {
+		if i == 0 {
+			b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
+		} else {
+			b.WriteString(continuation())
+		}
+		b.WriteString(warningStyle().Render(hl))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

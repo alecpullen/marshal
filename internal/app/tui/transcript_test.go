@@ -1096,7 +1096,7 @@ func TestCompletedToolCallShowsDisclosureGlyphWhenResultContentPresent(t *testin
 // sequence was present, which passes even when every one of these degrades to
 // plain text — the failure mode this package kept shipping.
 func TestMarkdownEmitsRichStyling(t *testing.T) {
-	out := renderAgentMarkdown("# Title\n\nSome **bold** and *italic* text.\n", 100)
+	out := renderAgentMarkdown("# Title\n\n## Section\n\n### Sub\n\nSome **bold** and *italic* text.\n", 100)
 	for _, c := range []struct{ name, sgr string }{
 		{"bold", ";1m"},
 		{"italic", ";3m"},
@@ -1104,6 +1104,12 @@ func TestMarkdownEmitsRichStyling(t *testing.T) {
 	} {
 		if !strings.Contains(out, c.sgr) {
 			t.Errorf("markdown output lost %s (%q):\n%q", c.name, c.sgr, out)
+		}
+	}
+	plain := stripANSI(out)
+	for _, marker := range []string{"## Section", "### Sub"} {
+		if strings.Contains(plain, marker) {
+			t.Errorf("heading prefix leaked into rendered markdown:\n%q", plain)
 		}
 	}
 }

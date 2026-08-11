@@ -36,6 +36,17 @@ func marshalStyleConfig(margin uint) gansi.StyleConfig {
 		Color: strutil.Ptr("209"), // accentColor
 		Bold:  strutil.Ptr(true),
 	}
+	// Dark's H2–H6 carry literal "## "/"### " prefixes that render in the
+	// heading's own colour — colored text with stray hashes next to it. H1
+	// is replaced wholesale above; here we keep each level's styling and
+	// drop only the marker.
+	for _, h := range []*gansi.StylePrimitive{
+		&cfg.H2.StylePrimitive, &cfg.H3.StylePrimitive,
+		&cfg.H4.StylePrimitive, &cfg.H5.StylePrimitive,
+		&cfg.H6.StylePrimitive,
+	} {
+		h.Prefix = ""
+	}
 	cfg.Document.Margin = &margin
 	return cfg
 }

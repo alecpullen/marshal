@@ -68,14 +68,14 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 					m.dock.Open(doctorpanel.New(m.state, diags))
 				}
 			}
-			m.input.Reset()
+			m.resetInput()
 			m.input.Placeholder = m.savedInputPlaceholder
 			m.doctorFixProvider = ""
 			m.savedInputPlaceholder = ""
 			m.refreshViewport()
 			return *m, nil, true
 		case "esc":
-			m.input.Reset()
+			m.resetInput()
 			m.input.Placeholder = m.savedInputPlaceholder
 			m.doctorFixProvider = ""
 			m.savedInputPlaceholder = ""
@@ -346,6 +346,9 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		value := strings.TrimSpace(m.input.Value())
+		if len(m.pastes) > 0 {
+			value = m.expandPastes(value)
+		}
 		if value != "" {
 			m.recordPrompt(value)
 		}
@@ -365,7 +368,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if value == "" {
 			return *m, nil, true
 		}
-		m.input.Reset()
+		m.resetInput()
 		m.completionSuppressed = false
 		m.lastInputForPopups = ""
 		// The all-done todo summary belongs to the finished turn; the next

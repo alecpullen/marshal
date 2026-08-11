@@ -32,8 +32,8 @@ func TestLoadSkillsBothDirs(t *testing.T) {
 	}
 
 	list := idx.List()
-	if len(list) != 3 {
-		t.Fatalf("List length = %d, want 3 (two filesystem skills + built-in)", len(list))
+	if len(list) != 4 {
+		t.Fatalf("List length = %d, want 4 (two filesystem skills + two built-ins)", len(list))
 	}
 
 	names := make(map[string]bool)
@@ -71,8 +71,8 @@ func TestLoadSkillsNeitherDirExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSkills should not error for missing dirs: %v", err)
 	}
-	if len(idx.List()) != 1 {
-		t.Fatalf("List length = %d, want 1 (built-in only for missing dirs)", len(idx.List()))
+	if len(idx.List()) != 2 {
+		t.Fatalf("List length = %d, want 2 (built-ins only for missing dirs)", len(idx.List()))
 	}
 	if _, ok := idx.Load("marshal-sdd-plan-authoring"); !ok {
 		t.Fatal("built-in skill missing for missing dirs")
@@ -87,8 +87,8 @@ func TestLoadSkillsOnlyProjectDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSkills: %v", err)
 	}
-	if len(idx.List()) != 2 {
-		t.Fatalf("List length = %d, want 2 (project skill + built-in)", len(idx.List()))
+	if len(idx.List()) != 3 {
+		t.Fatalf("List length = %d, want 3 (project skill + two built-ins)", len(idx.List()))
 	}
 }
 
@@ -104,8 +104,8 @@ func TestLoadSkillsSkipsNonMdFiles(t *testing.T) {
 	}
 
 	list := idx.List()
-	if len(list) != 2 {
-		t.Fatalf("List length = %d, want 2 (skill + built-in)", len(list))
+	if len(list) != 3 {
+		t.Fatalf("List length = %d, want 3 (skill + two built-ins)", len(list))
 	}
 	if _, ok := idx.Load("skill"); !ok {
 		t.Fatalf("skill missing from index: %v", list)
@@ -123,8 +123,8 @@ func TestLoadSkillsMalformedFileSkipped(t *testing.T) {
 	}
 
 	list := idx.List()
-	if len(list) != 2 {
-		t.Fatalf("List length = %d, want 2 (good + built-in)", len(list))
+	if len(list) != 3 {
+		t.Fatalf("List length = %d, want 3 (good + two built-ins)", len(list))
 	}
 	if _, ok := idx.Load("good"); !ok {
 		t.Fatalf("good missing from index: %v", list)
@@ -188,8 +188,8 @@ func TestLoadSkillsBundleAndFlatCoexist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSkills: %v", err)
 	}
-	if len(idx.List()) != 3 {
-		t.Fatalf("List length = %d, want 3 (two skills + built-in)", len(idx.List()))
+	if len(idx.List()) != 4 {
+		t.Fatalf("List length = %d, want 4 (two skills + two built-ins)", len(idx.List()))
 	}
 }
 
@@ -205,8 +205,8 @@ func TestLoadSkillsIgnoresDirsWithoutSkillMD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSkills: %v", err)
 	}
-	if len(idx.List()) != 2 {
-		t.Fatalf("List length = %d, want 2 (skill + built-in)", len(idx.List()))
+	if len(idx.List()) != 3 {
+		t.Fatalf("List length = %d, want 3 (skill + two built-ins)", len(idx.List()))
 	}
 }
 
@@ -220,8 +220,8 @@ func TestLoadSkillsMalformedBundleSkipped(t *testing.T) {
 		t.Fatalf("LoadSkills: %v", err)
 	}
 	list := idx.List()
-	if len(list) != 2 || list[0].Name != "good" {
-		t.Fatalf("List = %v, want [good] plus built-in", list)
+	if len(list) != 3 || list[0].Name != "good" {
+		t.Fatalf("List = %v, want [good] plus built-ins", list)
 	}
 }
 

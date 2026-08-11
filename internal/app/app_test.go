@@ -2489,6 +2489,117 @@ func TestBuildSubagentFactoryCrossProviderFallsBackToParentWhenResolverNil(t *te
 	}
 }
 
+func TestBuildSubagentFactoryRolePinning(t *testing.T) {
+	parent := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "parent"}
+	other := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "other"}
+
+	cfg := config.Default()
+	cfg.Project.Name = "role-pinning-test"
+	cfg.Profile.Default = "pin"
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"parent": {Type: "openai_compatible", BaseURL: "http://parent/v1", APIKey: "parent-key"},
+		"other":  {Type: "openai_compatible", BaseURL: "http://other/v1", APIKey: "other-key"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"parent/parent-model": {Provider: "parent", Model: "parent-model"},
+		"other/reviewer-model": {Provider: "other", Model: "reviewer-model"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"pin": {
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "parent/parent-model"},
+				routing.RoleReviewer:    {Preset: "other/reviewer-model"},
+			},
+		},
+	}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	pol := policy.NewEngine(&cfg, nil)
+	resolver := newRoutedProviderResolver(cfg, "")
+	resolver.providers["parent"] = parent
+	resolver.providers["other"] = other
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+
+	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, resolver, nil, 0)
+
+	// Explicitly bound reviewer role pins model and provider.
+	child, _, err := factory(agent.SubagentRequest{Role: routing.RoleReviewer})
+	if err != nil {
+		t.Fatalf("role-pinned factory error = %v", err)
+	}
+	if child.Model != "reviewer-model" {
+		t.Fatalf("child model = %q, want reviewer-model", child.Model)
+	}
+	if child.Provider != other {
+		t.Fatal("cross-provider reviewer binding should switch provider")
+	}
+
+	// Unbound role keeps the default model.
+	child, _, err = factory(agent.SubagentRequest{Role: routing.RoleSubtask})
+	if err != nil {
+		t.Fatalf("unbound role factory error = %v", err)
+	}
+	if child.Model != "parent/parent-model" {
+		t.Fatalf("unbound role child model = %q, want parent/parent-model", child.Model)
+	}
+	if child.Provider != parent {
+		t.Fatal("unbound role should keep parent provider")
+	}
+
+	// Explicit model beats role binding.
+	child, _, err = factory(agent.SubagentRequest{Role: routing.RoleReviewer, Model: "parent/parent-model"})
+	if err != nil {
+		t.Fatalf("explicit-model factory error = %v", err)
+	}
+	if child.Model == "reviewer-model" {
+		t.Fatal("explicit model should beat role binding")
+	}
+	if child.Provider != parent {
+		t.Fatal("explicit model should keep same provider")
+	}
+}
+
+func TestBuildSubagentFactoryReviewerInheritedKeepsDefault(t *testing.T) {
+	parent := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "parent"}
+
+	cfg := config.Default()
+	cfg.Project.Name = "reviewer-inherited-test"
+	cfg.Profile.Default = "inherit"
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"parent": {Type: "openai_compatible", BaseURL: "http://parent/v1", APIKey: "parent-key"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"parent/parent-model": {Provider: "parent", Model: "parent-model"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"inherit": {
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "parent/parent-model"},
+			},
+		},
+	}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	pol := policy.NewEngine(&cfg, nil)
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+
+	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, nil, nil, 0)
+	child, _, err := factory(agent.SubagentRequest{Role: routing.RoleReviewer})
+	if err != nil {
+		t.Fatalf("inherited reviewer factory error = %v", err)
+	}
+	if child.Model != "parent/parent-model" {
+		t.Fatalf("inherited reviewer child model = %q, want parent/parent-model", child.Model)
+	}
+	if child.Provider != parent {
+		t.Fatal("inherited reviewer should keep parent provider")
+	}
+}
+
 // (onboarding tests removed — onboarding is deleted)
 
 func TestRunOpensConnectOnFirstRun(t *testing.T) {

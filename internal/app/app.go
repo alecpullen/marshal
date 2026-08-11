@@ -1115,9 +1115,11 @@ const defaultSubtaskIterations = 12
 // When the request names a custom agent, the factory resolves it via the
 // router and applies its overrides (system prompt, tool denylist, max
 // iterations). An explicit model in the request replaces only the resolved
-// preset's provider/model; all other overrides are retained. Both named-agent
-// and ad-hoc paths wire Pricing, UsageObserver, and MetricsObserver so
-// subagent token usage and cost are visible to the parent session.
+// preset's provider/model; all other overrides are retained. A role in the
+// request resolves through the active profile's explicit binding for that
+// role, falling back to the default model when the role is unbound. Both
+// named-agent and ad-hoc paths wire Pricing, UsageObserver, and MetricsObserver
+// so subagent token usage and cost are visible to the parent session.
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
 	subtaskIters := cfg.Agent.SubtaskIterations
 	if subtaskIters <= 0 {
@@ -1150,6 +1152,16 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			model = eroute.Preset.Model
 			pricingRates = pricing.Lookup(eroute.Preset)
 			targetRoute = eroute
+		}
+		// Role pinning: applies only when no explicit model/agent was requested,
+		// and only when the role is explicitly bound in the profile. Unbound or
+		// inherited bindings keep the default model (today's behavior).
+		if req.Role != "" && req.Model == "" && req.Agent == "" && router != nil {
+			if route, ok := router.ResolveRoleIfBound(routing.AgentRole(req.Role)); ok {
+				model = route.Preset.Model
+				pricingRates = pricing.Lookup(route.Preset)
+				targetRoute = route
+			}
 		}
 		if req.Agent != "" && router != nil {
 			route, err := router.ResolveCustomAgent(req.Agent, agent.RoleSubtask)
@@ -1407,8 +1419,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				},
 			))
 			tuiOpts = append(tuiOpts, tui.WithReviewDispatcher(
-				func(ctx context.Context, focus string) error {
-					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus)
+				func(ctx context.Context, focus, model string) error {
+					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus, model)
 				},
 			))
 		}
@@ -1434,8 +1446,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				PipelineFactory:   pipelineFactory,
 				PlanAuthorFactory: planAuthorFactory,
 				ToolRegistry:      toolReg,
-				ReviewDispatcher: func(ctx context.Context, focus string) error {
-					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus)
+				ReviewDispatcher: func(ctx context.Context, focus, model string) error {
+					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus, model)
 				},
 			}, nil
 		})))

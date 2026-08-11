@@ -560,6 +560,65 @@ func TestResolveRoleStillFallsBackToImplementer(t *testing.T) {
 	}
 }
 
+func TestResolveRoleIfBoundExplicitReviewer(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Presets:        map[string]ModelPreset{"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleReviewer: {Preset: "openai/gpt-4o"},
+		}}},
+	})
+	route, ok := r.ResolveRoleIfBound(RoleReviewer)
+	if !ok {
+		t.Fatal("expected explicit reviewer binding to resolve")
+	}
+	if route.Preset.Model != "gpt-4o" {
+		t.Errorf("got %q, want gpt-4o", route.Preset.Model)
+	}
+}
+
+func TestResolveRoleIfBoundInheritsFromImplementer(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Presets:        map[string]ModelPreset{"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleImplementer: {Preset: "openai/gpt-4o"},
+		}}},
+	})
+	if _, ok := r.ResolveRoleIfBound(RoleReviewer); ok {
+		t.Fatal("expected reviewer inherited from implementer to return ok=false")
+	}
+}
+
+func TestResolveRoleIfBoundInheritsFromFast(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Presets:        map[string]ModelPreset{"openai/gpt-4o-mini": {Name: "openai/gpt-4o-mini", Provider: "openai", Model: "gpt-4o-mini"}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleFast: {Preset: "openai/gpt-4o-mini"},
+		}}},
+	})
+	if _, ok := r.ResolveRoleIfBound(RoleReviewer); ok {
+		t.Fatal("expected reviewer inherited from fast rung to return ok=false")
+	}
+}
+
+func TestResolveRoleIfBoundUnknownPreset(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleReviewer: {Preset: "missing-preset"},
+		}}},
+	})
+	if _, ok := r.ResolveRoleIfBound(RoleReviewer); ok {
+		t.Fatal("expected unknown preset to return ok=false, not an error")
+	}
+}
+
 func TestCastResolvesEveryRequestedRole(t *testing.T) {
 	router := testRouter()
 

@@ -26,6 +26,21 @@ import (
 // commands live here, one entry each, next to the dispatch entry point.
 var tuiCommandEffects map[string]func(m *Model, args []string) (tea.Model, tea.Cmd)
 
+// parseReviewModelArg extracts an optional leading --model <pair> (or
+// --model=<pair>) from /review arguments. It returns the model pair and the
+// remaining focus words.
+func parseReviewModelArg(args []string) (model string, remaining []string) {
+	for i, a := range args {
+		switch {
+		case a == "--model" && i+1 < len(args):
+			return args[i+1], append(args[:i], args[i+2:]...)
+		case strings.HasPrefix(a, "--model="):
+			return strings.TrimPrefix(a, "--model="), append(args[:i], args[i+1:]...)
+		}
+	}
+	return "", args
+}
+
 // newSessionEffect is the shared /new and /clear handler. It asks the
 // runtime to build a brand-new session, then re-points every model field
 // that depends on the current session and drops per-message UI state that
@@ -266,8 +281,9 @@ func init() {
 			m.turnStartedAt = m.now()
 			agentCtx, cancel := context.WithCancel(m.ctx)
 			m.agentCancel = cancel
-			focus := strings.TrimSpace(strings.Join(args, " "))
-			return *m, tea.Batch(runReviewCmd(agentCtx, m.state, m.reviewDispatcher, focus), tickCmd(), spinnerTickCmd())
+			model, remaining := parseReviewModelArg(args)
+			focus := strings.TrimSpace(strings.Join(remaining, " "))
+			return *m, tea.Batch(runReviewCmd(agentCtx, m.state, m.reviewDispatcher, focus, model), tickCmd(), spinnerTickCmd())
 		},
 		"connect": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openConnect("/")

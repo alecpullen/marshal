@@ -9,6 +9,7 @@ import (
 	"marshal/internal/agent"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/routing"
 )
 
 func TestRunReviewSubagentRegistersCardAndAppendsSummary(t *testing.T) {
@@ -29,7 +30,7 @@ func TestRunReviewSubagentRegistersCardAndAppendsSummary(t *testing.T) {
 		return runner, childState, nil
 	}
 
-	if err := runReviewSubagent(context.Background(), state, factory, "main.go"); err != nil {
+	if err := runReviewSubagent(context.Background(), state, factory, "main.go", ""); err != nil {
 		t.Fatalf("runReviewSubagent() error = %v", err)
 	}
 	if !factoryCalled {
@@ -50,8 +51,8 @@ func TestRunReviewSubagentRegistersCardAndAppendsSummary(t *testing.T) {
 	if v.Model != "test-model" {
 		t.Fatalf("model = %q, want test-model", v.Model)
 	}
-	if v.Role != agent.RoleSubtask {
-		t.Fatalf("role = %v, want RoleSubtask", v.Role)
+	if v.Role != routing.RoleReviewer {
+		t.Fatalf("role = %v, want RoleReviewer", v.Role)
 	}
 
 	msgs := state.Messages()
@@ -71,7 +72,7 @@ func TestRunReviewSubagentFactoryError(t *testing.T) {
 		return nil, nil, errors.New("factory exploded")
 	}
 
-	err := runReviewSubagent(context.Background(), state, factory, "")
+	err := runReviewSubagent(context.Background(), state, factory, "", "")
 	if err == nil {
 		t.Fatal("expected error from factory")
 	}
@@ -92,7 +93,7 @@ func TestRunReviewSubagentRunErrorMarksFailed(t *testing.T) {
 		return runner, childState, nil
 	}
 
-	err := runReviewSubagent(context.Background(), state, factory, "")
+	err := runReviewSubagent(context.Background(), state, factory, "", "")
 	if err == nil {
 		t.Fatal("expected error from child run")
 	}
@@ -102,5 +103,52 @@ func TestRunReviewSubagentRunErrorMarksFailed(t *testing.T) {
 	}
 	if len(state.Messages()) != 0 {
 		t.Fatal("no assistant message expected on failure")
+	}
+}
+
+func TestRunReviewSubagentDispatchesReviewerRole(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	var gotReq agent.SubagentRequest
+	factory := func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
+		gotReq = req
+		childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		runner := agent.NewRunner(nil, nil, nil, childState, "test-model")
+		runner.RunTaskFunc = func(ctx context.Context, prompt string) (*agent.Task, error) {
+			return &agent.Task{Summary: "Looks good."}, nil
+		}
+		return runner, childState, nil
+	}
+
+	if err := runReviewSubagent(context.Background(), state, factory, "", ""); err != nil {
+		t.Fatalf("runReviewSubagent() error = %v", err)
+	}
+	if gotReq.Role != routing.RoleReviewer {
+		t.Fatalf("dispatched role = %v, want RoleReviewer", gotReq.Role)
+	}
+}
+
+func TestRunReviewSubagentExplicitModelBeatsRole(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	var gotReq agent.SubagentRequest
+	factory := func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
+		gotReq = req
+		childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		runner := agent.NewRunner(nil, nil, nil, childState, "test-model")
+		runner.RunTaskFunc = func(ctx context.Context, prompt string) (*agent.Task, error) {
+			return &agent.Task{Summary: "Looks good."}, nil
+		}
+		return runner, childState, nil
+	}
+
+	if err := runReviewSubagent(context.Background(), state, factory, "main.go", "ollama/explicit"); err != nil {
+		t.Fatalf("runReviewSubagent() error = %v", err)
+	}
+	if gotReq.Role != routing.RoleReviewer {
+		t.Fatalf("dispatched role = %v, want RoleReviewer", gotReq.Role)
+	}
+	if gotReq.Model != "ollama/explicit" {
+		t.Fatalf("dispatched model = %q, want ollama/explicit", gotReq.Model)
 	}
 }

@@ -8,13 +8,18 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/routing"
 )
 
 // runReviewSubagent dispatches a read-only reviewer subagent over the
 // current working-tree changes, or over the user-supplied focus if non-empty.
 // The review prompt is constructed here in the app layer, not in the TUI.
-func runReviewSubagent(ctx context.Context, state *session.State, factory agent.SubagentRunnerFactory, focus string) error {
-	child, childState, err := factory(agent.SubagentRequest{})
+func runReviewSubagent(ctx context.Context, state *session.State, factory agent.SubagentRunnerFactory, focus, model string) error {
+	req := agent.SubagentRequest{Role: routing.RoleReviewer}
+	if model != "" {
+		req.Model = model
+	}
+	child, childState, err := factory(req)
 	if err != nil {
 		return fmt.Errorf("review: build subagent: %w", err)
 	}
@@ -25,7 +30,7 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 	}
 
 	meta := session.SubagentMeta{
-		Role: agent.RoleSubtask,
+		Role: routing.RoleReviewer,
 	}
 	if child.Model != "" {
 		meta.Model = child.Model

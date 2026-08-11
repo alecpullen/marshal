@@ -47,6 +47,26 @@ func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 	return r.resolveProfileRole(role)
 }
 
+// ResolveRoleIfBound resolves a role route only when the profile binds that
+// exact role — bindings inherited from the implementer preset or the fast
+// rung do NOT count. Callers use this for "pin only when explicitly bound"
+// semantics (e.g. /review): ok=false means fall back to the caller's
+// default model.
+func (r *StaticRouter) ResolveRoleIfBound(role AgentRole) (Route, bool) {
+	profile, ok := r.config.Profiles[r.config.DefaultProfile]
+	if !ok {
+		return Route{}, false
+	}
+	if _, from, ok := profile.EffectiveBinding(role); !ok || from != role {
+		return Route{}, false
+	}
+	route, err := r.ResolveRole(role)
+	if err != nil {
+		return Route{}, false
+	}
+	return route, true
+}
+
 // ResolveEmbedding resolves the embedding provider+model. It prefers the
 // structural [indexing] embedding_preset (r.config.EmbeddingPreset), falling
 // back to the active profile's legacy embedding role binding for configs

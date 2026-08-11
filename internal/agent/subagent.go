@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"marshal/internal/app/session"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
@@ -16,9 +17,15 @@ import (
 // custom agent. Model is an optional "provider/model" pair; "" means use
 // the default model selection (the factory's captured base model / the
 // named agent's own preset).
+//
+// Role requests model resolution through the profile's binding for this
+// role. It applies only when Model and Agent are both empty, and only
+// when the role is explicitly bound in the active profile
+// (router.ResolveRoleIfBound); otherwise the default model is used.
 type SubagentRequest struct {
 	Agent string
 	Model string
+	Role  routing.AgentRole
 }
 
 // SubagentRunnerFactory builds a fresh Runner bound to a fresh child

@@ -17,12 +17,11 @@ const questionOtherSentinel = "other"
 // questionModel wraps a *huh.Form that captures answers for one or more
 // clarifying questions presented in a single round-trip. It renders inline
 // inside the chat input area. For each Question:
-//   - Options empty                                → huh.NewInput (free-text)
-//   - Options + !Multi                             → huh.NewSelect single-choice
-//   - Options + Multi                              → huh.NewMultiSelect
-//   - Options + AllowOther (single-choice only)    → huh.NewSelect with an
-//     "Other" sentinel option followed by a NewInput that captures the
-//     custom answer when the sentinel is picked.
+//   - Options empty          → huh.NewInput (free-text)
+//   - Options + Multi        → huh.NewMultiSelect
+//   - Options (single or multi) → a select plus an 'Other…' sentinel; every
+//     options question always gets the sentinel and a custom-answer input in
+//     its own huh.Group, hidden unless the sentinel is picked.
 //
 // The View renders each question's text itself (markdown-rendered and
 // word-wrapped, with the ? gutter) plus the focused huh field's own View —
@@ -62,7 +61,12 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 		fields:  make([][]huh.Field, len(q.Questions)),
 	}
 
-	var fields []huh.Field
+	// One huh.Group per question field. The custom-answer input must live in
+	// its own group so it can be hidden independently: by the time huh
+	// evaluates the next group's hide func, the previous field's bound value
+	// is committed, so a user who picked a listed option never gets walked
+	// into the free-text input.
+	var groups []*huh.Group
 	for i, qst := range q.Questions {
 		hasOptions := len(qst.Options) > 0
 		switch {
@@ -70,41 +74,61 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 			ms := make([]string, 0)
 			qm.multis[i] = &ms
 			multi := huh.NewMultiSelect[string]().
-				Options(buildQuestionOptions(qst.Options, false)...).
+				Options(buildQuestionOptions(qst.Options)...).
 				Value(qm.multis[i]).
 				Height(8)
-			fields = append(fields, multi)
+			groups = append(groups, huh.NewGroup(multi))
 			qm.fields[i] = append(qm.fields[i], multi)
+
+			fv := ""
+			qm.others[i] = &fv
+			other := huh.NewInput().
+				Title("Custom answer (since you picked Other)").
+				Prompt("❯ ").
+				Value(qm.others[i])
+			idx := i
+			groups = append(groups, huh.NewGroup(other).WithHideFunc(func() bool {
+				if qm.multis[idx] == nil {
+					return true
+				}
+				for _, p := range *qm.multis[idx] {
+					if p == questionOtherSentinel {
+						return false
+					}
+				}
+				return true
+			}))
+			qm.fields[i] = append(qm.fields[i], other)
 		case hasOptions:
 			v := ""
 			qm.selects[i] = &v
 			sel := huh.NewSelect[string]().
-				Options(buildQuestionOptions(qst.Options, qst.AllowOther)...).
+				Options(buildQuestionOptions(qst.Options)...).
 				Value(qm.selects[i])
-			fields = append(fields, sel)
+			groups = append(groups, huh.NewGroup(sel))
 			qm.fields[i] = append(qm.fields[i], sel)
-			if qst.AllowOther {
-				fv := ""
-				qm.others[i] = &fv
-				other := huh.NewInput().
-					Title("Custom answer (since you picked Other)").
-					Prompt("❯ ").
-					Value(qm.others[i])
-				fields = append(fields, other)
-				qm.fields[i] = append(qm.fields[i], other)
-			}
+
+			fv := ""
+			qm.others[i] = &fv
+			other := huh.NewInput().
+				Title("Custom answer (since you picked Other)").
+				Prompt("❯ ").
+				Value(qm.others[i])
+			idx := i
+			groups = append(groups, huh.NewGroup(other).WithHideFunc(func() bool {
+				return qm.selects[idx] == nil || *qm.selects[idx] != questionOtherSentinel
+			}))
+			qm.fields[i] = append(qm.fields[i], other)
 		default:
 			v := ""
 			qm.inputs[i] = &v
 			in := huh.NewInput().
 				Prompt("❯ ").
 				Value(qm.inputs[i])
-			fields = append(fields, in)
+			groups = append(groups, huh.NewGroup(in))
 			qm.fields[i] = append(qm.fields[i], in)
 		}
 	}
-
-	group := huh.NewGroup(fields...)
 
 	km := huh.NewDefaultKeyMap()
 	// Esc declines every remaining (unanswered) question. Ctrl+C is
@@ -113,7 +137,7 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 	km.Input.Submit = key.NewBinding(key.WithKeys("enter"))
 	km.Select.Submit = key.NewBinding(key.WithKeys("enter"))
 
-	qm.form = huh.NewForm(group).
+	qm.form = huh.NewForm(groups...).
 		WithTheme(huhtheme.WarmSunset()).
 		WithWidth(questionFieldWidth(qm.width)).
 		WithShowHelp(false).
@@ -129,17 +153,15 @@ func questionFieldWidth(panelWidth int) int {
 	return max(panelWidth-4, 30)
 }
 
-// buildQuestionOptions constructs a huh option list. When allowOther is
-// true, an extra "Other" sentinel option is appended; the user can then use
-// the follow-up NewInput to type a custom answer.
-func buildQuestionOptions(in []string, allowOther bool) []huh.Option[string] {
+// buildQuestionOptions constructs a huh option list for an options
+// question. The 'Other…' sentinel is always appended; picking it reveals the
+// custom-answer input via that input group's WithHideFunc.
+func buildQuestionOptions(in []string) []huh.Option[string] {
 	opts := make([]huh.Option[string], 0, len(in)+1)
 	for _, o := range in {
 		opts = append(opts, huh.NewOption(o, o))
 	}
-	if allowOther {
-		opts = append(opts, huh.NewOption("Other…", questionOtherSentinel))
-	}
+	opts = append(opts, huh.NewOption("Other…", questionOtherSentinel))
 	return opts
 }
 
@@ -184,7 +206,21 @@ func (qm *questionModel) finalizeAnswers() {
 		switch {
 		case hasOptions && qst.Multi:
 			if qm.multis[i] != nil && len(*qm.multis[i]) > 0 {
-				qm.answers[i].Answer = strings.Join(*qm.multis[i], ", ")
+				picks := make([]string, 0, len(*qm.multis[i]))
+				for _, p := range *qm.multis[i] {
+					if p == questionOtherSentinel {
+						if qm.others[i] != nil {
+							if custom := strings.TrimSpace(*qm.others[i]); custom != "" {
+								picks = append(picks, custom)
+							}
+						}
+						continue
+					}
+					picks = append(picks, p)
+				}
+				if len(picks) > 0 {
+					qm.answers[i].Answer = strings.Join(picks, ", ")
+				}
 			}
 		case hasOptions:
 			if qm.selects[i] != nil {

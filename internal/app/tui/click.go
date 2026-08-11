@@ -54,6 +54,38 @@ func (m *Model) regionAt(line int) (clickTarget, bool) {
 	return clickTarget{}, false
 }
 
+// todoPanelBand returns the half-open screen-row range [top, bottom) the
+// pinned todo panel occupies, or false when it isn't rendered. The panel
+// sits directly below the transcript frame (scroll hint + breadcrumb +
+// viewport) and the turn-spinner row (view.go:95-107).
+func (m *Model) todoPanelBand() (top, bottom int, ok bool) {
+	rows := m.todoPanelRows()
+	if rows == 0 {
+		return 0, 0, false
+	}
+	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() + m.turnSpinnerRows()
+	return top, top + rows, true
+}
+
+// handleTodoPanelClick cycles the pinned todo panel's visibility mode
+// when a left click lands in its row band — the same transition Ctrl+T
+// performs. (A dedicated "show all" state beyond todoPanelMaxVisibleItems
+// is a deliberate non-goal; the cycle is the existing, understood UX.)
+func (m *Model) handleTodoPanelClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
+	if msg.Button != tea.MouseLeft {
+		return nil, false
+	}
+	if msg.X < 0 || msg.X >= m.leftWidth {
+		return nil, false
+	}
+	top, bottom, ok := m.todoPanelBand()
+	if !ok || msg.Y < top || msg.Y >= bottom {
+		return nil, false
+	}
+	m.cycleTodoPanelMode()
+	return nil, true
+}
+
 // handleTranscriptClick toggles the transcript block under a left click, if
 // any. handled reports whether the click landed on a region (regardless of
 // whether that region was already at its target state — a click always

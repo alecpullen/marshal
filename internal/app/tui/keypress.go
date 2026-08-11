@@ -174,8 +174,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		// Cycle the pinned todo panel: expanded → collapsed → hidden.
 		// State persists for the session.
-		m.todoPanelMode = (m.todoPanelMode + 1) % todoPanelModeCount
-		m.updateViewportHeight()
+		m.cycleTodoPanelMode()
 		return *m, nil, true
 	case "ctrl+s":
 		if !readlineShortcutAvailable() {

@@ -154,10 +154,10 @@ func TestHandleApprovalRejectsForeignPending(t *testing.T) {
 
 	// Call handleApproval directly with P1 (a stale pointer). The form
 	// will be created from P1, driven to completion, and then the switch
-	// will check m.state.PendingApproval() == tc (P2 == P1 = false).
-	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, P1)
+	// will check owner.PendingApproval() == tc (P2 == P1 = false).
+	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, state, P1, "")
 	m = updated.(Model)
-	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, P1)
+	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, state, P1, "")
 	m = updated.(Model)
 
 	// P1's channel must not have been sent to (identity guard).

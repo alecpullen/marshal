@@ -378,6 +378,7 @@ type SessionEntry struct {
 	Title        string
 	UpdatedAt    time.Time
 	MessageCount int
+	EndedAt      *time.Time
 }
 
 const (
@@ -393,7 +394,8 @@ WITH session_stats AS (
 )
 SELECT s.id, p.root_path, s.title,
        COALESCE(ss.updated_at, s.started_at) AS updated_at,
-       COALESCE(ss.message_count, 0)        AS message_count
+       COALESCE(ss.message_count, 0)        AS message_count,
+       s.ended_at
   FROM agent_sessions s
   JOIN projects p ON p.id = s.project_id
   LEFT JOIN session_stats ss ON ss.session_id = s.id
@@ -431,8 +433,9 @@ func (db *DB) ListSessions(ctx context.Context, cwd, cursor string, limit int) (
 			e         SessionEntry
 			updatedAt string
 			title     sql.NullString
+			endedAt   sql.NullString
 		)
-		if err := rows.Scan(&e.SessionID, &e.Cwd, &title, &updatedAt, &e.MessageCount); err != nil {
+		if err := rows.Scan(&e.SessionID, &e.Cwd, &title, &updatedAt, &e.MessageCount, &endedAt); err != nil {
 			return nil, "", fmt.Errorf("scan session row: %w", err)
 		}
 		if title.Valid {
@@ -443,6 +446,14 @@ func (db *DB) ListSessions(ctx context.Context, cwd, cursor string, limit int) (
 			return nil, "", fmt.Errorf("parse updated_at %q: %w", updatedAt, perr)
 		}
 		e.UpdatedAt = parsed.UTC()
+		if endedAt.Valid {
+			et, perr := time.Parse(time.RFC3339, endedAt.String)
+			if perr != nil {
+				return nil, "", fmt.Errorf("parse ended_at %q: %w", endedAt.String, perr)
+			}
+			et = et.UTC()
+			e.EndedAt = &et
+		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {

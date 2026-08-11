@@ -163,7 +163,7 @@ func TestHelpCommandReturnsGroupedDoc(t *testing.T) {
 			t.Errorf("missing group header %q in %v", want, headers)
 		}
 	}
-	if !slices.Contains(names, "/new") {
+	if !slices.Contains(names, "/new [name]") {
 		t.Errorf("missing /new row in %v", names)
 	}
 	if res.Doc.Footer == "" {

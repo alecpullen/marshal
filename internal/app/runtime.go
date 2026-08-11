@@ -690,17 +690,20 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 // State) and rebuilds the agent runtime against it. On success it swaps the
 // new state/runner into rt and returns the new pieces; on failure it leaves
 // the current session untouched and returns the error.
-func (rt *Runtime) NewSession() (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string) tui.AgentRunner, sddauthor.Factory, *registry.Registry, error) {
+func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string) tui.AgentRunner, sddauthor.Factory, *registry.Registry, error) {
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 
 	now := time.Now()
 	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
-	if err := db.CreateSession(sessionID, rt.ProjectID, "", now); err != nil {
+	if err := db.CreateSession(sessionID, rt.ProjectID, name, now); err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("create session: %w", err)
 	}
 
 	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger})
+	if name != "" {
+		newState.SetTitleManual(name)
+	}
 	newState.SetTrusted(rt.State.Trusted())
 	newState.SetLayers(rt.Layers)
 	if rt.SteeringBroker != nil {

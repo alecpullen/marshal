@@ -80,7 +80,7 @@ func (m Model) renderStatusLine(width int) string {
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
-	if right != "" && m.state.PendingApproval() == nil && m.state.ProviderError() == nil {
+	if right != "" && !m.hasPendingApproval() && m.state.ProviderError() == nil {
 		fits := func(s string) bool {
 			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
 		}
@@ -139,7 +139,7 @@ func (m Model) modeSegment() string {
 	if m.activeCompletionPopup() != nil {
 		return "completing"
 	}
-	if m.state.PendingApproval() != nil {
+	if m.hasPendingApproval() {
 		return "approval"
 	}
 	if m.state.PendingQuestion() != nil {
@@ -281,7 +281,7 @@ func browserStatusText(bi session.BrowserInfo) string {
 }
 
 func (m Model) statusRightSegment() string {
-	if m.state.PendingApproval() != nil {
+	if m.hasPendingApproval() {
 		return warningStyle().Render(glyph.Warning + " approval")
 	}
 	if m.state.ProviderError() != nil {
@@ -297,7 +297,7 @@ func (m Model) footerHints() help.FooterHints {
 	return help.FooterHints{
 		Busy:                 m.busy,
 		EditingCommand:       m.editingCommand,
-		ApprovalPending:      m.state.PendingApproval() != nil,
+		ApprovalPending:      m.hasPendingApproval(),
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,47 @@ func TestParentApprovalWinsOverChild(t *testing.T) {
 	}
 	if child.PendingApproval() != childTC {
 		t.Fatal("child pending approval should remain pending")
+	}
+}
+
+// TestChildApprovalRenderedInInputArea verifies that a subagent approval is
+// visible to the user: the input area renders the approval panel and the
+// status bar reports an approval, even though only the child state (not the
+// parent) has a pending approval. Regression test for the "routed but not
+// rendered" review finding.
+func TestChildApprovalRenderedInInputArea(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	m.state.RegisterSubagent("child-task", child)
+
+	tc := &session.PendingToolCall{
+		ID:           "c1",
+		Name:         "shell.run",
+		Command:      "git commit -m x",
+		Risk:         "command",
+		Reason:       "commit work",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	child.SetPendingApproval(tc)
+
+	if m.state.PendingApproval() != nil {
+		t.Fatal("parent state should not have a pending approval")
+	}
+	if !m.hasPendingApproval() {
+		t.Fatal("hasPendingApproval should be true for a child approval")
+	}
+
+	// The input area must render the approval panel (or the eager huh form)
+	// rather than a plain input, and the mode/status must read "approval".
+	rendered := m.renderInputArea()
+	if strings.Contains(rendered, "Ask Marshal") {
+		t.Errorf("child approval should not render a plain input area; got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "git commit -m x") {
+		t.Errorf("child approval panel should surface the command; got:\n%s", rendered)
+	}
+	if m.modeSegment() != "approval" {
+		t.Errorf("modeSegment = %q, want %q", m.modeSegment(), "approval")
 	}
 }
 

@@ -179,8 +179,9 @@ func TestRegistryPermissionWaitsForDecision(t *testing.T) {
 		_, ok := r.permissions["tc-1"]
 		return ok
 	})
-	// The pending permission must survive short sleeps but still be
-	// bounded by the 30s wall-clock timeout.
+	// The pending permission must survive short sleeps; there is no
+	// wall-clock bound, the wait ends on a decision or session
+	// cancellation.
 	time.Sleep(200 * time.Millisecond)
 	r.permMu.Lock()
 	_, stillPending := r.permissions["tc-1"]
@@ -205,7 +206,7 @@ func TestRegistryPermissionWaitsForDecision(t *testing.T) {
 	}
 }
 
-func TestRegistryPermissionTimesOutAfterAbandonment(t *testing.T) {
+func TestRegistryPermissionWaitsForeverWhenAbandoned(t *testing.T) {
 	r, _ := newTestRegistry(t, "registry")
 	ctx, cancel := testContext(t)
 	defer cancel()
@@ -215,8 +216,8 @@ func TestRegistryPermissionTimesOutAfterAbandonment(t *testing.T) {
 	}
 
 	// Trigger the permission on a goroutine with a long context so the
-	// test can observe the bridge's 30s timeout denial rather than the
-	// test context expiring first.
+	// test can observe that the bridge waits forever (no wall-clock
+	// timeout denial) until the session is cancelled.
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer triggerCancel()
 	respResult := make(chan json.RawMessage, 1)
@@ -237,9 +238,21 @@ func TestRegistryPermissionTimesOutAfterAbandonment(t *testing.T) {
 	})
 
 	// Abandon the request: do not resolve it and do not cancel the
-	// session. The bridge's 30s wall-clock timeout must eventually deny
-	// it and clean up the pending entry.
-	waitFor(t, 35*time.Second, "permission denied by timeout", func() bool {
+	// session. With no wall-clock bound, the pending entry must still be
+	// present after a short sleep.
+	time.Sleep(300 * time.Millisecond)
+	r.permMu.Lock()
+	_, stillPending := r.permissions["tc-1"]
+	r.permMu.Unlock()
+	if !stillPending {
+		t.Fatal("pending permission was dropped without a decision")
+	}
+
+	// Cancelling the issuing session must drain the pending permission.
+	if err := r.Cancel(ctx, "s-1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitFor(t, 2*time.Second, "permission drained on cancel", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
 		_, ok := r.permissions["tc-1"]
@@ -249,14 +262,14 @@ func TestRegistryPermissionTimesOutAfterAbandonment(t *testing.T) {
 	// its trigger request (the helper echoes the bridge's response).
 	select {
 	case <-respResult:
-		// The trigger's own result is empty; the bridge's timeout denial
-		// is sent to the child-initiated request id=9000. The important
+		// The trigger's own result is empty; the bridge's denial is sent
+		// to the child-initiated request id=9000. The important
 		// regression check is that the pending entry was removed and the
 		// child request completed.
 	case err := <-respErr:
-		t.Fatalf("trigger request returned error instead of timeout denial: %v", err)
+		t.Fatalf("trigger request returned error instead of denied result: %v", err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("child did not receive timeout denial")
+		t.Fatal("child did not receive denied result after cancel")
 	}
 }
 
@@ -322,8 +335,9 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 		_, ok := r.questions["q-1"]
 		return ok
 	})
-	// The pending question must survive short sleeps but still be
-	// bounded by the 30s wall-clock timeout.
+	// The pending question must survive short sleeps; there is no
+	// wall-clock bound, the wait ends on an answer or session
+	// cancellation.
 	time.Sleep(200 * time.Millisecond)
 	r.quesMu.Lock()
 	_, stillPending := r.questions["q-1"]
@@ -348,7 +362,7 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	}
 }
 
-func TestRegistryQuestionTimesOutAfterAbandonment(t *testing.T) {
+func TestRegistryQuestionWaitsForeverWhenAbandoned(t *testing.T) {
 	r, _ := newTestRegistry(t, "registry")
 	ctx, cancel := testContext(t)
 	defer cancel()
@@ -358,8 +372,8 @@ func TestRegistryQuestionTimesOutAfterAbandonment(t *testing.T) {
 	}
 
 	// Trigger the question on a goroutine with a long context so the
-	// test can observe the bridge's 30s timeout decline rather than the
-	// test context expiring first.
+	// test can observe that the bridge waits forever (no wall-clock
+	// timeout decline) until the session is cancelled.
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer triggerCancel()
 	respResult := make(chan json.RawMessage, 1)
@@ -380,9 +394,21 @@ func TestRegistryQuestionTimesOutAfterAbandonment(t *testing.T) {
 	})
 
 	// Abandon the request: do not answer it and do not cancel the
-	// session. The bridge's 30s wall-clock timeout must eventually
-	// decline it and clean up the pending entry.
-	waitFor(t, 35*time.Second, "question declined by timeout", func() bool {
+	// session. With no wall-clock bound, the pending entry must still be
+	// present after a short sleep.
+	time.Sleep(300 * time.Millisecond)
+	r.quesMu.Lock()
+	_, stillPending := r.questions["q-1"]
+	r.quesMu.Unlock()
+	if !stillPending {
+		t.Fatal("pending question was dropped without an answer")
+	}
+
+	// Cancelling the issuing session must drain the pending question.
+	if err := r.Cancel(ctx, "s-1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitFor(t, 2*time.Second, "question drained on cancel", func() bool {
 		r.quesMu.Lock()
 		defer r.quesMu.Unlock()
 		_, ok := r.questions["q-1"]
@@ -392,14 +418,14 @@ func TestRegistryQuestionTimesOutAfterAbandonment(t *testing.T) {
 	// its trigger request (the helper echoes the bridge's response).
 	select {
 	case <-respResult:
-		// The trigger's own result is empty; the bridge's timeout decline
-		// is sent to the child-initiated request id=9000. The important
+		// The trigger's own result is empty; the bridge's decline is sent
+		// to the child-initiated request id=9000. The important
 		// regression check is that the pending entry was removed and the
 		// child request completed.
 	case err := <-respErr:
-		t.Fatalf("trigger request returned error instead of timeout decline: %v", err)
+		t.Fatalf("trigger request returned error instead of declined result: %v", err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("child did not receive timeout decline")
+		t.Fatal("child did not receive declined result after cancel")
 	}
 }
 

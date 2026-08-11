@@ -236,6 +236,7 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	mustReg(&registry.Tool{Name: "shell.run", Description: "shell", Schema: []byte(`{}`), Risk: registry.RiskCommand, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "diagnostics.check", Description: "diag", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Deferred: true, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "question.ask", Description: "ask", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
+	mustReg(&registry.Tool{Name: "ask_user", Description: "ask alias", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 
 	view := SubtaskScopeView(reg)
 	names := make(map[string]bool, len(view.List()))
@@ -274,6 +275,15 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	if _, ok := view.Lookup("question.ask"); ok {
 		t.Fatal("Lookup(question.ask) must fail in subtask view")
+	}
+	// ask_user is the alias for question.ask and routes through the same
+	// orphaned child session.State, so it must be excluded for the same
+	// reason.
+	if names["ask_user"] {
+		t.Fatal("subtask view must NOT contain ask_user (no user to answer it)")
+	}
+	if _, ok := view.Lookup("ask_user"); ok {
+		t.Fatal("Lookup(ask_user) must fail in subtask view")
 	}
 }
 

@@ -1863,11 +1863,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	//
 	// Scroll gestures are handled first so the user can review transcript
 	// history before approving a destructive command.
-	if tc := m.state.PendingApproval(); tc != nil {
+	if owner, tc, label := m.pendingApprovalTarget(); tc != nil {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleApproval(msg, tc)
+		return m.handleApproval(msg, owner, tc, label)
 	}
 
 	// Inline question prompt: when a clarifying question is pending, route
@@ -1934,6 +1934,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// pendingApprovalTarget returns the state owning the pending approval the
+// user should answer next, preferring the parent session, then the first
+// running subagent with a live child state. label names the subagent for
+// display; it is empty for the parent.
+//
+// Known limitation: with parallel agent.run (max 2 children), two children
+// could pend at once; answering the first-registered one is acceptable —
+// the other surfaces on the next message.
+func (m *Model) pendingApprovalTarget() (owner *session.State, tc *session.PendingToolCall, label string) {
+	if tc := m.state.PendingApproval(); tc != nil {
+		return m.state, tc, ""
+	}
+	for _, v := range m.state.Subagents() {
+		if v.Status != session.SubagentRunning || v.Child == nil {
+			continue
+		}
+		if tc := v.Child.PendingApproval(); tc != nil {
+			return v.Child, tc, v.Label
+		}
+	}
+	return nil, nil, ""
+}
+
 // isModeElevationApproval reports whether a pending approval is a mode
 // elevation request: its decision UI is the dock picker, so the inline
 // approval chooser/panel must not render for it.
@@ -1945,13 +1968,21 @@ func isModeElevationApproval(tc *session.PendingToolCall) bool {
 // edit-command textarea sub-mode) while a tool-call approval is pending. It
 // is called before the main keypress switch so huh's internal navigation
 // messages (nextFieldMsg/nextGroupMsg) round-trip back to the form.
-func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Model, tea.Cmd) {
+//
+// owner is the session.State that owns the pending approval (the parent, or
+// a running subagent's child state); tc is the pending tool call on that
+// state. source names the subagent for display and is empty for the parent.
+// The decision is always Responded on the original tc; a shallow display copy
+// with a prefixed reason is shown so the dialog names who is asking.
+func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.PendingToolCall, source string) (tea.Model, tea.Cmd) {
 	// mode.request: show the editing-variant picker instead of the normal
 	// approval dialog. The picker opens via the dock; while the dock is
 	// open, keypresses are routed to the picker and non-key messages
 	// return early here. On PickedMsg the main Update switch handles the
-	// response and mode change.
-	if isModeElevationApproval(tc) {
+	// response and mode change. This path is parent-only: child runners
+	// never request mode elevation, so a child that somehow pends a
+	// mode.request falls through to the normal chooser.
+	if source == "" && isModeElevationApproval(tc) {
 		if m.dock.IsOpen() {
 			// Picker already open; don't interfere.
 			return m, nil
@@ -1980,14 +2011,14 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 			case "enter":
 				value := strings.TrimSpace(m.input.Value())
 				if value != "" {
-					if m.state.PendingApproval() == tc {
+					if owner.PendingApproval() == tc {
 						tc.Respond(session.UserApprovalDecision{Approved: true, Edited: value})
 					}
 					m.editingCommand = false
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
 					m.updateViewportHeight()
-					m.state.SetPendingApproval(nil)
+					owner.SetPendingApproval(nil)
 					m.approvalModel = nil
 				}
 				m.lastTranscriptHash = 0
@@ -2001,9 +2032,27 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 	}
 
 	// Lazily build the inline approval chooser the first time a message
-	// arrives for a pending tool call.
+	// arrives for a pending tool call. For a subagent approval, show a
+	// display copy whose reason names the subagent, but always Respond on
+	// the original tc. The copy is built field-by-field (not a struct
+	// copy) because PendingToolCall embeds sync.Once, which must not be
+	// copied.
+	displayTC := tc
+	if source != "" {
+		displayTC = &session.PendingToolCall{
+			ID:           tc.ID,
+			Name:         tc.Name,
+			Args:         tc.Args,
+			Command:      tc.Command,
+			Risk:         tc.Risk,
+			Reason:       fmt.Sprintf("subagent %q: %s", source, tc.Reason),
+			Diff:         tc.Diff,
+			Schema:       tc.Schema,
+			ResponseChan: tc.ResponseChan,
+		}
+	}
 	if m.approvalModel == nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
+		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
 	}
 	am, cmd := m.approvalModel.Update(msg)
 	m.approvalModel = am
@@ -2015,17 +2064,17 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 	m.approvalModel = nil
 	switch choice {
 	case choiceApprove:
-		if m.state.PendingApproval() == tc {
+		if owner.PendingApproval() == tc {
 			tc.Respond(session.UserApprovalDecision{Approved: true})
 		}
-		m.state.SetPendingApproval(nil)
+		owner.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
 	case choiceDeny:
-		if m.state.PendingApproval() == tc {
+		if owner.PendingApproval() == tc {
 			tc.Respond(session.UserApprovalDecision{Approved: false})
 		}
-		m.state.SetPendingApproval(nil)
+		owner.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
 	case choiceAlways:
@@ -2053,18 +2102,18 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 				m.runner.SetPolicyRules(m.state.Config.Permissions.Rules)
 			}
 		}
-		if m.state.PendingApproval() == tc {
+		if owner.PendingApproval() == tc {
 			tc.Respond(session.UserApprovalDecision{Approved: true})
 		}
-		m.state.SetPendingApproval(nil)
+		owner.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
 	case choiceSessionAllow:
 		m.state.AddSessionRule(tc.Command)
-		if m.state.PendingApproval() == tc {
+		if owner.PendingApproval() == tc {
 			tc.Respond(session.UserApprovalDecision{Approved: true})
 		}
-		m.state.SetPendingApproval(nil)
+		owner.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
 	case choiceEdit:

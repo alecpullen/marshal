@@ -302,8 +302,8 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "review",
-			Description: "Dispatch a reviewer subagent over the current changes",
-			Args:        "[--model provider/model] [focus]",
+			Description: "Dispatch a reviewer subagent over the current changes, a --base ref, or an explicit range (main...HEAD)",
+			Args:        "[--model provider/model] [--base ref | <range>] [focus]",
 			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},

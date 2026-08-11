@@ -1419,8 +1419,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				},
 			))
 			tuiOpts = append(tuiOpts, tui.WithReviewDispatcher(
-				func(ctx context.Context, focus, model string) error {
-					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus, model)
+				func(ctx context.Context, focus, model, reviewRange string) error {
+					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus, model, reviewRange)
 				},
 			))
 		}
@@ -1446,8 +1446,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				PipelineFactory:   pipelineFactory,
 				PlanAuthorFactory: planAuthorFactory,
 				ToolRegistry:      toolReg,
-				ReviewDispatcher: func(ctx context.Context, focus, model string) error {
-					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus, model)
+				ReviewDispatcher: func(ctx context.Context, focus, model, reviewRange string) error {
+					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus, model, reviewRange)
 				},
 			}, nil
 		})))

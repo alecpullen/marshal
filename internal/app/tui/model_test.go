@@ -6650,7 +6650,7 @@ func TestDispatchReviewCommandWhileBusyIsRefused(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatal(err)
 	}
-	m := New(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus, model string) error {
+	m := New(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus, model, reviewRange string) error {
 		return nil
 	}))
 	m.resize(80, 24)
@@ -6699,7 +6699,7 @@ func TestDispatchReviewCommandStartsSubagent(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatched := make(chan string, 1)
-	m := New(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus, model string) error {
+	m := New(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus, model, reviewRange string) error {
 		dispatched <- focus
 		return nil
 	}))

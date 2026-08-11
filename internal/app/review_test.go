@@ -3,6 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +34,7 @@ func TestRunReviewSubagentRegistersCardAndAppendsSummary(t *testing.T) {
 		return runner, childState, nil
 	}
 
-	if err := runReviewSubagent(context.Background(), state, factory, "main.go", ""); err != nil {
+	if err := runReviewSubagent(context.Background(), state, factory, "main.go", "", ""); err != nil {
 		t.Fatalf("runReviewSubagent() error = %v", err)
 	}
 	if !factoryCalled {
@@ -83,7 +87,7 @@ func TestRunReviewSubagentSalvagedAppendsSalvagedMessage(t *testing.T) {
 		return runner, childState, nil
 	}
 
-	if err := runReviewSubagent(context.Background(), state, factory, "", ""); err != nil {
+	if err := runReviewSubagent(context.Background(), state, factory, "", "", ""); err != nil {
 		t.Fatalf("runReviewSubagent() error = %v", err)
 	}
 	msgs := state.Messages()
@@ -112,7 +116,7 @@ func TestRunReviewSubagentFactoryError(t *testing.T) {
 		return nil, nil, errors.New("factory exploded")
 	}
 
-	err := runReviewSubagent(context.Background(), state, factory, "", "")
+	err := runReviewSubagent(context.Background(), state, factory, "", "", "")
 	if err == nil {
 		t.Fatal("expected error from factory")
 	}
@@ -133,7 +137,7 @@ func TestRunReviewSubagentRunErrorMarksFailed(t *testing.T) {
 		return runner, childState, nil
 	}
 
-	err := runReviewSubagent(context.Background(), state, factory, "", "")
+	err := runReviewSubagent(context.Background(), state, factory, "", "", "")
 	if err == nil {
 		t.Fatal("expected error from child run")
 	}
@@ -160,7 +164,7 @@ func TestRunReviewSubagentDispatchesReviewerRole(t *testing.T) {
 		return runner, childState, nil
 	}
 
-	if err := runReviewSubagent(context.Background(), state, factory, "", ""); err != nil {
+	if err := runReviewSubagent(context.Background(), state, factory, "", "", ""); err != nil {
 		t.Fatalf("runReviewSubagent() error = %v", err)
 	}
 	if gotReq.Role != routing.RoleReviewer {
@@ -182,7 +186,7 @@ func TestRunReviewSubagentExplicitModelBeatsRole(t *testing.T) {
 		return runner, childState, nil
 	}
 
-	if err := runReviewSubagent(context.Background(), state, factory, "main.go", "ollama/explicit"); err != nil {
+	if err := runReviewSubagent(context.Background(), state, factory, "main.go", "ollama/explicit", ""); err != nil {
 		t.Fatalf("runReviewSubagent() error = %v", err)
 	}
 	if gotReq.Role != routing.RoleReviewer {
@@ -191,4 +195,114 @@ func TestRunReviewSubagentExplicitModelBeatsRole(t *testing.T) {
 	if gotReq.Model != "ollama/explicit" {
 		t.Fatalf("dispatched model = %q, want ollama/explicit", gotReq.Model)
 	}
+}
+
+func TestRunReviewSubagentInvalidRangeRegistersNoCard(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	factory := func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
+		t.Fatal("factory should not be called for invalid range")
+		return nil, nil, nil
+	}
+
+	err := runReviewSubagent(context.Background(), state, factory, "", "", "nope..HEAD")
+	if err == nil {
+		t.Fatal("expected error for invalid range")
+	}
+	if len(state.Subagents()) != 0 {
+		t.Fatal("no subagent should be registered when range validation fails")
+	}
+}
+
+func TestBuildReviewPromptRangeMode(t *testing.T) {
+	dir := initReviewGitRepo(t)
+
+	prompt := buildReviewPrompt(dir, "", "main..HEAD")
+	if !strings.Contains(prompt, "Review the changes in range main..HEAD") {
+		t.Fatalf("prompt missing range header:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "feature commit") {
+		t.Fatalf("prompt missing commit log:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "+feature") {
+		t.Fatalf("prompt missing diff:\n%s", prompt)
+	}
+
+	// Dirty the tree and assert working-tree section appears.
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\nextra"), 0o644); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	prompt = buildReviewPrompt(dir, "", "main..HEAD")
+	if !strings.Contains(prompt, "Working tree also has uncommitted changes") {
+		t.Fatalf("prompt missing dirty-tree note:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Working-tree diff") {
+		t.Fatalf("prompt missing working-tree diff:\n%s", prompt)
+	}
+}
+
+func TestResolveReviewRangeBase(t *testing.T) {
+	dir := initReviewGitRepo(t)
+	r, err := resolveReviewRange(dir, "main")
+	if err != nil {
+		t.Fatalf("resolveReviewRange error = %v", err)
+	}
+	if !strings.HasSuffix(r, "..HEAD") {
+		t.Fatalf("resolved range = %q, want merge-base..HEAD", r)
+	}
+}
+
+func TestResolveReviewRangeExplicit(t *testing.T) {
+	dir := initReviewGitRepo(t)
+	r, err := resolveReviewRange(dir, "main..HEAD")
+	if err != nil {
+		t.Fatalf("resolveReviewRange error = %v", err)
+	}
+	if r != "main..HEAD" {
+		t.Fatalf("resolved range = %q, want main..HEAD", r)
+	}
+}
+
+func TestResolveReviewRangeInvalid(t *testing.T) {
+	dir := initReviewGitRepo(t)
+	_, err := resolveReviewRange(dir, "nope..HEAD")
+	if err == nil {
+		t.Fatal("expected error for invalid range")
+	}
+}
+
+func initReviewGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@example.com")
+	runGit("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base.txt: %v", err)
+	}
+	runGit("add", "base.txt")
+	runGit("commit", "-m", "base commit")
+	// Ensure a stable base branch then create a feature branch for the
+	// commit that HEAD will be ahead of main. Some git versions already
+	// default to main, so create the branch only when absent.
+	if err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "main").Run(); err != nil {
+		runGit("branch", "main")
+	}
+	runGit("checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	runGit("add", "feature.txt")
+	runGit("commit", "-m", "feature commit")
+	return dir
 }

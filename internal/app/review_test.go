@@ -251,7 +251,7 @@ func TestBuildReviewPromptRangeMode(t *testing.T) {
 
 func TestResolveReviewRangeBase(t *testing.T) {
 	dir := initReviewGitRepo(t)
-	r, err := resolveReviewRange(dir, "main")
+	r, err := resolveReviewRange(dir, "base:main")
 	if err != nil {
 		t.Fatalf("resolveReviewRange error = %v", err)
 	}

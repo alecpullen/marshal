@@ -112,10 +112,17 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 		return b.String()
 	}
 
-	// Default: heading line + indented bullet list.
+	// Default: heading line + indented bullet list. Wrapped continuation
+	// lines are re-indented behind the continuation gutter so they never
+	// start in column 0.
 	b.WriteString(gutter)
-	b.WriteString(statusOkStyle().Render(ansi.Wrap(head, max(width-3, 1), "")))
-	b.WriteString("\n")
+	for i, hl := range strings.Split(ansi.Wrap(head, max(width-3, 1), ""), "\n") {
+		if i > 0 {
+			b.WriteString(continuation())
+		}
+		b.WriteString(statusOkStyle().Render(hl))
+		b.WriteString("\n")
+	}
 	for _, ev := range events {
 		line := toolTarget(ev)
 		if ev.ResultSummary != "" {
@@ -125,8 +132,13 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 			line += ev.ResultSummary
 		}
 		bullet := "  – " + line
-		b.WriteString(mutedStyle().Render(ansi.Wrap(bullet, max(width-2, 1), "")))
-		b.WriteString("\n")
+		for i, bl := range strings.Split(ansi.Wrap(bullet, max(width-3, 1), ""), "\n") {
+			if i > 0 {
+				b.WriteString(continuation())
+			}
+			b.WriteString(mutedStyle().Render(bl))
+			b.WriteString("\n")
+		}
 	}
 	return b.String()
 }

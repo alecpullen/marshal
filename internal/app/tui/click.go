@@ -58,6 +58,15 @@ func (m *Model) regionAt(line int) (clickTarget, bool) {
 // pinned todo panel occupies, or false when it isn't rendered. The panel
 // sits directly below the transcript frame (scroll hint + breadcrumb +
 // viewport) and the turn-spinner row (view.go:95-107).
+//
+// This math is coupled to viewString()'s layout invariants: the spinner and
+// breadcrumb rows are only emitted when their *Rows() helpers return
+// nonzero, and each helper returns 0 when that element isn't rendered. The
+// viewport height here is used raw (m.viewport.Height()) while the render
+// path guards it with max(height, 1); in practice the viewport is always
+// >= 1, so the two agree, but keep them in sync if the render guard ever
+// changes. The band also depends on todoPanelRows() matching the panel's
+// rendered height.
 func (m *Model) todoPanelBand() (top, bottom int, ok bool) {
 	rows := m.todoPanelRows()
 	if rows == 0 {

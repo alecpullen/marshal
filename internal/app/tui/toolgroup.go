@@ -11,6 +11,13 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// bulletIndent is the width of the "  – " prefix that precedes each bullet's
+// text: two cells for the dash gutter plus the en-dash and its trailing
+// space. Bullet continuation lines are indented gutter + bulletIndent so
+// wrapped text stays aligned under the first line's bullet text, matching
+// how continuation() aligns heading text under its gutter.
+const bulletIndent = 4
+
 // transcriptEntry is either a single transcript item or a collapsed run of
 // consecutive audit events sharing one tool name.
 type transcriptEntry struct {
@@ -131,10 +138,17 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 			}
 			line += ev.ResultSummary
 		}
-		bullet := "  – " + line
-		for i, bl := range strings.Split(ansi.Wrap(bullet, max(width-3, 1), ""), "\n") {
-			if i > 0 {
+		// Wrap the bullet text at the width left after the gutter and the
+		// bullet prefix; continuation lines indent gutter + bulletIndent so
+		// they sit under the bullet text (the first line's "  – " prefix is
+		// written separately, not part of the wrap).
+		for i, bl := range strings.Split(ansi.Wrap(line, max(width-gutterWidth-bulletIndent, 1), ""), "\n") {
+			if i == 0 {
+				b.WriteString(gutter)
+				b.WriteString("  – ")
+			} else {
 				b.WriteString(continuation())
+				b.WriteString(strings.Repeat(" ", bulletIndent))
 			}
 			b.WriteString(mutedStyle().Render(bl))
 			b.WriteString("\n")

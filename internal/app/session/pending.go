@@ -15,13 +15,14 @@ type UserApprovalDecision struct {
 
 // Question is a single clarifying question presented to the user. Options
 // triggers select/multi-select rendering in the TUI; Multi selects between
-// NewSelect and NewMultiSelect. AllowOther enables the "Other" affordance
-// that lets the user type a free-text answer that's not in the option list.
+// NewSelect and NewMultiSelect. Every options question always exposes an
+// 'Other…' sentinel in the TUI, which reveals a free-text input for a custom
+// answer not in the option list; the sentinel and its input are unconditional
+// (there is no per-question switch to disable them).
 type Question struct {
-	Question   string   `json:"question"`
-	Options    []string `json:"options,omitempty"`
-	Multi      bool     `json:"multi,omitempty"`
-	AllowOther bool     `json:"allow_other,omitempty"`
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	Multi    bool     `json:"multi,omitempty"`
 }
 
 // Answer is the user's response to one Question. When the user hits Esc on

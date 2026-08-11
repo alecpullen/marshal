@@ -101,6 +101,12 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	}
 	subtaskSet := (userFile.Agent != nil && userFile.Agent.SubtaskIterations != nil) ||
 		(projectFile.Agent != nil && projectFile.Agent.SubtaskIterations != nil)
+	// 12 was the old implicit default. Treat that legacy value as unset so
+	// existing configs receive the current default instead of remaining pinned.
+	if subtaskSet && cfg.Agent.SubtaskIterations == 12 {
+		cfg.Agent.SubtaskIterations = 0
+		subtaskSet = false
+	}
 	migrated := MigrateLegacyAgentModel(&cfg, legacyProvider, legacyModel)
 	migrated = MigrateEmbeddingRoleBinding(&cfg) || migrated
 	coercePresetPricing(&cfg)

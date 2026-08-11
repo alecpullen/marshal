@@ -33,6 +33,7 @@ var tuiCommandEffects map[string]func(m *Model, args []string) (tea.Model, tea.C
 // caller reports the conflict.
 func parseReviewArgs(args []string) (model, base, reviewRange string, remaining []string) {
 	out := make([]string, 0, len(args))
+	seenFocus := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -46,10 +47,11 @@ func parseReviewArgs(args []string) (model, base, reviewRange string, remaining 
 			i++
 		case strings.HasPrefix(a, "--base="):
 			base = strings.TrimPrefix(a, "--base=")
-		case strings.Contains(a, ".."):
+		case !seenFocus && strings.Contains(a, ".."):
 			reviewRange = a
 		default:
 			out = append(out, a)
+			seenFocus = true
 		}
 	}
 	return model, base, reviewRange, out
@@ -300,7 +302,19 @@ func init() {
 			m.turnStartedAt = m.now()
 			agentCtx, cancel := context.WithCancel(m.ctx)
 			m.agentCancel = cancel
-			model, _, reviewRange, remaining := parseReviewArgs(args)
+			model, base, reviewRange, remaining := parseReviewArgs(args)
+			if base != "" && reviewRange != "" {
+				m.state.EndWork()
+				m.busy = false
+				m.state.AddMessage(session.RoleSystem, "review: --base and an explicit range are mutually exclusive", session.ContentTypePlain)
+				m.refreshViewport()
+				return *m, nil
+			}
+			if reviewRange == "" && base != "" {
+				// Preserve the --base distinction through the dispatcher, whose
+				// range argument is otherwise reserved for explicit Git ranges.
+				reviewRange = "base:" + base
+			}
 			focus := strings.TrimSpace(strings.Join(remaining, " "))
 			return *m, tea.Batch(runReviewCmd(agentCtx, m.state, m.reviewDispatcher, focus, model, reviewRange), tickCmd(), spinnerTickCmd())
 		},

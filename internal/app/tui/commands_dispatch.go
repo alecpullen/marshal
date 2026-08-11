@@ -78,6 +78,9 @@ func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
 	m.activeToolExpanded = false
 	m.activeToolStartedAt = time.Time{}
 	m.clickRegions = nil
+	// The old session's changed-files list must never render in the new
+	// session while the railBaseRefMsg round-trips; re-read it below.
+	m.railChanged = nil
 
 	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount), session.ContentTypePlain)
 	m.refreshViewport()

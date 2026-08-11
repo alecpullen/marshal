@@ -83,6 +83,6 @@ func railBaseRefCmd(dir string) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		return railBaseRefMsg{ref: gitinfo.HeadSHA(dir)}
+		return railBaseRefMsg{dir: dir, ref: gitinfo.HeadSHA(dir)}
 	}
 }

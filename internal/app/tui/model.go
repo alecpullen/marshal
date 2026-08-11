@@ -1340,6 +1340,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// WindowSizeMsg must always resize the underlying layout (and the
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		wasRailEnabled := m.railEnabled()
 		m.resize(ws.Width, ws.Height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.leftWidth-4, 30))
@@ -1351,6 +1352,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// current branch even if it changed in another tool.
 		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 		m.lastGitRead = m.now()
+		// A narrow→wide resize newly enables the rail; refreshRailChanged
+		// is gated on railEnabled(), so without this the changed section
+		// would stay empty until the next turn/workspace event. Fires at
+		// most once per disabled→enabled transition.
+		if !wasRailEnabled && m.railEnabled() {
+			m.refreshRailChanged()
+		}
 		m.refreshViewport()
 		return m, nil
 	}
@@ -3483,6 +3491,13 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 // matches the existing turn-boundary behavior and happens at most once per
 // workspace change, so it is acceptable on the UI thread.
 func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
+	// Drop msgs whose dir is no longer the active root: linked worktrees
+	// share the object store, so a stale in-flight cmd from a previous
+	// workspace/session could otherwise rebase the rail against the wrong
+	// tree and produce a misleading diff.
+	if msg.dir != m.state.Workspace().ActiveRoot {
+		return m, nil
+	}
 	if msg.ref != "" {
 		m.railBaseRef = msg.ref
 	}
@@ -3493,7 +3508,7 @@ func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
-	if now := m.now(); m.state.WorkingDir != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
+	if now := m.now(); m.state.Workspace().ActiveRoot != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
 		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 		m.lastGitRead = now
 	}

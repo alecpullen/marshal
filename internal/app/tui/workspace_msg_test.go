@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/sidepanel"
 )
 
 func TestHandleWorkspaceMsgRereadsGitInfo(t *testing.T) {
@@ -75,6 +76,9 @@ func TestHandleWorkspaceMsgRebasesRail(t *testing.T) {
 	if rb.ref != string(want[:len(want)-1]) {
 		t.Fatalf("railBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
 	}
+	if rb.dir != wt {
+		t.Fatalf("railBaseRefMsg.dir = %q, want %q", rb.dir, wt)
+	}
 
 	// Feed the railBaseRefMsg back through Update and assert the rail rebases.
 	mm2, _ := m.Update(rb)
@@ -93,10 +97,36 @@ func TestHandleWorkspaceMsgRebasesRail(t *testing.T) {
 	}
 }
 
+func TestHandleRailBaseRefStaleDirIgnored(t *testing.T) {
+	m := newTestModel(t)
+	m.railWidth = 40 // enable the rail
+	activeRoot := m.state.Workspace().ActiveRoot
+	m.railBaseRef = "base"
+	m.railChanged = []sidepanel.ChangedFile{{Path: "kept.txt"}}
+
+	// A msg whose dir is no longer the active root must be dropped.
+	mm, cmd := m.handleRailBaseRef(railBaseRefMsg{dir: activeRoot + "/other", ref: "stale-sha"})
+	if cmd != nil {
+		t.Fatal("expected nil cmd for stale-dir msg")
+	}
+	if mm.railBaseRef != "base" {
+		t.Errorf("railBaseRef = %q, want base preserved on stale dir", mm.railBaseRef)
+	}
+	if len(mm.railChanged) != 1 || mm.railChanged[0].Path != "kept.txt" {
+		t.Errorf("railChanged = %+v, want unchanged on stale dir", mm.railChanged)
+	}
+
+	// A msg matching the active root rebases normally.
+	mm, _ = m.handleRailBaseRef(railBaseRefMsg{dir: activeRoot, ref: "new-sha"})
+	if mm.railBaseRef != "new-sha" {
+		t.Errorf("railBaseRef = %q, want new-sha for matching dir", mm.railBaseRef)
+	}
+}
+
 func TestHandleRailBaseRefEmptyRefKeepsBase(t *testing.T) {
 	m := newTestModel(t)
 	m.railBaseRef = "abc123"
-	mm, cmd := m.handleRailBaseRef(railBaseRefMsg{ref: ""})
+	mm, cmd := m.handleRailBaseRef(railBaseRefMsg{dir: m.state.Workspace().ActiveRoot, ref: ""})
 	m = mm
 	if cmd != nil {
 		t.Fatal("expected nil cmd")

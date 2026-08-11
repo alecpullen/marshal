@@ -33,3 +33,32 @@ func TestProjectSkillOverridesBuiltInSDDAuthoringSkill(t *testing.T) {
 		t.Fatalf("skill = %+v, want project override", skill)
 	}
 }
+
+func TestLoadSkillsIncludesBuiltInExecutingPlansSkill(t *testing.T) {
+	idx, err := LoadSkills(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	skill, ok := idx.Load("marshal-executing-plans")
+	if !ok {
+		t.Fatal("built-in executing-plans skill is missing")
+	}
+	if skill.Description == "" || !strings.Contains(skill.Body, "Commit after each verified task") {
+		t.Fatalf("built-in skill is incomplete: %+v", skill)
+	}
+}
+
+func TestProjectSkillOverridesBuiltInExecutingPlansSkill(t *testing.T) {
+	project := t.TempDir()
+	writeSkillFile(t, project, "marshal-executing-plans.md", skillContent(
+		"marshal-executing-plans", "project override"))
+
+	idx, err := LoadSkills(t.TempDir(), project)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	skill, ok := idx.Load("marshal-executing-plans")
+	if !ok || skill.Description != "project override" {
+		t.Fatalf("skill = %+v, want project override", skill)
+	}
+}

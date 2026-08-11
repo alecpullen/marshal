@@ -1499,7 +1499,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
+	case doctorpanel.ClosedMsg:
+		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
 	case doctorpanel.FixMsg:
+		m.dock.CloseNow()
 		m.doctorFixProvider = msg.Provider
 		m.savedInputPlaceholder = m.input.Placeholder
 		m.input.Reset()

@@ -538,6 +538,35 @@ func TestStartRuntimePopulatesCommandRegistry(t *testing.T) {
 	}
 }
 
+func TestRuntimeNewSessionWithName(t *testing.T) {
+	ctx := context.Background()
+	rt, err := StartRuntime(ctx, WithWorkingDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+
+	state, _, _, _, _, _, err := rt.NewSession("fix-auth")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if !state.TitleManuallySet() {
+		t.Fatal("TitleManuallySet = false, want true")
+	}
+	if got := state.Title(); got != "fix-auth" {
+		t.Fatalf("Title = %q, want %q", got, "fix-auth")
+	}
+
+	// Empty name preserves auto-title behavior.
+	state2, _, _, _, _, _, err := rt.NewSession("")
+	if err != nil {
+		t.Fatalf("NewSession empty: %v", err)
+	}
+	if state2.TitleManuallySet() {
+		t.Fatal("empty-name session must not be manually titled")
+	}
+}
+
 func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	prevTimeout := jobShutdownTimeout
 	jobShutdownTimeout = 50 * time.Millisecond

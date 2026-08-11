@@ -53,12 +53,14 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "new",
 			Description: "Start a new conversation",
+			Args:        "[name]",
 			Group:       groupChat,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "clear",
 			Description: "Start a new conversation (alias for /new)",
+			Args:        "[name]",
 			Group:       groupChat,
 			TUIOnly:     true,
 		},

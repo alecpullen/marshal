@@ -1434,8 +1434,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// /new and /clear swap in a brand-new session via the runtime. This
 		// is wired outside the ProviderError block so the commands stay
 		// available even when the initial provider build failed.
-		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func() (tui.SessionSwapResult, error) {
-			state, runner, swarmRunner, pipelineFactory, planAuthorFactory, toolReg, err := rt.NewSession()
+		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
+			state, runner, swarmRunner, pipelineFactory, planAuthorFactory, toolReg, err := rt.NewSession(name)
 			if err != nil {
 				return tui.SessionSwapResult{}, err
 			}

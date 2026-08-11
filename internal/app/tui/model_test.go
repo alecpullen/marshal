@@ -54,11 +54,13 @@ import (
 type fakeSessionSwapper struct {
 	newState *session.State
 	called   bool
+	lastName string
 	err      error
 }
 
-func (f *fakeSessionSwapper) NewSession() (SessionSwapResult, error) {
+func (f *fakeSessionSwapper) NewSession(name string) (SessionSwapResult, error) {
 	f.called = true
+	f.lastName = name
 	if f.err != nil {
 		return SessionSwapResult{}, f.err
 	}
@@ -2597,6 +2599,34 @@ func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
 	}
 	if m.state != oldState {
 		t.Fatal("expected state to remain unchanged while busy")
+	}
+}
+
+func TestSlashCommandNewWithName(t *testing.T) {
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	swapper := &fakeSessionSwapper{newState: newState}
+	model := New(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.input.SetValue("/new fix-auth")
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := updated.(*Model)
+
+	if !swapper.called {
+		t.Fatal("expected session swapper to be called")
+	}
+	if swapper.lastName != "fix-auth" {
+		t.Fatalf("expected name %q, got %q", "fix-auth", swapper.lastName)
+	}
+	if m.state != newState {
+		t.Fatal("expected model state to be swapped to the new session")
+	}
+	msgs := m.state.Messages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0].Content, "fix-auth") {
+		t.Fatalf("expected confirmation naming the session, got: %s", msgs[0].Content)
 	}
 }
 

@@ -96,13 +96,13 @@ type SessionSwapResult struct {
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
 // session without importing the app package (avoiding an import cycle).
 type SessionSwapper interface {
-	NewSession() (SessionSwapResult, error)
+	NewSession(name string) (SessionSwapResult, error)
 }
 
 // SessionSwapperFunc lets app.go pass a closure directly as a SessionSwapper.
-type SessionSwapperFunc func() (SessionSwapResult, error)
+type SessionSwapperFunc func(name string) (SessionSwapResult, error)
 
-func (f SessionSwapperFunc) NewSession() (SessionSwapResult, error) { return f() }
+func (f SessionSwapperFunc) NewSession(name string) (SessionSwapResult, error) { return f(name) }
 
 // CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
 // agent. It is wired from app.go via WithCustomAgentRunnerFactory and used

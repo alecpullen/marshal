@@ -45,7 +45,7 @@ func parseReviewModelArg(args []string) (model string, remaining []string) {
 // runtime to build a brand-new session, then re-points every model field
 // that depends on the current session and drops per-message UI state that
 // belonged to the old one.
-func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
+func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
@@ -55,8 +55,9 @@ func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	name := strings.TrimSpace(strings.Join(args, " "))
 	oldCount := len(m.state.Messages())
-	snap, err := m.sessionSwapper.NewSession()
+	snap, err := m.sessionSwapper.NewSession(name)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to start new session: %v", err), session.ContentTypePlain)
 		m.refreshViewport()
@@ -97,7 +98,11 @@ func newSessionEffect(m *Model, _ []string) (tea.Model, tea.Cmd) {
 	// session while the railBaseRefMsg round-trips; re-read it below.
 	m.railChanged = nil
 
-	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount), session.ContentTypePlain)
+	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
+	if name != "" {
+		msg = fmt.Sprintf("Started new conversation named %q. Cleared %d messages.", name, oldCount)
+	}
+	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
 	return m, railBaseRefCmd(m.state.Workspace().ActiveRoot)
 }

@@ -267,6 +267,17 @@ CREATE TABLE IF NOT EXISTS project_skills (
     PRIMARY KEY (project_id, skill_name)
 );
 CREATE INDEX IF NOT EXISTS idx_project_skills_project ON project_skills(project_id);
+
+CREATE TABLE IF NOT EXISTS session_mail (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    from_session TEXT NOT NULL,
+    to_session TEXT,               -- NULL = broadcast to all sessions
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_mail_unread ON session_mail(to_session, from_session, read_at);
 `
 
 // migrations is the ordered list of post-CREATE-TABLE schema changes.

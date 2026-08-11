@@ -211,6 +211,12 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 			tools.scratchpadDeleteTool(),
 		)
 	}
+	if tools.db != nil && tools.sessionState != nil {
+		all = append(all,
+			tools.sessionsListTool(),
+			tools.sessionSendTool(),
+		)
+	}
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())
 	}

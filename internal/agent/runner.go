@@ -502,6 +502,23 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			r.State.Logger().Warn("turn-start snapshot failed", "error", err)
 		}
 	}
+	if db := r.State.DB(); db != nil {
+		if mails, err := db.UnreadMail(r.State.SessionID()); err == nil && len(mails) > 0 {
+			var b strings.Builder
+			b.WriteString("Mail from other sessions:\n")
+			ids := make([]int64, 0, len(mails))
+			for _, mail := range mails {
+				fmt.Fprintf(&b, "- [%s] %s\n", mail.FromSession, mail.Body)
+				ids = append(ids, mail.ID)
+			}
+			r.State.AddMessage(session.RoleSystem, strings.TrimRight(b.String(), "\n"), session.ContentTypePlain)
+			if merr := db.MarkMailRead(ids, r.Now()); merr != nil {
+				r.State.Logger().Warn("failed to mark session mail read", "error", merr)
+			}
+		} else if err != nil {
+			r.State.Logger().Warn("failed to load session mail", "error", err)
+		}
+	}
 
 	r.trackerMu.Lock()
 	r.tracker = newProgressTracker()

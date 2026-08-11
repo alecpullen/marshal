@@ -2502,7 +2502,7 @@ func TestBuildSubagentFactoryRolePinning(t *testing.T) {
 		"other":  {Type: "openai_compatible", BaseURL: "http://other/v1", APIKey: "other-key"},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"parent/parent-model": {Provider: "parent", Model: "parent-model"},
+		"parent/parent-model":  {Provider: "parent", Model: "parent-model"},
 		"other/reviewer-model": {Provider: "other", Model: "reviewer-model"},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
@@ -3419,7 +3419,7 @@ func TestRuntimeNewSessionResetsState(t *testing.T) {
 	rt.State.SetTurnUsage(123)
 	rt.State.SetTurnContextWindow(1000)
 
-	newState, _, _, _, _, _, err := rt.NewSession()
+	newState, _, _, _, _, _, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

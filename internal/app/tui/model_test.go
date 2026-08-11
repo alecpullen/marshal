@@ -746,6 +746,45 @@ func TestDoctorOpensDockPanel(t *testing.T) {
 	}
 }
 
+// TestDoctorPanelEscClosesDock is the regression for the "can't get out of
+// /doctor" bug: Esc at the doctor panel root emits doctorpanel.ClosedMsg,
+// which previously had no case in the model switch and so died — the dock
+// stayed open forever. Driving the real key path (not handleKeypress) pins
+// the fix.
+func TestDoctorPanelEscClosesDock(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, nil); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
+	}
+	m := New(state, WithCommandRegistry(cmdReg))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = asModel(t, updated)
+	updated, _ = m.dispatchCommand("/doctor")
+	m = asModel(t, updated)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected /doctor to open the dock")
+	}
+
+	// Esc at the doctor panel root returns a command that emits
+	// doctorpanel.ClosedMsg; the live tea.Program executes it and feeds the
+	// message back into Update. Drive the same loop here.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("expected Esc at the doctor panel root to yield a close command")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("expected the close command to emit a message")
+	} else {
+		updated, _ = m.Update(msg)
+		m = asModel(t, updated)
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("expected Esc at the doctor panel root to close the dock")
+	}
+}
+
 func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	tc := &session.PendingToolCall{
@@ -6974,9 +7013,15 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	if m.doctorFixProvider != "openai" {
 		t.Fatalf("doctorFixProvider = %q, want openai", m.doctorFixProvider)
 	}
-	// Type a key and submit.
+	// FixMsg must close the dock so the input keys reach the doctor fix
+	// sub-mode via the real key path (the dock routing swallows them
+	// otherwise — the old test bypassed it by calling handleKeypress).
+	if m.dock.IsOpen() {
+		t.Fatal("expected FixMsg to close the dock")
+	}
+	// Type a key and submit through the real Update path.
 	m.input.SetValue("sk-test-123")
-	updated, _, _ = m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = asModel(t, updated)
 	if m.doctorFixProvider != "" {
 		t.Fatal("expected doctor fix mode to exit")

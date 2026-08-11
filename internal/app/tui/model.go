@@ -383,6 +383,11 @@ type Model struct {
 	// to propose build/test commands when none can be detected.
 	subagentFactory SubagentRunnerFactory
 
+	// pastes holds condensed paste attachments for the current input.
+	// They are expanded into fenced blocks on submit and cleared whenever
+	// the input is reset.
+	pastes []pasteAttachment
+
 	// reviewDispatcher runs a reviewer subagent for the /review command.
 	// Wired from app.go; if nil, /review reports that it is unavailable.
 	reviewDispatcher func(ctx context.Context, focus, model string) error
@@ -1515,7 +1520,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.doctorFixProvider = msg.Provider
 		m.savedInputPlaceholder = m.input.Placeholder
-		m.input.Reset()
+		m.resetInput()
 		m.input.Placeholder = "Enter API key for " + msg.Provider
 		m.refreshViewport()
 		return m, nil
@@ -1913,6 +1918,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+	case tea.PasteMsg:
+		if shouldCondensePaste(msg.Content) {
+			m.addPaste(msg.Content)
+			m.updateViewportHeight()
+			m.refreshViewport()
+			return m, nil
+		}
+		// Small paste: fall through to the textarea as today.
 	case tea.KeyPressMsg:
 		if mm, cmd, handled := m.handleKeypress(msg); handled {
 			return mm, cmd
@@ -2052,7 +2065,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			switch k.String() {
 			case "esc":
 				m.editingCommand = false
-				m.input.Reset()
+				m.resetInput()
 				m.input.Placeholder = "Ask Marshal..."
 				m.updateViewportHeight()
 				m.lastTranscriptHash = 0
@@ -2064,7 +2077,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 						tc.Respond(session.UserApprovalDecision{Approved: true, Edited: value})
 					}
 					m.editingCommand = false
-					m.input.Reset()
+					m.resetInput()
 					m.input.Placeholder = "Ask Marshal..."
 					m.updateViewportHeight()
 					owner.SetPendingApproval(nil)
@@ -2227,7 +2240,7 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 	}
 	m.state.SetPendingQuestion(nil)
 	m.questionModel = nil
-	m.input.Reset()
+	m.resetInput()
 	m.input.Placeholder = "Ask Marshal..."
 	m.updateViewportHeight()
 	m.lastTranscriptHash = 0

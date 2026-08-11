@@ -90,7 +90,7 @@ type SessionSwapResult struct {
 	PipelineFactory   func(planPath string) AgentRunner
 	PlanAuthorFactory PlanAuthorFactory
 	ToolRegistry      *registry.Registry
-	ReviewDispatcher  func(ctx context.Context, focus, model string) error
+	ReviewDispatcher  func(ctx context.Context, focus, model, reviewRange string) error
 }
 
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
@@ -390,7 +390,7 @@ type Model struct {
 
 	// reviewDispatcher runs a reviewer subagent for the /review command.
 	// Wired from app.go; if nil, /review reports that it is unavailable.
-	reviewDispatcher func(ctx context.Context, focus, model string) error
+	reviewDispatcher func(ctx context.Context, focus, model, reviewRange string) error
 
 	// pendingModelOptions holds a config candidate saved while the runner
 	// or background jobs are active. It is flushed when the model becomes
@@ -657,7 +657,7 @@ func WithSubagentFactory(fn SubagentRunnerFactory) Option {
 // WithReviewDispatcher wires the /review command to a dispatcher that runs
 // a reviewer subagent. The dispatcher receives the user's optional focus
 // argument and runs until the subagent finishes.
-func WithReviewDispatcher(fn func(ctx context.Context, focus, model string) error) Option {
+func WithReviewDispatcher(fn func(ctx context.Context, focus, model, reviewRange string) error) Option {
 	return func(m *Model) {
 		m.reviewDispatcher = fn
 	}
@@ -3330,10 +3330,10 @@ func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, 
 }
 
 // runReviewCmd wraps a /review subagent dispatch into a Bubble Tea command.
-func runReviewCmd(ctx context.Context, state *session.State, dispatcher func(ctx context.Context, focus, model string) error, focus, model string) tea.Cmd {
+func runReviewCmd(ctx context.Context, state *session.State, dispatcher func(ctx context.Context, focus, model, reviewRange string) error, focus, model, reviewRange string) tea.Cmd {
 	return func() tea.Msg {
 		defer state.EndWork()
-		err := dispatcher(ctx, focus, model)
+		err := dispatcher(ctx, focus, model, reviewRange)
 		return agentFinishedMsg{err: err}
 	}
 }

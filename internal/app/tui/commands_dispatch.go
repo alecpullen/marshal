@@ -26,19 +26,33 @@ import (
 // commands live here, one entry each, next to the dispatch entry point.
 var tuiCommandEffects map[string]func(m *Model, args []string) (tea.Model, tea.Cmd)
 
-// parseReviewModelArg extracts an optional leading --model <pair> (or
-// --model=<pair>) from /review arguments. It returns the model pair and the
-// remaining focus words.
-func parseReviewModelArg(args []string) (model string, remaining []string) {
-	for i, a := range args {
+// parseReviewArgs extracts /review options: --model <pair> (or
+// --model=<pair>), --base <ref> (or --base=<ref>), and an explicit
+// range token containing ".." (e.g. main...HEAD). Remaining words are
+// the focus. Only one of --base / explicit range may be given; the
+// caller reports the conflict.
+func parseReviewArgs(args []string) (model, base, reviewRange string, remaining []string) {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case a == "--model" && i+1 < len(args):
-			return args[i+1], append(args[:i], args[i+2:]...)
+			model = args[i+1]
+			i++
 		case strings.HasPrefix(a, "--model="):
-			return strings.TrimPrefix(a, "--model="), append(args[:i], args[i+1:]...)
+			model = strings.TrimPrefix(a, "--model=")
+		case a == "--base" && i+1 < len(args):
+			base = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--base="):
+			base = strings.TrimPrefix(a, "--base=")
+		case strings.Contains(a, ".."):
+			reviewRange = a
+		default:
+			out = append(out, a)
 		}
 	}
-	return "", args
+	return model, base, reviewRange, out
 }
 
 // newSessionEffect is the shared /new and /clear handler. It asks the
@@ -286,9 +300,9 @@ func init() {
 			m.turnStartedAt = m.now()
 			agentCtx, cancel := context.WithCancel(m.ctx)
 			m.agentCancel = cancel
-			model, remaining := parseReviewModelArg(args)
+			model, _, reviewRange, remaining := parseReviewArgs(args)
 			focus := strings.TrimSpace(strings.Join(remaining, " "))
-			return *m, tea.Batch(runReviewCmd(agentCtx, m.state, m.reviewDispatcher, focus, model), tickCmd(), spinnerTickCmd())
+			return *m, tea.Batch(runReviewCmd(agentCtx, m.state, m.reviewDispatcher, focus, model, reviewRange), tickCmd(), spinnerTickCmd())
 		},
 		"connect": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openConnect("/")

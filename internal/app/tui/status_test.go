@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/gitinfo"
@@ -597,6 +599,51 @@ func TestRefreshRailChangedUsesActiveRoot(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("railChanged missing worktree-modified a.txt: %+v", m.railChanged)
+	}
+}
+
+func TestResizeNarrowToWideRefreshesRail(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	base := initRailTestRepo(t, dir)
+
+	// Modify a file so the rail has something to show.
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+
+	m := newTestModel(t)
+	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir, Branch: "main"})
+	m.railBaseRef = base
+
+	// Narrow resize: below the rail breakpoint (MinWidth=120), the rail is
+	// disabled and the changed section must be empty.
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = mm.(Model)
+	if m.railEnabled() {
+		t.Fatal("rail enabled at narrow width, want disabled")
+	}
+	if len(m.railChanged) != 0 {
+		t.Fatalf("railChanged at narrow width = %+v, want empty", m.railChanged)
+	}
+
+	// Wide resize: rail becomes enabled and the changed section refreshes
+	// to list the modified file.
+	mm, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	m = mm.(Model)
+	if !m.railEnabled() {
+		t.Fatal("rail disabled at wide width, want enabled")
+	}
+	found := false
+	for _, f := range m.railChanged {
+		if f.Path == "a.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("railChanged after narrow→wide missing modified a.txt: %+v", m.railChanged)
 	}
 }
 

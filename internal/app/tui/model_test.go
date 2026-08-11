@@ -33,6 +33,7 @@ import (
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
@@ -2522,9 +2523,10 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	// Pre-set stale git info.
+	// Pre-set stale git info and a stale changed-files rail.
 	model.gitInfo = gitinfo.Info{Branch: "old", InRepo: true}
 	model.lastGitRead = time.Unix(50, 0)
+	model.railChanged = []sidepanel.ChangedFile{{Path: "old.txt"}}
 
 	model.input.SetValue("/new")
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -2535,6 +2537,9 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	}
 	if m.gitInfo.Branch != "feat-new" {
 		t.Errorf("gitInfo.Branch = %q, want feat-new after /new", m.gitInfo.Branch)
+	}
+	if m.railChanged != nil {
+		t.Errorf("railChanged = %+v, want nil after /new", m.railChanged)
 	}
 	if m.lastGitRead.Before(time.Unix(50, 0)) {
 		t.Errorf("lastGitRead = %v, want refreshed after /new", m.lastGitRead)

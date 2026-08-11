@@ -312,8 +312,53 @@ func TestRestrictedWrapCommandAppliesUlimitsOnUnix(t *testing.T) {
 	if !strings.Contains(wrapped, expected) {
 		t.Fatalf("expected %q in wrapped command: %q", expected, wrapped)
 	}
-	if !strings.HasSuffix(wrapped, "exec echo hi") {
-		t.Fatalf("missing exec tail: %q", wrapped)
+	// The command must be appended verbatim, with no `exec` prefix: `exec`
+	// binds tighter than the shell's list operators and would truncate any
+	// compound command. See TestRestrictedRunsCompoundCommands.
+	if !strings.HasSuffix(wrapped, "; echo hi") {
+		t.Fatalf("command tail not appended verbatim: %q", wrapped)
+	}
+	if strings.Contains(wrapped, "exec ") {
+		t.Fatalf("wrapper must not prefix the command with exec: %q", wrapped)
+	}
+}
+
+// TestRestrictedRunsCompoundCommands is a regression test for the `exec`
+// prefix the ulimit wrapper used to emit. Because config.Default() sets
+// MaxProcesses = 2048, the wrapper is active out of the box, so `exec`
+// silently truncated ordinary compound commands: `echo one; echo two`
+// returned only "one" with exit 0, and any command opening with a shell
+// builtin died with "exec: cd: not found".
+func TestRestrictedRunsCompoundCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ulimit wrapper is unix-only")
+	}
+	// Mirror the shipped default so the ulimit wrapper is engaged.
+	sb := newTestSandbox(t, Config{Backend: "restricted", MaxProcesses: 2048})
+	dir := t.TempDir()
+
+	cases := []struct{ name, command, want string }{
+		{"sequence", "echo one; echo two", "one\ntwo"},
+		{"and_list", "echo A && echo B", "A\nB"},
+		{"builtin_lead", "cd / && pwd", "/"},
+		{"assignment_lead", "X=5; echo $X", "5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := sb.Run(context.Background(), native.CommandRequest{
+				Command: tc.command,
+				Dir:     dir,
+			})
+			if err != nil {
+				t.Fatalf("Run(%q): %v (stderr %q)", tc.command, err, res.Stderr)
+			}
+			if res.ExitCode != 0 {
+				t.Fatalf("Run(%q) exit = %d, want 0 (stderr %q)", tc.command, res.ExitCode, res.Stderr)
+			}
+			if got := strings.TrimSpace(res.Stdout); got != tc.want {
+				t.Fatalf("Run(%q) stdout = %q, want %q", tc.command, got, tc.want)
+			}
+		})
 	}
 }
 

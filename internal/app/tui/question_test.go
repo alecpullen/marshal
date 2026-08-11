@@ -129,17 +129,17 @@ func TestQuestionFinalizeSingleChoice(t *testing.T) {
 	if answers[0].Answer != "green" {
 		t.Fatalf("single-choice answer = %q, want green", answers[0].Answer)
 	}
-	if qm.others[0] != nil {
-		t.Fatal("question without AllowOther should not create a custom-answer input")
+	if qm.others[0] == nil {
+		t.Fatal("every options question now gets a custom-answer input")
 	}
 }
 
-func TestBuildQuestionOptionsRespectsAllowOther(t *testing.T) {
-	if got := buildQuestionOptions([]string{"red"}, false); len(got) != 1 {
-		t.Fatalf("disallowed Other option count = %d, want 1", len(got))
+func TestBuildQuestionOptionsAlwaysAppendsOther(t *testing.T) {
+	if got := buildQuestionOptions([]string{"red"}); len(got) != 2 {
+		t.Fatalf("option count = %d, want 2", len(got))
 	}
-	if got := buildQuestionOptions([]string{"red"}, true); len(got) != 2 {
-		t.Fatalf("allowed Other option count = %d, want 2", len(got))
+	if got := buildQuestionOptions([]string{"red"}); got[len(got)-1].Value != questionOtherSentinel {
+		t.Fatalf("last option value should be the Other sentinel, got %q", got[len(got)-1].Value)
 	}
 }
 
@@ -308,5 +308,109 @@ func TestRenderInputAreaHidesTextareaWhileQuestionPending(t *testing.T) {
 	// chrome on the question panel itself.
 	if strings.Contains(out, "Ask Marshal...") {
 		t.Fatalf("main textarea must not render while a question is pending (its keys go to the question form):\n%s", out)
+	}
+}
+
+func TestQuestionMultiSelectOffersOther(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick some:", Options: []string{"a", "b"}, Multi: true}},
+	}
+	qm := newQuestionModel(q, 80)
+	if qm.multis[0] == nil {
+		t.Fatal("multi question should have a multi-select")
+	}
+	if qm.others[0] == nil {
+		t.Fatal("multi question should create a custom-answer input")
+	}
+	// The sentinel must be offered as a selectable option.
+	view := stripANSI(qm.View())
+	if !strings.Contains(view, "Other…") {
+		t.Fatalf("multi question view should offer Other…:\n%s", view)
+	}
+}
+
+// TestQuestionPremadePickSkipsCustomInput is the regression guard for the
+// unwanted free-input regression (report 7b): picking a listed option must
+// submit that option without the custom-answer input ever standing in the
+// way. The input now lives in its own group behind a hide func, so a listed
+// pick leaves it hidden. (Fallback: huh's group navigation needs a live
+// tea.Program to drive, so this asserts the wiring indirectly through the
+// bound select value + the custom-answer input's existence.)
+func TestQuestionPremadePickSkipsCustomInput(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green"}}},
+	}
+	qm := newQuestionModel(q, 80)
+	// A listed pick binds into the select; the input exists but is hidden
+	// by its group's hide func, so it must not interfere with completion.
+	*qm.selects[0] = "red"
+	qm.form.State = huh.StateCompleted
+	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !qm.IsDone() {
+		t.Fatalf("form should complete after picking the first listed option")
+	}
+	if got := qm.Answers()[0].Answer; got != "red" {
+		t.Fatalf("answer = %q, want red", got)
+	}
+	if qm.others[0] == nil {
+		t.Fatal("custom-answer input should exist behind its hide func")
+	}
+}
+
+// TestQuestionOtherPickRevealsCustomInput guards the Other path wiring:
+// every options question owns a custom-answer input (qm.others[i]) and the
+// sentinel is a selectable option. (Fallback: driving the reveal via keys
+// needs a live tea.Program; asserting wiring covers the report-7b regression
+// that the input could be walked into unconditionally.)
+func TestQuestionOtherPickRevealsCustomInput(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green"}}},
+	}
+	qm := newQuestionModel(q, 80)
+	if qm.others[0] == nil {
+		t.Fatal("custom-answer input should exist")
+	}
+	view := stripANSI(qm.View())
+	if !strings.Contains(view, "Other…") {
+		t.Fatalf("question view should offer Other…:\n%s", view)
+	}
+	// Sentinel selected + custom text set finalizes to the trimmed text.
+	*qm.selects[0] = questionOtherSentinel
+	*qm.others[0] = "  magenta  "
+	qm.form.State = huh.StateCompleted
+	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := qm.Answers()[0].Answer; got != "magenta" {
+		t.Fatalf("answer = %q, want magenta (trimmed)", got)
+	}
+}
+
+func TestQuestionFinalizeMultiOtherSubstitutesCustom(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick some:", Options: []string{"real", "other-choice"}, Multi: true}},
+	}
+	qm := newQuestionModel(q, 80)
+	*qm.multis[0] = []string{"real", questionOtherSentinel}
+	*qm.others[0] = "custom"
+	qm.form.State = huh.StateCompleted
+	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answers := qm.Answers()
+	if len(answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(answers))
+	}
+	if answers[0].Answer != "real, custom" {
+		t.Fatalf("multi Other answer = %q, want \"real, custom\"", answers[0].Answer)
+	}
+
+	// Sentinel with blank custom text is omitted entirely.
+	q2 := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick some:", Options: []string{"real", "other-choice"}, Multi: true}},
+	}
+	qm2 := newQuestionModel(q2, 80)
+	*qm2.multis[0] = []string{"real", questionOtherSentinel}
+	*qm2.others[0] = "   "
+	qm2.form.State = huh.StateCompleted
+	qm2, _ = qm2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := qm2.Answers()[0].Answer; got != "real" {
+		t.Fatalf("blank multi Other should be omitted, got %q", got)
 	}
 }

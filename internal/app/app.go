@@ -1098,9 +1098,9 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 
 // defaultSubtaskIterations is the tool-iteration cap for an ad-hoc agent.run
 // child when the user has not set [agent] subtask_iterations in config.
-// Kept lower than DefaultMaxToolIterations so a misbehaving child does not
-// burn tokens on an out-of-scope subtask while still leaving headroom for
-// real research work.
+// Capped independently of the main-loop budget (unlimited by default since
+// DefaultMaxToolIterations = 0) so a misbehaving child does not burn tokens
+// on an out-of-scope subtask.
 const defaultSubtaskIterations = 12
 
 // buildSubagentFactory returns a closure that constructs a fresh child

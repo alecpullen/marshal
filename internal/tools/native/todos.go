@@ -69,17 +69,20 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 		store := TodoStore(t.sessionState)
 
 		var dropped []string
-		newContents := map[string]bool{}
+		newContents := map[string]int{}
 		for _, item := range args.Todos {
-			newContents[strings.TrimSpace(item.Content)] = true
+			newContents[strings.TrimSpace(item.Content)]++
 		}
 		for _, old := range store.Todos() {
 			if old.Status == TodoCompleted {
 				continue
 			}
-			if !newContents[strings.TrimSpace(old.Content)] {
+			key := strings.TrimSpace(old.Content)
+			if newContents[key] == 0 {
 				dropped = append(dropped, old.Content)
+				continue
 			}
+			newContents[key]--
 		}
 		if len(dropped) > 0 {
 			return registry.ToolResult{}, fmt.Errorf("refusing to drop %d unfinished todo(s): %s; include them in the new list or mark them completed first", len(dropped), strings.Join(dropped, "; "))

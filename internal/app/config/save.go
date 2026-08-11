@@ -227,8 +227,11 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&sandbox.UnsafePassthrough, fileField[bool](file.Tools.Shell.Sandbox, "UnsafePassthrough"), cfg.Tools.Shell.Sandbox.UnsafePassthrough, def.Tools.Shell.Sandbox.UnsafePassthrough)
 	putSlice(&sandbox.EnvAllowlist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvAllowlist"), cfg.Tools.Shell.Sandbox.EnvAllowlist, def.Tools.Shell.Sandbox.EnvAllowlist)
 	putSlice(&sandbox.EnvDenylist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvDenylist"), cfg.Tools.Shell.Sandbox.EnvDenylist, def.Tools.Shell.Sandbox.EnvDenylist)
+	shell.Allow = file.Tools.Shell.Allow
+	shell.Confirm = file.Tools.Shell.Confirm
+	shell.Deny = file.Tools.Shell.Deny
 	shell.Sandbox = sandbox
-	file.Tools = &fileTools{Shell: shell}
+	file.Tools.Shell = shell
 
 	// Guard policy: profile/agent/privacy/shell/sandbox sections are written
 	// per-key so a deleted key is not resurrected when the merged config

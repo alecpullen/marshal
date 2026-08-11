@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 )
@@ -34,6 +35,9 @@ func (db *DB) LoadTodos(sessionID string) ([]TodoItem, error) {
 	)
 	var raw string
 	if err := row.Scan(&raw); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("load todos: %w", err)
 	}
 	var todos []TodoItem

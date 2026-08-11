@@ -30,10 +30,10 @@ func TestAgentRunToolRegistersAndDispatchesToChild(t *testing.T) {
 		calls++
 		return &agent.Runner{State: state}, state, nil
 	}
-	exec := func(ctx context.Context, child *agent.Runner, prompt string) (string, error) {
+	exec := func(ctx context.Context, child *agent.Runner, prompt string) (string, string, error) {
 		gotChild = child
 		gotPrompt = prompt
-		return "child summary text", nil
+		return "child summary text", "", nil
 	}
 
 	tool := agent.NewSubagentTool(factory, reg, state, agent.WithSubagentExec(exec))
@@ -86,9 +86,9 @@ func TestAgentRunToolRejectsWhenDepthLimitReached(t *testing.T) {
 		factoryCalls++
 		return &agent.Runner{}, nil, nil
 	}
-	exec := func(ctx context.Context, child *agent.Runner, prompt string) (string, error) {
+	exec := func(ctx context.Context, child *agent.Runner, prompt string) (string, string, error) {
 		t.Fatal("exec must not be called when the depth guard rejects")
-		return "", nil
+		return "", "", nil
 	}
 
 	tool := agent.NewSubagentTool(factory, reg, state, agent.WithSubagentExec(exec))

@@ -115,9 +115,9 @@ func TestSubagentCancelPropagatesToExec(t *testing.T) {
 		},
 		registry.New(),
 		state,
-		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, error) {
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
 			<-ctx.Done()
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		}),
 	)
 
@@ -170,11 +170,11 @@ func TestSubagentUsageObserverComposesAndUpdatesCard(t *testing.T) {
 		},
 		registry.New(),
 		state,
-		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, error) {
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
 			if child.UsageObserver != nil {
 				child.UsageObserver(schema.TokenUsage{PromptTokens: 10, CompletionTokens: 5})
 			}
-			return "done", nil
+			return "done", "", nil
 		}),
 	)
 	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
@@ -190,6 +190,40 @@ func TestSubagentUsageObserverComposesAndUpdatesCard(t *testing.T) {
 	}
 	if views[0].TokensUsed != 15 {
 		t.Fatalf("card TokensUsed = %d, want 15", views[0].TokensUsed)
+	}
+}
+
+func TestSubagentSalvageSurfacesInResultAndCard(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) {
+			return &Runner{}, state, nil
+		},
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			return "partial report", "exhausted", nil
+		}),
+	)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "salvaged: exhausted") {
+		t.Fatalf("summary = %q, want salvaged marker", res.Summary)
+	}
+	if !strings.Contains(res.Content, "partial report") {
+		t.Fatalf("content missing report: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, " Raise [agent] subtask_iterations") {
+		t.Fatalf("content missing remedy hint: %q", res.Content)
+	}
+	views := state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("expected one subagent view, got %d", len(views))
+	}
+	if views[0].SalvagedReason != "exhausted" {
+		t.Fatalf("SalvagedReason = %q, want exhausted", views[0].SalvagedReason)
 	}
 }
 

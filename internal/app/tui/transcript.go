@@ -581,6 +581,9 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 	if v.Fallback {
 		head += dimSeparator + mutedStyle().Render("(fallback)")
 	}
+	if v.SalvagedReason != "" {
+		head += dimSeparator + mutedStyle().Render(fmt.Sprintf("(salvaged: %s)", v.SalvagedReason))
+	}
 	if v.TokensUsed > 0 {
 		head += dimSeparator + strutil.CompactTokens(v.TokensUsed) + " tok"
 	}

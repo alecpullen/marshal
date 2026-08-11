@@ -5,6 +5,41 @@ import (
 	"testing"
 )
 
+func TestLoadLayersSubtaskIterationsSet(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+
+	// Neither layer sets it.
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if l.SubtaskIterationsSet {
+		t.Fatal("SubtaskIterationsSet should be false when no file sets it")
+	}
+
+	// User layer sets it.
+	writeFile(t, home+"/.config/marshal/config.toml", "[agent]\nsubtask_iterations = 5\n")
+	l, err = LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if !l.SubtaskIterationsSet {
+		t.Fatal("SubtaskIterationsSet should be true when user file sets it")
+	}
+
+	// Project layer sets it (explicit 0 is still "set").
+	writeFile(t, home+"/.config/marshal/config.toml", "")
+	writeFile(t, work+"/.marshal/config.toml", "[agent]\nsubtask_iterations = 0\n")
+	l, err = LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if !l.SubtaskIterationsSet {
+		t.Fatal("SubtaskIterationsSet should be true when project file sets explicit 0")
+	}
+}
+
 func TestLoadLayersAndProvenance(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

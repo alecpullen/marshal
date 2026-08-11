@@ -171,10 +171,24 @@ func TestSandboxCancellationKillsProcessGroupAfterGrace(t *testing.T) {
 	sb := newTestSandbox(t, Config{Backend: "restricted"})
 	ctx, cancel := context.WithCancel(context.Background())
 
-	start := time.Now()
+	// Cancel only once both PIDs have been written, which proves the TERM
+	// traps are installed. A fixed sleep raced `bash -lc` sourcing the login
+	// profile: when SIGTERM landed before the trap was in place the shell
+	// died on the spot, the process group vanished long before the grace
+	// deadline, and the assertion below failed intermittently.
+	started := make(chan time.Time, 1)
 	go func() {
-		// Cancel almost immediately so the process-group kill is exercised.
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			data, err := os.ReadFile(pidFile)
+			if err == nil && len(strings.Fields(string(data))) >= 2 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		// Give the shell a moment to reach `wait` so the trap is armed.
 		time.Sleep(50 * time.Millisecond)
+		started <- time.Now()
 		cancel()
 	}()
 
@@ -182,7 +196,9 @@ func TestSandboxCancellationKillsProcessGroupAfterGrace(t *testing.T) {
 		Command: cmd,
 		Dir:     t.TempDir(),
 	})
-	elapsed := time.Since(start)
+	// Measure the grace window from the cancel, not from process start:
+	// shell startup cost is not part of the grace period.
+	elapsed := time.Since(<-started)
 
 	// Must have waited at least the grace period (the child ignores
 	// TERM so SIGKILL only fires after the full grace window).
@@ -213,10 +229,36 @@ func TestSandboxCancellationKillsProcessGroupAfterGrace(t *testing.T) {
 		if _, err := fmt.Sscanf(line, "%d", &pid); err != nil {
 			t.Fatalf("parse pid %q: %v", line, err)
 		}
-		// syscall.Kill with signal 0 just checks existence.
-		err := syscall.Kill(pid, 0)
-		if err != syscall.ESRCH {
-			t.Fatalf("process %d still exists (kill 0 err = %v)", pid, err)
+		if alive, detail := processAlive(pid); alive {
+			t.Fatalf("process %d still exists (%s)", pid, detail)
 		}
 	}
+}
+
+// processAlive reports whether pid names a process that is still running.
+//
+// A plain kill(pid, 0) is not sufficient: a killed orphan stays in the
+// process table as a zombie until its new parent reaps it, and kill(0)
+// succeeds for a zombie. Under an init that does not reap orphans — the
+// default in most containers, including CI — that made this check fail on
+// processes the sandbox had correctly killed. A zombie is dead for our
+// purposes, so it is excluded on Linux, where /proc exposes the state.
+func processAlive(pid int) (bool, string) {
+	if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+		return false, "gone"
+	}
+	if runtime.GOOS == "linux" {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			return false, "gone"
+		}
+		// Field 3 is the state code; it follows "(comm)", which may itself
+		// contain spaces, so split after the final ')'.
+		if idx := strings.LastIndex(string(stat), ")"); idx >= 0 {
+			if fields := strings.Fields(string(stat)[idx+1:]); len(fields) > 0 && fields[0] == "Z" {
+				return false, "zombie"
+			}
+		}
+	}
+	return true, "kill 0 succeeded"
 }

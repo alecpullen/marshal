@@ -822,7 +822,7 @@ func TestCompletedFailedDiffToolShowsFailureDetailsWhenExpanded(t *testing.T) {
 		CommandExitCode: &exitCode,
 		ResultContent:   "patch output",
 	}, true, 80))
-	if !strings.Contains(out, "exit code: 2") || !strings.Contains(out, `args: {"path":"a.go"}`) {
+	if !strings.Contains(out, "(exit code 2)") || !strings.Contains(out, `args: {"path":"a.go"}`) {
 		t.Fatalf("expanded failed diff tool must show failure details:\n%s", out)
 	}
 }
@@ -1088,6 +1088,34 @@ func TestCompletedToolCallShowsDisclosureGlyphWhenResultContentPresent(t *testin
 	rendered := renderCompletedToolCall(withoutResult, false, 80)
 	if strings.Contains(rendered, glyph.DisclosureCollapsed) || strings.Contains(rendered, glyph.DisclosureExpanded) {
 		t.Fatal("expected no disclosure glyph when there is nothing to expand")
+	}
+
+	failed := registry.AuditEvent{ToolName: "shell.run", Error: "boom"}
+	if out := renderCompletedToolCall(failed, false, 80); !strings.Contains(out, glyph.DisclosureCollapsed) {
+		t.Fatal("expected the collapsed disclosure glyph when Error is set")
+	}
+}
+
+func TestCompletedToolCallExpandedShowsFailureDetail(t *testing.T) {
+	longArgs := `{"command": "run a very long command that keeps going and going until it wraps well past the sixty cell budget of this test renderer"}`
+	event := registry.AuditEvent{ToolName: "shell.run", Error: "boom", Args: []byte(longArgs)}
+
+	expanded := stripANSI(renderCompletedToolCall(event, true, 60))
+	if !strings.Contains(expanded, "error: boom") {
+		t.Fatalf("expected the error detail line, got:\n%q", expanded)
+	}
+	if !strings.Contains(expanded, "args: ") {
+		t.Fatalf("expected the args detail line, got:\n%q", expanded)
+	}
+	for _, line := range strings.Split(expanded, "\n") {
+		if w := ansi.StringWidth(line); w > 60 {
+			t.Errorf("line %d cells wide exceeds the 60-cell budget: %q", w, line)
+		}
+	}
+
+	collapsed := stripANSI(renderCompletedToolCall(event, false, 60))
+	if strings.Contains(collapsed, "args: ") {
+		t.Fatalf("collapsed render should not contain the args body:\n%q", collapsed)
 	}
 }
 

@@ -183,3 +183,25 @@ func TestResumeFallsBackWithNoticeWhenWorktreeGone(t *testing.T) {
 		t.Fatalf("stale ActiveRoot %q was not cleared", row.ActiveRoot)
 	}
 }
+
+func TestResumeRestoresTodos(t *testing.T) {
+	s, d, sid, root := newPersistedState(t)
+	todos := []db.TodoItem{
+		{Content: "step one", Status: "completed"},
+		{Content: "step two", Status: "in_progress"},
+	}
+	if err := s.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+
+	resumed := New(config.Default(), root, time.Unix(100, 0), Persistence{DB: d, SessionID: sid, Logger: slog.Default()})
+	got := resumed.Todos()
+	if len(got) != len(todos) {
+		t.Fatalf("resumed todos = %d, want %d", len(got), len(todos))
+	}
+	for i, want := range todos {
+		if got[i].Content != want.Content || got[i].Status != want.Status {
+			t.Fatalf("todo[%d] = %+v, want %+v", i, got[i], want)
+		}
+	}
+}

@@ -25,3 +25,20 @@ func (db *DB) SaveTodos(sessionID string, todos []TodoItem) error {
 	}
 	return nil
 }
+
+// LoadTodos restores the todo list for a session from session_state.
+func (db *DB) LoadTodos(sessionID string) ([]TodoItem, error) {
+	row := db.sqlDB.QueryRow(
+		`SELECT value FROM session_state WHERE session_id=? AND key='todos'`,
+		sessionID,
+	)
+	var raw string
+	if err := row.Scan(&raw); err != nil {
+		return nil, fmt.Errorf("load todos: %w", err)
+	}
+	var todos []TodoItem
+	if err := json.Unmarshal([]byte(raw), &todos); err != nil {
+		return nil, fmt.Errorf("unmarshal todos: %w", err)
+	}
+	return todos, nil
+}

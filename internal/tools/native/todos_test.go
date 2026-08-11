@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -95,5 +96,78 @@ func TestTodoWriteRejectsTwoInProgress(t *testing.T) {
 	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
 	if err == nil {
 		t.Fatal("expected error for two in_progress items")
+	}
+}
+
+func TestTodoWriteRejectsDroppingUnfinishedItems(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{sessionState: state}
+	tool := tools.todoWriteTool()
+
+	// Seed an existing list with one unfinished item.
+	if err := state.SetTodos([]db.TodoItem{
+		{Content: "keep me", Status: TodoPending},
+		{Content: "done", Status: TodoCompleted},
+	}); err != nil {
+		t.Fatalf("seed todos: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"todos": []map[string]string{
+			{"content": "done", "status": "completed"},
+		},
+	})
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
+	if err == nil {
+		t.Fatal("expected error when dropping unfinished todo")
+	}
+	if got := state.Todos(); len(got) != 2 {
+		t.Fatalf("state should not have been modified, got %d items", len(got))
+	}
+}
+
+func TestTodoWriteAllowsCompletingUnfinishedItem(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{sessionState: state}
+	tool := tools.todoWriteTool()
+
+	if err := state.SetTodos([]db.TodoItem{{Content: "keep me", Status: TodoPending}}); err != nil {
+		t.Fatalf("seed todos: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"todos": []map[string]string{
+			{"content": "keep me", "status": "completed"},
+		},
+	})
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: args}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := state.Todos()
+	if len(got) != 1 || got[0].Status != TodoCompleted {
+		t.Fatalf("expected one completed item, got %+v", got)
+	}
+}
+
+func TestTodoWriteAllowsKeepingUnfinishedItem(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{sessionState: state}
+	tool := tools.todoWriteTool()
+
+	if err := state.SetTodos([]db.TodoItem{{Content: "keep me", Status: TodoInProgress}}); err != nil {
+		t.Fatalf("seed todos: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"todos": []map[string]string{
+			{"content": "keep me", "status": "in_progress"},
+			{"content": "new", "status": "pending"},
+		},
+	})
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: args}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := state.Todos(); len(got) != 2 {
+		t.Fatalf("expected two items, got %d", len(got))
 	}
 }

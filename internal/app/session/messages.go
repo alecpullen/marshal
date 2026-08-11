@@ -175,6 +175,15 @@ func (s *State) loadFromDB() {
 	} else {
 		s.logger.Warn("failed to load scratchpad", "error", err)
 	}
+
+	// Restore todos from session_state so a resumed session continues the
+	// list it had — without this, the first todo.write after resume
+	// full-replaces a list the model can no longer see.
+	if todos, err := s.db.LoadTodos(s.sessionID); err == nil {
+		s.todos = todos
+	} else {
+		s.logger.Warn("failed to load todos", "error", err)
+	}
 }
 
 func (s *State) persistenceEnabled() bool {

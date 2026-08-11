@@ -234,6 +234,41 @@ func (r *Runner) mergeScratchpad(maxTokenOverride int) {
 	r.State.SetContextPack(contextpack.MergeScratchpad(current, cpEntries, maxTokens, r.State.ScratchpadConfig().ProjectionMaxTokens, r.Now))
 }
 
+// mergeTodos injects the session's current todo list into the context
+// pack as a projection section. Called during turn setup and before each
+// model call so todo.write replacements are visible to the model on the
+// next iteration.
+func (r *Runner) mergeTodos(maxTokenOverride int) {
+	todos := r.State.Todos()
+	current := r.State.ContextPack()
+	if len(todos) == 0 {
+		// Nothing to inject, but we still need to clear a stale projection
+		// if the previous turn left one behind.
+		hasTodos := false
+		for _, s := range current.Sections {
+			if s.Kind == contextpack.SectionTodos {
+				hasTodos = true
+				break
+			}
+		}
+		if !hasTodos {
+			return
+		}
+	}
+	maxTokens := maxTokenOverride
+	if maxTokens <= 0 {
+		maxTokens = current.TokenUsage.MaxTokens
+	}
+	if maxTokens <= 0 {
+		maxTokens = contextpack.DefaultMaxTokens
+	}
+	cpTodos := make([]contextpack.TodoItem, len(todos))
+	for i, item := range todos {
+		cpTodos[i] = contextpack.TodoItem{Content: item.Content, Status: item.Status}
+	}
+	r.State.SetContextPack(contextpack.MergeTodos(current, cpTodos, maxTokens, r.Now))
+}
+
 // semanticSource resolves the embedding source for passive semantic context
 // injection. Returns nil when embeddings are not configured (graceful-off).
 func (r *Runner) semanticSource(projectID int64) retrieval.Source {

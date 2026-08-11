@@ -581,6 +581,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
+	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 
 	effectiveRF := r.ResponseFormat
 
@@ -761,6 +762,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// entries written in earlier turns (e.g. scratchpad.write) appear in
 		// the context pack of subsequent turns.
 		r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
+		r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 		messages = r.setContextPackMessage(messages, r.State.ContextPack())
 		// Deliver the body of any skill loaded since the last iteration.
 		messages = r.appendSkillBodies(messages)

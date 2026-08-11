@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
@@ -124,5 +125,43 @@ func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	key := itemKey{ts: ts, kind: session.KindThinking}
 	if mm.isExpanded(key) {
 		t.Fatal("expected an out-of-bounds click to be a no-op")
+	}
+}
+
+func TestMouseClickExpandsFailedToolCall(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	ts := time.Unix(702, 0)
+	m.state.LogToolCall(registry.AuditEvent{
+		Timestamp: ts,
+		ToolName:  "shell.run",
+		Error:     "boom",
+		Args:      []byte(`{"command": "echo hi"}`),
+	})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	key := itemKey{ts: ts, kind: session.KindAudit}
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.key == key {
+			region, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("expected a click region for the failed tool call")
+	}
+
+	top := m.scrollHintRows()
+	y := top + region.startLine - m.viewport.YOffset()
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+
+	if !mm.isExpanded(key) {
+		t.Fatal("expected the click to expand the failed tool call")
+	}
+	if !strings.Contains(mm.viewport.GetContent(), "error: boom") {
+		t.Fatal("expected the failure detail to be visible after the click")
 	}
 }

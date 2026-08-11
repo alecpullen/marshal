@@ -867,7 +867,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 	} else if event.ResultSummary != "" {
 		head += dimSeparator + event.ResultSummary
 	}
-	if event.ResultContent != "" {
+	if event.ResultContent != "" || event.Error != "" {
 		if expanded {
 			head += " " + glyph.DisclosureExpanded
 		} else {
@@ -959,16 +959,26 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 			b.WriteString("\n")
 		}
 	}
-	if expanded && event.Error != "" && isDiffTool(event.ToolName) {
+	// Failed calls carry no ResultContent; expanding one shows the full
+	// error, the exit code when the tool reported one, and the call args.
+	// Each detail line wraps at the nested content width — the raw args JSON
+	// used to run straight off the terminal edge.
+	if expanded && event.Error != "" {
+		detail := "error: " + event.Error
 		if event.CommandExitCode != nil {
-			b.WriteString(nestedRail())
-			b.WriteString(dimStyle().Render(fmt.Sprintf("exit code: %d", *event.CommandExitCode)))
-			b.WriteString("\n")
+			detail += fmt.Sprintf(" (exit code %d)", *event.CommandExitCode)
 		}
+		lines := []string{detail}
 		if len(event.Args) > 0 {
-			b.WriteString(nestedRail())
-			b.WriteString(dimStyle().Render("args: " + string(event.Args)))
-			b.WriteString("\n")
+			lines = append(lines, "args: "+string(event.Args))
+		}
+		for _, line := range lines {
+			wrapped := ansi.Wrap(line, nestedContentWidth(width), "")
+			for _, wl := range strings.Split(wrapped, "\n") {
+				b.WriteString(nestedRail())
+				b.WriteString(dimStyle().Render(wl))
+				b.WriteString("\n")
+			}
 		}
 	}
 	return b.String()

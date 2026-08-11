@@ -233,6 +233,36 @@ func TestBuildHistoryMessagesSkipsSalvagedAnswers(t *testing.T) {
 	}
 }
 
+func TestBuildHistoryMessagesReplaysReviewSummary(t *testing.T) {
+	prior := []session.Message{
+		{Role: session.RoleAssistant, Content: "review summary", ContentType: session.ContentTypeMarkdown, Final: true},
+		{Role: session.RoleUser, Content: "follow-up", ContentType: session.ContentTypePlain},
+	}
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2 (review summary + follow-up user): %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != schema.RoleAssistant || msgs[0].Content != "review summary" {
+		t.Fatalf("msgs[0] = %+v, want review summary replayed as assistant", msgs[0])
+	}
+	if msgs[1].Role != schema.RoleUser || msgs[1].Content != "follow-up" {
+		t.Fatalf("msgs[1] = %+v, want follow-up user", msgs[1])
+	}
+
+	// Salvaged review summaries must NOT replay as reliable history.
+	salvaged := []session.Message{
+		{Role: session.RoleAssistant, Content: "partial review", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true},
+		{Role: session.RoleUser, Content: "follow-up", ContentType: session.ContentTypePlain},
+	}
+	msgs = buildHistoryMessages(salvaged, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1 (only follow-up user): %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != schema.RoleUser {
+		t.Fatalf("msgs[0] = %+v, want follow-up user; salvaged review must be dropped", msgs[0])
+	}
+}
+
 // TestBuildHistoryMessagesEmitsLedgerWhenAuditPresent: a final
 // assistant message whose DBID matches an entry in the audits map gets
 // the "tools: ..." ledger line in place of the legacy placeholder.

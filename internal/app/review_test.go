@@ -63,6 +63,46 @@ func TestRunReviewSubagentRegistersCardAndAppendsSummary(t *testing.T) {
 	if last.Role != session.RoleAssistant || last.Content != "Looks good." {
 		t.Fatalf("last message = %+v, want assistant summary", last)
 	}
+	if !last.Final {
+		t.Fatal("review summary must be a final assistant message, or history replay drops it")
+	}
+	if last.ContentType != session.ContentTypeMarkdown {
+		t.Fatalf("ContentType = %v, want markdown", last.ContentType)
+	}
+}
+
+func TestRunReviewSubagentSalvagedAppendsSalvagedMessage(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	factory := func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
+		childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		runner := agent.NewRunner(nil, nil, nil, childState, "test-model")
+		runner.RunTaskFunc = func(ctx context.Context, prompt string) (*agent.Task, error) {
+			return &agent.Task{Summary: "Partial findings.", SalvagedReason: "exhausted"}, nil
+		}
+		return runner, childState, nil
+	}
+
+	if err := runReviewSubagent(context.Background(), state, factory, "", ""); err != nil {
+		t.Fatalf("runReviewSubagent() error = %v", err)
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected salvaged summary appended to transcript")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleAssistant || last.Content != "Partial findings." {
+		t.Fatalf("last message = %+v, want salvaged assistant summary", last)
+	}
+	if !last.Final {
+		t.Fatal("salvaged review summary must still be Final=true so the TUI renders it as an answer")
+	}
+	if !last.Salvaged {
+		t.Fatalf("Salvaged = %v, want true", last.Salvaged)
+	}
+	if last.SalvageReason != "exhausted" {
+		t.Fatalf("SalvageReason = %q, want exhausted", last.SalvageReason)
+	}
 }
 
 func TestRunReviewSubagentFactoryError(t *testing.T) {

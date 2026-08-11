@@ -51,7 +51,17 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 		return fmt.Errorf("review: subagent run failed: %w", err)
 	}
 	if summary != "" {
-		state.AddMessage(session.RoleAssistant, summary, session.ContentTypePlain)
+		if task != nil && task.SalvagedReason != "" {
+			// Salvaged reports are partial: the TUI shows the salvage
+			// marker and history replay (history.go:62-63) excludes them,
+			// so the next turn does not treat a truncated review as
+			// complete.
+			state.AddMessageSalvaged(session.RoleAssistant, summary, session.ContentTypeMarkdown, task.SalvagedReason)
+		} else {
+			// Final so the next turn's history replay includes the review;
+			// plain AddMessage (Final=false) left it TUI-only.
+			state.AddMessageFinal(session.RoleAssistant, summary, session.ContentTypeMarkdown)
+		}
 	}
 	return nil
 }

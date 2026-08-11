@@ -18,6 +18,10 @@ type Layers struct {
 	User     Config
 	Merged   Config
 	Migrated bool // true when MigrateLegacyAgentModel ran during LoadLayers
+	// SubtaskIterationsSet reports whether either file layer explicitly set
+	// [agent] subtask_iterations — needed because the merged int cannot
+	// distinguish unset from an explicit 0 ("unlimited").
+	SubtaskIterationsSet bool
 }
 
 // LoadLayers loads config and exposes the cumulative snapshots used for
@@ -95,10 +99,12 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	} else if userFile.Agent != nil && userFile.Agent.Provider != nil && userFile.Agent.Model != nil {
 		legacyProvider, legacyModel = *userFile.Agent.Provider, *userFile.Agent.Model
 	}
+	subtaskSet := (userFile.Agent != nil && userFile.Agent.SubtaskIterations != nil) ||
+		(projectFile.Agent != nil && projectFile.Agent.SubtaskIterations != nil)
 	migrated := MigrateLegacyAgentModel(&cfg, legacyProvider, legacyModel)
 	migrated = MigrateEmbeddingRoleBinding(&cfg) || migrated
 	coercePresetPricing(&cfg)
-	return Layers{Default: def, User: user, Merged: cfg, Migrated: migrated}, nil
+	return Layers{Default: def, User: user, Merged: cfg, Migrated: migrated, SubtaskIterationsSet: subtaskSet}, nil
 }
 
 // LayerID identifies which merge layer supplied a value.

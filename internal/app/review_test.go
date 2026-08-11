@@ -107,6 +107,14 @@ func TestRunReviewSubagentSalvagedAppendsSalvagedMessage(t *testing.T) {
 	if last.SalvageReason != "exhausted" {
 		t.Fatalf("SalvageReason = %q, want exhausted", last.SalvageReason)
 	}
+
+	views := state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("expected one subagent view, got %d", len(views))
+	}
+	if views[0].SalvagedReason != "exhausted" {
+		t.Fatalf("subagent SalvagedReason = %q, want exhausted", views[0].SalvagedReason)
+	}
 }
 
 func TestRunReviewSubagentFactoryError(t *testing.T) {

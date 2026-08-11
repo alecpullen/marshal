@@ -717,12 +717,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		return messages, false, nil
 	}
+	var exhaustionReason finalizeReason
 	for {
 		// The task's real size is usually only known once the model has
 		// written a todo list, which happens a few iterations in — plan_first
 		// is off by default, so len(task.Plan) is normally 0 at loop entry.
 		budget.grantSteps(len(r.State.Todos()))
-		if budget.exhausted() {
+		if reason := budget.exhaustionReason(); reason != "" {
+			exhaustionReason = reason
+			r.State.Logger().Debug("turn budget exhausted",
+				"reason", reason,
+				"tools", budget.tools,
+				"max_tools", budget.maxTools,
+				"overhead", budget.overhead)
 			break
 		}
 		r.State.SetToolBudget(session.ToolBudget{Used: budget.tools, Max: budget.maxTools})
@@ -1174,12 +1181,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	if producedValidAction {
-		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted, effectiveRF); ferr == nil {
+		if exhaustionReason == "" {
+			exhaustionReason = reasonExhausted
+		}
+		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, exhaustionReason, effectiveRF); ferr == nil {
 			return res, nil
 		}
 	}
 	task.Status = TaskStatusFailed
-	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
+	if exhaustionReason == reasonOverhead {
+		r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Agent stopped: hit the overhead turn cap (%d turns with no tool progress).", maxOverheadTurns), session.ContentTypePlain)
+	} else {
+		r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
+	}
 	return task, ErrMaxIterationsExceeded
 }
 

@@ -2561,6 +2561,71 @@ func TestBuildSubagentFactoryRolePinning(t *testing.T) {
 	}
 }
 
+func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+
+	// Unset config → default 48.
+	factory := buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0)
+	child, _, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.MaxToolIterations != defaultSubtaskIterations {
+		t.Fatalf("MaxToolIterations = %d, want default %d", child.MaxToolIterations, defaultSubtaskIterations)
+	}
+
+	// Explicit value set in config.
+	cfg.Agent.SubtaskIterations = 5
+	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.SetLayers(config.Layers{SubtaskIterationsSet: true})
+	factory = buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0)
+	child, _, err = factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.MaxToolIterations != 5 {
+		t.Fatalf("MaxToolIterations = %d, want 5", child.MaxToolIterations)
+	}
+
+	// Explicit 0 in config with SubtaskIterationsSet → unlimited.
+	cfg.Agent.SubtaskIterations = 0
+	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.SetLayers(config.Layers{SubtaskIterationsSet: true})
+	factory = buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0)
+	child, _, err = factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.MaxToolIterations != 0 {
+		t.Fatalf("MaxToolIterations = %d, want 0 (unlimited)", child.MaxToolIterations)
+	}
+
+	// Custom agent max_iterations still wins.
+	cfg.Agent.SubtaskIterations = 5
+	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.SetLayers(config.Layers{SubtaskIterationsSet: true})
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"reviewer": {Preset: "m", MaxIterations: 99},
+	}
+	factory = buildSubagentFactory(cfg, state, nil, reg, nil, "m", routing.NewStaticRouter(cfg.RoutingConfig()), nil, nil, 0)
+	child, _, err = factory(agent.SubagentRequest{Agent: "reviewer"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.MaxToolIterations != 99 {
+		t.Fatalf("MaxToolIterations = %d, want 99 (custom agent override)", child.MaxToolIterations)
+	}
+}
+
 func TestBuildSubagentFactoryReviewerInheritedKeepsDefault(t *testing.T) {
 	parent := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "parent"}
 

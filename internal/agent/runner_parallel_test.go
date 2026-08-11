@@ -376,7 +376,7 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
 		return &Runner{State: state}, state, nil
 	}
-	exec := func(ctx context.Context, child *Runner, prompt string) (string, error) {
+	exec := func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
 		enteredMu.Lock()
 		entered = append(entered, prompt)
 		enteredMu.Unlock()
@@ -384,7 +384,7 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 		enteredMu.Lock()
 		exited = append(exited, prompt)
 		enteredMu.Unlock()
-		return "done: " + prompt, nil
+		return "done: " + prompt, "", nil
 	}
 
 	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
@@ -470,11 +470,11 @@ func TestParallelAgentRunPreservesSiblingsOnError(t *testing.T) {
 	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
 		return &Runner{State: state}, state, nil
 	}
-	exec := func(ctx context.Context, child *Runner, prompt string) (string, error) {
+	exec := func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
 		if prompt == "fail" {
-			return "", errors.New("boom")
+			return "", "", errors.New("boom")
 		}
-		return "ok: " + prompt, nil
+		return "ok: " + prompt, "", nil
 	}
 
 	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
@@ -534,9 +534,9 @@ func TestParallelAgentRunConcurrencyLimitRejectsThird(t *testing.T) {
 	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
 		return &Runner{State: state}, state, nil
 	}
-	exec := func(ctx context.Context, child *Runner, prompt string) (string, error) {
+	exec := func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
 		<-gate
-		return "done: " + prompt, nil
+		return "done: " + prompt, "", nil
 	}
 
 	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))

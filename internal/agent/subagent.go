@@ -40,23 +40,23 @@ type SubagentRunnerFactory func(req SubagentRequest) (*Runner, *session.State, e
 
 // runSubagentChild is the default runner runtime the agent.run tool uses to
 // execute a child runner. It is a small wrapper around RunTask that returns
-// the task summary as a string for tool-result rendering; tests inject a
-// stub via SubagentOptionWithExec to avoid spinning a real provider.
-func runSubagentChild(ctx context.Context, child *Runner, prompt string) (string, error) {
+// the task summary and any salvage reason for tool-result rendering; tests
+// inject a stub via SubagentOptionWithExec to avoid spinning a real provider.
+func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error) {
 	if child == nil {
-		return "", errors.New("agent.run: child runner is nil")
+		return "", "", errors.New("agent.run: child runner is nil")
 	}
 	if prompt == "" {
-		return "", errors.New("agent.run: prompt is required")
+		return "", "", errors.New("agent.run: prompt is required")
 	}
 	task, err := child.RunTask(ctx, prompt)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if task == nil || task.Summary == "" {
-		return "", nil
+	if task == nil {
+		return "", "", nil
 	}
-	return task.Summary, nil
+	return task.Summary, task.SalvagedReason, nil
 }
 
 // SubtaskScopeView returns a registry view for a subtask child. It excludes
@@ -86,12 +86,12 @@ func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 type SubagentOption func(*subagentToolConfig)
 
 type subagentToolConfig struct {
-	exec func(ctx context.Context, child *Runner, prompt string) (string, error)
+	exec func(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error)
 }
 
 // WithSubagentExec overrides the default child runner executor. Used in
 // tests so the suite does not need a live provider/model stub.
-func WithSubagentExec(exec func(ctx context.Context, child *Runner, prompt string) (string, error)) SubagentOption {
+func WithSubagentExec(exec func(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error)) SubagentOption {
 	return func(cfg *subagentToolConfig) {
 		cfg.exec = exec
 	}
@@ -167,10 +167,21 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 			}
 			state.AddSubagentTokens(view.ID, u.PromptTokens+u.CompletionTokens)
 		}
-		summary, err := cfg.exec(childCtx, child, args.Prompt)
+		summary, salvagedReason, err := cfg.exec(childCtx, child, args.Prompt)
+		if salvagedReason != "" {
+			state.SetSubagentSalvaged(view.ID, salvagedReason)
+		}
 		state.FinishSubagent(view.ID, summary, err)
 		if err != nil {
 			return registry.ToolResult{}, err
+		}
+		if salvagedReason != "" {
+			result := registry.ToolResult{
+				Summary: fmt.Sprintf("subagent completed (salvaged: %s): %s", salvagedReason, args.Description),
+				Content: summary,
+			}
+			result.Content = fmt.Sprintf("[note: this subagent hit its iteration budget (%s) and the report below is partial. Raise [agent] subtask_iterations or the custom agent's max_iterations for a longer budget.]\n\n%s", salvagedReason, summary)
+			return result, nil
 		}
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("subagent completed: %s", args.Description),

@@ -70,11 +70,21 @@ func (b *turnBudget) grantSteps(steps int) {
 	}
 }
 
-func (b *turnBudget) exhausted() bool {
+// exhaustionReason reports which ceiling tripped, or "" — the overhead
+// cap (maxOverheadTurns) and the tool ceiling have different remedies
+// and must not share a finalize reason.
+func (b *turnBudget) exhaustionReason() finalizeReason {
 	if b.overhead >= maxOverheadTurns {
-		return true
+		return reasonOverhead
 	}
-	return b.maxTools > 0 && b.tools >= b.maxTools
+	if b.maxTools > 0 && b.tools >= b.maxTools {
+		return reasonExhausted
+	}
+	return ""
+}
+
+func (b *turnBudget) exhausted() bool {
+	return b.exhaustionReason() != ""
 }
 
 // remainingTools reports how much work budget is left, for the finalize

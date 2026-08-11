@@ -360,9 +360,11 @@ type AgentConfig struct {
 	// [4000, 128000].
 	HistoryBudgetTokens int `toml:"history_budget_tokens"`
 	// SubtaskIterations caps tool iterations for an ad-hoc agent.run child.
-	// The child gets a fresh Runner with this cap (defaults to 12 when zero).
-	// A subtask that exhausts its budget is salvaged: the parent receives
-	// whatever partial answer the child produced instead of a hard error.
+	// Unset defaults to 48; explicit 0 means unlimited (matching
+	// max_tool_iterations semantics); custom agents may override via
+	// max_iterations. A subtask that exhausts its budget is salvaged: the
+	// parent receives whatever partial answer the child produced instead of
+	// a hard error.
 	SubtaskIterations int `toml:"subtask_iterations"`
 	// ApprovalMode is the active interaction/approval mode: "plan",
 	// "default", "edit", "copilot", or "auto". Default "default". See

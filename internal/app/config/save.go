@@ -114,76 +114,129 @@ func SaveUserConfigSection(path string, cfg Config) error {
 	return writeUserConfigFile(path, data)
 }
 
+// putKey writes merged into dst when the file already carries the key
+// (fileVal != nil) or when merged differs from the default. This prevents
+// keys the user deleted from the file from reappearing when the running
+// merged config happens to hold the default value.
+func putKey[T comparable](dst **T, fileVal *T, merged, def T) {
+	if fileVal != nil || merged != def {
+		*dst = strutil.Ptr(merged)
+	}
+}
+
+func fileField[T any](section any, name string) *T {
+	if section == nil {
+		return nil
+	}
+	v := reflect.ValueOf(section)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+	f := v.FieldByName(name)
+	if !f.IsValid() || f.IsNil() {
+		return nil
+	}
+	return f.Interface().(*T)
+}
+
+func fileSlice[T any](section any, name string) []T {
+	if section == nil {
+		return nil
+	}
+	v := reflect.ValueOf(section)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+	f := v.FieldByName(name)
+	if !f.IsValid() || f.IsNil() {
+		return nil
+	}
+	return f.Interface().([]T)
+}
+
+// putSlice writes merged into dst when the file already carries the key
+// or when merged differs from the default (using DeepEqual for slices).
+func putSlice[T any](dst *[]T, fileVal []T, merged, def []T) {
+	if len(fileVal) > 0 || !reflect.DeepEqual(merged, def) {
+		*dst = merged
+	}
+}
+
 // writeSections applies every editable section of cfg onto file in place,
 // preserving sections that are absent from cfg (nil in file) and equal to
 // Default. Shared by SaveProjectConfig and SaveUserConfigSection so both
 // files get identical section-preservation semantics.
 func writeSections(file *configFile, cfg Config, def Config) {
-	file.Profile = &fileProfile{
-		Default:      strutil.Ptr(cfg.Profile.Default),
-		ActivePreset: strutil.Ptr(cfg.Profile.ActivePreset),
-	}
-
-	file.Agent = &fileAgent{
-		MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),
-		MaxRetries:               strutil.Ptr(cfg.Agent.MaxRetries),
-		MaxTurnContextTokens:     strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
-		ReconnectMaxWaitSeconds:  strutil.Ptr(cfg.Agent.ReconnectMaxWaitSeconds),
-		MaxToolResultChars:       strutil.Ptr(cfg.Agent.MaxToolResultChars),
-		MaxStructuredOutputChars: strutil.Ptr(cfg.Agent.MaxStructuredOutputChars),
-		PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
-		SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
-		ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
-		HistoryBudgetTokens:      strutil.Ptr(cfg.Agent.HistoryBudgetTokens),
-	}
-
-	if file.Privacy == nil {
-		file.Privacy = &filePrivacy{}
-	}
-	file.Privacy.RemoteProvidersAllowed = strutil.Ptr(cfg.Privacy.RemoteProvidersAllowed)
-	file.Privacy.RedactSecrets = strutil.Ptr(cfg.Privacy.RedactSecrets)
-	file.Privacy.IncludeGitignoredFiles = strutil.Ptr(cfg.Privacy.IncludeGitignoredFiles)
-
 	if file.Tools == nil {
 		file.Tools = &fileTools{}
 	}
+	profile := &fileProfile{}
+	putKey(&profile.Default, fileField[string](file.Profile, "Default"), cfg.Profile.Default, def.Profile.Default)
+	putKey(&profile.ActivePreset, fileField[string](file.Profile, "ActivePreset"), cfg.Profile.ActivePreset, def.Profile.ActivePreset)
+	file.Profile = profile
+
+	agent := &fileAgent{}
+	putKey(&agent.MaxToolIterations, fileField[int](file.Agent, "MaxToolIterations"), cfg.Agent.MaxToolIterations, def.Agent.MaxToolIterations)
+	putKey(&agent.MaxRetries, fileField[int](file.Agent, "MaxRetries"), cfg.Agent.MaxRetries, def.Agent.MaxRetries)
+	putKey(&agent.MaxTurnContextTokens, fileField[int](file.Agent, "MaxTurnContextTokens"), cfg.Agent.MaxTurnContextTokens, def.Agent.MaxTurnContextTokens)
+	putKey(&agent.ReconnectMaxWaitSeconds, fileField[int](file.Agent, "ReconnectMaxWaitSeconds"), cfg.Agent.ReconnectMaxWaitSeconds, def.Agent.ReconnectMaxWaitSeconds)
+	putKey(&agent.MaxToolResultChars, fileField[int](file.Agent, "MaxToolResultChars"), cfg.Agent.MaxToolResultChars, def.Agent.MaxToolResultChars)
+	putKey(&agent.MaxStructuredOutputChars, fileField[int](file.Agent, "MaxStructuredOutputChars"), cfg.Agent.MaxStructuredOutputChars, def.Agent.MaxStructuredOutputChars)
+	putKey(&agent.PlanFirst, fileField[bool](file.Agent, "PlanFirst"), cfg.Agent.PlanFirst, def.Agent.PlanFirst)
+	putKey(&agent.SubtaskIterations, fileField[int](file.Agent, "SubtaskIterations"), cfg.Agent.SubtaskIterations, def.Agent.SubtaskIterations)
+	putKey(&agent.ApprovalMode, fileField[string](file.Agent, "ApprovalMode"), cfg.Agent.ApprovalMode, def.Agent.ApprovalMode)
+	putKey(&agent.HistoryBudgetTokens, fileField[int](file.Agent, "HistoryBudgetTokens"), cfg.Agent.HistoryBudgetTokens, def.Agent.HistoryBudgetTokens)
+	file.Agent = agent
+
+	privacy := &filePrivacy{}
+	putKey(&privacy.RemoteProvidersAllowed, fileField[bool](file.Privacy, "RemoteProvidersAllowed"), cfg.Privacy.RemoteProvidersAllowed, def.Privacy.RemoteProvidersAllowed)
+	putKey(&privacy.RedactSecrets, fileField[bool](file.Privacy, "RedactSecrets"), cfg.Privacy.RedactSecrets, def.Privacy.RedactSecrets)
+	putKey(&privacy.IncludeGitignoredFiles, fileField[bool](file.Privacy, "IncludeGitignoredFiles"), cfg.Privacy.IncludeGitignoredFiles, def.Privacy.IncludeGitignoredFiles)
+	file.Privacy = privacy
+
 	if file.Tools.Shell == nil {
 		file.Tools.Shell = &fileShell{}
 	}
-	file.Tools.Shell.DefaultTimeoutSeconds = strutil.Ptr(cfg.Tools.Shell.DefaultTimeoutSeconds)
-	file.Tools.Shell.MaxOutputBytes = strutil.Ptr(cfg.Tools.Shell.MaxOutputBytes)
-	file.Tools.Shell.MaxBackgroundJobs = strutil.Ptr(cfg.Tools.Shell.MaxBackgroundJobs)
-	file.Tools.Shell.BackgroundRetention = strutil.Ptr(cfg.Tools.Shell.BackgroundRetention.String())
-	file.Tools.Shell.AllowNetwork = strutil.Ptr(cfg.Tools.Shell.AllowNetwork)
-	file.Tools.Shell.AutoApprove = strutil.Ptr(cfg.Tools.Shell.AutoApprove)
-
-	file.Tools.Shell.GuardrailDynamicArgv0 = strutil.Ptr(cfg.Tools.Shell.GuardrailDynamicArgv0)
+	shell := &fileShell{}
+	putKey(&shell.DefaultTimeoutSeconds, fileField[int](file.Tools.Shell, "DefaultTimeoutSeconds"), cfg.Tools.Shell.DefaultTimeoutSeconds, def.Tools.Shell.DefaultTimeoutSeconds)
+	putKey(&shell.MaxOutputBytes, fileField[int](file.Tools.Shell, "MaxOutputBytes"), cfg.Tools.Shell.MaxOutputBytes, def.Tools.Shell.MaxOutputBytes)
+	putKey(&shell.MaxBackgroundJobs, fileField[int](file.Tools.Shell, "MaxBackgroundJobs"), cfg.Tools.Shell.MaxBackgroundJobs, def.Tools.Shell.MaxBackgroundJobs)
+	putKey(&shell.BackgroundRetention, fileField[string](file.Tools.Shell, "BackgroundRetention"), cfg.Tools.Shell.BackgroundRetention.String(), def.Tools.Shell.BackgroundRetention.String())
+	putKey(&shell.AllowNetwork, fileField[bool](file.Tools.Shell, "AllowNetwork"), cfg.Tools.Shell.AllowNetwork, def.Tools.Shell.AllowNetwork)
+	putKey(&shell.AutoApprove, fileField[bool](file.Tools.Shell, "AutoApprove"), cfg.Tools.Shell.AutoApprove, def.Tools.Shell.AutoApprove)
+	putKey(&shell.GuardrailDynamicArgv0, fileField[string](file.Tools.Shell, "GuardrailDynamicArgv0"), cfg.Tools.Shell.GuardrailDynamicArgv0, def.Tools.Shell.GuardrailDynamicArgv0)
 
 	if file.Tools.Shell.Sandbox == nil {
 		file.Tools.Shell.Sandbox = &sandboxFile{}
 	}
-	file.Tools.Shell.Sandbox.Backend = strutil.Ptr(cfg.Tools.Shell.Sandbox.Backend)
-	file.Tools.Shell.Sandbox.MemoryLimitMB = strutil.Ptr(cfg.Tools.Shell.Sandbox.MemoryLimitMB)
-	file.Tools.Shell.Sandbox.CPUSeconds = strutil.Ptr(cfg.Tools.Shell.Sandbox.CPUSeconds)
-	file.Tools.Shell.Sandbox.MaxProcesses = strutil.Ptr(cfg.Tools.Shell.Sandbox.MaxProcesses)
-	file.Tools.Shell.Sandbox.FileSizeLimitMB = strutil.Ptr(cfg.Tools.Shell.Sandbox.FileSizeLimitMB)
-	file.Tools.Shell.Sandbox.ContainerRuntime = strutil.Ptr(cfg.Tools.Shell.Sandbox.ContainerRuntime)
-	file.Tools.Shell.Sandbox.ContainerImage = strutil.Ptr(cfg.Tools.Shell.Sandbox.ContainerImage)
-	file.Tools.Shell.Sandbox.AllowFallback = strutil.Ptr(cfg.Tools.Shell.Sandbox.AllowFallback)
-	file.Tools.Shell.Sandbox.UnsafePassthrough = strutil.Ptr(cfg.Tools.Shell.Sandbox.UnsafePassthrough)
-	if cfg.Tools.Shell.Sandbox.EnvAllowlist != nil {
-		file.Tools.Shell.Sandbox.EnvAllowlist = cfg.Tools.Shell.Sandbox.EnvAllowlist
-	}
-	if cfg.Tools.Shell.Sandbox.EnvDenylist != nil {
-		file.Tools.Shell.Sandbox.EnvDenylist = cfg.Tools.Shell.Sandbox.EnvDenylist
-	}
+	sandbox := &sandboxFile{}
+	putKey(&sandbox.Backend, fileField[string](file.Tools.Shell.Sandbox, "Backend"), cfg.Tools.Shell.Sandbox.Backend, def.Tools.Shell.Sandbox.Backend)
+	putKey(&sandbox.MemoryLimitMB, fileField[int](file.Tools.Shell.Sandbox, "MemoryLimitMB"), cfg.Tools.Shell.Sandbox.MemoryLimitMB, def.Tools.Shell.Sandbox.MemoryLimitMB)
+	putKey(&sandbox.CPUSeconds, fileField[int](file.Tools.Shell.Sandbox, "CPUSeconds"), cfg.Tools.Shell.Sandbox.CPUSeconds, def.Tools.Shell.Sandbox.CPUSeconds)
+	putKey(&sandbox.MaxProcesses, fileField[int](file.Tools.Shell.Sandbox, "MaxProcesses"), cfg.Tools.Shell.Sandbox.MaxProcesses, def.Tools.Shell.Sandbox.MaxProcesses)
+	putKey(&sandbox.FileSizeLimitMB, fileField[int](file.Tools.Shell.Sandbox, "FileSizeLimitMB"), cfg.Tools.Shell.Sandbox.FileSizeLimitMB, def.Tools.Shell.Sandbox.FileSizeLimitMB)
+	putKey(&sandbox.ContainerRuntime, fileField[string](file.Tools.Shell.Sandbox, "ContainerRuntime"), cfg.Tools.Shell.Sandbox.ContainerRuntime, def.Tools.Shell.Sandbox.ContainerRuntime)
+	putKey(&sandbox.ContainerImage, fileField[string](file.Tools.Shell.Sandbox, "ContainerImage"), cfg.Tools.Shell.Sandbox.ContainerImage, def.Tools.Shell.Sandbox.ContainerImage)
+	putKey(&sandbox.AllowFallback, fileField[bool](file.Tools.Shell.Sandbox, "AllowFallback"), cfg.Tools.Shell.Sandbox.AllowFallback, def.Tools.Shell.Sandbox.AllowFallback)
+	putKey(&sandbox.UnsafePassthrough, fileField[bool](file.Tools.Shell.Sandbox, "UnsafePassthrough"), cfg.Tools.Shell.Sandbox.UnsafePassthrough, def.Tools.Shell.Sandbox.UnsafePassthrough)
+	putSlice(&sandbox.EnvAllowlist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvAllowlist"), cfg.Tools.Shell.Sandbox.EnvAllowlist, def.Tools.Shell.Sandbox.EnvAllowlist)
+	putSlice(&sandbox.EnvDenylist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvDenylist"), cfg.Tools.Shell.Sandbox.EnvDenylist, def.Tools.Shell.Sandbox.EnvDenylist)
+	shell.Sandbox = sandbox
+	file.Tools = &fileTools{Shell: shell}
 
 	// Guard policy: profile/agent/privacy/shell/sandbox sections are written
-	// unconditionally (they are the settings UI's primary targets); every
-	// other section is written only when the file already has it or the
-	// value differs from Default(). Callers pass merged user+project
-	// config, so unconditional sections bake user-global values into the
-	// project file — that is deliberate for the primary sections.
+	// per-key so a deleted key is not resurrected when the merged config
+	// holds the default. Every other section is written only when the file
+	// already has it or the value differs from Default(). Callers pass
+	// merged user+project config, so primary sections can still bake
+	// user-global values into the project file when those values differ
+	// from default.
 
 	if !reflect.DeepEqual(cfg.Project, def.Project) {
 		file.Project = &fileProject{Name: strutil.Ptr(cfg.Project.Name), Languages: cfg.Project.Languages}

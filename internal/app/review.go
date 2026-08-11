@@ -57,6 +57,9 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 	if task != nil {
 		summary = task.Summary
 	}
+	if task != nil && task.SalvagedReason != "" {
+		state.SetSubagentSalvaged(view.ID, task.SalvagedReason)
+	}
 	state.FinishSubagent(view.ID, summary, err)
 	if err != nil {
 		return fmt.Errorf("review: subagent run failed: %w", err)

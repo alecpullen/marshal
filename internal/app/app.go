@@ -1101,7 +1101,7 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 // Capped independently of the main-loop budget (unlimited by default since
 // DefaultMaxToolIterations = 0) so a misbehaving child does not burn tokens
 // on an out-of-scope subtask.
-const defaultSubtaskIterations = 12
+const defaultSubtaskIterations = 48
 
 // buildSubagentFactory returns a closure that constructs a fresh child
 // Runner for an agent.run invocation. The closure captures the parent's
@@ -1121,8 +1121,12 @@ const defaultSubtaskIterations = 12
 // named-agent and ad-hoc paths wire Pricing, UsageObserver, and MetricsObserver
 // so subagent token usage and cost are visible to the parent session.
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
+	// Unset: finite default so a misbehaving child cannot burn tokens on an
+	// out-of-scope subtask. Explicit 0: unlimited, matching
+	// max_tool_iterations semantics (turnBudget treats base <= 0 as no
+	// ceiling). Negative values are treated as unset.
 	subtaskIters := cfg.Agent.SubtaskIterations
-	if subtaskIters <= 0 {
+	if !parentState.Layers().SubtaskIterationsSet || subtaskIters < 0 {
 		subtaskIters = defaultSubtaskIterations
 	}
 	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())

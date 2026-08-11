@@ -63,6 +63,10 @@ type SubagentView struct {
 	// the view so a drilled-in user can stop a running subagent without
 	// cancelling the whole parent turn.
 	Cancel context.CancelFunc
+
+	// SalvagedReason is non-empty when the subagent hit a budget ceiling
+	// and its summary is partial. The TUI card renders this as a marker.
+	SalvagedReason string
 }
 
 // SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
@@ -148,6 +152,28 @@ func (s *State) SetSubagentCancel(id int64, cancel context.CancelFunc) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+// SetSubagentSalvaged records the reason a subagent was salvaged on its
+// view. Called by the agent.run handler before FinishSubagent so the TUI
+// card can render a salvage marker.
+func (s *State) SetSubagentSalvaged(id int64, reason string) {
+	s.mu.Lock()
+	for i := range s.subagents {
+		if s.subagents[i].ID == id {
+			s.subagents[i].SalvagedReason = reason
+			break
+		}
+	}
+	broker := s.subagentBroker
+	s.mu.Unlock()
+	if broker != nil {
+		// Publish a copy so subscribers see the updated reason. The view
+		// is still running until FinishSubagent is called.
+		if v, ok := s.Subagent(id); ok {
+			broker.Publish("subagent", SubagentEvent{View: v})
+		}
+	}
 }
 
 // CancelSubagent cancels the context of a running subagent with the

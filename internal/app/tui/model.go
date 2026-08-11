@@ -1134,9 +1134,9 @@ func New(state *session.State, opts ...Option) Model {
 	}
 
 	// Eagerly build inline approval/question forms if the session already
-	// has a pending request, so the first render shows the huh surface
-	// instead of the legacy fallback panels.
-	if tc := m.state.PendingApproval(); tc != nil {
+	// has a pending request (parent or subagent), so the first render shows
+	// the huh surface instead of the legacy fallback panels.
+	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
 	}
 	if q := m.state.PendingQuestion(); q != nil {
@@ -1836,7 +1836,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
 	// tool decision is pending. These must be intercepted before the
 	// approval/question routing below, which would otherwise swallow them.
-	if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+	if m.hasPendingApproval() || m.state.PendingQuestion() != nil {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
@@ -1939,9 +1939,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // running subagent with a live child state. label names the subagent for
 // display; it is empty for the parent.
 //
-// Known limitation: with parallel agent.run (max 2 children), two children
-// could pend at once; answering the first-registered one is acceptable —
-// the other surfaces on the next message.
+// Subagents() returns a slice in registration order, so the first running
+// child with a pending approval is deterministic. With parallel agent.run
+// (max 2 children), two children could pend at once; answering the
+// first-registered one is acceptable — the other surfaces on the next
+// message.
 func (m *Model) pendingApprovalTarget() (owner *session.State, tc *session.PendingToolCall, label string) {
 	if tc := m.state.PendingApproval(); tc != nil {
 		return m.state, tc, ""
@@ -1955,6 +1957,53 @@ func (m *Model) pendingApprovalTarget() (owner *session.State, tc *session.Pendi
 		}
 	}
 	return nil, nil, ""
+}
+
+// hasPendingApproval reports whether any approval is pending — either on
+// the parent state or on a running subagent's live child state. Rendering,
+// status indicators, and keypress gating must all consult this (not just
+// the parent) so a child approval is not silently routed into an invisible
+// form.
+func (m *Model) hasPendingApproval() bool {
+	if m.state.PendingApproval() != nil {
+		return true
+	}
+	for _, v := range m.state.Subagents() {
+		if v.Status != session.SubagentRunning || v.Child == nil {
+			continue
+		}
+		if v.Child.PendingApproval() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// pendingApprovalDisplay returns the tool call to render for the pending
+// approval the user should answer next, mirroring handleApproval's display
+// copy: a subagent approval is wrapped in a shallow copy whose reason names
+// the subagent, so the rendered panel (and the eager form) attribute the
+// request. label is the subagent name, empty for the parent. Returns nil
+// when no approval is pending.
+func (m *Model) pendingApprovalDisplay() (tc *session.PendingToolCall, label string) {
+	_, src, label := m.pendingApprovalTarget()
+	if src == nil {
+		return nil, ""
+	}
+	if label == "" {
+		return src, ""
+	}
+	return &session.PendingToolCall{
+		ID:           src.ID,
+		Name:         src.Name,
+		Args:         src.Args,
+		Command:      src.Command,
+		Risk:         src.Risk,
+		Reason:       fmt.Sprintf("subagent %q: %s", label, src.Reason),
+		Diff:         src.Diff,
+		Schema:       src.Schema,
+		ResponseChan: src.ResponseChan,
+	}, label
 }
 
 // isModeElevationApproval reports whether a pending approval is a mode
@@ -2039,6 +2088,8 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	// copied.
 	displayTC := tc
 	if source != "" {
+		// Mirror pendingApprovalDisplay so the eager form and the lazily
+		// built one attribute the request identically.
 		displayTC = &session.PendingToolCall{
 			ID:           tc.ID,
 			Name:         tc.Name,
@@ -2260,7 +2311,7 @@ func (m Model) inputChromeRows() int {
 			content = renderQuestionPanel(q, max(m.leftWidth-4, 1))
 		}
 		rows += lipgloss.Height(content)
-	} else if tc := m.state.PendingApproval(); tc != nil {
+	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		// Mirror renderInputArea's switch exactly so the budget never
 		// disagrees with what is on screen.
 		var content string
@@ -2288,7 +2339,7 @@ func (m Model) inputChromeRows() int {
 
 func (m Model) inputAreaRows() int {
 	rows := m.inputChromeRows()
-	if m.state.PendingQuestion() == nil && m.state.PendingApproval() == nil {
+	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
@@ -3371,7 +3422,7 @@ func (m Model) settingsBlockReason() string {
 	if m.busy || m.state.RunningJobsCount() > 0 {
 		return settingsBusyMessage
 	}
-	if m.state.PendingApproval() != nil {
+	if m.hasPendingApproval() {
 		return "Resolve the pending tool approval to save."
 	}
 	if m.state.PendingQuestion() != nil {

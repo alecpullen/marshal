@@ -215,7 +215,7 @@ func (m Model) renderInputArea() string {
 		// question is pending every keypress routes to the question form
 		// (handleQuestion), so a visible textarea would be a dead input
 		// that swallows nothing yet appears typable.
-	} else if tc := m.state.PendingApproval(); tc != nil {
+	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		switch {
 		case isModeElevationApproval(tc):
 			// The mode-elevation dock picker owns this decision; rendering
@@ -248,7 +248,7 @@ func (m Model) inputBarColor() color.Color {
 		return successColor
 	case m.state.PendingQuestion() != nil:
 		return violetColor
-	case m.state.PendingApproval() != nil:
+	case m.hasPendingApproval():
 		return warningColor
 	case m.state.SDDProgress().Active, !m.input.Focused():
 		return dimColor

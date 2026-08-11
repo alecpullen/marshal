@@ -344,15 +344,13 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	// disconnects (drainSession), or when clearPending drains it on child
 	// restart — all with a deny. Browsers can still explicitly deny.
 	//
-	// A wall-clock timeout is also applied so an unresponsive HTTP client
-	// (SSE connection open but no decision) cannot block the child
-	// forever. The bound matches the historical 30s default.
-	ctx, cancel := context.WithTimeout(r.sessionCtx(req.SessionID), 30*time.Second)
-	defer cancel()
+	// No wall-clock timeout: a user reading and deciding is not a hung
+	// request, and denying after N seconds punishes them for thinking.
+	// This matches the TUI runner and ACP, which also wait forever.
 	select {
 	case d := <-ch:
 		return map[string]any{"approved": d.Approved, "edited": d.Edited}, nil
-	case <-ctx.Done():
+	case <-r.sessionCtx(req.SessionID).Done():
 		return map[string]any{"approved": false}, nil
 	}
 }
@@ -406,18 +404,16 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	// or when clearPending drains it on child restart — all with a
 	// decline. Browsers can still explicitly decline.
 	//
-	// A wall-clock timeout is also applied so an unresponsive HTTP client
-	// (SSE connection open but no answers) cannot block the child
-	// forever. The bound matches the historical 30s default.
-	ctx, cancel := context.WithTimeout(r.sessionCtx(req.SessionID), 30*time.Second)
-	defer cancel()
+	// No wall-clock timeout: a user reading and deciding is not a hung
+	// request, and declining after N seconds punishes them for thinking.
+	// This matches the TUI runner and ACP, which also wait forever.
 	select {
 	case a := <-ch:
 		if a.Declined {
 			return map[string]any{"declined": true}, nil
 		}
 		return map[string]any{"answers": a.Answers}, nil
-	case <-ctx.Done():
+	case <-r.sessionCtx(req.SessionID).Done():
 		return map[string]any{"declined": true}, nil
 	}
 }

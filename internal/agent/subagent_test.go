@@ -107,6 +107,92 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestSubagentCancelPropagatesToExec(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) {
+			return &Runner{}, state, nil
+		},
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		}),
+	)
+
+	handlerErr := make(chan error, 1)
+	go func() {
+		_, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
+		handlerErr <- err
+	}()
+
+	// Wait for the subagent to register so we have an ID to cancel.
+	var viewID int64
+	for {
+		views := state.Subagents()
+		if len(views) == 1 {
+			viewID = views[0].ID
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !state.CancelSubagent(viewID) {
+		t.Fatal("CancelSubagent returned false")
+	}
+
+	err := <-handlerErr
+	if err == nil {
+		t.Fatal("expected cancellation error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	views := state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("expected one subagent view, got %d", len(views))
+	}
+	if views[0].Status != session.SubagentFailed {
+		t.Fatalf("status = %v, want SubagentFailed", views[0].Status)
+	}
+}
+
+func TestSubagentUsageObserverComposesAndUpdatesCard(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	parentUsage := 0
+	child := NewRunner(nil, registry.New(), nil, session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}), "test")
+	child.UsageObserver = func(u schema.TokenUsage) {
+		parentUsage += u.PromptTokens + u.CompletionTokens
+	}
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) {
+			return child, child.State, nil
+		},
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, error) {
+			if child.UsageObserver != nil {
+				child.UsageObserver(schema.TokenUsage{PromptTokens: 10, CompletionTokens: 5})
+			}
+			return "done", nil
+		}),
+	)
+	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if parentUsage != 15 {
+		t.Fatalf("parent usage observer got %d, want 15", parentUsage)
+	}
+	views := state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("expected one subagent view, got %d", len(views))
+	}
+	if views[0].TokensUsed != 15 {
+		t.Fatalf("card TokensUsed = %d, want 15", views[0].TokensUsed)
+	}
+}
+
 func TestSubagentGuardCountersRoundTrip(t *testing.T) {
 	top := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(0))
 	if got := top.SubagentDepth(); got != 0 {

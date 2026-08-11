@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -118,13 +120,19 @@ func TestRegistryPermissionRoundTrip(t *testing.T) {
 	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Trigger the fake child to emit session/request_permission.
+	// Trigger the fake child to emit session/request_permission. Use a
+	// long context for the trigger because the helper now forwards the
+	// bridge's response back as the trigger result.
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
 	if err := r.Steer(ctx, "s-1", "x"); err != nil { // any request primes the loop
 		t.Fatalf("prime: %v", err)
 	}
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErr <- err
+	}()
 	// The registry should now have a pending permission for tc-1.
 	waitFor(t, 2*time.Second, "pending permission", func() bool {
 		r.permMu.Lock()
@@ -134,6 +142,15 @@ func TestRegistryPermissionRoundTrip(t *testing.T) {
 	})
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
 		t.Fatalf("ResolvePermission: %v", err)
+	}
+	// The trigger request should complete successfully once resolved.
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after resolve")
 	}
 	// Duplicate resolve must report ErrGone.
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
@@ -149,17 +166,21 @@ func TestRegistryPermissionWaitsForDecision(t *testing.T) {
 	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "pending permission", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
 		_, ok := r.permissions["tc-1"]
 		return ok
 	})
-	// No wall-clock timeout: the pending permission must still be parked
-	// well past the old 300ms budget.
+	// The pending permission must survive short sleeps but still be
+	// bounded by the 30s wall-clock timeout.
 	time.Sleep(200 * time.Millisecond)
 	r.permMu.Lock()
 	_, stillPending := r.permissions["tc-1"]
@@ -170,9 +191,72 @@ func TestRegistryPermissionWaitsForDecision(t *testing.T) {
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
 		t.Fatalf("ResolvePermission: %v", err)
 	}
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error after resolve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after resolve")
+	}
 	// A late resolve now reports ErrGone.
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
 		t.Fatalf("late resolve: want ErrGone, got %v", err)
+	}
+}
+
+func TestRegistryPermissionTimesOutAfterAbandonment(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Trigger the permission on a goroutine with a long context so the
+	// test can observe the bridge's 30s timeout denial rather than the
+	// test context expiring first.
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer triggerCancel()
+	respResult := make(chan json.RawMessage, 1)
+	respErr := make(chan error, 1)
+	go func() {
+		res, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		if err != nil {
+			respErr <- err
+			return
+		}
+		respResult <- res
+	}()
+	waitFor(t, 2*time.Second, "pending permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return ok
+	})
+
+	// Abandon the request: do not resolve it and do not cancel the
+	// session. The bridge's 30s wall-clock timeout must eventually deny
+	// it and clean up the pending entry.
+	waitFor(t, 35*time.Second, "permission denied by timeout", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return !ok
+	})
+	// The child should have received the denied result and returned from
+	// its trigger request (the helper echoes the bridge's response).
+	select {
+	case <-respResult:
+		// The trigger's own result is empty; the bridge's timeout denial
+		// is sent to the child-initiated request id=9000. The important
+		// regression check is that the pending entry was removed and the
+		// child request completed.
+	case err := <-respErr:
+		t.Fatalf("trigger request returned error instead of timeout denial: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("child did not receive timeout denial")
 	}
 }
 
@@ -184,9 +268,15 @@ func TestRegistryQuestionRoundTrip(t *testing.T) {
 	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	// Use a long context for the trigger because the helper now forwards
+	// the bridge's response back as the trigger result.
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_question", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "pending question", func() bool {
 		r.quesMu.Lock()
 		defer r.quesMu.Unlock()
@@ -196,6 +286,15 @@ func TestRegistryQuestionRoundTrip(t *testing.T) {
 	ans := Answers{Answers: []session.Answer{{Question: "proceed?", Answer: "yes"}}}
 	if err := r.ResolveQuestion("q-1", ans); err != nil {
 		t.Fatalf("ResolveQuestion: %v", err)
+	}
+	// The trigger request should complete successfully once resolved.
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after resolve")
 	}
 	if err := r.ResolveQuestion("q-1", ans); !errors.Is(err, ErrGone) {
 		t.Fatalf("duplicate resolve: want ErrGone, got %v", err)
@@ -210,17 +309,21 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_question", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "pending question", func() bool {
 		r.quesMu.Lock()
 		defer r.quesMu.Unlock()
 		_, ok := r.questions["q-1"]
 		return ok
 	})
-	// No wall-clock timeout: the pending question must still be parked
-	// well past the old 300ms budget.
+	// The pending question must survive short sleeps but still be
+	// bounded by the 30s wall-clock timeout.
 	time.Sleep(200 * time.Millisecond)
 	r.quesMu.Lock()
 	_, stillPending := r.questions["q-1"]
@@ -232,8 +335,71 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	if err := r.ResolveQuestion("q-1", ans); err != nil {
 		t.Fatalf("ResolveQuestion: %v", err)
 	}
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error after resolve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after resolve")
+	}
 	if err := r.ResolveQuestion("q-1", ans); !errors.Is(err, ErrGone) {
 		t.Fatalf("late resolve: want ErrGone, got %v", err)
+	}
+}
+
+func TestRegistryQuestionTimesOutAfterAbandonment(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Trigger the question on a goroutine with a long context so the
+	// test can observe the bridge's 30s timeout decline rather than the
+	// test context expiring first.
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer triggerCancel()
+	respResult := make(chan json.RawMessage, 1)
+	respErr := make(chan error, 1)
+	go func() {
+		res, err := r.child.Request(triggerCtx, "test/ask_question", nil)
+		if err != nil {
+			respErr <- err
+			return
+		}
+		respResult <- res
+	}()
+	waitFor(t, 2*time.Second, "pending question", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return ok
+	})
+
+	// Abandon the request: do not answer it and do not cancel the
+	// session. The bridge's 30s wall-clock timeout must eventually
+	// decline it and clean up the pending entry.
+	waitFor(t, 35*time.Second, "question declined by timeout", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return !ok
+	})
+	// The child should have received the declined result and returned from
+	// its trigger request (the helper echoes the bridge's response).
+	select {
+	case <-respResult:
+		// The trigger's own result is empty; the bridge's timeout decline
+		// is sent to the child-initiated request id=9000. The important
+		// regression check is that the pending entry was removed and the
+		// child request completed.
+	case err := <-respErr:
+		t.Fatalf("trigger request returned error instead of timeout decline: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("child did not receive timeout decline")
 	}
 }
 
@@ -245,9 +411,13 @@ func TestRegistryCancelDrainsPendingPermission(t *testing.T) {
 	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "pending permission", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
@@ -268,6 +438,14 @@ func TestRegistryCancelDrainsPendingPermission(t *testing.T) {
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
 		t.Fatalf("resolve after cancel: want ErrGone, got %v", err)
 	}
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after cancel")
+	}
 }
 
 func TestRegistryCancelDrainsPendingQuestion(t *testing.T) {
@@ -278,9 +456,13 @@ func TestRegistryCancelDrainsPendingQuestion(t *testing.T) {
 	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_question", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "pending question", func() bool {
 		r.quesMu.Lock()
 		defer r.quesMu.Unlock()
@@ -300,6 +482,14 @@ func TestRegistryCancelDrainsPendingQuestion(t *testing.T) {
 	if err := r.ResolveQuestion("q-1", Answers{Declined: true}); !errors.Is(err, ErrGone) {
 		t.Fatalf("resolve after cancel: want ErrGone, got %v", err)
 	}
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after cancel")
+	}
 }
 
 func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
@@ -312,9 +502,13 @@ func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
 	}
 	// Trigger a permission, then cancel the session: the pending wait is
 	// drained with a deny.
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "pending permission", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
@@ -331,6 +525,15 @@ func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
 		return !ok
 	})
 
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after cancel")
+	}
+
 	// A request arriving after cancellation but before the next prompt
 	// belongs to the cancelled turn and must be rejected.
 	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
@@ -346,9 +549,13 @@ func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
 	// Starting a new prompt opens a new generation; requests from that
 	// turn are allowed to wait for the HTTP response.
 	r.beginTurn("s-1")
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger in next turn: %v", err)
-	}
+	triggerCtx2, triggerCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel2()
+	triggerErr2 := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx2, "test/ask_permission", nil)
+		triggerErr2 <- err
+	}()
 	waitFor(t, 2*time.Second, "pending permission in next turn", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
@@ -357,6 +564,14 @@ func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
 	})
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
 		t.Fatalf("ResolvePermission after next turn: %v", err)
+	}
+	select {
+	case err := <-triggerErr2:
+		if err != nil {
+			t.Fatalf("trigger in next turn returned error after resolve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger in next turn did not return after resolve")
 	}
 }
 
@@ -380,9 +595,13 @@ func TestRegistryLateRequestFromCancelledTurnIsRejected(t *testing.T) {
 
 	// The late permission must be denied immediately, not parked forever
 	// on the fresh (post-cancel) context.
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger permission: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "late permission drained", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
@@ -392,11 +611,23 @@ func TestRegistryLateRequestFromCancelledTurnIsRejected(t *testing.T) {
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
 		t.Fatalf("resolve late permission: want ErrGone, got %v", err)
 	}
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("late permission trigger returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("late permission trigger did not return")
+	}
 
 	// Same for a late question.
-	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
-		t.Fatalf("trigger question: %v", err)
-	}
+	triggerCtx2, triggerCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel2()
+	triggerErr2 := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx2, "test/ask_question", nil)
+		triggerErr2 <- err
+	}()
 	waitFor(t, 2*time.Second, "late question drained", func() bool {
 		r.quesMu.Lock()
 		defer r.quesMu.Unlock()
@@ -406,35 +637,67 @@ func TestRegistryLateRequestFromCancelledTurnIsRejected(t *testing.T) {
 	if err := r.ResolveQuestion("q-1", Answers{Declined: true}); !errors.Is(err, ErrGone) {
 		t.Fatalf("resolve late question: want ErrGone, got %v", err)
 	}
+	select {
+	case err := <-triggerErr2:
+		if err != nil {
+			t.Fatalf("late question trigger returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("late question trigger did not return")
+	}
 }
 
 func TestRegistryUntrackedSessionRequestIsRejected(t *testing.T) {
 	r, _ := newTestRegistry(t, "registry")
-	ctx, cancel := testContext(t)
+	_, cancel := testContext(t)
 	defer cancel()
 
 	// A permission keyed to an untracked session must be denied
 	// immediately rather than waiting forever with no drain path.
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger permission: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "untracked permission drained", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
 		_, ok := r.permissions["tc-1"]
 		return !ok
 	})
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("untracked permission trigger returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("untracked permission trigger did not return")
+	}
 
 	// Same for a question.
-	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
-		t.Fatalf("trigger question: %v", err)
-	}
+	triggerCtx2, triggerCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel2()
+	triggerErr2 := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx2, "test/ask_question", nil)
+		triggerErr2 <- err
+	}()
 	waitFor(t, 2*time.Second, "untracked question drained", func() bool {
 		r.quesMu.Lock()
 		defer r.quesMu.Unlock()
 		_, ok := r.questions["q-1"]
 		return !ok
 	})
+	select {
+	case err := <-triggerErr2:
+		if err != nil {
+			t.Fatalf("untracked question trigger returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("untracked question trigger did not return")
+	}
 }
 
 func TestRegistryDrainSessionUnblocksWaiters(t *testing.T) {
@@ -445,18 +708,27 @@ func TestRegistryDrainSessionUnblocksWaiters(t *testing.T) {
 	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger permission: %v", err)
-	}
-	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
-		t.Fatalf("trigger question: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErrPerm := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErrPerm <- err
+	}()
 	waitFor(t, 2*time.Second, "pending permission", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
 		_, ok := r.permissions["tc-1"]
 		return ok
 	})
+
+	triggerCtx2, triggerCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel2()
+	triggerErrQues := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx2, "test/ask_question", nil)
+		triggerErrQues <- err
+	}()
 	waitFor(t, 2*time.Second, "pending question", func() bool {
 		r.quesMu.Lock()
 		defer r.quesMu.Unlock()
@@ -481,6 +753,22 @@ func TestRegistryDrainSessionUnblocksWaiters(t *testing.T) {
 	}
 	if err := r.ResolveQuestion("q-1", Answers{Declined: true}); !errors.Is(err, ErrGone) {
 		t.Fatalf("resolve question after drain: want ErrGone, got %v", err)
+	}
+	select {
+	case err := <-triggerErrPerm:
+		if err != nil {
+			t.Fatalf("permission trigger returned error after drain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("permission trigger did not return after drain")
+	}
+	select {
+	case err := <-triggerErrQues:
+		if err != nil {
+			t.Fatalf("question trigger returned error after drain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("question trigger did not return after drain")
 	}
 }
 
@@ -533,9 +821,13 @@ func TestRegistryRestartClearsPending(t *testing.T) {
 	waitFor(t, 3*time.Second, "restart", func() bool {
 		return strings.Contains(c0Stderr(r), "session/resume")
 	})
-	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
-		t.Fatalf("trigger: %v", err)
-	}
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer triggerCancel()
+	triggerErr := make(chan error, 1)
+	go func() {
+		_, err := r.child.Request(triggerCtx, "test/ask_permission", nil)
+		triggerErr <- err
+	}()
 	waitFor(t, 2*time.Second, "pending permission", func() bool {
 		r.permMu.Lock()
 		defer r.permMu.Unlock()
@@ -546,6 +838,14 @@ func TestRegistryRestartClearsPending(t *testing.T) {
 	// Simulate a second restart: clearPending must drain the map and a
 	// late resolve must report ErrGone.
 	r.clearPending()
+	select {
+	case err := <-triggerErr:
+		if err != nil {
+			t.Fatalf("trigger returned error after clear: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trigger did not return after clear")
+	}
 	r.permMu.Lock()
 	_, ok := r.permissions["tc-1"]
 	r.permMu.Unlock()

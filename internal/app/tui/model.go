@@ -90,6 +90,7 @@ type SessionSwapResult struct {
 	PipelineFactory   func(planPath string) AgentRunner
 	PlanAuthorFactory PlanAuthorFactory
 	ToolRegistry      *registry.Registry
+	ReviewDispatcher  func(ctx context.Context, focus string) error
 }
 
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
@@ -243,6 +244,11 @@ type Model struct {
 	workspaceBroker *pubsub.Broker[session.WorkspaceEvent]
 	workspaceEvents <-chan pubsub.Event[session.WorkspaceEvent]
 
+	// subagentBroker, when non-nil, delivers SubagentEvents so the TUI
+	// re-renders subagent cards as they are registered or change status.
+	subagentBroker *pubsub.Broker[session.SubagentEvent]
+	subagentEvents <-chan pubsub.Event[session.SubagentEvent]
+
 	// gitInfo holds the cached branch + worktree for state.WorkingDir,
 	// refreshed on a throttled tick and on every WindowSizeMsg. lastGitRead
 	// bounds the throttle (see handleAgentTick).
@@ -376,6 +382,10 @@ type Model struct {
 	// proposal task. Wired from app.go; used by the /sdd offer-to-fill flow
 	// to propose build/test commands when none can be detected.
 	subagentFactory SubagentRunnerFactory
+
+	// reviewDispatcher runs a reviewer subagent for the /review command.
+	// Wired from app.go; if nil, /review reports that it is unavailable.
+	reviewDispatcher func(ctx context.Context, focus string) error
 
 	// pendingModelOptions holds a config candidate saved while the runner
 	// or background jobs are active. It is flushed when the model becomes
@@ -613,6 +623,15 @@ func WithWorkspaceBroker(ctx context.Context, broker *pubsub.Broker[session.Work
 	}
 }
 
+// WithSubagentBroker wires the broker carrying session.SubagentEvents so
+// subagent cards re-render on registration/status changes.
+func WithSubagentBroker(ctx context.Context, broker *pubsub.Broker[session.SubagentEvent]) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.subagentBroker = broker
+	}
+}
+
 // WithCustomAgentRunnerFactory wires a factory that builds a one-shot
 // AgentRunner for a named custom agent. Used by the /agents Run-now action.
 func WithCustomAgentRunnerFactory(fn CustomAgentRunnerFactory) Option {
@@ -627,6 +646,15 @@ func WithCustomAgentRunnerFactory(fn CustomAgentRunnerFactory) Option {
 func WithSubagentFactory(fn SubagentRunnerFactory) Option {
 	return func(m *Model) {
 		m.subagentFactory = fn
+	}
+}
+
+// WithReviewDispatcher wires the /review command to a dispatcher that runs
+// a reviewer subagent. The dispatcher receives the user's optional focus
+// argument and runs until the subagent finishes.
+func WithReviewDispatcher(fn func(ctx context.Context, focus string) error) Option {
+	return func(m *Model) {
+		m.reviewDispatcher = fn
 	}
 }
 
@@ -1101,6 +1129,9 @@ func New(state *session.State, opts ...Option) Model {
 	if m.workspaceBroker != nil && m.workspaceEvents == nil {
 		m.workspaceEvents = m.workspaceBroker.Subscribe(m.ctx)
 	}
+	if m.subagentBroker != nil && m.subagentEvents == nil {
+		m.subagentEvents = m.subagentBroker.Subscribe(m.ctx)
+	}
 
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request, so the first render shows the huh surface
@@ -1166,6 +1197,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.workspaceEvents != nil {
 		cmds = append(cmds, pumpWorkspaceEvents(m.workspaceEvents))
+	}
+	if m.subagentEvents != nil {
+		cmds = append(cmds, pumpSubagentEvents(m.subagentEvents))
 	}
 	return tea.Batch(cmds...)
 }
@@ -1477,7 +1511,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, railBaseRefMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2848,8 +2882,14 @@ func (m *Model) refreshViewport() {
 	// m.state.ActiveToolCall(), which always used the parent session
 	// and showed the wrong tool inside a drilled subagent view.
 	if atc, ok := transcriptState.ActiveToolCall(); ok {
-		s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width())
-		addBlock(s, &clickTarget{isActiveTool: true})
+		// Suppress the parent in-flight agent.run row when a subagent card
+		// is already rendering the running child. Completed rows are already
+		// deduplicated above; this is the in-flight counterpart.
+		suppress := !drilling && atc.Name == "agent.run" && m.state.HasRunningSubagent()
+		if !suppress {
+			s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width())
+			addBlock(s, &clickTarget{isActiveTool: true})
+		}
 	}
 	if err := m.state.ProviderError(); err != nil {
 		addBlock(renderProviderError(err, m.viewport.Width())+
@@ -3157,6 +3197,15 @@ func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, 
 	}
 }
 
+// runReviewCmd wraps a /review subagent dispatch into a Bubble Tea command.
+func runReviewCmd(ctx context.Context, state *session.State, dispatcher func(ctx context.Context, focus string) error, focus string) tea.Cmd {
+	return func() tea.Msg {
+		defer state.EndWork()
+		err := dispatcher(ctx, focus)
+		return agentFinishedMsg{err: err}
+	}
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
 		return agentTickMsg{}
@@ -3406,6 +3455,17 @@ func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
 	return m, tea.Batch(pumpWorkspaceEvents(m.workspaceEvents), baseCmd)
 }
 
+// handleSubagentMsg handles a subagentMsg: a subagent card was registered
+// or changed status, so refresh the transcript viewport to reflect the
+// new card state, then re-arm the pump.
+func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
+	m.refreshViewport()
+	if m.subagentEvents == nil {
+		return m, nil
+	}
+	return m, pumpSubagentEvents(m.subagentEvents)
+}
+
 // handleRailBaseRef handles a railBaseRefMsg: a freshly-read HEAD SHA for
 // the changed-files rail. It rebases the base ref and refreshes the cache.
 // refreshRailChanged runs two git diff subprocesses synchronously here; that
@@ -3474,6 +3534,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSteering(msg)
 	case workspaceMsg:
 		return m.handleWorkspaceMsg(msg)
+	case subagentMsg:
+		return m.handleSubagentMsg(msg)
 	case railBaseRefMsg:
 		return m.handleRailBaseRef(msg)
 	case agentTickMsg:

@@ -306,7 +306,17 @@ func (m Model) footerHints() help.FooterHints {
 		RailEnabled:          m.railEnabled(),
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),
+		DrilledRunActive:     m.drilledIntoRunningSubagent(),
 	}
+}
+
+// drilledIntoRunningSubagent reports whether the top of the view stack
+// is a running subagent, which makes the Ctrl+X stop-agent hint actionable.
+func (m Model) drilledIntoRunningSubagent() bool {
+	if len(m.viewStack) == 0 {
+		return false
+	}
+	return m.viewStack[len(m.viewStack)-1].Status == session.SubagentRunning
 }
 
 // hasRunningSubagent reports whether any registered subagent is currently

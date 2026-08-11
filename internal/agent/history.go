@@ -75,6 +75,15 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 							kind:    "ledger",
 						})
 					}
+					for _, e := range audits[m.DBID] {
+						if e.Tool == "agent.run" && e.Content != "" {
+							cands = append(cands, candEntry{
+								role:    schema.RoleSystem,
+								content: fmt.Sprintf("Subagent report (%s): %s", e.Summary, e.Content),
+								kind:    "ledger",
+							})
+						}
+					}
 				}
 				cands = append(cands, candEntry{role: schema.RoleAssistant, content: m.Content, kind: "assistant-full"})
 			}

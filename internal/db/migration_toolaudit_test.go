@@ -39,6 +39,7 @@ func TestSaveAndLoadTurnToolAudit(t *testing.T) {
 		{Seq: 1, Tool: "file.read", Summary: "a.go:1-80 (412t)", Ok: true, Tokens: 412},
 		{Seq: 2, Tool: "file.write_patch", Summary: "b.go", Ok: true, Tokens: 80},
 		{Seq: 3, Tool: "shell.run", Summary: "go test ./...", Ok: true, Tokens: 320},
+		{Seq: 4, Tool: "agent.run", Summary: "review", Ok: true, Tokens: 120, Content: "Looks good."},
 	}
 	if err := db.SaveTurnToolAudit(sessionID, msgID, entries); err != nil {
 		t.Fatalf("save: %v", err)

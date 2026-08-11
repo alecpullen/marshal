@@ -8,6 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
 
@@ -163,5 +165,53 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 	}
 	if !strings.Contains(mm.viewport.GetContent(), "error: boom") {
 		t.Fatal("expected the failure detail to be visible after the click")
+	}
+}
+
+func TestMouseClickTodoPanelCyclesMode(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	todos := make([]db.TodoItem, 0, 8)
+	for i := 0; i < 8; i++ {
+		status := native.TodoPending
+		if i == 3 {
+			status = native.TodoInProgress
+		}
+		todos = append(todos, db.TodoItem{Content: "todo item", Status: status})
+	}
+	if err := m.state.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	if m.todoPanelMode != todoPanelExpanded {
+		t.Fatalf("initial mode = %v, want expanded", m.todoPanelMode)
+	}
+
+	top, _, ok := m.todoPanelBand()
+	if !ok {
+		t.Fatal("expected a todo panel band after seeding todos")
+	}
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+	if mm.todoPanelMode != todoPanelCollapsed {
+		t.Fatalf("click in the todo band should advance to collapsed, got %v", mm.todoPanelMode)
+	}
+
+	// Control: a click just above the band (inside the viewport) must not
+	// cycle the mode.
+	ctrl, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top - 1, Button: tea.MouseLeft})
+	cc := asModel(t, ctrl)
+	if cc.todoPanelMode != todoPanelExpanded {
+		t.Fatalf("click above the band must not cycle, got %v", cc.todoPanelMode)
+	}
+
+	// Control: a click past the left column width must not cycle either.
+	ctrl2, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 5, Y: top, Button: tea.MouseLeft})
+	cc2 := asModel(t, ctrl2)
+	if cc2.todoPanelMode != todoPanelExpanded {
+		t.Fatalf("click past leftWidth must not cycle, got %v", cc2.todoPanelMode)
 	}
 }

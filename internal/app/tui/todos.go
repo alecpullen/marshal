@@ -146,6 +146,14 @@ func todosAllDone(todos []native.TodoItem) bool {
 	return done == len(todos)
 }
 
+// cycleTodoPanelMode advances the pinned todo panel's visibility cycle:
+// expanded → collapsed → hidden. Used by Ctrl+T and by clicks in the
+// panel's row band (click.go).
+func (m *Model) cycleTodoPanelMode() {
+	m.todoPanelMode = (m.todoPanelMode + 1) % todoPanelModeCount
+	m.updateViewportHeight()
+}
+
 // todoSignature identifies a todo list by content and status, so the TUI
 // can tell an agent rewrite from a re-render.
 func todoSignature(todos []native.TodoItem) string {

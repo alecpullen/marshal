@@ -19,6 +19,13 @@ package glyph
 // Rule: state glyphs (Running, Error) always win over category
 // glyphs. Single-cell glyphs only — a double-width rune breaks the gutter's
 // column math, which is why 🌐 was retired in favour of Web.
+//
+// Width math is necessary but not sufficient: glyphs must also come from
+// blocks with broad terminal-font coverage. U+2313 (⌕, Miscellaneous
+// Technical) is absent from common terminal fonts, so macOS font fallback
+// draws it from a CJK font full-width, bleeding into the trailing gutter
+// cell. Search now uses ◈ from Geometric Shapes (U+25A0–U+25FF), which has
+// far wider coverage.
 const (
 	// Rail is the structural rail. It marks a contained region — panel
 	// gutters, the input state bar, stacked-panel rails, nested bodies — and
@@ -48,7 +55,7 @@ const (
 	Edit   = "✎"
 	File   = "≡"
 	Shell  = "›"
-	Search = "⌕"
+	Search = "◈"
 	Agent  = "⧉"
 	// Web marks web and browser activity. It replaced 🌐, which is
 	// double-width and blew the status line's width budget.

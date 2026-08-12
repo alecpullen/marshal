@@ -160,3 +160,28 @@ func init() {
 	// Suppress "no test files" warning for the temp dir cleanup
 	_ = os.RemoveAll
 }
+
+// TestLastReadTimeRejectsUnparseableTimestamp covers a row whose read_at is
+// not valid RFC3339. The parse error used to be discarded, so the caller was
+// handed a zero time reported as a genuine read time — and the read-before-
+// write staleness gate has no way to tell that apart from a real timestamp.
+func TestLastReadTimeRejectsUnparseableTimestamp(t *testing.T) {
+	db := testDB(t)
+	svc := New(db, "session-1")
+	if _, err := db.Exec(
+		`INSERT INTO file_reads (session_id, path, read_at) VALUES (?, ?, ?)`,
+		"session-1", "/tmp/x.go", "not-a-timestamp"); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+
+	got, ok, err := svc.LastReadTime("/tmp/x.go")
+	if err == nil {
+		t.Fatal("expected an error for an unparseable read_at, got nil")
+	}
+	if ok {
+		t.Error("ok = true, want false when the timestamp cannot be parsed")
+	}
+	if !got.IsZero() {
+		t.Errorf("time = %v, want zero", got)
+	}
+}

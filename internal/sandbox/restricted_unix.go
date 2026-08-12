@@ -18,8 +18,11 @@ var (
 // the ulimit-based caps (cpu/file-size/max-procs). darwin cannot limit
 // address space (ulimit -v) but the other caps still apply, so this is true
 // on all unix; memory caps simply report as 0 on darwin (see metaFor).
+//
+// This file is unix-only (see the build constraint), so the answer is always
+// true here; the windows build supplies its own version returning false.
 func restrictedResourceLimitsSupported() bool {
-	return runtime.GOOS != "windows"
+	return true
 }
 
 // ulimitSupportsMem reports whether address-space limits (ulimit -v) work on

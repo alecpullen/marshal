@@ -192,7 +192,10 @@ func TestSandboxCancellationKillsProcessGroupAfterGrace(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := sb.Run(ctx, native.CommandRequest{
+	// The run is cancelled by design, so Run's error is expected and
+	// deliberately ignored; what matters is the timing and the process state
+	// asserted below.
+	_, _ = sb.Run(ctx, native.CommandRequest{
 		Command: cmd,
 		Dir:     t.TempDir(),
 	})

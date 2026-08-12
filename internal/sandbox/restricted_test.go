@@ -163,31 +163,39 @@ func TestSandboxCancellationKillsProcessGroupAfterGrace(t *testing.T) {
 
 	pidDir := t.TempDir()
 	pidFile := filepath.Join(pidDir, "pids")
-	// The command starts a child that ignores SIGTERM and captures
-	// both shell PID and child PID to a file. Both survive the
-	// initial SIGTERM, forcing the grace-period wait before SIGKILL.
-	cmd := `trap '' TERM; echo $$ > ` + pidFile + `; (trap '' TERM; while true; do :; done) & echo $! >> ` + pidFile + `; wait`
+	readyFile := filepath.Join(pidDir, "child-ready")
+	// The command starts a child that ignores SIGTERM and captures both shell
+	// PID and child PID to a file. Both survive the initial SIGTERM, forcing
+	// the grace-period wait before SIGKILL. The child touches readyFile
+	// immediately after installing its own trap, so the file's existence is
+	// proof the trap is armed.
+	cmd := `trap '' TERM; echo $$ > ` + pidFile +
+		`; (trap '' TERM; : > ` + readyFile + `; while true; do :; done) & echo $! >> ` + pidFile + `; wait`
 
 	sb := newTestSandbox(t, Config{Backend: "restricted"})
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Cancel only once both PIDs have been written, which proves the TERM
-	// traps are installed. A fixed sleep raced `bash -lc` sourcing the login
-	// profile: when SIGTERM landed before the trap was in place the shell
-	// died on the spot, the process group vanished long before the grace
-	// deadline, and the assertion below failed intermittently.
+	// Cancel only once both traps are provably installed. The parent writes
+	// its PID after its own trap, and the child touches readyFile after its
+	// own; waiting on both is what makes the grace period observable.
+	//
+	// Two weaker versions of this failed intermittently. A fixed sleep raced
+	// `bash -lc` sourcing the login profile, so SIGTERM could land before any
+	// trap existed. Waiting on the PIDs alone is also not enough: `$!` is
+	// written by the parent the moment it forks, which says nothing about
+	// whether the child has reached its `trap` yet.
 	started := make(chan time.Time, 1)
 	go func() {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			data, err := os.ReadFile(pidFile)
 			if err == nil && len(strings.Fields(string(data))) >= 2 {
-				break
+				if _, statErr := os.Stat(readyFile); statErr == nil {
+					break
+				}
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		// Give the shell a moment to reach `wait` so the trap is armed.
-		time.Sleep(50 * time.Millisecond)
 		started <- time.Now()
 		cancel()
 	}()

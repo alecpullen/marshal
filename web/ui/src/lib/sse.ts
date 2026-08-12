@@ -1,4 +1,5 @@
 import { ensureToken, getToken } from './api.js'
+import type { FleetDelta } from './fleet'
 
 export interface SSEMessage {
   id: number
@@ -68,12 +69,14 @@ function parseSSEEvents(chunk: string): SSEMessage[] {
 }
 
 export interface SSEOptions {
-  sessionId: string
+  sessionId?: string
+  query?: string
   onEvent: (event: SSEEvent) => void
   signal?: AbortSignal
 }
 
-export function connectSSE({ sessionId, onEvent, signal }: SSEOptions): () => void {
+export function connectSSE({ sessionId, query, onEvent, signal }: SSEOptions): () => void {
+	const streamKey = sessionId ?? query ?? 'fleet'
   let abortController = new AbortController()
   let cancelled = false
   let reconnectDelay = 1000
@@ -89,9 +92,10 @@ export function connectSSE({ sessionId, onEvent, signal }: SSEOptions): () => vo
   const run = async () => {
     while (!cancelled) {
       const token = getToken() ?? ensureToken()
-      const lastId = getLastEventId(sessionId)
+      const lastId = getLastEventId(streamKey)
       try {
-        const res = await fetch(`/api/events?sessionId=${encodeURIComponent(sessionId)}&lastEventId=${lastId}`, {
+        const qs = query ? `${query}&lastEventId=${lastId}` : `sessionId=${encodeURIComponent(sessionId!)}&lastEventId=${lastId}`
+        const res = await fetch(`/api/events?${qs}`, {
           headers: {
             Accept: 'text/event-stream',
             Authorization: `Bearer ${token}`,
@@ -120,7 +124,7 @@ export function connectSSE({ sessionId, onEvent, signal }: SSEOptions): () => vo
             const messages = parseSSEEvents(part)
             for (const msg of messages) {
               if (msg.id > 0) {
-                setLastEventId(sessionId, msg.id)
+                setLastEventId(streamKey, msg.id)
               }
               onEvent({ type: 'message', message: msg })
             }
@@ -145,6 +149,19 @@ export function connectSSE({ sessionId, onEvent, signal }: SSEOptions): () => vo
     cancelled = true
     abortController.abort()
   }
+}
+
+export function parseFleetEvent(data: string): FleetDelta | 'overflow' | null {
+  try {
+    const value = JSON.parse(data) as Record<string, unknown>
+    if (value.type === 'replay_overflow') return 'overflow'
+    if (typeof value.kind !== 'string' || typeof value.sessionId !== 'string') return null
+    return value as unknown as FleetDelta
+  } catch { return null }
+}
+
+export function connectFleetSSE(opts: { onDelta: (d: FleetDelta) => void; onOverflow: () => void; signal?: AbortSignal }): () => void {
+  return connectSSE({ query: 'stream=fleet', onEvent: e => { if (e.type !== 'message') return; const parsed = parseFleetEvent(e.message.data); if (parsed === 'overflow') opts.onOverflow(); else if (parsed) opts.onDelta(parsed) }, signal: opts.signal })
 }
 
 function sleep(ms: number): Promise<void> {

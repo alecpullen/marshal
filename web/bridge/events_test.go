@@ -6,6 +6,40 @@ import (
 	"time"
 )
 
+func TestAttachDoesNotDrainOnUnsubscribe(t *testing.T) {
+	l := NewEventLog()
+	child := &Child{}
+	reg := NewRegistry(child)
+	Attach(l, child, reg)
+	reg.track("s1", "/home/u/repo")
+	ch := make(chan Decision, 1)
+	reg.permMu.Lock()
+	reg.permissions["tc1"] = ch
+	reg.permSession["tc1"] = "s1"
+	reg.permMu.Unlock()
+	_, unsub := l.Subscribe("s1")
+	unsub()
+	select {
+	case d := <-ch:
+		t.Fatalf("pending permission was drained (approved=%v)", d.Approved)
+	default:
+	}
+	if got := reg.Pending("s1"); got != "approval" {
+		t.Fatalf("Pending after unsubscribe = %q", got)
+	}
+	if err := reg.ResolvePermission("tc1", Decision{Approved: true}); err != nil {
+		t.Fatalf("ResolvePermission: %v", err)
+	}
+	select {
+	case d := <-ch:
+		if !d.Approved {
+			t.Error("resolved decision should be approved")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resolve did not reach waiter")
+	}
+}
+
 func TestEventLogAppendAndReplay(t *testing.T) {
 	l := NewEventLog()
 	for i := 1; i <= 3; i++ {

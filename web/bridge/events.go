@@ -270,14 +270,7 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 			prevOnEvent(sessionID, payload)
 		}
 	}
-	// When the last SSE client for a session disconnects, drain that
-	// session's pending permission/question waits so they do not leak.
-	// Chained, not replaced.
-	prevOnUnsub := l.OnUnsubscribe
-	l.OnUnsubscribe = func(sessionID string) {
-		reg.DrainSession(sessionID)
-		if prevOnUnsub != nil {
-			prevOnUnsub(sessionID)
-		}
-	}
+	// Deliberately do not wire OnUnsubscribe to DrainSession. Closing an
+	// SSE client must park pending approvals/questions rather than deny
+	// them; explicit cancellation and deletion still drain the waits.
 }

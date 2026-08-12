@@ -675,7 +675,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	body += listView
 	footer := fmt.Sprintf("%d entries", len(settings.FieldListRows(l)))
 
-	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)
+	content := body + "\n" + chrome.TertiaryStyle().Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
 
 	var hints string

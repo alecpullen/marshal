@@ -116,7 +116,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	footerHeight := 0
 	footer := ""
 	if len(p.stack.Stack) == 1 && p.doc.Footer != "" {
-		footer = lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(p.doc.Footer)
+		footer = chrome.TertiaryStyle().Render(p.doc.Footer)
 		footerHeight = lipgloss.Height(footer)
 	}
 	listHeight := maxHeight - 1 - footerHeight

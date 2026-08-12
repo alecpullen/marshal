@@ -9,14 +9,13 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/textfield"
-	"marshal/internal/app/tui/theme"
 	"marshal/internal/plugins"
 )
 
@@ -651,7 +650,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	case p.status != "":
 		footer += " · " + p.status
 	}
-	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)
+	content := body + "\n" + chrome.TertiaryStyle().Render(footer)
 	return content
 }
 

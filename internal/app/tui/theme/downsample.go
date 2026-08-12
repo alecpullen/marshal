@@ -121,28 +121,43 @@ func downsampleTo16(t Theme) Theme {
 	return out
 }
 
+// maxSeparationPasses bounds separatePairs' fixed-point iteration. A nudge
+// can move a shared slot onto another pair's anchor, so a single pass does
+// not guarantee every pair is distinct; re-checking until a pass makes no
+// change reaches a fixed point. The bound guards against oscillation between
+// two configurations that each break a different pair.
+const maxSeparationPasses = 16
+
 // separatePairs nudges any pair that collapsed onto one colour to the
 // next-nearest distinct ANSI slot. The second element of each pair is the
 // one moved: meaningfulPairs lists the less-critical foreground second, and
-// backgroundPairs lists the background second.
+// backgroundPairs lists the background second. It iterates to a bounded fixed
+// point so a later nudge cannot leave an earlier pair collapsed.
 func separatePairs(t *Theme) {
 	pairs := make([][2]func(*Theme) *color.Color, 0, len(meaningfulPairs)+len(backgroundPairs))
 	pairs = append(pairs, meaningfulPairs...)
 	pairs = append(pairs, backgroundPairs...)
-	for _, pair := range pairs {
-		a, b := pair[0](t), pair[1](t)
-		ai, aok := index256(*a)
-		bi, bok := index256(*b)
-		if !aok || !bok || ai != bi {
-			continue
+	for pass := 0; pass < maxSeparationPasses; pass++ {
+		changed := false
+		for _, pair := range pairs {
+			a, b := pair[0](t), pair[1](t)
+			ai, aok := index256(*a)
+			bi, bok := index256(*b)
+			if !aok || !bok || ai != bi {
+				continue
+			}
+			// Prefer the bright/dim counterpart of the same hue: it stays in the
+			// same color family, so the palette still reads as one system.
+			alt := ai ^ 8
+			if alt > 15 || alt == ai {
+				alt = (ai + 1) % 16
+			}
+			*b = lipgloss.Color(itoa(alt))
+			changed = true
 		}
-		// Prefer the bright/dim counterpart of the same hue: it stays in the
-		// same color family, so the palette still reads as one system.
-		alt := ai ^ 8
-		if alt > 15 || alt == ai {
-			alt = (ai + 1) % 16
+		if !changed {
+			return
 		}
-		*b = lipgloss.Color(itoa(alt))
 	}
 }
 

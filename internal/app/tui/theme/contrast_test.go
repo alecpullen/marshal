@@ -5,6 +5,8 @@ import (
 	"image/color"
 	"math"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 // marshal never paints BGBase (see its doc comment in theme.go), so a
@@ -334,5 +336,80 @@ func TestNoForegroundBackgroundCollapse(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestWarmSunset16Neutrals pins the deliberate neutral allocation of the
+// hand-tuned Warm Sunset 16-colour table. The four neutrals are spent as
+// backgrounds on 0 and 8 and foregrounds on 7 and 15; any drift from that
+// layout is a regression even if the collapse test still passes.
+func TestWarmSunset16Neutrals(t *testing.T) {
+	th, ok := presets16["warm-sunset"]
+	if !ok {
+		t.Fatal("warm-sunset 16-colour table missing")
+	}
+	got := map[string]int{}
+	want := map[string]int{}
+	for slot, c := range map[string]color.Color{
+		"FGDefault":   th.FGDefault,
+		"FGMuted":     th.FGMuted,
+		"BorderMuted": th.BorderMuted,
+		"BGBase":      th.BGBase,
+		"BGSurface":   th.BGSurface,
+	} {
+		i, ok := index256(c)
+		if !ok {
+			t.Fatalf("warm-sunset 16-colour %s is not a plain ANSI index: %v", slot, c)
+		}
+		got[slot] = i
+	}
+	want["FGDefault"] = 15
+	want["FGMuted"] = 7
+	want["BorderMuted"] = 7
+	want["BGBase"] = 0
+	want["BGSurface"] = 8
+	for slot, wantV := range want {
+		if got[slot] != wantV {
+			t.Errorf("warm-sunset 16-colour %s = %d, want %d", slot, got[slot], wantV)
+		}
+	}
+}
+
+// TestSeparatePairsIsFixedPoint asserts that separatePairs terminates at a
+// fixed point: every meaningful/background pair is distinct after it runs,
+// and running it again is a no-op. The pass iterates to a bounded fixed point
+// so a nudge cannot leave an earlier pair collapsed.
+func TestSeparatePairsIsFixedPoint(t *testing.T) {
+	th := warmSunset16
+	// Deliberately seed collisions across pairs so separation has work to do.
+	th.FGEmphasis = lipgloss.Color("8")
+	th.FGMuted = lipgloss.Color("8")
+	th.BGSurface = lipgloss.Color("8")
+
+	separatePairs(&th)
+
+	allPairs := func() [][2]func(*Theme) *color.Color {
+		pairs := make([][2]func(*Theme) *color.Color, 0, len(meaningfulPairs)+len(backgroundPairs))
+		pairs = append(pairs, meaningfulPairs...)
+		pairs = append(pairs, backgroundPairs...)
+		return pairs
+	}
+	for _, pair := range allPairs() {
+		a, b := pair[0](&th), pair[1](&th)
+		ai, aok := index256(*a)
+		bi, bok := index256(*b)
+		if !aok || !bok {
+			t.Fatalf("pair did not resolve to ANSI indices")
+		}
+		if ai == bi {
+			t.Errorf("pair still collapsed on %v after separation", *a)
+		}
+	}
+
+	// A converged table must be stable: a second pass changes nothing.
+	before := th
+	separatePairs(&th)
+	if th != before {
+		t.Errorf("separatePairs did not reach a fixed point: second pass mutated the theme")
 	}
 }

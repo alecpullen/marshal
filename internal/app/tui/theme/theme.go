@@ -231,8 +231,8 @@ var presets16 = map[string]Theme{
 // choosing any other theme on a non-256-color terminal silently did nothing.
 //
 // separatePairs runs over hand-tuned tables as well as downsampled ones. A
-// hand-tuned table is written by a person and can collide just as easily; the
-// pass is idempotent when the table is already correct.
+// hand-tuned table is written by a person and can collide just as easily; on
+// an already-correct table the pass makes no changes.
 func sixteenFor(name string, base Theme) Theme {
 	if t, ok := presets16[name]; ok {
 		separatePairs(&t)

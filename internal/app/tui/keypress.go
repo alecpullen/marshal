@@ -448,7 +448,8 @@ func (m *Model) cursorAtEndOfInput() bool {
 	if m.input.Line() != m.input.LineCount()-1 {
 		return false
 	}
-	return li.CharOffset >= len([]rune(value))
+	lines := strings.Split(value, "\n")
+	return li.CharOffset >= len([]rune(lines[m.input.Line()]))
 }
 
 // acceptSuggestion fills the input with the active suggestion, moves the

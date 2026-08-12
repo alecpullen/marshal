@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestCursorAtEndOfInputUsesCurrentLineLength(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.input.SetValue("first line\nlast")
+	m.input.CursorEnd()
+
+	if !m.cursorAtEndOfInput() {
+		t.Fatal("cursor at the end of the final line should accept a suggestion")
+	}
+}
+
 func TestGutteredInputSuggestion(t *testing.T) {
 	t.Run("empty_input_shows_full_suggestion", func(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)

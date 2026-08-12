@@ -56,10 +56,17 @@ func Reload(th Theme) {
 // color.Color, which is set to NoColor{} (no SGR emitted) in monochrome
 // mode when $NO_COLOR is set.
 type Theme struct {
-	FGDefault       color.Color
-	FGMuted         color.Color
-	BorderMuted     color.Color
-	FGEmphasis      color.Color
+	FGDefault   color.Color
+	FGMuted     color.Color
+	BorderMuted color.Color
+	FGEmphasis  color.Color
+	// BGBase is a reference value, not a render target: marshal deliberately
+	// never paints it, so the terminal's own background (and any
+	// transparency or background image) shows through. BGSurface and
+	// BGSelection are derived relative to it, and contrast_test.go validates
+	// foregrounds against a range of plausible terminal backgrounds rather
+	// than against this value. Zero call sites outside this package is
+	// correct, not dead code.
 	BGBase          color.Color
 	BGSurface       color.Color
 	BGSelection     color.Color
@@ -77,18 +84,18 @@ type Theme struct {
 // to 256-color ANSI codes.
 var warmSunset256 = Theme{
 	FGDefault:       lipgloss.Color("252"),
-	FGMuted:         lipgloss.Color("244"),
-	BorderMuted:     lipgloss.Color("245"),
+	FGMuted:         lipgloss.Color("248"),
+	BorderMuted:     lipgloss.Color("246"),
 	FGEmphasis:      lipgloss.Color("255"),
 	BGBase:          lipgloss.Color("235"),
-	BGSurface:       lipgloss.Color("237"),
-	BGSelection:     lipgloss.Color("60"),
+	BGSurface:       lipgloss.Color("236"),
+	BGSelection:     lipgloss.Color("238"),
 	AccentPrimary:   lipgloss.Color("209"),
-	AccentSecondary: lipgloss.Color("175"),
-	AccentTertiary:  lipgloss.Color("214"),
-	UserPrompt:      lipgloss.Color("246"),
-	StatusError:     lipgloss.Color("203"),
-	StatusWarning:   lipgloss.Color("172"),
+	AccentSecondary: lipgloss.Color("177"),
+	AccentTertiary:  lipgloss.Color("183"),
+	UserPrompt:      lipgloss.Color("250"),
+	StatusError:     lipgloss.Color("211"),
+	StatusWarning:   lipgloss.Color("214"),
 	StatusSuccess:   lipgloss.Color("43"),
 	StatusInfo:      lipgloss.Color("81"),
 }

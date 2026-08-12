@@ -105,14 +105,14 @@ func Test16ColorFallback(t *testing.T) {
 
 func Test256ColorPaletteHasNewThemeSlots(t *testing.T) {
 	th := LoadFor(false, "xterm-256color")
-	if th.AccentTertiary != lipgloss.Color("214") {
-		t.Fatalf("AccentTertiary = %#v, want 214 (gold)", th.AccentTertiary)
+	if th.AccentTertiary != lipgloss.Color("183") {
+		t.Fatalf("AccentTertiary = %#v, want 183", th.AccentTertiary)
 	}
-	if th.UserPrompt != lipgloss.Color("246") {
-		t.Fatalf("UserPrompt = %#v, want 246 (medium grey)", th.UserPrompt)
+	if th.UserPrompt != lipgloss.Color("250") {
+		t.Fatalf("UserPrompt = %#v, want 250", th.UserPrompt)
 	}
-	if th.BorderMuted != lipgloss.Color("245") {
-		t.Fatalf("BorderMuted = %#v, want 245", th.BorderMuted)
+	if th.BorderMuted != lipgloss.Color("246") {
+		t.Fatalf("BorderMuted = %#v, want 246", th.BorderMuted)
 	}
 }
 
@@ -177,8 +177,8 @@ func TestLoadWithConfigModeLight(t *testing.T) {
 	if th.BGBase != lipgloss.Color("255") {
 		t.Fatalf("BGBase = %#v, want 255 (light bg) for light mode", th.BGBase)
 	}
-	if th.FGDefault != lipgloss.Color("243") {
-		t.Fatalf("FGDefault = %#v, want 243 (dark fg) for light mode", th.FGDefault)
+	if th.FGDefault != lipgloss.Color("236") {
+		t.Fatalf("FGDefault = %#v, want 236 (dark fg) for light mode", th.FGDefault)
 	}
 }
 

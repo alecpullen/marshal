@@ -1,0 +1,4 @@
+import { describe, expect, it } from 'vitest'
+import { applyDeltaTo, sortAttentionFirst, type AgentRow } from './fleet'
+const row = (x: Partial<AgentRow>): AgentRow => ({ id:'x', project:'/p', status:'idle', updatedAt:'', name:'n', mode:'edit', activity:'', contextPct:0, changedFiles:0, interrupted:false, ...x })
+describe('fleet helpers', () => { it('sorts attention first without mutation', () => { const rows=[row({id:'idle'}),row({id:'a',status:'awaiting-approval'})]; expect(sortAttentionFirst(rows)[0].id).toBe('a'); expect(rows[0].id).toBe('idle') }); it('applies delta', () => { expect(applyDeltaTo([row({id:'a'})], {kind:'activity',sessionId:'a',activity:'file.read'})[0].activity).toBe('file.read') }) })

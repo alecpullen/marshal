@@ -32,6 +32,9 @@ api.fish
 docs/superpowers/
 skills-lock.json
 
+# Generated session exports
+/marshal-session-*.html
+
 # Test/build binaries
 *.test
 tui.test

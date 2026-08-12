@@ -215,23 +215,23 @@ func (m *Model) View(maxW, maxH int) string {
 			marker = "▸ "
 			focusLine = len(rows)
 		}
-		right := detailStyle().Render(it.Detail)
+		detail := ""
+		if it.Detail != "" {
+			detail = detailStyle().Render(it.Detail)
+		}
+		badge := ""
 		if it.Badge != "" {
 			bs := badgeStyle()
 			if strings.HasPrefix(it.Badge, "●") {
 				bs = nowStyle()
 			}
-			right += " " + bs.Render(it.Badge)
-		}
-		gap := inner - lipgloss.Width(marker) - lipgloss.Width(it.Label) - lipgloss.Width(right)
-		if gap < 1 {
-			gap = 1
+			badge = bs.Render(it.Badge)
 		}
 		label := it.Label
 		if pos == m.cursor {
 			label = cursorStyle().Render(label)
 		}
-		rows = append(rows, marker+label+strings.Repeat(" ", gap)+right)
+		rows = append(rows, chrome.Row(marker, label, detail, badge, inner))
 	}
 	if len(m.matches) == 0 {
 		rows = append(rows, mutedStyle().Render("  no matches"))

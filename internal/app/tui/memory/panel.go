@@ -2,12 +2,10 @@ package memory
 
 import (
 	"fmt"
-	"strings"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -180,24 +178,11 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 			focusLine = len(rows)
 		}
 		title := memoryTitle(mem.Content)
-		right := mutedStyle().Render(formatAge(mem.CreatedAt) + " · " + mem.Kind)
-		rightWidth := lipgloss.Width(right)
-		titleBudget := inner - lipgloss.Width(marker) - rightWidth - 1
-		if titleBudget < 1 {
-			titleBudget = 1
-		}
-		if ansi.StringWidth(title) > titleBudget {
-			title = ansi.Truncate(title, titleBudget, "…")
-		}
-		label := title
 		if pos == p.cursor {
-			label = cursorStyle().Render(label)
+			title = cursorStyle().Render(title)
 		}
-		gap := inner - lipgloss.Width(marker) - lipgloss.Width(label) - rightWidth
-		if gap < 1 {
-			gap = 1
-		}
-		rows = append(rows, marker+label+strings.Repeat(" ", gap)+right)
+		detail := mutedStyle().Render(formatAge(mem.CreatedAt) + " · " + mem.Kind)
+		rows = append(rows, chrome.Row(marker, title, detail, "", inner))
 	}
 	if len(p.matches) == 0 && p.loadErr == nil {
 		rows = append(rows, mutedStyle().Render("  no matches"))

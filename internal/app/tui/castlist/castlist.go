@@ -4,11 +4,8 @@
 package castlist
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -269,30 +266,15 @@ func (p *Panel) View(width, maxHeight int) string {
 // renderRow renders a single cast row (or the strategy row) into a string,
 // including any Err/Warn continuation lines.
 func renderRow(r Row, inner int) string {
-	right := ""
+	detail := ""
 	if r.Detail != "" {
-		right = detailStyle().Render(r.Detail)
+		detail = detailStyle().Render(r.Detail)
 	}
+	badge := ""
 	if r.Badge != "" {
-		right += " " + badgeStyle().Render(r.Badge)
+		badge = badgeStyle().Render(r.Badge)
 	}
-	rightWidth := lipgloss.Width(right)
-
-	titleBudget := inner - rightWidth - 1
-	if titleBudget < 1 {
-		titleBudget = 1
-	}
-	label := r.Title
-	if ansi.StringWidth(label) > titleBudget {
-		label = ansi.Truncate(label, titleBudget, "…")
-	}
-
-	gap := inner - lipgloss.Width(label) - rightWidth
-	if gap < 1 {
-		gap = 1
-	}
-
-	line := "  " + label + strings.Repeat(" ", gap) + right
+	line := chrome.Row("  ", r.Title, detail, badge, inner)
 
 	if r.Err != "" {
 		line += "\n" + errorStyle().Render("    "+r.Err)

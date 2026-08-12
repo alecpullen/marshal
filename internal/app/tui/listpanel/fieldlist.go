@@ -621,15 +621,13 @@ func (fl *FieldList) View() string {
 		if row.Warn {
 			title = flWarnStyle().Render(glyph.Warning+" ") + title
 		}
-		gap := fl.width - lipgloss.Width(marker) - lipgloss.Width(title) - lipgloss.Width(val)
-		if gap < 1 {
-			gap = 1
-		}
-		line := marker + flTitleStyle().Render(title) + strings.Repeat(" ", gap) + val
 		if isCursor {
 			cursorLine = len(lines)
-			line = flCursorStyle().Render(marker+title) + strings.Repeat(" ", gap) + val
+			title = flCursorStyle().Render(title)
+		} else {
+			title = flTitleStyle().Render(title)
 		}
+		line := chrome.Row(marker, title, val, "", fl.width)
 		lines = append(lines, line)
 		if isCursor && fl.ErrMsg != "" {
 			lines = append(lines, "    "+flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))

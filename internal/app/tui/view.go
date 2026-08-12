@@ -258,12 +258,81 @@ func (m Model) inputBarColor() color.Color {
 }
 
 // gutteredInput renders the textarea with the ▍ state bar prepended to
-// every display line.
+// every display line, and overlays the active next-prompt suggestion as
+// grey ghost text immediately after the cursor on the cursor line.
 func (m Model) gutteredInput() string {
 	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render(glyph.Rail)
-	lines := strings.Split(m.input.View(), "\n")
+	view := m.input.View()
+	ghost := m.suggestionGhost()
+	if ghost != "" {
+		view = insertGhostAfterCursor(view, ghost)
+	}
+	lines := strings.Split(view, "\n")
 	for i := range lines {
 		lines[i] = bar + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// suggestionGhost returns the styled ghost text to overlay on the input, or
+// "" when no suggestion should be shown. The ghost is fish-style: when the
+// typed value prefixes the suggestion, only the untyped suffix is shown;
+// otherwise the full suggestion appears only when the input is empty. It is
+// rendered in the theme's muted style and truncated to the remaining width
+// of the cursor row so it never wraps onto the next line.
+func (m Model) suggestionGhost() string {
+	if m.suggestion == "" || m.suggestionDismissed || m.busy {
+		return ""
+	}
+	// The completion popup, approval, and question panels all hide the
+	// textarea; a ghost would be a visual conflict, so suppress it.
+	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil {
+		return ""
+	}
+	value := m.input.Value()
+	var ghost string
+	if value == "" {
+		ghost = m.suggestion
+	} else if strings.HasPrefix(m.suggestion, value) {
+		ghost = m.suggestion[len(value):]
+	} else {
+		return ""
+	}
+	// Truncate to the remaining width of the cursor row (fish-shell style;
+	// no wrapping onto the next row). The ▍ rail and ❯ prompt reserve
+	// cells, so budget against the input width.
+	remaining := max(m.input.Width()-len([]rune(value)), 1)
+	ghost = ansi.Truncate(ghost, remaining, "…")
+	return mutedStyle().Render(ghost)
+}
+
+// insertGhostAfterCursor inserts ghost (already styled) into the textarea
+// view immediately after the cursor's reverse-video marker on the cursor
+// line. The cursor is rendered by bubbles as "\x1b[7;<color>m<char>\x1b[m";
+// we locate that sequence and splice the ghost in after it. If the cursor
+// marker cannot be found (e.g. placeholder view), the ghost is appended to
+// the first line instead.
+func insertGhostAfterCursor(view, ghost string) string {
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		// The cursor's reverse-video sequence always starts with "\x1b[7;".
+		idx := strings.Index(line, "\x1b[7;")
+		if idx < 0 {
+			continue
+		}
+		// Find the end of the cursor's SGR reset ("\x1b[m") after the char.
+		rest := line[idx:]
+		end := strings.Index(rest, "\x1b[m")
+		if end < 0 {
+			continue
+		}
+		insertAt := idx + end + len("\x1b[m")
+		lines[i] = line[:insertAt] + ghost + line[insertAt:]
+		return strings.Join(lines, "\n")
+	}
+	// Fallback: no cursor marker found — append to the first line.
+	if len(lines) > 0 {
+		lines[0] += ghost
 	}
 	return strings.Join(lines, "\n")
 }

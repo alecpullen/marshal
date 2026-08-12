@@ -98,8 +98,8 @@ func Test16ColorFallback(t *testing.T) {
 	if th.BGSelection != lipgloss.Color("4") {
 		t.Fatalf("BGSelection = %#v, want 16-color blue 4", th.BGSelection)
 	}
-	if th.BorderMuted != lipgloss.Color("8") {
-		t.Fatalf("BorderMuted = %#v, want 16-color bright black 8", th.BorderMuted)
+	if th.BorderMuted != lipgloss.Color("7") {
+		t.Fatalf("BorderMuted = %#v, want 16-color grey 7", th.BorderMuted)
 	}
 }
 
@@ -124,8 +124,8 @@ func Test16ColorPaletteHasNewThemeSlots(t *testing.T) {
 	if th.UserPrompt != lipgloss.Color("7") {
 		t.Fatalf("UserPrompt = %#v, want 7 (white)", th.UserPrompt)
 	}
-	if th.BorderMuted != lipgloss.Color("8") {
-		t.Fatalf("BorderMuted = %#v, want 8 (bright black)", th.BorderMuted)
+	if th.BorderMuted != lipgloss.Color("7") {
+		t.Fatalf("BorderMuted = %#v, want 7 (grey)", th.BorderMuted)
 	}
 }
 

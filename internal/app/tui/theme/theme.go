@@ -102,10 +102,15 @@ var warmSunset256 = Theme{
 
 // warmSunset16 maps the Warm Sunset palette onto the 16-ANSI relative set
 // so the terminal theme controls the actual appearance.
+//
+// The four neutrals (0 < 8 < 7 < 15 by conventional lightness) are spent
+// deliberately: backgrounds take 0 and 8, foregrounds take 7 and 15. Any
+// other arrangement collapses a foreground onto a background, which does not
+// dim that text — it deletes it.
 var warmSunset16 = Theme{
-	FGDefault:       lipgloss.Color("7"),
-	FGMuted:         lipgloss.Color("8"),
-	BorderMuted:     lipgloss.Color("8"),
+	FGDefault:       lipgloss.Color("15"),
+	FGMuted:         lipgloss.Color("7"),
+	BorderMuted:     lipgloss.Color("7"),
 	FGEmphasis:      lipgloss.Color("15"),
 	BGBase:          lipgloss.Color("0"),
 	BGSurface:       lipgloss.Color("8"),
@@ -224,8 +229,13 @@ var presets16 = map[string]Theme{
 //
 // Previously every preset fell back to warmSunset16 regardless of name, so
 // choosing any other theme on a non-256-color terminal silently did nothing.
+//
+// separatePairs runs over hand-tuned tables as well as downsampled ones. A
+// hand-tuned table is written by a person and can collide just as easily; the
+// pass is idempotent when the table is already correct.
 func sixteenFor(name string, base Theme) Theme {
 	if t, ok := presets16[name]; ok {
+		separatePairs(&t)
 		return t
 	}
 	return downsampleTo16(base)

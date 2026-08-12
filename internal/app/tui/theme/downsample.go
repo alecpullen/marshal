@@ -77,6 +77,29 @@ var meaningfulPairs = [][2]func(*Theme) *color.Color{
 		func(t *Theme) *color.Color { return &t.FGMuted }},
 }
 
+// backgroundPairs are foreground/background pairs that must not collapse.
+// Nearest-colour matching can legitimately land a foreground on the same
+// ANSI slot as a background, which makes that text invisible rather than
+// merely low-contrast.
+//
+// separatePairs nudges the *second* element of a pair, so the background is
+// listed second here: the foreground carries the semantic weight and should
+// keep its colour.
+var backgroundPairs = [][2]func(*Theme) *color.Color{
+	{func(t *Theme) *color.Color { return &t.FGMuted },
+		func(t *Theme) *color.Color { return &t.BGSurface }},
+	{func(t *Theme) *color.Color { return &t.FGMuted },
+		func(t *Theme) *color.Color { return &t.BGSelection }},
+	{func(t *Theme) *color.Color { return &t.FGDefault },
+		func(t *Theme) *color.Color { return &t.BGSurface }},
+	{func(t *Theme) *color.Color { return &t.FGEmphasis },
+		func(t *Theme) *color.Color { return &t.BGSelection }},
+	{func(t *Theme) *color.Color { return &t.BorderMuted },
+		func(t *Theme) *color.Color { return &t.BGBase }},
+	{func(t *Theme) *color.Color { return &t.BorderMuted },
+		func(t *Theme) *color.Color { return &t.BGSurface }},
+}
+
 // downsampleTo16 maps a 256-color theme onto the 16-ANSI set by nearest
 // color, preserving the preset's identity as far as 16 colors allow.
 //
@@ -98,10 +121,15 @@ func downsampleTo16(t Theme) Theme {
 	return out
 }
 
-// separatePairs nudges any meaningful pair that collapsed onto one color to
-// the next-nearest distinct ANSI slot.
+// separatePairs nudges any pair that collapsed onto one colour to the
+// next-nearest distinct ANSI slot. The second element of each pair is the
+// one moved: meaningfulPairs lists the less-critical foreground second, and
+// backgroundPairs lists the background second.
 func separatePairs(t *Theme) {
-	for _, pair := range meaningfulPairs {
+	pairs := make([][2]func(*Theme) *color.Color, 0, len(meaningfulPairs)+len(backgroundPairs))
+	pairs = append(pairs, meaningfulPairs...)
+	pairs = append(pairs, backgroundPairs...)
+	for _, pair := range pairs {
 		a, b := pair[0](t), pair[1](t)
 		ai, aok := index256(*a)
 		bi, bok := index256(*b)

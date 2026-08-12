@@ -293,3 +293,46 @@ func TestErrorDistinctFromFocusAccent(t *testing.T) {
 		}
 	}
 }
+
+// TestNoForegroundBackgroundCollapse pins F5: in the 16-colour set a
+// foreground that lands on the same ANSI index as a background it renders
+// against is not merely low-contrast, it is invisible. warmSunset16 assigned
+// ANSI 8 to FGMuted, BorderMuted and BGSurface, so muted text inside a code
+// block was drawn in exactly its own background colour.
+//
+// Covers the hand-tuned tables and the downsampled fallback, since
+// sixteenFor picks between them.
+func TestNoForegroundBackgroundCollapse(t *testing.T) {
+	foregrounds := []struct {
+		name string
+		get  func(Theme) color.Color
+	}{
+		{"FGDefault", func(t Theme) color.Color { return t.FGDefault }},
+		{"FGMuted", func(t Theme) color.Color { return t.FGMuted }},
+		{"FGEmphasis", func(t Theme) color.Color { return t.FGEmphasis }},
+		{"BorderMuted", func(t Theme) color.Color { return t.BorderMuted }},
+	}
+	backgrounds := []struct {
+		name string
+		get  func(Theme) color.Color
+	}{
+		{"BGBase", func(t Theme) color.Color { return t.BGBase }},
+		{"BGSurface", func(t Theme) color.Color { return t.BGSurface }},
+		{"BGSelection", func(t Theme) color.Color { return t.BGSelection }},
+	}
+	for _, name := range Names() {
+		preset, ok := LookupPreset(name)
+		if !ok {
+			t.Fatalf("preset %q missing", name)
+		}
+		th := sixteenFor(name, preset)
+		for _, f := range foregrounds {
+			for _, b := range backgrounds {
+				if f.get(th) == b.get(th) {
+					t.Errorf("%s (16-colour): %s and %s are both %v — the foreground is invisible",
+						name, f.name, b.name, f.get(th))
+				}
+			}
+		}
+	}
+}

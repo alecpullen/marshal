@@ -73,6 +73,31 @@ func TestRowStacksWhenLabelWouldStarve(t *testing.T) {
 	}
 }
 
+// TestRowStackedDropsDetailBeforeBadge pins C12 on the stacked path: when a
+// single line cannot carry both columns and the right column overflows, the
+// detail is dropped entirely and the badge is preserved (or, at the extreme,
+// truncated) — never the detail kept ahead of the badge. The badge is a state
+// marker, so it outranks the detail even below the stack threshold.
+func TestRowStackedDropsDetailBeforeBadge(t *testing.T) {
+	detail := "some long metadata that will not fit"
+	badge := "●now"
+	// Narrow enough that both right columns fail singleLine and force stacking,
+	// but the badge alone still fits the stacked right column whole.
+	got := Row("▸ ", "a-label", detail, badge, 16)
+	if !strings.Contains(got, "\n") {
+		t.Fatalf("expected a stacked row at inner=16, got one line:\n%q", got)
+	}
+	if strings.Contains(got, detail) {
+		t.Errorf("stacked row kept the detail instead of dropping it:\n%q", got)
+	}
+	if !strings.Contains(got, badge) {
+		t.Errorf("stacked row dropped the badge it exists to preserve:\n%q", got)
+	}
+	if w := widest(got); w > 16 {
+		t.Errorf("stacked row is %d cells wide, want <= 16:\n%q", w, got)
+	}
+}
+
 // TestRowRightAlignsWhenRoomy pins the wide case: the right column hugs the
 // right edge so a column of rows scans as a column.
 func TestRowRightAlignsWhenRoomy(t *testing.T) {

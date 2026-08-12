@@ -29,7 +29,9 @@ const StackThreshold = 24
 // marker is rendered at the start of the first line and is never truncated;
 // pass an equal-width blank for unselected rows so columns stay aligned.
 // label, detail and badge may carry ANSI styling. The result may contain one
-// newline, and no line exceeds inner cells.
+// newline, and every line is at most inner cells wide provided marker is no
+// wider than inner — an oversized marker is emitted verbatim and can overflow
+// the first line.
 func Row(marker, label, detail, badge string, inner int) string {
 	avail := inner - ansi.StringWidth(marker)
 	if avail < 1 {
@@ -46,7 +48,7 @@ func Row(marker, label, detail, badge string, inner int) string {
 		}
 	}
 	if detail != "" || badge != "" {
-		return stacked(marker, label, joinRight(detail, badge), inner)
+		return stacked(marker, label, detail, badge, inner)
 	}
 	line, _ := singleLine(marker, label, "", avail)
 	return line
@@ -83,7 +85,11 @@ func singleLine(marker, label, right string, avail int) (string, bool) {
 
 // stacked renders the label on its own line with the right column indented
 // beneath it, for widths where one line cannot carry both.
-func stacked(marker, label, right string, inner int) string {
+//
+// The badge is a state marker (C12) and outranks detail here too: when the
+// right column cannot fit, detail is dropped entirely before the badge is
+// ever truncated.
+func stacked(marker, label, detail, badge string, inner int) string {
 	markerW := ansi.StringWidth(marker)
 	budget := inner - markerW
 	if budget < 1 {
@@ -98,8 +104,20 @@ func stacked(marker, label, right string, inner int) string {
 	if rightBudget < 1 {
 		rightBudget = 1
 	}
-	if ansi.StringWidth(right) > rightBudget {
-		right = ansi.Truncate(right, rightBudget, "…")
+	// Try progressively cheaper right columns, mirroring Row's drop order.
+	// joinRight(detail, badge) first, then badge alone, and only truncate the
+	// badge once even it exceeds the right column.
+	right := ""
+	for _, candidate := range []string{joinRight(detail, badge), badge} {
+		if candidate != "" && ansi.StringWidth(candidate) <= rightBudget {
+			right = candidate
+			break
+		}
+	}
+	if right == "" && badge != "" {
+		right = ansi.Truncate(badge, rightBudget, "…")
+	} else if right == "" && detail != "" {
+		right = ansi.Truncate(detail, rightBudget, "…")
 	}
 	return marker + shown + "\n" + indent + right
 }

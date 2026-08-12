@@ -217,6 +217,13 @@ type Model struct {
 	// successful persist. Zero means no known issues.
 	diagnosticCount int
 
+	// suggestion is the active ghost-text next-prompt suggestion shown in
+	// the input box after a turn completes ("" = none). suggestionDismissed
+	// is set by Esc so a dismissed suggestion is not resurrected until the
+	// next turn completes. Both are cleared when a new turn starts.
+	suggestion          string
+	suggestionDismissed bool
+
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
 	// jobCountMsg) bridges it into jobCountMsg values. jobCount is the
@@ -3182,6 +3189,10 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	m.providerErrShownAt = time.Time{}
 	m.busy = true
 	m.turnStartedAt = m.now()
+	// A fresh prompt means the user is acting on their own — clear any
+	// stale ghost suggestion so it never survives into the new turn.
+	m.suggestion = ""
+	m.suggestionDismissed = false
 	agentCtx, cancel := context.WithCancel(m.ctx)
 	m.agentCancel = cancel
 	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
@@ -3503,6 +3514,11 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 				"To turn this approved plan into an executable SDD artifact, run /sdd new --from-last-plan.",
 				session.ContentTypePlain)
 		}
+		// A completed turn is the single point where the final assistant
+		// message is in the session state — compute the next-prompt
+		// suggestion here. Only on the success path: a failed or cancelled
+		// turn must not leave a stale ghost.
+		m.computeSuggestion()
 	}
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	m.updateViewportHeight()
@@ -3512,6 +3528,25 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// agent work stops inflating the diff; the railBaseRefMsg handler sets the
 	// new base and refreshes the cache after the next tick.
 	return m, tea.Sequence(tickCmd(), flushCmd, railBaseRefCmd(m.state.Workspace().ActiveRoot))
+}
+
+// computeSuggestion derives the next-prompt suggestion from the final
+// assistant message of the just-completed turn and stores it on the model.
+// It resets the dismissed flag so a fresh turn can surface a new ghost.
+func (m *Model) computeSuggestion() {
+	m.suggestion = ""
+	m.suggestionDismissed = false
+	msgs := m.state.Messages()
+	if len(msgs) == 0 {
+		return
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleAssistant {
+		return
+	}
+	if s, ok := extractSuggestion(last.Content); ok {
+		m.suggestion = s
+	}
 }
 
 // handlePlanAuthorFinished handles the completion of an authoring turn. On

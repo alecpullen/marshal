@@ -1755,6 +1755,60 @@ func TestAgentFinishedAdvancesRailBaseRef(t *testing.T) {
 	}
 }
 
+func TestSuggestionSetOnTurnFinish(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
+	m.busy = true
+
+	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = mm
+	if m.suggestion != "yes" {
+		t.Fatalf("suggestion = %q, want %q after a yes/no question turn", m.suggestion, "yes")
+	}
+	if m.suggestionDismissed {
+		t.Fatal("suggestionDismissed should be false after a fresh turn")
+	}
+}
+
+func TestSuggestionNotSetOnNonQuestionTurn(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
+	m.busy = true
+
+	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = mm
+	if m.suggestion != "" {
+		t.Fatalf("suggestion = %q, want empty for a non-question turn", m.suggestion)
+	}
+}
+
+func TestSuggestionNotSetOnFailedTurn(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
+	m.busy = true
+
+	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: errors.New("boom")})
+	m = mm
+	if m.suggestion != "" {
+		t.Fatalf("suggestion = %q, want empty after a failed turn", m.suggestion)
+	}
+}
+
+func TestSuggestionClearedOnTurnStart(t *testing.T) {
+	m := newTestModel(t)
+	m.suggestion = "yes"
+	m.suggestionDismissed = false
+
+	mm, _ := m.startAgentRun(m.runner, "continue")
+	m = asModel(t, mm)
+	if m.suggestion != "" {
+		t.Fatalf("suggestion = %q, want empty when a new turn starts", m.suggestion)
+	}
+	if m.suggestionDismissed {
+		t.Fatal("suggestionDismissed should be reset when a new turn starts")
+	}
+}
+
 func TestAgentFinishedAdvancesRailBaseRefWhenCancelled(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")

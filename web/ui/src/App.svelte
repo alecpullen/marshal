@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Dashboard from './views/Dashboard.svelte'
+  import NewAgent from './views/NewAgent.svelte'
   import Chat from './views/Chat.svelte'
 
   let hash = $state('#')
@@ -21,7 +22,7 @@
   {#if chatSessionId}
     <Chat sessionId={chatSessionId} onBack={() => (window.location.hash = '#')} />
   {:else if isNew}
-    <Dashboard onOpenAgent={(id) => (window.location.hash = `#chat/${id}`)} onNewAgent={() => (window.location.hash = '#')} />
+    <NewAgent onDone={(id) => (window.location.hash = id ? `#chat/${id}` : '#')} />
   {:else}
     <Dashboard onOpenAgent={(id) => (window.location.hash = `#chat/${id}`)} onNewAgent={() => (window.location.hash = '#new')} />
   {/if}

@@ -35,8 +35,8 @@ plans retain the legacy agent strategy.
 | Knowledge | `internal/knowledge/`, `internal/contextpack/`, `internal/rollover/` | Durable project memory, context budget, long-session rollover. |
 | Persistence | `internal/db/`, `internal/snapshot/`, `internal/filetrack/` | SQLite schema, workspace snapshots, file access tracking. |
 | ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. |
-| Web bridge | `web/bridge/`, `cmd/webbridge/` | HTTP/SSE bridge that supervises `marshal acp` and exposes sessions to browsers. |
-| Web UI | `web/ui/` | Svelte 5 + Vite + TypeScript SPA (dev-only Node toolchain; build output is embedded by `web/bridge`). |
+| Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, and serves REST plus per-session and fleet SSE streams. |
+| Web UI | `web/ui/` | Svelte 5 + Vite + TypeScript SPA: fleet dashboard, spawn composer, and per-agent chat (dev-only Node toolchain; build output is embedded by `web/bridge`). |
 
 ## Data flow of a single turn
 

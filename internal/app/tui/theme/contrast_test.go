@@ -172,3 +172,124 @@ func TestSelectionLegibility(t *testing.T) {
 		}
 	}
 }
+
+// minHueSeparation is the angular distance below which two saturated colours
+// stop being reliably distinguishable at terminal font weights, especially
+// with red-green colour vision deficiency.
+const minHueSeparation = 20.0
+
+// hueSat returns the HSL hue in degrees and the saturation of an RGB triple.
+func hueSat(rgb [3]int) (hue, sat float64) {
+	r := float64(rgb[0]) / 255
+	g := float64(rgb[1]) / 255
+	b := float64(rgb[2]) / 255
+	maxc := math.Max(r, math.Max(g, b))
+	minc := math.Min(r, math.Min(g, b))
+	if maxc == minc {
+		return 0, 0
+	}
+	l := (maxc + minc) / 2
+	d := maxc - minc
+	if l > 0.5 {
+		sat = d / (2 - maxc - minc)
+	} else {
+		sat = d / (maxc + minc)
+	}
+	switch maxc {
+	case r:
+		hue = math.Mod((g-b)/d, 6)
+	case g:
+		hue = (b-r)/d + 2
+	default:
+		hue = (r-g)/d + 4
+	}
+	hue *= 60
+	if hue < 0 {
+		hue += 360
+	}
+	return hue, sat
+}
+
+// hueDistance returns the shortest angular distance between two hues.
+func hueDistance(a, b float64) float64 {
+	d := math.Abs(a - b)
+	if d > 180 {
+		d = 360 - d
+	}
+	return d
+}
+
+// signalSlots are the four semantic status colours. They answer
+// good/bad/warning/info and frequently appear adjacent in one view, so they
+// must stay separable by hue.
+//
+// The accents are deliberately excluded. They mark structure and focus,
+// which position, weight and gutter glyphs also carry; and requiring them to
+// clear 20° from every status colour over-constrains the light-mode gamut
+// past what the 256-colour cube can satisfy at AA contrast. The one accent
+// relationship that does matter is pinned separately below.
+var signalSlots = []struct {
+	name string
+	get  func(Theme) color.Color
+}{
+	{"StatusError", func(t Theme) color.Color { return t.StatusError }},
+	{"StatusWarning", func(t Theme) color.Color { return t.StatusWarning }},
+	{"StatusSuccess", func(t Theme) color.Color { return t.StatusSuccess }},
+	{"StatusInfo", func(t Theme) color.Color { return t.StatusInfo }},
+}
+
+// TestSignalHueSeparation pins F4: warm-sunset previously packed five signal
+// colours into a 40° arc, leaving a warning and a tool-call name 4° apart.
+func TestSignalHueSeparation(t *testing.T) {
+	for _, name := range Names() {
+		th, ok := LookupPreset(name)
+		if !ok {
+			t.Fatalf("preset %q missing", name)
+		}
+		for i := 0; i < len(signalSlots); i++ {
+			for j := i + 1; j < len(signalSlots); j++ {
+				a, ok1 := slotRGB(signalSlots[i].get(th))
+				b, ok2 := slotRGB(signalSlots[j].get(th))
+				if !ok1 || !ok2 {
+					continue
+				}
+				ha, sa := hueSat(a)
+				hb, sb := hueSat(b)
+				if sa < 0.15 || sb < 0.15 {
+					continue // a grey carries no hue to separate
+				}
+				if d := hueDistance(ha, hb); d < minHueSeparation {
+					t.Errorf("%s: %s %s (%.0f°) and %s %s (%.0f°) are %.0f° apart, need %.0f°",
+						name, signalSlots[i].name, hexOf(a), ha,
+						signalSlots[j].name, hexOf(b), hb, d, minHueSeparation)
+				}
+			}
+		}
+	}
+}
+
+// TestErrorDistinctFromFocusAccent pins F4's motivating case: AccentPrimary
+// decides focused panel chrome, so an error sharing its hue makes a focused
+// border and a failure indistinguishable. warm-sunset had them 15° apart.
+func TestErrorDistinctFromFocusAccent(t *testing.T) {
+	for _, name := range Names() {
+		th, ok := LookupPreset(name)
+		if !ok {
+			t.Fatalf("preset %q missing", name)
+		}
+		ap, ok1 := slotRGB(th.AccentPrimary)
+		se, ok2 := slotRGB(th.StatusError)
+		if !ok1 || !ok2 {
+			continue
+		}
+		ha, sa := hueSat(ap)
+		hb, sb := hueSat(se)
+		if sa < 0.15 || sb < 0.15 {
+			continue
+		}
+		if d := hueDistance(ha, hb); d < minHueSeparation {
+			t.Errorf("%s: AccentPrimary %s (%.0f°) and StatusError %s (%.0f°) are %.0f° apart, need %.0f°",
+				name, hexOf(ap), ha, hexOf(se), hb, d, minHueSeparation)
+		}
+	}
+}

@@ -350,9 +350,35 @@ func TestResolveUsesSingleModelProfileWhenNoProfileRouteExists(t *testing.T) {
 }
 
 func TestResolveMissingProfileWithoutLegacyReturnsError(t *testing.T) {
-	_, err := NewStaticRouter(Config{DefaultProfile: "missing"}).Resolve("question")
+	// A preset exists, so the config is configured — the named profile is
+	// genuinely missing. Without the preset this is the first-run state and
+	// reports ErrNoModelConfigured instead; see the test below.
+	_, err := NewStaticRouter(Config{
+		DefaultProfile: "missing",
+		Presets: map[string]ModelPreset{
+			"ollama/qwen2.5-coder:7b": {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		},
+	}).Resolve("question")
 	if !errors.Is(err, ErrProfileNotFound) {
 		t.Fatalf("err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// TestResolveWithNothingConfiguredReportsNoModel covers the first-run state:
+// config.Default() names a "local_balanced" profile but ships no profiles and
+// no presets, so a brand-new user used to be told a profile they had never
+// heard of was missing.
+func TestResolveWithNothingConfiguredReportsNoModel(t *testing.T) {
+	_, err := NewStaticRouter(Config{DefaultProfile: "local_balanced"}).Resolve("question")
+	if !errors.Is(err, ErrNoModelConfigured) {
+		t.Fatalf("err = %v, want ErrNoModelConfigured", err)
+	}
+	if errors.Is(err, ErrProfileNotFound) {
+		t.Fatal("first-run error must not also report ErrProfileNotFound")
+	}
+	// The message is shown verbatim at startup, so it must point somewhere.
+	if !strings.Contains(err.Error(), "/connect") {
+		t.Fatalf("error should direct the user to /connect, got %q", err)
 	}
 }
 
@@ -1120,5 +1146,16 @@ func TestInternalSDDPlanAuthorFallsBackToImplementer(t *testing.T) {
 	}
 	if route.Preset.Model == "" {
 		t.Fatal("internal plan-author role should resolve through implementer")
+	}
+}
+
+// TestResolveEmbeddingWithNothingConfiguredStillDegrades guards the
+// interaction between ErrNoModelConfigured and ResolveEmbedding: callers use
+// ErrEmbeddingNotConfigured to disable embedding features gracefully, so the
+// first-run error must not leak past isNoConfiguredRoute.
+func TestResolveEmbeddingWithNothingConfiguredStillDegrades(t *testing.T) {
+	_, err := NewStaticRouter(Config{DefaultProfile: "local_balanced"}).ResolveEmbedding()
+	if !errors.Is(err, ErrEmbeddingNotConfigured) {
+		t.Fatalf("err = %v, want ErrEmbeddingNotConfigured", err)
 	}
 }

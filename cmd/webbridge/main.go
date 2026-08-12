@@ -16,11 +16,18 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"marshal/web/bridge"
 )
+
+// stringList collects repeatable project flags.
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // config holds the resolved flag/env settings.
 type config struct {
@@ -28,6 +35,8 @@ type config struct {
 	token      string
 	marshalBin string
 	cwdRoot    string
+	projects   []string
+	workspace  string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -40,13 +49,23 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	token := fs.String("token", envOr("WEBBRIDGE_TOKEN", ""), "bearer token for /api routes (generated when empty)")
 	marshalBin := fs.String("marshal-bin", envOr("WEBBRIDGE_MARSHAL_BIN", "marshal"), "marshal binary to supervise")
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
+	var projects stringList
+	fs.Var(&projects, "project", "project root to manage (repeatable)")
+	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace}
+	if cfg.workspace == "" {
+		p, err := bridge.DefaultWorkspacePath()
+		if err != nil {
+			return config{}, err
+		}
+		cfg.workspace = p
+	}
 	if cfg.cwdRoot == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -96,21 +115,32 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "webbridge: no --token given; generated bearer token: %s\n", cfg.token)
 	}
 
-	// Build the whole stack before starting the child: Attach and
-	// NewRegistry install hooks the child's read loop reads
-	// unsynchronized.
-	child := &bridge.Child{MarshalBin: cfg.marshalBin}
-	reg := bridge.NewRegistry(child)
-	reg.RootCwd = cfg.cwdRoot
-	events := bridge.NewEventLog()
-	bridge.Attach(events, child, reg)
-	if err := child.Start(); err != nil {
-		return fmt.Errorf("start marshal acp child: %w", err)
+	ws := bridge.NewWorkspace(cfg.workspace)
+	quarantined, err := ws.Load()
+	if err != nil {
+		return fmt.Errorf("load workspace: %w", err)
 	}
+	if quarantined != "" {
+		fmt.Fprintf(stderr, "webbridge: quarantined unreadable workspace at %s\n", quarantined)
+	}
+	if err := ws.MarkAllInterrupted(); err != nil {
+		return fmt.Errorf("mark interrupted agents: %w", err)
+	}
+	for _, root := range cfg.projects {
+		if err := ws.AddProject(root); err != nil {
+			return err
+		}
+	}
+	if cfg.cwdRoot != "" {
+		if err := ws.AddProject(cfg.cwdRoot); err != nil {
+			return err
+		}
+	}
+	fleet := bridge.NewFleet(ws, cfg.marshalBin)
 
 	srv := &http.Server{
 		Addr:              cfg.addr,
-		Handler:           bridge.NewServer(reg, events, cfg.token),
+		Handler:           bridge.NewServer(fleet, cfg.token),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ln, err := net.Listen("tcp", cfg.addr)
@@ -118,10 +148,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
 		// child delays the error return slightly; correct cleanup beats
 		// a faster failure here.
-		child.Stop()
+		fleet.Close()
 		return fmt.Errorf("listen %s: %w", cfg.addr, err)
 	}
-	fmt.Fprintf(stderr, "webbridge: listening on http://%s (cwd-root %s)\n", ln.Addr(), cfg.cwdRoot)
+	fmt.Fprintf(stderr, "webbridge: listening on http://%s (%d project(s))\n", ln.Addr(), len(ws.Projects()))
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -143,7 +173,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		// listener itself fails, which net.Listen above has already
 		// ruled out — in practice err is always nil here. The channel
 		// exists so the serve goroutine has a buffered parking spot.
-		child.Stop()
+		fleet.Close()
 		return err
 	case <-sigCtx.Done():
 	}
@@ -155,6 +185,6 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
 	}
-	child.Stop()
+	fleet.Close()
 	return nil
 }

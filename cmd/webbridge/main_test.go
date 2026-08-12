@@ -52,9 +52,8 @@ func TestParseConfigEnvAndFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	want := config{addr: "127.0.0.1:1234", token: "flag-token", marshalBin: "/bin/custom", cwdRoot: "/flag/root"}
-	if cfg != want {
-		t.Errorf("cfg = %+v, want %+v", cfg, want)
+	if cfg.addr != "127.0.0.1:1234" || cfg.token != "flag-token" || cfg.marshalBin != "/bin/custom" || cfg.cwdRoot != "/flag/root" {
+		t.Errorf("cfg = %+v", cfg)
 	}
 }
 

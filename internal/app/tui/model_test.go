@@ -1755,6 +1755,30 @@ func TestAgentFinishedAdvancesRailBaseRef(t *testing.T) {
 	}
 }
 
+func TestSuggestionsOffDisablesDeterministicSuggestions(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "off"
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
+	m.busy = true
+
+	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	if mm.suggestion != "" {
+		t.Fatalf("suggestion = %q, want empty when suggestions are off", mm.suggestion)
+	}
+}
+
+func TestSuggestionUsesLastAssistantMessageBeforePlanHint(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "rules"
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
+	m.state.AddMessage(session.RoleSystem, "To turn this approved plan into an executable SDD artifact, run /sdd new --from-last-plan.", session.ContentTypePlain)
+
+	m.computeSuggestion()
+	if m.suggestion != "yes" {
+		t.Fatalf("suggestion = %q, want suggestion from last assistant message", m.suggestion)
+	}
+}
+
 func TestSuggestionSetOnTurnFinish(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")

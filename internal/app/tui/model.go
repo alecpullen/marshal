@@ -3616,11 +3616,17 @@ func (m *Model) clearSuggestionIfPrefixBroken() {
 func (m *Model) computeSuggestion() tea.Cmd {
 	m.suggestion = ""
 	m.suggestionDismissed = false
-	msgs := m.state.Messages()
-	if len(msgs) == 0 {
+	if m.state.Config.TUI.Suggestions == "off" {
 		return nil
 	}
-	last := msgs[len(msgs)-1]
+	msgs := m.state.Messages()
+	var last session.Message
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == session.RoleAssistant {
+			last = msgs[i]
+			break
+		}
+	}
 	if last.Role != session.RoleAssistant {
 		return nil
 	}

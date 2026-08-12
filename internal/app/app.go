@@ -1435,10 +1435,13 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			// words, or "NONE".
 			tuiOpts = append(tuiOpts, tui.WithSuggestionProvider(
 				func(ctx context.Context, lastMsg string) (string, error) {
-					if rt.Runner == nil {
+					rt.mu.Lock()
+					runner := rt.Runner
+					rt.mu.Unlock()
+					if runner == nil {
 						return "", nil
 					}
-					res, err := rt.Runner.Chat(ctx, []schema.ChatMessage{
+					res, err := runner.Chat(ctx, []schema.ChatMessage{
 						{Role: schema.RoleUser, Content: lastMsg},
 						{Role: schema.RoleSystem, Content: "Suggest the user's most likely next reply in at most 10 words, or NONE."},
 					})

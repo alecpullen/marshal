@@ -262,6 +262,11 @@ func (m Model) inputBarColor() color.Color {
 // grey ghost text immediately after the cursor on the cursor line.
 func (m Model) gutteredInput() string {
 	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render(glyph.Rail)
+	placeholder := m.input.Placeholder
+	if m.input.Value() == "" && m.suggestionGhost() != "" {
+		m.input.Placeholder = ""
+		defer func() { m.input.Placeholder = placeholder }()
+	}
 	view := m.input.View()
 	ghost := m.suggestionGhost()
 	if ghost != "" {

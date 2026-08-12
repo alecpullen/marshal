@@ -230,6 +230,21 @@ func (f *Fleet) Snapshot() []AgentStatus {
 	return out
 }
 
+func (f *Fleet) StopProject(root string) {
+	f.mu.Lock()
+	rt := f.runtimes[root]
+	delete(f.runtimes, root)
+	for id, project := range f.sessionProject {
+		if project == root {
+			delete(f.sessionProject, id)
+		}
+	}
+	f.mu.Unlock()
+	if rt != nil && rt.spawnErr == nil {
+		rt.child.Stop()
+	}
+}
+
 func (f *Fleet) Close() {
 	f.mu.Lock()
 	rts := make([]*projectRuntime, 0, len(f.runtimes))

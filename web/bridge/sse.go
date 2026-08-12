@@ -22,6 +22,11 @@ func (l *EventLog) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bridge: sessionId query parameter is required", http.StatusBadRequest)
 		return
 	}
+	l.ServeSSEKey(w, r, sessionID)
+}
+
+// ServeSSEKey streams one log key, including replay and live events.
+func (l *EventLog) ServeSSEKey(w http.ResponseWriter, r *http.Request, key string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "bridge: streaming unsupported", http.StatusInternalServerError)
@@ -36,13 +41,13 @@ func (l *EventLog) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	// Subscribe before replaying so events appended during the replay
 	// land on the channel; IDs at or below the replayed window are
 	// dropped as duplicates when drained.
-	ch, unsub := l.Subscribe(sessionID)
+	ch, unsub := l.Subscribe(key)
 	defer unsub()
 
 	afterID := lastEventID(r)
-	replay, overflowed := l.Replay(sessionID, afterID)
+	replay, overflowed := l.Replay(key, afterID)
 	if overflowed {
-		writeSSE(w, Event{ID: 0, SessionID: sessionID, Data: overflowNudgePayload})
+		writeSSE(w, Event{ID: 0, SessionID: key, Data: overflowNudgePayload})
 	}
 	lastID := afterID
 	for _, ev := range replay {

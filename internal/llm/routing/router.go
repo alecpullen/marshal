@@ -10,7 +10,14 @@ import (
 )
 
 var (
-	ErrProfileNotFound       = errors.New("routing: profile not found")
+	ErrProfileNotFound = errors.New("routing: profile not found")
+	// ErrNoModelConfigured is returned instead of ErrProfileNotFound when
+	// the config names no model at all — the genuine first-run state,
+	// before /connect has been used. Config.Default() sets Profile.Default
+	// to "local_balanced" but ships no profiles, so without this the very
+	// first thing a new user saw was a complaint about a profile name they
+	// had never heard of. Callers can match on it to offer onboarding.
+	ErrNoModelConfigured     = errors.New("no model configured — run /connect to add one")
 	ErrPresetNotFound        = errors.New("routing: preset not found")
 	ErrRemoteProviderBlocked = errors.New("routing: remote provider blocked")
 	// ErrUnknownProvider is returned when an explicit provider/model pair
@@ -109,6 +116,12 @@ func roleForTaskClass(class string) AgentRole {
 func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 	profile, ok := r.config.Profiles[r.config.DefaultProfile]
 	if !ok {
+		// Nothing to route through at all: no profile was ever defined and
+		// no preset exists for RoutingConfig to synthesize one from. That
+		// is first-run, not a misconfigured profile name.
+		if len(r.config.Profiles) == 0 && len(r.config.Presets) == 0 {
+			return Route{}, ErrNoModelConfigured
+		}
 		return Route{}, fmt.Errorf("%w: %s", ErrProfileNotFound, r.config.DefaultProfile)
 	}
 	binding, from, ok := profile.EffectiveBinding(role)
@@ -285,7 +298,13 @@ func (r *StaticRouter) resolveAgentBinding(name string, role AgentRole, profileN
 }
 
 func isNoConfiguredRoute(err error) bool {
-	return errors.Is(err, ErrProfileNotFound) || errors.Is(err, errRoleNotConfigured)
+	// ErrNoModelConfigured belongs here too: it is the first-run form of
+	// ErrProfileNotFound, so ResolveEmbedding must keep degrading to
+	// ErrEmbeddingNotConfigured rather than surfacing a chat-model error to
+	// callers that only wanted to disable embedding features.
+	return errors.Is(err, ErrProfileNotFound) ||
+		errors.Is(err, ErrNoModelConfigured) ||
+		errors.Is(err, errRoleNotConfigured)
 }
 
 // IsLocalProvider reports whether the provider URL targets the local

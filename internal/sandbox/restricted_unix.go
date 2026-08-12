@@ -18,8 +18,11 @@ var (
 // the ulimit-based caps (cpu/file-size/max-procs). darwin cannot limit
 // address space (ulimit -v) but the other caps still apply, so this is true
 // on all unix; memory caps simply report as 0 on darwin (see metaFor).
+//
+// This file is unix-only (see the build constraint), so the answer is always
+// true here; the windows build supplies its own version returning false.
 func restrictedResourceLimitsSupported() bool {
-	return runtime.GOOS != "windows"
+	return true
 }
 
 // ulimitSupportsMem reports whether address-space limits (ulimit -v) work on
@@ -47,8 +50,16 @@ func ulimitBlockSize() int {
 //	max_processes    -> ulimit -u <n>
 //	memory_limit_mb  -> ulimit -v <kb>      (darwin: unsupported, skipped)
 //
-// Everything including the `exec <command>` tail is written to the same
-// strings.Builder to avoid heap-escape and post-concat allocations.
+// The command is appended as-is, with no `exec` prefix. An earlier version
+// emitted `exec <command>` to save the wrapper shell process, but `exec`
+// binds tighter than the shell's list operators, so it silently truncated
+// every compound command: `exec a; b` ran only `a` and still exited 0, and
+// `exec cd x && y` failed outright with "exec: cd: not found" because exec
+// cannot run a builtin. Dropping it costs one shell process, which
+// terminateProcessTree already reaps via the process group.
+//
+// Everything is written to the same strings.Builder to avoid heap-escape
+// and post-concat allocations.
 func restrictedWrapCommand(command string, cfg Config) string {
 	if cfg.CPUSeconds == 0 && cfg.MaxProcesses == 0 && cfg.FileSizeLimitMB == 0 &&
 		!(cfg.MemoryLimitMB > 0 && ulimitSupportsMem()) {
@@ -77,7 +88,6 @@ func restrictedWrapCommand(command string, cfg Config) string {
 		pre.WriteString(strconv.Itoa(cfg.MemoryLimitMB * 1024))
 		pre.WriteString("; ")
 	}
-	pre.WriteString("exec ")
 	pre.WriteString(command)
 	return pre.String()
 }

@@ -169,10 +169,15 @@ func TestHTTPSessionLifecycle(t *testing.T) {
 	if rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/mode", map[string]string{"mode": "auto"}, nil); rec.Code != http.StatusOK {
 		t.Errorf("mode: status = %d, want 200", rec.Code)
 	}
+	// A 200 means the request was dispatched to the child, not that the child
+	// has processed and logged it — so poll rather than reading the log once.
+	// Checking immediately raced the child's stderr write and failed roughly
+	// one run in ten, printing a "never saw it" message whose own log dump
+	// contained the line.
 	for _, m := range []string{"session/steer", "session/set_mode"} {
-		if !strings.Contains(c.StderrLog(), "helper saw request "+m) {
-			t.Errorf("child never saw %s; log:\n%s", m, c.StderrLog())
-		}
+		waitFor(t, 2*time.Second, "child to see "+m, func() bool {
+			return strings.Contains(c.StderrLog(), "helper saw request "+m)
+		})
 	}
 
 	// Prompt validation: empty text and malformed JSON both 400.

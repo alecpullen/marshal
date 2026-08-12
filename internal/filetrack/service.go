@@ -38,6 +38,13 @@ func (s *Service) LastReadTime(path string) (time.Time, bool, error) {
 		return time.Time{}, false, fmt.Errorf("query last read: %w", err)
 	}
 	t, err := time.Parse(time.RFC3339Nano, readAt)
+	if err != nil {
+		// Previously discarded, which reported a zero timestamp as a valid
+		// read time. Callers use this to gate the read-before-write staleness
+		// check, so a corrupt row silently became "you last read this file at
+		// the zero time" instead of an error they could act on.
+		return time.Time{}, false, fmt.Errorf("parse last read time %q: %w", readAt, err)
+	}
 	return t.UTC(), true, nil
 }
 

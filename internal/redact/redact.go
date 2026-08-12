@@ -7,6 +7,7 @@ package redact
 
 import (
 	"regexp"
+	"strings"
 
 	"marshal/internal/sandbox/envutil"
 )
@@ -20,8 +21,38 @@ const MaskToken = "[REDACTED]"
 var secretAssignment = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s*([:=])\s*([^\s]+)`)
 
 // highEntropyToken matches common token sigils so bare tokens in logs/prompts
-// are masked even when no KEY= form is present.
-var highEntropyToken = regexp.MustCompile(`(?i)\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|ghu_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{12,}|glpat-[A-Za-z0-9_-]{16,}|xoxb-[A-Za-z0-9-]{10,})\b`)
+// are masked even when no KEY= form is present. Assembled from named parts
+// rather than one long literal so a missing vendor is easy to spot.
+//
+// Only credentials belong here. Stripe's pk_live_ publishable keys are
+// deliberately absent: they are designed to ship in client code, and masking
+// them would corrupt legitimate transcripts for no gain.
+var highEntropyToken = regexp.MustCompile(`(?i)\b(` + strings.Join([]string{
+	// OpenAI / Anthropic (covers sk-ant-, sk-proj-).
+	`sk-[A-Za-z0-9_-]{16,}`,
+	// GitHub personal, OAuth, user-to-server, server-to-server, fine-grained.
+	`ghp_[A-Za-z0-9]{20,}`,
+	`gho_[A-Za-z0-9]{20,}`,
+	`ghu_[A-Za-z0-9]{20,}`,
+	`ghs_[A-Za-z0-9]{20,}`,
+	`github_pat_[A-Za-z0-9_]{20,}`,
+	// AWS access key ID.
+	`AKIA[0-9A-Z]{12,}`,
+	// GitLab personal access token.
+	`glpat-[A-Za-z0-9_-]{16,}`,
+	// Slack bot/user/app/refresh/legacy tokens.
+	`xox[baprs]-[A-Za-z0-9-]{10,}`,
+	// Stripe secret and restricted keys, and webhook signing secrets. The
+	// separator is an underscore, so the sk- branch above never matched
+	// these.
+	`[sr]k_(?:live|test)_[A-Za-z0-9]{16,}`,
+	`whsec_[A-Za-z0-9]{16,}`,
+	// Google API keys: the AIza sigil plus 35 payload characters. Bounded
+	// below but not above — a strict {35} combined with the trailing \b
+	// would match nothing at all on a longer payload, silently leaking the
+	// very thing this pattern exists to catch.
+	`AIza[A-Za-z0-9_-]{35,}`,
+}, "|") + `)\b`)
 
 // bearerJWT matches `Bearer <jwt>` authorization headers.
 var bearerJWT = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)

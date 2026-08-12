@@ -167,6 +167,7 @@ type fileTUI struct {
 	Mode         *string           `toml:"mode"`
 	MouseCapture *bool             `toml:"mouse_capture"`
 	SidePanel    *fileSidePanel    `toml:"side_panel"`
+	Suggestions  *string           `toml:"suggestions"`
 }
 
 type fileSidePanel struct {

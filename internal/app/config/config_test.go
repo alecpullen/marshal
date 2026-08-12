@@ -521,6 +521,30 @@ tester = 4
 	}
 }
 
+func TestTUISuggestionsConfigDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.TUI.Suggestions != "rules" {
+		t.Errorf("Suggestions default = %q, want %q", cfg.TUI.Suggestions, "rules")
+	}
+}
+
+func TestTUISuggestionsConfigMergesFromFile(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[tui]
+suggestions = "llm"
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.TUI.Suggestions != "llm" {
+		t.Errorf("Suggestions = %q, want %q", cfg.TUI.Suggestions, "llm")
+	}
+}
+
 func TestSDDConfigDefaults(t *testing.T) {
 	cfg := Default()
 	if !cfg.SDD.AutoWorktree {

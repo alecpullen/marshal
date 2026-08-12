@@ -279,6 +279,7 @@ func merge(cfg *Config, file configFile) error {
 		}
 		set(&cfg.TUI.Mode, file.TUI.Mode)
 		set(&cfg.TUI.MouseCapture, file.TUI.MouseCapture)
+		set(&cfg.TUI.Suggestions, file.TUI.Suggestions)
 		if sp := file.TUI.SidePanel; sp != nil {
 			set(&cfg.TUI.SidePanel.Enabled, sp.Enabled)
 			set(&cfg.TUI.SidePanel.MinWidth, sp.MinWidth)

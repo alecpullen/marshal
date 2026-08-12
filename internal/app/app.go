@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -1425,6 +1426,30 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithReviewDispatcher(
 				func(ctx context.Context, focus, model, reviewRange string) error {
 					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus, model, reviewRange)
+				},
+			))
+			// Phase 2 next-prompt suggestion LLM fallback: a background
+			// one-shot call through the runner's provider when the
+			// deterministic rules produce no suggestion. The strict prompt
+			// asks for the user's most likely next reply in at most 10
+			// words, or "NONE".
+			tuiOpts = append(tuiOpts, tui.WithSuggestionProvider(
+				func(ctx context.Context, lastMsg string) (string, error) {
+					if rt.Runner == nil {
+						return "", nil
+					}
+					res, err := rt.Runner.Chat(ctx, []schema.ChatMessage{
+						{Role: schema.RoleUser, Content: lastMsg},
+						{Role: schema.RoleSystem, Content: "Suggest the user's most likely next reply in at most 10 words, or NONE."},
+					})
+					if err != nil {
+						return "", err
+					}
+					text := strings.TrimSpace(res.Content)
+					if strings.EqualFold(text, "NONE") || text == "" {
+						return "", nil
+					}
+					return text, nil
 				},
 			))
 		}

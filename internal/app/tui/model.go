@@ -223,6 +223,14 @@ type Model struct {
 	// next turn completes. Both are cleared when a new turn starts.
 	suggestion          string
 	suggestionDismissed bool
+	// suggestionProvider, when set, is the Phase 2 LLM fallback seam: a
+	// function that derives a suggestion from the last assistant message
+	// when the deterministic rules produce none. It runs as a background
+	// tea.Cmd so it never blocks the UI. suggestionGen is a generation
+	// counter bumped on every keystroke and turn start; a late result from
+	// an older generation is discarded.
+	suggestionProvider func(ctx context.Context, lastMsg string) (string, error)
+	suggestionGen      int
 
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
@@ -667,6 +675,18 @@ func WithSubagentFactory(fn SubagentRunnerFactory) Option {
 func WithReviewDispatcher(fn func(ctx context.Context, focus, model, reviewRange string) error) Option {
 	return func(m *Model) {
 		m.reviewDispatcher = fn
+	}
+}
+
+// WithSuggestionProvider wires the Phase 2 LLM fallback for next-prompt
+// suggestions. The provider derives a suggestion from the last assistant
+// message when the deterministic rules produce none. It runs as a background
+// tea.Cmd so it never blocks the UI; stale results are discarded via a
+// generation counter. Nil (the default) disables the LLM fallback even when
+// [tui] suggestions = "llm".
+func WithSuggestionProvider(fn func(ctx context.Context, lastMsg string) (string, error)) Option {
+	return func(m *Model) {
+		m.suggestionProvider = fn
 	}
 }
 
@@ -1536,7 +1556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -1942,7 +1962,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	// Typing that breaks the suggestion's prefix clears it so a stale ghost
-	// cannot resurrect if the user deletes back to empty.
+	// cannot resurrect if the user deletes back to empty. Any keystroke also
+	// bumps the generation counter so an in-flight LLM fallback result is
+	// discarded.
+	m.suggestionGen++
 	m.clearSuggestionIfPrefixBroken()
 	m.updateCompletionPopups()
 
@@ -3193,9 +3216,12 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	m.busy = true
 	m.turnStartedAt = m.now()
 	// A fresh prompt means the user is acting on their own — clear any
-	// stale ghost suggestion so it never survives into the new turn.
+	// stale ghost suggestion so it never survives into the new turn, and
+	// bump the generation counter so an in-flight LLM fallback result is
+	// discarded.
 	m.suggestion = ""
 	m.suggestionDismissed = false
+	m.suggestionGen++
 	agentCtx, cancel := context.WithCancel(m.ctx)
 	m.agentCancel = cancel
 	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
@@ -3268,6 +3294,31 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 type agentFinishedMsg struct{ err error }
 type agentTickMsg struct{}
 type spinnerTickMsg struct{}
+
+// suggestionMsg carries the result of a Phase 2 LLM fallback suggestion
+// call. gen is the generation counter captured when the call started; a
+// result whose gen is older than the model's current counter is stale and
+// discarded.
+type suggestionMsg struct {
+	suggestion string
+	gen        int
+}
+
+// runSuggestionFallbackCmd returns a tea.Cmd that invokes the suggestion
+// provider for the given last assistant message and reports via
+// suggestionMsg. The generation counter is captured at call time so a late
+// result can be discarded if the user typed or started a new turn.
+func runSuggestionFallbackCmd(provider func(ctx context.Context, lastMsg string) (string, error), lastMsg string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		s, err := provider(ctx, lastMsg)
+		if err != nil || strings.TrimSpace(s) == "" {
+			return suggestionMsg{suggestion: "", gen: gen}
+		}
+		return suggestionMsg{suggestion: strings.TrimSpace(s), gen: gen}
+	}
+}
 
 // verifyProposeMsg carries the result of a one-shot proposal task that
 // inspects the repo and proposes build/test commands for the verify gate.
@@ -3467,6 +3518,9 @@ func (m Model) settingsBlockReason() string {
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
+	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
+	// on the success path; nil otherwise.
+	var suggestionCmd tea.Cmd
 	// A cancelled turn's error is an artifact of the cancellation, not a
 	// provider fault. It does not reliably wrap context.Canceled: a stream
 	// aborted mid-flight surfaces as a wrapped transport error ("provider
@@ -3520,8 +3574,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// A completed turn is the single point where the final assistant
 		// message is in the session state — compute the next-prompt
 		// suggestion here. Only on the success path: a failed or cancelled
-		// turn must not leave a stale ghost.
-		m.computeSuggestion()
+		// turn must not leave a stale ghost. The returned cmd is the Phase 2
+		// LLM fallback (nil when not applicable).
+		suggestionCmd = m.computeSuggestion()
 	}
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	m.updateViewportHeight()
@@ -3530,7 +3585,11 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// Rebase the changed-files rail onto the active root's HEAD so committed
 	// agent work stops inflating the diff; the railBaseRefMsg handler sets the
 	// new base and refreshes the cache after the next tick.
-	return m, tea.Sequence(tickCmd(), flushCmd, railBaseRefCmd(m.state.Workspace().ActiveRoot))
+	cmds := []tea.Cmd{tickCmd(), flushCmd, railBaseRefCmd(m.state.Workspace().ActiveRoot)}
+	if suggestionCmd != nil {
+		cmds = append(cmds, suggestionCmd)
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // clearSuggestionIfPrefixBroken clears the active suggestion when the typed
@@ -3551,20 +3610,32 @@ func (m *Model) clearSuggestionIfPrefixBroken() {
 // computeSuggestion derives the next-prompt suggestion from the final
 // assistant message of the just-completed turn and stores it on the model.
 // It resets the dismissed flag so a fresh turn can surface a new ghost.
-func (m *Model) computeSuggestion() {
+// When the deterministic rules produce no suggestion and [tui] suggestions
+// is "llm" with a provider wired, it returns a background tea.Cmd for the
+// LLM fallback; otherwise it returns nil.
+func (m *Model) computeSuggestion() tea.Cmd {
 	m.suggestion = ""
 	m.suggestionDismissed = false
 	msgs := m.state.Messages()
 	if len(msgs) == 0 {
-		return
+		return nil
 	}
 	last := msgs[len(msgs)-1]
 	if last.Role != session.RoleAssistant {
-		return
+		return nil
 	}
 	if s, ok := extractSuggestion(last.Content); ok {
 		m.suggestion = s
+		return nil
 	}
+	// Phase 2 LLM fallback: only when the mode is "llm" and a provider is
+	// wired. The generation counter is bumped so a stale result from an
+	// earlier turn is discarded.
+	if m.state.Config.TUI.Suggestions == "llm" && m.suggestionProvider != nil {
+		m.suggestionGen++
+		return runSuggestionFallbackCmd(m.suggestionProvider, last.Content, m.suggestionGen)
+	}
+	return nil
 }
 
 // handlePlanAuthorFinished handles the completion of an authoring turn. On
@@ -3734,7 +3805,25 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:
 		return m.handleSpinnerTick(msg)
+	case suggestionMsg:
+		return m.handleSuggestionMsg(msg)
 	}
+	return m, nil
+}
+
+// handleSuggestionMsg applies a Phase 2 LLM fallback suggestion result,
+// discarding it if a newer generation has superseded it (the user typed or
+// started a new turn).
+func (m Model) handleSuggestionMsg(msg suggestionMsg) (Model, tea.Cmd) {
+	if msg.gen < m.suggestionGen {
+		return m, nil
+	}
+	if msg.suggestion == "" {
+		return m, nil
+	}
+	m.suggestion = msg.suggestion
+	m.suggestionDismissed = false
+	m.refreshViewport()
 	return m, nil
 }
 

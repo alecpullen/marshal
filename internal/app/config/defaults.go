@@ -167,6 +167,7 @@ func Default() Config {
 				MinCols:  30,
 				MaxCols:  60,
 			},
+			Suggestions: "rules",
 		},
 		Hooks: HooksConfig{
 			FailClosed: false,

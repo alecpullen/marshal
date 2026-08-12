@@ -1882,6 +1882,102 @@ func TestSuggestionEscDismisses(t *testing.T) {
 	}
 }
 
+type fakeSuggestionProvider struct {
+	called   bool
+	lastMsg  string
+	response string
+	err      error
+}
+
+func (f *fakeSuggestionProvider) Provide(ctx context.Context, lastMsg string) (string, error) {
+	f.called = true
+	f.lastMsg = lastMsg
+	return f.response, f.err
+}
+
+func TestSuggestionLLMFallbackCmd(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "llm"
+	fp := &fakeSuggestionProvider{response: "yes, go ahead"}
+	m.suggestionProvider = fp.Provide
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
+	m.busy = true
+
+	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = asModel(t, mm)
+	if m.suggestion != "" {
+		t.Fatalf("suggestion should be empty until the LLM result arrives, got %q", m.suggestion)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd for the LLM fallback")
+	}
+	// Execute the cmd tree (a tea.Batch) and feed the produced suggestionMsg
+	// back into the model.
+	var suggestionMsgSeen bool
+	var walk func(c tea.Cmd)
+	walk = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		msg := c()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				walk(sub)
+			}
+			return
+		}
+		if sm, ok := msg.(suggestionMsg); ok {
+			suggestionMsgSeen = true
+			mm2, _ := m.Update(sm)
+			m = asModel(t, mm2)
+		}
+	}
+	walk(cmd)
+	if !suggestionMsgSeen {
+		t.Fatal("expected a suggestionMsg from the cmd tree")
+	}
+	if !fp.called {
+		t.Fatal("suggestion provider should have been called")
+	}
+	if m.suggestion != "yes, go ahead" {
+		t.Fatalf("suggestion = %q, want %q after LLM fallback", m.suggestion, "yes, go ahead")
+	}
+}
+
+func TestSuggestionLLMStaleDiscarded(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "llm"
+	fp := &fakeSuggestionProvider{response: "stale"}
+	m.suggestionProvider = fp.Provide
+	m.suggestionGen = 5
+
+	// A result from an older generation (e.g. the user typed or started a
+	// new turn) must be discarded.
+	mm, _ := m.Update(suggestionMsg{suggestion: "stale", gen: 3})
+	m = asModel(t, mm)
+	if m.suggestion != "" {
+		t.Fatalf("stale suggestion should be discarded, got %q", m.suggestion)
+	}
+}
+
+func TestSuggestionLLMOffNoCall(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "off"
+	fp := &fakeSuggestionProvider{response: "yes"}
+	m.suggestionProvider = fp.Provide
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
+	m.busy = true
+
+	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = asModel(t, mm)
+	if fp.called {
+		t.Fatal("suggestion provider should not be called when mode is off")
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd (turn completion) even with suggestions off")
+	}
+}
+
 func TestSuggestionClearedOnTurnStart(t *testing.T) {
 	m := newTestModel(t)
 	m.suggestion = "yes"

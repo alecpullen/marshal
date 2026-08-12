@@ -136,6 +136,11 @@ type TUIConfig struct {
 	// to get plain click-drag selection back and scroll by keyboard.
 	MouseCapture bool            `toml:"mouse_capture"`
 	SidePanel    SidePanelConfig `toml:"side_panel"`
+	// Suggestions controls the next-prompt autosuggestion mode: "off"
+	// disables it, "rules" uses only the deterministic extractor, and "llm"
+	// additionally falls back to a background model call when the rules
+	// produce no suggestion.
+	Suggestions string `toml:"suggestions"`
 }
 
 // SidePanelConfig controls the widescreen side rail. MinWidth is the frame

@@ -23,6 +23,7 @@ type ProjectStatus struct {
 	Root      string `json:"root"`
 	Available bool   `json:"available"`
 	Error     string `json:"error,omitempty"`
+	Trust     string `json:"trust"`
 }
 
 type Fleet struct {
@@ -169,7 +170,7 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 			return
 		}
 		seen[root] = true
-		st := ProjectStatus{Root: root, Available: true}
+		st := ProjectStatus{Root: root, Available: true, Trust: projectTrust(root)}
 		if rt := f.runtimes[root]; rt != nil && rt.spawnErr != nil {
 			st.Available = false
 			st.Error = rt.spawnErr.Error()

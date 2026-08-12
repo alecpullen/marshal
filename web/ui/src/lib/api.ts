@@ -84,6 +84,33 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
   return data as T
 }
 
+export interface AgentStatus {
+  id: string
+  project: string
+  name?: string
+  mode?: string
+  status: 'idle' | 'running' | 'awaiting-approval' | 'awaiting-question' | 'error'
+  activity?: string
+  contextPct?: number
+  changedFiles?: number
+  interrupted?: boolean
+  updatedAt: string
+}
+
+export interface ProjectStatus {
+  root: string
+  available: boolean
+  error?: string
+  trust?: 'na' | 'untrusted' | 'trusted'
+}
+
+export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string }
+export async function listAgents(): Promise<AgentStatus[]> { return request('GET', '/api/agents') }
+export async function listProjects(): Promise<ProjectStatus[]> { return request('GET', '/api/projects') }
+export async function addProject(root: string): Promise<ProjectStatus[]> { return request('POST', '/api/projects', { root }) }
+export async function removeProject(root: string): Promise<ProjectStatus[]> { return request('DELETE', '/api/projects', { root }) }
+export async function spawnAgent(req: SpawnRequest): Promise<{ agentId: string; warning?: string }> { return request('POST', '/api/agents', req) }
+
 export interface SessionSummary {
   sessionId: string
   title?: string

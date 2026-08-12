@@ -99,6 +99,32 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.rollbackArmed = false
 	}
 
+	// Suggestion accept/dismiss keys are routed before the textarea sees
+	// them, following the existing priority-routing pattern. Right accepts
+	// only at end-of-input; Tab accepts only when the completion popup is
+	// closed (popup priority wins); Esc dismisses only when idle (cancel
+	// takes precedence while busy).
+	if m.suggestion != "" && !m.suggestionDismissed {
+		switch msg.String() {
+		case "right":
+			if m.cursorAtEndOfInput() {
+				m.acceptSuggestion()
+				return *m, nil, true
+			}
+		case "tab":
+			if m.activeCompletionPopup() == nil && m.cursorAtEndOfInput() {
+				m.acceptSuggestion()
+				return *m, nil, true
+			}
+		case "esc":
+			if !m.busy {
+				m.suggestionDismissed = true
+				m.refreshViewport()
+				return *m, nil, true
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "?":
 		// ? on an empty textarea prints the help cheatsheet to the
@@ -404,6 +430,36 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return mm, cmd, true
 	}
 	return *m, nil, false
+}
+
+// cursorAtEndOfInput reports whether the textarea cursor sits at the end of
+// the input value (the only position where Right/Tab accept a suggestion).
+// It compares the cursor's character offset against the value length on the
+// cursor's line.
+func (m *Model) cursorAtEndOfInput() bool {
+	value := m.input.Value()
+	if value == "" {
+		return true
+	}
+	li := m.input.LineInfo()
+	// For a single-line input the cursor is at EOL when its char offset
+	// equals the value length. Multi-line inputs only accept at the end of
+	// the last line.
+	if m.input.Line() != m.input.LineCount()-1 {
+		return false
+	}
+	return li.CharOffset >= len([]rune(value))
+}
+
+// acceptSuggestion fills the input with the active suggestion, moves the
+// cursor to the end, and clears the suggestion so it behaves like normal
+// typed text (editable, Enter submits).
+func (m *Model) acceptSuggestion() {
+	m.input.SetValue(m.suggestion)
+	m.input.CursorEnd()
+	m.suggestion = ""
+	m.suggestionDismissed = false
+	m.refreshViewport()
 }
 
 // clearFinishedRun clears a finished run's collapsed summary and its event

@@ -1941,6 +1941,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	// Typing that breaks the suggestion's prefix clears it so a stale ghost
+	// cannot resurrect if the user deletes back to empty.
+	m.clearSuggestionIfPrefixBroken()
 	m.updateCompletionPopups()
 
 	// The textarea updates its own height (DynamicHeight); recalculate the
@@ -3528,6 +3531,21 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// agent work stops inflating the diff; the railBaseRefMsg handler sets the
 	// new base and refreshes the cache after the next tick.
 	return m, tea.Sequence(tickCmd(), flushCmd, railBaseRefCmd(m.state.Workspace().ActiveRoot))
+}
+
+// clearSuggestionIfPrefixBroken clears the active suggestion when the typed
+// input no longer prefixes it (the user typed something that diverges from
+// the suggested text). This prevents a stale ghost from resurrecting if the
+// user deletes back to an empty input.
+func (m *Model) clearSuggestionIfPrefixBroken() {
+	if m.suggestion == "" {
+		return
+	}
+	value := m.input.Value()
+	if value != "" && !strings.HasPrefix(m.suggestion, value) {
+		m.suggestion = ""
+		m.suggestionDismissed = false
+	}
 }
 
 // computeSuggestion derives the next-prompt suggestion from the final

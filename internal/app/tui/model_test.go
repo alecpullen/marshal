@@ -1794,6 +1794,94 @@ func TestSuggestionNotSetOnFailedTurn(t *testing.T) {
 	}
 }
 
+func TestSuggestionRightArrowAcceptsAtEOL(t *testing.T) {
+	m := newTestModel(t)
+	m.suggestion = "yes"
+	m.suggestionDismissed = false
+	m.input.SetValue("ye")
+	m.input.CursorEnd()
+
+	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = asModel(t, updated)
+	if !handled {
+		t.Fatal("Right arrow at EOL with active suggestion should be handled")
+	}
+	if got := m.input.Value(); got != "yes" {
+		t.Fatalf("input after Right accept = %q, want %q", got, "yes")
+	}
+	if m.suggestion != "" {
+		t.Fatalf("suggestion should be cleared after accept, got %q", m.suggestion)
+	}
+}
+
+func TestSuggestionRightArrowMidInputMovesCursor(t *testing.T) {
+	m := newTestModel(t)
+	m.suggestion = "yes"
+	m.suggestionDismissed = false
+	m.input.SetValue("ye")
+	m.input.CursorStart()
+
+	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = asModel(t, updated)
+	if handled {
+		t.Fatal("Right arrow mid-input should fall through to the textarea (not handled)")
+	}
+	if m.suggestion != "yes" {
+		t.Fatalf("suggestion should be retained when cursor is mid-input, got %q", m.suggestion)
+	}
+}
+
+func TestSuggestionTabAcceptsWhenPopupClosed(t *testing.T) {
+	m := newTestModel(t)
+	m.suggestion = "yes"
+	m.suggestionDismissed = false
+	m.input.SetValue("ye")
+	m.input.CursorEnd()
+
+	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = asModel(t, updated)
+	if !handled {
+		t.Fatal("Tab with popup closed and cursor at EOL should accept the suggestion")
+	}
+	if got := m.input.Value(); got != "yes" {
+		t.Fatalf("input after Tab accept = %q, want %q", got, "yes")
+	}
+}
+
+func TestSuggestionClearedWhenTypingBreaksPrefix(t *testing.T) {
+	m := newTestModel(t)
+	m.suggestion = "yes"
+	m.suggestionDismissed = false
+	m.input.SetValue("ye")
+	m.input.CursorEnd()
+
+	// Typing a character that breaks the prefix ("no" vs "yes") clears the
+	// suggestion so it cannot resurrect if the user deletes back to empty.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	m = asModel(t, updated)
+	if m.suggestion != "" {
+		t.Fatalf("suggestion should be cleared when typing breaks the prefix, got %q", m.suggestion)
+	}
+}
+
+func TestSuggestionEscDismisses(t *testing.T) {
+	m := newTestModel(t)
+	m.suggestion = "yes"
+	m.suggestionDismissed = false
+
+	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = asModel(t, updated)
+	if !handled {
+		t.Fatal("Esc with active suggestion should be handled")
+	}
+	if !m.suggestionDismissed {
+		t.Fatal("suggestionDismissed should be set after Esc")
+	}
+	if m.suggestion != "yes" {
+		t.Fatalf("suggestion should be retained (dismissed, not cleared) after Esc, got %q", m.suggestion)
+	}
+}
+
 func TestSuggestionClearedOnTurnStart(t *testing.T) {
 	m := newTestModel(t)
 	m.suggestion = "yes"

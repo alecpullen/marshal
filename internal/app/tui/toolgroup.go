@@ -123,7 +123,7 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 	// lines are re-indented behind the continuation gutter so they never
 	// start in column 0.
 	b.WriteString(gutter)
-	for i, hl := range strings.Split(ansi.Wrap(head, max(width-3, 1), ""), "\n") {
+	for i, hl := range strings.Split(ansi.Wrap(head, max(width-3, 1), WrapBreakpoints), "\n") {
 		if i > 0 {
 			b.WriteString(continuation())
 		}
@@ -142,7 +142,7 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 		// bullet prefix; continuation lines indent gutter + bulletIndent so
 		// they sit under the bullet text (the first line's "  – " prefix is
 		// written separately, not part of the wrap).
-		for i, bl := range strings.Split(ansi.Wrap(line, max(width-gutterWidth-bulletIndent, 1), ""), "\n") {
+		for i, bl := range strings.Split(ansi.Wrap(line, max(width-gutterWidth-bulletIndent, 1), WrapBreakpoints), "\n") {
 			if i == 0 {
 				b.WriteString(gutter)
 				b.WriteString("  – ")

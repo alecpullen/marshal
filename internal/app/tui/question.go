@@ -250,7 +250,7 @@ func renderQuestionText(text string, width int) string {
 	if out, ok := renderMarkdown(text, width); ok {
 		return strings.Trim(out, "\n")
 	}
-	return ansi.Wrap(text, width, "")
+	return ansi.Wrap(text, width, WrapBreakpoints)
 }
 
 func (qm *questionModel) View() string {
@@ -266,7 +266,7 @@ func (qm *questionModel) View() string {
 	var b strings.Builder
 	for i, qs := range qm.q.Questions {
 		if ans := qm.answers[i].Answer; ans != "" && ans != session.AnswerUnanswered {
-			for j, line := range strings.Split(ansi.Wrap(qs.Question+" · "+ans, contentWidth, ""), "\n") {
+			for j, line := range strings.Split(ansi.Wrap(qs.Question+" · "+ans, contentWidth, WrapBreakpoints), "\n") {
 				if j == 0 {
 					b.WriteString(gutter)
 				} else {

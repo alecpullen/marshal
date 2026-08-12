@@ -34,6 +34,11 @@ type StopMsg struct{}
 // The question is the point; the report is supporting evidence.
 const reportLines = 6
 
+// wrapBreakpoints mirrors tui.WrapBreakpoints. gatepanel cannot import tui
+// (tui imports gatepanel), so the value is duplicated deliberately; keep the
+// two in step.
+const wrapBreakpoints = "/-:"
+
 // Panel is a dock.Panel that asks the human a subagent's question.
 type Panel struct {
 	gate  session.SDDGate
@@ -86,7 +91,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	var rows []string
 
 	// The question, first and unmissable.
-	for _, line := range strings.Split(ansi.Wrap(p.gate.Question, inner, ""), "\n") {
+	for _, line := range strings.Split(ansi.Wrap(p.gate.Question, inner, wrapBreakpoints), "\n") {
 		rows = append(rows, "  "+line)
 	}
 

@@ -221,7 +221,7 @@ func renderPlainProse(content string, width int) string {
 	cw := contentWidth(width)
 	var b strings.Builder
 	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
-		wrapped := ansi.Wrap(line, cw, "")
+		wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(wrapped, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(wl)
@@ -351,7 +351,7 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	b.WriteString(thinkingLineStyle().Render(header))
 	b.WriteString("\n")
 	for _, line := range tailLines {
-		wrapped := ansi.Wrap(line, cw, "")
+		wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(wrapped, "\n") {
 			b.WriteString(gutterPrefix(glyph.Rail, dimColor))
 			b.WriteString(thinkingLineStyle().Render(wl))
@@ -373,7 +373,7 @@ func renderReconnectNotice(label, spinnerFrame string, width int) string {
 	cw := contentWidth(width)
 	var b strings.Builder
 	header := spinnerLabel(spinnerFrame, label)
-	for i, hl := range strings.Split(ansi.Wrap(header, cw, ""), "\n") {
+	for i, hl := range strings.Split(ansi.Wrap(header, cw, WrapBreakpoints), "\n") {
 		if i == 0 {
 			b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
 		} else {
@@ -417,7 +417,7 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("thought for %s %s", formatThinkDuration(duration), glyph.DisclosureExpanded)))
 	b.WriteString("\n")
 	for _, line := range strings.Split(strings.TrimSpace(reasoning), "\n") {
-		wrapped := ansi.Wrap(line, cw, "")
+		wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(wrapped, "\n") {
 			b.WriteString(gutterPrefix(glyph.Rail, dimColor))
 			b.WriteString(thinkingLineStyle().Render(wl))
@@ -481,7 +481,7 @@ func renderTurnSeparator(width int) string {
 func renderUserMessage(content string, width int) string {
 	gutter := gutterPrefix(glyph.User, accentColor)
 	cw := contentWidth(width)
-	wrapped := ansi.Wrap(content, cw, "")
+	wrapped := ansi.Wrap(content, cw, WrapBreakpoints)
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
@@ -608,7 +608,7 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 
 	cw := contentWidth(width)
 	var b strings.Builder
-	headWrapped := ansi.Wrap(head, cw, "")
+	headWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
 	for i, hl := range strings.Split(headWrapped, "\n") {
 		if i == 0 {
 			b.WriteString(gutter)
@@ -620,7 +620,7 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 	}
 	if v.Status == session.SubagentRunning && v.Child != nil {
 		for _, line := range subagentTailLines(v.Child, 5) {
-			wrapped := ansi.Wrap(line, cw, "")
+			wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
 			for _, wl := range strings.Split(wrapped, "\n") {
 				b.WriteString(continuation())
 				b.WriteString(dimStyle().Render(wl))
@@ -629,7 +629,7 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 		}
 	}
 	if expanded && v.Summary != "" {
-		wrapped := ansi.Wrap(v.Summary, cw, "")
+		wrapped := ansi.Wrap(v.Summary, cw, WrapBreakpoints)
 		for _, line := range strings.Split(wrapped, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(line))
@@ -669,7 +669,7 @@ func subagentTailLines(child *session.State, n int) []string {
 
 func renderSkillTag(name string, width int) string {
 	cw := contentWidth(width)
-	wrapped := ansi.Wrap("skill.load: "+name, cw, "")
+	wrapped := ansi.Wrap("skill.load: "+name, cw, WrapBreakpoints)
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
@@ -685,7 +685,7 @@ func renderSkillTag(name string, width int) string {
 
 func renderSystemNotice(content string, width int) string {
 	cw := contentWidth(width)
-	wrapped := ansi.Wrap(content, cw, "")
+	wrapped := ansi.Wrap(content, cw, WrapBreakpoints)
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
@@ -725,7 +725,7 @@ func renderToolResultLine(content string, width int) string {
 	gutter := gutterPrefix(glyph.Ambient, dimColor)
 	cw := contentWidth(width)
 	var b strings.Builder
-	firstWrapped := ansi.Wrap(strings.TrimSpace(lines[0]), cw, "")
+	firstWrapped := ansi.Wrap(strings.TrimSpace(lines[0]), cw, WrapBreakpoints)
 	firstLines := strings.Split(firstWrapped, "\n")
 	for i, wl := range firstLines {
 		if i == 0 {
@@ -737,7 +737,7 @@ func renderToolResultLine(content string, width int) string {
 		b.WriteString("\n")
 	}
 	for _, line := range lines[1:] {
-		wrapped := ansi.Wrap(line, cw, "")
+		wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(wrapped, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
@@ -757,7 +757,7 @@ func renderPlanBlock(content string, width int) string {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		wrapped := ansi.Wrap(line, nestedContentWidth(width), "")
+		wrapped := ansi.Wrap(line, nestedContentWidth(width), WrapBreakpoints)
 		for _, wl := range strings.Split(wrapped, "\n") {
 			b.WriteString(nestedRail())
 			b.WriteString(wl)
@@ -769,7 +769,7 @@ func renderPlanBlock(content string, width int) string {
 
 func renderProviderError(err error, width int) string {
 	cw := contentWidth(width)
-	wrapped := ansi.Wrap("provider: "+err.Error(), cw, "")
+	wrapped := ansi.Wrap("provider: "+err.Error(), cw, WrapBreakpoints)
 	lines := strings.Split(wrapped, "\n")
 	if len(lines) == 0 {
 		return ""
@@ -800,7 +800,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
 	gutter := gutterPrefix(glyph.Running, accentColor)
 	cw := contentWidth(width)
-	headerWrapped := ansi.Wrap(head, cw, "")
+	headerWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
 	headerLines := strings.Split(headerWrapped, "\n")
 	var b strings.Builder
 	for i, hl := range headerLines {
@@ -813,14 +813,14 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	}
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		cmdLine := "$ " + atc.Args
-		cmdWrapped := ansi.Wrap(cmdLine, cw, "")
+		cmdWrapped := ansi.Wrap(cmdLine, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(cmdWrapped, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
 		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
-			isoWrapped := ansi.Wrap(iso, cw, "")
+			isoWrapped := ansi.Wrap(iso, cw, WrapBreakpoints)
 			for _, wl := range strings.Split(isoWrapped, "\n") {
 				b.WriteString(continuation())
 				b.WriteString(mutedStyle().Render(wl))
@@ -828,7 +828,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 			}
 		}
 	} else if atc.Args != "" {
-		argsWrapped := ansi.Wrap(atc.Args, cw, "")
+		argsWrapped := ansi.Wrap(atc.Args, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(argsWrapped, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
@@ -842,7 +842,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 			lines = lines[len(lines)-tail:]
 		}
 		for _, line := range lines {
-			wrapped := ansi.Wrap(line, cw, "")
+			wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
 			for _, wl := range strings.Split(wrapped, "\n") {
 				b.WriteString(continuation())
 				b.WriteString(mutedStyle().Render(wl))
@@ -886,7 +886,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 
 	cw := contentWidth(width)
 	var b strings.Builder
-	headWrapped := ansi.Wrap(head, cw, "")
+	headWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
 	headLines := strings.Split(headWrapped, "\n")
 	for i, hl := range headLines {
 		if i == 0 {
@@ -955,7 +955,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 			lines = lines[:maxExpandedResultLines]
 		}
 		for _, line := range lines {
-			wrapped := ansi.Wrap(line, nestedContentWidth(width), "")
+			wrapped := ansi.Wrap(line, nestedContentWidth(width), WrapBreakpoints)
 			for _, wl := range strings.Split(wrapped, "\n") {
 				b.WriteString(nestedRail())
 				b.WriteString(dimStyle().Render(wl))
@@ -982,7 +982,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 			lines = append(lines, "args: "+string(event.Args))
 		}
 		for _, line := range lines {
-			wrapped := ansi.Wrap(line, nestedContentWidth(width), "")
+			wrapped := ansi.Wrap(line, nestedContentWidth(width), WrapBreakpoints)
 			for _, wl := range strings.Split(wrapped, "\n") {
 				b.WriteString(nestedRail())
 				b.WriteString(dimStyle().Render(wl))
@@ -1190,7 +1190,7 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 	questionStyle := lipgloss.NewStyle().Foreground(violetColor).Bold(true)
 	var b strings.Builder
 	for _, qs := range q.Questions {
-		for j, line := range strings.Split(ansi.Wrap(qs.Question, cw, ""), "\n") {
+		for j, line := range strings.Split(ansi.Wrap(qs.Question, cw, WrapBreakpoints), "\n") {
 			if j == 0 {
 				b.WriteString(gutter)
 			} else {

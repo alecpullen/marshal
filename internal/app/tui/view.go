@@ -383,7 +383,7 @@ func (m Model) tooSmallView() string {
 	boxW := max(m.rawWidth, 1)
 	boxH := max(m.rawHeight, 1)
 	msg := fmt.Sprintf("Terminal too small\nResize to at least %d×%d", minTerminalWidth, minTerminalHeight)
-	wrapped := ansi.Wrap(msg, boxW, "")
+	wrapped := ansi.Wrap(msg, boxW, WrapBreakpoints)
 	trimmedLines := strings.Split(wrapped, "\n")
 	if len(trimmedLines) > boxH {
 		trimmedLines = trimmedLines[:boxH]

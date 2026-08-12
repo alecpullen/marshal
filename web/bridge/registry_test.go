@@ -25,6 +25,35 @@ func newTestRegistry(t *testing.T, mode string) (*Registry, *Child) {
 	return r, c
 }
 
+func TestRegistryPendingReportsParkedKind(t *testing.T) {
+	r := NewRegistry(&Child{})
+	r.track("s1", "/home/u/repo")
+	if got := r.Pending("s1"); got != "" {
+		t.Fatalf("Pending on idle session = %q, want empty", got)
+	}
+	r.permMu.Lock()
+	r.permissions["tc1"] = make(chan Decision, 1)
+	r.permSession["tc1"] = "s1"
+	r.permMu.Unlock()
+	if got := r.Pending("s1"); got != "approval" {
+		t.Fatalf("Pending with pending permission = %q", got)
+	}
+	r.permMu.Lock()
+	delete(r.permissions, "tc1")
+	delete(r.permSession, "tc1")
+	r.permMu.Unlock()
+	r.quesMu.Lock()
+	r.questions["q1"] = make(chan Answers, 1)
+	r.quesSession["q1"] = "s1"
+	r.quesMu.Unlock()
+	if got := r.Pending("s1"); got != "question" {
+		t.Fatalf("Pending with pending question = %q", got)
+	}
+	if got := r.Pending("other"); got != "" {
+		t.Fatalf("Pending for unrelated session = %q", got)
+	}
+}
+
 func TestRegistryNew(t *testing.T) {
 	r, _ := newTestRegistry(t, "registry")
 	ctx, cancel := testContext(t)

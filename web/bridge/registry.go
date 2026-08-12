@@ -247,6 +247,31 @@ func (r *Registry) Sessions() map[string]sessionInfo {
 	return out
 }
 
+// Pending reports whether a session is parked on an approval or question.
+// Approval takes precedence if both are outstanding.
+func (r *Registry) Pending(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	r.permMu.Lock()
+	for _, id := range r.permSession {
+		if id == sessionID {
+			r.permMu.Unlock()
+			return "approval"
+		}
+	}
+	r.permMu.Unlock()
+
+	r.quesMu.Lock()
+	defer r.quesMu.Unlock()
+	for _, id := range r.quesSession {
+		if id == sessionID {
+			return "question"
+		}
+	}
+	return ""
+}
+
 // ResolvePermission delivers the HTTP layer's decision to a pending
 // session/request_permission. Late or duplicate resolves return ErrGone.
 func (r *Registry) ResolvePermission(toolCallId string, d Decision) error {

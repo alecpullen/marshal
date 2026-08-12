@@ -15,9 +15,19 @@ const StatusLineRows = 1
 const WideBreakpoint = 100
 
 // PanelWidth returns the width a dock panel renders at: it fills the width
-// the dock gives it minus the standard 2-cell right margin, floored at 30.
+// the dock gives it minus the standard 2-cell right margin, preferring a
+// 30-cell floor.
+//
+// The floor is clamped to the dock width. A floor larger than its container
+// is not a floor, it is an overflow: the panel would render past the dock
+// edge and corrupt the frame around it. Unreachable while the TUI gates
+// below minTerminalWidth, but the clamp costs nothing and removes the trap.
 func PanelWidth(dockWidth int) int {
-	return max(dockWidth-2, 30)
+	w := max(dockWidth-2, 30)
+	if w > dockWidth && dockWidth > 0 {
+		w = dockWidth
+	}
+	return max(w, 1)
 }
 
 // TwoColumn reports whether a panel interior of the given width uses the

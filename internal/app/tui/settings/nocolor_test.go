@@ -39,7 +39,11 @@ func TestViewNoANSIEscapesUnderNoColor(t *testing.T) {
 
 	browser := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	v := browser.View(80, 12)
+	// The selection style deliberately emits a bold SGR escape under NO_COLOR
+	// (marker + bold weight carry the cursor). Tolerate that one sequence but
+	// flag any other escape.
+	v = strings.ReplaceAll(strings.ReplaceAll(v, "\x1b[1m", ""), "\x1b[m", "")
 	if strings.Contains(v, "\x1b[") {
-		t.Fatalf("BrowserPanel.View emitted ANSI escapes under NO_COLOR:\n%q", v)
+		t.Fatalf("BrowserPanel.View emitted ANSI escapes under NO_COLOR (bold selection allowed):\n%q", v)
 	}
 }

@@ -172,17 +172,19 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 	focusLine := 0
 	for pos, idx := range p.matches {
 		mem := p.all[idx]
-		marker := "  "
+		marker := chrome.BlankMarker
 		if pos == p.cursor {
-			marker = "▸ "
+			marker = chrome.SelectionMarker
 			focusLine = len(rows)
 		}
 		title := memoryTitle(mem.Content)
+		age := formatAge(mem.CreatedAt) + " · " + mem.Kind
 		if pos == p.cursor {
-			title = cursorStyle().Render(title)
+			line := chrome.Row(marker, title, age, "", inner)
+			rows = append(rows, chrome.SelectionStyle().Width(inner).Render(line))
+			continue
 		}
-		detail := mutedStyle().Render(formatAge(mem.CreatedAt) + " · " + mem.Kind)
-		rows = append(rows, chrome.Row(marker, title, detail, "", inner))
+		rows = append(rows, chrome.Row(marker, title, mutedStyle().Render(age), "", inner))
 	}
 	if len(p.matches) == 0 && p.loadErr == nil {
 		rows = append(rows, mutedStyle().Render("  no matches"))
@@ -240,11 +242,4 @@ func mutedStyle() lipgloss.Style {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
-}
-
-func cursorStyle() lipgloss.Style {
-	if isMono() {
-		return lipgloss.NewStyle()
-	}
-	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
 }

@@ -24,11 +24,8 @@ func groupStyle() lipgloss.Style {
 func detailStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 func nowStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary) }
 func badgeStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
-func cursorStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
-}
-func mutedStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
-func errStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
+func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 
 // Item is one pickable row.
 type Item struct {
@@ -210,10 +207,15 @@ func (m *Model) View(maxW, maxH int) string {
 			rows = append(rows, groupStyle().Render(it.Group))
 			lastGroup = it.Group
 		}
-		marker := "  "
+		marker := chrome.BlankMarker
 		if pos == m.cursor {
-			marker = "▸ "
+			marker = chrome.SelectionMarker
 			focusLine = len(rows)
+		}
+		if pos == m.cursor {
+			line := chrome.Row(marker, it.Label, it.Detail, it.Badge, inner)
+			rows = append(rows, chrome.SelectionStyle().Width(inner).Render(line))
+			continue
 		}
 		detail := ""
 		if it.Detail != "" {
@@ -227,11 +229,7 @@ func (m *Model) View(maxW, maxH int) string {
 			}
 			badge = bs.Render(it.Badge)
 		}
-		label := it.Label
-		if pos == m.cursor {
-			label = cursorStyle().Render(label)
-		}
-		rows = append(rows, chrome.Row(marker, label, detail, badge, inner))
+		rows = append(rows, chrome.Row(marker, it.Label, detail, badge, inner))
 	}
 	if len(m.matches) == 0 {
 		rows = append(rows, mutedStyle().Render("  no matches"))

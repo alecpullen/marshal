@@ -12,6 +12,14 @@ import (
 	"marshal/internal/db"
 )
 
+// stripBold removes the SGR bold open/close sequences that the selection
+// style deliberately emits under NO_COLOR (the marker + bold weight carry
+// the cursor). Anything else left behind is an escape this test must flag.
+func stripBold(s string) string {
+	s = strings.ReplaceAll(s, "\x1b[1m", "")
+	return strings.ReplaceAll(s, "\x1b[m", "")
+}
+
 func newTestDB(t *testing.T) (*db.DB, int64) {
 	t.Helper()
 	database, err := db.Open(":memory:")
@@ -250,8 +258,8 @@ func TestMemoryPanelNoColorOmitsANSIEscapes(t *testing.T) {
 		t.Fatalf("SaveMemory failed: %v", err)
 	}
 	p := NewPanel(database, projectID)
-	v := p.View(80, 12)
+	v := stripBold(p.View(80, 12))
 	if strings.Contains(v, "\x1b[") {
-		t.Fatalf("NO_COLOR panel view must not contain ANSI escapes:\n%q", v)
+		t.Fatalf("NO_COLOR panel view must not contain ANSI escapes (bold selection allowed):\n%q", v)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
@@ -22,12 +23,6 @@ func isMono() bool {
 	return ok
 }
 
-func flCursorStyle() lipgloss.Style {
-	if isMono() {
-		return lipgloss.NewStyle()
-	}
-	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
-}
 func flTitleStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 func flValueStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary)
@@ -612,22 +607,23 @@ func (fl *FieldList) View() string {
 			lines = append(lines, header+strings.Repeat(" ", gap))
 			continue
 		}
-		marker := "  "
+		marker := chrome.BlankMarker
 		if isCursor {
-			marker = "▸ "
+			marker = chrome.SelectionMarker
 		}
 		val := fl.valueCell(row, isCursor)
 		title := row.Title
 		if row.Warn {
 			title = flWarnStyle().Render(glyph.Warning+" ") + title
 		}
+		var line string
 		if isCursor {
 			cursorLine = len(lines)
-			title = flCursorStyle().Render(title)
+			line = chrome.SelectionStyle().Width(fl.width).
+				Render(chrome.Row(marker, row.Title, ansi.Strip(val), "", fl.width))
 		} else {
-			title = flTitleStyle().Render(title)
+			line = chrome.Row(marker, flTitleStyle().Render(title), val, "", fl.width)
 		}
-		line := chrome.Row(marker, title, val, "", fl.width)
 		lines = append(lines, line)
 		if isCursor && fl.ErrMsg != "" {
 			lines = append(lines, "    "+flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))

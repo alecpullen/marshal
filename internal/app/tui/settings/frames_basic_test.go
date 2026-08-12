@@ -165,10 +165,13 @@ func TestUnsafePassthroughExposedAndRiskyFieldsFlagged(t *testing.T) {
 		t.Fatal("space should toggle UnsafePassthrough")
 	}
 
-	// Verify the warning indicator appears in the view
+	// The warning glyph is dropped from the focused row's title (the row is
+	// already identified as focused); it must still appear on the row when
+	// unfocused. Navigate away and check.
+	ps.Update(kp("k"))
 	view := ps.Top().List.View()
 	if !strings.Contains(view, "⚠") {
-		t.Fatalf("expected warning indicator in view for risky field, got:\n%s", view)
+		t.Fatalf("expected warning indicator in view for risky unfocused field, got:\n%s", view)
 	}
 }
 

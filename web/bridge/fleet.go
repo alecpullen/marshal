@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -28,6 +29,7 @@ type Fleet struct {
 	ws             *Workspace
 	marshalBin     string
 	fleetLog       *EventLog
+	live           *liveState
 	newChild       func(root string) *Child
 	mu             sync.Mutex
 	runtimes       map[string]*projectRuntime
@@ -35,7 +37,7 @@ type Fleet struct {
 }
 
 func NewFleet(ws *Workspace, marshalBin string) *Fleet {
-	f := &Fleet{ws: ws, marshalBin: marshalBin, fleetLog: NewEventLog(), runtimes: make(map[string]*projectRuntime), sessionProject: make(map[string]string)}
+	f := &Fleet{ws: ws, marshalBin: marshalBin, fleetLog: NewEventLog(), live: newLiveState(), runtimes: make(map[string]*projectRuntime), sessionProject: make(map[string]string)}
 	f.newChild = func(string) *Child { return &Child{MarshalBin: marshalBin} }
 	return f
 }
@@ -58,6 +60,7 @@ func (f *Fleet) runtimeFor(root string) (*projectRuntime, error) {
 	log := NewEventLog()
 	Attach(log, child, reg)
 	rt := &projectRuntime{root: root, child: child, reg: reg, log: log}
+	f.attachClassifier(rt)
 	if err := child.Start(); err != nil {
 		rt.spawnErr = fmt.Errorf("start marshal acp for %s: %w (stderr: %s)", root, err, child.StderrLog())
 		f.mu.Lock()
@@ -178,6 +181,51 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 	}
 	for root := range f.runtimes {
 		add(root)
+	}
+	return out
+}
+
+const fleetStreamKey = "fleet"
+
+func (f *Fleet) attachClassifier(rt *projectRuntime) {
+	prev := rt.child.OnNotification
+	rt.child.OnNotification = func(method string, params json.RawMessage) {
+		if prev != nil {
+			prev(method, params)
+		}
+		if d, ok := classifyNotification(method, params); ok {
+			f.live.apply(d)
+			_, _ = f.fleetLog.Append(fleetStreamKey, d)
+		}
+	}
+}
+
+func (f *Fleet) Snapshot() []AgentStatus {
+	out := make([]AgentStatus, 0)
+	for _, a := range f.ws.Agents() {
+		live := f.live.get(a.ID)
+		st := AgentStatus{ID: a.ID, Project: a.Project, Name: a.Name, Mode: a.Mode, Status: "idle", Activity: live.activity, ContextPct: live.contextPct, ChangedFiles: live.changedFiles, Interrupted: a.Interrupted, UpdatedAt: live.updatedAt}
+		if live.mode != "" {
+			st.Mode = live.mode
+		}
+		if a.CreatedAt.After(st.UpdatedAt) {
+			st.UpdatedAt = a.CreatedAt
+		}
+		if rt, err := f.liveRuntimeForSession(a.ID); err == nil {
+			switch rt.reg.Pending(a.ID) {
+			case "approval":
+				st.Status = "awaiting-approval"
+			case "question":
+				st.Status = "awaiting-question"
+			default:
+				if info, ok := rt.reg.lookup(a.ID); ok && info.Busy {
+					st.Status = "running"
+				}
+			}
+		} else if !errors.Is(err, ErrUnknownSession) {
+			st.Status = "error"
+		}
+		out = append(out, st)
 	}
 	return out
 }

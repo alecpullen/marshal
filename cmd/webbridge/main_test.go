@@ -57,6 +57,16 @@ func TestParseConfigEnvAndFlags(t *testing.T) {
 	}
 }
 
+func TestParseConfigProjects(t *testing.T) {
+	cfg, err := parseConfig([]string{"--project", "/tmp/project"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if len(cfg.projects) != 1 || cfg.projects[0] != "/tmp/project" {
+		t.Fatalf("projects = %#v", cfg.projects)
+	}
+}
+
 func TestParseConfigRejectsArgs(t *testing.T) {
 	if _, err := parseConfig([]string{"bogus"}, io.Discard); err == nil {
 		t.Fatal("positional arg: expected error, got nil")

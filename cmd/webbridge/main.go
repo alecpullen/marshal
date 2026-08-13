@@ -127,11 +127,17 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		return fmt.Errorf("mark interrupted agents: %w", err)
 	}
 	for _, root := range cfg.projects {
+		if err := bridge.ValidateProjectRoot(root); err != nil {
+			return fmt.Errorf("--project %q: %w", root, err)
+		}
 		if err := ws.AddProject(root); err != nil {
 			return err
 		}
 	}
 	if cfg.cwdRoot != "" {
+		if err := bridge.ValidateProjectRoot(cfg.cwdRoot); err != nil {
+			return fmt.Errorf("--cwd-root %q: %w", cfg.cwdRoot, err)
+		}
 		if err := ws.AddProject(cfg.cwdRoot); err != nil {
 			return err
 		}

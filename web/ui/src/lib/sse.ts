@@ -1,5 +1,5 @@
 import { ensureToken, getToken } from './api.js'
-import type { FleetDelta } from './fleet'
+import type { FleetEvent, FleetDelta, ProjectRemovedDelta } from './fleet'
 
 export interface SSEMessage {
   id: number
@@ -151,16 +151,17 @@ export function connectSSE({ sessionId, query, onEvent, signal }: SSEOptions): (
   }
 }
 
-export function parseFleetEvent(data: string): FleetDelta | 'overflow' | null {
+export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
   try {
     const value = JSON.parse(data) as Record<string, unknown>
     if (value.type === 'replay_overflow') return 'overflow'
+    if (value.kind === 'project_removed' && typeof value.project === 'string') return value as unknown as ProjectRemovedDelta
     if (typeof value.kind !== 'string' || typeof value.sessionId !== 'string') return null
     return value as unknown as FleetDelta
   } catch { return null }
 }
 
-export function connectFleetSSE(opts: { onDelta: (d: FleetDelta) => void; onOverflow: () => void; signal?: AbortSignal }): () => void {
+export function connectFleetSSE(opts: { onDelta: (d: FleetEvent) => void; onOverflow: () => void; signal?: AbortSignal }): () => void {
   return connectSSE({ query: 'stream=fleet', onEvent: e => { if (e.type !== 'message') return; const parsed = parseFleetEvent(e.message.data); if (parsed === 'overflow') opts.onOverflow(); else if (parsed) opts.onDelta(parsed) }, signal: opts.signal })
 }
 

@@ -97,11 +97,23 @@ func (w *Workspace) save() error {
 		tmp.Close()
 		return fmt.Errorf("write temp workspace: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp workspace: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp workspace: %w", err)
 	}
 	if err := os.Rename(name, w.path); err != nil {
 		return fmt.Errorf("rename workspace: %w", err)
+	}
+	dir, err := os.Open(filepath.Dir(w.path))
+	if err != nil {
+		return fmt.Errorf("open workspace dir: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("sync workspace dir: %w", err)
 	}
 	return nil
 }

@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestLiveStateRemoveProject(t *testing.T) {
+	live := newLiveState()
+	live.apply(fleetDelta{SessionID: "s1", Kind: "activity", Activity: "read"})
+	live.removeProject([]string{"s1"})
+	if got := live.get("s1"); got.activity != "" {
+		t.Fatalf("removed live state = %+v", got)
+	}
+}
+
 func TestClassifyNotificationExtractsActivity(t *testing.T) {
 	d, ok := classifyNotification("session/update", json.RawMessage(`{"sessionId":"s1","update":{"kind":"tool_call","toolName":"file.read"}}`))
 	if !ok || d.Kind != "activity" || d.Activity != "file.read" {

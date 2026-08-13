@@ -156,7 +156,7 @@ func (s *Server) addProject(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if err := validateProjectRoot(body.Root); err != nil {
+	if err := ValidateProjectRoot(body.Root); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -183,6 +183,7 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	_, _ = s.fleet.FleetLog().Append(fleetStreamKey, map[string]any{"kind": "project_removed", "project": body.Root})
 	writeJSON(w, http.StatusOK, s.fleet.ProjectStatus())
 }
 
@@ -190,7 +191,9 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.fleet.Snapshot())
 }
 
-func validateProjectRoot(root string) error {
+// ValidateProjectRoot checks that root is an absolute path under one of the
+// bridge's trusted roots. It is exported for CLI startup validation.
+func ValidateProjectRoot(root string) error {
 	if !filepath.IsAbs(root) {
 		return fmt.Errorf("project root %q must be an absolute path", root)
 	}
@@ -230,7 +233,7 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if err := validateProjectRoot(body.Project); err != nil {
+	if err := ValidateProjectRoot(body.Project); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -520,7 +523,13 @@ func (s *Server) resolvePermission(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if err := s.reg.ResolvePermission(r.PathValue("toolCallId"), body); err != nil {
+	var err error
+	if s.fleet != nil {
+		err = s.fleet.ResolvePermission(r.PathValue("toolCallId"), body)
+	} else {
+		err = s.reg.ResolvePermission(r.PathValue("toolCallId"), body)
+	}
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -534,7 +543,13 @@ func (s *Server) resolveQuestion(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if err := s.reg.ResolveQuestion(r.PathValue("questionId"), body); err != nil {
+	var err error
+	if s.fleet != nil {
+		err = s.fleet.ResolveQuestion(r.PathValue("questionId"), body)
+	} else {
+		err = s.reg.ResolveQuestion(r.PathValue("questionId"), body)
+	}
+	if err != nil {
 		writeErr(w, err)
 		return
 	}

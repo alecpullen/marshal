@@ -126,6 +126,36 @@ func (f *Fleet) LogForSession(id string) (*EventLog, error) {
 	}
 	return rt.log, nil
 }
+func (f *Fleet) ResolvePermission(id string, d Decision) error {
+	f.mu.Lock()
+	rts := make([]*projectRuntime, 0, len(f.runtimes))
+	for _, rt := range f.runtimes {
+		rts = append(rts, rt)
+	}
+	f.mu.Unlock()
+	for _, rt := range rts {
+		if err := rt.reg.ResolvePermission(id, d); !errors.Is(err, ErrGone) {
+			return err
+		}
+	}
+	return ErrGone
+}
+
+func (f *Fleet) ResolveQuestion(id string, a Answers) error {
+	f.mu.Lock()
+	rts := make([]*projectRuntime, 0, len(f.runtimes))
+	for _, rt := range f.runtimes {
+		rts = append(rts, rt)
+	}
+	f.mu.Unlock()
+	for _, rt := range rts {
+		if err := rt.reg.ResolveQuestion(id, a); !errors.Is(err, ErrGone) {
+			return err
+		}
+	}
+	return ErrGone
+}
+
 func (f *Fleet) RegistryForSession(id string) (*Registry, error) {
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
@@ -162,7 +192,11 @@ func (f *Fleet) Spawn(ctx context.Context, root, name, mode string) (string, err
 func (f *Fleet) ProjectStatus() []ProjectStatus {
 	roots := f.ws.Projects()
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	runtimeErrors := make(map[string]error, len(f.runtimes))
+	for root, rt := range f.runtimes {
+		runtimeErrors[root] = rt.spawnErr
+	}
+	f.mu.Unlock()
 	seen := make(map[string]bool)
 	out := make([]ProjectStatus, 0, len(roots)+len(f.runtimes))
 	add := func(root string) {
@@ -171,16 +205,16 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 		}
 		seen[root] = true
 		st := ProjectStatus{Root: root, Available: true, Trust: projectTrust(root)}
-		if rt := f.runtimes[root]; rt != nil && rt.spawnErr != nil {
+		if spawnErr := runtimeErrors[root]; spawnErr != nil {
 			st.Available = false
-			st.Error = rt.spawnErr.Error()
+			st.Error = spawnErr.Error()
 		}
 		out = append(out, st)
 	}
 	for _, root := range roots {
 		add(root)
 	}
-	for root := range f.runtimes {
+	for root := range runtimeErrors {
 		add(root)
 	}
 	return out
@@ -235,12 +269,15 @@ func (f *Fleet) StopProject(root string) {
 	f.mu.Lock()
 	rt := f.runtimes[root]
 	delete(f.runtimes, root)
+	var removed []string
 	for id, project := range f.sessionProject {
 		if project == root {
+			removed = append(removed, id)
 			delete(f.sessionProject, id)
 		}
 	}
 	f.mu.Unlock()
+	f.live.removeProject(removed)
 	if rt != nil && rt.spawnErr == nil {
 		rt.child.Stop()
 	}

@@ -3,6 +3,7 @@
   import Dashboard from './views/Dashboard.svelte'
   import NewAgent from './views/NewAgent.svelte'
   import Chat from './views/Chat.svelte'
+  import { connectFleetSSE } from './lib/sse'
 
   let hash = $state('#')
 
@@ -10,7 +11,11 @@
     const update = () => (hash = window.location.hash || '#')
     window.addEventListener('hashchange', update)
     update()
-    return () => window.removeEventListener('hashchange', update)
+    const disconnect = connectFleetSSE({
+      onDelta: (d) => { if (d.kind === 'project_removed') window.location.hash = '#' },
+      onOverflow: () => {},
+    })
+    return () => { window.removeEventListener('hashchange', update); disconnect() }
   })
 
   const chatMatch = $derived(/^#chat\/(.+)$/.exec(hash))

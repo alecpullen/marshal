@@ -77,6 +77,20 @@ func (s *liveState) apply(d fleetDelta) {
 	}
 	a.updatedAt = time.Now().UTC()
 }
+func (s *liveState) remove(id string) {
+	s.mu.Lock()
+	delete(s.agents, id)
+	s.mu.Unlock()
+}
+
+func (s *liveState) removeProject(ids []string) {
+	s.mu.Lock()
+	for _, id := range ids {
+		delete(s.agents, id)
+	}
+	s.mu.Unlock()
+}
+
 func (s *liveState) get(id string) agentLive {
 	s.mu.Lock()
 	defer s.mu.Unlock()

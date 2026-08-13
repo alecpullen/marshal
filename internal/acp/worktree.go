@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -105,12 +106,16 @@ type WorktreeManagerConfig struct {
 	Lookup func(sessionID string) (*WorktreeRuntime, bool)
 	// Git defaults to CLIGitOps when nil. Tests inject FakeGitOps.
 	Git worktree.GitOps
+	// KnownWorktrees returns the worktrees a project's live sessions claim.
+	// Used by Prune to distinguish orphans from in-use worktrees.
+	KnownWorktrees func(projectRoot string) []string
 }
 
 // WorktreeManager serves the isolation-related ACP methods.
 type WorktreeManager struct {
 	lookup func(string) (*WorktreeRuntime, bool)
 	git    worktree.GitOps
+	known  func(string) []string
 }
 
 func NewWorktreeManager(cfg WorktreeManagerConfig) *WorktreeManager {
@@ -118,7 +123,7 @@ func NewWorktreeManager(cfg WorktreeManagerConfig) *WorktreeManager {
 	if git == nil {
 		git = worktree.CLIGitOps{}
 	}
-	return &WorktreeManager{lookup: cfg.Lookup, git: git}
+	return &WorktreeManager{lookup: cfg.Lookup, git: git, known: cfg.KnownWorktrees}
 }
 
 // DiffFile is one changed file's stat line.
@@ -332,5 +337,101 @@ func (w *WorktreeManager) Merge(_ context.Context, params json.RawMessage) (any,
 	}
 	rt.State.SetWorkspace(session.Workspace{ProjectRoot: rt.ProjectRoot, ActiveRoot: rt.ProjectRoot})
 	res.Merged = true
+	return res, nil
+}
+
+type discardParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// Discard handles session/discard: remove the worktree and delete the
+// branch. The branch is unmerged by definition, so the delete is forced.
+// The explicit RPC call is the confirmation; the UI gates it behind one.
+func (w *WorktreeManager) Discard(_ context.Context, params json.RawMessage) (any, error) {
+	var p discardParams
+	if err := decodeParams(params, &p, "session/discard"); err != nil {
+		return nil, err
+	}
+	rt, ws, err := w.isolated(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if rerr := w.git.WorktreeRemove(rt.ProjectRoot, ws.ActiveRoot); rerr != nil {
+		return nil, serverErrorf("remove worktree %s: %v", ws.ActiveRoot, rerr)
+	}
+	if derr := w.git.BranchDelete(rt.ProjectRoot, ws.Branch, true); derr != nil {
+		return nil, serverErrorf("delete branch %s: %v", ws.Branch, derr)
+	}
+	rt.State.SetWorkspace(session.Workspace{ProjectRoot: rt.ProjectRoot, ActiveRoot: rt.ProjectRoot})
+	return struct{}{}, nil
+}
+
+// PruneResult is the session/worktree_prune result. Pruned lists git's own
+// stale administrative entries removed; Unknown lists live worktrees that
+// no known agent claims.
+type PruneResult struct {
+	Pruned  []string `json:"pruned"`
+	Unknown []string `json:"unknown"`
+}
+
+type pruneParams struct {
+	Cwd string `json:"cwd"`
+}
+
+// Prune handles session/worktree_prune. cwd-scoped, not session-scoped: the
+// bridge calls it at startup when a project may have no live session.
+//
+// It never removes an unknown worktree — that is potentially someone's
+// uncommitted work. It only runs `git worktree prune`, which clears git's
+// stale metadata, and reports what it could not account for.
+func (w *WorktreeManager) Prune(_ context.Context, params json.RawMessage) (any, error) {
+	var p pruneParams
+	if err := decodeParams(params, &p, "session/worktree_prune"); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(p.Cwd) == "" {
+		return nil, invalidParamsError("cwd is required")
+	}
+	if !filepath.IsAbs(p.Cwd) {
+		return nil, invalidParamsError("cwd must be an absolute path")
+	}
+	if err := validateWorkingPaths(p.Cwd, nil); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+
+	before, err := w.git.WorktreeList(p.Cwd)
+	if err != nil {
+		return nil, serverErrorf("list worktrees: %v", err)
+	}
+	if perr := w.git.WorktreePrune(p.Cwd); perr != nil {
+		return nil, serverErrorf("prune worktrees: %v", perr)
+	}
+	after, err := w.git.WorktreeList(p.Cwd)
+	if err != nil {
+		return nil, serverErrorf("list worktrees after prune: %v", err)
+	}
+
+	stillThere := make(map[string]bool, len(after))
+	for _, p2 := range after {
+		stillThere[p2] = true
+	}
+	res := PruneResult{Pruned: []string{}, Unknown: []string{}}
+	for _, p2 := range before {
+		if !stillThere[p2] {
+			res.Pruned = append(res.Pruned, p2)
+		}
+	}
+
+	claimed := map[string]bool{}
+	if w.known != nil {
+		for _, p2 := range w.known(p.Cwd) {
+			claimed[p2] = true
+		}
+	}
+	for _, p2 := range after {
+		if !claimed[p2] {
+			res.Unknown = append(res.Unknown, p2)
+		}
+	}
 	return res, nil
 }

@@ -226,9 +226,24 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 			}
 			return &WorktreeRuntime{State: rt.State, ProjectRoot: rt.State.Workspace().ProjectRoot}, true
 		},
+		KnownWorktrees: func(projectRoot string) []string {
+			var out []string
+			for _, rt := range manager.All() {
+				if rt == nil || rt.State == nil {
+					continue
+				}
+				ws := rt.State.Workspace()
+				if ws.ProjectRoot == projectRoot && ws.ActiveRoot != ws.ProjectRoot {
+					out = append(out, ws.ActiveRoot)
+				}
+			}
+			return out
+		},
 	})
 	srv.Handle("session/diff", wtMgr.Diff)
 	srv.Handle("session/merge", wtMgr.Merge)
+	srv.Handle("session/discard", wtMgr.Discard)
+	srv.Handle("session/worktree_prune", wtMgr.Prune)
 
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {

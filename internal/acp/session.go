@@ -542,6 +542,18 @@ func (m *SessionManager) Get(id string) (*app.Runtime, bool) {
 	return rt, ok
 }
 
+// All returns every published runtime. Used by worktree orphan detection,
+// which must know every session's active root.
+func (m *SessionManager) All() []*app.Runtime {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*app.Runtime, 0, len(m.sessions))
+	for _, rt := range m.sessions {
+		out = append(out, rt)
+	}
+	return out
+}
+
 // detach removes the runtime for id from the map under both locks and
 // returns the removed pointer (or false if id was unknown).
 func (m *SessionManager) detach(id string) (*app.Runtime, bool) {

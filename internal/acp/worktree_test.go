@@ -13,6 +13,13 @@ import (
 	"marshal/internal/worktree"
 )
 
+// tempAbsDir returns an absolute path inside TMPDIR, which
+// validateWorkingPaths accepts.
+func tempAbsDir(t *testing.T) string {
+	t.Helper()
+	return t.TempDir()
+}
+
 // newWorktreeTestState returns a session.State with no persistence, enough
 // for Workspace()/SetWorkspace(). Named distinctly from skills_test.go's
 // newTestState, which takes no arguments.
@@ -291,6 +298,76 @@ func TestMergeSuccessRemovesWorktreeDeletesBranchAndUnisolates(t *testing.T) {
 	}
 	if ws := st.Workspace(); ws.Branch != "" || ws.ActiveRoot != ws.ProjectRoot {
 		t.Errorf("session must return to the project root, got %+v", ws)
+	}
+}
+
+func TestDiscardRemovesWorktreeAndForceDeletesBranch(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+
+	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	if len(git.Deleted) != 1 || git.Deleted[0] != "f" {
+		t.Errorf("Deleted = %v", git.Deleted)
+	}
+	if ws := st.Workspace(); ws.Branch != "" || ws.ActiveRoot != ws.ProjectRoot {
+		t.Errorf("session must return to the project root, got %+v", ws)
+	}
+}
+
+func TestDiscardRejectsNonIsolatedSession(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	st := newWorktreeTestState(t, "/home/u/repo")
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
+		t.Fatal("expected an error for a session that is not isolated")
+	}
+}
+
+func TestPruneReportsUnknownWorktreesWithoutDeletingThem(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.Worktrees = []string{"/home/u/repo/.marshal/worktrees/known", "/home/u/repo/.marshal/worktrees/orphan"}
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git:            git,
+		KnownWorktrees: func(string) []string { return []string{"/home/u/repo/.marshal/worktrees/known"} },
+	})
+
+	res, err := m.Prune(context.Background(), json.RawMessage(`{"cwd":"`+tempAbsDir(t)+`"}`))
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	out := res.(PruneResult)
+	if len(out.Unknown) != 1 || !strings.HasSuffix(out.Unknown[0], "orphan") {
+		t.Fatalf("Unknown = %v, want just the orphan", out.Unknown)
+	}
+	// An unknown worktree may hold someone's uncommitted work.
+	if len(git.Deleted) != 0 {
+		t.Error("prune must never delete a branch")
+	}
+	for _, c := range git.Calls() {
+		if c == "WorktreeRemove" {
+			t.Fatal("prune must never remove an unknown worktree")
+		}
+	}
+}
+
+func TestPruneRejectsRelativeCwd(t *testing.T) {
+	m := NewWorktreeManager(WorktreeManagerConfig{Git: worktree.NewFakeGitOps()})
+	if _, err := m.Prune(context.Background(), json.RawMessage(`{"cwd":"rel/path"}`)); err == nil {
+		t.Fatal("expected an error for a relative cwd")
 	}
 }
 

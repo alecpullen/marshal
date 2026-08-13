@@ -1,7 +1,10 @@
 package acp
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"marshal/internal/app/session"
@@ -89,4 +92,129 @@ func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, 
 		BaseSha:      wt.Base,
 		TargetBranch: strings.TrimSpace(target),
 	}, nil
+}
+
+// WorktreeRuntime is the per-session state the worktree handlers need.
+type WorktreeRuntime struct {
+	State       *session.State
+	ProjectRoot string
+}
+
+// WorktreeManagerConfig wires the manager to the session registry and git.
+type WorktreeManagerConfig struct {
+	Lookup func(sessionID string) (*WorktreeRuntime, bool)
+	// Git defaults to CLIGitOps when nil. Tests inject FakeGitOps.
+	Git worktree.GitOps
+}
+
+// WorktreeManager serves the isolation-related ACP methods.
+type WorktreeManager struct {
+	lookup func(string) (*WorktreeRuntime, bool)
+	git    worktree.GitOps
+}
+
+func NewWorktreeManager(cfg WorktreeManagerConfig) *WorktreeManager {
+	git := cfg.Git
+	if git == nil {
+		git = worktree.CLIGitOps{}
+	}
+	return &WorktreeManager{lookup: cfg.Lookup, git: git}
+}
+
+// DiffFile is one changed file's stat line.
+type DiffFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+}
+
+// DiffResult is the session/diff result.
+type DiffResult struct {
+	Files []DiffFile `json:"files"`
+	Diff  string     `json:"diff,omitempty"`
+}
+
+type diffParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path,omitempty"`
+}
+
+// isolated resolves a session and requires it to be in a worktree.
+func (w *WorktreeManager) isolated(sessionID string) (*WorktreeRuntime, session.Workspace, error) {
+	if w.lookup == nil {
+		return nil, session.Workspace{}, serverErrorf("worktree manager has no session lookup configured")
+	}
+	rt, ok := w.lookup(sessionID)
+	if !ok || rt == nil || rt.State == nil {
+		return nil, session.Workspace{}, serverErrorf("unknown session %q", sessionID)
+	}
+	ws := rt.State.Workspace()
+	if ws.Branch == "" || ws.ActiveRoot == ws.ProjectRoot {
+		return nil, session.Workspace{}, serverErrorf("session %q is not isolated in a worktree", sessionID)
+	}
+	return rt, ws, nil
+}
+
+// parseNumstat turns `git diff --numstat` output into DiffFiles. Binary
+// files report "-" for both counts and are kept with zero counts rather
+// than dropped — the operator still needs to see that they changed.
+func parseNumstat(out string) []DiffFile {
+	var files []DiffFile
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		add, _ := strconv.Atoi(parts[0]) // "-" for binary → 0
+		del, _ := strconv.Atoi(parts[1])
+		files = append(files, DiffFile{Path: parts[2], Added: add, Removed: del})
+	}
+	return files
+}
+
+// Diff handles session/diff.
+//
+// The range is the recorded base SHA with no right-hand side, which git reads
+// as "base versus the working tree" — so it covers both work committed on the
+// branch and changes still uncommitted, which is what the operator is judging.
+//
+// The base comes from the workspace, not from a merge-base call: inside a
+// worktree HEAD *is* the branch tip, so MergeBase(worktree, "HEAD", branch)
+// returns the tip and the diff would always be empty.
+func (w *WorktreeManager) Diff(_ context.Context, params json.RawMessage) (any, error) {
+	var p diffParams
+	if err := decodeParams(params, &p, "session/diff"); err != nil {
+		return nil, err
+	}
+	_, ws, err := w.isolated(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	rng := ws.BaseSha
+	if rng == "" {
+		// A resumed session has no in-memory base; recover it from the
+		// project side, where the branch and its target still differ.
+		base, berr := w.git.MergeBase(ws.ProjectRoot, ws.Branch, "HEAD")
+		if berr != nil {
+			return nil, serverErrorf("resolve diff base: %v", berr)
+		}
+		rng = base
+	}
+
+	stat, err := w.git.DiffNumstat(ws.ActiveRoot, rng)
+	if err != nil {
+		return nil, serverErrorf("diff stat: %v", err)
+	}
+	res := DiffResult{Files: parseNumstat(stat)}
+	if p.Path != "" {
+		d, derr := w.git.DiffPath(ws.ActiveRoot, rng, p.Path, 3)
+		if derr != nil {
+			return nil, serverErrorf("diff %s: %v", p.Path, derr)
+		}
+		res.Diff = d
+	}
+	return res, nil
 }

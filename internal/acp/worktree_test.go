@@ -1,6 +1,8 @@
 package acp
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +90,98 @@ func TestIsolateSessionHonoursBaseRef(t *testing.T) {
 	}
 	if got.BaseSha != "sha-release" {
 		t.Errorf("BaseSha = %q, want sha-release", got.BaseSha)
+	}
+}
+
+func TestParseNumstat(t *testing.T) {
+	got := parseNumstat("3\t1\tmain.go\n0\t7\told.go\n-\t-\timage.png\n")
+	if len(got) != 3 {
+		t.Fatalf("len = %d: %+v", len(got), got)
+	}
+	if got[0] != (DiffFile{Path: "main.go", Added: 3, Removed: 1}) {
+		t.Errorf("[0] = %+v", got[0])
+	}
+	if got[1] != (DiffFile{Path: "old.go", Added: 0, Removed: 7}) {
+		t.Errorf("[1] = %+v", got[1])
+	}
+	// Binary files report "-" and must not be dropped or crash.
+	if got[2].Path != "image.png" || got[2].Added != 0 {
+		t.Errorf("[2] = %+v", got[2])
+	}
+}
+
+// newDiffManager wires a WorktreeManager over one isolated fake session.
+func newDiffManager(t *testing.T, git *worktree.FakeGitOps) (*WorktreeManager, string) {
+	t.Helper()
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f", BaseSha: "sha-base"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(id string) (*WorktreeRuntime, bool) {
+			if id != "s1" {
+				return nil, false
+			}
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	return m, "s1"
+}
+
+func TestDiffReturnsFileStatsWithoutPath(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.DiffStatOut = "2\t0\ta.go\n"
+	m, id := newDiffManager(t, git)
+
+	res, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"`+id+`"}`))
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	out := res.(DiffResult)
+	if len(out.Files) != 1 || out.Files[0].Path != "a.go" {
+		t.Fatalf("Files = %+v", out.Files)
+	}
+	if out.Diff != "" {
+		t.Errorf("Diff must be empty without a path, got %q", out.Diff)
+	}
+}
+
+func TestDiffReturnsUnifiedDiffForOnePath(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.DiffStatOut = "2\t0\ta.go\n"
+	git.DiffOut = "--- a/a.go\n+++ b/a.go\n@@\n+x\n"
+	m, id := newDiffManager(t, git)
+
+	res, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"`+id+`","path":"a.go"}`))
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if out := res.(DiffResult); !strings.Contains(out.Diff, "+x") {
+		t.Fatalf("Diff = %q", out.Diff)
+	}
+}
+
+func TestDiffRejectsNonIsolatedSession(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	st := newWorktreeTestState(t, "/home/u/repo") // at the project root, not isolated
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	if _, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
+		t.Fatal("expected an error for a session that is not isolated")
+	}
+}
+
+func TestDiffRejectsUnknownSession(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git:    git,
+		Lookup: func(string) (*WorktreeRuntime, bool) { return nil, false },
+	})
+	if _, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"nope"}`)); err == nil {
+		t.Fatal("expected an error for an unknown session")
 	}
 }
 

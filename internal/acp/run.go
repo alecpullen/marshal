@@ -218,6 +218,17 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
 	srv.Handle("session/agents_roster", mem.AgentsRoster)
 
+	wtMgr := NewWorktreeManager(WorktreeManagerConfig{
+		Lookup: func(sessionID string) (*WorktreeRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil {
+				return nil, false
+			}
+			return &WorktreeRuntime{State: rt.State, ProjectRoot: rt.State.Workspace().ProjectRoot}, true
+		},
+	})
+	srv.Handle("session/diff", wtMgr.Diff)
+
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
 			rt, ok := manager.Get(sessionID)

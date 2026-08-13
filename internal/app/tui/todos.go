@@ -147,10 +147,22 @@ func todosAllDone(todos []native.TodoItem) bool {
 }
 
 // cycleTodoPanelMode advances the pinned todo panel's visibility cycle:
-// expanded → collapsed → hidden. Used by Ctrl+T and by clicks in the
-// panel's row band (click.go).
+// expanded → collapsed → hidden. Used by Ctrl+T.
 func (m *Model) cycleTodoPanelMode() {
 	m.todoPanelMode = (m.todoPanelMode + 1) % todoPanelModeCount
+	m.updateViewportHeight()
+}
+
+// toggleTodoPanelMode flips between expanded and collapsed without
+// entering the hidden state. Used by mouse clicks so the panel never
+// vanishes unexpectedly. Ctrl+T still cycles through all three states
+// (expanded → collapsed → hidden) via cycleTodoPanelMode.
+func (m *Model) toggleTodoPanelMode() {
+	if m.todoPanelMode == todoPanelExpanded {
+		m.todoPanelMode = todoPanelCollapsed
+	} else {
+		m.todoPanelMode = todoPanelExpanded
+	}
 	m.updateViewportHeight()
 }
 

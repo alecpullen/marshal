@@ -215,3 +215,54 @@ func TestMouseClickTodoPanelCyclesMode(t *testing.T) {
 		t.Fatalf("click past leftWidth must not cycle, got %v", cc2.todoPanelMode)
 	}
 }
+
+// TestMouseClickTodoPanelNeverHides verifies that repeated clicks on the
+// todo panel toggle between expanded and collapsed and never enter the
+// hidden state — a click should never make the panel vanish.
+func TestMouseClickTodoPanelNeverHides(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	todos := make([]db.TodoItem, 0, 8)
+	for i := 0; i < 8; i++ {
+		todos = append(todos, db.TodoItem{Content: "todo item", Status: native.TodoPending})
+	}
+	if err := m.state.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	top, _, ok := m.todoPanelBand()
+	if !ok {
+		t.Fatal("expected a todo panel band after seeding todos")
+	}
+
+	// First click: expanded → collapsed.
+	u1, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top, Button: tea.MouseLeft})
+	m1 := asModel(t, u1)
+	if m1.todoPanelMode != todoPanelCollapsed {
+		t.Fatalf("first click mode = %v, want collapsed", m1.todoPanelMode)
+	}
+	// The band moves when the panel collapses (viewport height changes);
+	// recompute it for the next click.
+	top1, _, ok1 := m1.todoPanelBand()
+	if !ok1 {
+		t.Fatal("expected a todo panel band after first click")
+	}
+	// Second click: collapsed → expanded (NOT hidden).
+	u2, _ := m1.Update(tea.MouseClickMsg{X: 2, Y: top1, Button: tea.MouseLeft})
+	m2 := asModel(t, u2)
+	if m2.todoPanelMode != todoPanelExpanded {
+		t.Fatalf("second click mode = %v, want expanded (never hidden)", m2.todoPanelMode)
+	}
+	// Third click: back to collapsed.
+	top2, _, ok2 := m2.todoPanelBand()
+	if !ok2 {
+		t.Fatal("expected a todo panel band after second click")
+	}
+	u3, _ := m2.Update(tea.MouseClickMsg{X: 2, Y: top2, Button: tea.MouseLeft})
+	m3 := asModel(t, u3)
+	if m3.todoPanelMode != todoPanelCollapsed {
+		t.Fatalf("third click mode = %v, want collapsed", m3.todoPanelMode)
+	}
+}

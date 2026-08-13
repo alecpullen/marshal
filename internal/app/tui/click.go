@@ -76,10 +76,11 @@ func (m *Model) todoPanelBand() (top, bottom int, ok bool) {
 	return top, top + rows, true
 }
 
-// handleTodoPanelClick cycles the pinned todo panel's visibility mode
-// when a left click lands in its row band — the same transition Ctrl+T
-// performs. (A dedicated "show all" state beyond todoPanelMaxVisibleItems
-// is a deliberate non-goal; the cycle is the existing, understood UX.)
+// handleTodoPanelClick toggles the pinned todo panel between expanded and
+// collapsed when a left click lands in its row band. It deliberately does
+// NOT cycle into the hidden state — a click should never make the panel
+// vanish. Ctrl+T still cycles through all three states (expanded →
+// collapsed → hidden).
 func (m *Model) handleTodoPanelClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return nil, false
@@ -91,7 +92,9 @@ func (m *Model) handleTodoPanelClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok || msg.Y < top || msg.Y >= bottom {
 		return nil, false
 	}
-	m.cycleTodoPanelMode()
+	m.toggleTodoPanelMode()
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
 	return nil, true
 }
 

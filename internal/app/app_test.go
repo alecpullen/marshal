@@ -2574,14 +2574,14 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := registry.New()
 
-	// Unset config → default 48.
+	// Unset config → unlimited; users must explicitly opt into a child cap.
 	factory, _ := buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
-	if child.MaxToolIterations != defaultSubtaskIterations {
-		t.Fatalf("MaxToolIterations = %d, want default %d", child.MaxToolIterations, defaultSubtaskIterations)
+	if child.MaxToolIterations != 0 {
+		t.Fatalf("MaxToolIterations = %d, want 0 (unlimited)", child.MaxToolIterations)
 	}
 
 	// Explicit value set in config.

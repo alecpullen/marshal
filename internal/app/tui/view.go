@@ -125,7 +125,11 @@ func (m *Model) viewString() string {
 		leftHeight -= lipgloss.Height(topBar)
 	}
 	left = clipLeftColumn(left, leftHeight)
-	if m.railEnabled() {
+	// Suppress the side rail while drilled into a subagent: the rail shows
+	// parent-session telemetry that is irrelevant (and squashing) while
+	// viewing a child transcript. The breadcrumb row already identifies the
+	// drilled-in state, so the left column gets the full frame width.
+	if m.railEnabled() && len(m.viewStack) == 0 {
 		railHeight := m.height - statusLineRows
 		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {
 			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)

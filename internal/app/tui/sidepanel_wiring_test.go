@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/session"
 )
 
 // newTestModelForRail builds a Model at the given size with the rail
@@ -110,5 +112,32 @@ func TestCtrlBTogglesRail(t *testing.T) {
 	}
 	if m.leftWidth != 160 {
 		t.Errorf("leftWidth = %d, want 160 when hidden", m.leftWidth)
+	}
+}
+
+// TestRailSuppressedDuringSubagentDrillIn verifies that the side rail is
+// not rendered while the user is drilled into a subagent (viewStack
+// non-empty). The rail shows parent-session telemetry that is irrelevant
+// (and squashing) while viewing a child transcript.
+func TestRailSuppressedDuringSubagentDrillIn(t *testing.T) {
+	m := newTestModelForRail(t, 160, 40, true)
+	if !m.railEnabled() {
+		t.Fatal("rail should be enabled at 160 cols")
+	}
+	// Register a subagent and drill into it.
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	m.state.RegisterSubagent("explore repo", child)
+	views := m.state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("registered subagents = %d, want 1", len(views))
+	}
+	m.drillIntoSubagent(views[0])
+	if len(m.viewStack) != 1 {
+		t.Fatalf("viewStack len = %d, want 1 after drill-in", len(m.viewStack))
+	}
+	// The rail must not be rendered while drilled in.
+	if strings.Contains(stripANSI(m.viewString()), "│") {
+		t.Error("rail divider rendered while drilled into a subagent")
 	}
 }

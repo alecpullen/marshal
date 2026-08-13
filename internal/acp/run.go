@@ -228,6 +228,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 		},
 	})
 	srv.Handle("session/diff", wtMgr.Diff)
+	srv.Handle("session/merge", wtMgr.Merge)
 
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {

@@ -218,3 +218,119 @@ func (w *WorktreeManager) Diff(_ context.Context, params json.RawMessage) (any, 
 	}
 	return res, nil
 }
+
+// Refusal reasons returned by session/merge. The bridge maps any non-empty
+// reason to HTTP 409 so a client can branch on a code, not on prose.
+const (
+	ReasonDirty        = "dirty"
+	ReasonProjectDirty = "project_dirty"
+	ReasonTargetMoved  = "target_moved"
+	ReasonConflicts    = "conflicts"
+)
+
+// MergeResult is the session/merge result. Merged is false for every
+// refusal, with Reason naming which.
+type MergeResult struct {
+	Merged    bool     `json:"merged"`
+	Branch    string   `json:"branch"`
+	Target    string   `json:"target"`
+	Reason    string   `json:"reason,omitempty"`
+	Conflicts []string `json:"conflicts,omitempty"`
+}
+
+type mergeParams struct {
+	SessionID     string `json:"sessionId"`
+	TargetBranch  string `json:"targetBranch"`
+	CommitMessage string `json:"commitMessage,omitempty"`
+}
+
+// conflictFiles pulls file names out of git's CONFLICT lines. Best-effort:
+// the reason is what drives the UI, the list is detail.
+func conflictFiles(msg string) []string {
+	var out []string
+	for _, line := range strings.Split(msg, "\n") {
+		if !strings.Contains(line, "CONFLICT") {
+			continue
+		}
+		if i := strings.LastIndex(line, " in "); i >= 0 {
+			if f := strings.TrimSpace(line[i+4:]); f != "" {
+				out = append(out, f)
+			}
+		}
+	}
+	return out
+}
+
+// Merge handles session/merge: merge the agent's branch into the branch the
+// project was on when the session was isolated, then clean up. It refuses
+// rather than improvising — see the four Reason constants.
+func (w *WorktreeManager) Merge(_ context.Context, params json.RawMessage) (any, error) {
+	var p mergeParams
+	if err := decodeParams(params, &p, "session/merge"); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(p.TargetBranch) == "" {
+		return nil, invalidParamsError("targetBranch is required")
+	}
+	rt, ws, err := w.isolated(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	res := MergeResult{Branch: ws.Branch, Target: p.TargetBranch}
+
+	// 1. The worktree must be committed, or we must be told to commit it.
+	dirty, err := w.git.IsDirty(ws.ActiveRoot)
+	if err != nil {
+		return nil, serverErrorf("check worktree: %v", err)
+	}
+	if dirty {
+		if p.CommitMessage == "" {
+			res.Reason = ReasonDirty
+			return res, nil
+		}
+		if _, cerr := w.git.CommitAll(ws.ActiveRoot, p.CommitMessage); cerr != nil {
+			return nil, serverErrorf("commit worktree: %v", cerr)
+		}
+	}
+
+	// 2. Never merge into a dirty project checkout.
+	projectDirty, err := w.git.IsDirty(rt.ProjectRoot)
+	if err != nil {
+		return nil, serverErrorf("check project: %v", err)
+	}
+	if projectDirty {
+		res.Reason = ReasonProjectDirty
+		return res, nil
+	}
+
+	// 3. The project must still be on the branch we recorded at isolation.
+	current, err := w.git.RevParse(rt.ProjectRoot, "--abbrev-ref HEAD")
+	if err != nil {
+		return nil, serverErrorf("resolve project branch: %v", err)
+	}
+	if strings.TrimSpace(current) != p.TargetBranch {
+		res.Reason = ReasonTargetMoved
+		return res, nil
+	}
+
+	// 4. Attempt the merge. On failure abort before returning, so a refused
+	// merge never leaves the project mid-merge.
+	if merr := w.git.Merge(rt.ProjectRoot, ws.Branch); merr != nil {
+		_ = w.git.MergeAbort(rt.ProjectRoot)
+		res.Reason = ReasonConflicts
+		res.Conflicts = conflictFiles(merr.Error())
+		return res, nil
+	}
+
+	// Success: drop the worktree, delete the now-merged branch, and return
+	// the session to the project root. Its history stays in the project DB.
+	if rerr := w.git.WorktreeRemove(rt.ProjectRoot, ws.ActiveRoot); rerr != nil {
+		return nil, serverErrorf("merged, but removing the worktree failed: %v", rerr)
+	}
+	if derr := w.git.BranchDelete(rt.ProjectRoot, ws.Branch, false); derr != nil {
+		return nil, serverErrorf("merged, but deleting branch %s failed: %v", ws.Branch, derr)
+	}
+	rt.State.SetWorkspace(session.Workspace{ProjectRoot: rt.ProjectRoot, ActiveRoot: rt.ProjectRoot})
+	res.Merged = true
+	return res, nil
+}

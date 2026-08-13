@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +183,114 @@ func TestDiffRejectsUnknownSession(t *testing.T) {
 	})
 	if _, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"nope"}`)); err == nil {
 		t.Fatal("expected an error for an unknown session")
+	}
+}
+
+// newMergeManager wires an isolated session plus a project root.
+func newMergeManager(t *testing.T, git *worktree.FakeGitOps) *WorktreeManager {
+	t.Helper()
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f"})
+	return NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+}
+
+func mergeCall(t *testing.T, m *WorktreeManager, body string) MergeResult {
+	t.Helper()
+	res, err := m.Merge(context.Background(), json.RawMessage(body))
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	return res.(MergeResult)
+}
+
+func TestMergeRefusesDirtyWorktreeWithoutCommitMessage(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.Dirty = true
+	git.AbbrevRef = "main"
+	m := newMergeManager(t, git)
+
+	got := mergeCall(t, m, `{"sessionId":"s1","targetBranch":"main"}`)
+	if got.Merged || got.Reason != ReasonDirty {
+		t.Fatalf("got %+v, want refusal with reason dirty", got)
+	}
+	if len(git.Merges) != 0 {
+		t.Error("must not attempt a merge when refusing")
+	}
+}
+
+func TestMergeCommitsDirtyWorktreeWhenGivenAMessage(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	// Only the worktree is dirty; the project root stays clean.
+	git.DirtyDirs["/home/u/repo/.marshal/worktrees/f"] = true
+	git.AbbrevRef = "main"
+	m := newMergeManager(t, git)
+
+	got := mergeCall(t, m, `{"sessionId":"s1","targetBranch":"main","commitMessage":"wip"}`)
+	if !got.Merged {
+		t.Fatalf("got %+v, want merged", got)
+	}
+	if len(git.Commits) == 0 {
+		t.Error("expected CommitAll before merging")
+	}
+}
+
+func TestMergeRefusesWhenProjectIsOnADifferentBranch(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.AbbrevRef = "other"
+	m := newMergeManager(t, git)
+
+	got := mergeCall(t, m, `{"sessionId":"s1","targetBranch":"main"}`)
+	if got.Merged || got.Reason != ReasonTargetMoved {
+		t.Fatalf("got %+v, want refusal with reason target_moved", got)
+	}
+}
+
+// The critical one: a conflicting merge must abort so the project is not
+// left mid-merge.
+func TestMergeAbortsOnConflict(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.AbbrevRef = "main"
+	git.MergeErr = errors.New("CONFLICT (content): Merge conflict in a.go\nCONFLICT (content): Merge conflict in b.go")
+	m := newMergeManager(t, git)
+
+	got := mergeCall(t, m, `{"sessionId":"s1","targetBranch":"main"}`)
+	if got.Merged || got.Reason != ReasonConflicts {
+		t.Fatalf("got %+v, want refusal with reason conflicts", got)
+	}
+	if git.Aborts != 1 {
+		t.Fatalf("Aborts = %d, want exactly 1 — a refused merge must never leave the project mid-merge", git.Aborts)
+	}
+	if len(got.Conflicts) != 2 {
+		t.Errorf("Conflicts = %v, want both files", got.Conflicts)
+	}
+}
+
+func TestMergeSuccessRemovesWorktreeDeletesBranchAndUnisolates(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.AbbrevRef = "main"
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+
+	got := mergeCall(t, m, `{"sessionId":"s1","targetBranch":"main"}`)
+	if !got.Merged {
+		t.Fatalf("got %+v", got)
+	}
+	if len(git.Deleted) != 1 || git.Deleted[0] != "f" {
+		t.Errorf("Deleted = %v, want the agent branch", git.Deleted)
+	}
+	if ws := st.Workspace(); ws.Branch != "" || ws.ActiveRoot != ws.ProjectRoot {
+		t.Errorf("session must return to the project root, got %+v", ws)
 	}
 }
 

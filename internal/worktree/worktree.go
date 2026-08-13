@@ -58,6 +58,11 @@ type FakeGitOps struct {
 	Heads     map[string]string
 	Commits   []string
 	Dirty     bool
+	// DirtyDirs maps a directory to its dirty state. When a dir is present,
+	// IsDirty returns that value; otherwise it falls back to the global
+	// Dirty. CommitAll clears the entry for the committed dir, so a committed
+	// worktree reads as clean while the project root can stay dirty.
+	DirtyDirs map[string]bool
 	// NextHead, when non-empty, is popped as the SHA of the next CommitAll.
 	NextHead  []string
 	LogOut    string
@@ -89,9 +94,10 @@ func (f *FakeGitOps) Calls() []string { return f.calls }
 
 func NewFakeGitOps() *FakeGitOps {
 	return &FakeGitOps{
-		Refs:     map[string]string{},
-		Branches: map[string]bool{},
-		Heads:    map[string]string{},
+		Refs:      map[string]string{},
+		Branches:  map[string]bool{},
+		Heads:     map[string]string{},
+		DirtyDirs: map[string]bool{},
 	}
 }
 
@@ -159,7 +165,13 @@ func (f *FakeGitOps) WorktreePrune(dir string) error {
 // IsDirty reports the Dirty field. Dirty is sticky: CommitAll does not
 // clear it, so a scripted multi-task run keeps producing commits without
 // the test resetting the flag between tasks.
-func (f *FakeGitOps) IsDirty(dir string) (bool, error) { f.record("IsDirty"); return f.Dirty, nil }
+func (f *FakeGitOps) IsDirty(dir string) (bool, error) {
+	f.record("IsDirty")
+	if v, ok := f.DirtyDirs[dir]; ok {
+		return v, nil
+	}
+	return f.Dirty, nil
+}
 
 func (f *FakeGitOps) CommitAll(dir, message string) (string, error) {
 	f.record("CommitAll")
@@ -167,6 +179,7 @@ func (f *FakeGitOps) CommitAll(dir, message string) (string, error) {
 		return "", f.CommitErr
 	}
 	f.Commits = append(f.Commits, message)
+	delete(f.DirtyDirs, dir)
 	head := fmt.Sprintf("commit%03d0000000000000000000000000000000", len(f.Commits))
 	if len(f.NextHead) > 0 {
 		head = f.NextHead[0]

@@ -95,6 +95,9 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
 					"pluginsAccess":         map[string]any{},
+					// session/new isolation plus session/diff, /merge,
+					// /discard and /worktree_prune.
+					"worktreeIsolation": map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{

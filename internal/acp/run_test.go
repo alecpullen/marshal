@@ -74,6 +74,19 @@ func TestRunInitializeCapabilities(t *testing.T) {
 		if !ok {
 			t.Fatalf("sessionCapabilities missing or wrong type: %T", caps["sessionCapabilities"])
 		}
+		// Every subsystem advertises a capability so clients can discover
+		// it. session/diff, /merge, /discard and /worktree_prune exist, so
+		// worktreeIsolation must be advertised too — otherwise the
+		// "truthful capability advertisement" property is broken and no
+		// client can find the isolation surface.
+		isoCap, ok := sessionCaps["worktreeIsolation"]
+		if !ok {
+			t.Fatalf("sessionCapabilities.worktreeIsolation missing; capabilities = %v", sessionCaps)
+		}
+		if isoObj, ok := isoCap.(map[string]any); !ok || len(isoObj) != 0 {
+			t.Fatalf("sessionCapabilities.worktreeIsolation = %v, want an empty object", isoCap)
+		}
+
 		closeCap, ok := sessionCaps["close"]
 		if !ok {
 			t.Fatalf("sessionCapabilities.close missing")

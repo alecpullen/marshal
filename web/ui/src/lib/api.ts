@@ -84,6 +84,19 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
   return data as T
 }
 
+/**
+ * The approval or question an agent is parked on. Present only while it is
+ * genuinely outstanding, so its presence is enough to offer a decision.
+ * `params` is the raw ACP request payload — shape varies by tool, so read
+ * it defensively (see describePending in fleet.ts).
+ */
+export interface PendingRequest {
+  kind: 'approval' | 'question'
+  /** toolCallId for an approval, questionId for a question. */
+  id: string
+  params?: Record<string, unknown>
+}
+
 export interface AgentStatus {
   id: string
   project: string
@@ -95,6 +108,7 @@ export interface AgentStatus {
   changedFiles?: number
   interrupted?: boolean
   updatedAt: string
+  pending?: PendingRequest
 }
 
 export interface ProjectStatus {

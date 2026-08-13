@@ -1,16 +1,96 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { createFleetStore, sortAttentionFirst } from '../lib/fleet'
+  import { createFleetStore, sortAttentionFirst, type AgentRow } from '../lib/fleet'
   import { connectFleetSSE } from '../lib/sse'
+  import AgentCard from '../lib/AgentCard.svelte'
+  import AttentionList from '../lib/AttentionList.svelte'
+  import Button from '../lib/ui/Button.svelte'
+
   let { onOpenAgent, onNewAgent }: { onOpenAgent: (id: string) => void; onNewAgent: () => void } = $props()
+
   const { state: fleet, actions } = createFleetStore()
-  onMount(() => { const ctl = new AbortController(); actions.refresh(); const disconnect = connectFleetSSE({ onDelta: actions.applyDelta, onOverflow: actions.refresh, signal: ctl.signal }); return () => { ctl.abort(); disconnect() } })
+
+  onMount(() => {
+    const ctl = new AbortController()
+    actions.refresh()
+    const disconnect = connectFleetSSE({
+      onDelta: (d) => {
+        actions.applyDelta(d)
+        // A pending delta carries only the kind; refetch to pick up the
+        // payload the attention list needs to render a decision.
+        if (d.kind === 'pending') actions.refresh()
+      },
+      // We lagged or reconnected past the ring: the snapshot is the
+      // authority, so refetch rather than trying to patch the gap.
+      onOverflow: () => actions.refresh(),
+      signal: ctl.signal,
+    })
+    return () => {
+      ctl.abort()
+      disconnect()
+    }
+  })
+
+  // Group by project so a multi-project fleet stays legible, with the
+  // groups themselves ordered by their most-urgent agent.
+  const grouped = $derived.by(() => {
+    const byProject = new Map<string, AgentRow[]>()
+    for (const a of sortAttentionFirst($fleet.agents)) {
+      const list = byProject.get(a.project)
+      if (list) list.push(a)
+      else byProject.set(a.project, [a])
+    }
+    return [...byProject.entries()]
+  })
+
+  const unavailable = $derived($fleet.projects.filter((p) => !p.available))
+  const untrusted = $derived($fleet.projects.filter((p) => p.available && p.trust === 'untrusted'))
 </script>
+
 <div class="mx-auto flex max-w-6xl flex-col gap-4 p-4">
-  <header class="flex items-center justify-between"><h1 class="text-lg font-semibold">Fleet</h1><button class="rounded border px-3 py-2" onclick={onNewAgent}>New agent</button></header>
-  {#if $fleet.error}<div class="rounded border border-danger p-3">{$fleet.error}</div>{/if}
-  {#each $fleet.projects.filter(p => !p.available) as p (p.root)}<div class="rounded border border-danger p-3">{p.root} unavailable: {p.error}</div>{/each}
-  {#each $fleet.projects.filter(p => p.available && p.trust === 'untrusted') as p (p.root)}<div class="rounded border border-attention p-3 text-sm"><strong>{p.root} is not trusted</strong><div class="text-muted">Project config and plugins are ignored until trusted in the marshal TUI.</div></div>{/each}
-  {#each sortAttentionFirst($fleet.agents) as a (a.id)}<button class="block w-full rounded border border-border bg-surface p-4 text-left" onclick={() => onOpenAgent(a.id)}><div class="flex justify-between"><span>{a.name || a.id}</span><span>{a.status}</span></div><div class="text-sm text-muted">{a.project} {a.activity}</div></button>{/each}
-  {#if $fleet.agents.length === 0}<p class="text-muted">No agents yet.</p>{/if}
+  <header class="flex items-center justify-between gap-3">
+    <h1 class="text-lg font-semibold">Fleet</h1>
+    <div class="flex gap-2">
+      <Button variant="ghost" onclick={() => actions.refresh()}>Refresh</Button>
+      <Button onclick={onNewAgent}>New agent</Button>
+    </div>
+  </header>
+
+  {#if $fleet.error}
+    <div class="rounded-md border border-danger bg-danger/10 p-3 text-sm">{$fleet.error}</div>
+  {/if}
+
+  {#each unavailable as p (p.root)}
+    <div class="rounded-md border border-danger bg-danger/10 p-3 text-sm">
+      <div class="font-medium">{p.root} is unavailable</div>
+      <div class="mt-1 break-words text-muted">{p.error}</div>
+    </div>
+  {/each}
+
+  {#each untrusted as p (p.root)}
+    <div class="rounded-md border border-attention bg-attention/10 p-3 text-sm">
+      <div class="font-medium">{p.root} is not trusted</div>
+      <div class="mt-1 text-muted">
+        Its <code>.marshal/config.toml</code> and project-scope plugins are being ignored. Open the project in the
+        marshal TUI once to trust it — this cannot be granted from the browser.
+      </div>
+    </div>
+  {/each}
+
+  <AttentionList agents={$fleet.agents} onOpen={onOpenAgent} onResolved={() => actions.refresh()} />
+
+  {#if $fleet.agents.length === 0 && !$fleet.loading}
+    <p class="text-sm text-muted">No agents yet. Create one to get started.</p>
+  {/if}
+
+  {#each grouped as [project, agents] (project)}
+    <section class="flex flex-col gap-2">
+      <h2 class="truncate text-xs tracking-wide text-muted uppercase">{project}</h2>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {#each agents as a (a.id)}
+          <AgentCard agent={a} onOpen={onOpenAgent} />
+        {/each}
+      </div>
+    </section>
+  {/each}
 </div>

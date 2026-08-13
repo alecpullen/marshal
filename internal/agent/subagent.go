@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"marshal/internal/app/session"
 	"marshal/internal/llm/pricing"
@@ -107,6 +108,13 @@ type subagentToolConfig struct {
 	resolver      SubagentModelResolver
 	parentModel   string
 	parentPricing pricing.ModelPricing
+
+	// consentMu serializes model-consent approvals. State.PendingApproval
+	// is a single slot; two concurrent agent.run calls that both need
+	// consent would overwrite each other and strand the first caller's
+	// ResponseChan. The tool handler is shared across the parent runner's
+	// parallel batch, so the mutex lives on the config (not the handler).
+	consentMu sync.Mutex
 }
 
 // WithSubagentExec overrides the default child runner executor. Used in
@@ -192,8 +200,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 				return registry.ToolResult{}, fmt.Errorf("agent.run: resolve model: %w", err)
 			}
 			if modelChangeNeedsConsent(cfg.parentModel, preview.Model, cfg.parentPricing, preview.Pricing) {
-				reason := fmt.Sprintf("Subagent will use %s @ %s (different model/cost than parent %s). Approve?", preview.Model, preview.Provider, cfg.parentModel)
-				approved, denied := requestSubagentConsent(ctx, state, reason)
+				// Serialize consent on the shared config: State.PendingApproval
+				// is a single slot, and two concurrent agent.run calls that
+				// both need consent would otherwise overwrite each other and
+				// strand the first caller's ResponseChan.
+				cfg.consentMu.Lock()
+				approved, denied := requestSubagentConsent(ctx, state, fmt.Sprintf("Subagent will use %s @ %s (different model/cost than parent %s). Approve?", preview.Model, preview.Provider, cfg.parentModel))
+				cfg.consentMu.Unlock()
 				if !approved {
 					if denied {
 						return registry.ToolResult{}, fmt.Errorf("agent.run: user denied subagent model change to %s @ %s", preview.Model, preview.Provider)

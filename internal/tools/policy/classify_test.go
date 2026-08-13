@@ -73,8 +73,13 @@ func TestClassifyEnvironmentCommands(t *testing.T) {
 		{"git config --global user.name x", "git config --global"},
 		{"brew uninstall wget", "brew uninstall"},
 		{"brew cleanup", "brew cleanup"},
+		{"brew install ripgrep", "brew install"},
 		{"apt remove nginx", "apt"},
+		{"apt install curl", "apt"},
+		{"apt-get install curl", "apt-get"},
+		{"dnf install vim", "dnf"},
 		{"yum remove httpd", "yum"},
+		{"yum install vim", "yum"},
 	}
 	for _, tc := range env {
 		cls, err := ClassifyCommand(tc.cmd)
@@ -97,11 +102,6 @@ func TestClassifyEnvironmentCommands(t *testing.T) {
 		"npm cache ls",
 		"brew list",
 		"apt list --installed",
-		"brew install ripgrep",
-		"apt-get install curl",
-		"apt install curl",
-		"dnf install vim",
-		"yum install vim",
 	}
 	for _, cmd := range ordinary {
 		cls, err := ClassifyCommand(cmd)

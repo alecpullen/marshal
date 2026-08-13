@@ -601,3 +601,73 @@ func TestSubagentModelConsentSkippedForSameModel(t *testing.T) {
 		t.Fatal("pending approval should not have been set for same model")
 	}
 }
+
+// TestSubagentModelConsentSerialized guards the single State.PendingApproval
+// slot against concurrent agent.run calls that both need model-cost consent.
+// Before the fix, two parallel calls would both call SetPendingApproval and
+// clobber each other's ResponseChan, stranding the first caller. The consent
+// mutex on the shared tool config serializes them so each is answered in turn.
+func TestSubagentModelConsentSerialized(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil, nil
+	}
+	resolver := func(req SubagentRequest) (SubagentModelPreview, error) {
+		return SubagentModelPreview{
+			Model:    "gpt-4o",
+			Provider: "openai",
+			Pricing:  pricing.ModelPricing{InputPerMTokCents: 250, OutputPerMTokCents: 1000},
+		}, nil
+	}
+	tool := NewSubagentTool(factory, resolver, registry.New(), state,
+		WithSubagentParentModel("local-model", pricing.ModelPricing{}),
+	)
+
+	// Answer every pending approval as it appears. Dedup by ResponseChan
+	// (unique per approval) rather than ID: the consent gate uses a fixed
+	// ID, so two approvals share the same ID and a stale read of the same
+	// PendingToolCall must not count as a second answer.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		answered := 0
+		var lastChan chan session.UserApprovalDecision
+		for answered < 2 {
+			ptc := state.PendingApproval()
+			if ptc == nil || ptc.ResponseChan == lastChan {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			// Small delay so a race would have time to overwrite the slot.
+			time.Sleep(20 * time.Millisecond)
+			ptc.Respond(session.UserApprovalDecision{Approved: true})
+			lastChan = ptc.ResponseChan
+			answered++
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = tool.Handler(ctx, registry.ToolCall{
+				Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"openai/gpt-4o"}`),
+			})
+		}(i)
+	}
+	wg.Wait()
+	<-done
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("handler %d: %v", i, err)
+		}
+	}
+}

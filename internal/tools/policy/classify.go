@@ -210,16 +210,18 @@ func classifyEnvironment(name string, args []string) string {
 			return "yarn cache clean"
 		}
 	case "brew":
-		// install is a routine dev operation (adding a package); only
-		// destructive/global mutations warrant an environment confirmation.
-		for _, sub := range []string{"uninstall", "cleanup"} {
+		// install runs package scripts and mutates the system, so it stays
+		// an environment confirmation even in copilot mode; uninstall and
+		// cleanup are likewise global mutations.
+		for _, sub := range []string{"install", "uninstall", "cleanup"} {
 			if hasSubcmd(args, sub) {
 				return "brew " + sub
 			}
 		}
 	case "apt", "apt-get", "dnf", "yum":
-		// install is routine; remove/purge are destructive.
-		for _, sub := range []string{"remove", "purge"} {
+		// install runs package scripts and mutates the system; remove/purge
+		// are destructive. All warrant an environment confirmation.
+		for _, sub := range []string{"install", "remove", "purge"} {
 			if hasSubcmd(args, sub) {
 				return name + " " + sub
 			}

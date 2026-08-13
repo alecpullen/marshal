@@ -159,6 +159,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stderr, "webbridge: listening on http://%s (%d project(s))\n", ln.Addr(), len(ws.Projects()))
 
+	// Reconcile orphaned worktrees after the server is listening, so a slow
+	// prune cannot delay accepting requests.
+	go fleet.ReconcileWorktrees(context.Background())
+
 	serveErr := make(chan error, 1)
 	go func() {
 		err := srv.Serve(ln)

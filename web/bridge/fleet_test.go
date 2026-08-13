@@ -100,6 +100,54 @@ func TestSpawnNonIsolatedRecordsNoBranch(t *testing.T) {
 	}
 }
 
+func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	plain := t.TempDir() // a directory, not a git repo
+	if err := ws.AddProject(plain); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused")
+	t.Cleanup(f.Close)
+
+	for _, st := range f.ProjectStatus() {
+		if st.Root != plain {
+			continue
+		}
+		if st.Isolation == "available" {
+			t.Error("isolation must not be available outside a git repo")
+		}
+		if st.Isolation == "" {
+			t.Error("Isolation must carry a reason the composer can display")
+		}
+	}
+}
+
+func TestReconcileWorktreesRecordsOrphans(t *testing.T) {
+	f := testFleet(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	// Bring a project up so it has a runtime to ask.
+	if _, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.ReconcileWorktrees(ctx)
+
+	// The fake child answers session/worktree_prune with one unknown entry.
+	var found bool
+	for _, st := range f.ProjectStatus() {
+		if st.Root == "/home/u/a" && len(st.OrphanWorktrees) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an orphan recorded for the project: %+v", f.ProjectStatus())
+	}
+}
+
 func TestFleetSpawnFailureIsReported(t *testing.T) {
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
 	if _, err := ws.Load(); err != nil {

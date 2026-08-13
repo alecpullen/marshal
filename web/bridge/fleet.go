@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -24,6 +28,13 @@ type ProjectStatus struct {
 	Available bool   `json:"available"`
 	Error     string `json:"error,omitempty"`
 	Trust     string `json:"trust"`
+	// Isolation is "available", or a human-readable reason isolation cannot
+	// be offered for this project. The composer disables its toggle and shows
+	// the reason, rather than letting a spawn fail.
+	Isolation string `json:"isolation"`
+	// OrphanWorktrees are worktrees under this project that no known agent
+	// claims. Reported, never deleted — they may hold uncommitted work.
+	OrphanWorktrees []string `json:"orphanWorktrees,omitempty"`
 }
 
 type Fleet struct {
@@ -35,10 +46,11 @@ type Fleet struct {
 	mu             sync.Mutex
 	runtimes       map[string]*projectRuntime
 	sessionProject map[string]string
+	orphans        map[string][]string
 }
 
 func NewFleet(ws *Workspace, marshalBin string) *Fleet {
-	f := &Fleet{ws: ws, marshalBin: marshalBin, fleetLog: NewEventLog(), live: newLiveState(), runtimes: make(map[string]*projectRuntime), sessionProject: make(map[string]string)}
+	f := &Fleet{ws: ws, marshalBin: marshalBin, fleetLog: NewEventLog(), live: newLiveState(), runtimes: make(map[string]*projectRuntime), sessionProject: make(map[string]string), orphans: make(map[string][]string)}
 	f.newChild = func(string) *Child { return &Child{MarshalBin: marshalBin} }
 	return f
 }
@@ -290,7 +302,10 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 			return
 		}
 		seen[root] = true
-		st := ProjectStatus{Root: root, Available: true, Trust: projectTrust(root)}
+		st := ProjectStatus{
+			Root: root, Available: true, Trust: projectTrust(root),
+			Isolation: isolationSupport(root), OrphanWorktrees: f.orphans[root],
+		}
 		if spawnErr := runtimeErrors[root]; spawnErr != nil {
 			st.Available = false
 			st.Error = spawnErr.Error()
@@ -304,6 +319,57 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 		add(root)
 	}
 	return out
+}
+
+// isolationSupport reports whether a project can host isolated agents, or
+// why not. Deliberately cheap: a .git entry plus git on PATH. It does not
+// shell out to git — the bridge performs no git operations.
+func isolationSupport(root string) string {
+	if _, err := exec.LookPath("git"); err != nil {
+		return "git is not installed on the bridge host"
+	}
+	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+		return "not a git repository"
+	}
+	return "available"
+}
+
+// ReconcileWorktrees asks each live project to prune stale git metadata and
+// report worktrees no agent claims, recording the result on ProjectStatus.
+//
+// Only projects whose child is already up are asked: bringing every project
+// up at startup just to prune would defeat lazy spawning. Cold projects are
+// reconciled the first time they are used.
+func (f *Fleet) ReconcileWorktrees(ctx context.Context) {
+	f.mu.Lock()
+	roots := make([]string, 0, len(f.runtimes))
+	for root, rt := range f.runtimes {
+		if rt.spawnErr == nil {
+			roots = append(roots, root)
+		}
+	}
+	f.mu.Unlock()
+
+	for _, root := range roots {
+		rt, err := f.runtimeFor(root)
+		if err != nil {
+			continue
+		}
+		raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": root})
+		if rerr != nil {
+			slog.Default().Warn("webbridge: worktree prune failed", "project", root, "err", rerr)
+			continue
+		}
+		var out struct {
+			Unknown []string `json:"unknown"`
+		}
+		if json.Unmarshal(raw, &out) != nil {
+			continue
+		}
+		f.mu.Lock()
+		f.orphans[root] = out.Unknown
+		f.mu.Unlock()
+	}
 }
 
 const fleetStreamKey = "fleet"

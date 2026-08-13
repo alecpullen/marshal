@@ -257,6 +257,33 @@ func TestMergeRefusesWhenProjectIsOnADifferentBranch(t *testing.T) {
 	}
 }
 
+// The merge target is fixed at isolation time and persisted. A caller that
+// supplies a different target must be refused, even if the project happens
+// to be on that branch.
+func TestMergeRefusesCallerSuppliedTargetDifferentFromPersisted(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.AbbrevRef = "release" // the project is on release, which the caller asks for
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{
+		ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f",
+		Branch: "f", TargetBranch: "main", // but isolation recorded main
+	})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+
+	got := mergeCall(t, m, `{"sessionId":"s1","targetBranch":"release"}`)
+	if got.Merged || got.Reason != ReasonTargetMoved {
+		t.Fatalf("got %+v, want refusal with reason target_moved", got)
+	}
+	if len(git.Merges) != 0 {
+		t.Error("must not merge into a target that differs from the persisted one")
+	}
+}
+
 // The critical one: a conflicting merge must abort so the project is not
 // left mid-merge.
 func TestMergeAbortsOnConflict(t *testing.T) {
@@ -303,6 +330,7 @@ func TestMergeSuccessRemovesWorktreeDeletesBranchAndUnisolates(t *testing.T) {
 
 func TestDiscardRemovesWorktreeAndForceDeletesBranch(t *testing.T) {
 	git := worktree.NewFakeGitOps()
+	git.WorktreeBranches["/home/u/repo/.marshal/worktrees/f"] = "f"
 	st := newWorktreeTestState(t, "/home/u/repo")
 	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f"})
 	m := NewWorktreeManager(WorktreeManagerConfig{
@@ -320,6 +348,65 @@ func TestDiscardRemovesWorktreeAndForceDeletesBranch(t *testing.T) {
 	}
 	if ws := st.Workspace(); ws.Branch != "" || ws.ActiveRoot != ws.ProjectRoot {
 		t.Errorf("session must return to the project root, got %+v", ws)
+	}
+}
+
+// Discard must refuse to remove a worktree it cannot prove it owns: the
+// recorded path is not under the agent worktree dir, is not a registered
+// worktree, or is attached to a different branch.
+func TestDiscardRefusesWorktreeOutsideAgentDir(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/other", Branch: "f"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
+		t.Fatal("expected an error for a worktree outside the agent dir")
+	}
+	if len(git.Deleted) != 0 {
+		t.Errorf("must not delete a branch when refusing, Deleted = %v", git.Deleted)
+	}
+}
+
+func TestDiscardRefusesUnregisteredWorktree(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	// No entry in WorktreeBranches → WorktreeBranch errors.
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
+		t.Fatal("expected an error for an unregistered worktree")
+	}
+	if len(git.Deleted) != 0 {
+		t.Errorf("must not delete a branch when refusing, Deleted = %v", git.Deleted)
+	}
+}
+
+func TestDiscardRefusesWrongBranchAttached(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.WorktreeBranches["/home/u/repo/.marshal/worktrees/f"] = "other"
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
+		t.Fatal("expected an error when the worktree is attached to a different branch")
+	}
+	if len(git.Deleted) != 0 {
+		t.Errorf("must not delete a branch when refusing, Deleted = %v", git.Deleted)
 	}
 }
 

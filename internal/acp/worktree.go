@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"marshal/internal/app/session"
 	"marshal/internal/worktree"
@@ -85,7 +86,7 @@ func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, 
 		return WorkspaceInfo{}, err
 	}
 	st.SetWorkspace(session.Workspace{
-		ProjectRoot: projectRoot, ActiveRoot: wt.Path, Branch: wt.Branch, BaseSha: wt.Base,
+		ProjectRoot: projectRoot, ActiveRoot: wt.Path, Branch: wt.Branch, BaseSha: wt.Base, TargetBranch: strings.TrimSpace(target),
 	})
 	return WorkspaceInfo{
 		ActiveRoot:   wt.Path,
@@ -99,6 +100,13 @@ func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, 
 type WorktreeRuntime struct {
 	State       *session.State
 	ProjectRoot string
+
+	// mu serialises the exit-path operations (Merge, Discard) for this
+	// session. Without it, two concurrent requests could both pass
+	// isolated(), then one removes the worktree while the other merges or
+	// deletes the branch — leaving partial cleanup or a merged branch that
+	// stays registered. Diff is read-only and does not take the lock.
+	mu sync.Mutex
 }
 
 // WorktreeManagerConfig wires the manager to the session registry and git.
@@ -281,7 +289,20 @@ func (w *WorktreeManager) Merge(_ context.Context, params json.RawMessage) (any,
 	if err != nil {
 		return nil, err
 	}
+	// Serialise the exit path for this session: a concurrent Discard must not
+	// remove the worktree while this merge is mid-flight.
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
 	res := MergeResult{Branch: ws.Branch, Target: p.TargetBranch}
+
+	// 0. The merge target is fixed at isolation time and persisted. A caller
+	// that supplies a different target is refused rather than silently
+	// merging into the wrong branch — the project may have moved on, and the
+	// operator's intent is ambiguous.
+	if ws.TargetBranch != "" && strings.TrimSpace(p.TargetBranch) != ws.TargetBranch {
+		res.Reason = ReasonTargetMoved
+		return res, nil
+	}
 
 	// 1. The worktree must be committed, or we must be told to commit it.
 	dirty, err := w.git.IsDirty(ws.ActiveRoot)
@@ -344,6 +365,30 @@ type discardParams struct {
 	SessionID string `json:"sessionId"`
 }
 
+// verifyOwnership confirms the recorded worktree is safe to remove: its path
+// lives under the project's agent worktree directory, it is a registered
+// worktree of the project, and it is attached to the branch the session
+// recorded. A stale or corrupt record must never delete an unrelated
+// worktree or branch.
+func (w *WorktreeManager) verifyOwnership(rt *WorktreeRuntime, ws session.Workspace) error {
+	// Compute the agent worktree dir without AgentDir's mkdir side effect:
+	// this is a verification, not a creation, and must not touch the
+	// filesystem beyond reading git's worktree list.
+	agentDir := filepath.Join(rt.ProjectRoot, ".marshal", "worktrees")
+	rel, err := filepath.Rel(agentDir, ws.ActiveRoot)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return serverErrorf("refusing to remove %s: not under the agent worktree dir %s", ws.ActiveRoot, agentDir)
+	}
+	attached, err := w.git.WorktreeBranch(rt.ProjectRoot, ws.ActiveRoot)
+	if err != nil {
+		return serverErrorf("refusing to remove %s: %v", ws.ActiveRoot, err)
+	}
+	if attached != ws.Branch {
+		return serverErrorf("refusing to remove %s: attached to branch %s, expected %s", ws.ActiveRoot, attached, ws.Branch)
+	}
+	return nil
+}
+
 // Discard handles session/discard: remove the worktree and delete the
 // branch. The branch is unmerged by definition, so the delete is forced.
 // The explicit RPC call is the confirmation; the UI gates it behind one.
@@ -355,6 +400,14 @@ func (w *WorktreeManager) Discard(_ context.Context, params json.RawMessage) (an
 	rt, ws, err := w.isolated(p.SessionID)
 	if err != nil {
 		return nil, err
+	}
+	// Serialise the exit path for this session: a concurrent Merge must not
+	// merge the branch while this discard is removing it.
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	// Never delete a worktree/branch we cannot prove we own.
+	if verr := w.verifyOwnership(rt, ws); verr != nil {
+		return nil, verr
 	}
 	if rerr := w.git.WorktreeRemove(rt.ProjectRoot, ws.ActiveRoot); rerr != nil {
 		return nil, serverErrorf("remove worktree %s: %v", ws.ActiveRoot, rerr)

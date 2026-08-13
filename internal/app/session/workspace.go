@@ -18,6 +18,13 @@ type Workspace struct {
 	// session is isolated; used as the left side of the diff range. It cannot
 	// be recomputed inside the worktree, where HEAD is the branch tip.
 	BaseSha string // "" when at ProjectRoot
+	// TargetBranch is the project branch the worktree branch is destined to
+	// merge into. Recorded at isolation time and persisted so a later
+	// session/merge can reject a caller-supplied target that differs. It
+	// cannot be derived later: EnsureWorktree returns a SHA, and merging into
+	// whatever the project is on at merge time would silently pick the wrong
+	// branch. "" when at ProjectRoot.
+	TargetBranch string
 }
 
 // WorkspaceEvent is published on the workspace broker when SetWorkspace
@@ -50,6 +57,7 @@ func (s *State) SetWorkspace(w Workspace) {
 	if w.ActiveRoot == w.ProjectRoot {
 		w.Branch = ""
 		w.BaseSha = ""
+		w.TargetBranch = ""
 	}
 	changed := s.workspace != w
 	s.workspace = w
@@ -60,11 +68,11 @@ func (s *State) SetWorkspace(w Workspace) {
 		return
 	}
 	if s.persistenceEnabled() {
-		persistRoot, persistBranch := w.ActiveRoot, w.Branch
+		persistRoot, persistBranch, persistTarget := w.ActiveRoot, w.Branch, w.TargetBranch
 		if w.ActiveRoot == w.ProjectRoot {
-			persistRoot, persistBranch = "", ""
+			persistRoot, persistBranch, persistTarget = "", "", ""
 		}
-		if err := s.db.UpdateSessionWorkspace(s.sessionID, persistRoot, persistBranch); err != nil {
+		if err := s.db.UpdateSessionWorkspace(s.sessionID, persistRoot, persistBranch, persistTarget); err != nil {
 			s.logger.Warn("persist workspace", "error", err)
 		}
 	}
@@ -103,11 +111,11 @@ func (s *State) restoreWorkspace() {
 	}
 	if info, statErr := os.Stat(row.ActiveRoot); statErr == nil && info.IsDir() {
 		s.mu.Lock()
-		s.workspace = Workspace{ProjectRoot: s.WorkingDir, ActiveRoot: row.ActiveRoot, Branch: row.WorktreeBranch}
+		s.workspace = Workspace{ProjectRoot: s.WorkingDir, ActiveRoot: row.ActiveRoot, Branch: row.WorktreeBranch, TargetBranch: row.WorktreeTargetBranch}
 		s.mu.Unlock()
 		return
 	}
-	if err := s.db.UpdateSessionWorkspace(s.sessionID, "", ""); err != nil {
+	if err := s.db.UpdateSessionWorkspace(s.sessionID, "", "", ""); err != nil {
 		s.logger.Warn("clear stale workspace", "error", err)
 	}
 	s.AddMessage(RoleSystem, fmt.Sprintf(

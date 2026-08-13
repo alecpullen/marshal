@@ -296,17 +296,21 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
-	m.publishReplacement(ctx, rt.SessionID, rt)
 	resp := SessionResponse{SessionID: rt.SessionID}
 	if p.Isolation != nil {
 		ws, ierr := isolateSession(worktree.CLIGitOps{}, rt.State, p.Cwd, *p.Isolation, p.Name)
 		if ierr != nil {
-			// The session exists and is usable at the project root; report
-			// the isolation failure rather than discarding it.
+			// The runtime was started but isolation failed. Tear it down
+			// rather than publishing a live session at the project root with
+			// no usable id to clean it up.
+			sCtx, sCancel := shutdownCtx()
+			defer sCancel()
+			_ = m.close(sCtx, rt)
 			return nil, serverErrorf("session created but isolation failed: %v", ierr)
 		}
 		resp.Workspace = &ws
 	}
+	m.publishReplacement(ctx, rt.SessionID, rt)
 	return resp, nil
 }
 

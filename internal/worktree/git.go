@@ -18,6 +18,10 @@ type GitOps interface {
 	BranchExists(dir, branch string) bool
 	WorktreeAdd(dir, path, branch, startPoint string) error
 	WorktreeList(dir string) ([]string, error)
+	// WorktreeBranch returns the branch a worktree at path is attached to,
+	// or an error when path is not a registered worktree of dir. Used to
+	// verify ownership before destructive operations.
+	WorktreeBranch(dir, path string) (string, error)
 	// WorktreeRemove removes the worktree at path. git refuses when the
 	// worktree has uncommitted changes — callers treat that error as
 	// "kept", never retry with --force.
@@ -98,6 +102,28 @@ func (g CLIGitOps) WorktreeList(dir string) ([]string, error) {
 		}
 	}
 	return paths, nil
+}
+
+// WorktreeBranch parses `git worktree list --porcelain` to find the branch
+// attached to the worktree at path. A detached worktree reports "HEAD" and
+// is treated as not owned by any agent branch.
+func (g CLIGitOps) WorktreeBranch(dir, path string) (string, error) {
+	out, err := g.run(dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	var curPath string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			curPath = p
+			continue
+		}
+		if b, ok := strings.CutPrefix(line, "branch "); ok && curPath == path {
+			return strings.TrimPrefix(b, "refs/heads/"), nil
+		}
+	}
+	return "", fmt.Errorf("worktree git: %s is not a registered worktree of %s", path, dir)
 }
 
 func (g CLIGitOps) WorktreeRemove(dir, path string) error {

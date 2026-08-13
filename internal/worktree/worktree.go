@@ -54,10 +54,13 @@ type FakeGitOps struct {
 	Refs      map[string]string
 	Branches  map[string]bool
 	Worktrees []string
-	Added     []string
-	Heads     map[string]string
-	Commits   []string
-	Dirty     bool
+	// WorktreeBranches maps a worktree path to the branch it is attached to.
+	// Backs WorktreeBranch for ownership verification.
+	WorktreeBranches map[string]string
+	Added            []string
+	Heads            map[string]string
+	Commits          []string
+	Dirty            bool
 	// DirtyDirs maps a directory to its dirty state. When a dir is present,
 	// IsDirty returns that value; otherwise it falls back to the global
 	// Dirty. CommitAll clears the entry for the committed dir, so a committed
@@ -94,10 +97,11 @@ func (f *FakeGitOps) Calls() []string { return f.calls }
 
 func NewFakeGitOps() *FakeGitOps {
 	return &FakeGitOps{
-		Refs:      map[string]string{},
-		Branches:  map[string]bool{},
-		Heads:     map[string]string{},
-		DirtyDirs: map[string]bool{},
+		Refs:             map[string]string{},
+		Branches:         map[string]bool{},
+		Heads:            map[string]string{},
+		DirtyDirs:        map[string]bool{},
+		WorktreeBranches: map[string]string{},
 	}
 }
 
@@ -138,6 +142,7 @@ func (f *FakeGitOps) WorktreeAdd(dir, path, branch, startPoint string) error {
 	f.Added = append(f.Added, path)
 	f.Branches[branch] = true
 	f.Worktrees = append(f.Worktrees, path)
+	f.WorktreeBranches[path] = branch
 	f.Heads[path] = startPoint
 	return nil
 }
@@ -145,6 +150,16 @@ func (f *FakeGitOps) WorktreeAdd(dir, path, branch, startPoint string) error {
 func (f *FakeGitOps) WorktreeList(dir string) ([]string, error) {
 	f.record("WorktreeList")
 	return f.Worktrees, nil
+}
+
+// WorktreeBranch returns the branch recorded for path in WorktreeBranches,
+// or an error when path is not a registered worktree.
+func (f *FakeGitOps) WorktreeBranch(dir, path string) (string, error) {
+	f.record("WorktreeBranch")
+	if b, ok := f.WorktreeBranches[path]; ok {
+		return b, nil
+	}
+	return "", fmt.Errorf("fake git: %s is not a registered worktree", path)
 }
 
 func (f *FakeGitOps) WorktreeRemove(dir, path string) error {

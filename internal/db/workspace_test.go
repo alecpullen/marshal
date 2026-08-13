@@ -32,29 +32,29 @@ func TestSessionWorkspaceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != "" || row.WorktreeBranch != "" {
-		t.Fatalf("fresh session workspace = %q/%q, want empty", row.ActiveRoot, row.WorktreeBranch)
+	if row.ActiveRoot != "" || row.WorktreeBranch != "" || row.WorktreeTargetBranch != "" {
+		t.Fatalf("fresh session workspace = %q/%q/%q, want empty", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch)
 	}
 
-	if err := d.UpdateSessionWorkspace("s1", "/tmp/proj/.marshal/worktrees/feat-x", "feat/x"); err != nil {
+	if err := d.UpdateSessionWorkspace("s1", "/tmp/proj/.marshal/worktrees/feat-x", "feat/x", "main"); err != nil {
 		t.Fatalf("UpdateSessionWorkspace: %v", err)
 	}
 	row, err = d.GetSession("s1")
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != "/tmp/proj/.marshal/worktrees/feat-x" || row.WorktreeBranch != "feat/x" {
-		t.Fatalf("workspace = %q/%q, want worktree path and feat/x", row.ActiveRoot, row.WorktreeBranch)
+	if row.ActiveRoot != "/tmp/proj/.marshal/worktrees/feat-x" || row.WorktreeBranch != "feat/x" || row.WorktreeTargetBranch != "main" {
+		t.Fatalf("workspace = %q/%q/%q, want worktree path, feat/x, main", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch)
 	}
 
-	if err := d.UpdateSessionWorkspace("s1", "", ""); err != nil {
+	if err := d.UpdateSessionWorkspace("s1", "", "", ""); err != nil {
 		t.Fatalf("UpdateSessionWorkspace clear: %v", err)
 	}
 	row, err = d.GetSession("s1")
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != "" || row.WorktreeBranch != "" {
-		t.Fatalf("cleared workspace = %q/%q, want empty", row.ActiveRoot, row.WorktreeBranch)
+	if row.ActiveRoot != "" || row.WorktreeBranch != "" || row.WorktreeTargetBranch != "" {
+		t.Fatalf("cleared workspace = %q/%q/%q, want empty", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch)
 	}
 }

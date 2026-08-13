@@ -1046,6 +1046,38 @@ func TestSessionManagerLogsReplacement(t *testing.T) {
 	}
 }
 
+// TestCreateClosesRuntimeWhenIsolationFails verifies that a session/new
+// whose isolation step fails tears down the started runtime instead of
+// publishing a live session at the project root with no usable id.
+func TestCreateClosesRuntimeWhenIsolationFails(t *testing.T) {
+	var closed atomic.Int64
+	closeFn := func(ctx context.Context, rt *app.Runtime) error {
+		closed.Add(1)
+		return nil
+	}
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: closeFn,
+		Notify:       func(method string, params any) error { return nil },
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	// A non-git temp dir makes isolateSession's RevParse fail.
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+
+	_, err := m.Create(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","mcpServers":[],"isolation":{"branch":"f"}}`))
+	if err == nil {
+		t.Fatal("expected an error when isolation fails")
+	}
+	if closed.Load() != 1 {
+		t.Fatalf("runtime close count = %d, want 1 — the started runtime must be torn down", closed.Load())
+	}
+	if _, ok := m.Get("sess_1"); ok {
+		t.Fatal("the failed session must not be published")
+	}
+}
+
 // TestSessionManagerLogsCloseNoop verifies that Close logs at Debug when
 // the session id is unknown.
 func TestSessionManagerLogsCloseNoop(t *testing.T) {

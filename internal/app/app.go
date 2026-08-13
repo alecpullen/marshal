@@ -541,10 +541,14 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentPricing := pricing.Lookup(route.Preset)
+	subagentFactory, subagentResolver := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing)
 	if err := reg.Register(agent.NewSubagentTool(
-		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID),
+		subagentFactory,
+		subagentResolver,
 		reg,
 		state,
+		agent.WithSubagentParentModel(route.Preset.Model, parentPricing),
 	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
@@ -557,7 +561,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
-	runner.Pricing = pricing.Lookup(route.Preset)
+	runner.Pricing = parentPricing
 
 	// Give the runner the merged limit table so a preset with no explicit
 	// context_window still resolves a real window instead of falling
@@ -747,7 +751,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		desktopCloser = closer
 	}
 
-	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID)
+	subagentFactory, _ = buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset))
 	pipelineFactory := func(planPath string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath)
 	}
@@ -1121,7 +1125,7 @@ const defaultSubtaskIterations = 48
 // role, falling back to the default model when the role is unbound. Both
 // named-agent and ad-hoc paths wire Pricing, UsageObserver, and MetricsObserver
 // so subagent token usage and cost are visible to the parent session.
-func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
+func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
 	// Unset: finite default so a misbehaving child cannot burn tokens on an
 	// out-of-scope subtask. Explicit 0: unlimited, matching
 	// max_tool_iterations semantics (turnBudget treats base <= 0 as no
@@ -1133,6 +1137,56 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
 	repoInstructionsForSubagent, _ := loadRepoInstructions(parentState.WorkingDir)
 	writeLock := &swarm.WriteLock{}
+
+	// Model resolver for the consent gate — mirrors the factory's model
+	// resolution without building a runner. Used by agent.run's handler to
+	// preview the child's model so it can ask the user for consent when the
+	// child's model has different cost implications than the parent's.
+	modelResolver := agent.SubagentModelResolver(func(req agent.SubagentRequest) (agent.SubagentModelPreview, error) {
+		model := defaultModel
+		providerName := ""
+		if parentProvider != nil {
+			providerName = parentProvider.Name()
+		}
+		if req.Model != "" {
+			if router == nil {
+				return agent.SubagentModelPreview{}, fmt.Errorf("explicit model %q requested but no router configured", req.Model)
+			}
+			eroute, err := router.ResolveExplicitModel(req.Model, agent.RoleSubtask)
+			if err != nil {
+				return agent.SubagentModelPreview{}, fmt.Errorf("agent.run: %w", err)
+			}
+			return agent.SubagentModelPreview{
+				Model:    eroute.Preset.Model,
+				Provider: eroute.Preset.Provider,
+				Pricing:  pricing.Lookup(eroute.Preset),
+			}, nil
+		}
+		if req.Role != "" && req.Agent == "" && router != nil {
+			if route, ok := router.ResolveRoleIfBound(routing.AgentRole(req.Role)); ok {
+				return agent.SubagentModelPreview{
+					Model:    route.Preset.Model,
+					Provider: route.Preset.Provider,
+					Pricing:  pricing.Lookup(route.Preset),
+				}, nil
+			}
+		}
+		if req.Agent != "" && router != nil {
+			route, err := router.ResolveCustomAgent(req.Agent, agent.RoleSubtask)
+			if err != nil {
+				return agent.SubagentModelPreview{}, fmt.Errorf("agent.run: %w", err)
+			}
+			if req.Model == "" {
+				return agent.SubagentModelPreview{
+					Model:    route.Preset.Model,
+					Provider: route.Preset.Provider,
+					Pricing:  pricing.Lookup(route.Preset),
+				}, nil
+			}
+		}
+		return agent.SubagentModelPreview{Model: model, Provider: providerName, Pricing: parentPricing}, nil
+	})
+
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
@@ -1217,7 +1271,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			parentState.SetTurnUsage(used + usage.PromptTokens + usage.CompletionTokens)
 		}
 		return child, childState, nil
-	}
+	}, modelResolver
 }
 
 type actionDecodingConfig struct {

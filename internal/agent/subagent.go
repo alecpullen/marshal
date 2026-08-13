@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"marshal/internal/app/session"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
@@ -27,6 +28,22 @@ type SubagentRequest struct {
 	Model string
 	Role  routing.AgentRole
 }
+
+// SubagentModelPreview describes what model a subagent will use before it
+// runs, so the handler can ask for user consent when the cost differs from
+// the parent's model.
+type SubagentModelPreview struct {
+	Model    string
+	Provider string
+	Pricing  pricing.ModelPricing
+}
+
+// SubagentModelResolver resolves the model a SubagentRequest would use
+// without building a full child runner. Returns the resolved model name,
+// provider name, and pricing rates. When the request uses the parent's
+// default model (no explicit model, no bound role, no named agent), the
+// returned preview matches the parent's model.
+type SubagentModelResolver func(req SubagentRequest) (SubagentModelPreview, error)
 
 // SubagentRunnerFactory builds a fresh Runner bound to a fresh child
 // session state. The factory deliberately does NOT take the prompt as an
@@ -86,7 +103,10 @@ func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 type SubagentOption func(*subagentToolConfig)
 
 type subagentToolConfig struct {
-	exec func(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error)
+	exec          func(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error)
+	resolver      SubagentModelResolver
+	parentModel   string
+	parentPricing pricing.ModelPricing
 }
 
 // WithSubagentExec overrides the default child runner executor. Used in
@@ -94,6 +114,25 @@ type subagentToolConfig struct {
 func WithSubagentExec(exec func(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error)) SubagentOption {
 	return func(cfg *subagentToolConfig) {
 		cfg.exec = exec
+	}
+}
+
+// WithSubagentModelResolver sets the model resolver used to preview the
+// child's model before execution. When set, the handler checks whether the
+// child's model has different cost implications and asks for user consent
+// if so. When nil (test default), the consent gate is skipped.
+func WithSubagentModelResolver(resolver SubagentModelResolver) SubagentOption {
+	return func(cfg *subagentToolConfig) {
+		cfg.resolver = resolver
+	}
+}
+
+// WithSubagentParentModel records the parent runner's model and pricing so
+// the consent gate can compare against the child's resolved model.
+func WithSubagentParentModel(model string, p pricing.ModelPricing) SubagentOption {
+	return func(cfg *subagentToolConfig) {
+		cfg.parentModel = model
+		cfg.parentPricing = p
 	}
 }
 
@@ -114,8 +153,8 @@ type agentRunArgs struct {
 // NewSubagentTool returns the registry.Tool entry for agent.run. The
 // factory builds a fresh subagent runner; the state enforces the depth and
 // concurrency guards.
-func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, state *session.State, opts ...SubagentOption) registry.Tool {
-	cfg := subagentToolConfig{exec: runSubagentChild}
+func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolver, reg *registry.Registry, state *session.State, opts ...SubagentOption) registry.Tool {
+	cfg := subagentToolConfig{exec: runSubagentChild, resolver: resolver}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -139,6 +178,30 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 			return registry.ToolResult{}, err
 		}
 		defer state.ExitSubagent()
+
+		// Model-cost consent: if a resolver is configured, preview the
+		// child's model before building the runner. When the child's model
+		// has different cost implications (different provider, paid vs free,
+		// or >2x rate change), ask the user for approval via the session's
+		// pending-approval mechanism. This bypasses copilot mode's
+		// auto-approve because it is a cost-consent issue, not a
+		// workspace-write issue.
+		if cfg.resolver != nil {
+			preview, err := cfg.resolver(SubagentRequest{Agent: args.Agent, Model: args.Model})
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("agent.run: resolve model: %w", err)
+			}
+			if modelChangeNeedsConsent(cfg.parentModel, preview.Model, cfg.parentPricing, preview.Pricing) {
+				reason := fmt.Sprintf("Subagent will use %s @ %s (different model/cost than parent %s). Approve?", preview.Model, preview.Provider, cfg.parentModel)
+				approved, denied := requestSubagentConsent(ctx, state, reason)
+				if !approved {
+					if denied {
+						return registry.ToolResult{}, fmt.Errorf("agent.run: user denied subagent model change to %s @ %s", preview.Model, preview.Provider)
+					}
+					return registry.ToolResult{}, fmt.Errorf("agent.run: consent request cancelled")
+				}
+			}
+		}
 
 		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model})
 		if err != nil {
@@ -206,4 +269,68 @@ func decodeAgentRunArgs(tool registry.Tool, raw json.RawMessage) (agentRunArgs, 
 		return agentRunArgs{}, fmt.Errorf("%s requires non-empty description", tool.Name)
 	}
 	return args, nil
+}
+
+// modelChangeNeedsConsent reports whether switching from the parent's model
+// to the child's model has cost implications that warrant asking the user.
+//
+// Consent is needed when:
+//   - The provider differs (different billing system) — surfaced to the
+//     caller by comparing provider names; here we compare pricing.
+//   - The parent's pricing is zero but the child's is non-zero (paid model
+//     spawned from a free/local one).
+//   - The child's rates are more than 2x the parent's in either direction
+//     (materially different cost tier).
+//
+// Same model string never needs consent.
+func modelChangeNeedsConsent(parentModel, childModel string, parentPricing, childPricing pricing.ModelPricing) bool {
+	if parentModel == childModel {
+		return false
+	}
+	parentFree := parentPricing.InputPerMTokCents == 0 && parentPricing.OutputPerMTokCents == 0
+	childFree := childPricing.InputPerMTokCents == 0 && childPricing.OutputPerMTokCents == 0
+	if parentFree && !childFree {
+		return true
+	}
+	if !parentFree && !childFree {
+		if parentPricing.InputPerMTokCents > 0 {
+			if childPricing.InputPerMTokCents > 2*parentPricing.InputPerMTokCents ||
+				parentPricing.InputPerMTokCents > 2*childPricing.InputPerMTokCents {
+				return true
+			}
+		}
+		if parentPricing.OutputPerMTokCents > 0 {
+			if childPricing.OutputPerMTokCents > 2*parentPricing.OutputPerMTokCents ||
+				parentPricing.OutputPerMTokCents > 2*childPricing.OutputPerMTokCents {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// requestSubagentConsent sets a pending approval on the session state and
+// blocks until the user responds. Returns (true, false) when approved,
+// (false, true) when explicitly denied, and (false, false) when the
+// context is cancelled (e.g. shutdown). The approval uses the existing
+// PendingToolCall mechanism so the TUI renders the standard approve/deny
+// panel — the consent reason is displayed as the approval reason.
+func requestSubagentConsent(ctx context.Context, state *session.State, reason string) (approved, denied bool) {
+	ch := make(chan session.UserApprovalDecision, 1)
+	tc := &session.PendingToolCall{
+		ID:           "subagent-model-consent",
+		Name:         "agent.run",
+		Args:         "",
+		Risk:         "model-cost-consent",
+		Reason:       reason,
+		ResponseChan: ch,
+	}
+	state.SetPendingApproval(tc)
+	defer state.SetPendingApproval(nil)
+	select {
+	case d := <-ch:
+		return d.Approved, !d.Approved
+	case <-ctx.Done():
+		return false, false
+	}
 }

@@ -20,7 +20,7 @@ func TestAgentRunIsWriteRisk(t *testing.T) {
 			return &Task{Summary: "ok"}, nil
 		}}, nil, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	tool := NewSubagentTool(factory, nil, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	if tool.Risk != registry.RiskWorkspaceWrite {
 		t.Fatalf("agent.run Risk = %q, want %q", tool.Risk, registry.RiskWorkspaceWrite)
 	}

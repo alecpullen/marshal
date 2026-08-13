@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
@@ -27,7 +28,7 @@ func TestSubagentDepthLimit(t *testing.T) {
 	}
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(2))
 
-	tool := NewSubagentTool(factory, registry.New(), state)
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
 	if tool.Name != "agent.run" {
 		t.Fatalf("Name = %q, want %q", tool.Name, "agent.run")
 	}
@@ -85,7 +86,7 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 		factoryCalls++
 		return &Runner{}, nil, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), state)
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
 	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
 	if err == nil {
 		t.Fatal("expected concurrency-limit error, got nil")
@@ -113,6 +114,7 @@ func TestSubagentCancelPropagatesToExec(t *testing.T) {
 		func(req SubagentRequest) (*Runner, *session.State, error) {
 			return &Runner{}, state, nil
 		},
+		nil,
 		registry.New(),
 		state,
 		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
@@ -168,6 +170,7 @@ func TestSubagentUsageObserverComposesAndUpdatesCard(t *testing.T) {
 		func(req SubagentRequest) (*Runner, *session.State, error) {
 			return child, child.State, nil
 		},
+		nil,
 		registry.New(),
 		state,
 		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
@@ -199,6 +202,7 @@ func TestSubagentSalvageSurfacesInResultAndCard(t *testing.T) {
 		func(req SubagentRequest) (*Runner, *session.State, error) {
 			return &Runner{}, state, nil
 		},
+		nil,
 		registry.New(),
 		state,
 		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
@@ -330,7 +334,7 @@ func TestNewSubagentToolAgentArgResolves(t *testing.T) {
 		}}
 		return r, nil, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	tool := NewSubagentTool(factory, nil, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	res, err := tool.Handler(context.Background(), registry.ToolCall{
 		Args: json.RawMessage(`{"prompt":"do it","description":"d","agent":"my-scout"}`),
 	})
@@ -354,7 +358,7 @@ func TestNewSubagentToolNoAgentArgStillWorks(t *testing.T) {
 			return &Task{Summary: "ok"}, nil
 		}}, nil, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	tool := NewSubagentTool(factory, nil, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	if _, err := tool.Handler(context.Background(), registry.ToolCall{
 		Args: json.RawMessage(`{"prompt":"do it","description":"d"}`),
 	}); err != nil {
@@ -373,7 +377,7 @@ func TestNewSubagentToolForwardsExplicitModel(t *testing.T) {
 			return &Task{Summary: "ok"}, nil
 		}}, nil, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	tool := NewSubagentTool(factory, nil, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	if _, err := tool.Handler(context.Background(), registry.ToolCall{
 		Args: json.RawMessage(`{"prompt":"do it","description":"d","agent":"my-scout","model":"openai/gpt-4o-mini"}`),
 	}); err != nil {
@@ -403,7 +407,7 @@ func TestNewSubagentToolRecordsMetaFromRunner(t *testing.T) {
 		}
 		return r, nil, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), state)
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
 	if _, err := tool.Handler(context.Background(), registry.ToolCall{
 		Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"ollama/gpt-4o-mini"}`),
 	}); err != nil {
@@ -447,7 +451,7 @@ func TestNewSubagentToolModelDefaultsWhenOmitted(t *testing.T) {
 			return &Task{Summary: "ok"}, nil
 		}}, nil, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	tool := NewSubagentTool(factory, nil, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	if _, err := tool.Handler(context.Background(), registry.ToolCall{
 		Args: json.RawMessage(`{"prompt":"do it","description":"d"}`),
 	}); err != nil {
@@ -469,7 +473,7 @@ func TestNewSubagentToolFactoryErrorPreventsRegistration(t *testing.T) {
 	factory := func(SubagentRequest) (*Runner, *session.State, error) {
 		return nil, nil, errors.New("invalid provider/model pair")
 	}
-	tool := NewSubagentTool(factory, registry.New(), state)
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
 		Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"bogus/nope"}`),
 	})
@@ -486,4 +490,114 @@ func TestNewSubagentToolFactoryErrorPreventsRegistration(t *testing.T) {
 
 func stubAgentRunHandler(_ context.Context, _ registry.ToolCall) (registry.ToolResult, error) {
 	return registry.ToolResult{Summary: "stub"}, nil
+}
+
+func TestSubagentModelConsentGate(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factoryCalled := false
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		factoryCalled = true
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil, nil
+	}
+	// Resolver returns a paid model; parent is free.
+	resolver := func(req SubagentRequest) (SubagentModelPreview, error) {
+		return SubagentModelPreview{
+			Model:    "gpt-4o",
+			Provider: "openai",
+			Pricing:  pricing.ModelPricing{InputPerMTokCents: 250, OutputPerMTokCents: 1000},
+		}, nil
+	}
+	tool := NewSubagentTool(factory, resolver, registry.New(), state,
+		WithSubagentParentModel("local-model", pricing.ModelPricing{}),
+	)
+	// Auto-approve the consent in a goroutine.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		if tc := state.PendingApproval(); tc != nil {
+			tc.Respond(session.UserApprovalDecision{Approved: true})
+		}
+	}()
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"openai/gpt-4o"}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !factoryCalled {
+		t.Fatal("factory should have been called after consent approval")
+	}
+}
+
+func TestSubagentModelConsentDenied(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factoryCalled := false
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		factoryCalled = true
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil, nil
+	}
+	resolver := func(req SubagentRequest) (SubagentModelPreview, error) {
+		return SubagentModelPreview{
+			Model:    "gpt-4o",
+			Provider: "openai",
+			Pricing:  pricing.ModelPricing{InputPerMTokCents: 250, OutputPerMTokCents: 1000},
+		}, nil
+	}
+	tool := NewSubagentTool(factory, resolver, registry.New(), state,
+		WithSubagentParentModel("local-model", pricing.ModelPricing{}),
+	)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		if tc := state.PendingApproval(); tc != nil {
+			tc.Respond(session.UserApprovalDecision{Approved: false})
+		}
+	}()
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"openai/gpt-4o"}`),
+	})
+	if err == nil {
+		t.Fatal("expected denial error, got nil")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("error = %v, want 'denied'", err)
+	}
+	if factoryCalled {
+		t.Fatal("factory must not be called when consent is denied")
+	}
+}
+
+func TestSubagentModelConsentSkippedForSameModel(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factoryCalled := false
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		factoryCalled = true
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil, nil
+	}
+	resolver := func(req SubagentRequest) (SubagentModelPreview, error) {
+		return SubagentModelPreview{
+			Model:    "local-model",
+			Provider: "ollama",
+			Pricing:  pricing.ModelPricing{},
+		}, nil
+	}
+	tool := NewSubagentTool(factory, resolver, registry.New(), state,
+		WithSubagentParentModel("local-model", pricing.ModelPricing{}),
+	)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d"}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !factoryCalled {
+		t.Fatal("factory should have been called (same model, no consent)")
+	}
+	if state.PendingApproval() != nil {
+		t.Fatal("pending approval should not have been set for same model")
+	}
 }

@@ -36,7 +36,7 @@ func TestAgentRunToolRegistersAndDispatchesToChild(t *testing.T) {
 		return "child summary text", "", nil
 	}
 
-	tool := agent.NewSubagentTool(factory, reg, state, agent.WithSubagentExec(exec))
+	tool := agent.NewSubagentTool(factory, nil, reg, state, agent.WithSubagentExec(exec))
 
 	if err := reg.Register(tool); err != nil {
 		t.Fatalf("register agent.run: %v", err)
@@ -91,7 +91,7 @@ func TestAgentRunToolRejectsWhenDepthLimitReached(t *testing.T) {
 		return "", "", nil
 	}
 
-	tool := agent.NewSubagentTool(factory, reg, state, agent.WithSubagentExec(exec))
+	tool := agent.NewSubagentTool(factory, nil, reg, state, agent.WithSubagentExec(exec))
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
 		Name: "agent.run",
 		Args: []byte(`{"prompt":"x","description":"y"}`),
@@ -115,7 +115,7 @@ func TestAgentRunToolRejectsWhenConcurrencyLimitReached(t *testing.T) {
 	factory := func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		return &agent.Runner{}, nil, nil
 	}
-	tool := agent.NewSubagentTool(factory, reg, state)
+	tool := agent.NewSubagentTool(factory, nil, reg, state)
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
 		Name: "agent.run",
 		Args: []byte(`{"prompt":"x","description":"y"}`),
@@ -131,7 +131,7 @@ func TestAgentRunToolRejectsWhenConcurrencyLimitReached(t *testing.T) {
 func TestAgentRunToolRejectsMissingArgs(t *testing.T) {
 	reg := registry.New()
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	tool := agent.NewSubagentTool(func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) { return &agent.Runner{}, nil, nil }, reg, state)
+	tool := agent.NewSubagentTool(func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) { return &agent.Runner{}, nil, nil }, nil, reg, state)
 
 	cases := []struct {
 		name string

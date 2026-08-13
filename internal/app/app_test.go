@@ -31,6 +31,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -2427,7 +2428,7 @@ func TestBuildSubagentFactoryCrossProvider(t *testing.T) {
 	resolver.providers["other"] = other
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 
-	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, resolver, nil, 0)
+	factory, _ := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, resolver, nil, 0, pricing.ModelPricing{})
 
 	// Same provider keeps the parent instance.
 	child, _, err := factory(agent.SubagentRequest{Model: "parent/parent-model"})
@@ -2477,7 +2478,7 @@ func TestBuildSubagentFactoryCrossProviderFallsBackToParentWhenResolverNil(t *te
 	pol := policy.NewEngine(&cfg, nil)
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 
-	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, nil, nil, 0)
+	factory, _ := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, nil, nil, 0, pricing.ModelPricing{})
 	// With a nil resolver and a cross-provider pair, routing still resolves
 	// but the factory keeps the parent provider instead of calling the resolver.
 	child, _, err := factory(agent.SubagentRequest{Model: "other/other-model"})
@@ -2522,7 +2523,7 @@ func TestBuildSubagentFactoryRolePinning(t *testing.T) {
 	resolver.providers["other"] = other
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 
-	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, resolver, nil, 0)
+	factory, _ := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, resolver, nil, 0, pricing.ModelPricing{})
 
 	// Explicitly bound reviewer role pins model and provider.
 	child, _, err := factory(agent.SubagentRequest{Role: routing.RoleReviewer})
@@ -2574,7 +2575,7 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	reg := registry.New()
 
 	// Unset config → default 48.
-	factory := buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0)
+	factory, _ := buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2587,7 +2588,7 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	cfg.Agent.SubtaskIterations = 5
 	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	state.SetLayers(config.Layers{SubtaskIterationsSet: true})
-	factory = buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0)
+	factory, _ = buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
 	child, _, err = factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2600,7 +2601,7 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	cfg.Agent.SubtaskIterations = 0
 	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	state.SetLayers(config.Layers{SubtaskIterationsSet: true})
-	factory = buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0)
+	factory, _ = buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
 	child, _, err = factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2616,7 +2617,7 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"reviewer": {Preset: "m", MaxIterations: 99},
 	}
-	factory = buildSubagentFactory(cfg, state, nil, reg, nil, "m", routing.NewStaticRouter(cfg.RoutingConfig()), nil, nil, 0)
+	factory, _ = buildSubagentFactory(cfg, state, nil, reg, nil, "m", routing.NewStaticRouter(cfg.RoutingConfig()), nil, nil, 0, pricing.ModelPricing{})
 	child, _, err = factory(agent.SubagentRequest{Agent: "reviewer"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2652,7 +2653,7 @@ func TestBuildSubagentFactoryReviewerInheritedKeepsDefault(t *testing.T) {
 	pol := policy.NewEngine(&cfg, nil)
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 
-	factory := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, nil, nil, 0)
+	factory, _ := buildSubagentFactory(cfg, state, parent, reg, pol, "parent/parent-model", router, nil, nil, 0, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{Role: routing.RoleReviewer})
 	if err != nil {
 		t.Fatalf("inherited reviewer factory error = %v", err)
@@ -2880,7 +2881,7 @@ func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2924,7 +2925,7 @@ func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -2967,7 +2968,7 @@ func TestSubagentFactoryExplicitModelOverridesNamedAgent(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: stub})
 	_ = reg.Register(registry.Tool{Name: "web.fetch", Risk: registry.RiskNetwork, Handler: stub})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout", Model: "other/x"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -3015,7 +3016,7 @@ func TestSubagentFactoryExplicitModelAdHoc(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{Model: "ollama/qwen2.5-coder:32b"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -3047,7 +3048,7 @@ func TestSubagentFactoryInvalidPairErrors(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1, pricing.ModelPricing{})
 	if _, _, err := factory(agent.SubagentRequest{Model: "bogus"}); err == nil {
 		t.Fatal("expected an error for a malformed provider/model pair")
 	} else if !strings.Contains(err.Error(), "bogus") {
@@ -3094,7 +3095,7 @@ func TestSubagentFactoryCrossProviderSwitchesProvider(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{Model: "other/x"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -3133,7 +3134,7 @@ func TestSubagentFactoryCrossProviderUnconfiguredErrors(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1, pricing.ModelPricing{})
 	_, _, err := factory(agent.SubagentRequest{Model: "other/x"})
 	if err == nil {
 		t.Fatal("expected error for unconfigured provider")
@@ -3166,7 +3167,7 @@ func TestSubagentFactorySameProviderKeepsParentInstance(t *testing.T) {
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
-	factory := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1)
+	factory, _ := buildSubagentFactory(cfg, parentState, parentProvider, reg, pol, "fallback", router, resolver, nil, 1, pricing.ModelPricing{})
 	child, _, err := factory(agent.SubagentRequest{Model: "ollama/qwen2.5-coder:32b"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)

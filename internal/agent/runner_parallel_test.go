@@ -387,7 +387,7 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 		return "done: " + prompt, "", nil
 	}
 
-	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
+	tool := NewSubagentTool(factory, nil, reg, state, WithSubagentExec(exec))
 	if err := reg.Register(tool); err != nil {
 		t.Fatalf("register agent.run: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestParallelAgentRunPreservesSiblingsOnError(t *testing.T) {
 		return "ok: " + prompt, "", nil
 	}
 
-	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
+	tool := NewSubagentTool(factory, nil, reg, state, WithSubagentExec(exec))
 	if err := reg.Register(tool); err != nil {
 		t.Fatalf("register agent.run: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestParallelAgentRunConcurrencyLimitRejectsThird(t *testing.T) {
 		return "done: " + prompt, "", nil
 	}
 
-	tool := NewSubagentTool(factory, reg, state, WithSubagentExec(exec))
+	tool := NewSubagentTool(factory, nil, reg, state, WithSubagentExec(exec))
 	if err := reg.Register(tool); err != nil {
 		t.Fatalf("register agent.run: %v", err)
 	}

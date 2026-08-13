@@ -224,10 +224,13 @@ func classifyEnvironment(name string, args []string) string {
 		if hasSubcmd(args, "cache") && hasSubcmd(args, "clean") {
 			return "yarn cache clean"
 		}
-		// yarn add installs packages and runs lifecycle scripts, mutating
-		// the environment.
+		// yarn add and yarn install both install packages and run lifecycle
+		// scripts, mutating the environment.
 		if hasSubcmd(args, "add") {
 			return "yarn add"
+		}
+		if hasSubcmd(args, "install") {
+			return "yarn install"
 		}
 	case "brew":
 		// install runs package scripts and mutates the system, so it stays

@@ -76,6 +76,8 @@ func TestClassifyEnvironmentCommands(t *testing.T) {
 		{"pip3 install --user black", "pip3 install"},
 		{"yarn cache clean", "yarn cache clean"},
 		{"yarn add lodash", "yarn add"},
+		{"yarn install", "yarn install"},
+		{"yarn install --frozen-lockfile", "yarn install"},
 		{"git config --global user.name x", "git config --global"},
 		{"brew uninstall wget", "brew uninstall"},
 		{"brew cleanup", "brew cleanup"},

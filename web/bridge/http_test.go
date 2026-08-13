@@ -63,6 +63,23 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	}
 }
 
+func TestHTTPFleetSessionRouting(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(t.Context(), "/home/u/a", "agent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(f, "")
+
+	rec := doReq(t, s, http.MethodGet, "/api/sessions?cwd=/home/u/a", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fleet list sessions: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec := doReq(t, s, http.MethodPost, "/api/sessions/"+id+"/mode", map[string]string{"mode": "auto"}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("fleet set mode: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHTTPServerAuth(t *testing.T) {
 	s, _, _, _ := newTestServer(t, "tok")
 

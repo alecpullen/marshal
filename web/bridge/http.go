@@ -275,6 +275,28 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 
 // listSessions proxies ACP session/list: all sessions known to the
 // child for a cwd, tracked or not.
+func (s *Server) registryForSession(id string) (*Registry, *EventLog, error) {
+	if s.fleet != nil {
+		rt, err := s.fleet.RuntimeForSession(id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rt.reg, rt.log, nil
+	}
+	return s.reg, s.log, nil
+}
+
+func (s *Server) registryForRoot(root string) (*Registry, *EventLog, error) {
+	if s.fleet != nil {
+		rt, err := s.fleet.runtimeFor(root)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rt.reg, rt.log, nil
+	}
+	return s.reg, s.log, nil
+}
+
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	cwd := r.URL.Query().Get("cwd")
 	if cwd == "" {
@@ -285,7 +307,12 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
 		params["cursor"] = cursor
 	}
-	res, err := s.reg.child.Request(r.Context(), "session/list", params)
+	reg, _, err := s.registryForRoot(cwd)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, err := reg.child.Request(r.Context(), "session/list", params)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -308,7 +335,13 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cwd is required"})
 		return
 	}
-	id, err := s.reg.New(r.Context(), body.Cwd, body.SessionID)
+	var id string
+	var err error
+	if s.fleet != nil {
+		id, err = s.fleet.Spawn(r.Context(), body.Cwd, "", "")
+	} else {
+		id, err = s.reg.New(r.Context(), body.Cwd, body.SessionID)
+	}
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -332,19 +365,31 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var reg *Registry
+	var log *EventLog
+	var err error
 	cwd := body.Cwd
-	if cwd == "" {
-		cwd = s.reg.RootCwd
+	if s.fleet != nil {
+		reg, log, err = s.registryForSession(id)
+	} else {
+		if cwd == "" {
+			cwd = s.reg.RootCwd
+		}
+		reg, log = s.reg, s.log
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
 	}
 	if cwd == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cwd is required (body or configured root)"})
 		return
 	}
-	if err := s.reg.Load(r.Context(), cwd, id); err != nil {
+	if err := reg.Load(r.Context(), cwd, id); err != nil {
 		writeErr(w, err)
 		return
 	}
-	events := s.log.Tail(id)
+	events := log.Tail(id)
 	if events == nil {
 		events = []Event{}
 	}
@@ -356,7 +401,12 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 
 // deleteSession removes the session record.
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
-	if err := s.reg.Delete(r.Context(), r.PathValue("id")); err != nil {
+	reg, _, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := reg.Delete(r.Context(), r.PathValue("id")); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -369,7 +419,12 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 // the bridge-side turn_end event carries the terminal status.
 func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	info, ok := s.reg.lookup(id)
+	reg, _, err := s.registryForSession(id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	info, ok := reg.lookup(id)
 	if !ok {
 		writeErr(w, ErrUnknownSession)
 		return
@@ -389,7 +444,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		if err := s.reg.Prompt(context.Background(), id, body.Text); err != nil {
+		if err := reg.Prompt(context.Background(), id, body.Text); err != nil {
 			slog.Default().Warn("webbridge: prompt turn failed", "session", id, "err", err)
 		}
 	}()
@@ -398,7 +453,12 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 
 // cancel interrupts the in-flight turn.
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
-	if err := s.reg.Cancel(r.Context(), r.PathValue("id")); err != nil {
+	reg, _, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := reg.Cancel(r.Context(), r.PathValue("id")); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -417,7 +477,12 @@ func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
 		return
 	}
-	if err := s.reg.Steer(r.Context(), r.PathValue("id"), body.Text); err != nil {
+	reg, _, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := reg.Steer(r.Context(), r.PathValue("id"), body.Text); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -436,7 +501,12 @@ func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode is required"})
 		return
 	}
-	if err := s.reg.SetMode(r.Context(), r.PathValue("id"), body.Mode); err != nil {
+	reg, _, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := reg.SetMode(r.Context(), r.PathValue("id"), body.Mode); err != nil {
 		writeErr(w, err)
 		return
 	}

@@ -66,7 +66,10 @@ func (CLIGitOps) run(dir string, args ...string) (string, error) {
 }
 
 func (g CLIGitOps) RevParse(dir, ref string) (string, error) {
-	return g.run(dir, "rev-parse", ref)
+	// ref may be a compound expression like "--abbrev-ref HEAD"; split it so
+	// each token reaches git as its own argument.
+	args := append([]string{"rev-parse"}, strings.Fields(ref)...)
+	return g.run(dir, args...)
 }
 
 func (g CLIGitOps) MergeBase(dir, a, b string) (string, error) {

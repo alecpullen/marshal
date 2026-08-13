@@ -602,6 +602,64 @@ func TestSubagentModelConsentSkippedForSameModel(t *testing.T) {
 	}
 }
 
+// TestSubagentModelConsentProviderSwitch verifies that switching providers
+// triggers consent even when both providers have equal or unknown (zero)
+// pricing. Before the fix, modelChangeNeedsConsent only compared model
+// strings and pricing, so a provider switch with equal/unknown pricing
+// bypassed approval entirely.
+func TestSubagentModelConsentProviderSwitch(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factoryCalled := false
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		factoryCalled = true
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil, nil
+	}
+	// Child resolves to a different provider with identical (zero) pricing.
+	resolver := func(req SubagentRequest) (SubagentModelPreview, error) {
+		return SubagentModelPreview{
+			Model:    "some-model",
+			Provider: "other-provider",
+			Pricing:  pricing.ModelPricing{},
+		}, nil
+	}
+	tool := NewSubagentTool(factory, resolver, registry.New(), state,
+		WithSubagentParentModel("parent-model", pricing.ModelPricing{}),
+		WithSubagentParentProvider("parent-provider"),
+	)
+
+	// Signal when a pending approval appears, so we can assert consent was
+	// actually requested (not just that the handler eventually returned).
+	approvalSeen := make(chan struct{})
+	go func() {
+		for {
+			if tc := state.PendingApproval(); tc != nil {
+				close(approvalSeen)
+				tc.Respond(session.UserApprovalDecision{Approved: true})
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d","model":"other-provider/some-model"}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	select {
+	case <-approvalSeen:
+		// consent was requested and approved
+	default:
+		t.Fatal("expected a consent approval to be requested for a provider switch")
+	}
+	if !factoryCalled {
+		t.Fatal("factory should have been called after consent approval")
+	}
+}
+
 // TestSubagentModelConsentSerialized guards the single State.PendingApproval
 // slot against concurrent agent.run calls that both need model-cost consent.
 // Before the fix, two parallel calls would both call SetPendingApproval and

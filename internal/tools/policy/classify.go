@@ -193,6 +193,11 @@ func classifyEnvironment(name string, args []string) string {
 		if hasSubcmd(args, "clean") && (hasArg(args, "cache") || hasArg(args, "modcache")) {
 			return "go clean -cache/-modcache"
 		}
+		// go install fetches and compiles packages into the module cache and
+		// GOBIN, mutating state outside the working directory.
+		if hasSubcmd(args, "install") {
+			return "go install"
+		}
 	case "git":
 		if hasSubcmd(args, "config") && hasArg(args, "global") {
 			return "git config --global"
@@ -201,13 +206,28 @@ func classifyEnvironment(name string, args []string) string {
 		if hasSubcmd(args, "cache") && hasSubcmd(args, "clean") {
 			return "npm cache clean"
 		}
+		// npm install runs package lifecycle scripts and writes to the
+		// global node_modules / npm cache, so it is an environment mutation.
+		if hasSubcmd(args, "install") {
+			return "npm install"
+		}
 	case "pip", "pip3":
 		if hasSubcmd(args, "cache") && (hasSubcmd(args, "purge") || hasSubcmd(args, "remove")) {
 			return name + " cache purge/remove"
 		}
+		// pip install writes packages into the interpreter's site-packages
+		// and can run setup scripts, mutating the environment.
+		if hasSubcmd(args, "install") {
+			return name + " install"
+		}
 	case "yarn":
 		if hasSubcmd(args, "cache") && hasSubcmd(args, "clean") {
 			return "yarn cache clean"
+		}
+		// yarn add installs packages and runs lifecycle scripts, mutating
+		// the environment.
+		if hasSubcmd(args, "add") {
+			return "yarn add"
 		}
 	case "brew":
 		// install runs package scripts and mutates the system, so it stays

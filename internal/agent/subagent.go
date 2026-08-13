@@ -104,10 +104,11 @@ func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 type SubagentOption func(*subagentToolConfig)
 
 type subagentToolConfig struct {
-	exec          func(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error)
-	resolver      SubagentModelResolver
-	parentModel   string
-	parentPricing pricing.ModelPricing
+	exec           func(ctx context.Context, child *Runner, prompt string) (summary, salvagedReason string, err error)
+	resolver       SubagentModelResolver
+	parentModel    string
+	parentProvider string
+	parentPricing  pricing.ModelPricing
 
 	// consentMu serializes model-consent approvals. State.PendingApproval
 	// is a single slot; two concurrent agent.run calls that both need
@@ -141,6 +142,17 @@ func WithSubagentParentModel(model string, p pricing.ModelPricing) SubagentOptio
 	return func(cfg *subagentToolConfig) {
 		cfg.parentModel = model
 		cfg.parentPricing = p
+	}
+}
+
+// WithSubagentParentProvider records the parent runner's provider name so
+// the consent gate can require approval whenever the child resolves to a
+// different provider, even when the two providers' pricing tables are equal
+// or unknown (both zero). A provider switch is a different billing system,
+// which the user should always be asked about.
+func WithSubagentParentProvider(provider string) SubagentOption {
+	return func(cfg *subagentToolConfig) {
+		cfg.parentProvider = provider
 	}
 }
 
@@ -199,13 +211,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			if err != nil {
 				return registry.ToolResult{}, fmt.Errorf("agent.run: resolve model: %w", err)
 			}
-			if modelChangeNeedsConsent(cfg.parentModel, preview.Model, cfg.parentPricing, preview.Pricing) {
+			if modelChangeNeedsConsent(cfg.parentModel, cfg.parentProvider, preview.Model, preview.Provider, cfg.parentPricing, preview.Pricing) {
 				// Serialize consent on the shared config: State.PendingApproval
 				// is a single slot, and two concurrent agent.run calls that
 				// both need consent would otherwise overwrite each other and
 				// strand the first caller's ResponseChan.
 				cfg.consentMu.Lock()
-				approved, denied := requestSubagentConsent(ctx, state, fmt.Sprintf("Subagent will use %s @ %s (different model/cost than parent %s). Approve?", preview.Model, preview.Provider, cfg.parentModel))
+				approved, denied := requestSubagentConsent(ctx, state, fmt.Sprintf("Subagent will use %s @ %s (different model/provider/cost than parent %s @ %s). Approve?", preview.Model, preview.Provider, cfg.parentModel, cfg.parentProvider))
 				cfg.consentMu.Unlock()
 				if !approved {
 					if denied {
@@ -288,17 +300,22 @@ func decodeAgentRunArgs(tool registry.Tool, raw json.RawMessage) (agentRunArgs, 
 // to the child's model has cost implications that warrant asking the user.
 //
 // Consent is needed when:
-//   - The provider differs (different billing system) — surfaced to the
-//     caller by comparing provider names; here we compare pricing.
+//   - The provider differs (different billing system). This is checked
+//     first and independently of pricing: two providers may have equal or
+//     unknown (zero) pricing tables, but a provider switch is still a
+//     different billing relationship the user should be asked about.
 //   - The parent's pricing is zero but the child's is non-zero (paid model
 //     spawned from a free/local one).
 //   - The child's rates are more than 2x the parent's in either direction
 //     (materially different cost tier).
 //
-// Same model string never needs consent.
-func modelChangeNeedsConsent(parentModel, childModel string, parentPricing, childPricing pricing.ModelPricing) bool {
-	if parentModel == childModel {
+// Same model string on the same provider never needs consent.
+func modelChangeNeedsConsent(parentModel, parentProvider, childModel, childProvider string, parentPricing, childPricing pricing.ModelPricing) bool {
+	if parentModel == childModel && parentProvider == childProvider {
 		return false
+	}
+	if parentProvider != "" && childProvider != "" && parentProvider != childProvider {
+		return true
 	}
 	parentFree := parentPricing.InputPerMTokCents == 0 && parentPricing.OutputPerMTokCents == 0
 	childFree := childPricing.InputPerMTokCents == 0 && childPricing.OutputPerMTokCents == 0

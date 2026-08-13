@@ -1238,7 +1238,9 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 				if len(ca.ToolDenylist) > 0 {
 					roReg = agent.DenylistView(roReg, ca.ToolDenylist)
 				}
-				if ca.MaxIterations > 0 {
+				if ca.MaxIterationsUnlimited {
+					iters = 0 // unlimited, matching DefaultMaxToolIterations semantics
+				} else if ca.MaxIterations > 0 {
 					iters = ca.MaxIterations
 				}
 			}
@@ -1254,10 +1256,40 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 				childProvider = p
 			}
 		}
+		// Resolve action decoding from the child's route preset and the
+		// child provider's capabilities — matching roleRunnerSpec.newRunner.
+		// Hardcoding NativeTools=true sent tool definitions to providers
+		// that ignored them, leaving the model unable to call tools.
+		toolCalling := "native"
+		if targetRoute.Preset.ToolCalling != "" {
+			toolCalling = targetRoute.Preset.ToolCalling
+		}
+		// A nil provider (unit tests that only inspect model/pricing) has no
+		// capabilities to probe; default to native tool-calling, the old
+		// behavior, so those tests keep working.
+		var caps schema.ProviderCapabilities
+		if childProvider != nil {
+			caps = childProvider.Capabilities(context.Background())
+		}
+		decoding := resolveActionDecoding(toolCalling, caps)
 		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
 		child.Role = role
 		child.MaxToolIterations = iters
-		child.NativeTools = true
+		child.NativeTools = decoding.Native
+		child.ResponseFormat = decoding.ResponseFormat
+		// Set a route resolver so the child's RunTask can derive the
+		// correct context window and max output from the resolved route.
+		// Without this, resolveRoute returns an empty Route with
+		// Window=0, causing premature context truncation.
+		if targetRoute.Preset.Name != "" {
+			// Explicit model or named agent: use a static resolver that
+			// always returns the already-resolved target route.
+			child.RouteResolver = &staticRouteResolver{route: targetRoute, provider: childProvider}
+		} else if resolver != nil {
+			// Default model: reuse the parent's resolver so the child
+			// gets the same context window as the parent.
+			child.RouteResolver = resolver
+		}
 		child.SystemPromptAddendum = composeAddendum(repoInstructionsForSubagent, addendum)
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
@@ -1272,6 +1304,19 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		}
 		return child, childState, nil
 	}, modelResolver
+}
+
+// staticRouteResolver implements agent.RouteResolver, always returning the
+// same pre-resolved route. Used by subagent children that were dispatched
+// with an explicit model or named agent so their RunTask derives the
+// correct context window without re-resolving through the profile.
+type staticRouteResolver struct {
+	route    routing.Route
+	provider provider.Provider
+}
+
+func (s *staticRouteResolver) Resolve(string) (routing.Route, provider.Provider, error) {
+	return s.route, s.provider, nil
 }
 
 type actionDecodingConfig struct {

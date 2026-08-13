@@ -173,13 +173,14 @@ type AgentProfile struct {
 // referenced ModelPreset. It can fill a role slot (via RoleBinding) or be
 // dispatched ad-hoc by name (agent.run / /agents Run now).
 type CustomAgent struct {
-	Name          string        `toml:"name"`
-	Preset        string        `toml:"preset"`
-	SystemPrompt  string        `toml:"system_prompt,omitempty"`
-	ToolDenylist  []string      `toml:"tool_denylist,omitempty"`
-	ApprovalMode  string        `toml:"approval_mode,omitempty"`
-	MaxIterations int           `toml:"max_iterations,omitempty"`
-	Context       ContextBudget `toml:"context,omitempty"`
+	Name                   string        `toml:"name"`
+	Preset                 string        `toml:"preset"`
+	SystemPrompt           string        `toml:"system_prompt,omitempty"`
+	ToolDenylist           []string      `toml:"tool_denylist,omitempty"`
+	ApprovalMode           string        `toml:"approval_mode,omitempty"`
+	MaxIterations          int           `toml:"max_iterations,omitempty"`
+	MaxIterationsUnlimited bool          `toml:"max_iterations_unlimited,omitempty"`
+	Context                ContextBudget `toml:"context,omitempty"`
 }
 
 type ContextBudget struct {

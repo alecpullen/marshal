@@ -3177,6 +3177,149 @@ func TestSubagentFactorySameProviderKeepsParentInstance(t *testing.T) {
 	}
 }
 
+func TestBuildSubagentFactorySetsNativeToolsFromProviderCapability(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"local/m": {Provider: "local", Model: "m"},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+
+	// Provider with tool calling → NativeTools = true.
+	parent := &agenttest.ScriptedProvider{
+		ProviderCaps: schema.ProviderCapabilities{ToolCalling: true},
+	}
+	factory, _ := buildSubagentFactory(cfg, state, parent, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if !child.NativeTools {
+		t.Fatalf("NativeTools = false, want true when provider supports tool calling")
+	}
+	if child.ResponseFormat != nil {
+		t.Fatalf("ResponseFormat = %+v, want nil in native mode", child.ResponseFormat)
+	}
+
+	// Provider without tool calling → NativeTools = false, ResponseFormat set.
+	parentNoTools := &agenttest.ScriptedProvider{
+		ProviderCaps: schema.ProviderCapabilities{ToolCalling: false, StructuredOutput: true},
+	}
+	factory, _ = buildSubagentFactory(cfg, state, parentNoTools, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	child, _, err = factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.NativeTools {
+		t.Fatalf("NativeTools = true, want false when provider lacks tool calling")
+	}
+	if child.ResponseFormat == nil {
+		t.Fatalf("ResponseFormat = nil, want non-nil fallback when provider lacks tool calling")
+	}
+}
+
+func TestBuildSubagentFactorySetsRouteResolver(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"local/m": {Provider: "local", Model: "m", ContextWindow: 32000, MaxOutputTokens: 4096},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+
+	parent := &agenttest.ScriptedProvider{
+		ProviderCaps: schema.ProviderCapabilities{ToolCalling: true},
+	}
+	resolver := newRoutedProviderResolver(cfg, "")
+	factory, _ := buildSubagentFactory(cfg, state, parent, reg, nil, "m", nil, resolver, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.RouteResolver == nil {
+		t.Fatal("RouteResolver should be set on child runner")
+	}
+	// Verify it resolves a route carrying the preset's context window.
+	route, _, err := child.RouteResolver.Resolve("question")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if route.Preset.ContextWindow == 0 {
+		t.Fatal("resolved route should carry a non-zero context window on its preset")
+	}
+}
+
+func TestBuildSubagentFactoryCustomAgentMaxIterationsUnlimited(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"scout": {Preset: "m", MaxIterationsUnlimited: true},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+
+	factory, _ := buildSubagentFactory(cfg, state, nil, reg, nil, "m", routing.NewStaticRouter(cfg.RoutingConfig()), nil, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{Agent: "scout"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.MaxToolIterations != 0 {
+		t.Fatalf("MaxToolIterations = %d, want 0 (unlimited) for custom agent with max_iterations_unlimited=true", child.MaxToolIterations)
+	}
+}
+
+func TestBuildSubagentFactoryExplicitModelUsesStaticRouteResolver(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local":  {Type: "ollama", BaseURL: "http://local/v1"},
+		"remote": {Type: "openai_compatible", BaseURL: "http://remote/v1", APIKey: "k"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"local/m":    {Provider: "local", Model: "m", ContextWindow: 32000, MaxOutputTokens: 4096},
+		"remote/big": {Provider: "remote", Model: "big", ContextWindow: 128000, MaxOutputTokens: 8192},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	resolver := newRoutedProviderResolver(cfg, "")
+
+	parent := &agenttest.ScriptedProvider{
+		ProviderCaps: schema.ProviderCapabilities{ToolCalling: true},
+	}
+	factory, _ := buildSubagentFactory(cfg, state, parent, reg, nil, "m", router, resolver, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{Model: "remote/big"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.RouteResolver == nil {
+		t.Fatal("RouteResolver should be set for explicit model")
+	}
+	route, _, err := child.RouteResolver.Resolve("question")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if route.Preset.Model != "big" {
+		t.Fatalf("resolved model = %q, want 'big'", route.Preset.Model)
+	}
+	if route.Preset.ContextWindow != 128000 {
+		t.Fatalf("resolved context window = %d, want 128000", route.Preset.ContextWindow)
+	}
+}
+
 func TestInjectedWorkerStartsAndStops(t *testing.T) {
 	started := make(chan struct{})
 	stopped := make(chan struct{})

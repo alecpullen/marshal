@@ -6,6 +6,7 @@
   import ToolCallCard from '../lib/ToolCallCard.svelte'
   import PermissionModal from '../lib/PermissionModal.svelte'
   import QuestionModal from '../lib/QuestionModal.svelte'
+  import ExitPanel from '../lib/ExitPanel.svelte'
 
   interface Props {
     sessionId: string
@@ -86,6 +87,8 @@
   </div>
 
   <Composer busy={$session.busy} onSend={send} onCancel={actions.cancel} />
+
+  <ExitPanel agentId={sessionId} onDone={onBack} />
 </div>
 
 {#if $session.pendingPermission}

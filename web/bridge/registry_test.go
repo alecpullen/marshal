@@ -115,12 +115,22 @@ func TestRegistryWrappers(t *testing.T) {
 
 	// The fake child logs every request to stderr; confirm the wrapper
 	// methods reached it with the right ACP method strings.
-	log := c.StderrLog()
-	for _, m := range []string{"session/new", "session/load", "session/prompt", "session/steer", "session/set_mode", "session/delete"} {
-		if !strings.Contains(log, "helper saw request "+m) {
-			t.Errorf("child never saw %s; log:\n%s", m, log)
+	//
+	// Poll rather than reading once: the child writes each line to stderr
+	// before it responds, but the parent drains stderr on a separate
+	// goroutine, so a received response does NOT imply the matching line
+	// has been drained yet. Reading once made this test fail whenever the
+	// package ran enough concurrent children to delay the drain.
+	want := []string{"session/new", "session/load", "session/prompt", "session/steer", "session/set_mode", "session/delete"}
+	waitFor(t, 2*time.Second, "every wrapper method in the child's stderr log", func() bool {
+		log := c.StderrLog()
+		for _, m := range want {
+			if !strings.Contains(log, "helper saw request "+m) {
+				return false
+			}
 		}
-	}
+		return true
+	})
 }
 
 func TestRegistryUnknownSession(t *testing.T) {

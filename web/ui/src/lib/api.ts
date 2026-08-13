@@ -107,6 +107,8 @@ export interface AgentStatus {
   contextPct?: number
   changedFiles?: number
   interrupted?: boolean
+  isolated?: boolean
+  branch?: string
   updatedAt: string
   pending?: PendingRequest
 }
@@ -116,14 +118,49 @@ export interface ProjectStatus {
   available: boolean
   error?: string
   trust?: 'na' | 'untrusted' | 'trusted'
+  isolation?: string
+  orphanWorktrees?: string[]
 }
 
-export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string }
+export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string }
 export async function listAgents(): Promise<AgentStatus[]> { return request('GET', '/api/agents') }
 export async function listProjects(): Promise<ProjectStatus[]> { return request('GET', '/api/projects') }
 export async function addProject(root: string): Promise<ProjectStatus[]> { return request('POST', '/api/projects', { root }) }
 export async function removeProject(root: string): Promise<ProjectStatus[]> { return request('DELETE', '/api/projects', { root }) }
 export async function spawnAgent(req: SpawnRequest): Promise<{ agentId: string; warning?: string }> { return request('POST', '/api/agents', req) }
+
+export interface DiffFile {
+  path: string
+  added: number
+  removed: number
+}
+
+export interface DiffResult {
+  files: DiffFile[]
+  diff?: string
+}
+
+export interface MergeResult {
+  merged: boolean
+  branch: string
+  target: string
+  reason?: string
+  conflicts?: string[]
+}
+
+export async function getDiff(id: string, path?: string): Promise<DiffResult> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : ''
+  return request('GET', `/api/agents/${encodeURIComponent(id)}/diff${q}`)
+}
+
+/** A refusal arrives as a 409; request throws APIError whose body is the MergeResult. */
+export async function mergeAgent(id: string, commitMessage?: string): Promise<MergeResult> {
+  return request('POST', `/api/agents/${encodeURIComponent(id)}/merge`, { commitMessage })
+}
+
+export async function discardAgent(id: string): Promise<void> {
+  return request('POST', `/api/agents/${encodeURIComponent(id)}/discard`)
+}
 
 export interface SessionSummary {
   sessionId: string

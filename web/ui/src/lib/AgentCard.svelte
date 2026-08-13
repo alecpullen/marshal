@@ -47,6 +47,7 @@
 
     <div class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
       {#if agent.mode}<span>mode {agent.mode}</span>{/if}
+      {#if agent.isolated && agent.branch}<span class="font-mono">{agent.branch}</span>{/if}
       {#if agent.contextPct > 0}<span>ctx {agent.contextPct}%</span>{/if}
       {#if agent.changedFiles > 0}<span>{agent.changedFiles} changed</span>{/if}
       {#if agent.interrupted}<span class="text-attention">interrupted by restart</span>{/if}

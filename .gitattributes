@@ -1,0 +1,6 @@
+# Generated/minified web assets: exempt from whitespace checks. The minifier
+# emits literal tabs inside template literals, which git diff --check flags as
+# trailing whitespace even though it is legitimate content.
+web/bridge/static/assets/*.js  -whitespace
+web/bridge/static/assets/*.css -whitespace
+web/bridge/static/assets/*.map -whitespace

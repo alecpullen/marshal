@@ -121,13 +121,13 @@ func newPersistedState(t *testing.T) (*State, *db.DB, string, string) {
 func TestSetWorkspacePersists(t *testing.T) {
 	s, d, sid, root := newPersistedState(t)
 	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
-	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x", TargetBranch: "main", BaseSha: "abc123"})
 	row, err := d.GetSession(sid)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != wt || row.WorktreeBranch != "feat/x" {
-		t.Fatalf("persisted = %q/%q, want %q/feat/x", row.ActiveRoot, row.WorktreeBranch, wt)
+	if row.ActiveRoot != wt || row.WorktreeBranch != "feat/x" || row.WorktreeTargetBranch != "main" || row.WorktreeBaseSha != "abc123" {
+		t.Fatalf("persisted = %q/%q/%q/%q, want %q/feat/x/main/abc123", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch, row.WorktreeBaseSha, wt)
 	}
 	// Returning to the project root stores empty values, not the root path.
 	s.SetWorkspace(Workspace{ActiveRoot: root})
@@ -135,8 +135,8 @@ func TestSetWorkspacePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != "" || row.WorktreeBranch != "" {
-		t.Fatalf("persisted after return = %q/%q, want empty", row.ActiveRoot, row.WorktreeBranch)
+	if row.ActiveRoot != "" || row.WorktreeBranch != "" || row.WorktreeTargetBranch != "" || row.WorktreeBaseSha != "" {
+		t.Fatalf("persisted after return = %q/%q/%q/%q, want empty", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch, row.WorktreeBaseSha)
 	}
 }
 
@@ -146,13 +146,13 @@ func TestResumeRestoresWorkspace(t *testing.T) {
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatalf("mkdir worktree: %v", err)
 	}
-	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x", TargetBranch: "main", BaseSha: "abc123"})
 
 	// A second State over the same row simulates resume.
 	resumed := New(config.Default(), root, time.Unix(100, 0), Persistence{DB: d, SessionID: sid, Logger: slog.Default()})
 	ws := resumed.Workspace()
-	if ws.ActiveRoot != wt || ws.Branch != "feat/x" || ws.ProjectRoot != root {
-		t.Fatalf("resumed Workspace() = %+v, want worktree %q on feat/x", ws, wt)
+	if ws.ActiveRoot != wt || ws.Branch != "feat/x" || ws.ProjectRoot != root || ws.TargetBranch != "main" || ws.BaseSha != "abc123" {
+		t.Fatalf("resumed Workspace() = %+v, want worktree %q on feat/x targeting main from abc123", ws, wt)
 	}
 }
 

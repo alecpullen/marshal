@@ -3,6 +3,7 @@ package worktree
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -106,24 +107,39 @@ func (g CLIGitOps) WorktreeList(dir string) ([]string, error) {
 
 // WorktreeBranch parses `git worktree list --porcelain` to find the branch
 // attached to the worktree at path. A detached worktree reports "HEAD" and
-// is treated as not owned by any agent branch.
+// is treated as not owned by any agent branch. The path is normalized on
+// both sides so a caller passing a path with a trailing slash, redundant
+// segments, or a symlinked prefix (e.g. /var vs /private/var on macOS) still
+// matches git's canonical listing.
 func (g CLIGitOps) WorktreeBranch(dir, path string) (string, error) {
 	out, err := g.run(dir, "worktree", "list", "--porcelain")
 	if err != nil {
 		return "", err
 	}
+	want := canonicalPath(path)
 	var curPath string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			curPath = p
+			curPath = canonicalPath(p)
 			continue
 		}
-		if b, ok := strings.CutPrefix(line, "branch "); ok && curPath == path {
+		if b, ok := strings.CutPrefix(line, "branch "); ok && curPath == want {
 			return strings.TrimPrefix(b, "refs/heads/"), nil
 		}
 	}
 	return "", fmt.Errorf("worktree git: %s is not a registered worktree of %s", path, dir)
+}
+
+// canonicalPath resolves symlinks (so /var and /private/var compare equal)
+// and cleans redundant segments. EvalSymlinks fails when the path does not
+// exist; in that case we fall back to a plain Clean so the caller still gets
+// a meaningful "not a registered worktree" error rather than a spurious one.
+func canonicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return filepath.Clean(p)
 }
 
 func (g CLIGitOps) WorktreeRemove(dir, path string) error {

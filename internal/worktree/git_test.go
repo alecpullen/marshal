@@ -158,3 +158,37 @@ func TestCLIWorktreeRemoveDirtyRefuses(t *testing.T) {
 		t.Fatal("dirty worktree must be kept")
 	}
 }
+
+// TestCLIWorktreeBranch verifies WorktreeBranch against real git: it must
+// report the attached branch, tolerate a caller path with a trailing slash,
+// and error for a path that is not a registered worktree.
+func TestCLIWorktreeBranch(t *testing.T) {
+	repo := initRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	g := CLIGitOps{}
+	if err := g.WorktreeAdd(repo, wtPath, "feature-z", "HEAD"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+
+	branch, err := g.WorktreeBranch(repo, wtPath)
+	if err != nil {
+		t.Fatalf("WorktreeBranch: %v", err)
+	}
+	if branch != "feature-z" {
+		t.Fatalf("WorktreeBranch = %q, want feature-z", branch)
+	}
+
+	// A trailing slash must still resolve to the same worktree.
+	branch, err = g.WorktreeBranch(repo, wtPath+string(filepath.Separator))
+	if err != nil {
+		t.Fatalf("WorktreeBranch with trailing slash: %v", err)
+	}
+	if branch != "feature-z" {
+		t.Fatalf("WorktreeBranch (trailing slash) = %q, want feature-z", branch)
+	}
+
+	// A path that is not a registered worktree must error.
+	if _, err := g.WorktreeBranch(repo, filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Fatal("WorktreeBranch for an unregistered path: want error, got nil")
+	}
+}

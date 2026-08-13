@@ -38,6 +38,11 @@ type Session struct {
 	// session/merge can reject a caller-supplied target that differs.
 	// Empty when the session operates at the project root.
 	WorktreeTargetBranch string
+	// WorktreeBaseSha is the commit the worktree branch started from.
+	// Persisted so a resumed isolated session can diff stably against the
+	// original base rather than recomputing a merge-base that may have
+	// moved. Empty when the session operates at the project root.
+	WorktreeBaseSha string
 }
 
 // CreateSession inserts a new agent_sessions row. The session id is generated
@@ -58,12 +63,12 @@ func (db *DB) CreateSession(sessionID string, projectID int64, title string, sta
 func (db *DB) GetSession(sessionID string) (Session, error) {
 	var s Session
 	var startedAt string
-	var endedAt, summary, activeRoot, worktreeBranch, worktreeTargetBranch sql.NullString
+	var endedAt, summary, activeRoot, worktreeBranch, worktreeTargetBranch, worktreeBaseSha sql.NullString
 	row := db.sqlDB.QueryRow(
-		`SELECT id, project_id, title, started_at, ended_at, summary, active_root, worktree_branch, worktree_target_branch FROM agent_sessions WHERE id = ?`,
+		`SELECT id, project_id, title, started_at, ended_at, summary, active_root, worktree_branch, worktree_target_branch, worktree_base_sha FROM agent_sessions WHERE id = ?`,
 		sessionID,
 	)
-	if err := row.Scan(&s.ID, &s.ProjectID, &s.Title, &startedAt, &endedAt, &summary, &activeRoot, &worktreeBranch, &worktreeTargetBranch); err != nil {
+	if err := row.Scan(&s.ID, &s.ProjectID, &s.Title, &startedAt, &endedAt, &summary, &activeRoot, &worktreeBranch, &worktreeTargetBranch, &worktreeBaseSha); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, fmt.Errorf("session not found: %s", sessionID)
 		}
@@ -94,6 +99,9 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 	if worktreeTargetBranch.Valid {
 		s.WorktreeTargetBranch = worktreeTargetBranch.String
 	}
+	if worktreeBaseSha.Valid {
+		s.WorktreeBaseSha = worktreeBaseSha.String
+	}
 	return s, nil
 }
 
@@ -122,12 +130,13 @@ func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) er
 }
 
 // UpdateSessionWorkspace records the session's active workspace root,
-// worktree branch, and the branch the worktree is destined to merge into.
-// All three are stored empty when the session operates at the project root.
-func (db *DB) UpdateSessionWorkspace(sessionID, activeRoot, branch, targetBranch string) error {
+// worktree branch, the branch the worktree is destined to merge into, and
+// the commit the worktree branch started from. All four are stored empty
+// when the session operates at the project root.
+func (db *DB) UpdateSessionWorkspace(sessionID, activeRoot, branch, targetBranch, baseSha string) error {
 	_, err := db.sqlDB.Exec(
-		`UPDATE agent_sessions SET active_root = ?, worktree_branch = ?, worktree_target_branch = ? WHERE id = ?`,
-		activeRoot, branch, targetBranch, sessionID,
+		`UPDATE agent_sessions SET active_root = ?, worktree_branch = ?, worktree_target_branch = ?, worktree_base_sha = ? WHERE id = ?`,
+		activeRoot, branch, targetBranch, baseSha, sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session workspace: %w", err)

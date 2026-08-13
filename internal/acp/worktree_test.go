@@ -328,6 +328,39 @@ func TestMergeSuccessRemovesWorktreeDeletesBranchAndUnisolates(t *testing.T) {
 	}
 }
 
+// A merge that succeeds but then fails to remove the worktree must still
+// return the session to the project root: the merge is done, and leaving the
+// session claiming isolation in a worktree that is already merged away would
+// be worse than reporting the cleanup failure.
+func TestMergeCleanupFailureStillUnisolates(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.AbbrevRef = "main"
+	git.RemoveErr = errors.New("git refuses: dirty worktree")
+	st := newWorktreeTestState(t, "/home/u/repo")
+	st.SetWorkspace(session.Workspace{ProjectRoot: "/home/u/repo", ActiveRoot: "/home/u/repo/.marshal/worktrees/f", Branch: "f"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+
+	raw, err := m.Merge(context.Background(), json.RawMessage(`{"sessionId":"s1","targetBranch":"main"}`))
+	if err == nil {
+		t.Fatal("expected an error when worktree removal fails after a successful merge")
+	}
+	got, ok := raw.(MergeResult)
+	if !ok {
+		t.Fatalf("Merge returned %T, want MergeResult", raw)
+	}
+	if !got.Merged {
+		t.Fatalf("Merged = false, want true — the merge itself succeeded")
+	}
+	if ws := st.Workspace(); ws.Branch != "" || ws.ActiveRoot != ws.ProjectRoot {
+		t.Errorf("session must return to the project root even when cleanup fails, got %+v", ws)
+	}
+}
+
 func TestDiscardRemovesWorktreeAndForceDeletesBranch(t *testing.T) {
 	git := worktree.NewFakeGitOps()
 	git.WorktreeBranches["/home/u/repo/.marshal/worktrees/f"] = "f"

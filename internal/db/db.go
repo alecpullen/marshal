@@ -69,6 +69,7 @@ var migrationColumns = []columnAdd{
 	{"agent_sessions", "active_root", "TEXT"},
 	{"agent_sessions", "worktree_branch", "TEXT"},
 	{"agent_sessions", "worktree_target_branch", "TEXT"},
+	{"agent_sessions", "worktree_base_sha", "TEXT"},
 	{"turn_metrics", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "cache_write_tokens", "INTEGER NOT NULL DEFAULT 0"},

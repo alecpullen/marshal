@@ -348,16 +348,20 @@ func (w *WorktreeManager) Merge(_ context.Context, params json.RawMessage) (any,
 		return res, nil
 	}
 
-	// Success: drop the worktree, delete the now-merged branch, and return
-	// the session to the project root. Its history stays in the project DB.
-	if rerr := w.git.WorktreeRemove(rt.ProjectRoot, ws.ActiveRoot); rerr != nil {
-		return nil, serverErrorf("merged, but removing the worktree failed: %v", rerr)
-	}
-	if derr := w.git.BranchDelete(rt.ProjectRoot, ws.Branch, false); derr != nil {
-		return nil, serverErrorf("merged, but deleting branch %s failed: %v", ws.Branch, derr)
-	}
+	// Success: the merge is done. Return the session to the project root
+	// FIRST, so a cleanup failure below never leaves the session claiming
+	// isolation in a worktree that is already merged away. The worktree and
+	// branch are then best-effort cleanup; a failure is reported but the
+	// session is already consistent and the operator can remove the stale
+	// worktree/branch by hand.
 	rt.State.SetWorkspace(session.Workspace{ProjectRoot: rt.ProjectRoot, ActiveRoot: rt.ProjectRoot})
 	res.Merged = true
+	if rerr := w.git.WorktreeRemove(rt.ProjectRoot, ws.ActiveRoot); rerr != nil {
+		return res, serverErrorf("merged, but removing the worktree failed: %v", rerr)
+	}
+	if derr := w.git.BranchDelete(rt.ProjectRoot, ws.Branch, false); derr != nil {
+		return res, serverErrorf("merged, but deleting branch %s failed: %v", ws.Branch, derr)
+	}
 	return res, nil
 }
 

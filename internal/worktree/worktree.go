@@ -168,6 +168,15 @@ func (f *FakeGitOps) WorktreeRemove(dir, path string) error {
 		return f.RemoveErr
 	}
 	f.Removed = append(f.Removed, path)
+	// Mirror real git: removing a worktree unregisters it but leaves the
+	// branch (and its ref) intact — BranchDelete is what removes the branch.
+	for i, p := range f.Worktrees {
+		if p == path {
+			f.Worktrees = append(f.Worktrees[:i], f.Worktrees[i+1:]...)
+			break
+		}
+	}
+	delete(f.WorktreeBranches, path)
 	return nil
 }
 

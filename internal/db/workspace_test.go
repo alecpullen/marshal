@@ -32,29 +32,29 @@ func TestSessionWorkspaceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != "" || row.WorktreeBranch != "" || row.WorktreeTargetBranch != "" {
-		t.Fatalf("fresh session workspace = %q/%q/%q, want empty", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch)
+	if row.ActiveRoot != "" || row.WorktreeBranch != "" || row.WorktreeTargetBranch != "" || row.WorktreeBaseSha != "" {
+		t.Fatalf("fresh session workspace = %q/%q/%q/%q, want empty", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch, row.WorktreeBaseSha)
 	}
 
-	if err := d.UpdateSessionWorkspace("s1", "/tmp/proj/.marshal/worktrees/feat-x", "feat/x", "main"); err != nil {
+	if err := d.UpdateSessionWorkspace("s1", "/tmp/proj/.marshal/worktrees/feat-x", "feat/x", "main", "abc123"); err != nil {
 		t.Fatalf("UpdateSessionWorkspace: %v", err)
 	}
 	row, err = d.GetSession("s1")
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != "/tmp/proj/.marshal/worktrees/feat-x" || row.WorktreeBranch != "feat/x" || row.WorktreeTargetBranch != "main" {
-		t.Fatalf("workspace = %q/%q/%q, want worktree path, feat/x, main", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch)
+	if row.ActiveRoot != "/tmp/proj/.marshal/worktrees/feat-x" || row.WorktreeBranch != "feat/x" || row.WorktreeTargetBranch != "main" || row.WorktreeBaseSha != "abc123" {
+		t.Fatalf("workspace = %q/%q/%q/%q, want worktree path, feat/x, main, abc123", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch, row.WorktreeBaseSha)
 	}
 
-	if err := d.UpdateSessionWorkspace("s1", "", "", ""); err != nil {
+	if err := d.UpdateSessionWorkspace("s1", "", "", "", ""); err != nil {
 		t.Fatalf("UpdateSessionWorkspace clear: %v", err)
 	}
 	row, err = d.GetSession("s1")
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if row.ActiveRoot != "" || row.WorktreeBranch != "" || row.WorktreeTargetBranch != "" {
-		t.Fatalf("cleared workspace = %q/%q/%q, want empty", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch)
+	if row.ActiveRoot != "" || row.WorktreeBranch != "" || row.WorktreeTargetBranch != "" || row.WorktreeBaseSha != "" {
+		t.Fatalf("cleared workspace = %q/%q/%q/%q, want empty", row.ActiveRoot, row.WorktreeBranch, row.WorktreeTargetBranch, row.WorktreeBaseSha)
 	}
 }

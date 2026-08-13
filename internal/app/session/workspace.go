@@ -68,11 +68,11 @@ func (s *State) SetWorkspace(w Workspace) {
 		return
 	}
 	if s.persistenceEnabled() {
-		persistRoot, persistBranch, persistTarget := w.ActiveRoot, w.Branch, w.TargetBranch
+		persistRoot, persistBranch, persistTarget, persistBase := w.ActiveRoot, w.Branch, w.TargetBranch, w.BaseSha
 		if w.ActiveRoot == w.ProjectRoot {
-			persistRoot, persistBranch, persistTarget = "", "", ""
+			persistRoot, persistBranch, persistTarget, persistBase = "", "", "", ""
 		}
-		if err := s.db.UpdateSessionWorkspace(s.sessionID, persistRoot, persistBranch, persistTarget); err != nil {
+		if err := s.db.UpdateSessionWorkspace(s.sessionID, persistRoot, persistBranch, persistTarget, persistBase); err != nil {
 			s.logger.Warn("persist workspace", "error", err)
 		}
 	}
@@ -111,11 +111,11 @@ func (s *State) restoreWorkspace() {
 	}
 	if info, statErr := os.Stat(row.ActiveRoot); statErr == nil && info.IsDir() {
 		s.mu.Lock()
-		s.workspace = Workspace{ProjectRoot: s.WorkingDir, ActiveRoot: row.ActiveRoot, Branch: row.WorktreeBranch, TargetBranch: row.WorktreeTargetBranch}
+		s.workspace = Workspace{ProjectRoot: s.WorkingDir, ActiveRoot: row.ActiveRoot, Branch: row.WorktreeBranch, TargetBranch: row.WorktreeTargetBranch, BaseSha: row.WorktreeBaseSha}
 		s.mu.Unlock()
 		return
 	}
-	if err := s.db.UpdateSessionWorkspace(s.sessionID, "", "", ""); err != nil {
+	if err := s.db.UpdateSessionWorkspace(s.sessionID, "", "", "", ""); err != nil {
 		s.logger.Warn("clear stale workspace", "error", err)
 	}
 	s.AddMessage(RoleSystem, fmt.Sprintf(

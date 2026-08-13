@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     leaf_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     active_root TEXT,
     worktree_branch TEXT,
-    worktree_target_branch TEXT
+    worktree_target_branch TEXT,
+    worktree_base_sha TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (

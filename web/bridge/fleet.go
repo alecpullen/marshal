@@ -47,10 +47,11 @@ type Fleet struct {
 	runtimes       map[string]*projectRuntime
 	sessionProject map[string]string
 	orphans        map[string][]string
+	reconciled     map[string]bool
 }
 
 func NewFleet(ws *Workspace, marshalBin string) *Fleet {
-	f := &Fleet{ws: ws, marshalBin: marshalBin, fleetLog: NewEventLog(), live: newLiveState(), runtimes: make(map[string]*projectRuntime), sessionProject: make(map[string]string), orphans: make(map[string][]string)}
+	f := &Fleet{ws: ws, marshalBin: marshalBin, fleetLog: NewEventLog(), live: newLiveState(), runtimes: make(map[string]*projectRuntime), sessionProject: make(map[string]string), orphans: make(map[string][]string), reconciled: make(map[string]bool)}
 	f.newChild = func(string) *Child { return &Child{MarshalBin: marshalBin} }
 	return f
 }
@@ -196,6 +197,10 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if err != nil {
 		return "", err
 	}
+	// A cold project (not running when the bridge started) is reconciled the
+	// first time it is used, so its orphan worktrees are reported even though
+	// startup reconciliation never saw it.
+	f.reconcileOnce(ctx, root)
 	params := map[string]any{"cwd": root, "mcpServers": []any{}, "name": opts.Name}
 	if opts.Isolated {
 		iso := map[string]any{}
@@ -334,12 +339,45 @@ func isolationSupport(root string) string {
 	return "available"
 }
 
+// reconcileOnce asks a project to prune stale git metadata and report
+// worktrees no agent claims, recording the result on ProjectStatus. It runs
+// at most once per project per bridge lifetime, so a cold project is
+// reconciled the first time it is used without re-pruning on every spawn.
+func (f *Fleet) reconcileOnce(ctx context.Context, root string) {
+	f.mu.Lock()
+	if f.reconciled[root] {
+		f.mu.Unlock()
+		return
+	}
+	f.reconciled[root] = true
+	f.mu.Unlock()
+
+	rt, err := f.runtimeFor(root)
+	if err != nil {
+		return
+	}
+	raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": root})
+	if rerr != nil {
+		slog.Default().Warn("webbridge: worktree prune failed", "project", root, "err", rerr)
+		return
+	}
+	var out struct {
+		Unknown []string `json:"unknown"`
+	}
+	if json.Unmarshal(raw, &out) != nil {
+		return
+	}
+	f.mu.Lock()
+	f.orphans[root] = out.Unknown
+	f.mu.Unlock()
+}
+
 // ReconcileWorktrees asks each live project to prune stale git metadata and
 // report worktrees no agent claims, recording the result on ProjectStatus.
 //
 // Only projects whose child is already up are asked: bringing every project
 // up at startup just to prune would defeat lazy spawning. Cold projects are
-// reconciled the first time they are used.
+// reconciled the first time they are used (see reconcileOnce).
 func (f *Fleet) ReconcileWorktrees(ctx context.Context) {
 	f.mu.Lock()
 	roots := make([]string, 0, len(f.runtimes))
@@ -351,24 +389,7 @@ func (f *Fleet) ReconcileWorktrees(ctx context.Context) {
 	f.mu.Unlock()
 
 	for _, root := range roots {
-		rt, err := f.runtimeFor(root)
-		if err != nil {
-			continue
-		}
-		raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": root})
-		if rerr != nil {
-			slog.Default().Warn("webbridge: worktree prune failed", "project", root, "err", rerr)
-			continue
-		}
-		var out struct {
-			Unknown []string `json:"unknown"`
-		}
-		if json.Unmarshal(raw, &out) != nil {
-			continue
-		}
-		f.mu.Lock()
-		f.orphans[root] = out.Unknown
-		f.mu.Unlock()
+		f.reconcileOnce(ctx, root)
 	}
 }
 

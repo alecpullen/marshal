@@ -85,6 +85,38 @@ func TestSpawnIsolatedRecordsBranchAndTarget(t *testing.T) {
 	}
 }
 
+func TestMergeClearsIsolationOnSuccess(t *testing.T) {
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused")
+	bin, args, env := helperCommand("registry-merged")
+	f.newChild = func(root string) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	t.Cleanup(f.Close)
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+	id, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "fix", Mode: "edit", Isolated: true, BaseRef: "HEAD"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, _ := f.ws.Agent(id)
+	if !a.Isolated {
+		t.Fatal("agent must start isolated")
+	}
+
+	if _, err := f.Merge(ctx, id, ""); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	// A successful merge returns the session to the project root; the agent
+	// must no longer be reported as isolated.
+	a, _ = f.ws.Agent(id)
+	if a.Isolated || a.Branch != "" || a.TargetBranch != "" {
+		t.Errorf("agent still isolated after successful merge: %+v", a)
+	}
+}
+
 func TestSpawnNonIsolatedRecordsNoBranch(t *testing.T) {
 	f := testFleet(t)
 	ctx, cancel := testContext(t)

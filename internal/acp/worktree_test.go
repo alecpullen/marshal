@@ -103,6 +103,23 @@ func TestIsolateSessionHonoursBaseRef(t *testing.T) {
 	}
 }
 
+func TestIsolateSessionRefusesDetachedHead(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.Refs["HEAD"] = "sha"
+	// A detached checkout reports "HEAD" as the abbreviated ref.
+	git.AbbrevRef = "HEAD"
+	root := t.TempDir()
+	st := newWorktreeTestState(t, root)
+
+	if _, err := isolateSession(git, st, root, IsolationParams{Branch: "feat/x"}, "n"); err == nil {
+		t.Fatal("expected isolation to be refused on a detached HEAD")
+	}
+	// The session must not have been switched into a worktree.
+	if ws := st.Workspace(); ws.ActiveRoot != root {
+		t.Fatalf("session workspace changed on refused isolation: %+v", ws)
+	}
+}
+
 func TestParseNumstat(t *testing.T) {
 	got := parseNumstat("3\t1\tmain.go\n0\t7\told.go\n-\t-\timage.png\n")
 	if len(got) != 3 {
@@ -493,11 +510,12 @@ func TestDiscardRefusesSymlinkEscapingAgentDir(t *testing.T) {
 	}
 }
 
-// The per-session runtime must be cached so every lookup returns the same
-// instance — and therefore the same exit-path mutex. Without the cache, two
-// concurrent Merge/Discard requests would each construct a fresh runtime
-// with a fresh mutex, defeating the serialization.
-func TestWorktreeManagerCachesRuntimePerSession(t *testing.T) {
+// The per-session exit-path mutex must be shared across every lookup of a
+// session, so concurrent Merge/Discard requests serialise on the same lock.
+// But the runtime itself must NOT be cached: a session can be replaced
+// (Load/Resume/Create with the same id), and caching the runtime would hand
+// stale State/ProjectRoot to later diff/merge/discard calls.
+func TestWorktreeManagerSharesMutexButRebuildsRuntimePerSession(t *testing.T) {
 	st := newWorktreeTestState(t, "/home/u/repo")
 	m := NewWorktreeManager(WorktreeManagerConfig{
 		Git: worktree.NewFakeGitOps(),
@@ -510,16 +528,22 @@ func TestWorktreeManagerCachesRuntimePerSession(t *testing.T) {
 	if !ok1 || !ok2 {
 		t.Fatalf("runtime lookups failed: %v %v", ok1, ok2)
 	}
-	if rt1 != rt2 {
-		t.Fatal("runtime must be cached per session; got two distinct instances")
+	// The mutex is shared across lookups of the same session.
+	if rt1.mu != rt2.mu {
+		t.Fatal("exit-path mutex must be shared per session; got two distinct mutexes")
 	}
-	// A different session gets its own runtime.
+	// The runtime itself is rebuilt fresh each lookup, so a replaced session
+	// never sees stale State/ProjectRoot.
+	if rt1 == rt2 {
+		t.Fatal("runtime must be rebuilt per lookup, not cached")
+	}
+	// A different session gets its own mutex.
 	rt3, ok3 := m.runtime("s2")
 	if !ok3 {
 		t.Fatal("second session lookup failed")
 	}
-	if rt3 == rt1 {
-		t.Fatal("different sessions must not share a runtime")
+	if rt3.mu == rt1.mu {
+		t.Fatal("different sessions must not share an exit-path mutex")
 	}
 }
 

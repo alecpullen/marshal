@@ -273,7 +273,26 @@ func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMe
 	if commitMessage != "" {
 		params["commitMessage"] = commitMessage
 	}
-	return rt.child.Request(ctx, "session/merge", params)
+	out, err := rt.child.Request(ctx, "session/merge", params)
+	if err != nil {
+		return nil, err
+	}
+	// A successful merge returns the session to the project root and removes
+	// the worktree/branch. Clear the agent's persisted isolation state so
+	// /api/agents stops reporting it as isolated. A refusal (dirty, conflicts,
+	// target moved) leaves the agent isolated, so only clear on merged==true.
+	var res struct {
+		Merged bool `json:"merged"`
+	}
+	if jerr := json.Unmarshal(out, &res); jerr == nil && res.Merged {
+		if a, ok := f.ws.Agent(id); ok {
+			a.Isolated, a.Branch, a.TargetBranch = false, "", ""
+			if perr := f.ws.PutAgent(a); perr != nil {
+				return nil, fmt.Errorf("agent merged but recording it failed: %w", perr)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (f *Fleet) Discard(ctx context.Context, id string) error {

@@ -79,8 +79,8 @@ func runHelperChild(mode string) {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "helper saw request %s\n", req.Method)
-		if mode == "registry" || mode == "registry-die" {
-			handleRegistryMode(&req, enc)
+		if mode == "registry" || mode == "registry-die" || mode == "registry-merged" {
+			handleRegistryMode(&req, enc, mode)
 			// registry-die kills the process only after session/new, so
 			// the post-restart session/resume survives on generation 2.
 			if mode == "registry-die" && req.Method == "session/new" {
@@ -109,7 +109,7 @@ func handleRegistryMode(req *struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
-}, enc *json.Encoder) {
+}, enc *json.Encoder, mode string) {
 	switch req.Method {
 	case "session/new":
 		result := map[string]any{"sessionId": "s-1"}
@@ -127,6 +127,11 @@ func handleRegistryMode(req *struct {
 		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
 			"result": map[string]any{"files": []map[string]any{{"path": "a.go", "added": 2, "removed": 0}}}})
 	case "session/merge":
+		if mode == "registry-merged" {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{"merged": true, "branch": "f", "target": "main"}})
+			return
+		}
 		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
 			"result": map[string]any{"merged": false, "branch": "f", "target": "main", "reason": "dirty"}})
 	case "session/discard":

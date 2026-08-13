@@ -76,6 +76,12 @@ func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, 
 	if err != nil {
 		return WorkspaceInfo{}, fmt.Errorf("resolve project branch: %w", err)
 	}
+	// A detached checkout has no branch to merge into. Refuse rather than
+	// recording "HEAD" as the target and later merging into a detached
+	// checkout, which would leave the merge on no branch at all.
+	if strings.TrimSpace(target) == "" || strings.TrimSpace(target) == "HEAD" {
+		return WorkspaceInfo{}, fmt.Errorf("resolve project branch: project is in detached HEAD; isolation requires a checked-out branch to merge back into")
+	}
 
 	dir, err := worktree.AgentDir(projectRoot)
 	if err != nil {
@@ -106,7 +112,13 @@ type WorktreeRuntime struct {
 	// isolated(), then one removes the worktree while the other merges or
 	// deletes the branch — leaving partial cleanup or a merged branch that
 	// stays registered. Diff is read-only and does not take the lock.
-	mu sync.Mutex
+	//
+	// It is a pointer so the WorktreeManager can hand the same mutex to
+	// every runtime it builds for a session while still rebuilding the
+	// runtime (and its State/ProjectRoot) fresh on each lookup. A value
+	// mutex would be copied, which go vet rejects and which would defeat
+	// the sharing.
+	mu *sync.Mutex
 }
 
 // WorktreeManagerConfig wires the manager to the session registry and git.
@@ -125,13 +137,14 @@ type WorktreeManager struct {
 	git    worktree.GitOps
 	known  func(string) []string
 
-	// mu guards runtimes. runtimes caches the per-session WorktreeRuntime so
-	// every lookup returns the same instance — and therefore the same
-	// exit-path mutex. Without the cache, each Merge/Discard would construct
-	// a fresh runtime with a fresh sync.Mutex, so the serialization would be
-	// ineffective.
-	mu       sync.Mutex
-	runtimes map[string]*WorktreeRuntime
+	// mu guards locks. locks caches the per-session exit-path mutex so every
+	// runtime built for a session shares the same one. The runtime itself is
+	// NOT cached: a session can be replaced (Load/Resume/Create with the same
+	// id), and caching the runtime would hand stale State/ProjectRoot to
+	// later diff/merge/discard calls. Only the mutex is stable across a
+	// session's lifetime.
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
 }
 
 func NewWorktreeManager(cfg WorktreeManagerConfig) *WorktreeManager {
@@ -140,27 +153,31 @@ func NewWorktreeManager(cfg WorktreeManagerConfig) *WorktreeManager {
 		git = worktree.CLIGitOps{}
 	}
 	return &WorktreeManager{
-		lookup:   cfg.Lookup,
-		git:      git,
-		known:    cfg.KnownWorktrees,
-		runtimes: map[string]*WorktreeRuntime{},
+		lookup: cfg.Lookup,
+		git:    git,
+		known:  cfg.KnownWorktrees,
+		locks:  map[string]*sync.Mutex{},
 	}
 }
 
-// runtime returns the cached per-session WorktreeRuntime, constructing and
-// caching it on first use. The same pointer is returned for every lookup of
-// a session, so its exit-path mutex is shared across concurrent requests.
+// runtime resolves a session's WorktreeRuntime fresh from the lookup each
+// call, attaching the session's shared exit-path mutex. The runtime is
+// rebuilt so a replaced session (Load/Resume/Create with the same id) never
+// sees stale State/ProjectRoot; only the mutex is reused across the session's
+// lifetime, which is what serialises concurrent exit-path operations.
 func (w *WorktreeManager) runtime(sessionID string) (*WorktreeRuntime, bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if rt, ok := w.runtimes[sessionID]; ok {
-		return rt, true
-	}
 	rt, ok := w.lookup(sessionID)
 	if !ok || rt == nil {
 		return nil, false
 	}
-	w.runtimes[sessionID] = rt
+	w.mu.Lock()
+	mu, ok := w.locks[sessionID]
+	if !ok {
+		mu = &sync.Mutex{}
+		w.locks[sessionID] = mu
+	}
+	w.mu.Unlock()
+	rt.mu = mu
 	return rt, true
 }
 
@@ -183,8 +200,8 @@ type diffParams struct {
 }
 
 // isolated resolves a session and requires it to be in a worktree. It uses
-// the cached runtime so the exit-path mutex is shared across concurrent
-// requests for the same session.
+// the cached exit-path mutex so concurrent requests for the same session
+// serialise on the same lock.
 func (w *WorktreeManager) isolated(sessionID string) (*WorktreeRuntime, session.Workspace, error) {
 	if w.lookup == nil {
 		return nil, session.Workspace{}, serverErrorf("worktree manager has no session lookup configured")

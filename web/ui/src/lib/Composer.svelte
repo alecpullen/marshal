@@ -44,23 +44,25 @@
     display: flex;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    border-top: 1px solid #e5e5e5;
-    background: #fafafa;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
   textarea {
+    background: var(--color-bg);
+    color: var(--color-fg);
     flex: 1;
     resize: none;
     padding: 0.6rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     font: inherit;
   }
   button {
     padding: 0 1rem;
-    border: 1px solid #2563eb;
+    border: 1px solid var(--color-accent);
     border-radius: 8px;
-    background: #2563eb;
-    color: white;
+    background: var(--color-accent);
+    color: var(--color-bg);
     font: inherit;
     cursor: pointer;
   }
@@ -69,8 +71,8 @@
     cursor: not-allowed;
   }
   .cancel {
-    background: white;
-    color: #111;
-    border-color: #d1d5db;
+    background: var(--color-surface);
+    color: var(--color-fg);
+    border-color: var(--color-border);
   }
 </style>

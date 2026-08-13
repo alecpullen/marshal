@@ -103,21 +103,21 @@
     height: 100vh;
     max-width: 960px;
     margin: 0 auto;
-    background: white;
+    background: var(--color-surface);
   }
   header {
     display: flex;
     align-items: center;
     gap: 0.75rem;
     padding: 0.75rem 1rem;
-    border-bottom: 1px solid #e5e5e5;
+    border-bottom: 1px solid var(--color-border);
   }
   .back {
     background: transparent;
     border: none;
     cursor: pointer;
     font: inherit;
-    color: #555;
+    color: var(--color-muted);
   }
   .title {
     flex: 1;
@@ -127,10 +127,10 @@
     white-space: nowrap;
   }
   .connection {
-    color: #ef4444;
+    color: var(--color-danger);
   }
   .connection.connected {
-    color: #22c55e;
+    color: var(--color-running);
   }
   .transcript {
     flex: 1;
@@ -153,18 +153,18 @@
     max-width: 80%;
     padding: 0.75rem 1rem;
     border-radius: 12px;
-    background: #f3f4f6;
+    background: var(--color-bg);
     white-space: pre-wrap;
     word-break: break-word;
   }
   .message.user .bubble {
-    background: #2563eb;
-    color: white;
+    background: var(--color-accent);
+    color: var(--color-bg);
   }
   .reasoning {
     margin-bottom: 0.5rem;
     font-size: 0.85rem;
-    color: #666;
+    color: var(--color-muted);
   }
   .reasoning pre {
     margin: 0.25rem 0 0;
@@ -172,12 +172,12 @@
     font-family: inherit;
   }
   .typing {
-    color: #666;
+    color: var(--color-muted);
     font-style: italic;
   }
   .error-banner {
-    background: #fee2e2;
-    color: #991b1b;
+    background: color-mix(in oklch, var(--color-danger) 18%, var(--color-bg));
+    color: var(--color-danger);
     padding: 0.75rem;
     border-radius: 6px;
     display: flex;
@@ -185,8 +185,8 @@
     align-items: center;
   }
   .error-banner button {
-    background: white;
-    border: 1px solid #fca5a5;
+    background: var(--color-surface);
+    border: 1px solid var(--color-danger);
     border-radius: 4px;
     cursor: pointer;
   }

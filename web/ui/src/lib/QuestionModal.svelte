@@ -89,14 +89,14 @@
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.6);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 100;
   }
   .modal {
-    background: white;
+    background: var(--color-surface);
     padding: 1.5rem;
     border-radius: 12px;
     max-width: 560px;
@@ -121,9 +121,11 @@
     margin: 0.25rem 0;
   }
   input[type='text'] {
+    background: var(--color-bg);
+    color: var(--color-fg);
     width: 100%;
     padding: 0.5rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
     font: inherit;
     margin-top: 0.25rem;
@@ -134,21 +136,22 @@
     gap: 0.5rem;
   }
   button {
+    color: var(--color-fg);
     padding: 0.5rem 1rem;
     border-radius: 6px;
-    border: 1px solid #d1d5db;
-    background: white;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
     cursor: pointer;
     font: inherit;
   }
   .submit {
-    background: #2563eb;
-    border-color: #2563eb;
-    color: white;
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-bg);
   }
   .decline {
-    background: #ef4444;
-    border-color: #ef4444;
-    color: white;
+    background: var(--color-danger);
+    border-color: var(--color-danger);
+    color: var(--color-bg);
   }
 </style>

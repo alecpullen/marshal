@@ -1,5 +1,14 @@
 @import 'tailwindcss';
 
+/*
+  The single source of truth for the web UI palette. Dark by design: the fleet
+  dashboard is a monitoring surface, usually kept open beside a terminal.
+
+  Do not redefine background or colour on `body` in a component <style> block.
+  Svelte injects component styles after this file, so such a copy wins the
+  cascade — that is exactly how a leftover light-theme body rule in App.svelte
+  ended up putting near-white text on a light grey page.
+*/
 @theme {
   --color-bg: oklch(0.18 0.01 260);
   --color-surface: oklch(0.23 0.012 260);
@@ -11,4 +20,25 @@
   --color-attention: oklch(0.80 0.15 75);
   --color-danger: oklch(0.68 0.18 20);
 }
-html, body { margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: ui-sans-serif, system-ui, sans-serif; }
+
+html,
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+/*
+  Form controls do not inherit colour by default — they fall back to the UA's
+  own text colour, which is near-black. On a dark surface that renders label
+  text invisible, and it fails silently: the markup looks correct and only the
+  contrast is wrong. Inheriting here fixes the whole class of bug at once,
+  rather than requiring every component to remember an explicit colour.
+*/
+button,
+select,
+input,
+textarea {
+  color: inherit;
+}

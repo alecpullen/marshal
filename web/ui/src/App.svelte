@@ -34,15 +34,14 @@
 </main>
 
 <style>
-  :global(*) {
-    box-sizing: border-box;
-  }
-  :global(body) {
-    margin: 0;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #f7f7f8;
-    color: #111;
-  }
+  /*
+    Body background, colour, margin and font live in app.css, which owns the
+    palette. They used to be duplicated here as a light theme and, because
+    Svelte injects component styles after app.css, that copy won the cascade
+    and left near-white text on a light body. One source of truth only.
+
+    Tailwind's preflight already sets box-sizing.
+  */
   main {
     min-height: 100vh;
   }

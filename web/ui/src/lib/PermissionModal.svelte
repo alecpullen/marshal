@@ -43,14 +43,14 @@
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.6);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 100;
   }
   .modal {
-    background: white;
+    background: var(--color-surface);
     padding: 1.5rem;
     border-radius: 12px;
     max-width: 560px;
@@ -62,7 +62,7 @@
     margin-top: 0;
   }
   pre {
-    background: #f3f4f6;
+    background: var(--color-bg);
     padding: 0.75rem;
     border-radius: 6px;
     white-space: pre-wrap;
@@ -73,10 +73,12 @@
     margin: 1rem 0;
   }
   input {
+    background: var(--color-bg);
+    color: var(--color-fg);
     width: 100%;
     margin-top: 0.25rem;
     padding: 0.5rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
     font: inherit;
   }
@@ -86,21 +88,22 @@
     gap: 0.5rem;
   }
   button {
+    color: var(--color-fg);
     padding: 0.5rem 1rem;
     border-radius: 6px;
-    border: 1px solid #d1d5db;
-    background: white;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
     cursor: pointer;
     font: inherit;
   }
   .approve {
-    background: #22c55e;
-    border-color: #22c55e;
-    color: white;
+    background: var(--color-running);
+    border-color: var(--color-running);
+    color: var(--color-bg);
   }
   .deny {
-    background: #ef4444;
-    border-color: #ef4444;
-    color: white;
+    background: var(--color-danger);
+    border-color: var(--color-danger);
+    color: var(--color-bg);
   }
 </style>

@@ -29,10 +29,10 @@
 
 <style>
   .card {
-    border: 1px solid #e5e5e5;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     overflow: hidden;
-    background: #fafafa;
+    background: var(--color-surface);
   }
   .summary {
     width: 100%;
@@ -50,11 +50,11 @@
   .status {
     text-transform: uppercase;
     font-size: 0.75rem;
-    color: #666;
+    color: var(--color-muted);
   }
   .body {
     padding: 0.75rem;
-    border-top: 1px solid #e5e5e5;
+    border-top: 1px solid var(--color-border);
   }
   .args {
     margin: 0 0 0.5rem;
@@ -67,7 +67,7 @@
     font-size: 0.85rem;
   }
   .error {
-    color: #b91c1c;
+    color: var(--color-danger);
     margin-top: 0.5rem;
   }
 </style>

@@ -107,15 +107,16 @@
     font-size: 1.5rem;
   }
   button {
+    color: var(--color-fg);
     cursor: pointer;
     padding: 0.5rem 0.75rem;
-    border: 1px solid #ccc;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
-    background: white;
+    background: var(--color-surface);
     font: inherit;
   }
   button:hover {
-    background: #f0f0f0;
+    background: var(--color-border);
   }
   ul {
     list-style: none;
@@ -140,23 +141,23 @@
   }
   .meta {
     font-size: 0.85rem;
-    color: #666;
+    color: var(--color-muted);
   }
   .danger {
-    color: #b91c1c;
-    border-color: #fca5a5;
+    color: var(--color-danger);
+    border-color: var(--color-danger);
   }
   .danger:hover {
-    background: #fee2e2;
+    background: color-mix(in oklch, var(--color-danger) 18%, var(--color-bg));
   }
   .error {
-    color: #b91c1c;
-    background: #fee2e2;
+    color: var(--color-danger);
+    background: color-mix(in oklch, var(--color-danger) 18%, var(--color-bg));
     padding: 0.75rem;
     border-radius: 6px;
     margin-bottom: 1rem;
   }
   .empty {
-    color: #666;
+    color: var(--color-muted);
   }
 </style>

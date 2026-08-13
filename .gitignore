@@ -1,6 +1,7 @@
 kimi-api
 # Local build outputs
 /marshal
+/webbridge
 /bin/
 /node_modules/
 

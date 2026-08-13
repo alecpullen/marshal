@@ -9,8 +9,15 @@
   }
 
   let { question, onResolve, onDecline }: Props = $props()
-  let values = $state<(string | string[])[]>(question.questions.map(initValue))
-  let others = $state<string[]>(question.questions.map(() => ''))
+  let values = $state<(string | string[])[]>([])
+  let others = $state<string[]>([])
+
+  $effect(() => {
+    if (values.length !== question.questions.length) {
+      values = question.questions.map(initValue)
+      others = question.questions.map(() => '')
+    }
+  })
 
   function initValue(q: Question): string | string[] {
     if (q.multi) return []

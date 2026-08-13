@@ -14,7 +14,9 @@
 
   let { sessionId, onBack }: Props = $props()
 
-  // Use a default cwd; the real cwd is loaded via the load endpoint.
+  // Chat instances are keyed by session route, so this store intentionally
+  // captures the session ID once for the lifetime of the component.
+  // svelte-ignore state_referenced_locally
   const { state: session, actions } = createSessionStore(sessionId, '/')
 
   onMount(() => {

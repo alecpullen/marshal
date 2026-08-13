@@ -2,6 +2,7 @@ kimi-api
 # Local build outputs
 /marshal
 /bin/
+/node_modules/
 
 # Go test/build artifacts
 *.test

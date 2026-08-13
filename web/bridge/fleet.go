@@ -233,6 +233,23 @@ func (f *Fleet) attachClassifier(rt *projectRuntime) {
 			_, _ = f.fleetLog.Append(fleetStreamKey, d)
 		}
 	}
+
+	// Permission and question requests are child-initiated REQUESTS, so
+	// they never pass through OnNotification. Registry.emitEvent is the
+	// only place they surface, so chain onto OnEvent (installed by Attach,
+	// which runs first) to learn what an agent is parked on.
+	prevEvent := rt.reg.OnEvent
+	rt.reg.OnEvent = func(sessionID string, payload any) {
+		if prevEvent != nil {
+			prevEvent(sessionID, payload)
+		}
+		if p, ok := classifyRegistryEvent(payload); ok {
+			f.live.observePending(sessionID, p)
+			_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{
+				Kind: "pending", SessionID: sessionID, PendingKind: p.kind,
+			})
+		}
+	}
 }
 
 func (f *Fleet) Snapshot() []AgentStatus {
@@ -247,7 +264,17 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			st.UpdatedAt = a.CreatedAt
 		}
 		if rt, err := f.liveRuntimeForSession(a.ID); err == nil {
-			switch rt.reg.Pending(a.ID) {
+			// Registry.Pending is the authority on whether anything is
+			// still outstanding; live.pending only supplies the payload.
+			// A resolved request therefore stops being advertised even
+			// though its payload is still cached.
+			pending := rt.reg.Pending(a.ID)
+			if pending != "" && live.pending != nil && live.pending.kind == pending {
+				st.Pending = &PendingRequest{
+					Kind: live.pending.kind, ID: live.pending.id, Params: live.pending.params,
+				}
+			}
+			switch pending {
 			case "approval":
 				st.Status = "awaiting-approval"
 			case "question":

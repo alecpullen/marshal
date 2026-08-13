@@ -69,6 +69,16 @@ type FakeGitOps struct {
 	Removed   []string
 	Pruned    bool
 	RemoveErr error
+	// Merges records Merge calls by branch; MergeErr, when set, is returned
+	// by Merge so tests can drive the conflict path.
+	Merges   []string
+	MergeErr error
+	Aborts   int
+	Deleted  []string
+	// DiffStatOut backs DiffNumstat; DiffOut backs Diff and DiffPath.
+	DiffStatOut string
+	// AbbrevRef is returned by RevParse for "--abbrev-ref HEAD".
+	AbbrevRef string
 	// Calls records every method invocation in order, so tests can assert
 	// a consumer only ever reads (e.g. only Diff, never WorktreeAdd).
 	calls []string
@@ -90,6 +100,9 @@ func (f *FakeGitOps) record(name string) { f.calls = append(f.calls, name) }
 
 func (f *FakeGitOps) RevParse(dir, ref string) (string, error) {
 	f.record("RevParse")
+	if ref == "--abbrev-ref HEAD" {
+		return f.AbbrevRef, nil
+	}
 	if sha, ok := f.Refs[ref]; ok {
 		return sha, nil
 	}
@@ -173,5 +186,33 @@ func (f *FakeGitOps) DiffStat(dir, rng string) (string, error) {
 }
 func (f *FakeGitOps) Diff(dir, rng string, contextLines int) (string, error) {
 	f.record("Diff")
+	return f.DiffOut, nil
+}
+
+func (f *FakeGitOps) Merge(dir, branch string) error {
+	f.record("Merge")
+	f.Merges = append(f.Merges, branch)
+	return f.MergeErr
+}
+
+func (f *FakeGitOps) MergeAbort(dir string) error {
+	f.record("MergeAbort")
+	f.Aborts++
+	return nil
+}
+
+func (f *FakeGitOps) BranchDelete(dir, branch string, force bool) error {
+	f.record("BranchDelete")
+	f.Deleted = append(f.Deleted, branch)
+	return nil
+}
+
+func (f *FakeGitOps) DiffNumstat(dir, rng string) (string, error) {
+	f.record("DiffNumstat")
+	return f.DiffStatOut, nil
+}
+
+func (f *FakeGitOps) DiffPath(dir, rng, path string, contextLines int) (string, error) {
+	f.record("DiffPath")
 	return f.DiffOut, nil
 }

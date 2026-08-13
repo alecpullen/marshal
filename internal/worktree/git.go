@@ -31,6 +31,25 @@ type GitOps interface {
 	LogOneline(dir, rng string) (string, error)
 	DiffStat(dir, rng string) (string, error)
 	Diff(dir, rng string, contextLines int) (string, error)
+	// Merge merges branch into the current HEAD of dir. It returns an error
+	// when the merge is not clean; callers must call MergeAbort to leave the
+	// repository in a usable state.
+	Merge(dir, branch string) error
+	// MergeAbort aborts an in-progress merge. Safe to call when no merge is
+	// in progress — git exits non-zero and the error is returned, which
+	// callers may ignore on that path.
+	MergeAbort(dir string) error
+	// BranchDelete deletes branch. force uses -D, which deletes an unmerged
+	// branch; without it git refuses to delete unmerged work.
+	BranchDelete(dir, branch string, force bool) error
+	// DiffNumstat is DiffStat's machine-readable sibling: one
+	// "added\tremoved\tpath" line per file. DiffStat's --stat output is
+	// prose and internal/pipeline depends on that format, so this is a
+	// separate method rather than a change to it.
+	DiffNumstat(dir, rng string) (string, error)
+	// DiffPath is Diff scoped to one path. Diff passes rng as a single argv
+	// element, so a caller cannot append "-- path" to it.
+	DiffPath(dir, rng, path string, contextLines int) (string, error)
 }
 
 // CLIGitOps shells out to the git CLI.
@@ -116,4 +135,33 @@ func (g CLIGitOps) DiffStat(dir, rng string) (string, error) {
 
 func (g CLIGitOps) Diff(dir, rng string, contextLines int) (string, error) {
 	return g.run(dir, "diff", fmt.Sprintf("-U%d", contextLines), rng)
+}
+
+func (g CLIGitOps) Merge(dir, branch string) error {
+	// --no-ff keeps a merge commit so the agent's work is identifiable
+	// afterwards; --no-edit avoids opening an editor in a headless process.
+	_, err := g.run(dir, "merge", "--no-ff", "--no-edit", branch)
+	return err
+}
+
+func (g CLIGitOps) MergeAbort(dir string) error {
+	_, err := g.run(dir, "merge", "--abort")
+	return err
+}
+
+func (g CLIGitOps) BranchDelete(dir, branch string, force bool) error {
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	_, err := g.run(dir, "branch", flag, branch)
+	return err
+}
+
+func (g CLIGitOps) DiffNumstat(dir, rng string) (string, error) {
+	return g.run(dir, "diff", "--numstat", rng)
+}
+
+func (g CLIGitOps) DiffPath(dir, rng, path string, contextLines int) (string, error) {
+	return g.run(dir, "diff", fmt.Sprintf("-U%d", contextLines), rng, "--", path)
 }

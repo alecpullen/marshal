@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -54,6 +55,37 @@ func TestEnsureWorktreeBranchWithoutWorktree(t *testing.T) {
 
 	if _, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main"); err == nil {
 		t.Fatal("branch exists but no worktree: want error, got nil")
+	}
+}
+
+func TestFakeGitOpsRecordsMergeAbortAndDelete(t *testing.T) {
+	f := NewFakeGitOps()
+	if err := f.Merge("/repo", "feat/x"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if got := f.Merges; len(got) != 1 || got[0] != "feat/x" {
+		t.Fatalf("Merges = %v", got)
+	}
+	if err := f.MergeAbort("/repo"); err != nil {
+		t.Fatalf("MergeAbort: %v", err)
+	}
+	if f.Aborts != 1 {
+		t.Fatalf("Aborts = %d, want 1", f.Aborts)
+	}
+	if err := f.BranchDelete("/repo", "feat/x", true); err != nil {
+		t.Fatalf("BranchDelete: %v", err)
+	}
+	if got := f.Deleted; len(got) != 1 || got[0] != "feat/x" {
+		t.Fatalf("Deleted = %v", got)
+	}
+}
+
+// MergeErr lets a test drive the conflict path without a real repository.
+func TestFakeGitOpsMergeErrIsReturned(t *testing.T) {
+	f := NewFakeGitOps()
+	f.MergeErr = errors.New("CONFLICT (content): Merge conflict in a.go")
+	if err := f.Merge("/repo", "feat/x"); err == nil {
+		t.Fatal("expected the injected merge error")
 	}
 }
 

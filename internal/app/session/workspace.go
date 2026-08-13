@@ -14,6 +14,10 @@ type Workspace struct {
 	ProjectRoot string // fixed for the session's lifetime
 	ActiveRoot  string // == ProjectRoot, or a worktree path
 	Branch      string // worktree branch; "" when at ProjectRoot
+	// BaseSha is the commit the worktree branch started from. Set when the
+	// session is isolated; used as the left side of the diff range. It cannot
+	// be recomputed inside the worktree, where HEAD is the branch tip.
+	BaseSha string // "" when at ProjectRoot
 }
 
 // WorkspaceEvent is published on the workspace broker when SetWorkspace
@@ -45,6 +49,7 @@ func (s *State) SetWorkspace(w Workspace) {
 	}
 	if w.ActiveRoot == w.ProjectRoot {
 		w.Branch = ""
+		w.BaseSha = ""
 	}
 	changed := s.workspace != w
 	s.workspace = w

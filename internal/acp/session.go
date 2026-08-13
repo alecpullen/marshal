@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/worktree"
 )
 
 // RuntimeStarter abstracts app.StartRuntime so SessionManager can be tested
@@ -92,7 +93,8 @@ type SessionManager struct {
 // SessionResponse is the successful result shape for session/new.
 // session/load returns a null result once replay completes.
 type SessionResponse struct {
-	SessionID string `json:"sessionId"`
+	SessionID string         `json:"sessionId"`
+	Workspace *WorkspaceInfo `json:"workspace,omitempty"`
 }
 
 // sessionParams is the subset of ACP session/new and session/load params
@@ -103,6 +105,12 @@ type sessionParams struct {
 	SessionID             string             `json:"sessionId"`
 	MCPServers            *[]json.RawMessage `json:"mcpServers"`
 	AdditionalDirectories []string           `json:"additionalDirectories,omitempty"`
+	// Isolation, when present, puts the new session in a git worktree.
+	// Honored by session/new only.
+	Isolation *IsolationParams `json:"isolation,omitempty"`
+	// Name is an optional display name used to derive a branch when
+	// isolation.branch is omitted.
+	Name string `json:"name,omitempty"`
 }
 
 // NewSessionManager constructs a SessionManager.
@@ -289,7 +297,17 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 		return nil, err
 	}
 	m.publishReplacement(ctx, rt.SessionID, rt)
-	return SessionResponse{SessionID: rt.SessionID}, nil
+	resp := SessionResponse{SessionID: rt.SessionID}
+	if p.Isolation != nil {
+		ws, ierr := isolateSession(worktree.CLIGitOps{}, rt.State, p.Cwd, *p.Isolation, p.Name)
+		if ierr != nil {
+			// The session exists and is usable at the project root; report
+			// the isolation failure rather than discarding it.
+			return nil, serverErrorf("session created but isolation failed: %v", ierr)
+		}
+		resp.Workspace = &ws
+	}
+	return resp, nil
 }
 
 // Load handles session/load. It validates the params, cancels and closes

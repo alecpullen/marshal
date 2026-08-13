@@ -26,13 +26,14 @@ type TodoStore interface {
 
 type todoWriteArgs struct {
 	Todos []TodoItem `json:"todos"`
+	Force bool       `json:"force,omitempty"`
 }
 
 func (t *toolSet) todoWriteTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "todo.write",
 		Description: "Replace the entire session todo list. Use for any task with 3+ steps or multiple requirements; mark items completed immediately, never batch-complete at the end.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}},"force":{"type":"boolean","description":"When true, allows dropping unfinished todos from the list without marking them completed first. Use when the user explicitly requests dropping or reorganizing items."}},"required":["todos"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -40,7 +41,6 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		inProgress := 0
 		for i, item := range args.Todos {
 			// registry.ValidateArgs only checks that the arguments are a
 			// JSON object — the declared schema's "required" is not
@@ -53,39 +53,38 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 			}
 			switch item.Status {
 			case TodoPending, TodoInProgress, TodoCompleted:
-				if item.Status == TodoInProgress {
-					inProgress++
-				}
 			default:
 				return registry.ToolResult{}, fmt.Errorf("invalid todo status %q; use pending|in_progress|completed", item.Status)
 			}
-		}
-		if inProgress > 1 {
-			return registry.ToolResult{}, fmt.Errorf("at most one todo may be in_progress; got %d", inProgress)
 		}
 		if t.sessionState == nil {
 			return registry.ToolResult{}, fmt.Errorf("todo store not available")
 		}
 		store := TodoStore(t.sessionState)
 
-		var dropped []string
-		newContents := map[string]int{}
-		for _, item := range args.Todos {
-			newContents[strings.TrimSpace(item.Content)]++
-		}
-		for _, old := range store.Todos() {
-			if old.Status == TodoCompleted {
-				continue
+		// The drop guard is a safety net against accidental loss of
+		// unfinished work. It is skipped when the caller explicitly sets
+		// force=true (e.g. the user asked to drop or reorganize items).
+		if !args.Force {
+			var dropped []string
+			newContents := map[string]int{}
+			for _, item := range args.Todos {
+				newContents[strings.TrimSpace(item.Content)]++
 			}
-			key := strings.TrimSpace(old.Content)
-			if newContents[key] == 0 {
-				dropped = append(dropped, old.Content)
-				continue
+			for _, old := range store.Todos() {
+				if old.Status == TodoCompleted {
+					continue
+				}
+				key := strings.TrimSpace(old.Content)
+				if newContents[key] == 0 {
+					dropped = append(dropped, old.Content)
+					continue
+				}
+				newContents[key]--
 			}
-			newContents[key]--
-		}
-		if len(dropped) > 0 {
-			return registry.ToolResult{}, fmt.Errorf("refusing to drop %d unfinished todo(s): %s; include them in the new list or mark them completed first", len(dropped), strings.Join(dropped, "; "))
+			if len(dropped) > 0 {
+				return registry.ToolResult{}, fmt.Errorf("refusing to drop %d unfinished todo(s): %s; include them in the new list, mark them completed first, or set force=true to override", len(dropped), strings.Join(dropped, "; "))
+			}
 		}
 
 		if err := store.SetTodos(args.Todos); err != nil {

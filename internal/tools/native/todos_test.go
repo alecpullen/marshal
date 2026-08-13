@@ -82,7 +82,7 @@ func TestTodoWriteRejectsBlankContent(t *testing.T) {
 	}
 }
 
-func TestTodoWriteRejectsTwoInProgress(t *testing.T) {
+func TestTodoWriteAllowsMultipleInProgress(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
 	tools := &toolSet{sessionState: state}
 	tool := tools.todoWriteTool()
@@ -93,9 +93,12 @@ func TestTodoWriteRejectsTwoInProgress(t *testing.T) {
 			{"content": "b", "status": "in_progress"},
 		},
 	})
-	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
-	if err == nil {
-		t.Fatal("expected error for two in_progress items")
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: args}); err != nil {
+		t.Fatalf("expected multiple in_progress to be allowed: %v", err)
+	}
+	got := state.Todos()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(got))
 	}
 }
 
@@ -121,8 +124,42 @@ func TestTodoWriteRejectsDroppingUnfinishedItems(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when dropping unfinished todo")
 	}
+	if !strings.Contains(err.Error(), "force=true") {
+		t.Fatalf("error should mention the force=true override option: %v", err)
+	}
 	if got := state.Todos(); len(got) != 2 {
 		t.Fatalf("state should not have been modified, got %d items", len(got))
+	}
+}
+
+func TestTodoWriteForceDropsUnfinishedItems(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{sessionState: state}
+	tool := tools.todoWriteTool()
+
+	if err := state.SetTodos([]db.TodoItem{
+		{Content: "keep me", Status: TodoPending},
+		{Content: "done", Status: TodoCompleted},
+	}); err != nil {
+		t.Fatalf("seed todos: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"todos": []map[string]string{
+			{"content": "done", "status": "completed"},
+			{"content": "new task", "status": "in_progress"},
+		},
+		"force": true,
+	})
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: args}); err != nil {
+		t.Fatalf("force=true should allow dropping: %v", err)
+	}
+	got := state.Todos()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 items (done + new), got %d", len(got))
+	}
+	if got[0].Content != "done" || got[1].Content != "new task" {
+		t.Fatalf("unexpected todos: %+v", got)
 	}
 }
 

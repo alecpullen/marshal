@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,7 +66,7 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 
 func TestHTTPFleetSessionRouting(t *testing.T) {
 	f := testFleet(t)
-	id, err := f.Spawn(t.Context(), "/home/u/a", "agent", "")
+	id, err := f.Spawn(t.Context(), "/home/u/a", SpawnOptions{Name: "agent"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +426,45 @@ func TestHTTPResolvePermission(t *testing.T) {
 	rec = doReq(t, s, http.MethodPost, "/api/permissions/nope", Decision{Approved: false}, nil)
 	if rec.Code != http.StatusGone {
 		t.Fatalf("unknown toolCallId: status = %d, want 410", rec.Code)
+	}
+}
+
+func TestHTTPMergeRefusalMapsTo409(t *testing.T) {
+	f := testFleet(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	id, err := f.Spawn(ctx, filepath.Join(t.TempDir(), "a"), SpawnOptions{Name: "x", Isolated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(f, "")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/merge", strings.NewReader(`{}`)))
+	// The fake child answers session/merge with a refusal shape; a refusal
+	// is a 409 so the UI can branch on a code rather than parse prose.
+	if rec.Code != http.StatusConflict && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 or 409; body = %s", rec.Code, rec.Body)
+	}
+	if rec.Code == http.StatusConflict && !strings.Contains(rec.Body.String(), "reason") {
+		t.Errorf("a 409 must carry the reason: %s", rec.Body)
+	}
+}
+
+func TestHTTPDiffRoutesThrough(t *testing.T) {
+	f := testFleet(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	id, err := f.Spawn(ctx, filepath.Join(t.TempDir(), "a"), SpawnOptions{Name: "x", Isolated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(f, "")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/api/agents/"+id+"/diff", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
 }
 

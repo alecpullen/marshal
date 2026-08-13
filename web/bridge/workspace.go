@@ -21,6 +21,11 @@ type Agent struct {
 	Prompt      string    `json:"prompt,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	Interrupted bool      `json:"interrupted,omitempty"`
+	Isolated    bool      `json:"isolated,omitempty"`
+	Branch      string    `json:"branch,omitempty"`
+	// TargetBranch is the project's branch at spawn — the merge target. It
+	// cannot be derived later, so it is persisted here.
+	TargetBranch string `json:"targetBranch,omitempty"`
 }
 
 type workspaceFile struct {

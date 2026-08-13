@@ -112,11 +112,28 @@ func handleRegistryMode(req *struct {
 }, enc *json.Encoder) {
 	switch req.Method {
 	case "session/new":
+		result := map[string]any{"sessionId": "s-1"}
+		if strings.Contains(string(req.Params), `"isolation"`) {
+			result["workspace"] = map[string]any{
+				"activeRoot": "/tmp/wt", "branch": "marshal/fix", "baseSha": "abc", "targetBranch": "main",
+			}
+		}
 		_ = enc.Encode(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      req.ID,
-			"result":  map[string]any{"sessionId": "s-1"},
+			"result":  result,
 		})
+	case "session/diff":
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{"files": []map[string]any{{"path": "a.go", "added": 2, "removed": 0}}}})
+	case "session/merge":
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{"merged": false, "branch": "f", "target": "main", "reason": "dirty"}})
+	case "session/discard":
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+	case "session/worktree_prune":
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{"pruned": []string{}, "unknown": []string{"/home/u/a/.marshal/worktrees/orphan"}}})
 	case "test/emit_update":
 		// Reply, then emit one session/update notification so the event
 		// log wiring can be observed end to end.

@@ -186,6 +186,8 @@ type AgentStatus struct {
 	ContextPct   int       `json:"contextPct,omitempty"`
 	ChangedFiles int       `json:"changedFiles,omitempty"`
 	Interrupted  bool      `json:"interrupted,omitempty"`
+	Isolated     bool      `json:"isolated,omitempty"`
+	Branch       string    `json:"branch,omitempty"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	// Pending is set only while the agent is genuinely parked on an
 	// approval or question, so the dashboard can resolve it in place.

@@ -75,6 +75,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/projects", s.removeProject)
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)
 	s.mux.HandleFunc("POST /api/agents", s.spawnAgent)
+	s.mux.HandleFunc("GET /api/agents/{id}/diff", s.agentDiff)
+	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
+	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
 	s.mux.HandleFunc("GET /api/sessions", s.listSessions)
 	s.mux.HandleFunc("POST /api/sessions", s.newSession)
 	s.mux.HandleFunc("POST /api/sessions/{id}/load", s.loadSession)
@@ -229,7 +232,15 @@ func ValidateProjectRoot(root string) error {
 }
 
 func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
-	var body struct{ Project, Name, Mode, Prompt string }
+	var body struct {
+		Project  string `json:"project"`
+		Name     string `json:"name"`
+		Mode     string `json:"mode"`
+		Prompt   string `json:"prompt"`
+		Isolated bool   `json:"isolated"`
+		Branch   string `json:"branch"`
+		BaseRef  string `json:"baseRef"`
+	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -237,7 +248,9 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	id, err := s.fleet.Spawn(r.Context(), body.Project, body.Name, body.Mode)
+	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
+		Name: body.Name, Mode: body.Mode, Isolated: body.Isolated, Branch: body.Branch, BaseRef: body.BaseRef,
+	})
 	if id == "" {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -256,6 +269,53 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		resp["warning"] = err.Error()
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (s *Server) agentDiff(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.fleet.Diff(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) agentMerge(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CommitMessage string `json:"commitMessage"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	raw, err := s.fleet.Merge(r.Context(), r.PathValue("id"), body.CommitMessage)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// A refusal carries a reason and merged:false. Map it to 409 so the UI
+	// branches on a code rather than parsing prose.
+	var probe struct {
+		Merged bool   `json:"merged"`
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(raw, &probe)
+	status := http.StatusOK
+	if !probe.Merged && probe.Reason != "" {
+		status = http.StatusConflict
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) agentDiscard(w http.ResponseWriter, r *http.Request) {
+	if err := s.fleet.Discard(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
 }
 
 func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +401,7 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request) {
 	var id string
 	var err error
 	if s.fleet != nil {
-		id, err = s.fleet.Spawn(r.Context(), body.Cwd, "", "")
+		id, err = s.fleet.Spawn(r.Context(), body.Cwd, SpawnOptions{})
 	} else {
 		id, err = s.reg.New(r.Context(), body.Cwd, body.SessionID)
 	}

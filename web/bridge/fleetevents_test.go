@@ -24,7 +24,7 @@ func TestClassifyNotificationExtractsActivity(t *testing.T) {
 
 func TestSnapshotDerivesIdleAndPending(t *testing.T) {
 	f := testFleet(t)
-	id, err := f.Spawn(t.Context(), "/home/u/a", "agent one", "edit")
+	id, err := f.Spawn(t.Context(), "/home/u/a", SpawnOptions{Name: "agent one", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestSnapshotCarriesPendingApprovalPayload(t *testing.T) {
 	f := testFleet(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
-	id, err := f.Spawn(ctx, "/home/u/a", "agent one", "edit")
+	id, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "agent one", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSnapshotDropsPendingPayloadOnceResolved(t *testing.T) {
 	f := testFleet(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
-	id, err := f.Spawn(ctx, "/home/u/a", "agent one", "edit")
+	id, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "agent one", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestSnapshotCarriesPendingQuestionPayload(t *testing.T) {
 	f := testFleet(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
-	id, err := f.Spawn(ctx, "/home/u/a", "agent one", "edit")
+	id, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "agent one", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -165,7 +165,18 @@ func (f *Fleet) RegistryForSession(id string) (*Registry, error) {
 }
 func (f *Fleet) track(id, root string) { f.mu.Lock(); f.sessionProject[id] = root; f.mu.Unlock() }
 
-func (f *Fleet) Spawn(ctx context.Context, root, name, mode string) (string, error) {
+// SpawnOptions describes a new agent. Isolated puts it in a git worktree;
+// Branch and BaseRef are forwarded to ACP's isolation object and may be
+// empty, in which case marshal derives them.
+type SpawnOptions struct {
+	Name     string
+	Mode     string
+	Isolated bool
+	Branch   string
+	BaseRef  string
+}
+
+func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (string, error) {
 	if err := f.ws.AddProject(root); err != nil {
 		return "", err
 	}
@@ -173,20 +184,95 @@ func (f *Fleet) Spawn(ctx context.Context, root, name, mode string) (string, err
 	if err != nil {
 		return "", err
 	}
-	id, err := rt.reg.New(ctx, root, "")
+	params := map[string]any{"cwd": root, "mcpServers": []any{}, "name": opts.Name}
+	if opts.Isolated {
+		iso := map[string]any{}
+		if opts.Branch != "" {
+			iso["branch"] = opts.Branch
+		}
+		if opts.BaseRef != "" {
+			iso["baseRef"] = opts.BaseRef
+		}
+		params["isolation"] = iso
+	}
+	raw, err := rt.child.Request(ctx, "session/new", params)
 	if err != nil {
 		return "", err
 	}
-	f.track(id, root)
-	if mode != "" {
-		if err := rt.reg.SetMode(ctx, id, mode); err != nil {
-			return id, fmt.Errorf("agent created but setting mode %q failed: %w", mode, err)
+	var out struct {
+		SessionID string `json:"sessionId"`
+		Workspace *struct {
+			Branch       string `json:"branch"`
+			TargetBranch string `json:"targetBranch"`
+		} `json:"workspace"`
+	}
+	if uerr := json.Unmarshal(raw, &out); uerr != nil || out.SessionID == "" {
+		return "", fmt.Errorf("bridge: decode session/new result: %v", uerr)
+	}
+	f.track(out.SessionID, root)
+	rt.reg.track(out.SessionID, root)
+	agent := Agent{ID: out.SessionID, Project: root, Name: opts.Name, Mode: opts.Mode, CreatedAt: time.Now().UTC()}
+	if out.Workspace != nil {
+		agent.Isolated = true
+		agent.Branch = out.Workspace.Branch
+		agent.TargetBranch = out.Workspace.TargetBranch
+	}
+	if opts.Mode != "" {
+		if err := rt.reg.SetMode(ctx, out.SessionID, opts.Mode); err != nil {
+			_ = f.ws.PutAgent(agent)
+			return out.SessionID, fmt.Errorf("agent created but setting mode %q failed: %w", opts.Mode, err)
 		}
 	}
-	if err := f.ws.PutAgent(Agent{ID: id, Project: root, Name: name, Mode: mode, CreatedAt: time.Now().UTC()}); err != nil {
-		return id, fmt.Errorf("agent created but recording it failed: %w", err)
+	if err := f.ws.PutAgent(agent); err != nil {
+		return out.SessionID, fmt.Errorf("agent created but recording it failed: %w", err)
 	}
-	return id, nil
+	return out.SessionID, nil
+}
+
+// Diff, Merge and Discard are thin ACP pass-throughs. The bridge holds no
+// git knowledge; every operation happens inside marshal.
+func (f *Fleet) Diff(ctx context.Context, id, path string) (json.RawMessage, error) {
+	rt, err := f.RuntimeForSession(id)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"sessionId": id}
+	if path != "" {
+		params["path"] = path
+	}
+	return rt.child.Request(ctx, "session/diff", params)
+}
+
+func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMessage, error) {
+	rt, err := f.RuntimeForSession(id)
+	if err != nil {
+		return nil, err
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok || a.TargetBranch == "" {
+		return nil, fmt.Errorf("bridge: agent %s has no recorded merge target", id)
+	}
+	params := map[string]any{"sessionId": id, "targetBranch": a.TargetBranch}
+	if commitMessage != "" {
+		params["commitMessage"] = commitMessage
+	}
+	return rt.child.Request(ctx, "session/merge", params)
+}
+
+func (f *Fleet) Discard(ctx context.Context, id string) error {
+	rt, err := f.RuntimeForSession(id)
+	if err != nil {
+		return err
+	}
+	if _, rerr := rt.child.Request(ctx, "session/discard", map[string]any{"sessionId": id}); rerr != nil {
+		return rerr
+	}
+	a, ok := f.ws.Agent(id)
+	if ok {
+		a.Isolated, a.Branch, a.TargetBranch = false, "", ""
+		return f.ws.PutAgent(a)
+	}
+	return nil
 }
 
 func (f *Fleet) ProjectStatus() []ProjectStatus {
@@ -256,7 +342,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 	out := make([]AgentStatus, 0)
 	for _, a := range f.ws.Agents() {
 		live := f.live.get(a.ID)
-		st := AgentStatus{ID: a.ID, Project: a.Project, Name: a.Name, Mode: a.Mode, Status: "idle", Activity: live.activity, ContextPct: live.contextPct, ChangedFiles: live.changedFiles, Interrupted: a.Interrupted, UpdatedAt: live.updatedAt}
+		st := AgentStatus{ID: a.ID, Project: a.Project, Name: a.Name, Mode: a.Mode, Status: "idle", Activity: live.activity, ContextPct: live.contextPct, ChangedFiles: live.changedFiles, Interrupted: a.Interrupted, Isolated: a.Isolated, Branch: a.Branch, UpdatedAt: live.updatedAt}
 		if live.mode != "" {
 			st.Mode = live.mode
 		}

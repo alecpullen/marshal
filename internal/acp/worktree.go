@@ -124,6 +124,14 @@ type WorktreeManager struct {
 	lookup func(string) (*WorktreeRuntime, bool)
 	git    worktree.GitOps
 	known  func(string) []string
+
+	// mu guards runtimes. runtimes caches the per-session WorktreeRuntime so
+	// every lookup returns the same instance — and therefore the same
+	// exit-path mutex. Without the cache, each Merge/Discard would construct
+	// a fresh runtime with a fresh sync.Mutex, so the serialization would be
+	// ineffective.
+	mu       sync.Mutex
+	runtimes map[string]*WorktreeRuntime
 }
 
 func NewWorktreeManager(cfg WorktreeManagerConfig) *WorktreeManager {
@@ -131,7 +139,29 @@ func NewWorktreeManager(cfg WorktreeManagerConfig) *WorktreeManager {
 	if git == nil {
 		git = worktree.CLIGitOps{}
 	}
-	return &WorktreeManager{lookup: cfg.Lookup, git: git, known: cfg.KnownWorktrees}
+	return &WorktreeManager{
+		lookup:   cfg.Lookup,
+		git:      git,
+		known:    cfg.KnownWorktrees,
+		runtimes: map[string]*WorktreeRuntime{},
+	}
+}
+
+// runtime returns the cached per-session WorktreeRuntime, constructing and
+// caching it on first use. The same pointer is returned for every lookup of
+// a session, so its exit-path mutex is shared across concurrent requests.
+func (w *WorktreeManager) runtime(sessionID string) (*WorktreeRuntime, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if rt, ok := w.runtimes[sessionID]; ok {
+		return rt, true
+	}
+	rt, ok := w.lookup(sessionID)
+	if !ok || rt == nil {
+		return nil, false
+	}
+	w.runtimes[sessionID] = rt
+	return rt, true
 }
 
 // DiffFile is one changed file's stat line.
@@ -152,12 +182,14 @@ type diffParams struct {
 	Path      string `json:"path,omitempty"`
 }
 
-// isolated resolves a session and requires it to be in a worktree.
+// isolated resolves a session and requires it to be in a worktree. It uses
+// the cached runtime so the exit-path mutex is shared across concurrent
+// requests for the same session.
 func (w *WorktreeManager) isolated(sessionID string) (*WorktreeRuntime, session.Workspace, error) {
 	if w.lookup == nil {
 		return nil, session.Workspace{}, serverErrorf("worktree manager has no session lookup configured")
 	}
-	rt, ok := w.lookup(sessionID)
+	rt, ok := w.runtime(sessionID)
 	if !ok || rt == nil || rt.State == nil {
 		return nil, session.Workspace{}, serverErrorf("unknown session %q", sessionID)
 	}
@@ -379,7 +411,14 @@ func (w *WorktreeManager) verifyOwnership(rt *WorktreeRuntime, ws session.Worksp
 	// this is a verification, not a creation, and must not touch the
 	// filesystem beyond reading git's worktree list.
 	agentDir := filepath.Join(rt.ProjectRoot, ".marshal", "worktrees")
-	rel, err := filepath.Rel(agentDir, ws.ActiveRoot)
+	// Canonicalize both sides before the containment check. A purely lexical
+	// filepath.Rel would let a symlink inside the agent dir (e.g.
+	// .marshal/worktrees/link → /elsewhere) pass containment, and
+	// WorktreeRemove would then remove the symlink's target. Reject any
+	// recorded path whose canonical form escapes the canonical agent dir.
+	canonAgent := worktree.CanonicalPath(agentDir)
+	canonActive := worktree.CanonicalPath(ws.ActiveRoot)
+	rel, err := filepath.Rel(canonAgent, canonActive)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return serverErrorf("refusing to remove %s: not under the agent worktree dir %s", ws.ActiveRoot, agentDir)
 	}

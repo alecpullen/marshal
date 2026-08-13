@@ -116,12 +116,12 @@ func (g CLIGitOps) WorktreeBranch(dir, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	want := canonicalPath(path)
+	want := CanonicalPath(path)
 	var curPath string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			curPath = canonicalPath(p)
+			curPath = CanonicalPath(p)
 			continue
 		}
 		if b, ok := strings.CutPrefix(line, "branch "); ok && curPath == want {
@@ -131,11 +131,11 @@ func (g CLIGitOps) WorktreeBranch(dir, path string) (string, error) {
 	return "", fmt.Errorf("worktree git: %s is not a registered worktree of %s", path, dir)
 }
 
-// canonicalPath resolves symlinks (so /var and /private/var compare equal)
+// CanonicalPath resolves symlinks (so /var and /private/var compare equal)
 // and cleans redundant segments. EvalSymlinks fails when the path does not
 // exist; in that case we fall back to a plain Clean so the caller still gets
 // a meaningful "not a registered worktree" error rather than a spurious one.
-func canonicalPath(p string) string {
+func CanonicalPath(p string) string {
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return resolved
 	}

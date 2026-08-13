@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -454,6 +456,70 @@ func TestDiscardRejectsNonIsolatedSession(t *testing.T) {
 	})
 	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
 		t.Fatal("expected an error for a session that is not isolated")
+	}
+}
+
+// A symlink inside the agent worktree dir that points outside it must not
+// pass ownership: WorktreeRemove would otherwise remove the symlink's
+// target. verifyOwnership canonicalizes both sides, so the escape is caught
+// even though the lexical path is under the agent dir.
+func TestDiscardRefusesSymlinkEscapingAgentDir(t *testing.T) {
+	root := t.TempDir()
+	agentDir := filepath.Join(root, ".marshal", "worktrees")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	outside := t.TempDir()
+	link := filepath.Join(agentDir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	git := worktree.NewFakeGitOps()
+	git.WorktreeBranches[link] = "f"
+	st := newWorktreeTestState(t, root)
+	st.SetWorkspace(session.Workspace{ProjectRoot: root, ActiveRoot: link, Branch: "f"})
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: root}, true
+		},
+	})
+	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
+		t.Fatal("expected an error for a symlink escaping the agent dir")
+	}
+	if len(git.Deleted) != 0 {
+		t.Errorf("must not delete a branch when refusing, Deleted = %v", git.Deleted)
+	}
+}
+
+// The per-session runtime must be cached so every lookup returns the same
+// instance — and therefore the same exit-path mutex. Without the cache, two
+// concurrent Merge/Discard requests would each construct a fresh runtime
+// with a fresh mutex, defeating the serialization.
+func TestWorktreeManagerCachesRuntimePerSession(t *testing.T) {
+	st := newWorktreeTestState(t, "/home/u/repo")
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: worktree.NewFakeGitOps(),
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	rt1, ok1 := m.runtime("s1")
+	rt2, ok2 := m.runtime("s1")
+	if !ok1 || !ok2 {
+		t.Fatalf("runtime lookups failed: %v %v", ok1, ok2)
+	}
+	if rt1 != rt2 {
+		t.Fatal("runtime must be cached per session; got two distinct instances")
+	}
+	// A different session gets its own runtime.
+	rt3, ok3 := m.runtime("s2")
+	if !ok3 {
+		t.Fatal("second session lookup failed")
+	}
+	if rt3 == rt1 {
+		t.Fatal("different sessions must not share a runtime")
 	}
 }
 

@@ -43,22 +43,17 @@ func (r *Rollover) flushArchive(ctx context.Context, wire []schema.ChatMessage) 
 // Controller.Due. When due, it calls Controller.Rollover and updates
 // session state with the new generation info. It is a no-op when Rollover
 // or its Controller is nil, or when the rollover is not due.
-func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage, contextWindow int) (string, error) {
+func (r *Rollover) rollover(ctx context.Context, wire []schema.ChatMessage, reason string) (string, error) {
 	if r == nil || r.Controller == nil {
 		return "", nil
 	}
-	if !r.Controller.Due(ctx, wire, contextWindow) {
-		return "", nil
-	}
-	h := rollover.GenerationHandle{
+	seedDigest, err := r.Controller.Rollover(ctx, rollover.GenerationHandle{
 		SessionID: r.Controller.SessionID,
 		Wire:      wire,
-	}
-	seedDigest, err := r.Controller.Rollover(ctx, h)
+	})
 	if err != nil {
-		return "", fmt.Errorf("maybe rollover: %w", err)
+		return "", fmt.Errorf("%s: %w", reason, err)
 	}
-	// Update session state with the new generation info (AC #3, Constraints).
 	if r.State != nil {
 		genID, genSeq, genSeed := r.Controller.Current()
 		r.State.BeginGeneration(genID, genSeq, genSeed)
@@ -66,13 +61,25 @@ func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage,
 	return seedDigest, nil
 }
 
-// compactContext archives the current wire messages and performs a rollover
-// if due. It is called from rolloverAndContinue. Returns the seed digest if
-// a rollover occurred, or "" if not. When rollover is disabled (nil
-// Controller), it is a no-op.
+func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage, contextWindow int) (string, error) {
+	if r == nil || r.Controller == nil {
+		return "", nil
+	}
+	if !r.Controller.Due(ctx, wire, contextWindow) {
+		return "", nil
+	}
+	return r.rollover(ctx, wire, "maybe rollover")
+}
+
+// compactContext archives the current wire messages and performs a rollover.
+// It is called from rolloverAndContinue after the runner has detected an
+// overflow. Returns the seed digest if a rollover occurred, or "" when
+// rollover is disabled (nil Controller).
 //
-// The single Due check is owned by maybeRollover; compactContext always
-// archives first, then lets maybeRollover decide whether to roll over.
+// Compaction is entered only after the runner has detected that its live wire
+// exceeds the per-turn budget. That condition must force a rollover: the
+// controller's policy window may be larger than the budget used for this turn.
+// The contextWindow parameter is retained for API compatibility.
 func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage, contextWindow int) (string, error) {
 	if r == nil || r.Controller == nil {
 		return "", nil
@@ -80,7 +87,7 @@ func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage
 	if _, err := r.flushArchive(ctx, wire); err != nil {
 		return "", fmt.Errorf("compact context: %w", err)
 	}
-	return r.maybeRollover(ctx, wire, contextWindow)
+	return r.rollover(ctx, wire, "compact context")
 }
 
 // rolloverAndContinue is the unified intra-turn compaction entry point. When

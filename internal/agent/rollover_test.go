@@ -292,11 +292,35 @@ func TestRolloverCompactContextNoopWhenNil(t *testing.T) {
 	}
 }
 
-// TestRolloverCompactContextNoopWhenNotDue verifies that when rollover is
-// enabled but not due, compactContext returns ("", nil) and advances the
-// cursor (flushArchive always runs) but does not roll over (seedDigest is
-// empty). The single Due check is owned by maybeRollover.
-func TestRolloverCompactContextNoopWhenNotDue(t *testing.T) {
+// TestRolloverCompactContextUsesOverflowBudgetWhenModelWindowIsNotDue verifies
+// that an already-detected overflow forces compaction even when the configured
+// policy has not reached the model's larger full window.
+func TestRolloverCompactContextUsesOverflowBudgetWhenModelWindowIsNotDue(t *testing.T) {
+	ctrl := newTestController(true)
+	ctrl.Counter = &fakeTokenCounter{count: 6000}
+	ctrl.ModelContextWindow = 10000
+	ctrl.Policy = rollover.Policy{
+		Mode:           rollover.PolicyContextPercent,
+		ContextPercent: 70,
+	}
+	r := &Rollover{
+		Controller: ctrl,
+		Cursor:     0,
+	}
+	wire := []schema.ChatMessage{{Role: schema.RoleUser, Content: "full"}}
+
+	seedDigest, err := r.compactContext(context.Background(), wire, 5000)
+	if err != nil {
+		t.Fatalf("compactContext failed: %v", err)
+	}
+	if seedDigest != "test-digest" {
+		t.Fatalf("seedDigest = %q, want compaction despite model-window policy not being due", seedDigest)
+	}
+}
+
+// TestRolloverMaybeRolloverNoopWhenNotDue verifies that policy-based rollover
+// remains a no-op outside the overflow compaction path.
+func TestRolloverMaybeRolloverNoopWhenNotDue(t *testing.T) {
 	ctrl := newTestController(true)
 	// Set a turn-count policy that will NOT fire (needs 100 turns).
 	ctrl.Policy = rollover.Policy{
@@ -310,17 +334,14 @@ func TestRolloverCompactContextNoopWhenNotDue(t *testing.T) {
 	wire := []schema.ChatMessage{
 		{Role: schema.RoleUser, Content: "hello"},
 	}
-	seedDigest, err := r.compactContext(context.Background(), wire, 1000)
+	seedDigest, err := r.maybeRollover(context.Background(), wire, 1000)
 	if err != nil {
-		t.Fatalf("compactContext should not error when not due: %v", err)
+		t.Fatalf("maybeRollover should not error when not due: %v", err)
 	}
 	if seedDigest != "" {
 		t.Fatalf("seedDigest = %q, want empty when not due", seedDigest)
 	}
-	// flushArchive always runs, so cursor advances even when not due.
-	if r.Cursor != len(wire) {
-		t.Fatalf("cursor = %d, want %d (flushArchive should have been called)", r.Cursor, len(wire))
-	}
+
 }
 
 // TestRolloverNilOnRunner verifies that a Runner with Rollover == nil works

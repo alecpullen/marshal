@@ -597,3 +597,37 @@ func TestContainerBuildArgs_SetsPipefailInShellPath(t *testing.T) {
 		t.Errorf("expected pipefail-wrapped command after -lc, got %v", args)
 	}
 }
+
+func TestContainerParseQuotedArgs(t *testing.T) {
+	// Test that buildArgs correctly parses a command with quoted arguments.
+	// strings.Fields would split "git commit -m \"fix: update logic\"" into
+	// 5 tokens; shlex.Split produces 4.
+	cfg := Config{Backend: "container", ContainerImage: "alpine:latest"}
+	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
+
+	args := c.buildArgs(`git commit -m "fix: update logic"`, "alpine:latest", "/workspace")
+
+	// Find the inner command args (after the image name)
+	imgIdx := -1
+	for i, a := range args {
+		if a == "alpine:latest" {
+			imgIdx = i
+			break
+		}
+	}
+	if imgIdx == -1 {
+		t.Fatal("image name not found in args")
+	}
+	inner := args[imgIdx+1:]
+	// When shellFree, inner should be the shlex-split argv.
+	// "git commit -m \"fix: update logic\"" should produce:
+	// ["git", "commit", "-m", "fix: update logic"]
+	// If strings.Fields is used, it produces 5 tokens instead of 4.
+	if len(inner) < 4 {
+		t.Fatalf("expected at least 4 inner args, got %d: %v", len(inner), inner)
+	}
+	// Verify the 4th element is the full quoted string, not split
+	if inner[3] != "fix: update logic" {
+		t.Errorf("expected inner[3] = %q, got %q (strings.Fields splits quoted args)", "fix: update logic", inner[3])
+	}
+}

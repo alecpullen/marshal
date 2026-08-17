@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/shlex"
+
 	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -197,7 +199,11 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	}
 	var inner []string
 	if shellFree {
-		inner = strings.Fields(command)
+		parsed, err := shlex.Split(command)
+		if err != nil {
+			parsed = strings.Fields(command)
+		}
+		inner = parsed
 	} else {
 		// Best-effort pipefail: container images may ship dash or
 		// busybox sh without pipefail support, so a failed `set` is

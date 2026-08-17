@@ -54,13 +54,16 @@ func encodeVector(v []float32) []byte {
 	return b
 }
 
-// decodeVector reverses encodeVector.
-func decodeVector(b []byte) []float32 {
+// decodeVector reverses encodeVector and validates the result length.
+func decodeVector(b []byte, dims int) ([]float32, error) {
 	v := make([]float32, len(b)/4)
 	for i := range v {
 		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
 	}
-	return v
+	if dims > 0 && len(v) != dims {
+		return nil, fmt.Errorf("vector length mismatch: got %d, want %d", len(v), dims)
+	}
+	return v, nil
 }
 
 // ReplaceFileChunks deletes a file's existing chunks and inserts the given
@@ -136,7 +139,7 @@ func (db *DB) ChunkedFiles(projectID int64) (map[string]FileChunkState, error) {
 // LoadVectors returns all chunk vectors for a project+model (read path).
 func (db *DB) LoadVectors(projectID int64, model string) ([]VectorRow, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT c.id, c.file_path, c.start_line, c.end_line, c.content, e.vector
+		`SELECT c.id, c.file_path, c.start_line, c.end_line, c.content, e.vector, e.dim
 		   FROM chunks c JOIN embeddings e ON e.chunk_id = c.id
 		  WHERE c.project_id = ? AND e.model = ?`, projectID, model)
 	if err != nil {
@@ -147,10 +150,15 @@ func (db *DB) LoadVectors(projectID int64, model string) ([]VectorRow, error) {
 	for rows.Next() {
 		var r VectorRow
 		var blob []byte
-		if err := rows.Scan(&r.ChunkID, &r.FilePath, &r.StartLine, &r.EndLine, &r.Content, &blob); err != nil {
+		var dims int
+		if err := rows.Scan(&r.ChunkID, &r.FilePath, &r.StartLine, &r.EndLine, &r.Content, &blob, &dims); err != nil {
 			return nil, err
 		}
-		r.Vector = decodeVector(blob)
+		vec, err := decodeVector(blob, dims)
+		if err != nil {
+			return nil, fmt.Errorf("load vectors: %w", err)
+		}
+		r.Vector = vec
 		out = append(out, r)
 	}
 	return out, rows.Err()

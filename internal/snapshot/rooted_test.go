@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -56,5 +57,50 @@ func TestRootedSnapshotsFollowActiveRoot(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(filepath.Join(project, "f.txt")); string(data) != "v1" {
 		t.Fatalf("project f.txt = %q after worktree ops, want v1", data)
+	}
+}
+
+// TestRootedSvcReusesServiceForSameRoot verifies that svc() returns the
+// same *Service for the same active root, so concurrent Track calls share
+// the same semaphore.
+func TestRootedSvcReusesServiceForSameRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dataDir := t.TempDir()
+	project := t.TempDir()
+
+	r := NewRooted(dataDir, project, func() string { return project }, 1<<20, nil, testLogger())
+
+	s1 := r.svc()
+	s2 := r.svc()
+	if s1 != s2 {
+		t.Fatal("svc() should return the same *Service for the same root")
+	}
+}
+
+// TestRootedSvcCreatesNewServiceForNewRoot verifies that svc() returns a
+// different *Service when the active root changes (worktree rebind).
+func TestRootedSvcCreatesNewServiceForNewRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dataDir := t.TempDir()
+	project := t.TempDir()
+	worktree := t.TempDir()
+
+	root := project
+	r := NewRooted(dataDir, project, func() string { return root }, 1<<20, nil, testLogger())
+
+	s1 := r.svc()
+	root = worktree
+	s2 := r.svc()
+	if s1 == s2 {
+		t.Fatal("svc() should return a different *Service for a different root")
+	}
+	// First root's service should still be cached.
+	s3 := r.svc()
+	if s3 != s2 {
+		t.Fatal("svc() should return cached *Service for worktree root")
 	}
 }

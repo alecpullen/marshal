@@ -495,6 +495,9 @@ func (c *Controller) runTaskAgent(ctx context.Context, t TaskSpec, briefPath, di
 // runTaskDeterministic applies deterministic operations, runs assertions,
 // then optionally dispatches an agent for unresolved work.
 func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskIR *TaskIR, briefPath, dir, base string) (taskResult, error) {
+	if c.Verifier.Runner == nil {
+		return taskResult{}, fmt.Errorf("pipeline: task %d: verifier has no runner configured", t.N)
+	}
 	var report ImplementerReport
 	needsAgent := false
 

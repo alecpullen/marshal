@@ -24,7 +24,8 @@ type Client struct {
 	diagMu sync.Mutex
 	diags  map[string][]Diagnostic
 
-	closed chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func newClient(w io.Writer, r io.Reader) *Client {
@@ -39,7 +40,11 @@ func newClient(w io.Writer, r io.Reader) *Client {
 	return c
 }
 
-func (c *Client) Close() { close(c.closed) }
+func (c *Client) Close() {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+	})
+}
 
 // ClearDiagnostics removes cached diagnostics for uri (e.g. after didClose).
 func (c *Client) ClearDiagnostics(uri string) {

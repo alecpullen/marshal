@@ -416,6 +416,48 @@ func TestJobManagerEvictsCompletedJobsByRetention(t *testing.T) {
 	}
 }
 
+// TestShellRunBackgroundInvokesGuardrail verifies that the handler-level
+// guardrail is invoked for background shell.run jobs. Policy evaluation
+// (deny/allow rules) happens upstream in the agent loop before the tool
+// handler runs — see internal/agent/execute.go, where Policy.Evaluate is
+// called for every tool call and DecisionDeny short-circuits before
+// dispatch. The audit finding TOOLS-MOD-F9 ("background shell.run bypasses
+// policy") is a false positive: evaluateShell reads only args["command"]
+// and does not branch on background, so the same command is evaluated the
+// same way whether foreground or background. This test pins the one piece
+// of enforcement that lives at the handler layer: the guardrail pre-flight
+// check, which runs for background jobs too.
+func TestShellRunBackgroundInvokesGuardrail(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
+
+	blocked := false
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		SessionState:  state,
+		Guardrail: func(command string) error {
+			blocked = true
+			return fmt.Errorf("guardrail blocked %q", command)
+		},
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// A background job must still pass through the guardrail. If the
+	// guardrail is not invoked for background jobs, this returns nil and
+	// starts a job, which would be a regression.
+	if _, err := invokeTool(t, reg, "shell.run", `{"command":"echo hi","background":true}`); err == nil {
+		t.Fatal("background shell.run should have been blocked by the guardrail")
+	}
+	if !blocked {
+		t.Fatal("guardrail was not invoked for a background shell.run job")
+	}
+	if state.RunningJobsCount() != 0 {
+		t.Fatalf("running jobs = %d, want 0 (guardrail must block before start)", state.RunningJobsCount())
+	}
+}
+
 func TestShellRunBackgroundStartsJob(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()

@@ -2,6 +2,7 @@ package db
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -58,7 +59,10 @@ func TestVectorCodecRoundTrip(t *testing.T) {
 		{float32(math.MaxFloat32), float32(-math.MaxFloat32)},
 	}
 	for _, want := range cases {
-		got := decodeVector(encodeVector(want))
+		got, err := decodeVector(encodeVector(want), len(want))
+		if err != nil {
+			t.Fatalf("decodeVector: %v", err)
+		}
 		if len(got) != len(want) {
 			t.Fatalf("len = %d, want %d", len(got), len(want))
 		}
@@ -67,5 +71,22 @@ func TestVectorCodecRoundTrip(t *testing.T) {
 				t.Fatalf("v[%d] = %v, want %v", i, got[i], want[i])
 			}
 		}
+	}
+}
+
+func TestDecodeVectorRejectsWrongLength(t *testing.T) {
+	// Encode a 4-element vector, then try to decode with dims=2.
+	encoded := encodeVector([]float32{1.0, 2.0, 3.0, 4.0})
+	_, err := decodeVector(encoded, 4)
+	if err != nil {
+		t.Fatalf("decodeVector with correct dims: %v", err)
+	}
+
+	_, err = decodeVector(encoded, 2)
+	if err == nil {
+		t.Fatal("expected error for wrong dims, got nil")
+	}
+	if !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("expected mismatch error, got: %v", err)
 	}
 }

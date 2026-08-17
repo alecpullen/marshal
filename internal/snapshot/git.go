@@ -27,11 +27,6 @@ func projectHash(root string) string {
 }
 
 func (s *Service) ensureRepo(ctx context.Context) error {
-	info, err := os.Stat(s.shadowDir)
-	if err == nil && info.IsDir() {
-		// Best-effort check that the dir is actually a git repo; if not,
-		// re-initialize. init --bare on an existing bare repo is a no-op.
-	}
 	if err := os.MkdirAll(s.shadowDir, 0755); err != nil {
 		return fmt.Errorf("create shadow dir: %w", err)
 	}

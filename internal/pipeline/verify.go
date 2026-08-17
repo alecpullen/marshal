@@ -61,6 +61,15 @@ type Verifier struct {
 	Runner  CommandRunner
 }
 
+// withTimeout returns a context bounded by the verifier's timeout. When
+// Timeout is zero, the context is cancellable but not time-bounded.
+func (v Verifier) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if v.Timeout > 0 {
+		return context.WithTimeout(ctx, v.Timeout)
+	}
+	return context.WithCancel(ctx)
+}
+
 // Run executes build then test in dir. A failing command stops the gate —
 // there is no point running tests against a tree that does not compile. A
 // command failure is reported in the result, not as an error; an error

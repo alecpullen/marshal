@@ -532,7 +532,7 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 	// 2. Run prepare-phase commands.
 	for _, op := range taskIR.Operations {
 		if r, ok := op.(*RunOp); ok && r.Status == OpExecutable && r.Phase == "prepare" {
-			if err := runRunOp(ctx, dir, c.Verifier.Runner, r); err != nil {
+			if err := runRunOp(ctx, dir, c.Verifier, r); err != nil {
 				return taskResult{}, fmt.Errorf("pipeline: task %d prepare: %w", t.N, err)
 			}
 		}
@@ -545,7 +545,7 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 	})
 	for _, op := range taskIR.Operations {
 		if a, ok := op.(*AssertOp); ok && a.Status == OpExecutable {
-			if err := checkAssert(ctx, dir, c.Verifier.Runner, a); err != nil {
+			if err := checkAssert(ctx, dir, c.Verifier, a); err != nil {
 				return taskResult{}, fmt.Errorf("pipeline: task %d assert: %w", t.N, err)
 			}
 		}
@@ -645,7 +645,7 @@ func (c *Controller) runFallbackAndVerifyGate(ctx context.Context, t TaskSpec, t
 			// Run plan-specified verify-phase commands alongside the
 			// build/test gate. If they fail, treat it as a gate failure
 			// so the fixer loop can address it.
-			vres := runVerifyOps(ctx, dir, c.Verifier.Runner, taskIR.Operations)
+			vres := runVerifyOps(ctx, dir, c.Verifier, taskIR.Operations)
 			if !vres.OK {
 				res = vres
 			}

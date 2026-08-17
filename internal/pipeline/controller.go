@@ -1038,8 +1038,15 @@ func (c *Controller) Run(ctx context.Context) error {
 	// Wire the token-usage callback so the budget is enforced. OnTokens
 	// is called from the dispatch path in the same goroutine as Run
 	// (the controller is single-threaded), so no atomics are needed.
+	// Chain any pre-existing callback (e.g. the app's TUI token display)
+	// rather than clobbering it. The controller owns UsageTokens; the
+	// chained callback reads the updated value.
+	prevOnTokens := c.Dispatch.OnTokens
 	c.Dispatch.OnTokens = func(n int) {
 		c.UsageTokens += n
+		if prevOnTokens != nil {
+			prevOnTokens(n)
+		}
 		if c.overBudget() {
 			cancel()
 		}

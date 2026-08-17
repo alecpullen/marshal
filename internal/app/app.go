@@ -926,7 +926,8 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 					return
 				}
 				ctl := adapter.Controller()
-				ctl.UsageTokens += n
+				// UsageTokens is owned and incremented by the controller's
+				// chained OnTokens closure; read the updated value here.
 				state.UpdateSDDTokens(ctl.UsageTokens, cfg.SDD.MaxTotalTokens)
 			},
 			RegistryFactory: makePipelineRegistryFactory(cfg, state, commandRunner, resolver, database, projectID, skillIndex, reg),

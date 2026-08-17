@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"log/slog"
+	"sync"
 )
 
 // Rooted is a snapshotter whose target root is resolved on every call, so
@@ -19,6 +20,9 @@ type Rooted struct {
 	maxFile     int64
 	ignore      []string
 	logger      *slog.Logger
+
+	mu       sync.Mutex
+	services map[string]*Service
 }
 
 // NewRooted builds a Rooted. activeRoot must return the session's current
@@ -33,7 +37,17 @@ func (r *Rooted) svc() *Service {
 	if root == "" {
 		root = r.projectRoot
 	}
-	return New(r.dataDir, root, r.maxFile, r.ignore, r.logger)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.services[root]; ok {
+		return s
+	}
+	s := New(r.dataDir, root, r.maxFile, r.ignore, r.logger)
+	if r.services == nil {
+		r.services = make(map[string]*Service)
+	}
+	r.services[root] = s
+	return s
 }
 
 func (r *Rooted) Track(ctx context.Context) (string, error) { return r.svc().Track(ctx) }

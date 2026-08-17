@@ -64,7 +64,20 @@ func (c Candidate) Resumable() bool {
 // yields no candidates, and a plan that will not parse is returned with its
 // error set so the picker can show why rather than silently omitting it.
 func Discover(repoRoot, plansDir string) []Candidate {
-	matches, err := filepath.Glob(filepath.Join(repoRoot, plansDir, "*.md"))
+	root := filepath.Join(repoRoot, plansDir)
+	var matches []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+			matches = append(matches, path)
+		}
+		return nil
+	})
 	if err != nil || len(matches) == 0 {
 		return nil
 	}
@@ -73,10 +86,18 @@ func Discover(repoRoot, plansDir string) []Candidate {
 	out := make([]Candidate, 0, len(matches))
 	for _, path := range matches {
 		name := filepath.Base(path)
+		rel, relErr := filepath.Rel(root, path)
+		if relErr == nil && filepath.Dir(rel) != "." {
+			// Keep picker rows readable while making run state unique for
+			// same-named plans in different subdirectories.
+			name = filepath.ToSlash(rel)
+		}
+		slug := strings.TrimSuffix(filepath.ToSlash(rel), filepath.Ext(rel))
+		slug = strings.NewReplacer("/", "-", "\\", "-").Replace(slug)
 		c := Candidate{
 			Path: path,
 			Name: name,
-			Slug: strings.TrimSuffix(name, filepath.Ext(name)),
+			Slug: slug,
 		}
 		plan, err := pipeline.ParsePlan(path)
 		if err != nil {

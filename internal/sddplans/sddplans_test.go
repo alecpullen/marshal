@@ -80,6 +80,23 @@ func TestDiscoverMissingDirectoryIsEmptyNotAnError(t *testing.T) {
 	}
 }
 
+func TestDiscoverFindsPlansRecursivelyWithUniqueSlugs(t *testing.T) {
+	root := t.TempDir()
+	writePlan(t, filepath.Join(root, ".marshal/plans", "backend"), "plan.md", twoTaskPlan)
+	writePlan(t, filepath.Join(root, ".marshal/plans", "frontend"), "plan.md", twoTaskPlan)
+
+	got := Discover(root, ".marshal/plans")
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want 2", len(got))
+	}
+	if got[0].Name != "backend/plan.md" || got[1].Name != "frontend/plan.md" {
+		t.Fatalf("nested names = %q, %q", got[0].Name, got[1].Name)
+	}
+	if got[0].Slug == got[1].Slug {
+		t.Fatalf("nested plans share slug %q", got[0].Slug)
+	}
+}
+
 func TestDiscoverSortsByName(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".marshal/plans")

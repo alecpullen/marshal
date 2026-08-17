@@ -145,9 +145,10 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 	if opts.MaxDispatchRetries <= 0 {
 		opts.MaxDispatchRetries = 2
 	}
-	if opts.TargetBranch == "" {
-		opts.TargetBranch = "main"
-	}
+	// Leave TargetBranch empty when the caller did not provide one. Run
+	// resolves it from the repository's checked-out branch immediately before
+	// creating the worktree; this supports repositories whose default branch is
+	// master (or any other branch name).
 	if opts.Sleep == nil {
 		opts.Sleep = sleepCtx
 	}
@@ -999,6 +1000,20 @@ func (c *Controller) Run(ctx context.Context) error {
 		return fmt.Errorf("pipeline: strict plan is blocked:\n%s", strings.Join(msgs, "\n"))
 	}
 	if c.Worktree.Path == "" {
+		if strings.TrimSpace(c.TargetBranch) == "" {
+			if c.Git == nil {
+				return fmt.Errorf("pipeline: cannot infer target branch: git is not configured")
+			}
+			branch, err := c.Git.RevParse(c.RepoRoot, "--abbrev-ref HEAD")
+			if err != nil {
+				return fmt.Errorf("pipeline: infer target branch: %w", err)
+			}
+			branch = strings.TrimSpace(branch)
+			if branch == "" || branch == "HEAD" {
+				return fmt.Errorf("pipeline: infer target branch: repository is in detached HEAD")
+			}
+			c.TargetBranch = branch
+		}
 		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
 		if err != nil {
 			return err

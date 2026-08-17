@@ -940,7 +940,6 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		MaxFixRounds:       cfg.SDD.MaxFixRounds,
 		MaxDispatchRetries: cfg.SDD.DispatchRetries,
 		AutoEscalate:       parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
-		TargetBranch:       "main",
 		MaxTokensCfg:       cfg.SDD.MaxTotalTokens,
 	})
 	if err != nil {

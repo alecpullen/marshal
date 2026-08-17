@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,43 @@ func ValidName(name string) bool {
 		return false
 	}
 	return !strings.ContainsAny(name, `/\`)
+}
+
+// ValidateCloneSource validates that a file:// source is contained
+// within the workspace root. Non-file:// sources always pass — git
+// handles remote URLs with its own transport security. file:// sources
+// that resolve outside the workspace root are rejected to prevent a
+// malicious config from cloning arbitrary local paths (e.g.
+// file:///etc/passwd). Local development and testing use file:// with
+// paths inside the workspace.
+func ValidateCloneSource(source, workspaceRoot string) error {
+	u, err := url.Parse(source)
+	if err != nil {
+		return nil // malformed sources fail later in git clone
+	}
+	if u.Scheme != "file" {
+		return nil
+	}
+	// Resolve the file path to absolute and check containment
+	localPath := u.Path
+	abs, err := filepath.Abs(localPath)
+	if err != nil {
+		return fmt.Errorf("invalid file:// path %q: %w", localPath, err)
+	}
+	// Resolve workspace root to absolute as well
+	wsAbs, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return fmt.Errorf("invalid workspace root %q: %w", workspaceRoot, err)
+	}
+	// Check containment: abs must be inside wsAbs
+	rel, err := filepath.Rel(wsAbs, abs)
+	if err != nil {
+		return fmt.Errorf("file:// source %q is outside the workspace root", localPath)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("file:// source %q is outside the workspace root", localPath)
+	}
+	return nil
 }
 
 // GlobalStoreDir is where user-scope plugins are installed.

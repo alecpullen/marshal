@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -96,6 +97,43 @@ func TestValidName(t *testing.T) {
 	for _, n := range invalid {
 		if ValidName(n) {
 			t.Fatalf("ValidName(%q) = true, want false", n)
+		}
+	}
+}
+
+func TestValidateCloneSourceFileOutsideWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	// file:// pointing outside workspace should be rejected
+	err := ValidateCloneSource("file:///etc/passwd", ws)
+	if err == nil {
+		t.Fatal("ValidateCloneSource should reject file:// outside workspace")
+	}
+}
+
+func TestValidateCloneSourceFileInsideWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	// Create a subdirectory inside workspace
+	inside := filepath.Join(ws, "local-repo")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// file:// pointing inside workspace should be accepted
+	err := ValidateCloneSource("file://"+inside, ws)
+	if err != nil {
+		t.Fatalf("ValidateCloneSource should accept file:// inside workspace: %v", err)
+	}
+}
+
+func TestValidateCloneSourceNonFileAlwaysAllowed(t *testing.T) {
+	ws := t.TempDir()
+	// Non-file:// sources should always pass (git clone handles them)
+	for _, src := range []string{
+		"https://github.com/acme/widgets.git",
+		"git@github.com:acme/widgets.git",
+		"github:acme/widgets",
+	} {
+		if err := ValidateCloneSource(src, ws); err != nil {
+			t.Errorf("ValidateCloneSource(%q) should pass for non-file source: %v", src, err)
 		}
 	}
 }

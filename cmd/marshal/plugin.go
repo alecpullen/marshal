@@ -188,6 +188,13 @@ func runPluginInstall(ctx context.Context, args []string, stdin io.Reader, stdou
 	if err != nil {
 		return err
 	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	if err := plugins.ValidateCloneSource(cloneURL, wd); err != nil {
+		return err
+	}
 	if *name == "" {
 		*name = derivedName
 	}

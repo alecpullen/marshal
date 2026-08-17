@@ -197,12 +197,16 @@ func (m *PluginsManager) PluginsInstallScan(ctx context.Context, params json.Raw
 	if strings.TrimSpace(p.Source) == "" {
 		return nil, invalidParamsError("session/plugins_install_scan requires a non-empty source")
 	}
-	if _, ok := m.lookup(p.SessionID); !ok {
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
 		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
 	}
 
 	cloneURL, name, err := plugins.NormalizeSource(p.Source)
 	if err != nil {
+		return nil, invalidParamsError("invalid source: %v", err)
+	}
+	if err := plugins.ValidateCloneSource(cloneURL, rt.WorkingDir); err != nil {
 		return nil, invalidParamsError("invalid source: %v", err)
 	}
 	inst, err := plugins.NewInstaller()

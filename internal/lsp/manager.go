@@ -131,6 +131,20 @@ func (m *Manager) startServer(ctx context.Context, lang string, spec ServerSpec)
 		}
 		return
 	}
+
+	// If the parent context was cancelled during Initialize, clean up
+	// inline to avoid leaking the process. Without this, the client is
+	// never registered in m.state and shutdownAll never reaps it.
+	if err := ctx.Err(); err != nil {
+		client.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		m.log.Debug("lsp context cancelled after init", "lang", lang, "err", err)
+		return
+	}
+
 	m.mu.Lock()
 	m.state[lang] = &serverState{client: client, cmd: cmd, ready: true}
 	m.mu.Unlock()

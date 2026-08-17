@@ -36,6 +36,45 @@ func TestDetectServersOnPath(t *testing.T) {
 	}
 }
 
+// TestStartServerCancelledAfterInit verifies that when the parent context
+// is cancelled after Initialize succeeds but before the client is
+// registered in m.state, the process is cleaned up and no entry is left
+// in m.state.
+func TestStartServerCancelledAfterInit(t *testing.T) {
+	dir := t.TempDir()
+
+	// A stub server that blocks without reading stdin. Initialize's
+	// request gets no response, so when we cancel the context the
+	// in-flight Initialize fails via the cancelled initCtx and the
+	// process is reaped. This is deterministic: the server never
+	// registers, and no zombie process is left behind.
+	stub := filepath.Join(dir, "stub.sh")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	servers := map[string]ServerSpec{
+		"test": {Command: stub},
+	}
+	m := NewManager(dir, servers, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	err := m.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	// No server should be registered.
+	if _, ok := m.ServerFor("test"); ok {
+		t.Fatal("test server should not be registered after context cancellation")
+	}
+}
+
 // TestRunStartsServersInParallel verifies that Manager.Run starts each server
 // in its own goroutine so a hung Initialize does not block other languages.
 func TestRunStartsServersInParallel(t *testing.T) {

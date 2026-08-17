@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -296,7 +297,9 @@ func (c *Controller) checkpoint(phase string, taskN int, extra func(*Checkpoint)
 	if extra != nil {
 		extra(&cp)
 	}
-	_ = c.RunStore.AppendCheckpoint(cp)
+	if err := c.RunStore.AppendCheckpoint(cp); err != nil {
+		slog.Error("pipeline: failed to write checkpoint", "error", err, "phase", phase, "task", taskN)
+	}
 }
 
 // nextSeq returns the next checkpoint sequence number, starting from the

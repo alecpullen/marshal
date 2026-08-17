@@ -1,8 +1,10 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -967,6 +969,43 @@ func TestRunTokenBudgetEnforcedAutomatically(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "budget") {
 		t.Errorf("error should mention budget: %v", err)
+	}
+}
+
+// TestCheckpointLogsError verifies that a checkpoint write failure is
+// logged via slog.Error rather than silently discarded.
+func TestCheckpointLogsError(t *testing.T) {
+	// Capture slog output.
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})
+	old := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(old)
+
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	// Inject a RunStore that fails on AppendCheckpoint.
+	c.RunStore = &RunStore{paths: c.Paths}
+	// Write a manifest so Run() doesn't try to create one.
+	_ = c.RunStore.CreateManifest(Manifest{
+		RunID: "test-run", PlanPath: c.Plan.Path, RepoRoot: c.RepoRoot,
+		PipelineBranch: "pipeline/test-plan",
+	})
+
+	// Corrupt the checkpoint path so AppendCheckpoint fails.
+	// Create a directory where the checkpoint file should go.
+	os.MkdirAll(c.RunStore.checkpointPath(), 0o755)
+
+	err := c.Run(context.Background())
+	// The run may succeed or fail depending on other factors, but the
+	// checkpoint error must be logged.
+	_ = err
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "failed to write checkpoint") {
+		t.Fatalf("expected 'failed to write checkpoint' in log output, got: %s", logOutput)
 	}
 }
 

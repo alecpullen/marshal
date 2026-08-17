@@ -373,16 +373,13 @@ func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {
 // TestCancelAndWaitBoundsWait reproduces F-BUG-50: when a runner
 // goroutine never writes to runErr (simulated by an activeTurn whose
 // done channel is never closed), CancelAndWait must not block forever.
-// The test uses a short bounded-wait override so it completes in
-// milliseconds regardless.
+// The test uses a short per-instance cancelTimeout override so it
+// completes in milliseconds regardless.
 func TestCancelAndWaitBoundsWait(t *testing.T) {
-	orig := cancelWait
-	cancelWait = 100 * time.Millisecond
-	defer func() { cancelWait = orig }()
-
 	tm := &TurnManager{
-		activeTurns:   map[string]*activeTurn{},
-		activeTurnsMu: sync.Mutex{},
+		activeTurns:     map[string]*activeTurn{},
+		activeTurnsMu:   sync.Mutex{},
+		cancelTimeout:   100 * time.Millisecond,
 	}
 	_, slotCancel := context.WithCancel(context.Background())
 	tm.activeTurns["s1"] = &activeTurn{
@@ -401,6 +398,31 @@ func TestCancelAndWaitBoundsWait(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected timeout error from bounded wait")
+	}
+}
+
+// TestCancelAndWaitDefaultTimeout verifies the const default is used when
+// cancelTimeout is zero.
+func TestCancelAndWaitDefaultTimeout(t *testing.T) {
+	tm := &TurnManager{
+		activeTurns:   map[string]*activeTurn{},
+		activeTurnsMu: sync.Mutex{},
+		// cancelTimeout is zero — should use default const
+	}
+	_, slotCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		close(done) // simulate runner finishing immediately
+	}()
+	tm.activeTurns["s1"] = &activeTurn{
+		cancel: slotCancel,
+		done:   done,
+	}
+
+	// Should return quickly because done is already closed.
+	err := tm.CancelAndWait(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("CancelAndWait returned error: %v", err)
 	}
 }
 

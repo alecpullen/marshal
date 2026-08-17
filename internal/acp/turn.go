@@ -141,6 +141,11 @@ type TurnManager struct {
 	// since SDD/swarm runs make commits mid-session).
 	baseRefsMu sync.Mutex
 	baseRefs   map[string]string
+
+	// cancelTimeout overrides cancelWait for testing; zero means use the
+	// default const. Access is safe without a mutex because it is set
+	// only during construction and read only in CancelAndWait.
+	cancelTimeout time.Duration
 }
 
 // sddRun is one session's in-flight (possibly gated) SDD run.
@@ -1165,9 +1170,9 @@ func (m *TurnManager) Cancel(ctx context.Context, params json.RawMessage) (any, 
 	return nil, nil
 }
 
-// cancelWait is the fallback timeout for CancelAndWait. Exported as a
-// package-level var so tests can override it without slowing the suite.
-var cancelWait = 30 * time.Second
+// cancelWait is the default fallback timeout for CancelAndWait. Tests
+// override it per-instance via TurnManager.cancelTimeout.
+const cancelWait = 30 * time.Second
 
 // CancelAndWait cancels the active turn for the named session and blocks
 // until the runner has fully completed. Returns nil if no turn is active
@@ -1184,13 +1189,17 @@ func (m *TurnManager) CancelAndWait(ctx context.Context, sessionID string) error
 	slot.clientCancelled.Store(true)
 	slot.cancel()
 
-	timer := time.NewTimer(cancelWait)
+	timeout := cancelWait
+	if m.cancelTimeout > 0 {
+		timeout = m.cancelTimeout
+	}
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-slot.done:
 		return nil
 	case <-timer.C:
-		return fmt.Errorf("acp: CancelAndWait timed out after %v waiting for slot %s", cancelWait, sessionID)
+		return fmt.Errorf("acp: CancelAndWait timed out after %v waiting for slot %s", timeout, sessionID)
 	case <-ctx.Done():
 		return ctx.Err()
 	}

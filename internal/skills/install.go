@@ -130,6 +130,9 @@ func installGit(ctx context.Context, source, targetDir, name string) (string, er
 			continue
 		}
 		bundleName := e.Name()
+		if !ValidName(bundleName) {
+			continue
+		}
 		if explicitName {
 			// If user passed a specific name, install only the first matching
 			// bundle and rename it.

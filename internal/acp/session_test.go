@@ -1174,6 +1174,33 @@ func TestValidateLifecycleParamsRejectsSymlinkDuplicate(t *testing.T) {
 	}
 }
 
+func TestCheckPathCleansUnresolvedPath(t *testing.T) {
+	tmp := t.TempDir()
+	// Resolve symlinks (e.g. /var -> /private/var on macOS) so the trusted
+	// root matches what EvalSymlinks produces for existing paths.
+	resolved, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := []string{resolved}
+
+	// A non-existent path inside the root that cleans to a location inside
+	// the root should be accepted. EvalSymlinks fails (the intermediate
+	// "foo" does not exist), so the fallback must clean the .. components
+	// before the containment check.
+	insidePath := filepath.Join(resolved, "foo", "..", "..", filepath.Base(resolved))
+	if err := checkPath(insidePath, trusted); err != nil {
+		t.Fatalf("path inside trusted root after cleaning should be accepted: %v", err)
+	}
+
+	// A non-existent path that cleans to a location outside the root should
+	// be rejected.
+	escapePath := filepath.Join(resolved, "..", "..", "..", "etc")
+	if err := checkPath(escapePath, trusted); err == nil {
+		t.Fatal("path outside trusted root after cleaning should be rejected")
+	}
+}
+
 func countRows(t *testing.T, tmp string) (int, int, int) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(tmp, ".marshal", "marshal.db"))

@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -97,6 +98,82 @@ func TestValidName(t *testing.T) {
 		if ValidName(n) {
 			t.Fatalf("ValidName(%q) = true, want false", n)
 		}
+	}
+}
+
+func TestValidateCloneSourceFileOutsideWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	// file:// pointing outside workspace should be rejected
+	err := ValidateCloneSource("file:///etc/passwd", ws)
+	if err == nil {
+		t.Fatal("ValidateCloneSource should reject file:// outside workspace")
+	}
+}
+
+func TestValidateCloneSourceFileInsideWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	// Create a subdirectory inside workspace
+	inside := filepath.Join(ws, "local-repo")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// file:// pointing inside workspace should be accepted
+	err := ValidateCloneSource("file://"+inside, ws)
+	if err != nil {
+		t.Fatalf("ValidateCloneSource should accept file:// inside workspace: %v", err)
+	}
+}
+
+func TestValidateCloneSourceNonFileAlwaysAllowed(t *testing.T) {
+	ws := t.TempDir()
+	// Non-file:// sources should always pass (git clone handles them)
+	for _, src := range []string{
+		"https://github.com/acme/widgets.git",
+		"git@github.com:acme/widgets.git",
+		"github:acme/widgets",
+		"ssh://git@github.com/acme/widgets.git",
+	} {
+		if err := ValidateCloneSource(src, ws); err != nil {
+			t.Errorf("ValidateCloneSource(%q) should pass for non-local source: %v", src, err)
+		}
+	}
+}
+
+func TestValidateCloneSourceRejectsNonLocalFileHost(t *testing.T) {
+	ws := t.TempDir()
+	// A file:// URL with a non-empty, non-localhost host is a remote file
+	// share and must be rejected regardless of the path.
+	for _, src := range []string{
+		"file://attacker-host/etc/passwd",
+		"file://evil.example.com/workspace/repo",
+	} {
+		if err := ValidateCloneSource(src, ws); err == nil {
+			t.Errorf("ValidateCloneSource(%q) should reject a non-local file host", src)
+		}
+	}
+	// localhost is a legitimate local file URL and should pass containment.
+	inside := filepath.Join(ws, "local-repo")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCloneSource("file://localhost"+inside, ws); err != nil {
+		t.Errorf("ValidateCloneSource(file://localhost...) should accept an inside path: %v", err)
+	}
+}
+
+func TestValidateCloneSourceRejectsSymlinkEscape(t *testing.T) {
+	ws := t.TempDir()
+	// A symlink inside the workspace pointing outside must be rejected even
+	// though the lexical path is contained. Plain local paths are a
+	// supported interactive install source and are not validated, so only
+	// the file:// form is asserted here.
+	outside := t.TempDir()
+	link := filepath.Join(ws, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if err := ValidateCloneSource("file://"+link, ws); err == nil {
+		t.Error("ValidateCloneSource should reject a file:// symlink pointing outside")
 	}
 }
 

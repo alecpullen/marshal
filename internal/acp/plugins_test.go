@@ -353,6 +353,21 @@ func TestPluginsRemoveDeletesStoreAndLockEntry(t *testing.T) {
 	}
 }
 
+func TestPluginsRemoveInvalidName(t *testing.T) {
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: t.TempDir()}, true
+		},
+	})
+	for _, name := range []string{"../escape", "/abs/path", "a/b", ".", "..", ""} {
+		raw, _ := json.Marshal(PluginsRemoveParams{SessionID: "sess_1", Name: name, Scope: "global"})
+		_, err := mgr.PluginsRemove(context.Background(), raw)
+		if err == nil {
+			t.Errorf("PluginsRemove with name %q should error, got nil", name)
+		}
+	}
+}
+
 func TestPluginsRemoveRejectsProjectScopeWhenUntrusted(t *testing.T) {
 	mgr := NewPluginsManager(PluginsManagerConfig{
 		Lookup: func(sessionID string) (*PluginsRuntime, bool) {

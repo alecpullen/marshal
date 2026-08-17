@@ -371,6 +371,11 @@ func (p *Panel) runScan() tea.Cmd {
 		if name == "" {
 			name = "unknown"
 		}
+		// Validate the clone source against the workspace root before
+		// cloning, matching the CLI and ACP install paths.
+		if err := plugins.ValidateCloneSource(cloneURL, p.workDir); err != nil {
+			return scanResultMsg{Err: err}
+		}
 		inst, err := plugins.NewInstaller()
 		if err != nil {
 			return scanResultMsg{Err: err}

@@ -57,6 +57,38 @@ func TestURLAllowedDenylistWinsOverAllowlist(t *testing.T) {
 	}
 }
 
+func TestURLAllowedRejectsDangerousSchemes(t *testing.T) {
+	// javascript://example.com/alert(1) parses with a non-empty host, so
+	// it would pass the host check if no scheme allowlist is set — this is
+	// the real bypass the scheme check closes. The opaque forms (no host)
+	// are already blocked by the host check but are included for coverage.
+	dangerous := []string{
+		"javascript://example.com/alert(1)",
+		"data://example.com/text/html",
+		"vbscript://example.com/msgbox",
+		"javascript:alert(1)",
+		"data:text/html,<script>alert(1)</script>",
+		"vbscript:msgbox",
+	}
+	for _, u := range dangerous {
+		if err := urlAllowed(u, nil, nil); err == nil {
+			t.Errorf("urlAllowed(%q) should be blocked, got nil", u)
+		}
+	}
+}
+
+func TestURLAllowedPermitsSafeSchemes(t *testing.T) {
+	safe := []string{
+		"https://example.com",
+		"http://example.com",
+	}
+	for _, u := range safe {
+		if err := urlAllowed(u, nil, nil); err != nil {
+			t.Errorf("urlAllowed(%q) should be allowed, got: %v", u, err)
+		}
+	}
+}
+
 func TestURLAllowedInvalidURL(t *testing.T) {
 	if err := urlAllowed("not a url", nil, nil); err == nil {
 		t.Fatal("invalid URL should be blocked")

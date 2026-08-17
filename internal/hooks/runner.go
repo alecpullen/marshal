@@ -226,17 +226,22 @@ func isBrokenPipe(err error) bool {
 	return false
 }
 
-// scrubHookEnv returns a copy of parentEnv with secret-bearing vars
-// removed. Mirrors the sandbox's nil-allowlist scrub so hooks and
-// sandboxed shell commands agree on what counts as a secret. Hooks are
-// project-config files that may be committed to a repo, so they are not
-// necessarily authored by the user running Marshal — scrubbing prevents
-// a hook from reading provider API keys via $OPENAI_API_KEY etc.
+// scrubHookEnv returns a copy of parentEnv with secret-bearing and
+// dangerous vars removed. Mirrors the sandbox's nil-allowlist scrub so
+// hooks and sandboxed shell commands agree on what counts as a secret.
+// Hooks are project-config files that may be committed to a repo, so
+// they are not necessarily authored by the user running Marshal —
+// scrubbing prevents a hook from reading provider API keys via
+// $OPENAI_API_KEY etc. and from hijacking the shell or dynamic loader
+// via BASH_ENV, LD_PRELOAD, IFS, etc.
 func scrubHookEnv(parentEnv []string) []string {
 	out := make([]string, 0, len(parentEnv))
 	for _, kv := range parentEnv {
 		key := envutil.EnvKey(kv)
 		if envutil.IsSecretKey(key) {
+			continue
+		}
+		if envutil.IsDangerousKey(key) {
 			continue
 		}
 		out = append(out, kv)

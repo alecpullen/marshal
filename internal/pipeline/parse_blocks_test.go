@@ -135,6 +135,16 @@ func TestExtractREPLACENoReplaceSectionReturnsOriginal(t *testing.T) {
 	}
 }
 
+func TestExtractREPLACEMissingClosingMarkerReturnsOriginal(t *testing.T) {
+	// A "=======" separator without a closing ">>>>>>>" marker is malformed:
+	// the trailing text must not be captured as a replacement.
+	content := "<<<<<<< SEARCH\nold line\n=======\nstray text with no closing marker\n"
+	got := extractREPLACE(content)
+	if got != content {
+		t.Errorf("extractREPLACE with unclosed REPLACE section = %q, want original content %q", got, content)
+	}
+}
+
 func TestExtractREPLACEEmptyContentReturnsEmpty(t *testing.T) {
 	got := extractREPLACE("")
 	if got != "" {

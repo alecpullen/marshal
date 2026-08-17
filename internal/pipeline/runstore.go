@@ -250,14 +250,27 @@ func (rs *RunStore) AcquireLock(lock RunLock) error {
 		}
 		return fmt.Errorf("runstore: create lock: %w", err)
 	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
+	// The lock file must not be left behind on a partial write: a stale
+	// lock would block every later run on these paths. On any failure the
+	// file is removed. The descriptor is closed explicitly so a Close
+	// error is reported rather than silently swallowed by a deferred call.
+	writeErr := func() error {
+		if _, err := f.Write(data); err != nil {
+			return fmt.Errorf("runstore: write lock: %w", err)
+		}
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("runstore: sync lock: %w", err)
+		}
+		return nil
+	}()
+	closeErr := f.Close()
+	if writeErr != nil {
 		os.Remove(p)
-		return fmt.Errorf("runstore: write lock: %w", err)
+		return writeErr
 	}
-	if err := f.Sync(); err != nil {
+	if closeErr != nil {
 		os.Remove(p)
-		return fmt.Errorf("runstore: sync lock: %w", err)
+		return fmt.Errorf("runstore: close lock: %w", closeErr)
 	}
 	return nil
 }

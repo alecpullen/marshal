@@ -1134,8 +1134,10 @@ func (c *Controller) Run(ctx context.Context) error {
 			continue // commit exists; keep the task done
 		}
 		// LogOneline errored — the commit may be missing. Only prune if it
-		// is also not the current branch tip.
-		if h, err := c.Git.RevParse(c.workDir(), "HEAD"); err == nil && h == head {
+		// is also not the current branch tip. The ledger stores the short
+		// SHA form, so compare against the short form of HEAD to avoid a
+		// full-vs-short mismatch that would never match.
+		if h, err := c.Git.RevParse(c.workDir(), "HEAD"); err == nil && short(h) == head {
 			continue // head is the branch tip; keep the task done
 		}
 		delete(done, taskN)

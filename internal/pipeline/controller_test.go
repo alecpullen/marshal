@@ -972,6 +972,48 @@ func TestRunTokenBudgetEnforcedAutomatically(t *testing.T) {
 	}
 }
 
+// TestRunChainsPriorOnTokens verifies that Run() preserves a pre-existing
+// Dispatcher.OnTokens callback (e.g. the app's TUI token display) by
+// chaining it rather than clobbering it, while still enforcing the budget.
+func TestRunChainsPriorOnTokens(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.MaxTokensCfg = 100
+	// The budget cancel may land on a dispatch that fails report parsing,
+	// which would otherwise trigger a real 5s retry backoff. Elide it.
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
+
+	// A pre-existing observer installed before Run, as the app layer does.
+	observed := 0
+	c.Dispatch.OnTokens = func(n int) { observed += n }
+
+	c.Dispatch.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		if c.Dispatch.OnTokens != nil {
+			c.Dispatch.OnTokens(40) // under budget on first dispatch
+		}
+		if m := reportPathRe.FindStringSubmatch(prompt); m != nil {
+			p := m[1]
+			if c.Paths.Dir != "" {
+				p = strings.Replace(p, "@run/", c.Paths.Dir+"/", 1)
+			}
+			if err := os.WriteFile(p, []byte("STATUS: DONE\nTESTS: pass\n"), 0o644); err != nil {
+				return "", err
+			}
+		}
+		return "STATUS: DONE\nTESTS: pass\n", nil
+	}
+
+	_ = c.Run(context.Background())
+
+	if observed == 0 {
+		t.Fatal("pre-existing OnTokens callback was never invoked through the chain")
+	}
+	if c.UsageTokens == 0 {
+		t.Fatal("Run did not track token usage via the chained callback")
+	}
+}
+
 // TestCheckpointLogsError verifies that a checkpoint write failure is
 // logged via slog.Error rather than silently discarded.
 func TestCheckpointLogsError(t *testing.T) {
@@ -985,6 +1027,11 @@ func TestCheckpointLogsError(t *testing.T) {
 	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
 	c := testController(t, d, NewFakeCommandRunner())
 	c.Git.(*worktree.FakeGitOps).Dirty = true
+	// The checkpoint failure leaves the scripted dispatcher exhausted on a
+	// later dispatch, which would otherwise trigger a real dispatch-retry
+	// backoff (5s). This test only asserts the checkpoint error is logged,
+	// so elide the backoff to keep it fast.
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
 
 	// Inject a RunStore that fails on AppendCheckpoint.
 	c.RunStore = &RunStore{paths: c.Paths}
@@ -1038,6 +1085,47 @@ func TestRecoveryPrunesLostCommits(t *testing.T) {
 	// task 1 would be skipped and no implementer dispatch would occur.
 	if len(*prompts) == 0 {
 		t.Error("task 1 should have been re-dispatched after its commit was pruned")
+	}
+}
+
+// TestRecoveryKeepsTipCommitWithShortSHA verifies that a ledger commit whose
+// LogOneline errors is still kept when its short SHA matches the branch tip.
+// The ledger stores short SHAs while HEAD is full-length, so the comparison
+// must normalize to the short form or a tip commit is wrongly pruned.
+func TestRecoveryKeepsTipCommitWithShortSHA(t *testing.T) {
+	d, prompts := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	g := c.Git.(*worktree.FakeGitOps)
+	g.Dirty = true
+
+	// The branch tip is a full SHA; the ledger records its 7-char short form.
+	tip := "abcdef0123456789abcdef0123456789abcdef01"
+	_ = c.Ledger.MarkComplete(1, "0000000", short(tip))
+
+	// Pre-register the run's worktree so EnsureWorktree reuses it (rather
+	// than creating one pointed at main). Its HEAD is the recorded tip.
+	wtPath := c.Paths.WorktreesDir() + "/pipeline-" + c.Plan.Slug
+	g.Branches["pipeline/"+c.Plan.Slug] = true
+	g.Worktrees = append(g.Worktrees, wtPath)
+	g.WorktreeBranches[wtPath] = "pipeline/" + c.Plan.Slug
+	g.Refs["pipeline/"+c.Plan.Slug] = tip
+	g.Heads[wtPath] = tip
+
+	// LogOneline errors (as fakes without a populated log do), but HEAD
+	// equals the recorded commit — it must NOT be pruned.
+	g.LogErr = errors.New("unknown revision")
+
+	err := c.Run(context.Background())
+	_ = err
+
+	// Task 1 was already complete and its commit is the tip: it must not be
+	// re-dispatched. Pruning it would cause an implementer dispatch for
+	// task 1. Task 2 legitimately dispatches regardless, so only fail on
+	// prompts that name task 1.
+	for _, p := range *prompts {
+		if strings.Contains(p, "Task 1:") {
+			t.Fatalf("task 1 was re-dispatched; tip commit should have been kept (prompt: %.60s)", p)
+		}
 	}
 }
 

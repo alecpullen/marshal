@@ -234,14 +234,27 @@ func (rs *RunStore) lockPath() string {
 // take over.
 func (rs *RunStore) AcquireLock(lock RunLock) error {
 	p := rs.lockPath()
-	if _, err := os.Stat(p); err == nil {
-		return fmt.Errorf("runstore: run is already locked")
-	}
 	data, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
 		return fmt.Errorf("runstore: marshal lock: %w", err)
 	}
-	return atomicWriteSync(p, data)
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("runstore: run is already locked")
+		}
+		return fmt.Errorf("runstore: create lock: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		os.Remove(p)
+		return fmt.Errorf("runstore: write lock: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		os.Remove(p)
+		return fmt.Errorf("runstore: sync lock: %w", err)
+	}
+	return nil
 }
 
 // Lock returns the current lock, or ok=false when none exists.

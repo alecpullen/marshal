@@ -183,6 +183,38 @@ func TestRunStoreLockAcquireAndConcurrentRefusal(t *testing.T) {
 	}
 }
 
+func TestAcquireLockAtomicNoTOCTOU(t *testing.T) {
+	dir := t.TempDir()
+	paths, err := NewPaths(dir, "test-plan")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	rs := NewRunStore(paths)
+
+	// Two goroutines attempt to acquire the lock simultaneously.
+	errs := make(chan error, 2)
+	go func() {
+		errs <- rs.AcquireLock(RunLock{RunID: "r1", PID: 1, Host: "h", AcquiredAt: "now"})
+	}()
+	go func() {
+		errs <- rs.AcquireLock(RunLock{RunID: "r2", PID: 2, Host: "h", AcquiredAt: "now"})
+	}()
+
+	err1 := <-errs
+	err2 := <-errs
+
+	// Exactly one should succeed, the other should fail.
+	successes := 0
+	for _, err := range []error{err1, err2} {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly 1 success, got %d (err1=%v, err2=%v)", successes, err1, err2)
+	}
+}
+
 func TestRunStoreLockRelease(t *testing.T) {
 	dir := t.TempDir()
 	paths, err := NewPaths(dir, "test-plan")

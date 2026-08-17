@@ -1107,6 +1107,34 @@ func (c *Controller) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Prune ledger entries whose commits no longer exist in the repo.
+	// This handles the case where a task was marked complete but its
+	// commit was lost (force-push, branch reset) — the task must be re-run.
+	// The check is conservative: a task is only pruned when LogOneline
+	// errors (the commit is definitely missing) and the head is not the
+	// current branch tip.
+	for taskN := range done {
+		_, head, ok := c.Ledger.TaskCommit(taskN)
+		if !ok || head == "" {
+			delete(done, taskN)
+			_ = c.Ledger.MarkIncomplete(taskN)
+			_ = c.Ledger.Note("Task %d: marked incomplete (no commit recorded)", taskN)
+			continue
+		}
+		// LogOneline(dir, "<sha>^..<sha>") returns the commit's line when
+		// it exists and an error when the commit is missing.
+		if _, err := c.Git.LogOneline(c.workDir(), head+"^.."+head); err == nil {
+			continue // commit exists; keep the task done
+		}
+		// LogOneline errored — the commit may be missing. Only prune if it
+		// is also not the current branch tip.
+		if h, err := c.Git.RevParse(c.workDir(), "HEAD"); err == nil && h == head {
+			continue // head is the branch tip; keep the task done
+		}
+		delete(done, taskN)
+		_ = c.Ledger.MarkIncomplete(taskN)
+		_ = c.Ledger.Note("Task %d: marked incomplete (commit %s not found)", taskN, head)
+	}
 	// Recovery: replay checkpoints and reconcile with Git.
 	if c.RunStore != nil {
 		cps, _ := c.RunStore.Replay()

@@ -1009,6 +1009,38 @@ func TestCheckpointLogsError(t *testing.T) {
 	}
 }
 
+// TestRecoveryPrunesLostCommits verifies that a task marked complete in the
+// ledger but whose commit no longer exists is pruned from the done set so it
+// is re-run rather than skipped.
+func TestRecoveryPrunesLostCommits(t *testing.T) {
+	d, prompts := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	g := c.Git.(*worktree.FakeGitOps)
+	g.Dirty = true
+
+	// Mark task 1 as complete in the ledger with a commit that doesn't exist.
+	_ = c.Ledger.MarkComplete(1, "nonexist1", "nonexist2")
+
+	done, _ := c.Ledger.CompletedTasks()
+	if !done[1] {
+		t.Fatal("task 1 should be complete before Run")
+	}
+
+	// Simulate the commit being lost: LogOneline errors (commit missing)
+	// and the head is not the branch tip.
+	g.LogErr = errors.New("unknown revision")
+	g.Heads[c.Paths.WorktreesDir()+"/pipeline-test-plan"] = "someotherhead"
+
+	err := c.Run(context.Background())
+	_ = err
+
+	// The pruned task must be re-dispatched (not skipped). Without pruning,
+	// task 1 would be skipped and no implementer dispatch would occur.
+	if len(*prompts) == 0 {
+		t.Error("task 1 should have been re-dispatched after its commit was pruned")
+	}
+}
+
 // TestRunFailsWhenAnotherRunHoldsTheLock asserts a second Run on the same
 // paths fails when a live lock exists (a different run owns it).
 func TestRunFailsWhenAnotherRunHoldsTheLock(t *testing.T) {

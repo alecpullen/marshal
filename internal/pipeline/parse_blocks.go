@@ -294,5 +294,7 @@ func extractREPLACE(content string) string {
 	if len(replaceLines) > 0 {
 		return strings.Join(replaceLines, "\n")
 	}
-	return ""
+	// No REPLACE section found: return the original content rather than
+	// silently producing an empty replacement that would delete file content.
+	return content
 }

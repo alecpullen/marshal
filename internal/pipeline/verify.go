@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/shlex"
@@ -35,11 +36,29 @@ func (CLICommandRunner) Run(ctx context.Context, dir string, argv []string) (str
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	err := cmd.Run()
-	return out.String(), err
+
+	// Start the command. If the context is cancelled, kill the entire
+	// process group so child processes don't survive as orphans.
+	if err := cmd.Start(); err != nil {
+		return out.String(), err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case err := <-done:
+		return out.String(), err
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return out.String(), ctx.Err()
+	}
 }
 
 // VerifyResult is the outcome of one gate run. Skipped means no build or

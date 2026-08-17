@@ -127,3 +127,33 @@ func TestResolveNodeManifestScripts(t *testing.T) {
 		t.Errorf("test-only package.json: %+v", got)
 	}
 }
+
+func TestCLICommandRunnerKillsProcessGroup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process group test requires real process execution")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := CLICommandRunner{}
+
+	// Start a shell command that spawns a child process, then cancel.
+	// If the process group is killed, both should be gone.
+	dir := t.TempDir()
+	// Write a script that spawns a child and waits.
+	scriptPath := filepath.Join(dir, "spawn.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\nsleep 30 &\nwait\n"), 0o755)
+
+	start := time.Now()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	_, err := runner.Run(ctx, dir, []string{"sh", scriptPath})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from cancelled command")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("command took %v, should have been killed within ~100ms", elapsed)
+	}
+}

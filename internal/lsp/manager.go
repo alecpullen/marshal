@@ -63,6 +63,12 @@ type Manager struct {
 
 	mu    sync.Mutex
 	state map[string]*serverState
+
+	// afterInit is a test-only hook invoked after Initialize succeeds but
+	// before the post-init ctx.Err() guard. It lets tests deterministically
+	// cancel the parent context in the narrow window that the new
+	// cancellation branch reaps the process. Nil in production.
+	afterInit func()
 }
 
 func NewManager(root string, servers map[string]ServerSpec, log *slog.Logger) *Manager {
@@ -130,6 +136,13 @@ func (m *Manager) startServer(ctx context.Context, lang string, spec ServerSpec)
 			_ = cmd.Wait()
 		}
 		return
+	}
+
+	// Test hook: lets a test cancel the parent context in the window between
+	// a successful Initialize and the post-init cancellation guard below,
+	// so the new cancellation branch can be exercised deterministically.
+	if m.afterInit != nil {
+		m.afterInit()
 	}
 
 	// If the parent context was cancelled during Initialize, clean up

@@ -932,6 +932,44 @@ func TestRunStopsOnTokenBudgetExhaustion(t *testing.T) {
 	}
 }
 
+// TestRunTokenBudgetEnforcedAutomatically verifies that Run() wires the
+// Dispatcher.OnTokens callback itself, so the token budget is enforced
+// without the caller manually wiring it.
+func TestRunTokenBudgetEnforcedAutomatically(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.MaxTokensCfg = 100
+
+	// Override exec to consume tokens beyond the budget through the
+	// OnTokens callback, mirroring how the real dispatch path reports
+	// usage. If Run() does not wire OnTokens, UsageTokens stays 0 and the
+	// run completes without a budget error.
+	c.Dispatch.exec = func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+		if c.Dispatch.OnTokens != nil {
+			c.Dispatch.OnTokens(150) // exceeds the 100-token budget
+		}
+		if m := reportPathRe.FindStringSubmatch(prompt); m != nil {
+			p := m[1]
+			if c.Paths.Dir != "" {
+				p = strings.Replace(p, "@run/", c.Paths.Dir+"/", 1)
+			}
+			if err := os.WriteFile(p, []byte("STATUS: DONE\nTESTS: pass\n"), 0o644); err != nil {
+				return "", err
+			}
+		}
+		return "STATUS: DONE\nTESTS: pass\n", nil
+	}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should stop when budget is exhausted")
+	}
+	if !strings.Contains(err.Error(), "budget") {
+		t.Errorf("error should mention budget: %v", err)
+	}
+}
+
 // TestRunFailsWhenAnotherRunHoldsTheLock asserts a second Run on the same
 // paths fails when a live lock exists (a different run owns it).
 func TestRunFailsWhenAnotherRunHoldsTheLock(t *testing.T) {

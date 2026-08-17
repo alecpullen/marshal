@@ -983,6 +983,8 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 // ErrHumanGateRequired when a subagent needs an answer, or an error when a
 // task cannot be completed.
 func (c *Controller) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// Inspect (parse, compile, preflight) before any worktree is created: a
 	// strict plan with blocked, agent, or prose-only work is rejected without
 	// minting a worktree. The inspection is shared with the TUI preflight.
@@ -1029,6 +1031,15 @@ func (c *Controller) Run(ctx context.Context) error {
 		WorkspaceRoot: c.Worktree.Path,
 		ArtifactRoot:  c.Paths.Dir,
 		ArtifactAlias: "@run",
+	}
+	// Wire the token-usage callback so the budget is enforced. OnTokens
+	// is called from the dispatch path in the same goroutine as Run
+	// (the controller is single-threaded), so no atomics are needed.
+	c.Dispatch.OnTokens = func(n int) {
+		c.UsageTokens += n
+		if c.overBudget() {
+			cancel()
+		}
 	}
 	// Initialize run store if not already set (recovery sets it).
 	if c.RunStore == nil {

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"marshal/internal/sandbox/envutil"
 )
 
 // testHookTimeoutMS is the budget for hook scripts that do trivial work
@@ -79,6 +81,40 @@ func TestHookTimeoutFailOpen(t *testing.T) {
 	}
 	if out.Decision != DecisionAllow || !out.FailedOpen {
 		t.Fatalf("out = %+v", out)
+	}
+}
+
+func TestScrubHookEnvRemovesDangerousKeys(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"BASH_ENV=/tmp/evil.sh",
+		"ENV=/tmp/evil.sh",
+		"LD_PRELOAD=/tmp/evil.so",
+		"DYLD_INSERT_LIBRARIES=/tmp/evil.dylib",
+		"IFS=,",
+		"SHELLOPTS=braceexpand",
+		"PYTHONPATH=/tmp/evil",
+		"NODE_OPTIONS=--require=/tmp/evil.js",
+	}
+	got := scrubHookEnv(env)
+	for _, kv := range got {
+		key := envutil.EnvKey(kv)
+		if envutil.IsDangerousKey(key) {
+			t.Errorf("scrubHookEnv leaked dangerous key: %s", kv)
+		}
+	}
+	// Verify a genuinely safe key survived. PATH is itself classified as
+	// dangerous (IsDangerousKey), so it must be removed along with the
+	// other hijack/loader keys; HOME is safe and must survive.
+	foundHome := false
+	for _, kv := range got {
+		if envutil.EnvKey(kv) == "HOME" {
+			foundHome = true
+		}
+	}
+	if !foundHome {
+		t.Error("scrubHookEnv dropped HOME")
 	}
 }
 

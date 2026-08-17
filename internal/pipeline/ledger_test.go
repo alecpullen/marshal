@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +71,52 @@ func TestLedgerMinors(t *testing.T) {
 	}
 	if minors[0] != "Task 1 (minor): magic number 100 should be a constant" {
 		t.Errorf("Minors[0] = %q", minors[0])
+	}
+}
+
+func TestLedgerTaskCommit(t *testing.T) {
+	dir := t.TempDir()
+	l := Ledger{Path: filepath.Join(dir, "ledger.txt")}
+	_ = l.MarkComplete(1, "abc123def456", "ghi789jkl012")
+
+	base, head, ok := l.TaskCommit(1)
+	if !ok {
+		t.Fatal("TaskCommit should find task 1")
+	}
+	if base != "abc123d" || head != "ghi789j" {
+		t.Errorf("TaskCommit = (%q, %q, %v), want (abc123d, ghi789j, true)", base, head, ok)
+	}
+
+	_, _, ok = l.TaskCommit(2)
+	if ok {
+		t.Fatal("TaskCommit should not find task 2")
+	}
+}
+
+func TestLedgerMarkIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	l := Ledger{Path: filepath.Join(dir, "ledger.txt")}
+	_ = l.MarkComplete(1, "abc123def456", "ghi789jkl012")
+	_ = l.MarkComplete(2, "def456ghi789", "jkl012mno345")
+
+	if err := l.MarkIncomplete(1); err != nil {
+		t.Fatalf("MarkIncomplete: %v", err)
+	}
+
+	done, err := l.CompletedTasks()
+	if err != nil {
+		t.Fatalf("CompletedTasks: %v", err)
+	}
+	if done[1] {
+		t.Error("task 1 should not be complete after MarkIncomplete")
+	}
+	if !done[2] {
+		t.Error("task 2 should still be complete")
+	}
+
+	// Verify the ledger file doesn't contain task 1's completion line.
+	data, _ := os.ReadFile(l.Path)
+	if strings.Contains(string(data), "Task 1: complete") {
+		t.Error("ledger file still contains task 1 completion line")
 	}
 }

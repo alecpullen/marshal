@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestApplyPatchOpSuccess(t *testing.T) {
@@ -130,7 +131,7 @@ func TestRunOpPreparePhase(t *testing.T) {
 		ExpectExit: 0,
 		Status:     OpExecutable,
 	}
-	if err := runRunOp(context.Background(), dir, runner, op); err != nil {
+	if err := runRunOp(context.Background(), dir, Verifier{Runner: runner}, op); err != nil {
 		t.Fatalf("runRunOp: %v", err)
 	}
 	if len(runner.Calls) != 1 {
@@ -149,7 +150,7 @@ func TestRunOpNonZeroExitFails(t *testing.T) {
 		ExpectExit: 0,
 		Status:     OpExecutable,
 	}
-	err := runRunOp(context.Background(), dir, runner, op)
+	err := runRunOp(context.Background(), dir, Verifier{Runner: runner}, op)
 	if err == nil {
 		t.Fatal("runRunOp should error on non-zero exit")
 	}
@@ -166,7 +167,7 @@ func TestRunOpExpectedNonZeroExitSucceeds(t *testing.T) {
 		ExpectExit: 1,
 		Status:     OpExecutable,
 	}
-	if err := runRunOp(context.Background(), dir, runner, op); err != nil {
+	if err := runRunOp(context.Background(), dir, Verifier{Runner: runner}, op); err != nil {
 		t.Fatalf("runRunOp should accept expected exit 1: %v", err)
 	}
 }
@@ -182,7 +183,7 @@ func TestRunOpUnexpectedZeroExitFails(t *testing.T) {
 		ExpectExit: 1,
 		Status:     OpExecutable,
 	}
-	if err := runRunOp(context.Background(), dir, runner, op); err == nil {
+	if err := runRunOp(context.Background(), dir, Verifier{Runner: runner}, op); err == nil {
 		t.Fatal("runRunOp should error when command succeeds but exit 1 was expected")
 	}
 }
@@ -196,7 +197,7 @@ func TestRunVerifyOpsExecutesVerifyPhase(t *testing.T) {
 		&RunOp{Command: []string{"go", "build", "./..."}, Phase: "prepare", Status: OpExecutable},
 		&RunOp{Command: []string{"go", "vet", "./..."}, Phase: "verify", Status: OpExecutable},
 	}
-	res := runVerifyOps(context.Background(), dir, runner, ops)
+	res := runVerifyOps(context.Background(), dir, Verifier{Runner: runner}, ops)
 	if !res.OK {
 		t.Fatalf("runVerifyOps failed: %s", res.Output)
 	}
@@ -213,7 +214,7 @@ func TestRunVerifyOpsReturnsFirstFailure(t *testing.T) {
 	ops := []Operation{
 		&RunOp{Command: []string{"go", "vet", "./..."}, Phase: "verify", Status: OpExecutable},
 	}
-	res := runVerifyOps(context.Background(), dir, runner, ops)
+	res := runVerifyOps(context.Background(), dir, Verifier{Runner: runner}, ops)
 	if res.OK {
 		t.Fatal("runVerifyOps should report failure")
 	}
@@ -231,7 +232,7 @@ func TestAssertFileExistsPass(t *testing.T) {
 		File:   "exists.go",
 		Status: OpExecutable,
 	}
-	if err := checkAssert(context.Background(), dir, NewFakeCommandRunner(), op); err != nil {
+	if err := checkAssert(context.Background(), dir, Verifier{Runner: NewFakeCommandRunner()}, op); err != nil {
 		t.Fatalf("checkAssert: %v", err)
 	}
 }
@@ -243,7 +244,7 @@ func TestAssertFileExistsFail(t *testing.T) {
 		File:   "missing.go",
 		Status: OpExecutable,
 	}
-	err := checkAssert(context.Background(), dir, NewFakeCommandRunner(), op)
+	err := checkAssert(context.Background(), dir, Verifier{Runner: NewFakeCommandRunner()}, op)
 	if err == nil {
 		t.Fatal("checkAssert should error for missing file")
 	}
@@ -259,7 +260,7 @@ func TestAssertFileMatchesPass(t *testing.T) {
 		Content: "package foo",
 		Status:  OpExecutable,
 	}
-	if err := checkAssert(context.Background(), dir, NewFakeCommandRunner(), op); err != nil {
+	if err := checkAssert(context.Background(), dir, Verifier{Runner: NewFakeCommandRunner()}, op); err != nil {
 		t.Fatalf("checkAssert: %v", err)
 	}
 }
@@ -274,7 +275,7 @@ func TestAssertFileMatchesFail(t *testing.T) {
 		Content: "package foo",
 		Status:  OpExecutable,
 	}
-	err := checkAssert(context.Background(), dir, NewFakeCommandRunner(), op)
+	err := checkAssert(context.Background(), dir, Verifier{Runner: NewFakeCommandRunner()}, op)
 	if err == nil {
 		t.Fatal("checkAssert should error when content does not match")
 	}
@@ -290,7 +291,7 @@ func TestAssertTestPasses(t *testing.T) {
 		Command: []string{"go", "test", "./..."},
 		Status:  OpExecutable,
 	}
-	if err := checkAssert(context.Background(), dir, runner, op); err != nil {
+	if err := checkAssert(context.Background(), dir, Verifier{Runner: runner}, op); err != nil {
 		t.Fatalf("checkAssert: %v", err)
 	}
 }
@@ -305,7 +306,7 @@ func TestAssertTestPassesFail(t *testing.T) {
 		Command: []string{"go", "test", "./..."},
 		Status:  OpExecutable,
 	}
-	err := checkAssert(context.Background(), dir, runner, op)
+	err := checkAssert(context.Background(), dir, Verifier{Runner: runner}, op)
 	if err == nil {
 		t.Fatal("checkAssert should error when test fails")
 	}
@@ -369,3 +370,35 @@ type exitErr int
 
 func (e exitErr) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 func (e exitErr) ExitCode() int { return int(e) }
+
+// slowCommandRunner blocks until the context is cancelled or delay elapses.
+type slowCommandRunner struct {
+	delay time.Duration
+}
+
+func (s *slowCommandRunner) Run(ctx context.Context, dir string, argv []string) (string, error) {
+	select {
+	case <-time.After(s.delay):
+		return "", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestRunRunOpTimeoutEnforced(t *testing.T) {
+	// A runner that blocks until the context is cancelled.
+	runner := &slowCommandRunner{delay: 5 * time.Second}
+	vr := Verifier{Runner: runner, Timeout: 50 * time.Millisecond}
+
+	op := &RunOp{Command: []string{"sleep", "5"}}
+	start := time.Now()
+	err := runRunOp(context.Background(), t.TempDir(), vr, op)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("runRunOp should timeout, got nil error")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("runRunOp took %v, should have timed out after 50ms", elapsed)
+	}
+}

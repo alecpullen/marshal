@@ -127,6 +127,39 @@ func TestParseMarshalBlocksLineRange(t *testing.T) {
 	}
 }
 
+func TestExtractREPLACENoReplaceSectionReturnsOriginal(t *testing.T) {
+	content := "<<<<<<< SEARCH\nold line\n"
+	got := extractREPLACE(content)
+	if got != content {
+		t.Errorf("extractREPLACE with no REPLACE section = %q, want original content %q", got, content)
+	}
+}
+
+func TestExtractREPLACEMissingClosingMarkerReturnsOriginal(t *testing.T) {
+	// A "=======" separator without a closing ">>>>>>>" marker is malformed:
+	// the trailing text must not be captured as a replacement.
+	content := "<<<<<<< SEARCH\nold line\n=======\nstray text with no closing marker\n"
+	got := extractREPLACE(content)
+	if got != content {
+		t.Errorf("extractREPLACE with unclosed REPLACE section = %q, want original content %q", got, content)
+	}
+}
+
+func TestExtractREPLACEEmptyContentReturnsEmpty(t *testing.T) {
+	got := extractREPLACE("")
+	if got != "" {
+		t.Errorf("extractREPLACE(\"\") = %q, want \"\"", got)
+	}
+}
+
+func TestExtractREPLACEWithMarkersExtractsCorrectly(t *testing.T) {
+	content := "<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE"
+	got := extractREPLACE(content)
+	if got != "new line" {
+		t.Errorf("extractREPLACE with markers = %q, want %q", got, "new line")
+	}
+}
+
 func TestCompilePatchBlock(t *testing.T) {
 	blk := marshalBlock{
 		kind:    "marshal.patch",

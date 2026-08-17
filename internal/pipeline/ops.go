@@ -61,8 +61,10 @@ func applyFileOp(dir string, op *FileOp) error {
 
 // runRunOp executes a command and checks its exit status. An expected
 // non-zero exit code (ExpectExit) is treated as success.
-func runRunOp(ctx context.Context, dir string, runner CommandRunner, op *RunOp) error {
-	out, err := runner.Run(ctx, dir, op.Command)
+func runRunOp(ctx context.Context, dir string, vr Verifier, op *RunOp) error {
+	ctx, cancel := vr.withTimeout(ctx)
+	defer cancel()
+	out, err := vr.Runner.Run(ctx, dir, op.Command)
 	if err != nil {
 		var exitErr interface{ ExitCode() int }
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == op.ExpectExit {
@@ -79,13 +81,13 @@ func runRunOp(ctx context.Context, dir string, runner CommandRunner, op *RunOp) 
 // runVerifyOps executes all verify-phase RunOps and returns the first
 // failure as a VerifyResult. It is called inside the verify gate loop so
 // that a failing verify command triggers the fixer rounds.
-func runVerifyOps(ctx context.Context, dir string, runner CommandRunner, ops []Operation) VerifyResult {
+func runVerifyOps(ctx context.Context, dir string, vr Verifier, ops []Operation) VerifyResult {
 	for _, op := range ops {
 		r, ok := op.(*RunOp)
 		if !ok || r.Status != OpExecutable || r.Phase != "verify" {
 			continue
 		}
-		if err := runRunOp(ctx, dir, runner, r); err != nil {
+		if err := runRunOp(ctx, dir, vr, r); err != nil {
 			return VerifyResult{
 				OK:            false,
 				FailedCommand: strings.Join(r.Command, " "),
@@ -97,7 +99,7 @@ func runVerifyOps(ctx context.Context, dir string, runner CommandRunner, ops []O
 }
 
 // checkAssert evaluates one assertion against the worktree state.
-func checkAssert(ctx context.Context, dir string, runner CommandRunner, op *AssertOp) error {
+func checkAssert(ctx context.Context, dir string, vr Verifier, op *AssertOp) error {
 	switch op.Kind {
 	case AssertFileExists:
 		path := filepath.Join(dir, op.File)
@@ -118,7 +120,9 @@ func checkAssert(ctx context.Context, dir string, runner CommandRunner, op *Asse
 		return nil
 
 	case AssertTestPasses:
-		out, err := runner.Run(ctx, dir, op.Command)
+		ctx, cancel := vr.withTimeout(ctx)
+		defer cancel()
+		out, err := vr.Runner.Run(ctx, dir, op.Command)
 		if err != nil {
 			return fmt.Errorf("assert test.passes: %v: %w\noutput: %s", op.Command, err, out)
 		}
@@ -147,7 +151,9 @@ func checkAssert(ctx context.Context, dir string, runner CommandRunner, op *Asse
 		return nil
 
 	case AssertGoCompiles:
-		out, err := runner.Run(ctx, dir, []string{"go", "build", op.Package})
+		ctx, cancel := vr.withTimeout(ctx)
+		defer cancel()
+		out, err := vr.Runner.Run(ctx, dir, []string{"go", "build", op.Package})
 		if err != nil {
 			return fmt.Errorf("assert go.compiles: %s: %w\noutput: %s", op.Package, err, out)
 		}

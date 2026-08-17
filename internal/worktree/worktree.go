@@ -69,6 +69,7 @@ type FakeGitOps struct {
 	// NextHead, when non-empty, is popped as the SHA of the next CommitAll.
 	NextHead  []string
 	LogOut    string
+	LogErr    error
 	StatOut   string
 	DiffOut   string
 	CommitErr error
@@ -215,7 +216,7 @@ func (f *FakeGitOps) CommitAll(dir, message string) (string, error) {
 
 func (f *FakeGitOps) LogOneline(dir, rng string) (string, error) {
 	f.record("LogOneline")
-	return f.LogOut, nil
+	return f.LogOut, f.LogErr
 }
 func (f *FakeGitOps) DiffStat(dir, rng string) (string, error) {
 	f.record("DiffStat")

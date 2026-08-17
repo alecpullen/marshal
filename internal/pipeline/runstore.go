@@ -105,12 +105,17 @@ func (rs *RunStore) Manifest() (Manifest, error) {
 // atomicWriteSync writes data to a temp file, fsyncs, then renames to the
 // final path. This ensures the file is either fully present or absent after
 // a crash — never partially written.
-func atomicWriteSync(path string, data []byte) error {
+func atomicWriteSync(path string, data []byte) (retErr error) {
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("runstore: create temp %s: %w", tmp, err)
 	}
+	defer func() {
+		if retErr != nil {
+			os.Remove(tmp)
+		}
+	}()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return fmt.Errorf("runstore: write temp %s: %w", tmp, err)
@@ -234,14 +239,40 @@ func (rs *RunStore) lockPath() string {
 // take over.
 func (rs *RunStore) AcquireLock(lock RunLock) error {
 	p := rs.lockPath()
-	if _, err := os.Stat(p); err == nil {
-		return fmt.Errorf("runstore: run is already locked")
-	}
 	data, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
 		return fmt.Errorf("runstore: marshal lock: %w", err)
 	}
-	return atomicWriteSync(p, data)
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("runstore: run is already locked")
+		}
+		return fmt.Errorf("runstore: create lock: %w", err)
+	}
+	// The lock file must not be left behind on a partial write: a stale
+	// lock would block every later run on these paths. On any failure the
+	// file is removed. The descriptor is closed explicitly so a Close
+	// error is reported rather than silently swallowed by a deferred call.
+	writeErr := func() error {
+		if _, err := f.Write(data); err != nil {
+			return fmt.Errorf("runstore: write lock: %w", err)
+		}
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("runstore: sync lock: %w", err)
+		}
+		return nil
+	}()
+	closeErr := f.Close()
+	if writeErr != nil {
+		os.Remove(p)
+		return writeErr
+	}
+	if closeErr != nil {
+		os.Remove(p)
+		return fmt.Errorf("runstore: close lock: %w", closeErr)
+	}
+	return nil
 }
 
 // Lock returns the current lock, or ok=false when none exists.

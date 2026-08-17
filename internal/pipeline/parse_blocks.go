@@ -273,11 +273,15 @@ func extractSEARCH(content string) string {
 }
 
 // extractREPLACE pulls the REPLACE portion out of a SEARCH/REPLACE block
-// content.
+// content. A valid block must close its REPLACE section with a ">>>>>>>"
+// marker; a "=======" without that closing marker is malformed and the
+// original content is returned rather than capturing trailing garbage as a
+// replacement.
 func extractREPLACE(content string) string {
 	lines := strings.Split(content, "\n")
 	var replaceLines []string
 	inReplace := false
+	closed := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "=======") {
@@ -285,14 +289,18 @@ func extractREPLACE(content string) string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, ">>>>>>>") {
+			closed = true
 			break
 		}
 		if inReplace {
 			replaceLines = append(replaceLines, line)
 		}
 	}
-	if len(replaceLines) > 0 {
+	if closed && len(replaceLines) > 0 {
 		return strings.Join(replaceLines, "\n")
 	}
-	return ""
+	// No well-formed REPLACE section found (either no closing marker or no
+	// replacement content): return the original content rather than silently
+	// producing an empty replacement that would delete file content.
+	return content
 }

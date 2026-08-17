@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -296,7 +297,9 @@ func (c *Controller) checkpoint(phase string, taskN int, extra func(*Checkpoint)
 	if extra != nil {
 		extra(&cp)
 	}
-	_ = c.RunStore.AppendCheckpoint(cp)
+	if err := c.RunStore.AppendCheckpoint(cp); err != nil {
+		slog.Error("pipeline: failed to write checkpoint", "error", err, "phase", phase, "task", taskN)
+	}
 }
 
 // nextSeq returns the next checkpoint sequence number, starting from the
@@ -532,7 +535,7 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 	// 2. Run prepare-phase commands.
 	for _, op := range taskIR.Operations {
 		if r, ok := op.(*RunOp); ok && r.Status == OpExecutable && r.Phase == "prepare" {
-			if err := runRunOp(ctx, dir, c.Verifier.Runner, r); err != nil {
+			if err := runRunOp(ctx, dir, c.Verifier, r); err != nil {
 				return taskResult{}, fmt.Errorf("pipeline: task %d prepare: %w", t.N, err)
 			}
 		}
@@ -545,7 +548,7 @@ func (c *Controller) runTaskDeterministic(ctx context.Context, t TaskSpec, taskI
 	})
 	for _, op := range taskIR.Operations {
 		if a, ok := op.(*AssertOp); ok && a.Status == OpExecutable {
-			if err := checkAssert(ctx, dir, c.Verifier.Runner, a); err != nil {
+			if err := checkAssert(ctx, dir, c.Verifier, a); err != nil {
 				return taskResult{}, fmt.Errorf("pipeline: task %d assert: %w", t.N, err)
 			}
 		}
@@ -645,7 +648,7 @@ func (c *Controller) runFallbackAndVerifyGate(ctx context.Context, t TaskSpec, t
 			// Run plan-specified verify-phase commands alongside the
 			// build/test gate. If they fail, treat it as a gate failure
 			// so the fixer loop can address it.
-			vres := runVerifyOps(ctx, dir, c.Verifier.Runner, taskIR.Operations)
+			vres := runVerifyOps(ctx, dir, c.Verifier, taskIR.Operations)
 			if !vres.OK {
 				res = vres
 			}
@@ -983,6 +986,8 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 // ErrHumanGateRequired when a subagent needs an answer, or an error when a
 // task cannot be completed.
 func (c *Controller) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// Inspect (parse, compile, preflight) before any worktree is created: a
 	// strict plan with blocked, agent, or prose-only work is rejected without
 	// minting a worktree. The inspection is shared with the TUI preflight.
@@ -1029,6 +1034,22 @@ func (c *Controller) Run(ctx context.Context) error {
 		WorkspaceRoot: c.Worktree.Path,
 		ArtifactRoot:  c.Paths.Dir,
 		ArtifactAlias: "@run",
+	}
+	// Wire the token-usage callback so the budget is enforced. OnTokens
+	// is called from the dispatch path in the same goroutine as Run
+	// (the controller is single-threaded), so no atomics are needed.
+	// Chain any pre-existing callback (e.g. the app's TUI token display)
+	// rather than clobbering it. The controller owns UsageTokens; the
+	// chained callback reads the updated value.
+	prevOnTokens := c.Dispatch.OnTokens
+	c.Dispatch.OnTokens = func(n int) {
+		c.UsageTokens += n
+		if prevOnTokens != nil {
+			prevOnTokens(n)
+		}
+		if c.overBudget() {
+			cancel()
+		}
 	}
 	// Initialize run store if not already set (recovery sets it).
 	if c.RunStore == nil {
@@ -1092,6 +1113,36 @@ func (c *Controller) Run(ctx context.Context) error {
 	done, err := c.Ledger.CompletedTasks()
 	if err != nil {
 		return err
+	}
+	// Prune ledger entries whose commits no longer exist in the repo.
+	// This handles the case where a task was marked complete but its
+	// commit was lost (force-push, branch reset) — the task must be re-run.
+	// The check is conservative: a task is only pruned when LogOneline
+	// errors (the commit is definitely missing) and the head is not the
+	// current branch tip.
+	for taskN := range done {
+		_, head, ok := c.Ledger.TaskCommit(taskN)
+		if !ok || head == "" {
+			delete(done, taskN)
+			_ = c.Ledger.MarkIncomplete(taskN)
+			_ = c.Ledger.Note("Task %d: marked incomplete (no commit recorded)", taskN)
+			continue
+		}
+		// LogOneline(dir, "<sha>^..<sha>") returns the commit's line when
+		// it exists and an error when the commit is missing.
+		if _, err := c.Git.LogOneline(c.workDir(), head+"^.."+head); err == nil {
+			continue // commit exists; keep the task done
+		}
+		// LogOneline errored — the commit may be missing. Only prune if it
+		// is also not the current branch tip. The ledger stores the short
+		// SHA form, so compare against the short form of HEAD to avoid a
+		// full-vs-short mismatch that would never match.
+		if h, err := c.Git.RevParse(c.workDir(), "HEAD"); err == nil && short(h) == head {
+			continue // head is the branch tip; keep the task done
+		}
+		delete(done, taskN)
+		_ = c.Ledger.MarkIncomplete(taskN)
+		_ = c.Ledger.Note("Task %d: marked incomplete (commit %s not found)", taskN, head)
 	}
 	// Recovery: replay checkpoints and reconcile with Git.
 	if c.RunStore != nil {

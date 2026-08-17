@@ -18,6 +18,21 @@ import (
 	"marshal/internal/worktree"
 )
 
+// TestRunTaskDeterministicNilRunner verifies that a nil Verifier.Runner
+// returns an error instead of panicking.
+func TestRunTaskDeterministicNilRunner(t *testing.T) {
+	c := &Controller{
+		Verifier: Verifier{Runner: nil},
+	}
+	_, err := c.runTaskDeterministic(context.Background(), TaskSpec{N: 1}, &TaskIR{}, "", t.TempDir(), "")
+	if err == nil {
+		t.Fatal("expected error for nil runner, got nil")
+	}
+	if !strings.Contains(err.Error(), "no runner") {
+		t.Fatalf("expected 'no runner' error, got: %v", err)
+	}
+}
+
 // reportPathRe matches the report-contract line in an implementer or fixer
 // prompt, capturing the absolute path the subagent is told to write to.
 var reportPathRe = regexp.MustCompile(`Write your full report to (\S+)`)

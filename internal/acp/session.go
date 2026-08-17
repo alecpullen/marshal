@@ -698,7 +698,7 @@ func checkPath(p string, trusted []string) error {
 	}
 	res, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		res = p
+		res = filepath.Clean(p)
 	}
 	for _, root := range trusted {
 		rel, err := filepath.Rel(root, res)

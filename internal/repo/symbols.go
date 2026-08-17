@@ -24,6 +24,7 @@ func ExtractSymbols(ctx context.Context, path string, source []byte) ([]db.Symbo
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	defer tree.Close()
 
 	root := tree.RootNode()
 	var symbols []db.Symbol

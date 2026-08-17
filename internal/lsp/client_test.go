@@ -161,3 +161,16 @@ func TestClientInitializeAndRequest(t *testing.T) {
 		t.Fatalf("empty documentSymbol result: %s", raw)
 	}
 }
+
+// TestClientCloseIdempotent verifies that calling Close() twice does not
+// panic (previously: close of closed channel).
+func TestClientCloseIdempotent(t *testing.T) {
+	cToS := newPipe()
+	sToC := newPipe()
+	go fakeServer(t, cToS.r, sToC.w)
+
+	c := newClient(cToS.w, sToC.r)
+	c.Close()
+	// Second close must not panic.
+	c.Close()
+}

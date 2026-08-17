@@ -1,9 +1,12 @@
 package plugins
 
 import (
+	"bytes"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -109,6 +112,66 @@ func TestLoadStoreNoLockfile(t *testing.T) {
 	}
 	if len(loaded) != 0 {
 		t.Fatal("plugins without lockfile entries should not load")
+	}
+}
+
+func TestLoadStoreMalformedManifestLoggedAtError(t *testing.T) {
+	store := t.TempDir()
+	lock := filepath.Join(t.TempDir(), "plugins-lock.json")
+
+	// Create a plugin with a malformed manifest
+	pluginDir := filepath.Join(store, "bad-plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.toml"), []byte("{{{ not toml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Add a commands/*.md so the plugin isn't empty (to reach manifest parse)
+	if err := os.MkdirAll(filepath.Join(pluginDir, "commands"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "commands", "test.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hash the plugin dir for the lockfile
+	hash, err := HashDir(pluginDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a lockfile with this plugin
+	lf := Lockfile{Plugins: []LockEntry{{
+		Name:        "bad-plugin",
+		ContentHash: hash,
+	}}}
+	data, err := json.Marshal(lf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture logs
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	loaded, err := LoadStore(store, lock, logger)
+	if err != nil {
+		t.Fatalf("LoadStore should not return top-level error for per-plugin failure: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("expected 0 loaded plugins, got %d", len(loaded))
+	}
+	// Verify the error was logged at Error level
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "bad-plugin") {
+		t.Fatalf("error log should mention plugin name, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "level=ERROR") {
+		t.Fatalf("log should be at ERROR level, got: %s", logOutput)
 	}
 }
 

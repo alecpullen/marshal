@@ -81,7 +81,7 @@ func LoadStore(storeDir, lockPath string, logger *slog.Logger) ([]LoadedPlugin, 
 		}
 		contents, err := ScanPlugin(dir)
 		if err != nil {
-			logger.Warn("skipping plugin", "plugin", entry.Name, "error", err)
+			logger.Error("skipping plugin: scan failed", "plugin", entry.Name, "error", err)
 			continue
 		}
 		loaded = append(loaded, LoadedPlugin{Name: entry.Name, Contents: contents})

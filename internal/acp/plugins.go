@@ -62,6 +62,24 @@ func NewPluginsManager(cfg PluginsManagerConfig) *PluginsManager {
 	return &PluginsManager{lookup: cfg.Lookup, scans: map[string]map[string]*scannedPlugin{}}
 }
 
+// validPluginName reports whether name is safe to join onto a store
+// directory. Plugin names identify a directory directly inside the
+// plugin store, so anything that can redirect the join — a separator,
+// a parent traversal, an absolute or volume-qualified path — is
+// rejected rather than cleaned. This is enforced because the name
+// arrives from an ACP client over the wire and PluginsRemove hands the
+// result to os.RemoveAll: a name like "../../.." would otherwise delete
+// an arbitrary directory tree outside the plugin store.
+func validPluginName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, os.PathSeparator) {
+		return false
+	}
+	return !filepath.IsAbs(name) && filepath.VolumeName(name) == ""
+}
+
 // PluginEntry mirrors plugins.LockEntry for JSON transport, with a Scope
 // field added since a client sees both scopes merged into one list.
 type PluginEntry struct {
@@ -372,6 +390,9 @@ func (m *PluginsManager) PluginsRemove(ctx context.Context, params json.RawMessa
 	}
 	if p.Name == "" {
 		return nil, invalidParamsError("session/plugins_remove requires name")
+	}
+	if !validPluginName(p.Name) {
+		return nil, invalidParamsError("invalid plugin name %q", p.Name)
 	}
 	if !validPluginScope(p.Scope) {
 		return nil, invalidParamsError("invalid scope %q: want \"global\" or \"project\"", p.Scope)

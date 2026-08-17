@@ -11,6 +11,17 @@ func urlAllowed(rawURL string, allowlist, denylist []string) error {
 	if err != nil || parsed.Host == "" {
 		return fmt.Errorf("navigation blocked: invalid URL %q", rawURL)
 	}
+	// Scheme allowlist: only http, https, and file are permitted.
+	// Blocks javascript:, data:, vbscript:, and other schemes that could
+	// execute scripts in the browser context. This is defense-in-depth:
+	// javascript://example.com/alert(1) parses with a non-empty host and
+	// would otherwise pass the host check below.
+	switch parsed.Scheme {
+	case "http", "https", "file":
+		// proceed to host check
+	default:
+		return fmt.Errorf("navigation blocked: scheme %q not allowed for %q", parsed.Scheme, rawURL)
+	}
 	host := parsed.Hostname()
 	path := parsed.Path
 

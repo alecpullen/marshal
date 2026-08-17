@@ -105,12 +105,17 @@ func (rs *RunStore) Manifest() (Manifest, error) {
 // atomicWriteSync writes data to a temp file, fsyncs, then renames to the
 // final path. This ensures the file is either fully present or absent after
 // a crash — never partially written.
-func atomicWriteSync(path string, data []byte) error {
+func atomicWriteSync(path string, data []byte) (retErr error) {
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("runstore: create temp %s: %w", tmp, err)
 	}
+	defer func() {
+		if retErr != nil {
+			os.Remove(tmp)
+		}
+	}()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return fmt.Errorf("runstore: write temp %s: %w", tmp, err)

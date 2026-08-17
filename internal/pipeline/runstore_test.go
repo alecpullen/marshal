@@ -183,6 +183,22 @@ func TestRunStoreLockAcquireAndConcurrentRefusal(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteSyncCleansUpTempOnError(t *testing.T) {
+	dir := t.TempDir()
+	// Target a path in a non-existent subdirectory so the temp file
+	// creation fails (the parent dir doesn't exist).
+	badPath := filepath.Join(dir, "nonexistent", "output.json")
+	err := atomicWriteSync(badPath, []byte("{}"))
+	if err == nil {
+		t.Fatal("atomicWriteSync should fail for non-existent directory")
+	}
+	// Verify no .tmp file is left behind.
+	tmpPath := badPath + ".tmp"
+	if _, err := os.Stat(tmpPath); err == nil {
+		t.Errorf("stale .tmp file left behind at %s", tmpPath)
+	}
+}
+
 func TestAcquireLockAtomicNoTOCTOU(t *testing.T) {
 	dir := t.TempDir()
 	paths, err := NewPaths(dir, "test-plan")

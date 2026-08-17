@@ -88,6 +88,7 @@ func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Con
 	g := worktree.NewFakeGitOps()
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 	g.Heads[root] = g.Refs["main"]
+	g.AbbrevRef = "main"
 	g.Dirty = true
 
 	c, err := NewController(ControllerOpts{
@@ -1297,6 +1298,7 @@ func TestAdaptiveFallbackRejectsEmptyScope(t *testing.T) {
 	g := worktree.NewFakeGitOps()
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 	g.Heads[dir] = g.Refs["main"]
+	g.AbbrevRef = "main"
 	c, err := NewController(ControllerOpts{
 		PlanPath: planPath,
 		RepoRoot: dir,

@@ -377,9 +377,9 @@ func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {
 // completes in milliseconds regardless.
 func TestCancelAndWaitBoundsWait(t *testing.T) {
 	tm := &TurnManager{
-		activeTurns:     map[string]*activeTurn{},
-		activeTurnsMu:   sync.Mutex{},
-		cancelTimeout:   100 * time.Millisecond,
+		activeTurns:   map[string]*activeTurn{},
+		activeTurnsMu: sync.Mutex{},
+		cancelTimeout: 100 * time.Millisecond,
 	}
 	_, slotCancel := context.WithCancel(context.Background())
 	tm.activeTurns["s1"] = &activeTurn{

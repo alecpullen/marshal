@@ -154,21 +154,33 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	args = append(args, "--user", "65534:65534") // nobody/nogroup: a non-root uid
 
 	// Pass through allowlisted env so the command has PATH/HOME/etc inside
-	// the container. Empty allowlist = no env (consistent with restricted
-	// mode's behavior for explicit-empty allowlist).
+	// the container. Nil allowlist = use AllowList defaults (PATH, HOME,
+	// etc. minus secrets/dangerous keys), matching the restricted backend.
+	// Explicit-empty allowlist = no env (consistent with restricted mode).
 	//
 	// Apply the same secret/dangerous-key filtering the restricted backend
 	// uses: a user-supplied allowlist must not be used to inject secrets,
 	// dynamic-loader keys, or shell-hijack variables into the container.
-	for _, key := range c.cfg.EnvAllowlist {
-		if c.envDenySet[key] {
-			continue
+	if c.cfg.EnvAllowlist != nil {
+		for _, key := range c.cfg.EnvAllowlist {
+			if c.envDenySet[key] {
+				continue
+			}
+			if envutil.IsDangerousKey(key) || envutil.IsSecretKey(key) {
+				continue
+			}
+			if v, ok := os.LookupEnv(key); ok {
+				args = append(args, "-e", fmt.Sprintf("%s=%s", key, v))
+			}
 		}
-		if envutil.IsDangerousKey(key) || envutil.IsSecretKey(key) {
-			continue
-		}
-		if v, ok := os.LookupEnv(key); ok {
-			args = append(args, "-e", fmt.Sprintf("%s=%s", key, v))
+	} else {
+		// Nil allowlist: pass through safe default vars (AllowList).
+		for _, kv := range envutil.AllowList(os.Environ()) {
+			key := envutil.EnvKey(kv)
+			if c.envDenySet[key] {
+				continue
+			}
+			args = append(args, "-e", kv)
 		}
 	}
 

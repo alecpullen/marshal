@@ -598,6 +598,41 @@ func TestContainerBuildArgs_SetsPipefailInShellPath(t *testing.T) {
 	}
 }
 
+func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
+	// Set some env vars that should survive AllowList
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("HOME", "/home/test")
+
+	cfg := Config{
+		Backend:        "container",
+		ContainerImage: "alpine:latest",
+		EnvAllowlist:    nil, // nil → should use AllowList defaults
+	}
+	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
+
+	args := c.buildArgs("echo hi", "alpine:latest", "/workspace")
+
+	// Look for -e PATH=... and -e HOME=... in args
+	foundPath := false
+	foundHome := false
+	for i, a := range args {
+		if a == "-e" && i+1 < len(args) {
+			if strings.HasPrefix(args[i+1], "PATH=") {
+				foundPath = true
+			}
+			if strings.HasPrefix(args[i+1], "HOME=") {
+				foundHome = true
+			}
+		}
+	}
+	if !foundPath {
+		t.Error("nil EnvAllowlist should default to including PATH")
+	}
+	if !foundHome {
+		t.Error("nil EnvAllowlist should default to including HOME")
+	}
+}
+
 func TestContainerParseQuotedArgs(t *testing.T) {
 	// Test that buildArgs correctly parses a command with quoted arguments.
 	// strings.Fields would split "git commit -m \"fix: update logic\"" into

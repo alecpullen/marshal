@@ -58,12 +58,14 @@ func ValidName(name string) bool {
 }
 
 // ValidateCloneSource validates that a file:// source is contained
-// within the workspace root. Non-file:// sources always pass — git
-// handles remote URLs with its own transport security. file:// sources
-// that resolve outside the workspace root are rejected to prevent a
-// malicious config from cloning arbitrary local paths (e.g.
-// file:///etc/passwd). Local development and testing use file:// with
-// paths inside the workspace.
+// within the workspace root, after resolving symlinks. Non-file:// sources
+// always pass — git handles remote URLs with its own transport security,
+// and plain local paths are a supported interactive install source (the
+// user explicitly provides them). This prevents a malicious config,
+// lockfile, or ACP request from cloning arbitrary local paths (e.g.
+// file:///etc/passwd) or a workspace-internal symlink that points outside
+// the workspace. Local development and testing use file:// with paths
+// inside the workspace.
 func ValidateCloneSource(source, workspaceRoot string) error {
 	u, err := url.Parse(source)
 	if err != nil {
@@ -72,24 +74,43 @@ func ValidateCloneSource(source, workspaceRoot string) error {
 	if u.Scheme != "file" {
 		return nil
 	}
-	// Resolve the file path to absolute and check containment
-	localPath := u.Path
-	abs, err := filepath.Abs(localPath)
-	if err != nil {
-		return fmt.Errorf("invalid file:// path %q: %w", localPath, err)
+	// Only an empty host or "localhost" is a local file URL. A non-empty
+	// host (file://attacker-host/path) is a remote file share and must be
+	// rejected outright.
+	if u.Host != "" && u.Host != "localhost" {
+		return fmt.Errorf("file:// source %q has a non-local host %q", source, u.Host)
 	}
-	// Resolve workspace root to absolute as well
+	// Make the file path absolute (relative to the process cwd) so symlink
+	// resolution and containment compare against a consistent base.
+	abs, err := filepath.Abs(u.Path)
+	if err != nil {
+		return fmt.Errorf("invalid file:// path %q: %w", u.Path, err)
+	}
+	// Resolve symlinks on both the source and the workspace root so a
+	// symlink inside the workspace pointing outside is caught, and so a
+	// workspace root reached via a symlink compares consistently.
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// The path may not exist yet (git clone will fail on it anyway);
+		// fall back to the cleaned absolute path for the containment check.
+		resolved = abs
+	}
 	wsAbs, err := filepath.Abs(workspaceRoot)
 	if err != nil {
 		return fmt.Errorf("invalid workspace root %q: %w", workspaceRoot, err)
 	}
-	// Check containment: abs must be inside wsAbs
-	rel, err := filepath.Rel(wsAbs, abs)
+	wsResolved, err := filepath.EvalSymlinks(wsAbs)
 	if err != nil {
-		return fmt.Errorf("file:// source %q is outside the workspace root", localPath)
+		wsResolved = wsAbs
+	}
+
+	// Check containment: resolved must be inside wsResolved.
+	rel, err := filepath.Rel(wsResolved, resolved)
+	if err != nil {
+		return fmt.Errorf("file:// source %q is outside the workspace root", u.Path)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("file:// source %q is outside the workspace root", localPath)
+		return fmt.Errorf("file:// source %q is outside the workspace root", u.Path)
 	}
 	return nil
 }

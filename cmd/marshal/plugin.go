@@ -322,6 +322,17 @@ func runPluginUpdate(ctx context.Context, args []string, stdin io.Reader, stdout
 // updateOne re-clones one plugin's source, and when the commit moved,
 // shows the new contents and asks before swapping files and re-pinning.
 func updateOne(ctx context.Context, inst *plugins.Installer, scope scopePaths, lf *plugins.Lockfile, entry plugins.LockEntry, stdin io.Reader, stdout io.Writer) error {
+	// The lockfile source is re-cloned here, so re-validate it against the
+	// workspace root (the same base used at install time) to prevent a
+	// tampered lockfile from cloning an arbitrary local path.
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	if err := plugins.ValidateCloneSource(entry.Source, wd); err != nil {
+		return fmt.Errorf("update %s: %w", entry.Name, err)
+	}
+
 	tmp, err := os.MkdirTemp("", "marshal-plugin-*")
 	if err != nil {
 		return err

@@ -606,7 +606,7 @@ func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
 	cfg := Config{
 		Backend:        "container",
 		ContainerImage: "alpine:latest",
-		EnvAllowlist:    nil, // nil → should use AllowList defaults
+		EnvAllowlist:   nil, // nil → should use AllowList defaults
 	}
 	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
 

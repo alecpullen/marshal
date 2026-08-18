@@ -112,6 +112,21 @@ func TestExtract(t *testing.T) {
 	}
 }
 
+func TestExtractBalancedWithStrayBracket(t *testing.T) {
+	// A stray ']' inside the object is excised as cosmetic cleanup, but the
+	// object itself is naturally balanced — no structural repair is needed.
+	// Extract must therefore not return ErrNotFound for it.
+	input := `{"a": 1]}`
+	got, err := Extract(input)
+	if err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+	want := `{"a": 1}`
+	if got != want {
+		t.Fatalf("Extract = %q, want %q", got, want)
+	}
+}
+
 func TestExtractRepairing(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -139,8 +154,9 @@ func TestExtractRepairing(t *testing.T) {
 		},
 		{
 			// The "]}" tail models emit when they confuse the single-action
-			// and parallel-actions forms. The stray ']' must be excised, or
-			// the result is not valid JSON.
+			// and parallel-actions forms. The stray ']' is excised, so
+			// repaired=true (a correction was applied) even though the object
+			// itself was structurally balanced.
 			name:         "stray array close is excised",
 			input:        `{"action": {"type": "final", "content": "hi"}]}`,
 			want:         `{"action": {"type": "final", "content": "hi"}}`,

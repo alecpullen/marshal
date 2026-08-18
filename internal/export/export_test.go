@@ -177,6 +177,31 @@ func TestRenderRedactsSecretsWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestRenderRendersReasoningAsMarkdown guards the Reasoning/ContentHTML
+// asymmetry: thinking text is rendered through the same markdown pipeline as
+// content, so markdown in reasoning (e.g. bold) is rendered rather than
+// escaped as plain text.
+func TestRenderRendersReasoningAsMarkdown(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.BeginStreaming()
+	state.AppendThinking("I should use **bold** reasoning")
+	state.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	// The bold markdown in reasoning must be rendered as <strong>, not
+	// escaped as literal "**bold**".
+	if !strings.Contains(s, "<strong>bold</strong>") {
+		t.Fatalf("reasoning markdown not rendered:\n%s", s)
+	}
+	if strings.Contains(s, "**bold**") {
+		t.Fatalf("reasoning markdown escaped as plain text:\n%s", s)
+	}
+}
+
 func TestRenderRedactsReasoningAndToolSummaryAndError(t *testing.T) {
 	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
 
@@ -203,6 +228,69 @@ func TestRenderRedactsReasoningAndToolSummaryAndError(t *testing.T) {
 	}
 	if !strings.Contains(out, redact.MaskToken) {
 		t.Fatal("redaction marker absent")
+	}
+}
+
+func TestExportRendersToolContentAsCode(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	// A tool result containing "# Comment" should not become an <h1>.
+	state.AddMessage(session.RoleAssistant, "# Not a heading\n\ncode: here", session.ContentTypeCode)
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	// The content must be wrapped in a <pre><code> block, not turned into
+	// a markdown heading. (The page template legitimately emits an <h1> for
+	// the session title, so assert specifically that the code content did
+	// not become its own heading element.)
+	if strings.Contains(s, "<h1>Not a heading</h1>") {
+		t.Fatalf("code content rendered as heading (markdown mangling):\n%s", s)
+	}
+	if !strings.Contains(s, "<pre><code># Not a heading") {
+		t.Fatalf("code content not wrapped in a <pre><code> block:\n%s", s)
+	}
+	if !strings.Contains(s, "Not a heading") {
+		t.Fatalf("code content missing from export:\n%s", s)
+	}
+}
+
+// TestExportCodeContentWithBackticks guards against fenced-code wrapping
+// breaking when the content itself contains literal backticks. Code-like
+// content is rendered as an escaped <pre><code> block, so backticks in the
+// content must survive verbatim rather than being interpreted as fence
+// markers.
+func TestExportCodeContentWithBackticks(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.AddMessage(session.RoleAssistant, "```\ncode with `backticks`\n```", session.ContentTypeCode)
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	// The literal backticks must survive inside the code block.
+	if !strings.Contains(s, "`backticks`") {
+		t.Fatalf("literal backticks lost from code content:\n%s", s)
+	}
+	// The content must be a single <pre><code> block, not split by fence
+	// interpretation.
+	if !strings.Contains(s, "<pre><code>```") {
+		t.Fatalf("code content not wrapped in a <pre><code> block:\n%s", s)
+	}
+}
+
+func TestExportRedactsUsage(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
+	// Include a secret-bearing value in the usage string.
+	state.AddMessageFinalWithUsage(session.RoleAssistant, "done", session.ContentTypeMarkdown, 2, "model: gpt-4o, API_KEY=sk-proj-1234567890abcdef")
+	html, err := Render(state, true)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	if strings.Contains(s, "sk-proj-1234567890abcdef") {
+		t.Fatalf("secret in usage field survived redaction:\n%s", s)
 	}
 }
 

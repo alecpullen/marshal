@@ -29,24 +29,43 @@ var ErrNotFound = errors.New("jsonextract: no JSON object found in input")
 // must keep getting ErrNotFound. Only callers that explicitly want the
 // salvage call ExtractRepairing.
 func Extract(raw string) (string, error) {
-	text, repaired, err := ExtractRepairing(raw)
+	text, structural, _, err := extractBalanced(raw)
 	if err != nil {
 		return "", err
 	}
-	if repaired {
+	if structural {
 		return "", ErrNotFound
 	}
 	return text, nil
 }
 
-// ExtractRepairing behaves like Extract, but when the input ends with
-// containers still open it closes them from the depth stack and returns the
-// balanced result with repaired = true. Only closing punctuation is
-// appended: no content is invented, nothing inside a string literal is
-// touched, and an unterminated string literal is not repaired (the value
-// would be a guess). Callers that must not act on a guess should check
-// repaired.
+// ExtractRepairing behaves like Extract, but it also returns the balanced
+// result (with repaired = true) whenever the input needed any correction:
+// closing containers left open at the end of input, or excising stray closing
+// punctuation. Only closing punctuation is appended or removed: no content is
+// invented, nothing inside a string literal is touched, and an unterminated
+// string literal is not repaired (the value would be a guess). Callers that
+// must not act on a guess should check repaired.
 func ExtractRepairing(raw string) (text string, repaired bool, err error) {
+	text, structural, excised, err := extractBalanced(raw)
+	if err != nil {
+		return "", false, err
+	}
+	return text, structural || excised, nil
+}
+
+// extractBalanced scans raw for the first complete, balanced JSON object.
+// It returns the balanced text together with two independent signals:
+//
+//	structural — true when containers left open at the end of input were
+//	    closed (a genuinely unbalanced/truncated payload). Strict callers must
+//	    reject these.
+//	excised — true when stray closing punctuation (e.g. the "]}" tail) was
+//	    removed from an object that was otherwise naturally balanced. This is
+//	    cosmetic cleanup, not a structural repair.
+//
+// It returns ErrNotFound when no balanced object is present.
+func extractBalanced(raw string) (text string, structural, excised bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimPrefix(trimmed, "```json")
 	trimmed = strings.TrimPrefix(trimmed, "```")
@@ -112,7 +131,12 @@ func ExtractRepairing(raw string) (text string, repaired bool, err error) {
 			}
 			stack = stack[:len(stack)-1]
 			if len(stack) == 0 && start != -1 {
-				return excise(trimmed[start:i+1], drop, start)
+				// Object closed naturally; only cosmetic excision may remain.
+				text, hadDrop, err := excise(trimmed[start:i+1], drop, start)
+				if err != nil {
+					return "", false, false, err
+				}
+				return text, false, hadDrop, nil
 			}
 		}
 	}
@@ -121,19 +145,19 @@ func ExtractRepairing(raw string) (text string, repaired bool, err error) {
 	// structurally repairable: an object was started, and we are not stranded
 	// mid-string with a value we would have to invent.
 	if start != -1 && len(stack) > 0 && !inString {
-		text, _, err := excise(trimmed[start:], drop, start)
+		text, hadDrop, err := excise(trimmed[start:], drop, start)
 		if err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		var b strings.Builder
 		b.WriteString(text)
 		for i := len(stack) - 1; i >= 0; i-- {
 			b.WriteByte(stack[i])
 		}
-		return b.String(), true, nil
+		return b.String(), true, hadDrop, nil
 	}
 
-	return "", false, ErrNotFound
+	return "", false, false, ErrNotFound
 }
 
 // excise removes stray closing punctuation from an extracted object. offsets

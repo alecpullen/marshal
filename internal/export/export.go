@@ -30,7 +30,7 @@ type item struct {
 	MessageClass  string
 	RoleLabel     string
 	ContentHTML   template.HTML
-	Reasoning     string
+	Reasoning     template.HTML
 	Usage         string
 	ToolName      string
 	ResultSummary string
@@ -67,11 +67,17 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 			}
 			content := t.Message.Content
 			reasoning := t.Message.Reasoning
+			usage := t.Message.Usage
 			if redactOn {
 				content = redact.Secrets(content)
 				reasoning = redact.Secrets(reasoning)
+				usage = redact.Secrets(usage)
 			}
 			contentHTML := contentToHTML(md, content, t.Message.ContentType)
+			// Reasoning is rendered through the same markdown pipeline as
+			// content so thinking text (which may contain markdown) is
+			// rendered consistently rather than escaped as plain text.
+			reasoningHTML := contentToHTML(md, reasoning, session.ContentTypeMarkdown)
 			cls := "user"
 			role := "user"
 			if t.Message.Role == session.RoleAssistant {
@@ -86,8 +92,8 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				MessageClass: cls,
 				RoleLabel:    role,
 				ContentHTML:  contentHTML,
-				Reasoning:    reasoning,
-				Usage:        t.Message.Usage,
+				Reasoning:    reasoningHTML,
+				Usage:        usage,
 			})
 		case session.KindAudit:
 			if t.Audit == nil {
@@ -172,6 +178,15 @@ func safeInlineParsers() []util.PrioritizedValue {
 }
 
 func contentToHTML(md goldmark.Markdown, content string, ct session.ContentType) template.HTML {
+	// Code-like content types are rendered as escaped <pre><code> blocks
+	// rather than run through the markdown renderer. Fenced code blocks
+	// would break when the content itself contains literal backticks, and
+	// markdown would mangle code as headings, lists, or other constructs.
+	switch ct {
+	case session.ContentTypeCode, session.ContentTypeToolResult,
+		session.ContentTypeDiff, session.ContentTypePlan:
+		return template.HTML("<pre><code>" + html.EscapeString(content) + "</code></pre>")
+	}
 	if ct == session.ContentTypeMarkdown ||
 		strings.Contains(content, "\n") ||
 		strings.ContainsAny(content, "*`#") {

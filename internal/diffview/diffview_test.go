@@ -61,6 +61,56 @@ func TestParseRejectsGarbage(t *testing.T) {
 	}
 }
 
+// TestParseRejectsBackslashContentLine guards the no-newline marker match:
+// only the exact git marker "\ No newline at end of file" is treated as
+// metadata. Any other backslash-prefixed line must be rejected rather than
+// silently dropped, so real content is never lost.
+func TestParseRejectsBackslashContentLine(t *testing.T) {
+	diff := `--- a/foo.go
++++ b/foo.go
+@@ -1,1 +1,1 @@
+-old line
+\ some other backslash content
++new line
+`
+	if _, err := parseUnifiedDiff(diff); err == nil {
+		t.Fatal("expected parse error for non-marker backslash line")
+	}
+}
+
+func TestParseUnifiedDiffNoNewlineMarker(t *testing.T) {
+	diff := `--- a/foo.go
++++ b/foo.go
+@@ -1,1 +1,1 @@
+-old line
+\ No newline at end of file
++new line
+`
+	hunks, err := parseUnifiedDiff(diff)
+	if err != nil {
+		t.Fatalf("parse failed on no-newline marker: %v", err)
+	}
+	if len(hunks) != 1 {
+		t.Fatalf("hunks = %d, want 1", len(hunks))
+	}
+	// The old line should be classified as removed, the new line as added.
+	var removed, added int
+	for _, ln := range hunks[0].Lines {
+		switch ln.Kind {
+		case LineRemoved:
+			removed++
+		case LineAdded:
+			added++
+		}
+	}
+	if removed != 1 {
+		t.Fatalf("removed lines = %d, want 1", removed)
+	}
+	if added != 1 {
+		t.Fatalf("added lines = %d, want 1", added)
+	}
+}
+
 func TestRenderUnifiedFallbackPlainText(t *testing.T) {
 	out := Render(sampleUnified, Options{Width: 40, Mode: ModeUnified, Highlight: false})
 	if !strings.Contains(out, "return 2") {
@@ -122,6 +172,44 @@ func TestRenderTruncatesLargeDiffs(t *testing.T) {
 	out := Render(b.String(), Options{Width: 80, Mode: ModeUnified, Highlight: false})
 	if !strings.Contains(out, "truncated") {
 		t.Fatalf("expected truncation note in output")
+	}
+}
+
+func TestRenderSideBySideHighlightDoesNotCorruptEmphasis(t *testing.T) {
+	// When highlighting is enabled, emphasis offsets (computed from
+	// un-highlighted content) are incompatible with the highlighted
+	// string. The fix skips emphasis when highlighting is on.
+	diff := `--- a/foo.go
++++ b/foo.go
+@@ -1,1 +1,1 @@
+-return 1
++return 2
+`
+	// The emphasis styles render as bold color codes (1;91 for removed,
+	// 1;92 for added). When highlighting is on, emphasis must be skipped so
+	// these codes never appear; when highlighting is off, they must be
+	// present. This directly detects the corruption the fix prevents: if
+	// emphasis were applied to the highlighted string, the mismatched byte
+	// offsets would emit garbled partial ANSI sequences.
+	const (
+		remEmphCode = "\x1b[1;91m"
+		addEmphCode = "\x1b[1;92m"
+	)
+
+	out := Render(diff, Options{Width: 160, Mode: ModeSideBySide, Highlight: true})
+	if strings.Contains(out, remEmphCode) || strings.Contains(out, addEmphCode) {
+		t.Fatalf("emphasis applied while highlighting is on (corruption):\n%q", out)
+	}
+	if !strings.Contains(out, "return") {
+		t.Fatalf("content missing from highlighted render:\n%q", out)
+	}
+
+	outNoHL := Render(diff, Options{Width: 160, Mode: ModeSideBySide, Highlight: false})
+	if !strings.Contains(outNoHL, remEmphCode) && !strings.Contains(outNoHL, addEmphCode) {
+		t.Fatalf("emphasis not applied when highlighting is off:\n%q", outNoHL)
+	}
+	if !strings.Contains(outNoHL, "return") {
+		t.Fatalf("content missing from non-highlighted render:\n%q", outNoHL)
 	}
 }
 

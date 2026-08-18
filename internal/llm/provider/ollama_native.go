@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
@@ -43,7 +44,7 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{}
+		client = &http.Client{Timeout: 120 * time.Second}
 	}
 	caps := DefaultCapabilities()
 	// Ollama's think toggle is a different mechanism than the

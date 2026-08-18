@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"marshal/internal/llm/schema"
 	"marshal/internal/llm/streaming"
@@ -43,7 +44,7 @@ func NewAnthropic(opts Options) (*Anthropic, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{}
+		client = &http.Client{Timeout: 120 * time.Second}
 	}
 	caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false, Reasoning: true}
 	if opts.Capabilities != nil {

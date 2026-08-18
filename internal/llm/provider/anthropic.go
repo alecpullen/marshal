@@ -371,13 +371,25 @@ func (p *Anthropic) readChatResponse(body io.ReadCloser, events chan<- schema.Ch
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("decode chat response: %w", err)}
 		return
 	}
+	var hasContent bool
 	for _, block := range parsed.Content {
 		switch block.Type {
 		case "thinking":
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: block.Thinking}
+			hasContent = true
 		case "text":
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: block.Text}
+			if block.Text != "" {
+				hasContent = true
+			}
 		}
+	}
+	if !hasContent && len(anthropicToolCallsFromBlocks(parsed.Content)) > 0 {
+		hasContent = true
+	}
+	if !hasContent {
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("anthropic returned empty content (usage: in=%d out=%d)", parsed.Usage.InputTokens, parsed.Usage.OutputTokens)}
+		return
 	}
 	events <- schema.ChatEvent{
 		Type:         schema.ChatEventDone,

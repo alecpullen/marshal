@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"marshal/internal/llm/schema"
@@ -419,5 +420,34 @@ func TestAnthropicThinkingBudgetMapping(t *testing.T) {
 	req.Thinking = "off"
 	if _, ok := parseThinking(t, req); ok {
 		t.Fatal("off thinking must not emit a thinking block")
+	}
+}
+
+func TestAnthropicEmptyContentReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":0}}`))
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), schema.ChatRequest{
+		Model:    "claude-sonnet-4-5",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	var gotErr error
+	for ev := range events {
+		if ev.Type == schema.ChatEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected error for empty content, got nil")
+	}
+	if !strings.Contains(gotErr.Error(), "empty content") {
+		t.Fatalf("error should mention 'empty content', got: %v", gotErr)
 	}
 }

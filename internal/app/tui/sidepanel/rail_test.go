@@ -385,6 +385,26 @@ func TestRailNoANSIEscapesUnderNoColor(t *testing.T) {
 	}
 }
 
+// TestFooterAccountsForIntroRowInFitBudget pins that the footer's natural
+// cost passed to fit() includes the blank separator row View prepends to
+// the pinned footer. Previously fit() sized the footer to its full expanded
+// body at heights where only a one-liner fit, and the resulting overflow
+// dropped the footer entirely. Accounting for the intro row lets fit()
+// collapse it to a one-line summary instead.
+func TestFooterAccountsForIntroRowInFitBudget(t *testing.T) {
+	// Expanded footer needs 2 body rows + title = 3, plus 1 intro row = 4.
+	// At height 3 the full body can't fit, but a one-liner (1 + intro = 2)
+	// fits comfortably. Without the fix the footer is dropped.
+	r := New(footerSection(2))
+	out := StripANSI(r.View(Data{}, 40, 3))
+	if strings.Contains(out, "session-row") {
+		t.Fatalf("height 3 cannot fit the full footer body:\n%s", out)
+	}
+	if !strings.Contains(out, "session summary") {
+		t.Fatalf("height 3 should fit the footer as a one-liner, got:\n%s", out)
+	}
+}
+
 func TestFooterDoesNotPanicAtSmallHeights(t *testing.T) {
 	// Regression test for C1: a footer-only rail must not panic at any
 	// height from 1 to 8. The footer's natural height is 3 (2 body rows

@@ -116,9 +116,20 @@ func (r *Rail) View(d Data, width, height int) string {
 		if s.Clippable() {
 			clipped = min(len(bodies[i])+1, 4) // title + up to 3 body rows
 		}
+		natural := len(bodies[i]) + 1 // +1 for the title row
+		if s.ID() == footerID {
+			// The footer is pinned to the bottom edge and View prepends a
+			// blank separator row to it (the intro). Without accounting for
+			// that row here, fit() may assign the footer its full expanded
+			// height, then the real rendering overflows and the footer is
+			// dropped entirely — even when there was room for a one-liner.
+			// Adding the blank row to the natural cost lets fit() collapse
+			// the footer to a single line instead.
+			natural++
+		}
 		costs[i] = SectionCost{
 			Priority: s.Priority(),
-			Natural:  len(bodies[i]) + 1, // +1 for the title row
+			Natural:  natural,
 			Clipped:  clipped,
 		}
 	}

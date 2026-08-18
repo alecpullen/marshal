@@ -90,3 +90,53 @@ func TestReadEmptyBaseRefReturnsNil(t *testing.T) {
 		t.Errorf("Read(no base ref) = %+v, want nil", got)
 	}
 }
+
+func TestReadModifiedFileOnlyAdditionsGetsM(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	base := initRepo(t, dir)
+
+	// Append lines to existing file — numstat shows additions-only.
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\nthree\nfour\nfive\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := Read(dir, base)
+	if len(got) != 1 {
+		t.Fatalf("got %d files, want 1: %+v", len(got), got)
+	}
+	if got[0].Path != "a.txt" {
+		t.Errorf("path = %q, want a.txt", got[0].Path)
+	}
+	if got[0].Status != 'M' {
+		t.Errorf("status = %q, want 'M' (modified, not added)", got[0].Status)
+	}
+}
+
+func TestReadNewFileGetsA(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	base := initRepo(t, dir)
+
+	// Create a genuinely new file and stage it.
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("brand new\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "new.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+
+	got := Read(dir, base)
+	found := false
+	for _, f := range got {
+		if f.Path == "new.txt" {
+			found = true
+			if f.Status != 'A' {
+				t.Errorf("status = %q, want 'A' (added)", f.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("new.txt not in results: %+v", got)
+	}
+}

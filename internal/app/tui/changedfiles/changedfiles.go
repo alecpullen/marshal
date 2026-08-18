@@ -63,7 +63,42 @@ func Read(workingDir, baseRef string) []sidepanel.ChangedFile {
 		}
 	}
 
+	// Third pass: name-status for accurate file classification. numstat
+	// can't distinguish a new file from a modified file with only
+	// additions; --name-status provides the authoritative status letter.
+	ctx3, cancel3 := context.WithTimeout(context.Background(), readTimeout)
+	defer cancel3()
+
+	out3, err := exec.CommandContext(ctx3, "git", "-C", workingDir,
+		"diff", "--name-status", baseRef).Output()
+	if err == nil {
+		statusMap := parseNameStatus(string(out3))
+		for i := range files {
+			if s, ok := statusMap[files[i].Path]; ok {
+				files[i].Status = s
+			}
+		}
+	}
+
 	return files
+}
+
+// parseNameStatus parses `git diff --name-status` output into a path→status
+// map. The status letter is the first character of each line's first field
+// (A, M, D, R, C, etc.).
+func parseNameStatus(out string) map[string]rune {
+	m := make(map[string]rune)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		m[parts[1]] = rune(parts[0][0])
+	}
+	return m
 }
 
 // parseNumstat parses the output of `git diff --numstat` into ChangedFile

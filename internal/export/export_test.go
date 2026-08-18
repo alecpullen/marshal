@@ -206,6 +206,42 @@ func TestRenderRedactsReasoningAndToolSummaryAndError(t *testing.T) {
 	}
 }
 
+func TestExportRendersToolContentAsCode(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	// A tool result containing "# Comment" should not become an <h1>.
+	state.AddMessage(session.RoleAssistant, "# Not a heading\n\ncode: here", session.ContentTypeCode)
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	// The content must be wrapped in a fenced code block, not turned into
+	// a markdown heading. (The page template legitimately emits an <h1> for
+	// the session title, so assert specifically that the code content did
+	// not become its own heading element.)
+	if strings.Contains(s, "<h1>Not a heading</h1>") {
+		t.Fatalf("code content rendered as heading (markdown mangling):\n%s", s)
+	}
+	if !strings.Contains(s, "Not a heading") {
+		t.Fatalf("code content missing from export:\n%s", s)
+	}
+}
+
+func TestExportRedactsUsage(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
+	// Include a secret-bearing value in the usage string.
+	state.AddMessageFinalWithUsage(session.RoleAssistant, "done", session.ContentTypeMarkdown, 2, "model: gpt-4o, API_KEY=sk-proj-1234567890abcdef")
+	html, err := Render(state, true)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	if strings.Contains(s, "sk-proj-1234567890abcdef") {
+		t.Fatalf("secret in usage field survived redaction:\n%s", s)
+	}
+}
+
 func sessionMinimalConfig() config.Config {
 	return config.Default()
 }

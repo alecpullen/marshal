@@ -67,9 +67,19 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 			}
 			content := t.Message.Content
 			reasoning := t.Message.Reasoning
+			usage := t.Message.Usage
 			if redactOn {
 				content = redact.Secrets(content)
 				reasoning = redact.Secrets(reasoning)
+				usage = redact.Secrets(usage)
+			}
+			// Wrap non-prose content types in fenced code blocks to
+			// prevent the markdown renderer from mangling code as
+			// headings, lists, or other markdown constructs.
+			switch t.Message.ContentType {
+			case session.ContentTypeCode, session.ContentTypeToolResult,
+				session.ContentTypeDiff, session.ContentTypePlan:
+				content = "```\n" + content + "\n```"
 			}
 			contentHTML := contentToHTML(md, content, t.Message.ContentType)
 			cls := "user"
@@ -87,7 +97,7 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				RoleLabel:    role,
 				ContentHTML:  contentHTML,
 				Reasoning:    reasoning,
-				Usage:        t.Message.Usage,
+				Usage:        usage,
 			})
 		case session.KindAudit:
 			if t.Audit == nil {

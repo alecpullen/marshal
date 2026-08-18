@@ -360,7 +360,12 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema
 		if chunk.Message.Content != "" {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: chunk.Message.Content}
 		}
-		toolCalls = append(toolCalls, ollamaToolCallsFromWire(chunk.Message.ToolCalls)...)
+		// Ollama sends cumulative tool call state per chunk, not deltas.
+		// Overwrite with the latest chunk's tool calls so we end up with
+		// the final accumulated version, not a concatenation of all chunks.
+		if len(chunk.Message.ToolCalls) > 0 {
+			toolCalls = ollamaToolCallsFromWire(chunk.Message.ToolCalls)
+		}
 		if chunk.Done {
 			finishReason = chunk.DoneReason
 			usage = ollamaUsageFrom(chunk)

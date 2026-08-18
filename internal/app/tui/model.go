@@ -3751,6 +3751,7 @@ func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 		m.railBaseRef = msg.ref
 	}
 	m.refreshRailChanged()
+	m.refreshViewport()
 	return m, nil
 }
 

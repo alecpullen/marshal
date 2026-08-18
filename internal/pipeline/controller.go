@@ -981,6 +981,30 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 	}
 }
 
+// ResolveTargetBranch populates and returns the branch that the pipeline will
+// use as its merge target. Explicit targets are preserved; otherwise the
+// current checked-out branch is resolved before any run state is published or
+// worktree is created.
+func (c *Controller) ResolveTargetBranch() (string, error) {
+	if branch := strings.TrimSpace(c.TargetBranch); branch != "" {
+		c.TargetBranch = branch
+		return branch, nil
+	}
+	if c.Git == nil {
+		return "", fmt.Errorf("pipeline: cannot infer target branch: git is not configured")
+	}
+	branch, err := c.Git.RevParse(c.RepoRoot, "--abbrev-ref HEAD")
+	if err != nil {
+		return "", fmt.Errorf("pipeline: infer target branch: %w", err)
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" || branch == "HEAD" {
+		return "", fmt.Errorf("pipeline: infer target branch: repository is in detached HEAD")
+	}
+	c.TargetBranch = branch
+	return branch, nil
+}
+
 // Run executes the plan from the first task the ledger does not mark
 // complete. It returns nil when the branch is ready for the human,
 // ErrHumanGateRequired when a subagent needs an answer, or an error when a
@@ -1005,19 +1029,8 @@ func (c *Controller) Run(ctx context.Context) error {
 		return fmt.Errorf("pipeline: strict plan is blocked:\n%s", strings.Join(msgs, "\n"))
 	}
 	if c.Worktree.Path == "" {
-		if strings.TrimSpace(c.TargetBranch) == "" {
-			if c.Git == nil {
-				return fmt.Errorf("pipeline: cannot infer target branch: git is not configured")
-			}
-			branch, err := c.Git.RevParse(c.RepoRoot, "--abbrev-ref HEAD")
-			if err != nil {
-				return fmt.Errorf("pipeline: infer target branch: %w", err)
-			}
-			branch = strings.TrimSpace(branch)
-			if branch == "" || branch == "HEAD" {
-				return fmt.Errorf("pipeline: infer target branch: repository is in detached HEAD")
-			}
-			c.TargetBranch = branch
+		if _, err := c.ResolveTargetBranch(); err != nil {
+			return err
 		}
 		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
 		if err != nil {

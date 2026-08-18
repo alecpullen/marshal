@@ -33,6 +33,9 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	if a.c == nil {
 		return errors.New("pipeline: no controller")
 	}
+	if _, err := a.c.ResolveTargetBranch(); err != nil {
+		return err
+	}
 	a.state.UpdateSDDProgress(func(p *session.SDDProgress) {
 		p.Active = true
 		p.Finished = false

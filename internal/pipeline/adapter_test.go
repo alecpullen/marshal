@@ -47,8 +47,8 @@ func TestAdapterRecordsOutcomePathsAtRunStart(t *testing.T) {
 	if p.ArtifactsDir == "" {
 		t.Error("ArtifactsDir must be recorded so a failed run can point at its reports")
 	}
-	if p.BaseRef == "" {
-		t.Error("BaseRef must be recorded so the branch diff has a left side")
+	if p.BaseRef != "main" {
+		t.Errorf("BaseRef = %q at run start, want main", p.BaseRef)
 	}
 }
 
@@ -69,6 +69,9 @@ func TestAdapterKeepsProgressLiveAtGate(t *testing.T) {
 	}
 	if p.Finished {
 		t.Error("run marked finished at a human gate — it resumes after AnswerGate")
+	}
+	if p.BaseRef != "main" {
+		t.Errorf("BaseRef = %q at run start, want main", p.BaseRef)
 	}
 }
 

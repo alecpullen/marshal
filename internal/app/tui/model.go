@@ -1341,6 +1341,12 @@ func (m Model) railData() sidepanel.Data {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Clear interruptArmed for any non-keypress message so a stale flag
+	// doesn't cause the next Ctrl+C to quit instead of interrupt. Only an
+	// immediate second Ctrl+C (no intervening messages) should quit.
+	if _, ok := msg.(tea.KeyPressMsg); !ok {
+		m.interruptArmed = false
+	}
 	// Ctrl+C interrupts an in-flight turn on the first press and quits on the
 	// second. Checked before any overlay routing so it can never be captured
 	// by a form's keymap.

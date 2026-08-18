@@ -83,6 +83,36 @@ func TestCtrlCQuitsImmediatelyWhenIdle(t *testing.T) {
 	}
 }
 
+// TestInterruptArmedClearedByNonKeyMessage pins that a stale interruptArmed
+// flag is cleared by any non-keypress message (e.g. WindowSizeMsg), so a
+// Ctrl+C pressed after unrelated messages interrupts again rather than
+// quitting.
+func TestInterruptArmedClearedByNonKeyMessage(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+
+	// First Ctrl+C interrupts.
+	mm, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mm.(Model)
+	if !m.interruptArmed {
+		t.Fatal("interruptArmed should be true after first Ctrl+C")
+	}
+
+	// A non-keypress message (e.g. WindowSizeMsg) clears interruptArmed.
+	mm, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = mm.(Model)
+	if m.interruptArmed {
+		t.Fatal("interruptArmed should be cleared by non-keypress message")
+	}
+
+	// Second Ctrl+C should interrupt again, not quit.
+	mm, _ = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mm.(Model)
+	if !m.interruptArmed {
+		t.Fatal("interruptArmed should be true after Ctrl+C with busy state")
+	}
+}
+
 // TestRollbackRequiresConfirmation pins U-03: Ctrl+R is reverse-i-search in
 // every readline shell, so it gets pressed reflexively. It used to rewrite the
 // working tree on that single keystroke.

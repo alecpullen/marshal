@@ -55,13 +55,16 @@ func TestEscCancels(t *testing.T) {
 	}
 }
 
-func TestEnterOnNoMatchesIsNoop(t *testing.T) {
+func TestEnterOnNoMatchesShowsFeedback(t *testing.T) {
 	m := New("x", "", testItems())
 	for _, r := range "zzzzzz" {
 		m.Update(key(r))
 	}
 	if cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
-		t.Fatal("enter with no matches must be a no-op")
+		t.Fatal("enter with no matches must not emit a command")
+	}
+	if m.ErrMsg() == "" {
+		t.Fatal("enter on no matches should set a feedback message")
 	}
 	if !strings.Contains(ansi.Strip(m.View(80, 24)), "no matches") {
 		t.Fatal("view should say no matches")

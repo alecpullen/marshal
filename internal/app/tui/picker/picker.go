@@ -156,6 +156,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 				v := m.items[idx].Value
 				return func() tea.Msg { return PickedMsg{Value: v} }
 			}
+			m.errMsg = "No matches to select"
 			return nil
 		case "up":
 			if m.cursor > 0 {

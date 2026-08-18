@@ -83,10 +83,44 @@ func TestCtrlCQuitsImmediatelyWhenIdle(t *testing.T) {
 	}
 }
 
+// TestCtrlCDoublePressWhileBusyQuits pins that a second Ctrl+C pressed while
+// a turn is busy quits, even when the busy-turn background ticks (agentTickMsg
+// and spinnerTickMsg, which fire every 80-150ms) land between the two presses.
+// Those ticks must not clear the armed flag, or the documented
+// "Press Ctrl+C again to quit" path would re-interrupt instead of quitting.
+func TestCtrlCDoublePressWhileBusyQuits(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+
+	// First Ctrl+C interrupts and arms the quit.
+	mm, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mm.(Model)
+	if !m.interruptArmed {
+		t.Fatal("interruptArmed should be true after first Ctrl+C")
+	}
+
+	// Busy-turn background ticks arrive between the presses. These must not
+	// clear the armed flag.
+	for _, tick := range []tea.Msg{agentTickMsg{}, spinnerTickMsg{}} {
+		mm, _ = m.Update(tick)
+		m = mm.(Model)
+		if !m.interruptArmed {
+			t.Fatal("background tick cleared interruptArmed; double Ctrl+C would re-interrupt instead of quitting")
+		}
+	}
+
+	// Second Ctrl+C must quit, not re-interrupt.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Error("second Ctrl+C after background ticks did not quit")
+	}
+}
+
 // TestInterruptArmedClearedByNonKeyMessage pins that a stale interruptArmed
-// flag is cleared by any non-keypress message (e.g. WindowSizeMsg), so a
-// Ctrl+C pressed after unrelated messages interrupts again rather than
-// quitting.
+// flag is cleared by a genuine non-keypress message (e.g. WindowSizeMsg), so
+// a Ctrl+C pressed after unrelated messages interrupts again rather than
+// quitting. The busy-turn background ticks are exempt and covered separately
+// by TestCtrlCDoublePressWhileBusyQuits.
 func TestInterruptArmedClearedByNonKeyMessage(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true

@@ -1344,8 +1344,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Clear interruptArmed for any non-keypress message so a stale flag
 	// doesn't cause the next Ctrl+C to quit instead of interrupt. Only an
 	// immediate second Ctrl+C (no intervening messages) should quit.
+	//
+	// The two internal tick messages are exempt: while a turn is busy they
+	// fire every 80-150ms, so clearing on them would wipe the armed flag
+	// almost immediately and the documented "Press Ctrl+C again to quit"
+	// second press would re-interrupt instead of quitting.
 	if _, ok := msg.(tea.KeyPressMsg); !ok {
-		m.interruptArmed = false
+		switch msg.(type) {
+		case agentTickMsg, spinnerTickMsg:
+			// Background churn; do not clear the armed quit.
+		default:
+			m.interruptArmed = false
+		}
 	}
 	// Ctrl+C interrupts an in-flight turn on the first press and quits on the
 	// second. Checked before any overlay routing so it can never be captured

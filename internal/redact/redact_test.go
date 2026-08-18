@@ -168,6 +168,40 @@ func TestSecretsHandlesSpacesInSecrets(t *testing.T) {
 	}
 }
 
+// TestSecretsDoesNotSwallowTrailingProse guards against over-redaction: the
+// value capture must be bounded so that prose or subsequent KEY=value pairs
+// on the same line survive. A naive "rest of line" capture would swallow
+// everything after the first secret.
+func TestSecretsDoesNotSwallowTrailingProse(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		kept   string
+		secret string
+	}{
+		// A multi-word secret is fully redacted, but prose beyond the
+		// bounded value survives.
+		{"trailing prose", "API_KEY=my secret key here and the deploy finished", "and the deploy finished", "my secret key here"},
+		// An adjacent secret pair is redacted, not swallowed into the first
+		// value; the second key survives.
+		{"adjacent pair", "API_KEY=foo GITHUB_TOKEN=bar", "GITHUB_TOKEN=", "foo"},
+		// A single-word token followed by more than the bounded number of
+		// prose words keeps the overflow prose.
+		{"overflow prose", "GITHUB_TOKEN=ghp_abcdef1234567890 then the build passed successfully", "successfully", "ghp_abcdef1234567890"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Secrets(tc.input)
+			if contains(out, tc.secret) {
+				t.Fatalf("secret %q survived redaction: %q", tc.secret, out)
+			}
+			if !contains(out, tc.kept) {
+				t.Fatalf("trailing content %q was swallowed: %q", tc.kept, out)
+			}
+		})
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

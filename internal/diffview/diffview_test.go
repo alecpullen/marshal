@@ -168,17 +168,31 @@ func TestRenderSideBySideHighlightDoesNotCorruptEmphasis(t *testing.T) {
 -return 1
 +return 2
 `
-	// With highlight on, the output should not contain garbled partial
-	// ANSI sequences from mismatched emphasis offsets.
+	// The emphasis styles render as bold color codes (1;91 for removed,
+	// 1;92 for added). When highlighting is on, emphasis must be skipped so
+	// these codes never appear; when highlighting is off, they must be
+	// present. This directly detects the corruption the fix prevents: if
+	// emphasis were applied to the highlighted string, the mismatched byte
+	// offsets would emit garbled partial ANSI sequences.
+	const (
+		remEmphCode = "\x1b[1;91m"
+		addEmphCode = "\x1b[1;92m"
+	)
+
 	out := Render(diff, Options{Width: 160, Mode: ModeSideBySide, Highlight: true})
-	// The content should still be present.
-	if !strings.Contains(out, "return") {
-		t.Fatalf("content missing from highlighted render:\n%s", out)
+	if strings.Contains(out, remEmphCode) || strings.Contains(out, addEmphCode) {
+		t.Fatalf("emphasis applied while highlighting is on (corruption):\n%q", out)
 	}
-	// With highlight off, emphasis should still be applied.
+	if !strings.Contains(out, "return") {
+		t.Fatalf("content missing from highlighted render:\n%q", out)
+	}
+
 	outNoHL := Render(diff, Options{Width: 160, Mode: ModeSideBySide, Highlight: false})
+	if !strings.Contains(outNoHL, remEmphCode) && !strings.Contains(outNoHL, addEmphCode) {
+		t.Fatalf("emphasis not applied when highlighting is off:\n%q", outNoHL)
+	}
 	if !strings.Contains(outNoHL, "return") {
-		t.Fatalf("content missing from non-highlighted render:\n%s", outNoHL)
+		t.Fatalf("content missing from non-highlighted render:\n%q", outNoHL)
 	}
 }
 

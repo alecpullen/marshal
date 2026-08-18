@@ -20,6 +20,48 @@ const MaskToken = "[REDACTED]"
 // on which key names are secret-bearing.
 var secretAssignment = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s*([:=])\s*(.+)`)
 
+// assignmentStart matches the start of a new `KEY=value` or `KEY: value`
+// assignment. Used to bound a secret value so a subsequent assignment on the
+// same line is not swallowed into the preceding value.
+var assignmentStart = regexp.MustCompile(`\b[A-Za-z0-9_]+\s*[:=]`)
+
+// maxSecretWords bounds how many whitespace-delimited words a secret value
+// may span. Secret values can contain spaces (e.g. "API_KEY=my secret key
+// here"), but capturing to end-of-line would swallow trailing prose and any
+// subsequent KEY=value pairs on the same line.
+const maxSecretWords = 4
+
+// boundValue truncates a captured secret value to at most maxSecretWords
+// words and stops at the next KEY= assignment, so surrounding content on the
+// same line survives redaction. The returned value is always a byte prefix of
+// val, so callers can recover the trailing content with val[len(bounded):].
+func boundValue(val string) string {
+	// Stop at the next assignment (KEY= or KEY:), if any, so an adjacent
+	// pair like "API_KEY=foo GITHUB_TOKEN=bar" keeps the second pair.
+	if idx := assignmentStart.FindStringIndex(val); idx != nil && idx[0] > 0 {
+		val = val[:idx[0]]
+	}
+	// Bound to a small number of words, preserving the original whitespace so
+	// the result remains a byte prefix of the input.
+	words := strings.Fields(val)
+	if len(words) > maxSecretWords {
+		// Find the byte offset just past the maxSecretWords-th word.
+		pos := 0
+		for i := 0; i < maxSecretWords; i++ {
+			// Skip leading whitespace.
+			for pos < len(val) && (val[pos] == ' ' || val[pos] == '\t') {
+				pos++
+			}
+			// Skip the word.
+			for pos < len(val) && val[pos] != ' ' && val[pos] != '\t' {
+				pos++
+			}
+		}
+		val = val[:pos]
+	}
+	return val
+}
+
 // highEntropyToken matches common token sigils so bare tokens in logs/prompts
 // are masked even when no KEY= form is present. Assembled from named parts
 // rather than one long literal so a missing vendor is easy to spot.
@@ -72,15 +114,20 @@ func Secrets(text string) string {
 			return match
 		}
 		key, op, val := subs[1], subs[2], subs[3]
+		// Bound the value so trailing prose and subsequent KEY=value pairs on
+		// the same line survive redaction. The trailing remainder is re-scanned
+		// so an adjacent secret pair is still redacted rather than swallowed.
+		bounded := boundValue(val)
+		trailing := Secrets(val[len(bounded):])
 		if envutil.IsSecretKey(key) {
-			return key + op + MaskToken
+			return key + op + MaskToken + trailing
 		}
 		// The key itself isn't secret, but the value may contain a secret
 		// assignment (e.g. "error: DB_PASSWORD=hunter2"). Recursively redact
 		// just the value so nested secrets are still masked.
-		redactedVal := Secrets(val)
-		if redactedVal != val {
-			return key + op + redactedVal
+		redactedVal := Secrets(bounded)
+		if redactedVal != bounded {
+			return key + op + redactedVal + trailing
 		}
 		return match
 	})

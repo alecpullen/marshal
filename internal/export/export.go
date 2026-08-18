@@ -73,14 +73,6 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				reasoning = redact.Secrets(reasoning)
 				usage = redact.Secrets(usage)
 			}
-			// Wrap non-prose content types in fenced code blocks to
-			// prevent the markdown renderer from mangling code as
-			// headings, lists, or other markdown constructs.
-			switch t.Message.ContentType {
-			case session.ContentTypeCode, session.ContentTypeToolResult,
-				session.ContentTypeDiff, session.ContentTypePlan:
-				content = "```\n" + content + "\n```"
-			}
 			contentHTML := contentToHTML(md, content, t.Message.ContentType)
 			cls := "user"
 			role := "user"
@@ -182,6 +174,15 @@ func safeInlineParsers() []util.PrioritizedValue {
 }
 
 func contentToHTML(md goldmark.Markdown, content string, ct session.ContentType) template.HTML {
+	// Code-like content types are rendered as escaped <pre><code> blocks
+	// rather than run through the markdown renderer. Fenced code blocks
+	// would break when the content itself contains literal backticks, and
+	// markdown would mangle code as headings, lists, or other constructs.
+	switch ct {
+	case session.ContentTypeCode, session.ContentTypeToolResult,
+		session.ContentTypeDiff, session.ContentTypePlan:
+		return template.HTML("<pre><code>" + html.EscapeString(content) + "</code></pre>")
+	}
 	if ct == session.ContentTypeMarkdown ||
 		strings.Contains(content, "\n") ||
 		strings.ContainsAny(content, "*`#") {

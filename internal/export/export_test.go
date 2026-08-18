@@ -215,15 +215,42 @@ func TestExportRendersToolContentAsCode(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	s := string(html)
-	// The content must be wrapped in a fenced code block, not turned into
+	// The content must be wrapped in a <pre><code> block, not turned into
 	// a markdown heading. (The page template legitimately emits an <h1> for
 	// the session title, so assert specifically that the code content did
 	// not become its own heading element.)
 	if strings.Contains(s, "<h1>Not a heading</h1>") {
 		t.Fatalf("code content rendered as heading (markdown mangling):\n%s", s)
 	}
+	if !strings.Contains(s, "<pre><code># Not a heading") {
+		t.Fatalf("code content not wrapped in a <pre><code> block:\n%s", s)
+	}
 	if !strings.Contains(s, "Not a heading") {
 		t.Fatalf("code content missing from export:\n%s", s)
+	}
+}
+
+// TestExportCodeContentWithBackticks guards against fenced-code wrapping
+// breaking when the content itself contains literal backticks. Code-like
+// content is rendered as an escaped <pre><code> block, so backticks in the
+// content must survive verbatim rather than being interpreted as fence
+// markers.
+func TestExportCodeContentWithBackticks(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.AddMessage(session.RoleAssistant, "```\ncode with `backticks`\n```", session.ContentTypeCode)
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	// The literal backticks must survive inside the code block.
+	if !strings.Contains(s, "`backticks`") {
+		t.Fatalf("literal backticks lost from code content:\n%s", s)
+	}
+	// The content must be a single <pre><code> block, not split by fence
+	// interpretation.
+	if !strings.Contains(s, "<pre><code>```") {
+		t.Fatalf("code content not wrapped in a <pre><code> block:\n%s", s)
 	}
 }
 

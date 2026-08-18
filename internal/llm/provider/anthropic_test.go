@@ -423,6 +423,43 @@ func TestAnthropicThinkingBudgetMapping(t *testing.T) {
 	}
 }
 
+func TestAnthropicStreamingEmptyContentReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: message_start\n" +
+				`data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}` + "\n\n" +
+				"event: message_delta\n" +
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}` + "\n\n" +
+				"event: message_stop\n" +
+				`data: {"type":"message_stop"}` + "\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), schema.ChatRequest{
+		Model:    "claude-sonnet-4-5",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	var gotErr error
+	for ev := range events {
+		if ev.Type == schema.ChatEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected error for empty streaming content, got nil")
+	}
+	if !strings.Contains(gotErr.Error(), "empty content") {
+		t.Fatalf("error should mention 'empty content', got: %v", gotErr)
+	}
+}
+
 func TestAnthropicEmptyContentReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

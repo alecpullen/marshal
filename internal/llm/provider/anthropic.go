@@ -441,6 +441,7 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.Ch
 	var usage anthropicUsage
 	var haveUsage bool
 	var finishReason string
+	var hasContent bool
 
 	for dec.Next() {
 		data := strings.TrimSpace(dec.Event().Data)
@@ -465,6 +466,7 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.Ch
 					id:        ev.ContentBlock.ID,
 					name:      ev.ContentBlock.Name,
 				}
+				hasContent = true
 			}
 		case "content_block_delta":
 			if ev.Delta == nil {
@@ -473,8 +475,12 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.Ch
 			switch ev.Delta.Type {
 			case "text_delta":
 				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: ev.Delta.Text}
+				if ev.Delta.Text != "" {
+					hasContent = true
+				}
 			case "thinking_delta":
 				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: ev.Delta.Thinking}
+				hasContent = true
 			case "input_json_delta":
 				if buf := blocks[ev.Index]; buf != nil {
 					buf.args.WriteString(ev.Delta.PartialJSON)
@@ -513,6 +519,11 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.Ch
 		})
 	}
 	toolCalls, _ = repairToolCalls(toolCalls)
+
+	if !hasContent {
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("anthropic returned empty content (stream)")}
+		return
+	}
 
 	var usageOut *schema.TokenUsage
 	if haveUsage {

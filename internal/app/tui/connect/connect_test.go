@@ -1556,3 +1556,22 @@ func TestLiteralKeyClearsTemplateEnvRef(t *testing.T) {
 		t.Fatalf("APIKeyEnv = %q, want empty after literal key entry", m.providerCfg.APIKeyEnv)
 	}
 }
+
+func TestRenderInputTruncatesSafely(t *testing.T) {
+	m := &Model{}
+	m.input.SetValue("日本語テスト文字列abcdef")
+	// Truncate to a small width that lands inside a multi-byte rune.
+	result := m.renderInput(6)
+	if !utf8.ValidString(result) {
+		t.Fatalf("renderInput produced invalid UTF-8: %q", result)
+	}
+}
+
+func TestRenderRenameInputTruncatesSafely(t *testing.T) {
+	m := &Model{}
+	m.renameInput.SetValue("日本語テスト文字列abcdef")
+	result := m.renderRenameInput(6)
+	if !utf8.ValidString(result) {
+		t.Fatalf("renderRenameInput produced invalid UTF-8: %q", result)
+	}
+}

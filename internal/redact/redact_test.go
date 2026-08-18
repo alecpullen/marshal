@@ -154,6 +154,20 @@ func TestSecretsMasksPEMPrivateKey(t *testing.T) {
 	}
 }
 
+func TestSecretsHandlesSpacesInSecrets(t *testing.T) {
+	// A secret value containing spaces should be fully redacted, not
+	// partially redacted by splitting on whitespace (which would leave the
+	// remainder of the value — e.g. "secret key here" — visible).
+	in := "API_KEY=my secret key here"
+	out := Secrets(in)
+	if out != "API_KEY="+MaskToken {
+		t.Fatalf("secret with spaces not fully redacted: %q", out)
+	}
+	if contains(out, "secret") || contains(out, "key") {
+		t.Fatalf("secret remainder survived redaction: %q", out)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

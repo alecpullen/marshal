@@ -18,7 +18,7 @@ const MaskToken = "[REDACTED]"
 // secretAssignment matches `KEY=value` or `KEY: value`. The key is checked
 // against envutil.IsSecretKey so the export redactor agrees with the sandbox
 // on which key names are secret-bearing.
-var secretAssignment = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s*([:=])\s*([^\s]+)`)
+var secretAssignment = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s*([:=])\s*(.+)`)
 
 // highEntropyToken matches common token sigils so bare tokens in logs/prompts
 // are masked even when no KEY= form is present. Assembled from named parts

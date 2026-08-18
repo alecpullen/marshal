@@ -44,16 +44,50 @@ func TestEstimateCostCents(t *testing.T) {
 		CacheWritePerMTokCents: 300, // $3.00/M
 	}
 	u := schema.TokenUsage{
-		PromptTokens:     1_000_000, // 1M input -> 250 cents
-		CompletionTokens: 500_000,   // 0.5M output -> 500 cents
-		ReasoningTokens:  100_000,   // 0.1M reasoning -> 100 cents
-		CacheReadTokens:  200_000,   // 0.2M cache read -> 25 cents
-		CacheWriteTokens: 100_000,   // 0.1M cache write -> 30 cents
+		PromptTokens:     1_000_000,
+		CompletionTokens: 500_000,
+		ReasoningTokens:  100_000,
+		CacheReadTokens:  200_000,
+		CacheWriteTokens: 100_000,
 	}
 	got := EstimateCostCents(u, p)
-	want := int64(250 + 500 + 100 + 25 + 30) // 905 cents = $9.05
+	// non-cached prompt = 700_000 * 250 / 1_000_000 = 175
+	// non-reasoning completion = 400_000 * 1000 / 1_000_000 = 400
+	// reasoning = 100_000 * 1000 / 1_000_000 = 100
+	// cache read = 200_000 * 125 / 1_000_000 = 25
+	// cache write = 100_000 * 300 / 1_000_000 = 30
+	// total = 730
+	want := int64(730)
 	if got != want {
 		t.Errorf("EstimateCostCents = %d, want %d", got, want)
+	}
+}
+
+func TestEstimateCostCentsNoDoubleChargeCache(t *testing.T) {
+	p := ModelPricing{
+		InputPerMTokCents:      250,
+		OutputPerMTokCents:     1000,
+		ReasoningPerMTokCents:  1000,
+		CacheReadPerMTokCents:  125,
+		CacheWritePerMTokCents: 300,
+	}
+	u := schema.TokenUsage{
+		PromptTokens:     1_000_000,
+		CompletionTokens: 500_000,
+		ReasoningTokens:  100_000,
+		CacheReadTokens:  200_000,
+		CacheWriteTokens: 100_000,
+	}
+	got := EstimateCostCents(u, p)
+	// non-cached prompt = 1_000_000 - 200_000 - 100_000 = 700_000 -> 175 cents
+	// non-reasoning completion = 500_000 - 100_000 = 400_000 -> 400 cents
+	// reasoning = 100_000 -> 100 cents
+	// cache read = 200_000 -> 25 cents
+	// cache write = 100_000 -> 30 cents
+	// total = 175 + 400 + 100 + 25 + 30 = 730
+	want := int64(730)
+	if got != want {
+		t.Errorf("EstimateCostCents = %d, want %d (no double-charge)", got, want)
 	}
 }
 

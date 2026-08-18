@@ -28,9 +28,21 @@ func Lookup(preset routing.ModelPreset) ModelPricing {
 // (tokens * rate) / 1_000_000, summed. Sub-cent amounts truncate via
 // integer division, which is correct for an estimate.
 func EstimateCostCents(u schema.TokenUsage, p ModelPricing) int64 {
+	// Cache tokens are already included in PromptTokens by all providers;
+	// subtract them before applying the input rate to avoid double-charging.
+	nonCachedPrompt := int64(u.PromptTokens - u.CacheReadTokens - u.CacheWriteTokens)
+	if nonCachedPrompt < 0 {
+		nonCachedPrompt = 0
+	}
+	// Reasoning tokens are already included in CompletionTokens by OpenAI
+	// and DeepSeek; subtract before applying the output rate.
+	nonReasoningCompletion := int64(u.CompletionTokens - u.ReasoningTokens)
+	if nonReasoningCompletion < 0 {
+		nonReasoningCompletion = 0
+	}
 	cost := int64(0)
-	cost += (int64(u.PromptTokens) * p.InputPerMTokCents) / 1_000_000
-	cost += (int64(u.CompletionTokens) * p.OutputPerMTokCents) / 1_000_000
+	cost += (nonCachedPrompt * p.InputPerMTokCents) / 1_000_000
+	cost += (nonReasoningCompletion * p.OutputPerMTokCents) / 1_000_000
 	cost += (int64(u.ReasoningTokens) * p.ReasoningPerMTokCents) / 1_000_000
 	cost += (int64(u.CacheReadTokens) * p.CacheReadPerMTokCents) / 1_000_000
 	cost += (int64(u.CacheWriteTokens) * p.CacheWritePerMTokCents) / 1_000_000

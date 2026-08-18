@@ -61,6 +61,39 @@ func TestParseRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestParseUnifiedDiffNoNewlineMarker(t *testing.T) {
+	diff := `--- a/foo.go
++++ b/foo.go
+@@ -1,1 +1,1 @@
+-old line
+\ No newline at end of file
++new line
+`
+	hunks, err := parseUnifiedDiff(diff)
+	if err != nil {
+		t.Fatalf("parse failed on no-newline marker: %v", err)
+	}
+	if len(hunks) != 1 {
+		t.Fatalf("hunks = %d, want 1", len(hunks))
+	}
+	// The old line should be classified as removed, the new line as added.
+	var removed, added int
+	for _, ln := range hunks[0].Lines {
+		switch ln.Kind {
+		case LineRemoved:
+			removed++
+		case LineAdded:
+			added++
+		}
+	}
+	if removed != 1 {
+		t.Fatalf("removed lines = %d, want 1", removed)
+	}
+	if added != 1 {
+		t.Fatalf("added lines = %d, want 1", added)
+	}
+}
+
 func TestRenderUnifiedFallbackPlainText(t *testing.T) {
 	out := Render(sampleUnified, Options{Width: 40, Mode: ModeUnified, Highlight: false})
 	if !strings.Contains(out, "return 2") {

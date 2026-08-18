@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
@@ -54,7 +53,7 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+		client = defaultHTTPClient()
 	}
 	caps := DefaultCapabilities()
 	if opts.Capabilities != nil {

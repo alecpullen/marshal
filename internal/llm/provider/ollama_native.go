@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
@@ -44,7 +43,7 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+		client = defaultHTTPClient()
 	}
 	caps := DefaultCapabilities()
 	// Ollama's think toggle is a different mechanism than the
@@ -361,9 +360,15 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema
 		if chunk.Message.Content != "" {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: chunk.Message.Content}
 		}
-		// Ollama sends cumulative tool call state per chunk, not deltas.
-		// Overwrite with the latest chunk's tool calls so we end up with
-		// the final accumulated version, not a concatenation of all chunks.
+		// We assume Ollama emits each tool call as a cumulative snapshot of
+		// that call's state per chunk (a chunk's tool_calls array describes
+		// the call(s) as they stand at that point in the stream), not as
+		// per-field deltas. Under that assumption, overwriting with the
+		// latest chunk's calls yields the final accumulated state; appending
+		// would instead concatenate every intermediate snapshot into
+		// duplicates. If a future Ollama version ever switches to delta
+		// emission, this overwrite would drop earlier fields and need
+		// revisiting.
 		if len(chunk.Message.ToolCalls) > 0 {
 			toolCalls = ollamaToolCallsFromWire(chunk.Message.ToolCalls)
 		}

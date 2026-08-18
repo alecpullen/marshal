@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"marshal/internal/llm/schema"
 	"marshal/internal/llm/streaming"
@@ -44,7 +43,7 @@ func NewAnthropic(opts Options) (*Anthropic, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+		client = defaultHTTPClient()
 	}
 	caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false, Reasoning: true}
 	if opts.Capabilities != nil {
@@ -385,7 +384,9 @@ func (p *Anthropic) readChatResponse(body io.ReadCloser, events chan<- schema.Ch
 			}
 		}
 	}
-	if !hasContent && len(anthropicToolCallsFromBlocks(parsed.Content)) > 0 {
+	toolCalls := anthropicToolCallsFromBlocks(parsed.Content)
+	if !hasContent && len(toolCalls) > 0 {
+		// A response that only carries tool_use blocks is still valid.
 		hasContent = true
 	}
 	if !hasContent {
@@ -396,7 +397,7 @@ func (p *Anthropic) readChatResponse(body io.ReadCloser, events chan<- schema.Ch
 		Type:         schema.ChatEventDone,
 		FinishReason: anthropicFinishReason(parsed.StopReason),
 		Usage:        anthropicUsageFrom(parsed.Usage),
-		ToolCalls:    anthropicToolCallsFromBlocks(parsed.Content),
+		ToolCalls:    toolCalls,
 	}
 }
 

@@ -43,7 +43,11 @@ type Cache struct {
 
 // HashProvider fingerprints the configuration that determines which models
 // a provider reports. Key material is digested, never stored: the hash
-// answers "did the key change", not "what is the key".
+// answers "did the key change", not "what is the key". It covers the
+// provider type, base URL, api_key_env name, the literal api_key (when set),
+// and the resolved api_key_env value (when set), so repointing an env var
+// to a different key invalidates the cache even though the env var name
+// is unchanged.
 func HashProvider(pc config.ProviderConfig) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s", pc.Type, pc.BaseURL, pc.APIKeyEnv)

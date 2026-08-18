@@ -1357,21 +1357,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// the session — and with AltScreen there is no scrollback to read
 	// afterwards. Esc already had the interrupt semantics; the better-known
 	// key just did the more destructive thing.
-	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+c" {
-		if m.busy && !m.interruptArmed {
-			m.interruptArmed = true
-			m.cancelTurn()
-			m.state.AddMessage(session.RoleSystem,
-				"Turn interrupted. Press Ctrl+C again to quit.",
-				session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		if k.String() == "ctrl+c" {
+			if m.busy && !m.interruptArmed {
+				m.interruptArmed = true
+				m.cancelTurn()
+				m.state.AddMessage(session.RoleSystem,
+					"Turn interrupted. Press Ctrl+C again to quit.",
+					session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+			return m, m.beginShutdown()
 		}
-		return m, m.beginShutdown()
-	}
-	// Any other keypress clears the armed quit, so Ctrl+C never quits on a
-	// press the user has mentally separated from the interrupt.
-	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() != "ctrl+c" {
+		// Any other keypress clears the armed quit, so Ctrl+C never quits
+		// on a press the user has mentally separated from the interrupt.
 		m.interruptArmed = false
 	}
 

@@ -30,7 +30,7 @@ type item struct {
 	MessageClass  string
 	RoleLabel     string
 	ContentHTML   template.HTML
-	Reasoning     string
+	Reasoning     template.HTML
 	Usage         string
 	ToolName      string
 	ResultSummary string
@@ -74,6 +74,10 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				usage = redact.Secrets(usage)
 			}
 			contentHTML := contentToHTML(md, content, t.Message.ContentType)
+			// Reasoning is rendered through the same markdown pipeline as
+			// content so thinking text (which may contain markdown) is
+			// rendered consistently rather than escaped as plain text.
+			reasoningHTML := contentToHTML(md, reasoning, session.ContentTypeMarkdown)
 			cls := "user"
 			role := "user"
 			if t.Message.Role == session.RoleAssistant {
@@ -88,7 +92,7 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				MessageClass: cls,
 				RoleLabel:    role,
 				ContentHTML:  contentHTML,
-				Reasoning:    reasoning,
+				Reasoning:    reasoningHTML,
 				Usage:        usage,
 			})
 		case session.KindAudit:

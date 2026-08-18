@@ -61,6 +61,23 @@ func TestParseRejectsGarbage(t *testing.T) {
 	}
 }
 
+// TestParseRejectsBackslashContentLine guards the no-newline marker match:
+// only the exact git marker "\ No newline at end of file" is treated as
+// metadata. Any other backslash-prefixed line must be rejected rather than
+// silently dropped, so real content is never lost.
+func TestParseRejectsBackslashContentLine(t *testing.T) {
+	diff := `--- a/foo.go
++++ b/foo.go
+@@ -1,1 +1,1 @@
+-old line
+\ some other backslash content
++new line
+`
+	if _, err := parseUnifiedDiff(diff); err == nil {
+		t.Fatal("expected parse error for non-marker backslash line")
+	}
+}
+
 func TestParseUnifiedDiffNoNewlineMarker(t *testing.T) {
 	diff := `--- a/foo.go
 +++ b/foo.go

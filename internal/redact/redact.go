@@ -8,6 +8,7 @@ package redact
 import (
 	"regexp"
 	"strings"
+	"unicode"
 
 	"marshal/internal/sandbox/envutil"
 )
@@ -28,7 +29,10 @@ var assignmentStart = regexp.MustCompile(`\b[A-Za-z0-9_]+\s*[:=]`)
 // maxSecretWords bounds how many whitespace-delimited words a secret value
 // may span. Secret values can contain spaces (e.g. "API_KEY=my secret key
 // here"), but capturing to end-of-line would swallow trailing prose and any
-// subsequent KEY=value pairs on the same line.
+// subsequent KEY=value pairs on the same line. The bound is a deliberate
+// tradeoff: a multi-word passphrase longer than this leaks its tail, but
+// token-shaped secrets (ghp_, sk-, etc.) are still caught by the sigil
+// patterns in highEntropyToken even when they fall beyond the bound.
 const maxSecretWords = 4
 
 // boundValue truncates a captured secret value to at most maxSecretWords
@@ -43,21 +47,33 @@ func boundValue(val string) string {
 	}
 	// Bound to a small number of words, preserving the original whitespace so
 	// the result remains a byte prefix of the input.
-	words := strings.Fields(val)
-	if len(words) > maxSecretWords {
-		// Find the byte offset just past the maxSecretWords-th word.
-		pos := 0
-		for i := 0; i < maxSecretWords; i++ {
-			// Skip leading whitespace.
-			for pos < len(val) && (val[pos] == ' ' || val[pos] == '\t') {
-				pos++
-			}
-			// Skip the word.
-			for pos < len(val) && val[pos] != ' ' && val[pos] != '\t' {
-				pos++
+	return truncateToWords(val, maxSecretWords)
+}
+
+// truncateToWords returns the longest byte prefix of val containing at most
+// maxWords whitespace-delimited words. Word boundaries follow unicode.IsSpace
+// so the result agrees with strings.Fields (which splits on all Unicode
+// whitespace, not just space and tab). The returned value is always a byte
+// prefix of val, so callers can recover the trailing content with
+// val[len(bounded):].
+func truncateToWords(val string, maxWords int) string {
+	if maxWords <= 0 {
+		return ""
+	}
+	words := 0
+	inWord := false
+	for i, r := range val {
+		if unicode.IsSpace(r) {
+			inWord = false
+			continue
+		}
+		if !inWord {
+			words++
+			inWord = true
+			if words > maxWords {
+				return val[:i]
 			}
 		}
-		val = val[:pos]
 	}
 	return val
 }

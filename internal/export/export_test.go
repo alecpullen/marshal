@@ -177,6 +177,31 @@ func TestRenderRedactsSecretsWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestRenderRendersReasoningAsMarkdown guards the Reasoning/ContentHTML
+// asymmetry: thinking text is rendered through the same markdown pipeline as
+// content, so markdown in reasoning (e.g. bold) is rendered rather than
+// escaped as plain text.
+func TestRenderRendersReasoningAsMarkdown(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.BeginStreaming()
+	state.AppendThinking("I should use **bold** reasoning")
+	state.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	// The bold markdown in reasoning must be rendered as <strong>, not
+	// escaped as literal "**bold**".
+	if !strings.Contains(s, "<strong>bold</strong>") {
+		t.Fatalf("reasoning markdown not rendered:\n%s", s)
+	}
+	if strings.Contains(s, "**bold**") {
+		t.Fatalf("reasoning markdown escaped as plain text:\n%s", s)
+	}
+}
+
 func TestRenderRedactsReasoningAndToolSummaryAndError(t *testing.T) {
 	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
 

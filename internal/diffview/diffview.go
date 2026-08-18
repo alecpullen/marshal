@@ -180,8 +180,11 @@ func parseUnifiedDiff(diff string) ([]Hunk, error) {
 			cur.Lines = append(cur.Lines, Line{Kind: LineContext, Content: line[1:], OldNumber: oldLine, NewNumber: newLine})
 			oldLine++
 			newLine++
-		case strings.HasPrefix(line, "\\ "):
+		case strings.HasPrefix(line, "\\ No newline at end of file"):
 			// Git "no newline at end of file" marker — metadata, not content.
+			// Only the exact marker is skipped; any other backslash-prefixed
+			// line is treated as unrecognized so content is never silently
+			// dropped.
 			continue
 		default:
 			return nil, fmt.Errorf("unrecognized diff line: %q", line)

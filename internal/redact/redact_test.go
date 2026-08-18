@@ -202,6 +202,26 @@ func TestSecretsDoesNotSwallowTrailingProse(t *testing.T) {
 	}
 }
 
+// TestSecretsHandlesUnicodeWhitespaceInSecrets guards the word-boundary
+// logic: a secret value separated by non-ASCII whitespace (e.g. NBSP) must
+// still be bounded to maxSecretWords so trailing prose survives, and the
+// bounded value must be fully redacted.
+func TestSecretsHandlesUnicodeWhitespaceInSecrets(t *testing.T) {
+	// NBSP-separated words. The value is bounded to 4 words; the trailing
+	// prose must survive.
+	in := "API_KEY=my\u00a0secret\u00a0key\u00a0here and the deploy finished"
+	out := Secrets(in)
+	if contains(out, "secret") || contains(out, "key") {
+		t.Fatalf("secret remainder survived redaction: %q", out)
+	}
+	if !contains(out, "and the deploy finished") {
+		t.Fatalf("trailing prose swallowed with NBSP-separated secret: %q", out)
+	}
+	if !contains(out, MaskToken) {
+		t.Fatalf("redaction marker absent: %q", out)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

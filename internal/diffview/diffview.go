@@ -10,6 +10,7 @@ package diffview
 import (
 	"bufio"
 	"fmt"
+	"sort"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -421,7 +422,11 @@ func renderSideColumn(ln *Line, width int, baseStyle, emphStyle lipgloss.Style, 
 	if highlight {
 		content = highlightCode(content, lang)
 	}
-	if emph != nil {
+	// Emphasis offsets are computed from un-highlighted content and are
+	// incompatible with the highlighted string (which has ANSI escapes
+	// inserted). Skip emphasis when highlighting is on — syntax colors
+	// already provide visual differentiation.
+	if emph != nil && !highlight {
 		content = applyEmphasis(content, emph, emphStyle)
 	}
 	content = truncateVisible(content, width)
@@ -441,13 +446,9 @@ func applyEmphasis(content string, emph *lineEmphasis, emphStyle lipgloss.Style)
 		runs[i] = span{r.start, r.end}
 	}
 	// Sort by start to make this robust to out-of-order diffs.
-	for i := 0; i < len(runs); i++ {
-		for j := i + 1; j < len(runs); j++ {
-			if runs[j].start < runs[i].start {
-				runs[i], runs[j] = runs[j], runs[i]
-			}
-		}
-	}
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].start < runs[j].start
+	})
 	runes := []rune(content)
 	// Convert byte offsets to rune offsets.
 	type rsp struct{ rs, re int }

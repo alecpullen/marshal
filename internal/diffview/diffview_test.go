@@ -125,6 +125,30 @@ func TestRenderTruncatesLargeDiffs(t *testing.T) {
 	}
 }
 
+func TestRenderSideBySideHighlightDoesNotCorruptEmphasis(t *testing.T) {
+	// When highlighting is enabled, emphasis offsets (computed from
+	// un-highlighted content) are incompatible with the highlighted
+	// string. The fix skips emphasis when highlighting is on.
+	diff := `--- a/foo.go
++++ b/foo.go
+@@ -1,1 +1,1 @@
+-return 1
++return 2
+`
+	// With highlight on, the output should not contain garbled partial
+	// ANSI sequences from mismatched emphasis offsets.
+	out := Render(diff, Options{Width: 160, Mode: ModeSideBySide, Highlight: true})
+	// The content should still be present.
+	if !strings.Contains(out, "return") {
+		t.Fatalf("content missing from highlighted render:\n%s", out)
+	}
+	// With highlight off, emphasis should still be applied.
+	outNoHL := Render(diff, Options{Width: 160, Mode: ModeSideBySide, Highlight: false})
+	if !strings.Contains(outNoHL, "return") {
+		t.Fatalf("content missing from non-highlighted render:\n%s", outNoHL)
+	}
+}
+
 func TestComputeEmphasisFindsDifferingSubstrings(t *testing.T) {
 	le, re := computeEmphasis("return 1", "return 2")
 	if le == nil || re == nil {

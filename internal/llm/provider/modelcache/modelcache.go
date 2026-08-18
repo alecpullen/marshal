@@ -43,15 +43,28 @@ type Cache struct {
 
 // HashProvider fingerprints the configuration that determines which models
 // a provider reports. Key material is digested, never stored: the hash
-// answers "did the key change", not "what is the key".
+// answers "did the key change", not "what is the key". It covers the
+// provider type, base URL, api_key_env name, the literal api_key (when set),
+// and the resolved api_key_env value (when set), so repointing an env var
+// to a different key invalidates the cache even though the env var name
+// is unchanged.
 func HashProvider(pc config.ProviderConfig) string {
-	keyID := ""
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s", pc.Type, pc.BaseURL, pc.APIKeyEnv)
 	if pc.APIKey != "" {
+		// Include a hash of the literal key (never the key itself).
 		sum := sha256.Sum256([]byte(pc.APIKey))
-		keyID = hex.EncodeToString(sum[:])
+		fmt.Fprintf(h, "\x00%x", sum)
 	}
-	h := sha256.Sum256([]byte(pc.Type + "\x00" + pc.BaseURL + "\x00" + pc.APIKeyEnv + "\x00" + keyID))
-	return hex.EncodeToString(h[:])
+	// Also include the resolved env var value so repointing an env var
+	// to a different key invalidates the cache.
+	if pc.APIKeyEnv != "" {
+		if val := os.Getenv(pc.APIKeyEnv); val != "" {
+			sum := sha256.Sum256([]byte(val))
+			fmt.Fprintf(h, "\x00env:%x", sum)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Load reads the cache. Every failure mode yields an empty cache: there is

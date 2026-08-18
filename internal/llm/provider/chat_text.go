@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"marshal/internal/llm/schema"
@@ -17,15 +18,19 @@ func ChatText(ctx context.Context, p Provider, req schema.ChatRequest) (string, 
 		return "", err
 	}
 	var b strings.Builder
+	var done bool
 	for ev := range ch {
 		switch ev.Type {
 		case schema.ChatEventDelta:
 			b.WriteString(ev.Delta)
 		case schema.ChatEventError:
-			return "", ev.Err
+			return b.String(), ev.Err
 		case schema.ChatEventDone:
-			return b.String(), nil
+			done = true
 		}
+	}
+	if !done {
+		return b.String(), fmt.Errorf("stream ended without Done signal (%d bytes received)", b.Len())
 	}
 	return b.String(), nil
 }

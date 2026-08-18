@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"marshal/internal/llm/provider/limits"
@@ -469,4 +470,54 @@ func TestOllamaProbeCapabilitiesOldServerReportsUnknown(t *testing.T) {
 
 func TestOllamaImplementsCapabilityProber(t *testing.T) {
 	var _ CapabilityProber = (*OllamaNative)(nil)
+}
+
+func TestOllamaStreamingToolCallNotDuplicated(t *testing.T) {
+	// Ollama sends cumulative tool call state per chunk, not deltas.
+	// Chunk 1 has tool call A with partial args; chunk 2 (done) has
+	// tool call A with complete args. The final ToolCalls should have
+	// exactly one call with the complete args, not two calls.
+	body := strings.Join([]string{
+		`{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"S"}}}]},"done":false}`,
+		`{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"SF"}}}]},"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":5}`,
+	}, "\n")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	p, err := NewOllamaNative(Options{Name: "test-ollama", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOllamaNative: %v", err)
+	}
+	events, err := p.Chat(t.Context(), schema.ChatRequest{
+		Model:    "test-model",
+		Stream:   true,
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "weather?"}},
+		Tools: []schema.ToolDefinition{{
+			Name:       "get_weather",
+			Parameters: json.RawMessage(`{"type":"object"}`),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	var toolCalls []schema.ToolCall
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			toolCalls = ev.ToolCalls
+		}
+	}
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d: %+v", len(toolCalls), toolCalls)
+	}
+	if toolCalls[0].Name != "get_weather" {
+		t.Errorf("tool call name = %q, want get_weather", toolCalls[0].Name)
+	}
+	wantArgs := `{"city":"SF"}`
+	if string(toolCalls[0].Args) != wantArgs {
+		t.Errorf("tool call args = %q, want %q", string(toolCalls[0].Args), wantArgs)
+	}
 }

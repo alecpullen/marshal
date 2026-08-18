@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"marshal/internal/llm/schema"
@@ -53,5 +54,22 @@ func TestChatTextReturnsErrorEvent(t *testing.T) {
 	}}
 	if _, err := ChatText(context.Background(), p, schema.ChatRequest{Model: "m"}); !errors.Is(err, boom) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestChatTextNoDoneReturnsError(t *testing.T) {
+	p := &scriptedStub{events: []schema.ChatEvent{
+		{Type: schema.ChatEventDelta, Delta: "partial"},
+		// Channel closes without a Done event — no error event either.
+	}}
+	got, err := ChatText(context.Background(), p, schema.ChatRequest{Model: "m"})
+	if err == nil {
+		t.Fatalf("expected error for stream without Done, got nil; text=%q", got)
+	}
+	if !strings.Contains(err.Error(), "Done") {
+		t.Fatalf("error should mention Done, got: %v", err)
+	}
+	if got != "partial" {
+		t.Errorf("should still return accumulated text, got %q", got)
 	}
 }

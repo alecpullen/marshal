@@ -53,7 +53,7 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{}
+		client = defaultHTTPClient()
 	}
 	caps := DefaultCapabilities()
 	if opts.Capabilities != nil {

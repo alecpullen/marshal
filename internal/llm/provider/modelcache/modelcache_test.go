@@ -121,6 +121,32 @@ func TestLookupOtherProvidersUnaffected(t *testing.T) {
 	}
 }
 
+func TestHashProviderEnvVarResolvedValue(t *testing.T) {
+	// When APIKey is empty and APIKeyEnv is set, the hash should include
+	// the resolved env var value so that repointing the env var to a
+	// different key invalidates the cache.
+	const envName = "MARSHAL_TEST_HASH_KEY"
+
+	withEnvValue := func(val string) config.ProviderConfig {
+		t.Setenv(envName, val)
+		p := pc("https://a/v1")
+		p.APIKeyEnv = envName
+		return p
+	}
+
+	hash1 := HashProvider(withEnvValue("sk-first"))
+	hash2 := HashProvider(withEnvValue("sk-second"))
+	if hash1 == hash2 {
+		t.Error("changing the resolved env var value must produce a different hash")
+	}
+
+	// Same value should produce the same hash.
+	hash3 := HashProvider(withEnvValue("sk-first"))
+	if hash1 != hash3 {
+		t.Error("same resolved env var value must produce the same hash")
+	}
+}
+
 func TestCacheFileNeverContainsKeyMaterial(t *testing.T) {
 	dir := t.TempDir()
 	p := pc("https://a/v1")

@@ -13,6 +13,7 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/hooks"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -520,6 +521,79 @@ func TestParallelAgentRunPreservesSiblingsOnError(t *testing.T) {
 	}
 	if !foundErr {
 		t.Fatal("failed sibling error missing from tool results")
+	}
+}
+
+// haltHook returns DecisionHalt when the tool's arguments contain a "fail"
+// prompt, forcing executeToolCall to return a pre-tool (nil, err). This is
+// the deterministic pre-tool failure path that the old flushRunBatch
+// discarded the whole batch on.
+type haltHook struct{}
+
+func (haltHook) RunPreToolUse(ctx context.Context, input hooks.PreToolUseInput) (hooks.Output, error) {
+	if strings.Contains(string(input.Args), `"fail"`) {
+		return hooks.Output{Decision: hooks.DecisionHalt, Reason: "halted for test"}, nil
+	}
+	return hooks.Output{}, nil
+}
+
+func (haltHook) RunTurnEnd(ctx context.Context, input hooks.TurnEndInput) (hooks.Output, error) {
+	return hooks.Output{}, nil
+}
+
+// TestParallelAgentRunPreservesSiblingsOnPreToolError verifies that when
+// a batch of two agent.run calls hits a pre-tool error (hook halt) for one
+// slot, the successful sibling's result is still returned to the model
+// rather than the whole batch being discarded by a propagated error.
+func TestParallelAgentRunPreservesSiblingsOnPreToolError(t *testing.T) {
+	reg := registry.New()
+	state := newTestState(t)
+
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		return &Runner{State: state}, state, nil
+	}
+	exec := func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+		return "ok: " + prompt, "", nil
+	}
+
+	tool := NewSubagentTool(factory, nil, reg, state, WithSubagentExec(exec))
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("register agent.run: %v", err)
+	}
+
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"", ""},
+		ToolCalls: [][]schema.ToolCall{
+			{
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"ok","description":"ok"}`)},
+				{Name: "agent.run", Args: json.RawMessage(`{"prompt":"fail","description":"fail"}`)},
+			},
+			nil,
+		},
+		FinishReasons: []string{"tool_calls", "stop"},
+		ProviderCaps:  schema.ProviderCapabilities{ToolCalling: true},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.HookRunner = haltHook{}
+
+	if err := r.Run(context.Background(), "run parallel subagents one hook-halts"); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// The successful result should appear in the tool-result messages sent
+	// back to the model.
+	if len(p.Requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
+	}
+	foundOK := false
+	for _, m := range p.Requests[1].Messages {
+		if strings.Contains(m.Content, "ok: ok") {
+			foundOK = true
+		}
+	}
+	if !foundOK {
+		t.Fatal("successful sibling result missing from tool results — discarded by partial batch error")
 	}
 }
 

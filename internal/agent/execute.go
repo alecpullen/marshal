@@ -486,7 +486,9 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 				ToolCallID: call.ID,
 			})
 			if err != nil {
-				return err
+				msgs = append(msgs, r.buildToolErrorMessage(call.Name, err.Error(), call.ID))
+				runBatch = runBatch[:0]
+				return nil
 			}
 			msgs = append(msgs, resultMsgs...)
 			runBatch = runBatch[:0]
@@ -511,15 +513,15 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			}()
 		}
 		wg.Wait()
-		var firstErr error
 		for i := range runBatch {
-			if errs[i] != nil && firstErr == nil {
-				firstErr = errs[i]
+			if errs[i] != nil {
+				msgs = append(msgs, r.buildToolErrorMessage(runBatch[i].call.Name, errs[i].Error(), runBatch[i].call.ID))
+				continue
 			}
 			msgs = append(msgs, results[i]...)
 		}
 		runBatch = runBatch[:0]
-		return firstErr
+		return nil
 	}
 
 	for _, call := range calls {

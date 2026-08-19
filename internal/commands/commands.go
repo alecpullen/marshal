@@ -675,10 +675,7 @@ func generationTurnRows(database *db.DB, s history.GenerationSummary) []Row {
 	const cap = 200
 	var rows []Row
 	for _, turn := range turns {
-		snippet := turn.Content
-		if len(snippet) > 80 {
-			snippet = snippet[:80] + "…"
-		}
+		snippet := strutil.Truncate(turn.Content, 80, true)
 		rows = append(rows, Row{
 			Text:   fmt.Sprintf("turn %d (%s)", turn.TurnSeq, turn.Role),
 			Detail: snippet,

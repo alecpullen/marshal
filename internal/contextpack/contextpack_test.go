@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestEstimateTokensRoundsUpByFourRunes(t *testing.T) {
@@ -564,6 +565,25 @@ func TestMergeScratchpadTruncatesLongPreview(t *testing.T) {
 				t.Fatal("preview should be truncated before 130 chars of content")
 			}
 		}
+	}
+}
+
+func TestNewScratchpadSectionTruncatesUTF8Safely(t *testing.T) {
+	now := time.Now()
+	// 79 ASCII bytes then a multi-byte rune straddling byte 80.
+	content := strings.Repeat("a", 79) + "é" + strings.Repeat("é", 200)
+	entries := []ScratchpadEntry{
+		{Key: "k", Content: content, Format: "text", Updated: now.UnixMilli()},
+	}
+	sec, ok := newScratchpadSection(entries, 10000, now)
+	if !ok {
+		t.Fatal("expected section")
+	}
+	if !utf8.ValidString(sec.Content) {
+		t.Fatalf("scratchpad section content is not valid UTF-8:\n%s", sec.Content)
+	}
+	if !strings.Contains(sec.Content, "...") {
+		t.Fatalf("expected truncation marker in preview, got:\n%s", sec.Content)
 	}
 }
 

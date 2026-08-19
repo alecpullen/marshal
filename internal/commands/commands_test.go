@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -1013,6 +1014,55 @@ func TestHistoryCommandReturnsGenerationRows(t *testing.T) {
 	children := res.Doc.Rows[0].Children
 	if len(children) == 0 {
 		t.Fatal("generation rows should carry their turns as Children")
+	}
+}
+
+func TestGenerationTurnRowsTruncatesUTF8Safely(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/test/repo", "test-repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sessionID := "test-session-" + t.Name()
+	if err := database.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC()
+	gen := db.Generation{ID: "gen-utf8", SessionID: sessionID, Seq: 1, StartedAt: now, SeedDigest: "d"}
+	if err := database.BeginGeneration(gen); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	// Multi-byte content that would break on byte truncation: 79 ASCII
+	// bytes then a multi-byte rune straddling byte 80.
+	longContent := strings.Repeat("a", 79) + "é" + strings.Repeat("é", 100)
+	if err := database.ArchiveTurns("gen-utf8", []db.ArchivedTurn{
+		{TurnSeq: 1, Role: "user", Content: longContent, CreatedAt: now},
+	}, 1024, now); err != nil {
+		t.Fatalf("ArchiveTurns: %v", err)
+	}
+
+	rows := generationTurnRows(database, history.GenerationSummary{ID: "gen-utf8"})
+	var found bool
+	for _, r := range rows {
+		if strings.Contains(r.Text, "turn 1") {
+			found = true
+			if !utf8.ValidString(r.Detail) {
+				t.Fatalf("detail is not valid UTF-8: %q", r.Detail)
+			}
+			if !strings.HasSuffix(r.Detail, "…") {
+				t.Fatalf("expected rune-safe truncation with ellipsis, got %q", r.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a row for turn 1")
 	}
 }
 

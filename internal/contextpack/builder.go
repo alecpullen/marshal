@@ -249,8 +249,9 @@ func newScratchpadSection(entries []ScratchpadEntry, projectionMaxTokens int, no
 	for _, e := range entries {
 		preview := strings.ReplaceAll(e.Content, "\n", " ")
 		preview = strings.TrimSpace(preview)
-		if len(preview) > 80 {
-			preview = preview[:80] + "..."
+		runes := []rune(preview)
+		if len(runes) > 80 {
+			preview = string(runes[:80]) + "..."
 		}
 		tokens := EstimateTokens(e.Content)
 		format := e.Format

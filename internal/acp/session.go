@@ -256,12 +256,20 @@ func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
 	if len(p.AdditionalDirectories) > 8 {
 		return invalidParamsError("additionalDirectories max 8 entries")
 	}
-	// De-duplicate additionalDirectories by resolved path.
+	// De-duplicate additionalDirectories by resolved path. Non-existent
+	// paths (which may be created later by the agent) resolve to their
+	// nearest existing ancestor plus the remaining components, so the
+	// dedup key is stable and never errors out (ACP-MOD-#12).
 	seen := map[string]bool{}
 	for _, raw := range p.AdditionalDirectories {
-		resolved, err := filepath.EvalSymlinks(raw)
-		if err != nil {
-			return invalidParamsError("additionalDirectory %q: %v", raw, err)
+		resolved := raw
+		if _, err := os.Lstat(raw); err == nil {
+			resolved, err = filepath.EvalSymlinks(raw)
+			if err != nil {
+				return invalidParamsError("additionalDirectory %q: %v", raw, err)
+			}
+		} else {
+			resolved = resolveNearestAncestor(raw)
 		}
 		if seen[resolved] {
 			return invalidParamsError("additionalDirectory %q duplicates %q after symlink resolution", raw, resolved)
@@ -733,7 +741,12 @@ func checkPath(p string, trusted []string) error {
 	}
 	res, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		res = filepath.Clean(p)
+		// p (or one of its ancestors) does not exist. Resolve the deepest
+		// existing ancestor and append the remaining components so the
+		// containment check runs against the fully resolved path. This keeps
+		// non-existent paths inside a symlinked root (e.g. macOS /var ->
+		// /private/var) accepted, matching checkPath's documented fallback.
+		res = resolveNearestAncestor(p)
 	}
 	for _, root := range trusted {
 		rel, err := filepath.Rel(root, res)
@@ -742,6 +755,33 @@ func checkPath(p string, trusted []string) error {
 		}
 	}
 	return fmt.Errorf("%q is outside the trusted-roots allow-list", p)
+}
+
+// resolveNearestAncestor walks up from p until it finds an existing path,
+// resolves that ancestor through EvalSymlinks, and appends the remaining
+// components. It returns the cleaned result. Used when p itself does not
+// exist yet (e.g. an additional directory the agent will create later).
+func resolveNearestAncestor(p string) string {
+	cur := filepath.Clean(p)
+	var rest []string
+	for {
+		if _, err := os.Lstat(cur); err == nil {
+			resolved, rerr := filepath.EvalSymlinks(cur)
+			if rerr != nil {
+				return filepath.Clean(p)
+			}
+			for i := len(rest) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, rest[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Clean(p)
+		}
+		rest = append(rest, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // trustedRoots returns directories that are considered trusted for

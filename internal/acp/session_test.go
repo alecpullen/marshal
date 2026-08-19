@@ -1245,6 +1245,27 @@ func TestValidateLifecycleParamsRejectsSymlinkDuplicate(t *testing.T) {
 	}
 }
 
+func TestValidateLifecycleParamsAcceptsNonExistentAdditionalDir(t *testing.T) {
+	tmp := t.TempDir()
+	absCwd, err := filepath.Abs(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A non-existent subdirectory inside the cwd — should be accepted
+	// (it may be created later by the agent).
+	nonExistent := filepath.Join(absCwd, "future_dir")
+	params := sessionParams{
+		Cwd:                   absCwd,
+		SessionID:             "sess_test",
+		MCPServers:            &[]json.RawMessage{},
+		AdditionalDirectories: []string{nonExistent},
+	}
+	err = validateLifecycleParams(&params, true)
+	if err != nil {
+		t.Fatalf("expected nil error for non-existent additional dir, got: %v", err)
+	}
+}
+
 func TestCheckPathCleansUnresolvedPath(t *testing.T) {
 	tmp := t.TempDir()
 	// Resolve symlinks (e.g. /var -> /private/var on macOS) so the trusted

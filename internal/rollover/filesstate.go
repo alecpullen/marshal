@@ -3,6 +3,7 @@ package rollover
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -118,6 +119,12 @@ func (f *FilesState) OutstandingTodos(ctx context.Context) (string, error) {
 		return "", ctxErr
 	}
 	if err != nil {
+		// Cancellation/deadline surfaced by the runner (possibly wrapped)
+		// is not a real failure — propagate it rather than logging a
+		// spurious warning.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
 		slog.Warn("OutstandingTodos: git grep failed", "error", err, "dir", f.root)
 		return "", nil
 	}

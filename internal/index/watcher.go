@@ -45,6 +45,12 @@ func (w *Watcher) Run(ctx context.Context) error {
 	dirty := false
 	running := false
 	rerun := false
+	// finished is buffered with capacity 1. It is safe because the
+	// single-run invariant holds: at most one run is in-flight at a
+	// time, guarded by the running flag. The fire closure is the only
+	// sender, and the select loop is the only receiver. If a future
+	// change violates this invariant, the defensive select below
+	// prevents a deadlock.
 	finished := make(chan struct{}, 1)
 
 	fire := func() {
@@ -56,7 +62,14 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if err := w.run(ctx); err != nil {
 				w.log.Warn("index watcher pass failed", "err", err)
 			}
-			finished <- struct{}{}
+			select {
+			case finished <- struct{}{}:
+			default:
+				// Channel is full (invariant violated); drop the
+				// signal to avoid blocking. The running flag
+				// remains true until the next loop iteration reads
+				// the buffered signal.
+			}
 		}()
 	}
 

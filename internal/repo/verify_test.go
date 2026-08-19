@@ -35,10 +35,18 @@ func TestDominantSourceLanguage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := DominantSourceLanguage(dir); got != "go" {
+	got, err := DominantSourceLanguage(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "go" {
 		t.Errorf("got %q, want go", got)
 	}
-	if got := DominantSourceLanguage(t.TempDir()); got != "" {
+	got, err = DominantSourceLanguage(t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error for empty dir: %v", err)
+	}
+	if got != "" {
 		t.Errorf("empty dir: got %q, want empty", got)
 	}
 }

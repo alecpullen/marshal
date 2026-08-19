@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -42,11 +43,12 @@ var sourceLanguages = map[string]bool{
 
 // DominantSourceLanguage walks repoRoot (skipping common vendor dirs) and
 // returns the most common source language by extension, or "" when none.
-func DominantSourceLanguage(repoRoot string) string {
+// A non-nil error indicates the walk failed before completing.
+func DominantSourceLanguage(repoRoot string) (string, error) {
 	counts := map[string]int{}
-	filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
@@ -60,11 +62,14 @@ func DominantSourceLanguage(repoRoot string) string {
 		}
 		return nil
 	})
+	if err != nil {
+		return "", fmt.Errorf("walk repo: %w", err)
+	}
 	best, n := "", 0
 	for lang, c := range counts {
 		if c > n {
 			best, n = lang, c
 		}
 	}
-	return best
+	return best, nil
 }

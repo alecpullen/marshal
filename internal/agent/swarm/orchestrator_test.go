@@ -205,6 +205,34 @@ func TestOrchestratorRunsScoutsInParallel(t *testing.T) {
 	}
 }
 
+func TestOrchestratorScoutAtomicHasRealUsage(t *testing.T) {
+	state := newLockTestState(t)
+	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
+		response := `{"rationale": "done", "action": {"type": "final", "content": "ok"}}`
+		p := &agenttest.ScriptedProvider{Responses: []string{response}}
+		r := agent.NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r.Role = role
+		r.SetForceClass("question")
+		r.MaxToolIterations = 2
+		r.MaxRetries = 0
+		return r, nil
+	}
+	o := New(state, factory)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := o.Run(context.Background(), "goal"); err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("orchestrator deadlocked: atomic.Bool broke scout pattern")
+	}
+}
+
 func TestOrchestratorContinuesWhenAScoutFails(t *testing.T) {
 	state := newLockTestState(t)
 	scoutCount := 0

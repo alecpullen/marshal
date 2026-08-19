@@ -119,7 +119,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 			focus        ScoutFocus
 			runner       *agent.Runner
 			prompt       string
-			hasRealUsage *bool
+			hasRealUsage *atomic.Bool
 		}
 		jobs := make([]scoutJob, 0, len(focuses))
 		for _, focus := range focuses {
@@ -129,9 +129,9 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 				o.announce("Swarm aborted: could not build repo scout.")
 				return err
 			}
-			var hasRealUsage bool
+			var hasRealUsage atomic.Bool
 			runner.UsageObserver = func(usage schema.TokenUsage) {
-				hasRealUsage = true
+				hasRealUsage.Store(true)
 				meter.Observe(agent.RoleRepoScout, usage)
 			}
 			jobs = append(jobs, scoutJob{
@@ -152,7 +152,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 					ts.AddFinding(Finding{Agent: "repo_scout", Area: j.focus.Area, Content: "scout failed: " + err.Error()})
 				} else {
 					ts.AddFinding(Finding{Agent: "repo_scout", Area: j.focus.Area, Content: task.Summary})
-					if !*j.hasRealUsage {
+					if !j.hasRealUsage.Load() {
 						o.observe(meter, agent.RoleRepoScout, j.prompt, task.Summary)
 					}
 				}

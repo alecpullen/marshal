@@ -277,6 +277,40 @@ func TestSkillLoadBudgetIgnoresAutoloaded(t *testing.T) {
 	}
 }
 
+func TestSkillLoaderRejectsOnFreshBudgetCheck(t *testing.T) {
+	idx := NewIndex()
+	// Two skills, each small enough to pass individually, but together
+	// they exceed a tight budget.
+	body := strings.Repeat("x", 4000) // ~1000 tokens each
+	idx.skills["big1"] = Skill{Name: "big1", Description: "d", Body: body}
+	idx.skills["big2"] = Skill{Name: "big2", Description: "d", Body: body}
+
+	state := newTestState()
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"},
+		},
+		TokenUsage: contextpack.TokenUsage{
+			MaxTokens:       12000,
+			EstimatedTokens: 10500, // leaves ~1500 tokens — enough for one skill but not two
+		},
+	})
+
+	// First load succeeds.
+	if err := LoadSkillIntoSession(idx, state, "big1"); err != nil {
+		t.Fatalf("first load should succeed: %v", err)
+	}
+	// Second load must fail — the fresh budget check accounts for big1's
+	// body tokens already injected, not just the stale context pack.
+	err := LoadSkillIntoSession(idx, state, "big2")
+	if err == nil {
+		t.Fatal("second load should fail with fresh budget check, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "context budget") {
+		t.Fatalf("expected budget error, got: %v", err)
+	}
+}
+
 func TestSkillLoadBudgetZeroUnlimited(t *testing.T) {
 	idx := NewIndex()
 	for _, name := range []string{"a", "b", "c", "d"} {

@@ -117,22 +117,19 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 // Fallback so the TUI can display what model is actually running (or ran)
 // the subagent.
 func (s *State) RegisterSubagentWithMeta(label string, child *State, meta SubagentMeta) SubagentView {
-	v := s.RegisterSubagent(label, child)
-	v.Role = meta.Role
-	v.Provider = meta.Provider
-	v.Model = meta.Model
-	v.Fallback = meta.Fallback
-	// Update the stored copy.
-	s.mu.Lock()
-	for i := range s.subagents {
-		if s.subagents[i].ID == v.ID {
-			s.subagents[i].Role = meta.Role
-			s.subagents[i].Provider = meta.Provider
-			s.subagents[i].Model = meta.Model
-			s.subagents[i].Fallback = meta.Fallback
-			break
-		}
+	v := SubagentView{
+		ID:        subagentSeq.Add(1),
+		Label:     label,
+		Status:    SubagentRunning,
+		Child:     child,
+		StartedAt: time.Now(),
+		Role:      meta.Role,
+		Provider:  meta.Provider,
+		Model:     meta.Model,
+		Fallback:  meta.Fallback,
 	}
+	s.mu.Lock()
+	s.subagents = append(s.subagents, v)
 	broker := s.subagentBroker
 	s.mu.Unlock()
 	if broker != nil {

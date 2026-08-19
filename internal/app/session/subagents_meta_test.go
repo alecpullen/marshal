@@ -1,11 +1,13 @@
 package session
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
+	"marshal/internal/pubsub"
 )
 
 func TestRegisterSubagentWithMeta(t *testing.T) {
@@ -92,5 +94,44 @@ func TestCancelSubagentReturnsFalseForUnknown(t *testing.T) {
 	state := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
 	if state.CancelSubagent(999) {
 		t.Fatal("CancelSubagent returned true for unknown ID")
+	}
+}
+
+func TestRegisterSubagentWithMetaSingleEvent(t *testing.T) {
+	b := pubsub.NewBroker[SubagentEvent]()
+	state := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
+	state.SetSubagentBroker(b)
+	child := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := b.Subscribe(ctx)
+
+	state.RegisterSubagentWithMeta("worker", child, SubagentMeta{
+		Role:     routing.RoleImplementer,
+		Provider: "test",
+		Model:    "test-model",
+	})
+
+	// Drain with a short deadline; expect exactly one event carrying meta.
+	var events []SubagentEvent
+	deadline := time.After(200 * time.Millisecond)
+drain:
+	for {
+		select {
+		case ev := <-ch:
+			events = append(events, ev.Payload)
+		case <-deadline:
+			break drain
+		}
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want exactly 1", len(events))
+	}
+	if events[0].View.Role != routing.RoleImplementer {
+		t.Errorf("first event Role = %q, want %q (no empty first event)", events[0].View.Role, routing.RoleImplementer)
+	}
+	if events[0].View.Provider != "test" || events[0].View.Model != "test-model" {
+		t.Errorf("first event Provider/Model = %q/%q, want test/test-model", events[0].View.Provider, events[0].View.Model)
 	}
 }

@@ -636,6 +636,37 @@ func TestDeliverOutboundDoesNotBlockOnFullChannel(t *testing.T) {
 	}
 }
 
+func TestDeliverOutboundQueuesSecondResponseInBuffer2(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	id := json.RawMessage(`"abc"`)
+	// Buffer 2: pre-fill with one response, second should queue (not drop).
+	ch := make(chan outboundResult, 2)
+	ch <- outboundResult{response: &Response{}}
+	s.outbound["abc"] = ch
+
+	done := make(chan bool, 1)
+	go func() {
+		_ = s.deliverOutbound(&id, []byte(`{"jsonrpc":"2.0","id":"abc","result":{}}`))
+		done <- true
+	}()
+	select {
+	case <-done:
+		// ok — second response queued
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("deliverOutbound blocked on a 2-buffer with 1 pre-filled (should queue)")
+	}
+
+	// Drain both
+	<-ch
+	res := <-ch
+	if res.response == nil {
+		t.Fatal("second queued response was nil")
+	}
+}
+
 func TestFailOutboundDoesNotBlockOnFullChannel(t *testing.T) {
 	s := &Server{
 		outbound: make(map[string]chan outboundResult),

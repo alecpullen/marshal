@@ -188,7 +188,7 @@ func (s *Server) Request(ctx context.Context, method string, params any, result 
 	// 2. Allocate and register waiter.
 	s.outboundID++
 	id := fmt.Sprintf("marshal-out-%d", s.outboundID)
-	ch := make(chan outboundResult, 1)
+	ch := make(chan outboundResult, 2)
 	s.outbound[id] = ch
 	s.stateMu.Unlock()
 
@@ -400,7 +400,9 @@ func (s *Server) deliverOutbound(id *json.RawMessage, line []byte) bool {
 	select {
 	case ch <- outboundResult{response: &resp}:
 	default:
-		// waiter already consumed the buffer; nothing to do
+		// Buffer full — both slots consumed or waiter already gone.
+		s.log().Warn("acp: outbound response dropped (channel full)",
+			"id", key)
 	}
 	return true
 }

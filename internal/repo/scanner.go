@@ -137,10 +137,6 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 			}
 			return nil
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			s.skipped = append(s.skipped, skippedEntry{Path: rel, Reason: "symlink"})
-			return nil
-		}
 		if !entry.Type().IsRegular() {
 			return nil
 		}

@@ -1704,6 +1704,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				runOpts.knowledgeHook(knowledgeCtx, state, database)
 			}
 
+			// Clean up spill files from this session.
+			spillDir := filepath.Join(workingDir, ".marshal", "tool-results")
+			if err := agent.CleanupSpillFiles(spillDir); err != nil {
+				logger.Warn("spill file cleanup failed", "error", err)
+			}
+
 			// Phase 3: close — tear down MCP, brokers, snapshots, DB, logger.
 			closeErr := rt.Close(context.Background())
 			return errors.Join(progErr, quiesceErr, closeErr)

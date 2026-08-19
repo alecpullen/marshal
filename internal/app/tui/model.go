@@ -3761,7 +3761,10 @@ func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 		m.railBaseRef = msg.ref
 	}
 	m.refreshRailChanged()
-	m.refreshViewport()
+	// No explicit refreshViewport here: Bubble Tea re-renders after every
+	// Update, and the rail reads m.railChanged directly in View, so the
+	// updated cache is picked up on the next frame. refreshViewport only
+	// rebuilds the transcript viewport, which this message does not touch.
 	return m, nil
 }
 

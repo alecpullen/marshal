@@ -71,6 +71,32 @@ func TestEnterOnNoMatchesShowsFeedback(t *testing.T) {
 	}
 }
 
+// TestNoMatchesFeedbackClearsOnArrow verifies the "No matches to select"
+// feedback is not sticky: pressing up/down clears it, so it doesn't linger
+// after the user starts navigating again.
+func TestNoMatchesFeedbackClearsOnArrow(t *testing.T) {
+	m := New("x", "", testItems())
+	for _, r := range "zzzzzz" {
+		m.Update(key(r))
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.ErrMsg() == "" {
+		t.Fatal("precondition: enter on no matches should set feedback")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	if m.ErrMsg() != "" {
+		t.Fatalf("up should clear the feedback, got %q", m.ErrMsg())
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.ErrMsg() == "" {
+		t.Fatal("precondition: feedback should be set again")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.ErrMsg() != "" {
+		t.Fatalf("down should clear the feedback, got %q", m.ErrMsg())
+	}
+}
+
 func TestViewGroupsWhenUnfilteredFlatWhenFiltered(t *testing.T) {
 	m := New("Switch model", "session only", testItems())
 	v := ansi.Strip(m.View(80, 24))

@@ -113,6 +113,68 @@ func TestReadModifiedFileOnlyAdditionsGetsM(t *testing.T) {
 	}
 }
 
+func TestParseNameStatusRenameKeysByNewPath(t *testing.T) {
+	// A rename line carries two paths; the map must be keyed by the new
+	// path so it matches the entries parseNumstat produces.
+	m := parseNameStatus("R100\told.txt\tnew.txt\nM\tmodified.txt\n")
+	if got := m["new.txt"]; got != 'R' {
+		t.Errorf("new.txt status = %q, want 'R'", got)
+	}
+	if _, ok := m["old.txt"]; ok {
+		t.Error("old.txt should not be a key (numstat reports the new path)")
+	}
+	if got := m["modified.txt"]; got != 'M' {
+		t.Errorf("modified.txt status = %q, want 'M'", got)
+	}
+}
+
+func TestReadUntrackedUnstagedNewFileIncluded(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	base := initRepo(t, dir)
+
+	// Create a new file but do NOT stage it. The diff passes won't see it;
+	// only the ls-files --others pass reports it.
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := Read(dir, base)
+	found := false
+	for _, f := range got {
+		if f.Path == "untracked.txt" {
+			found = true
+			if f.Status != 'A' {
+				t.Errorf("status = %q, want 'A' (added)", f.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("untracked.txt not in results: %+v", got)
+	}
+}
+
+func TestReadIgnoresGitignoredUntracked(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	base := initRepo(t, dir)
+
+	// A gitignored file must never surface in the rail.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored.txt\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write ignored.txt: %v", err)
+	}
+
+	got := Read(dir, base)
+	for _, f := range got {
+		if f.Path == "ignored.txt" {
+			t.Fatalf("gitignored file should not appear: %+v", got)
+		}
+	}
+}
+
 func TestReadNewFileGetsA(t *testing.T) {
 	gitOrSkip(t)
 	dir := t.TempDir()

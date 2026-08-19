@@ -18,7 +18,8 @@ import (
 const readTimeout = 2 * time.Second
 
 // Read returns the files changed in workingDir since baseRef, including
-// untracked-but-staged files. Returns nil on any error.
+// untracked-but-staged files and untracked-and-unstaged new files. Returns
+// nil on any error.
 func Read(workingDir, baseRef string) []sidepanel.ChangedFile {
 	if workingDir == "" || baseRef == "" {
 		return nil
@@ -80,23 +81,54 @@ func Read(workingDir, baseRef string) []sidepanel.ChangedFile {
 		}
 	}
 
+	// Fourth pass: untracked-and-unstaged new files. None of the diff
+	// passes above report these (they only see tracked content), so list
+	// them explicitly and append as additions. Respect .gitignore via
+	// --exclude-standard so ignored files never surface in the rail.
+	ctx4, cancel4 := context.WithTimeout(context.Background(), readTimeout)
+	defer cancel4()
+
+	out4, err := exec.CommandContext(ctx4, "git", "-C", workingDir,
+		"ls-files", "--others", "--exclude-standard").Output()
+	if err != nil {
+		return files
+	}
+	for _, path := range strings.Split(strings.TrimSpace(string(out4)), "\n") {
+		if path == "" {
+			continue
+		}
+		if _, ok := byPath[path]; ok {
+			continue
+		}
+		files = append(files, sidepanel.ChangedFile{
+			Path: path, Status: 'A', Added: 1,
+		})
+	}
+
 	return files
 }
 
 // parseNameStatus parses `git diff --name-status` output into a path→status
 // map. The status letter is the first character of each line's first field
-// (A, M, D, R, C, etc.).
+// (A, M, D, R, C, etc.). Rename/copy lines carry two paths (old and new);
+// numstat reports the new path, so the map is keyed by the new path to stay
+// consistent with the entries produced by parseNumstat.
 func parseNameStatus(out string) map[string]rune {
 	m := make(map[string]rune)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 2)
+		parts := strings.SplitN(line, "\t", 3)
 		if len(parts) < 2 {
 			continue
 		}
-		m[parts[1]] = rune(parts[0][0])
+		path := parts[1]
+		if len(parts) == 3 {
+			// Rename/copy: "R100\told\tnew" — use the new path.
+			path = parts[2]
+		}
+		m[path] = rune(parts[0][0])
 	}
 	return m
 }

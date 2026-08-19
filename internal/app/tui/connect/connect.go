@@ -266,7 +266,7 @@ func (m *Model) renderInput(pw int) string {
 	inner := pw - 2
 	line := m.input.View()
 	if inner > 0 {
-		line = truncateRunes(line, inner)
+		line = strutil.Truncate(line, inner, false)
 	}
 	return line
 }
@@ -275,19 +275,9 @@ func (m *Model) renderRenameInput(pw int) string {
 	inner := pw - 2
 	line := m.renameInput.View()
 	if inner > 0 {
-		line = truncateRunes(line, inner)
+		line = strutil.Truncate(line, inner, false)
 	}
 	return line
-}
-
-// truncateRunes truncates s to at most max runes, preserving UTF-8
-// validity. Byte-slice truncation can split multi-byte runes.
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
 }
 
 func (m *Model) renderProbing(pw int) string {

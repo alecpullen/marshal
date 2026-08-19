@@ -159,11 +159,13 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 			m.errMsg = "No matches to select"
 			return nil
 		case "up":
+			m.errMsg = ""
 			if m.cursor > 0 {
 				m.cursor--
 			}
 			return nil
 		case "down":
+			m.errMsg = ""
 			if m.cursor < len(m.matches)-1 {
 				m.cursor++
 			}

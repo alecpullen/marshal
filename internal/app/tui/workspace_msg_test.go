@@ -136,23 +136,17 @@ func TestHandleRailBaseRefEmptyRefKeepsBase(t *testing.T) {
 	}
 }
 
-func TestHandleRailBaseRefRefreshesViewport(t *testing.T) {
+func TestHandleRailBaseRefRebasesAndRefreshesCache(t *testing.T) {
 	m := newTestModel(t)
 	m.railWidth = 40 // enable the rail so refreshRailChanged runs
 	activeRoot := m.state.Workspace().ActiveRoot
 	m.railBaseRef = "old-sha"
 
-	// Set a stale viewport hash so refreshViewport would change it.
-	m.lastTranscriptHash = 0
-
 	mm, _ := m.handleRailBaseRef(railBaseRefMsg{dir: activeRoot, ref: "new-sha"})
 
-	// After handleRailBaseRef, the viewport should have been refreshed.
-	// lastTranscriptHash is set by refreshViewport; if it's still 0,
-	// refreshViewport wasn't called.
-	if mm.lastTranscriptHash == 0 {
-		t.Fatal("handleRailBaseRef should call refreshViewport")
-	}
+	// The base ref is rebased and the changed-files cache is refreshed.
+	// (No explicit viewport refresh is needed: Bubble Tea re-renders after
+	// every Update and the rail reads the cache directly in View.)
 	if mm.railBaseRef != "new-sha" {
 		t.Errorf("railBaseRef = %q, want new-sha", mm.railBaseRef)
 	}

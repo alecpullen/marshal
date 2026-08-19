@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"marshal/internal/sandbox/envutil"
@@ -49,17 +50,24 @@ type Checker struct {
 	commands map[string]string
 	runner   Runner
 	lsp      LSPSource
+	mu       sync.Mutex
 }
 
 // SetLSPSource installs an LSP diagnostics source consulted before the
 // configured command checkers.
-func (c *Checker) SetLSPSource(src LSPSource) { c.lsp = src }
+func (c *Checker) SetLSPSource(src LSPSource) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lsp = src
+}
 
 func NewChecker(commands map[string]string) *Checker {
 	return &Checker{commands: commands, runner: execRunner}
 }
 
 func (c *Checker) Check(files []string, language string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.lsp != nil && len(files) > 0 {
 		if out, ok := c.lsp.Diagnostics(language, files[0]); ok {
 			return out, nil

@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -65,6 +66,31 @@ func TestCheckerPrefersLSP(t *testing.T) {
 	if err != nil || out != "a.go:1: oops" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
+}
+
+func TestCheckerConcurrentWithSetLSPSource(t *testing.T) {
+	c := NewChecker(map[string]string{"go": "go vet {package}"})
+	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return nil, nil
+	}
+	var wg sync.WaitGroup
+	// Writer goroutine: set LSP source concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			c.SetLSPSource(fakeLSPSource{ok: false})
+		}
+	}()
+	// Reader goroutine: call Check concurrently.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.Check([]string{"x.go"}, "go")
+		}()
+	}
+	wg.Wait()
 }
 
 func TestCheckerFallsBackWhenNoLSP(t *testing.T) {

@@ -130,6 +130,29 @@ func TestGenerateTitleDoesNotOverwriteConcurrentRename(t *testing.T) {
 	}
 }
 
+func TestSetTitleIfNotManualDoesNotOverwriteManual(t *testing.T) {
+	state := newTestState(t)
+	state.SetTitleManual("manual")
+
+	if ok := state.SetTitleIfNotManual("auto"); ok {
+		t.Fatal("SetTitleIfNotManual returned true when title was manually set")
+	}
+	if got := state.Title(); got != "manual" {
+		t.Fatalf("title = %q, want %q", got, "manual")
+	}
+}
+
+func TestSetTitleIfNotManualSetsWhenNotManual(t *testing.T) {
+	state := newTestState(t)
+
+	if ok := state.SetTitleIfNotManual("auto"); !ok {
+		t.Fatal("SetTitleIfNotManual returned false when title was not manually set")
+	}
+	if got := state.Title(); got != "auto" {
+		t.Fatalf("title = %q, want %q", got, "auto")
+	}
+}
+
 func TestGenerateTitleFailureLeavesFallback(t *testing.T) {
 	p := &failProvider{}
 	state := newTestState(t)

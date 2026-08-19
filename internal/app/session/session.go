@@ -467,6 +467,21 @@ func (s *State) SetTitleManual(title string) {
 	s.mu.Unlock()
 }
 
+// SetTitleIfNotManual sets the title only if it has not been manually set
+// (via SetTitleManual or /rename). Returns true if the title was set,
+// false if a manual title prevented the update. This atomically combines
+// the TitleManuallySet check and SetTitle call to prevent a TOCTOU race
+// where a /rename arrives between the check and the set.
+func (s *State) SetTitleIfNotManual(title string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.titleSet {
+		return false
+	}
+	s.title = title
+	return true
+}
+
 func (s *State) Title() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -65,15 +65,12 @@ func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) 
 	title = strings.Join(strings.Fields(title), " ")
 	title = strings.Trim(title, "\"'`.,;:!?")
 	title = strutil.Truncate(title, titleMaxChars, false)
-	// Re-check the manual-title guard immediately before persisting.
-	// A /rename issued after the early-return check at the top of
-	// generate() but before the LLM call returns must not be silently
-	// overwritten by the auto-title. Use the same mutex-locked check as
-	// SetTitleManual so the read is race-free with concurrent renames.
-	if t.state.TitleManuallySet() {
+	// SetTitleIfNotManual atomically checks the manual-title guard and
+	// persists the title under one lock, closing the TOCTOU window where
+	// a /rename between the check and the set could be overwritten.
+	if !t.state.SetTitleIfNotManual(title) {
 		return
 	}
-	t.state.SetTitle(title)
 	if db := t.state.DB(); db != nil {
 		_ = db.UpdateSessionTitle(t.state.SessionID(), title)
 	}

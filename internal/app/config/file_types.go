@@ -51,6 +51,7 @@ type fileAgent struct {
 	ApprovalMode             *string `toml:"approval_mode"`
 	HistoryBudgetTokens      *int    `toml:"history_budget_tokens"`
 	ParseRepairFeedback      *bool   `toml:"parse_repair_feedback"`
+	MaxTouchedFileBytes      *int    `toml:"max_touched_file_bytes"`
 }
 
 type filePrivacy struct {

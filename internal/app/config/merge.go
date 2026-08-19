@@ -46,6 +46,7 @@ func merge(cfg *Config, file configFile) error {
 		if file.Agent.ParseRepairFeedback != nil {
 			cfg.Agent.ParseRepairFeedback = file.Agent.ParseRepairFeedback
 		}
+		set(&cfg.Agent.MaxTouchedFileBytes, file.Agent.MaxTouchedFileBytes)
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -330,5 +331,44 @@ func TestEndSessionIgnoresFileSummaryOutsideTouchedFiles(t *testing.T) {
 	}
 	if len(files) != 1 || files[0].Summary != "" {
 		t.Fatalf("files = %#v, want summary untouched (empty)", files)
+	}
+}
+
+func TestReadTouchedFilesTruncatesLargeFile(t *testing.T) {
+	dir := t.TempDir()
+	largePath := "big.txt"
+	content := strings.Repeat("x", 100000)
+	if err := os.WriteFile(filepath.Join(dir, largePath), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	auditLog := []registry.AuditEvent{
+		{FilesChanged: []string{largePath}},
+	}
+	got := readTouchedFiles(dir, auditLog, 65536)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(got))
+	}
+	result := got[largePath]
+	if !strings.Contains(result, "[... file truncated at 65536 bytes ...]") {
+		t.Fatalf("expected truncation marker, got %d bytes", len(result))
+	}
+	if len(result) > 65536+100 { // marker text is short
+		t.Fatalf("result too large: %d bytes", len(result))
+	}
+}
+
+func TestReadTouchedFilesReadsSmallFile(t *testing.T) {
+	dir := t.TempDir()
+	smallPath := "small.txt"
+	content := "hello world"
+	if err := os.WriteFile(filepath.Join(dir, smallPath), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	auditLog := []registry.AuditEvent{
+		{FilesChanged: []string{smallPath}},
+	}
+	got := readTouchedFiles(dir, auditLog, 65536)
+	if got[smallPath] != content {
+		t.Fatalf("expected full content, got %q", got[smallPath])
 	}
 }

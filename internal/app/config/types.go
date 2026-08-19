@@ -380,6 +380,10 @@ type AgentConfig struct {
 	// of relying on the repair. Default true. Set false to save the tokens
 	// — repairs still happen either way, they just go unmentioned.
 	ParseRepairFeedback *bool `toml:"parse_repair_feedback,omitempty"`
+	// MaxTouchedFileBytes caps how much of each file readTouchedFiles
+	// loads during the knowledge pass. Files larger than this are
+	// truncated with a marker. 0 = 65536 (64 KiB default).
+	MaxTouchedFileBytes int `toml:"max_touched_file_bytes"`
 }
 
 // ParseRepairFeedbackEnabled resolves the tri-state toggle: unset means on.

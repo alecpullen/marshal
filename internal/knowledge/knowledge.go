@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -28,14 +29,15 @@ type RouteResolver interface {
 }
 
 type EndSessionInput struct {
-	DB            *db.DB
-	ProjectID     int64
-	SessionID     string
-	State         *session.State
-	RouteResolver RouteResolver
-	WorkingDir    string
-	Now           func() time.Time
-	Logger        *slog.Logger
+	DB                  *db.DB
+	ProjectID           int64
+	SessionID           string
+	State               *session.State
+	RouteResolver       RouteResolver
+	WorkingDir          string
+	MaxTouchedFileBytes int
+	Now                 func() time.Time
+	Logger              *slog.Logger
 }
 
 // EndSession summarizes the session, extracts durable memories, and
@@ -61,7 +63,11 @@ func EndSession(ctx context.Context, in EndSessionInput) {
 	}
 
 	auditLog := in.State.AuditLog()
-	touchedFiles := readTouchedFiles(in.WorkingDir, auditLog)
+	maxBytes := in.MaxTouchedFileBytes
+	if maxBytes <= 0 {
+		maxBytes = 65536
+	}
+	touchedFiles := readTouchedFiles(in.WorkingDir, auditLog, maxBytes)
 
 	prompt := BuildExtractionPrompt(messages, auditLog, touchedFiles)
 	raw, err := provider.ChatText(ctx, p, schema.ChatRequest{
@@ -111,8 +117,9 @@ func hasUserMessage(messages []session.Message) bool {
 // readTouchedFiles reads the current content of every distinct path in
 // auditLog's FilesChanged. Files that no longer exist or cannot be read are
 // silently skipped: the knowledge pass runs best-effort at process exit and
-// must not fail the whole extraction over one unreadable file.
-func readTouchedFiles(workingDir string, auditLog []registry.AuditEvent) map[string]string {
+// must not fail the whole extraction over one unreadable file. Files larger
+// than maxBytes are truncated to that size with a marker appended.
+func readTouchedFiles(workingDir string, auditLog []registry.AuditEvent, maxBytes int) map[string]string {
 	seen := map[string]bool{}
 	files := map[string]string{}
 	for _, event := range auditLog {
@@ -121,7 +128,25 @@ func readTouchedFiles(workingDir string, auditLog []registry.AuditEvent) map[str
 				continue
 			}
 			seen[path] = true
-			content, err := os.ReadFile(filepath.Join(workingDir, path))
+			fullPath := filepath.Join(workingDir, path)
+			info, err := os.Stat(fullPath)
+			if err != nil {
+				continue
+			}
+			if info.Size() > int64(maxBytes) {
+				f, err := os.Open(fullPath)
+				if err != nil {
+					continue
+				}
+				buf := make([]byte, maxBytes)
+				n, _ := f.Read(buf)
+				f.Close()
+				content := string(buf[:n])
+				content += fmt.Sprintf("\n[... file truncated at %d bytes ...]", maxBytes)
+				files[path] = content
+				continue
+			}
+			content, err := os.ReadFile(fullPath)
 			if err != nil {
 				continue
 			}

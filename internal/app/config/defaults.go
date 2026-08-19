@@ -21,7 +21,8 @@ func Default() Config {
 			Default: "local_balanced",
 		},
 		Agent: AgentConfig{
-			ApprovalMode: "default",
+			ApprovalMode:        "default",
+			MaxTouchedFileBytes: 65536, // 64 KiB
 		},
 		Privacy: PrivacyConfig{
 			RemoteProvidersAllowed: false,

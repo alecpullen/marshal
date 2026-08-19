@@ -199,6 +199,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	if fileField[bool](file.Agent, "ParseRepairFeedback") != nil || cfg.Agent.ParseRepairFeedback != nil {
 		agent.ParseRepairFeedback = cfg.Agent.ParseRepairFeedback
 	}
+	putKey(&agent.MaxTouchedFileBytes, fileField[int](file.Agent, "MaxTouchedFileBytes"), cfg.Agent.MaxTouchedFileBytes, def.Agent.MaxTouchedFileBytes)
 	file.Agent = agent
 
 	privacy := &filePrivacy{}

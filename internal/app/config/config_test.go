@@ -358,6 +358,27 @@ func TestSaveProjectConfigStripsProviderAPIKeys(t *testing.T) {
 	}
 }
 
+func TestMaxTouchedFileBytesLoadable(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := "[agent]\nmax_touched_file_bytes = 131072\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.MaxTouchedFileBytes != 131072 {
+		t.Errorf("MaxTouchedFileBytes = %d, want 131072", cfg.Agent.MaxTouchedFileBytes)
+	}
+}
+
 func TestLoadParsesAgentSection(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

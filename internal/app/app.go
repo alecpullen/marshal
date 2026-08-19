@@ -1688,14 +1688,15 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			// are still open.
 			knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
 			knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
-				DB:            database,
-				ProjectID:     projectID,
-				SessionID:     sessionID,
-				State:         state,
-				RouteResolver: newRoutedProviderResolver(state.Config, rt.DataDir),
-				WorkingDir:    workingDir,
-				Now:           runOpts.now,
-				Logger:        logger,
+				DB:                  database,
+				ProjectID:           projectID,
+				SessionID:           sessionID,
+				State:               state,
+				RouteResolver:       newRoutedProviderResolver(state.Config, rt.DataDir),
+				WorkingDir:          workingDir,
+				MaxTouchedFileBytes: state.Config.Agent.MaxTouchedFileBytes,
+				Now:                 runOpts.now,
+				Logger:              logger,
 			})
 			cancelKnowledge()
 

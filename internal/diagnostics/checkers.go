@@ -66,10 +66,16 @@ func NewChecker(commands map[string]string) *Checker {
 }
 
 func (c *Checker) Check(files []string, language string) (string, error) {
+	// Snapshot the LSP source under the lock, then release it before running
+	// any command. This keeps the lock held only for the cheap reference read
+	// rather than for the full (up to 15s) command execution, so concurrent
+	// Check calls don't serialize and SetLSPSource isn't blocked for the
+	// duration of a run.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.lsp != nil && len(files) > 0 {
-		if out, ok := c.lsp.Diagnostics(language, files[0]); ok {
+	lsp := c.lsp
+	c.mu.Unlock()
+	if lsp != nil && len(files) > 0 {
+		if out, ok := lsp.Diagnostics(language, files[0]); ok {
 			return out, nil
 		}
 	}

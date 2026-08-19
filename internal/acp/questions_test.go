@@ -87,6 +87,31 @@ func TestQuestionBridgeAnswerCountMismatchMapsToUnanswered(t *testing.T) {
 	}
 }
 
+func TestQuestionBridgeUniqueIDsUnderRapidCalls(t *testing.T) {
+	client := &fakeQuestionClient{resp: QuestionResponse{Declined: true}}
+	bridge := NewQuestionBridge(client)
+
+	var ids []string
+	for i := 0; i < 100; i++ {
+		pending, _ := newPendingQuestion(session.Question{Question: "q"})
+		if err := bridge.Ask(context.Background(), "sess_test", pending); err != nil {
+			t.Fatalf("Ask #%d: %v", i, err)
+		}
+		ids = append(ids, client.lastReq.QuestionID)
+	}
+
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("duplicate question ID: %s", id)
+		}
+		seen[id] = true
+	}
+	if len(ids) != 100 {
+		t.Fatalf("expected 100 IDs, got %d", len(ids))
+	}
+}
+
 func TestQuestionBridgeClientErrorReturnsError(t *testing.T) {
 	pending, _ := newPendingQuestion(session.Question{Question: "pick"})
 	client := &fakeQuestionClient{err: errors.New("transport dead")}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"marshal/internal/app/session"
@@ -60,6 +61,7 @@ func (c *serverQuestionClient) RequestQuestion(ctx context.Context, req Question
 // cannot deadlock or double-send).
 type QuestionBridge struct {
 	client QuestionClient
+	idCtr  atomic.Int64
 }
 
 func NewQuestionBridge(client QuestionClient) *QuestionBridge {
@@ -83,7 +85,7 @@ func (b *QuestionBridge) Ask(ctx context.Context, sessionID string, pending *ses
 	}
 	resp, err := b.client.RequestQuestion(ctx, QuestionRequest{
 		SessionID:  sessionID,
-		QuestionID: fmt.Sprintf("q_%d", time.Now().UnixNano()),
+		QuestionID: fmt.Sprintf("q_%d_%d", time.Now().UnixNano(), b.idCtr.Add(1)),
 		Questions:  pending.Questions,
 	})
 	if err != nil {

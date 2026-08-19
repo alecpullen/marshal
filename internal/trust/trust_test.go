@@ -1,6 +1,8 @@
 package trust
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,29 @@ func TestTrustStoreDirectoryPermissions(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o700 {
 		t.Errorf("directory permissions: got %o, want 700", perm)
+	}
+}
+
+func TestTrustStoreCorruptLoadLogsWarning(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	if err := os.WriteFile(filepath.Join(dir, "trust.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	trusted, err := s.IsTrusted("/some/project")
+	if err != nil {
+		t.Fatalf("IsTrusted must stay fail-closed without surfacing error, got: %v", err)
+	}
+	if trusted {
+		t.Error("corrupt store must resolve to untrusted")
+	}
+	if !strings.Contains(buf.String(), "trust") {
+		t.Errorf("expected warning log mentioning trust store, got: %q", buf.String())
 	}
 }
 

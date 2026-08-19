@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,7 +103,9 @@ func (s *Store) Save(records map[string]Record) error {
 func (s *Store) IsTrusted(absPath string) (bool, error) {
 	records, err := s.Load()
 	if err != nil {
-		// Corrupted or unreadable trust store: default to untrusted.
+		// Corrupted or unreadable trust store: default to untrusted, but
+		// surface the corruption so it can be repaired.
+		slog.Warn("trust store unreadable; treating projects as untrusted", "path", s.path, "error", err)
 		return false, nil
 	}
 	r, ok := records[absPath]
@@ -137,6 +140,7 @@ func (s *Store) StoredConfigHash(absPath string) (string, error) {
 	if err != nil {
 		// Corrupted store: treat as no record rather than failing trust
 		// resolution — the prompt path will run and re-establish trust.
+		slog.Warn("trust store unreadable; treating projects as untrusted", "path", s.path, "error", err)
 		return "", nil
 	}
 	r, ok := records[absPath]

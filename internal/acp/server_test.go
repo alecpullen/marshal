@@ -636,6 +636,47 @@ func TestDeliverOutboundDoesNotBlockOnFullChannel(t *testing.T) {
 	}
 }
 
+func TestServeDrainsBufferedFramesOnEOF(t *testing.T) {
+	// Write two frames, then close input. Both frames should be
+	// handled before Serve returns, even if scannerDone and frames
+	// are both ready when the select runs.
+	var handledMu sync.Mutex
+	var handled []string
+
+	pr, pw := io.Pipe()
+	out := &lockedBuffer{}
+	srv := NewServer(pr, out)
+	srv.Handle("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
+		handledMu.Lock()
+		handled = append(handled, "ping")
+		handledMu.Unlock()
+		return map[string]any{"ok": true}, nil
+	})
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(context.Background()) }()
+
+	// Write two frames, then close the pipe.
+	mustMarshalWrite(t, pw, map[string]any{"jsonrpc": "2.0", "id": float64(1), "method": "ping"})
+	mustMarshalWrite(t, pw, map[string]any{"jsonrpc": "2.0", "id": float64(2), "method": "ping"})
+	pw.Close()
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after EOF")
+	}
+
+	handledMu.Lock()
+	defer handledMu.Unlock()
+	if len(handled) < 2 {
+		t.Fatalf("expected at least 2 handled frames, got %d: %v", len(handled), handled)
+	}
+}
+
 func TestDeliverOutboundQueuesSecondResponseInBuffer2(t *testing.T) {
 	s := &Server{
 		outbound: make(map[string]chan outboundResult),

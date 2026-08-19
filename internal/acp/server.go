@@ -270,7 +270,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			return joinErrors(ctx.Err(), handlerErr, late)
 
 		case scanErr := <-scannerDone:
-			// Scanner finished (EOF or error).
+			// Scanner finished (EOF or error). Drain any buffered frames
+			// before shutting down so no frame is lost due to select
+			// picking scannerDone over a ready frames channel.
+		drainLoop:
+			for {
+				select {
+				case line := <-frames:
+					s.handleFrame(serveCtx, line)
+				default:
+					break drainLoop
+				}
+			}
 			handlerErr, late := s.shutdown(cancel)
 			if ctx.Err() != nil {
 				return joinErrors(ctx.Err(), handlerErr, late)

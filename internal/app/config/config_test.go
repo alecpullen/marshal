@@ -477,6 +477,32 @@ func TestDefaultPlanFirstIsFalse(t *testing.T) {
 	}
 }
 
+func TestParseRepairFeedbackLoadable(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := `[agent]
+parse_repair_feedback = false
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Agent.ParseRepairFeedback == nil || *cfg.Agent.ParseRepairFeedback {
+		t.Errorf("Agent.ParseRepairFeedback = %v, want pointer to false", cfg.Agent.ParseRepairFeedback)
+	}
+	if cfg.Agent.ParseRepairFeedbackEnabled() {
+		t.Error("ParseRepairFeedbackEnabled = true, want false")
+	}
+}
+
 func TestSwarmBudgetDefaults(t *testing.T) {
 	cfg := Default()
 	if cfg.Swarm.Budget.MaxFixRounds != 3 {

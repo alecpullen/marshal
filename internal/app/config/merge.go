@@ -43,6 +43,9 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
 		set(&cfg.Agent.ApprovalMode, file.Agent.ApprovalMode)
 		set(&cfg.Agent.HistoryBudgetTokens, file.Agent.HistoryBudgetTokens)
+		if file.Agent.ParseRepairFeedback != nil {
+			cfg.Agent.ParseRepairFeedback = file.Agent.ParseRepairFeedback
+		}
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)

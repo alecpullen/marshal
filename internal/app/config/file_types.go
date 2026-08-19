@@ -50,6 +50,7 @@ type fileAgent struct {
 	SubtaskIterations        *int    `toml:"subtask_iterations"`
 	ApprovalMode             *string `toml:"approval_mode"`
 	HistoryBudgetTokens      *int    `toml:"history_budget_tokens"`
+	ParseRepairFeedback      *bool   `toml:"parse_repair_feedback"`
 }
 
 type filePrivacy struct {

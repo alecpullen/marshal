@@ -305,6 +305,26 @@ func TestSaveProjectConfigRoundTripsPlanFirst(t *testing.T) {
 	}
 }
 
+func TestSDDDispatchRetriesRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.SDD.DispatchRetries = 5
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.SDD.DispatchRetries != 5 {
+		t.Errorf("SDD.DispatchRetries = %d, want 5", loaded.SDD.DispatchRetries)
+	}
+}
+
 func TestSaveProjectConfigRoundTripsTUI(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

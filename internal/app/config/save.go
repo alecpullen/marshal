@@ -317,6 +317,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		file.SDD = &fileSDD{
 			AutoWorktree:    strutil.Ptr(cfg.SDD.AutoWorktree),
 			MaxFixRounds:    strutil.Ptr(cfg.SDD.MaxFixRounds),
+			DispatchRetries: strutil.Ptr(cfg.SDD.DispatchRetries),
 			PlansDir:        strutil.Ptr(cfg.SDD.PlansDir),
 			VerifyTimeoutMS: strutil.Ptr(cfg.SDD.VerifyTimeoutMS),
 			CleanupAtStart:  strutil.Ptr(cfg.SDD.CleanupAtStart),

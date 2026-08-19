@@ -759,7 +759,7 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 // stamp that will be forgotten at the eighth.
 func (r *Runner) logToolCall(event registry.AuditEvent) {
 	if event.FinishReason == "" {
-		event.FinishReason = r.turnFinishReason
+		event.FinishReason = r.getTurnFinishReason()
 	}
 	r.State.LogToolCall(event)
 }

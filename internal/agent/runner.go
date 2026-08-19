@@ -292,6 +292,10 @@ type Runner struct {
 	trackerMu    sync.Mutex
 	stats        *turnStats
 	statsMu      sync.Mutex
+	// finishReasonMu guards turnFinishReason, which is written by RunTask
+	// (the model-response writer) and read by logToolCall from parallel tool
+	// execution goroutines.
+	finishReasonMu sync.Mutex
 
 	// turnBudget is set by RunTask to point to its local budget so that
 	// executeNativeAskUser / executeNativeQuestionAsk can charge a native
@@ -319,7 +323,8 @@ type Runner struct {
 	// per-turn state: reset at the top of RunTask, never shared across calls.
 	// Kept on the Runner rather than threaded through the execution call chain
 	// because the tool executor is several frames below where the reason is
-	// known.
+	// known. Guarded by finishReasonMu for concurrent access from tool
+	// execution goroutines.
 	turnFinishReason string
 	// turnRequestOptions carries the resolved max-token and context-window
 	// limits for the current turn, derived from the resolved route. Per-turn
@@ -392,6 +397,18 @@ func (r *Runner) SetForceClass(class string) {
 	r.forceClassMu.Lock()
 	r.ForceClass = class
 	r.forceClassMu.Unlock()
+}
+
+func (r *Runner) setTurnFinishReason(reason string) {
+	r.finishReasonMu.Lock()
+	r.turnFinishReason = reason
+	r.finishReasonMu.Unlock()
+}
+
+func (r *Runner) getTurnFinishReason() string {
+	r.finishReasonMu.Lock()
+	defer r.finishReasonMu.Unlock()
+	return r.turnFinishReason
 }
 
 // SetApprovalMode sets the active approval mode on the policy engine.
@@ -685,7 +702,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// before its next response. Zero value means nothing to report.
 	var pendingRepairNote *schema.ChatMessage
 	consecutiveEmpty := 0
-	r.turnFinishReason = ""
+	r.setTurnFinishReason("")
 
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
@@ -802,7 +819,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
-		r.turnFinishReason = res.FinishReason
+		r.setTurnFinishReason(res.FinishReason)
 		if err != nil {
 			// A stream that failed part-way may still have delivered a usable
 			// response — a malformed SSE chunk aborts the stream without

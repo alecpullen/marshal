@@ -1,9 +1,11 @@
 package rollover
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -144,6 +146,35 @@ func TestFilesState_OutstandingTodos(t *testing.T) {
 	}
 	if !strings.Contains(out, "TODO fix") {
 		t.Errorf("missing TODO, got %q", out)
+	}
+}
+
+type errorRunner struct{ err error }
+
+func (r *errorRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	return CommandResult{}, r.err
+}
+
+func TestFilesState_OutstandingTodosLogsNonCancellationErrors(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldDefault)
+
+	db := openFilesStateDB(t)
+	runner := &errorRunner{err: errors.New("git not found")}
+	fs := NewFilesState(db, "s1", runner, "/repo")
+	out, err := fs.OutstandingTodos(context.Background())
+	if err != nil {
+		t.Fatalf("OutstandingTodos should return nil error for non-cancellation failures, got: %v", err)
+	}
+	if out != "" {
+		t.Fatalf("expected empty output on error, got %q", out)
+	}
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "OutstandingTodos") || !strings.Contains(logOutput, "git not found") {
+		t.Fatalf("expected warning log with error details, got: %q", logOutput)
 	}
 }
 

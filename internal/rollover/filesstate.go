@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -116,7 +117,13 @@ func (f *FilesState) OutstandingTodos(ctx context.Context) (string, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
 	}
-	if err != nil || res.ExitCode != 0 {
+	if err != nil {
+		slog.Warn("OutstandingTodos: git grep failed", "error", err, "dir", f.root)
+		return "", nil
+	}
+	if res.ExitCode != 0 {
+		// Non-zero exit is expected (e.g. no matches, or not a git repo).
+		// Don't log — this is normal.
 		return "", nil
 	}
 	return strings.TrimSpace(res.Stdout), nil

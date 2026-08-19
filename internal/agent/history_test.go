@@ -47,6 +47,51 @@ func TestBuildHistory_TieredAging(t *testing.T) {
 	}
 }
 
+func TestTierSelectPinPassUsesDeltaCost(t *testing.T) {
+	// Exchange 1 is the newest (pinned) and gets DROPPED in the first
+	// pass because its full cost (8000) and stub cost (4075) both exceed
+	// the remaining budget after exchange 0. Its user message is large
+	// (4000 chars), so the pin-pass upgrade drop->full costs only the
+	// assistant delta (4000), which the remaining budget CAN afford.
+	//
+	// Setup:
+	//   exchange 0: user "u0" (2) + assistant 4000  -> full = 4002
+	//   exchange 1: user 4000 + assistant 4000      -> full = 8000, stub = 4075
+	//   budget = 8050
+	// First pass: exchange 0 full, remaining = 8050-4002 = 4048.
+	//   exchange 1: remaining 4048 < stub 4075 -> dropped (consumes 0).
+	// Pin pass (pinned=2): exchange 1 cur=drop, curCost=4000, full=8000,
+	//   delta=4000. remaining 4048 >= 4000 -> upgrade to full.
+	// With the old full-cost check (remaining >= full=8000): 4048 < 8000,
+	//   so exchange 1 stays dropped (bug). With delta-cost: upgrade!
+	assistant := strings.Repeat("x", 4000)
+	bigUser := strings.Repeat("u", 4000)
+	budget := 8050
+
+	exchanges := []exchange{
+		{start: 0, end: 2}, // user + assistant
+		{start: 2, end: 4},
+	}
+	cands := []candEntry{
+		{kind: "user", content: "u0"},
+		{kind: "assistant-full", content: assistant},
+		{kind: "user", content: bigUser},
+		{kind: "assistant-full", content: assistant},
+	}
+
+	levels := tierSelect(exchanges, cands, budget)
+
+	// Exchange 0 should be full (first pass).
+	if levels[0] != tieredFull {
+		t.Fatalf("exchange 0: want full, got %d", levels[0])
+	}
+	// Exchange 1 should be full via the pin-pass delta upgrade. With the
+	// old full-cost check it would stay dropped.
+	if levels[1] != tieredFull {
+		t.Fatalf("exchange 1: want full (delta-cost upgrade), got %d", levels[1])
+	}
+}
+
 func TestBuildHistoryMessagesKeepsUserAndFinalAssistantTurns(t *testing.T) {
 	prior := []session.Message{
 		{Role: session.RoleUser, Content: "first question", ContentType: session.ContentTypePlain},

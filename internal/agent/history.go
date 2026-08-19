@@ -283,9 +283,13 @@ func tierSelect(exchanges []exchange, cands []candEntry, budgetChars int) []tier
 		if curCost == 0 {
 			continue
 		}
-		if remaining >= full {
+		// Upgrade cost is the delta from the current tier to full, not
+		// the full cost: the exchange already consumed curCost of budget
+		// in the prior pass, so only the incremental cost is new.
+		delta := full - curCost
+		if remaining >= delta {
 			level[i] = tieredFull
-			remaining -= full
+			remaining -= delta
 		}
 	}
 

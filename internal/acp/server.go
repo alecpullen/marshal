@@ -451,6 +451,10 @@ func wireError(err error) string {
 			return "internal error"
 		case requestCancelled:
 			return "request cancelled"
+		case serverError:
+			// serverError messages are server-generated (not client input),
+			// so they are safe to expose to the client. F-SEC-37.
+			return "server error: " + rpcErr.Message
 		default:
 			return "server error"
 		}

@@ -981,6 +981,35 @@ func TestDispatchRequestSanitizesWireErrorMessage(t *testing.T) {
 	}
 }
 
+func TestWireErrorPreservesServerError(t *testing.T) {
+	err := &jsonRPCError{Code: serverError, Message: "session not found: sess_abc"}
+	got := wireError(err)
+	if !strings.Contains(got, "session not found: sess_abc") {
+		t.Fatalf("wireError should preserve serverError message, got %q", got)
+	}
+}
+
+func TestWireErrorStillOpaqueForKnownCodes(t *testing.T) {
+	cases := []struct {
+		code int
+		want string
+	}{
+		{parseError, "parse error"},
+		{invalidRequest, "invalid request"},
+		{methodNotFound, "method not found"},
+		{invalidParams, "invalid params"},
+		{internalError, "internal error"},
+		{requestCancelled, "request cancelled"},
+	}
+	for _, tc := range cases {
+		err := &jsonRPCError{Code: tc.code, Message: "sensitive details"}
+		got := wireError(err)
+		if got != tc.want {
+			t.Fatalf("code %d: got %q, want %q", tc.code, got, tc.want)
+		}
+	}
+}
+
 // rawMessagePtr returns a *json.RawMessage pointing to the given JSON string.
 func rawMessagePtr(s string) *json.RawMessage {
 	r := json.RawMessage(s)

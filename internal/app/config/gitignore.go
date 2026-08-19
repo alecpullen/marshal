@@ -40,8 +40,24 @@ func EnsureMarshalIgnored(workingDir string) error {
 	}
 	out += marshalIgnoreEntry + "\n"
 
-	if err := os.WriteFile(path, []byte(out), 0644); err != nil {
-		return fmt.Errorf("write .gitignore: %w", err)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".gitignore.tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp .gitignore: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after successful rename
+	if _, err := tmp.WriteString(out); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp .gitignore: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp .gitignore: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return fmt.Errorf("chmod temp .gitignore: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename .gitignore: %w", err)
 	}
 	return nil
 }

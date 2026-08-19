@@ -79,6 +79,28 @@ func TestEnsureMarshalIgnoredRecognizesExistingVariants(t *testing.T) {
 	}
 }
 
+func TestEnsureMarshalIgnoredAtomicWrite(t *testing.T) {
+	dir := gitRepo(t)
+	existing := "node_modules/\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(existing), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := EnsureMarshalIgnored(dir); err != nil {
+		t.Fatalf("EnsureMarshalIgnored: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if !strings.HasSuffix(string(data), ".marshal/\n") {
+		t.Errorf("gitignore content: %q", data)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".gitignore") && e.Name() != ".gitignore" {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
 func TestEnsureMarshalIgnoredSkipsNonGitDir(t *testing.T) {
 	dir := t.TempDir() // no .git
 	if err := EnsureMarshalIgnored(dir); err != nil {

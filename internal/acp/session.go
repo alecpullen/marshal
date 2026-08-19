@@ -89,6 +89,15 @@ type SessionManager struct {
 	mu          sync.RWMutex
 	sessions    map[string]*app.Runtime
 	lifecycleMu sync.Mutex
+
+	// closeOnce guards each runtime's closer so a given *app.Runtime
+	// pointer is torn down at most once, regardless of which lifecycle
+	// path (replaceExisting, publishReplacement, Close, CloseAll,
+	// teardownIfStillCurrent) races to close it first. Keyed by runtime
+	// pointer. A dedicated closeMu (never lifecycleMu) guards the map so
+	// the guard can be consulted from paths that already hold lifecycleMu.
+	closeMu   sync.Mutex
+	closeOnce map[*app.Runtime]*sync.Once
 }
 
 // SessionResponse is the successful result shape for session/new.
@@ -126,17 +135,42 @@ func NewSessionManager(cfg SessionManagerConfig, opts ...SessionManagerOption) *
 		}
 	}
 	m := &SessionManager{
-		start:    cfg.StartRuntime,
-		close:    closeFn,
-		notify:   cfg.Notify,
-		lister:   cfg.Lister,
-		options:  cfg.Options,
-		sessions: map[string]*app.Runtime{},
+		start:     cfg.StartRuntime,
+		close:     closeFn,
+		notify:    cfg.Notify,
+		lister:    cfg.Lister,
+		options:   cfg.Options,
+		sessions:  map[string]*app.Runtime{},
+		closeOnce: map[*app.Runtime]*sync.Once{},
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
 	return m
+}
+
+// closeRuntimeOnce runs m.close for rt at most once per runtime pointer,
+// regardless of which lifecycle path races to tear rt down. Concurrent
+// callers block on the sync.Once; the winning caller performs the close
+// and everyone else returns its error.
+func (m *SessionManager) closeRuntimeOnce(ctx context.Context, rt *app.Runtime) error {
+	if rt == nil {
+		return nil
+	}
+	m.closeMu.Lock()
+	if m.closeOnce == nil {
+		m.closeOnce = map[*app.Runtime]*sync.Once{}
+	}
+	once, ok := m.closeOnce[rt]
+	if !ok {
+		once = &sync.Once{}
+		m.closeOnce[rt] = once
+	}
+	m.closeMu.Unlock()
+
+	var closeErr error
+	once.Do(func() { closeErr = m.close(ctx, rt) })
+	return closeErr
 }
 
 // SetTurnCanceller registers the per-session turn cancellation function.
@@ -306,7 +340,7 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 			// no usable id to clean it up.
 			sCtx, sCancel := shutdownCtx()
 			defer sCancel()
-			_ = m.close(sCtx, rt)
+			_ = m.closeRuntimeOnce(sCtx, rt)
 			return nil, serverErrorf("session created but isolation failed: %v", ierr)
 		}
 		resp.Workspace = &ws
@@ -394,7 +428,7 @@ func (m *SessionManager) Close(ctx context.Context, id string) error {
 	sCtx, sCancel := shutdownCtx()
 	defer sCancel()
 	err1 := turnCancel(sCtx, id)
-	err2 := m.close(sCtx, rt)
+	err2 := m.closeRuntimeOnce(sCtx, rt)
 	return errors.Join(err1, err2)
 }
 
@@ -531,7 +565,7 @@ func (m *SessionManager) CloseAll(ctx context.Context) error {
 		if err := turnCancel(sCtx, id); err != nil {
 			errs = append(errs, err)
 		}
-		if err := m.close(sCtx, rt); err != nil {
+		if err := m.closeRuntimeOnce(sCtx, rt); err != nil {
 			errs = append(errs, err)
 		}
 		sCancel()
@@ -587,7 +621,7 @@ func (m *SessionManager) replaceExisting(ctx context.Context, id string, cancel 
 	if err := cancel(ctx, id); err != nil {
 		errs = append(errs, err)
 	}
-	if err := m.close(ctx, old); err != nil {
+	if err := m.closeRuntimeOnce(ctx, old); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -623,7 +657,7 @@ func (m *SessionManager) publishReplacement(ctx context.Context, id string, rt *
 	}
 	sCtx, sCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer sCancel()
-	_ = m.close(sCtx, prior)
+	_ = m.closeRuntimeOnce(sCtx, prior)
 }
 
 // replay synchronously projects rt.State.Messages() through messageUpdate
@@ -666,7 +700,7 @@ func (m *SessionManager) teardownIfStillCurrent(rt *app.Runtime) error {
 		m.mu.Unlock()
 		sCtx, sCancel := shutdownCtx()
 		defer sCancel()
-		return m.close(sCtx, rt)
+		return m.closeRuntimeOnce(sCtx, rt)
 	}
 	m.mu.Unlock()
 	return nil

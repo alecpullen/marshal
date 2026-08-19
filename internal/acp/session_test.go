@@ -1018,6 +1018,75 @@ func TestPublishReplacementDoesNotDoubleClose(t *testing.T) {
 
 // TestSessionManagerLogsReplacement verifies that publishReplacement emits
 // an Info-level log line when a prior runtime is replaced.
+func TestPublishReplacementSyncOnceGuard(t *testing.T) {
+	var closeCount atomic.Int32
+	m := &SessionManager{
+		sessions:    map[string]*app.Runtime{},
+		mu:          sync.RWMutex{},
+		lifecycleMu: sync.Mutex{},
+		close: func(ctx context.Context, rt *app.Runtime) error {
+			closeCount.Add(1)
+			return nil
+		},
+		cancel: func(ctx context.Context, id string) error { return nil },
+	}
+	rt1 := &app.Runtime{}
+	rt2 := &app.Runtime{}
+	m.sessions["s1"] = rt1
+
+	// Three concurrent publishes — all observe the same prior.
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { m.publishReplacement(context.Background(), "s1", rt2); wg.Done() }()
+	go func() { m.publishReplacement(context.Background(), "s1", rt2); wg.Done() }()
+	go func() { m.publishReplacement(context.Background(), "s1", rt2); wg.Done() }()
+	wg.Wait()
+
+	if got := closeCount.Load(); got > 1 {
+		t.Errorf("close was called %d times, want at most 1", got)
+	}
+}
+
+func TestReplaceExistingAndPublishReplacementNoDoubleClose(t *testing.T) {
+	// The two lifecycle paths may both observe the same prior runtime rt1
+	// (publishReplacement replacing it, and a concurrent replaceExisting
+	// that already detached it). The same pointer must be closed at most
+	// once even when the paths race.
+	var closeCount atomic.Int32
+	m := &SessionManager{
+		sessions:    map[string]*app.Runtime{},
+		mu:          sync.RWMutex{},
+		lifecycleMu: sync.Mutex{},
+		close: func(ctx context.Context, rt *app.Runtime) error {
+			closeCount.Add(1)
+			return nil
+		},
+		cancel: func(ctx context.Context, id string) error { return nil },
+	}
+	rt1 := &app.Runtime{}
+	rt2 := &app.Runtime{}
+	m.sessions["s1"] = rt1
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		// publishReplacement tears down the prior pointer rt1.
+		m.publishReplacement(context.Background(), "s1", rt2)
+		wg.Done()
+	}()
+	go func() {
+		// Simulate replaceExisting having already detached rt1 and racing
+		// to close the very same pointer.
+		_ = m.closeRuntimeOnce(context.Background(), rt1)
+		wg.Done()
+	}()
+	wg.Wait()
+
+	if got := closeCount.Load(); got > 1 {
+		t.Errorf("close was called %d times for the same runtime, want at most 1", got)
+	}
+}
+
 func TestSessionManagerLogsReplacement(t *testing.T) {
 	var buf bytes.Buffer
 	m := NewSessionManager(SessionManagerConfig{

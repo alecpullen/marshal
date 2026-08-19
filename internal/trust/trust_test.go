@@ -8,6 +8,22 @@ import (
 	"time"
 )
 
+func TestTrustStoreDirectoryPermissions(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "marshal-data")
+	s := NewStore(dataDir)
+	if err := s.Save(map[string]Record{}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("directory permissions: got %o, want 700", perm)
+	}
+}
+
 func TestStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

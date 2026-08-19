@@ -89,7 +89,7 @@ type loadRecord struct {
 }
 
 func (s *Store) Save(records map[string]Record) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(records, "", "  ")

@@ -381,6 +381,12 @@ func (db *DB) DeleteSession(ctx context.Context, sessionID string) (bool, error)
 	if err != nil {
 		return false, fmt.Errorf("delete session rows affected: %w", err)
 	}
+	// Clean up content_blobs that are no longer referenced by any
+	// generation_turn. The cascade delete above removed this session's
+	// turns, so any blobs only referenced by this session are now orphans.
+	if err := db.DeleteSessionBlobs(tx); err != nil {
+		return false, fmt.Errorf("delete session blobs: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("delete session: commit: %w", err)
 	}

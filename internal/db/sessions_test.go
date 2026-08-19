@@ -434,6 +434,62 @@ func TestListSessions(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionCleansOrphanedBlobs(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	projectID, _ := db.GetOrCreateProject("/r", "r")
+	sid := "sess-blob-cleanup"
+	if err := db.CreateSession(sid, projectID, "cleanup", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC()
+
+	if err := db.BeginGeneration(Generation{
+		ID: "gen-blob-cleanup", SessionID: sid, Seq: 1, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	// Large content (threshold=4) so it becomes a blob.
+	if err := db.ArchiveTurns("gen-blob-cleanup", []ArchivedTurn{
+		{TurnSeq: 1, Role: "user", Content: "large content for blob storage", CreatedAt: now},
+	}, 4, now); err != nil {
+		t.Fatalf("ArchiveTurns: %v", err)
+	}
+
+	// Find the blob hash.
+	var blobHash string
+	if err := db.sqlDB.QueryRow(
+		`SELECT gt.content_blob_hash FROM generation_turns gt
+		 JOIN session_generations sg ON sg.generation_id = gt.generation_id
+		 WHERE sg.session_id = ?`, sid,
+	).Scan(&blobHash); err != nil {
+		t.Fatalf("query blob hash: %v", err)
+	}
+	if blobHash == "" {
+		t.Fatal("expected content_blob_hash to be set")
+	}
+
+	// Verify blob exists.
+	if _, err := db.GetBlob(blobHash); err != nil {
+		t.Fatalf("blob should exist before delete: %v", err)
+	}
+
+	// Delete the session.
+	existed, err := db.DeleteSession(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if !existed {
+		t.Fatal("expected existed=true")
+	}
+
+	// The blob should now be gone (no other session references it).
+	if _, err := db.GetBlob(blobHash); err == nil {
+		t.Fatal("expected blob to be deleted after session deletion")
+	}
+}
+
 func TestDeleteSessionCascadesMessages(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()

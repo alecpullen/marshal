@@ -432,6 +432,7 @@ func (s *Server) failOutbound(err error) {
 		case ch <- outboundResult{err: err}:
 		default:
 		}
+		close(ch)
 	}
 }
 

@@ -677,6 +677,31 @@ func TestServeDrainsBufferedFramesOnEOF(t *testing.T) {
 	}
 }
 
+func TestFailOutboundClosesOldChannels(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	ch := make(chan outboundResult, 1)
+	s.outbound["abc"] = ch
+
+	s.failOutbound(errors.New("test close"))
+
+	// First receive: the error sent by failOutbound.
+	res, ok := <-ch
+	if !ok {
+		t.Fatal("channel was closed before delivering the error")
+	}
+	if res.err == nil {
+		t.Fatal("expected error in channel, got nil")
+	}
+	// Second receive: channel should now be closed.
+	_, ok = <-ch
+	if ok {
+		t.Fatal("expected channel to be closed after error was consumed")
+	}
+}
+
 func TestDeliverOutboundQueuesSecondResponseInBuffer2(t *testing.T) {
 	s := &Server{
 		outbound: make(map[string]chan outboundResult),

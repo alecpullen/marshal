@@ -96,6 +96,13 @@ type SessionManager struct {
 	// teardownIfStillCurrent) races to close it first. Keyed by runtime
 	// pointer. A dedicated closeMu (never lifecycleMu) guards the map so
 	// the guard can be consulted from paths that already hold lifecycleMu.
+	//
+	// Known limitation (documented at closeRuntimeOnce): entries are never
+	// removed, so the map grows by one small *sync.Once per runtime ever
+	// recycled over the lifetime of a long-running server. This is the
+	// deliberate price of the at-most-once pointer guarantee; removing an
+	// entry after the first close would let a later caller on a stale
+	// pointer create a fresh guard and re-close the runtime.
 	closeMu   sync.Mutex
 	closeOnce map[*app.Runtime]*sync.Once
 }
@@ -171,6 +178,17 @@ func (m *SessionManager) closeRuntimeOnce(ctx context.Context, rt *app.Runtime) 
 	var closeErr error
 	once.Do(func() { closeErr = m.close(ctx, rt) })
 	return closeErr
+	// Known limitation: this map (SessionManager.closeOnce) never drops
+	// entries, so it grows by one entry per distinct runtime pointer ever
+	// passed here. It is bounded per recycle (a single *sync.Once per
+	// runtime) and is the deliberate cost of guaranteeing that no stale
+	// pointer can ever be torn down twice. The entry must NOT be removed
+	// after the first Do completes: a later call on the same pointer would
+	// allocate a fresh guard and re-close an already-closed runtime, which
+	// is the exact double-teardown this guard exists to prevent. Reclaiming
+	// the memory would require reworking teardown to be id-serialized
+	// rather than pointer-keyed; out of scope for the transport-robustness
+	// batch (see .docs-archive/superpowers/plans/2026-08-19-batch11-*).
 }
 
 // SetTurnCanceller registers the per-session turn cancellation function.

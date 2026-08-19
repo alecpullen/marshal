@@ -538,12 +538,15 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				target := turns[n]
 				newLeaf := state.Rewind(target.ID)
 
+				restoreWarning := ""
 				if sp, database, _ := snapshotContext(state); sp != nil {
 					if hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex()); err == nil && hash != "" {
-						_ = sp.Restore(context.Background(), hash)
+						if rerr := sp.Restore(context.Background(), hash); rerr != nil {
+							restoreWarning = fmt.Sprintf(" Warning: file restore failed — %s. Your files were not rewound, but the conversation branch was.", rerr)
+						}
 					}
 				}
-				return Text(fmt.Sprintf("Rewound to before: %q. Your next message starts a new branch (leaf %d).", strutil.Truncate(target.Content, 60, true), newLeaf))
+				return Text(fmt.Sprintf("Rewound to before: %q. Your next message starts a new branch (leaf %d).%s", strutil.Truncate(target.Content, 60, true), newLeaf, restoreWarning))
 			},
 		},
 		{

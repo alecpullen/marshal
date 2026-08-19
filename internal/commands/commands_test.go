@@ -1017,6 +1017,67 @@ func TestHistoryCommandReturnsGenerationRows(t *testing.T) {
 	}
 }
 
+type failingSnapshotter struct{ err error }
+
+func (f *failingSnapshotter) Track(ctx context.Context) (string, error) { return "", nil }
+func (f *failingSnapshotter) Diff(ctx context.Context, hash string) (string, error) {
+	return "", nil
+}
+func (f *failingSnapshotter) Restore(ctx context.Context, hash string) error { return f.err }
+
+func TestRewindReportsRestoreFailure(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/test/repo", "test-repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sessionID := "test-session-" + t.Name()
+	if err := database.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{
+		DB: database, SessionID: sessionID,
+	})
+	state.AddMessage(session.RoleUser, "turn1", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a1", session.ContentTypeMarkdown)
+	state.AddMessage(session.RoleUser, "turn2", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a2", session.ContentTypeMarkdown)
+	// Advance the turn index so SnapshotBefore(sessionID, turnIndex) can
+	// find a snapshot recorded at an earlier turn_index.
+	state.IncrementTurnIndex()
+	state.IncrementTurnIndex()
+	state.IncrementTurnIndex()
+
+	// Save a snapshot before the current turn index so SnapshotBefore finds it.
+	now := time.Now().UTC()
+	if _, err := database.SaveSnapshot(sessionID, 1, "hash-abc", []string{"a.go"}, now); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	// Inject a snapshotter whose Restore fails.
+	state.SetSnapshotter(&failingSnapshotter{err: errors.New("git restore exploded")})
+
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	cmd, _ := cmdReg.Lookup("rewind")
+	res := cmd.Handler(state, []string{"1"})
+	if !strings.Contains(res.Text, "file restore failed") {
+		t.Fatalf("expected rewind to report restore failure, got: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "git restore exploded") {
+		t.Fatalf("expected rewind to include the restore error, got: %q", res.Text)
+	}
+}
+
 func TestGenerationTurnRowsTruncatesUTF8Safely(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {

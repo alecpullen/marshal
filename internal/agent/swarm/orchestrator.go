@@ -143,6 +143,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		}
 		var wg sync.WaitGroup
 		var done int32
+		var scoutErrors int32
 		for _, job := range jobs {
 			wg.Add(1)
 			go func(j scoutJob) {
@@ -150,6 +151,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 				task, err := j.runner.RunTask(ctx, j.prompt)
 				if err != nil {
 					ts.AddFinding(Finding{Agent: "repo_scout", Area: j.focus.Area, Content: "scout failed: " + err.Error()})
+					atomic.AddInt32(&scoutErrors, 1)
 				} else {
 					ts.AddFinding(Finding{Agent: "repo_scout", Area: j.focus.Area, Content: task.Summary})
 					if !j.hasRealUsage.Load() {
@@ -161,6 +163,10 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 			}(job)
 		}
 		wg.Wait()
+		if int(scoutErrors) == len(jobs) && len(jobs) > 0 {
+			o.State.Logger().Warn("all scout goroutines failed; proceeding with no findings",
+				"scout_count", len(jobs))
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

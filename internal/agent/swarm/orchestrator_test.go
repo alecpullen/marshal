@@ -233,6 +233,39 @@ func TestOrchestratorScoutAtomicHasRealUsage(t *testing.T) {
 	}
 }
 
+func TestOrchestratorLogsTotalScoutFailure(t *testing.T) {
+	state := newLockTestState(t)
+	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
+		if role == agent.RoleRepoScout {
+			// All scouts fail: malformed response exhausts iterations.
+			p := &agenttest.ScriptedProvider{Responses: []string{"not json at all"}}
+			r := agent.NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+			r.Role = role
+			r.SetForceClass("question")
+			r.MaxToolIterations = 2
+			r.MaxRetries = 0
+			return r, nil
+		}
+		response := `{"rationale": "done", "action": {"type": "final", "content": "ok"}}`
+		p := &agenttest.ScriptedProvider{Responses: []string{response}}
+		r := agent.NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r.Role = role
+		r.SetForceClass("question")
+		r.MaxToolIterations = 2
+		r.MaxRetries = 0
+		return r, nil
+	}
+	o := New(state, factory)
+
+	if err := o.Run(context.Background(), "goal"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	final := swarmSummaryMessage(t, state).Content
+	if !strings.Contains(final, "scout failed") {
+		t.Fatalf("final message should record scout failures:\n%s", final)
+	}
+}
+
 func TestOrchestratorContinuesWhenAScoutFails(t *testing.T) {
 	state := newLockTestState(t)
 	scoutCount := 0

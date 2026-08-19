@@ -192,6 +192,13 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&agent.SubtaskIterations, fileField[int](file.Agent, "SubtaskIterations"), cfg.Agent.SubtaskIterations, def.Agent.SubtaskIterations)
 	putKey(&agent.ApprovalMode, fileField[string](file.Agent, "ApprovalMode"), cfg.Agent.ApprovalMode, def.Agent.ApprovalMode)
 	putKey(&agent.HistoryBudgetTokens, fileField[int](file.Agent, "HistoryBudgetTokens"), cfg.Agent.HistoryBudgetTokens, def.Agent.HistoryBudgetTokens)
+	// ParseRepairFeedback is a *bool (tri-state). putKey can't infer a **bool
+	// target, so mirror its "write if file had it OR merged differs from
+	// default" semantics manually; the default is nil, so "differs" collapses
+	// to merged != nil.
+	if fileField[bool](file.Agent, "ParseRepairFeedback") != nil || cfg.Agent.ParseRepairFeedback != nil {
+		agent.ParseRepairFeedback = cfg.Agent.ParseRepairFeedback
+	}
 	file.Agent = agent
 
 	privacy := &filePrivacy{}

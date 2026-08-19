@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
+	"marshal/internal/strutil"
 )
 
 func TestSaveVerifyCommandsPreservesOtherFields(t *testing.T) {
@@ -302,6 +303,28 @@ func TestSaveProjectConfigRoundTripsPlanFirst(t *testing.T) {
 	}
 	if !loaded.Agent.PlanFirst {
 		t.Fatalf("Agent.PlanFirst = %v, want true", loaded.Agent.PlanFirst)
+	}
+}
+
+func TestSaveProjectConfigRoundTripsParseRepairFeedback(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Profile.Default = ""
+	cfg.AgentProfiles = nil
+	cfg.Agent.ParseRepairFeedback = strutil.Ptr(false)
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Agent.ParseRepairFeedback == nil || *loaded.Agent.ParseRepairFeedback {
+		t.Fatalf("Agent.ParseRepairFeedback = %v, want pointer to false (persisted)", loaded.Agent.ParseRepairFeedback)
 	}
 }
 

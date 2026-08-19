@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,28 @@ func newTestController(store *fakeStore, digest *fakeDigestProvider, counter *fa
 		Now:           func() time.Time { return time.Date(2026, 7, 23, 0, 0, 0, 0, time.UTC) },
 		NewID:         newIDSequence(),
 		Logger:        slog.Default(),
+	}
+}
+
+func TestController_Archive_RejectsEmptyGenID(t *testing.T) {
+	store := &fakeStore{}
+	c := newTestController(store, &fakeDigestProvider{}, &fakeCounter{}, Policy{})
+	// Do NOT call Start — genID should be empty.
+	msgs := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	err := c.Archive(context.Background(), msgs)
+	if err == nil {
+		t.Fatal("Archive should fail when genID is empty (Start not called)")
+	}
+	if !strings.Contains(err.Error(), "no active generation") {
+		t.Fatalf("expected 'no active generation' error, got: %v", err)
+	}
+	// Verify nothing was archived.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.archived) != 0 {
+		t.Fatalf("expected 0 archived calls, got %d", len(store.archived))
 	}
 }
 

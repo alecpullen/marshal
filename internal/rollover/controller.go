@@ -78,6 +78,10 @@ func (c *Controller) Archive(ctx context.Context, msgs []schema.ChatMessage) err
 		c.mu.Unlock()
 		return fmt.Errorf("archive: rollover controller is in a failed state")
 	}
+	if c.genID == "" {
+		c.mu.Unlock()
+		return fmt.Errorf("archive: no active generation — call Start or begin before archiving")
+	}
 	genID := c.genID
 	startSeq := c.turnSeq
 	c.turnSeq += len(msgs)

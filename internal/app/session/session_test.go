@@ -26,6 +26,40 @@ func newTestState() *State {
 	return New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
 }
 
+func TestSetTodosNoRace(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+	sessionID := "set-todos-race-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "race", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+
+	todos := []db.TodoItem{
+		{Content: "a", Status: "pending"},
+		{Content: "b", Status: "completed"},
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = s.SetTodos(todos) }()
+		go func() { defer wg.Done(); _ = s.Todos() }()
+	}
+	wg.Wait()
+}
+
 func TestStateAppendsMessagesInOrder(t *testing.T) {
 	state := newTestState()
 

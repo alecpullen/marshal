@@ -977,9 +977,10 @@ func (s *State) SetTodos(todos []db.TodoItem) error {
 	s.mu.Lock()
 	s.todos = make([]db.TodoItem, len(todos))
 	copy(s.todos, todos)
+	snapshot := s.todos
 	s.mu.Unlock()
 	if s.persistenceEnabled() {
-		if err := s.db.SaveTodos(s.sessionID, s.todos); err != nil {
+		if err := s.db.SaveTodos(s.sessionID, snapshot); err != nil {
 			s.logger.Warn("failed to persist todos", "error", err)
 		}
 	}

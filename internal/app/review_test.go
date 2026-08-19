@@ -16,6 +16,15 @@ import (
 	"marshal/internal/llm/routing"
 )
 
+func TestGitOutputRespectsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the call
+	_, err := gitOutput(ctx, t.TempDir(), "status", "--porcelain")
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+}
+
 func TestRunReviewSubagentRegistersCardAndAppendsSummary(t *testing.T) {
 	cfg := config.Default()
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -225,7 +234,7 @@ func TestRunReviewSubagentInvalidRangeRegistersNoCard(t *testing.T) {
 func TestBuildReviewPromptRangeMode(t *testing.T) {
 	dir := initReviewGitRepo(t)
 
-	prompt := buildReviewPrompt(dir, "", "main..HEAD")
+	prompt := buildReviewPrompt(context.Background(), dir, "", "main..HEAD")
 	if !strings.Contains(prompt, "Review the changes in range main..HEAD") {
 		t.Fatalf("prompt missing range header:\n%s", prompt)
 	}
@@ -240,7 +249,7 @@ func TestBuildReviewPromptRangeMode(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\nextra"), 0o644); err != nil {
 		t.Fatalf("write feature.txt: %v", err)
 	}
-	prompt = buildReviewPrompt(dir, "", "main..HEAD")
+	prompt = buildReviewPrompt(context.Background(), dir, "", "main..HEAD")
 	if !strings.Contains(prompt, "Working tree also has uncommitted changes") {
 		t.Fatalf("prompt missing dirty-tree note:\n%s", prompt)
 	}
@@ -251,7 +260,7 @@ func TestBuildReviewPromptRangeMode(t *testing.T) {
 
 func TestResolveReviewRangeBase(t *testing.T) {
 	dir := initReviewGitRepo(t)
-	r, err := resolveReviewRange(dir, "base:main")
+	r, err := resolveReviewRange(context.Background(), dir, "base:main")
 	if err != nil {
 		t.Fatalf("resolveReviewRange error = %v", err)
 	}
@@ -262,7 +271,7 @@ func TestResolveReviewRangeBase(t *testing.T) {
 
 func TestResolveReviewRangeExplicit(t *testing.T) {
 	dir := initReviewGitRepo(t)
-	r, err := resolveReviewRange(dir, "main..HEAD")
+	r, err := resolveReviewRange(context.Background(), dir, "main..HEAD")
 	if err != nil {
 		t.Fatalf("resolveReviewRange error = %v", err)
 	}
@@ -273,7 +282,7 @@ func TestResolveReviewRangeExplicit(t *testing.T) {
 
 func TestResolveReviewRangeInvalid(t *testing.T) {
 	dir := initReviewGitRepo(t)
-	_, err := resolveReviewRange(dir, "nope..HEAD")
+	_, err := resolveReviewRange(context.Background(), dir, "nope..HEAD")
 	if err == nil {
 		t.Fatal("expected error for invalid range")
 	}

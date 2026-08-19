@@ -13,7 +13,7 @@ import (
 )
 
 func runReviewSubagent(ctx context.Context, state *session.State, factory agent.SubagentRunnerFactory, focus, model, reviewRange string) error {
-	resolvedRange, err := resolveReviewRange(state.WorkingDir, reviewRange)
+	resolvedRange, err := resolveReviewRange(ctx, state.WorkingDir, reviewRange)
 	if err != nil {
 		return err
 	}
@@ -40,7 +40,7 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 		meta.Provider = child.Provider.Name()
 	}
 	view := state.RegisterSubagentWithMeta("review · "+label, childState, meta)
-	task, err := child.RunTask(ctx, buildReviewPrompt(state.WorkingDir, focus, resolvedRange))
+	task, err := child.RunTask(ctx, buildReviewPrompt(ctx, state.WorkingDir, focus, resolvedRange))
 	var summary string
 	if task != nil {
 		summary = task.Summary
@@ -62,13 +62,13 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 	return nil
 }
 
-func resolveReviewRange(workingDir, reviewRange string) (string, error) {
+func resolveReviewRange(ctx context.Context, workingDir, reviewRange string) (string, error) {
 	if reviewRange == "" {
 		return "", nil
 	}
 	if strings.HasPrefix(reviewRange, "base:") {
 		ref := strings.TrimPrefix(reviewRange, "base:")
-		base, err := gitOutput(workingDir, "merge-base", ref, "HEAD")
+		base, err := gitOutput(ctx, workingDir, "merge-base", ref, "HEAD")
 		if err != nil {
 			return "", fmt.Errorf("review: cannot find merge-base for %q: %w", ref, err)
 		}
@@ -92,14 +92,14 @@ func resolveReviewRange(workingDir, reviewRange string) (string, error) {
 		if endpoint == "" {
 			continue
 		}
-		if _, err := gitOutput(workingDir, "rev-parse", "--verify", endpoint); err != nil {
+		if _, err := gitOutput(ctx, workingDir, "rev-parse", "--verify", endpoint); err != nil {
 			return "", fmt.Errorf("review: invalid range endpoint %q: %w", endpoint, err)
 		}
 	}
 	return reviewRange, nil
 }
 
-func buildReviewPrompt(workingDir, focus, reviewRange string) string {
+func buildReviewPrompt(ctx context.Context, workingDir, focus, reviewRange string) string {
 	var b strings.Builder
 	b.WriteString("Review the following code or changes and report findings ordered by severity. For each issue, include a file:line reference if applicable. Do not make any edits; this is a read-only review.\n\n")
 	if focus != "" {
@@ -107,30 +107,30 @@ func buildReviewPrompt(workingDir, focus, reviewRange string) string {
 	}
 	if reviewRange != "" {
 		b.WriteString("Review the changes in range " + reviewRange + ".\n\n")
-		if log, err := gitOutput(workingDir, "log", "--oneline", reviewRange); err == nil && log != "" {
+		if log, err := gitOutput(ctx, workingDir, "log", "--oneline", reviewRange); err == nil && log != "" {
 			b.WriteString("Commits:\n" + strutil.Truncate(log, 20000, true) + "\n\n")
 		}
-		if stat, err := gitOutput(workingDir, "diff", "--stat", reviewRange); err == nil && stat != "" {
+		if stat, err := gitOutput(ctx, workingDir, "diff", "--stat", reviewRange); err == nil && stat != "" {
 			b.WriteString("Diff stat:\n" + strutil.Truncate(stat, 20000, true) + "\n\n")
 		}
-		if diff, err := gitOutput(workingDir, "diff", reviewRange); err == nil && diff != "" {
+		if diff, err := gitOutput(ctx, workingDir, "diff", reviewRange); err == nil && diff != "" {
 			b.WriteString("Diff:\n" + strutil.Truncate(diff, 100000, true) + "\n\n")
 		}
-		if status, err := gitOutput(workingDir, "status", "--porcelain"); err == nil && status != "" {
+		if status, err := gitOutput(ctx, workingDir, "status", "--porcelain"); err == nil && status != "" {
 			b.WriteString("Working tree also has uncommitted changes:\n" + status + "\n\n")
-			if diff, err := gitOutput(workingDir, "diff", "HEAD"); err == nil && diff != "" {
+			if diff, err := gitOutput(ctx, workingDir, "diff", "HEAD"); err == nil && diff != "" {
 				b.WriteString("Working-tree diff:\n" + strutil.Truncate(diff, 100000, true) + "\n\n")
 			}
 		}
 	} else {
 		b.WriteString("Review the working-tree changes (uncommitted modifications) in this repository.\n\n")
-		if status, err := gitOutput(workingDir, "status", "--porcelain"); err == nil && status != "" {
+		if status, err := gitOutput(ctx, workingDir, "status", "--porcelain"); err == nil && status != "" {
 			b.WriteString("Git status:\n" + status + "\n\n")
 		}
-		base := defaultBranch(workingDir)
-		if diff, err := gitOutput(workingDir, "diff", base); err == nil && diff != "" {
+		base := defaultBranch(ctx, workingDir)
+		if diff, err := gitOutput(ctx, workingDir, "diff", base); err == nil && diff != "" {
 			b.WriteString("Diff against " + base + ":\n" + diff + "\n\n")
-		} else if diff, err := gitOutput(workingDir, "diff", "HEAD"); err == nil && diff != "" {
+		} else if diff, err := gitOutput(ctx, workingDir, "diff", "HEAD"); err == nil && diff != "" {
 			b.WriteString("Diff against HEAD:\n" + diff + "\n\n")
 		}
 	}
@@ -138,8 +138,8 @@ func buildReviewPrompt(workingDir, focus, reviewRange string) string {
 	return b.String()
 }
 
-func gitOutput(workingDir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+func gitOutput(ctx context.Context, workingDir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
@@ -150,8 +150,8 @@ func gitOutput(workingDir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-func defaultBranch(workingDir string) string {
-	if out, err := gitOutput(workingDir, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
+func defaultBranch(ctx context.Context, workingDir string) string {
+	if out, err := gitOutput(ctx, workingDir, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
 		out = strings.TrimSpace(out)
 		if strings.HasPrefix(out, "refs/remotes/origin/") {
 			return strings.TrimPrefix(out, "refs/remotes/origin/")

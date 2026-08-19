@@ -68,7 +68,7 @@ func (f *fakeDigestProvider) Digest(_ context.Context, _ rollover.GenerationHand
 // with a custom Decide function via a wrapper.
 
 func newTestController(decision bool) *rollover.Controller {
-	return &rollover.Controller{
+	c := &rollover.Controller{
 		SessionID: "test-session",
 		Store:     &fakeRolloverStore{},
 		Counter:   &fakeTokenCounter{count: 1000},
@@ -81,6 +81,13 @@ func newTestController(decision bool) *rollover.Controller {
 		NewID: func() string { return "gen-id" },
 		Now:   time.Now,
 	}
+	// Production always calls Start before archiving (see app.go
+	// NewRolloverController wiring); mirror that so Archive has an active
+	// generation.
+	if err := c.Start(context.Background()); err != nil {
+		panic(err)
+	}
+	return c
 }
 
 func TestRolloverFlushArchiveWritesTail(t *testing.T) {

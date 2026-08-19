@@ -16,14 +16,6 @@ type historyCommand struct {
 	sessionID string
 }
 
-// Name returns "history".
-func (c *historyCommand) Name() string { return "history" }
-
-// Description returns a short help string.
-func (c *historyCommand) Description() string {
-	return "List generations, dump a transcript, or search archived turns"
-}
-
 // Run executes the /history command with the given args.
 // Subcommands:
 //

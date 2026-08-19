@@ -225,6 +225,47 @@ func TestLoadSkillsMalformedBundleSkipped(t *testing.T) {
 	}
 }
 
+func TestScanSkillDirReturnsMarkdownAndBundlePaths(t *testing.T) {
+	dir := t.TempDir()
+	// Plain .md skill
+	os.WriteFile(filepath.Join(dir, "plain.md"), []byte("---\nname: plain\ndescription: d\n---\nbody\n"), 0644)
+	// Skill bundle (directory with SKILL.md)
+	os.MkdirAll(filepath.Join(dir, "bundled"), 0755)
+	os.WriteFile(filepath.Join(dir, "bundled", BundleFileName), []byte("---\nname: bundled\ndescription: d\n---\nbody\n"), 0644)
+	// Non-md file (should be skipped)
+	os.WriteFile(filepath.Join(dir, "README.txt"), []byte("not a skill"), 0644)
+	// Empty directory (no SKILL.md — should be skipped)
+	os.MkdirAll(filepath.Join(dir, "empty"), 0755)
+
+	paths, err := scanSkillDir(dir)
+	if err != nil {
+		t.Fatalf("scanSkillDir: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 paths, got %d: %v", len(paths), paths)
+	}
+	found := map[string]bool{}
+	for _, p := range paths {
+		found[filepath.Base(p)] = true
+	}
+	if !found["plain.md"] {
+		t.Errorf("missing plain.md, got %v", paths)
+	}
+	if !found[BundleFileName] {
+		t.Errorf("missing %s, got %v", BundleFileName, paths)
+	}
+}
+
+func TestScanSkillDirNonexistentReturnsEmpty(t *testing.T) {
+	paths, err := scanSkillDir("/nonexistent/path")
+	if err != nil {
+		t.Fatalf("expected nil error for nonexistent dir, got: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("expected 0 paths for nonexistent dir, got %d", len(paths))
+	}
+}
+
 func TestParseExported(t *testing.T) {
 	skill, err := Parse(skillContent("parsed", "Parsed via export"))
 	if err != nil {

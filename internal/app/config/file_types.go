@@ -55,6 +55,7 @@ type fileAgent struct {
 
 type filePrivacy struct {
 	RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
+	RemoteLimitDiscovery   *bool `toml:"remote_limit_discovery"`
 	RedactSecrets          *bool `toml:"redact_secrets"`
 	IncludeGitignoredFiles *bool `toml:"include_gitignored_files"`
 }

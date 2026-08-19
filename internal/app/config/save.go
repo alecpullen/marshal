@@ -196,6 +196,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 
 	privacy := &filePrivacy{}
 	putKey(&privacy.RemoteProvidersAllowed, fileField[bool](file.Privacy, "RemoteProvidersAllowed"), cfg.Privacy.RemoteProvidersAllowed, def.Privacy.RemoteProvidersAllowed)
+	putKey(&privacy.RemoteLimitDiscovery, fileField[bool](file.Privacy, "RemoteLimitDiscovery"), cfg.Privacy.RemoteLimitDiscovery, def.Privacy.RemoteLimitDiscovery)
 	putKey(&privacy.RedactSecrets, fileField[bool](file.Privacy, "RedactSecrets"), cfg.Privacy.RedactSecrets, def.Privacy.RedactSecrets)
 	putKey(&privacy.IncludeGitignoredFiles, fileField[bool](file.Privacy, "IncludeGitignoredFiles"), cfg.Privacy.IncludeGitignoredFiles, def.Privacy.IncludeGitignoredFiles)
 	file.Privacy = privacy

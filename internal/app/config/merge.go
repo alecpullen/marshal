@@ -49,6 +49,7 @@ func merge(cfg *Config, file configFile) error {
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)
+		set(&cfg.Privacy.RemoteLimitDiscovery, file.Privacy.RemoteLimitDiscovery)
 		set(&cfg.Privacy.RedactSecrets, file.Privacy.RedactSecrets)
 		set(&cfg.Privacy.IncludeGitignoredFiles, file.Privacy.IncludeGitignoredFiles)
 	}

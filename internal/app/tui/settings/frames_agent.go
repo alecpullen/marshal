@@ -70,7 +70,7 @@ func agentFrame(s *state) *frame {
 					func() int { return s.cfg.Agent.SubtaskIterations }, 0,
 					func(v int) { s.cfg.Agent.SubtaskIterations = v })
 				f.TomlPath = "agent.subtask_iterations"
-				f.Desc = "max sub-agent iterations per task (unset = 48, 0 = unlimited)"
+				f.Desc = "max sub-agent iterations per task · 0 = unlimited (default)"
 				return f
 			}(),
 			{ID: "agent.plan_first", Title: "Plan first", Kind: kindToggle,

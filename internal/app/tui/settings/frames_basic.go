@@ -215,7 +215,7 @@ func webFrame(s *state) *frame {
 					func() string { return s.cfg.Web.SearchProvider },
 					func(v string) error { s.cfg.Web.SearchProvider = v; return nil })
 				f.TomlPath = "web.search_provider"
-				f.Desc = "search backend name (e.g. google, bing, serpapi)"
+				f.Desc = "label for the configured search provider (the endpoint is set in Search URL)"
 				return f
 			}(),
 			func() *field {

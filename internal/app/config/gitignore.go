@@ -40,6 +40,14 @@ func EnsureMarshalIgnored(workingDir string) error {
 	}
 	out += marshalIgnoreEntry + "\n"
 
+	// Preserve the original file's permissions across the atomic rename so a
+	// pre-existing .gitignore with non-default mode (e.g. 0600) is not reset
+	// to 0644. New files default to 0644.
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".gitignore.tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp .gitignore: %w", err)
@@ -50,10 +58,16 @@ func EnsureMarshalIgnored(workingDir string) error {
 		tmp.Close()
 		return fmt.Errorf("write temp .gitignore: %w", err)
 	}
+	// Flush to disk before the rename so a crash cannot leave a zero-length
+	// or partially-written .gitignore in place of the original.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp .gitignore: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp .gitignore: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	if err := os.Chmod(tmpName, mode); err != nil {
 		return fmt.Errorf("chmod temp .gitignore: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {

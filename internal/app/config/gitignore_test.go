@@ -101,6 +101,26 @@ func TestEnsureMarshalIgnoredAtomicWrite(t *testing.T) {
 	}
 }
 
+// TestEnsureMarshalIgnoredPreservesPermissions verifies the atomic rewrite
+// does not reset a pre-existing .gitignore's mode to the default 0644.
+func TestEnsureMarshalIgnoredPreservesPermissions(t *testing.T) {
+	dir := gitRepo(t)
+	path := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(path, []byte("node_modules/\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := EnsureMarshalIgnored(dir); err != nil {
+		t.Fatalf("EnsureMarshalIgnored: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("permissions: got %o, want 600", perm)
+	}
+}
+
 func TestEnsureMarshalIgnoredSkipsNonGitDir(t *testing.T) {
 	dir := t.TempDir() // no .git
 	if err := EnsureMarshalIgnored(dir); err != nil {

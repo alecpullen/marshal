@@ -107,6 +107,40 @@ func TestConfigDiffMasksAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigDiffMasksCDPURLCredentials(t *testing.T) {
+	before := config.Default()
+	after := config.Default()
+	after.Desktop.CDPURL = "http://user:supersecretpw@localhost:9222"
+
+	lines := configDiff(before, after)
+
+	// The password must never appear in the diff.
+	for _, l := range lines {
+		if strings.Contains(l.Detail, "supersecretpw") {
+			t.Fatalf("diff leaked CDPURL password in line %s%s: %q", l.Prefix, l.Path, l.Detail)
+		}
+	}
+
+	// The CDPURL field is present and its userinfo is masked (url.User
+	// percent-encodes the placeholder) while the host is preserved for
+	// debugging.
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l.Path, "CDPURL") {
+			found = true
+			if strings.Contains(l.Detail, "supersecretpw") {
+				t.Fatalf("CDPURL password leaked in %q", l.Detail)
+			}
+			if !strings.Contains(l.Detail, "localhost:9222") {
+				t.Fatalf("expected host preserved in %q", l.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a CDPURL diff line, got: %+v", lines)
+	}
+}
+
 func TestConfigDiffAgentRoleKeyedMap(t *testing.T) {
 	before := config.Default()
 	before.Agents = map[routing.AgentRole]config.AgentRoleConfig{

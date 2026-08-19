@@ -51,11 +51,21 @@ func (f *flexTime) UnmarshalJSON(data []byte) error {
 }
 
 type Store struct {
-	path string
+	path   string
+	logger *slog.Logger
 }
 
 func NewStore(dataDir string) *Store {
-	return &Store{path: filepath.Join(dataDir, "trust.json")}
+	return &Store{path: filepath.Join(dataDir, "trust.json"), logger: slog.Default()}
+}
+
+// SetLogger overrides the logger used for trust-store warnings. It exists
+// so tests can capture warnings without mutating the process-global default
+// logger (slog.SetDefault), which would race with parallel tests.
+func (s *Store) SetLogger(l *slog.Logger) {
+	if l != nil {
+		s.logger = l
+	}
 }
 
 func (s *Store) Load() (map[string]Record, error) {
@@ -90,7 +100,13 @@ type loadRecord struct {
 }
 
 func (s *Store) Save(records map[string]Record) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	// Tighten an existing data directory to 0700 even when it was created
+	// earlier with looser permissions (e.g. by a pre-hardening version).
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(records, "", "  ")
@@ -105,7 +121,7 @@ func (s *Store) IsTrusted(absPath string) (bool, error) {
 	if err != nil {
 		// Corrupted or unreadable trust store: default to untrusted, but
 		// surface the corruption so it can be repaired.
-		slog.Warn("trust store unreadable; treating projects as untrusted", "path", s.path, "error", err)
+		s.logger.Warn("trust store unreadable; treating projects as untrusted", "path", s.path, "error", err)
 		return false, nil
 	}
 	r, ok := records[absPath]
@@ -140,7 +156,7 @@ func (s *Store) StoredConfigHash(absPath string) (string, error) {
 	if err != nil {
 		// Corrupted store: treat as no record rather than failing trust
 		// resolution — the prompt path will run and re-establish trust.
-		slog.Warn("trust store unreadable; treating projects as untrusted", "path", s.path, "error", err)
+		s.logger.Warn("trust store unreadable; treating projects as untrusted", "path", s.path, "error", err)
 		return "", nil
 	}
 	r, ok := records[absPath]

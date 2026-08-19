@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -19,7 +20,7 @@ func (line diffLine) String() string {
 	return line.Prefix + " " + line.Path + line.Detail
 }
 
-var secretFieldNames = map[string]bool{"APIKey": true, "SearchKey": true}
+var secretFieldNames = map[string]bool{"APIKey": true, "SearchKey": true, "CDPURL": true}
 
 func configDiff(before, after config.Config) []diffLine {
 	var lines []diffLine
@@ -195,6 +196,12 @@ func joinPath(base, seg string) string {
 func fmtScalar(path string, v reflect.Value) string {
 	s := fmt.Sprintf("%v", v.Interface())
 	if isSecretPath(path) {
+		// CDPURL carries credentials embedded in a URL; strip the userinfo
+		// while preserving host/path so the diff stays useful for debugging,
+		// mirroring config.MaskSecrets. Other secrets are bullet-masked.
+		if isCDPURLPath(path) {
+			return maskURLUserinfo(s)
+		}
 		return maskKey(s)
 	}
 	return s
@@ -206,4 +213,20 @@ func isSecretPath(path string) bool {
 		return false
 	}
 	return secretFieldNames[parts[len(parts)-1]]
+}
+
+func isCDPURLPath(path string) bool {
+	parts := strings.Split(path, ".")
+	return len(parts) > 0 && parts[len(parts)-1] == "CDPURL"
+}
+
+// maskURLUserinfo strips credentials from a URL while preserving the host
+// and path, matching the config layer's MaskSecrets behavior.
+func maskURLUserinfo(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = url.User("***")
+	return u.String()
 }

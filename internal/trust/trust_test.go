@@ -26,6 +26,29 @@ func TestTrustStoreDirectoryPermissions(t *testing.T) {
 	}
 }
 
+// TestTrustStoreTightensExistingDirPermissions verifies that Save also
+// tightens a data directory that already exists with looser permissions
+// (e.g. created by a pre-hardening version), rather than only applying
+// 0700 to newly-created directories.
+func TestTrustStoreTightensExistingDirPermissions(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "marshal-data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	s := NewStore(dataDir)
+	if err := s.Save(map[string]Record{}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("directory permissions: got %o, want 700", perm)
+	}
+}
+
 func TestTrustStoreCorruptLoadLogsWarning(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
@@ -33,9 +56,7 @@ func TestTrustStoreCorruptLoadLogsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	defer slog.SetDefault(prev)
+	s.SetLogger(slog.New(slog.NewTextHandler(&buf, nil)))
 
 	trusted, err := s.IsTrusted("/some/project")
 	if err != nil {

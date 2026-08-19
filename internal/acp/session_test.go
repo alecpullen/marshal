@@ -84,6 +84,8 @@ func (f *fakeLister) DeleteSession(ctx context.Context, cwd, sessionID string) (
 	return f.deleteExisted, nil
 }
 
+func (f *fakeLister) Close() error { return nil }
+
 func TestSessionLifecycleValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	absCwd, err := filepath.Abs(tmpDir)

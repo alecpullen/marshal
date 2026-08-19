@@ -2,6 +2,8 @@ package acp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -95,4 +97,19 @@ func (l *perCwdLister) DeleteSession(ctx context.Context, cwd, sessionID string)
 		return false, err
 	}
 	return d.DeleteSession(ctx, sessionID)
+}
+
+// Close closes all cached database handles and clears the cache. It is
+// idempotent: calling Close with an already-empty cache returns nil.
+func (l *perCwdLister) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var errs []error
+	for cwd, entry := range l.cache {
+		if err := entry.db.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close db for %s: %w", cwd, err))
+		}
+		delete(l.cache, cwd)
+	}
+	return errors.Join(errs...)
 }

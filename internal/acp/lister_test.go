@@ -127,6 +127,35 @@ func TestPerCwdListerDeleteSession(t *testing.T) {
 // TestListSessionsDoesNotCreateDatabase reproduces F-POL-63: a list
 // request against a non-existent project dir must NOT create the
 // database file.
+func TestPerCwdListerCloseClosesAllCachedDBs(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := newPerCwdLister()
+	// Open a DB to populate the cache.
+	d, err := l.getOrOpen(tmp)
+	if err != nil {
+		t.Fatalf("getOrOpen: %v", err)
+	}
+
+	// Close should close all cached DBs and clear the cache.
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The cache should now be empty — calling getOrOpen again returns a
+	// fresh *db.DB handle.
+	d2, err := l.getOrOpen(tmp)
+	if err != nil {
+		t.Fatalf("getOrOpen after Close: %v", err)
+	}
+	if d == d2 {
+		t.Fatal("expected a fresh *db.DB after Close, got the same (closed) handle")
+	}
+	_ = l.Close()
+}
+
 func TestListSessionsDoesNotCreateDatabase(t *testing.T) {
 	tmp := t.TempDir()
 	l := newPerCwdLister()

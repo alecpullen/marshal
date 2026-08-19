@@ -37,6 +37,7 @@ type TurnCanceller func(context.Context, string) error
 type SessionLister interface {
 	ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error)
 	DeleteSession(ctx context.Context, cwd, sessionID string) (existed bool, err error)
+	Close() error
 }
 
 // SessionManagerOption configures a SessionManager.

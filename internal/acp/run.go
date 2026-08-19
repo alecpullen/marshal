@@ -292,6 +292,9 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	closeCtx, cancel := context.WithTimeout(context.Background(), cfg.shutdown)
 	closeErr := manager.CloseAll(closeCtx)
 	cancel()
+	if cfg.lister != nil {
+		_ = cfg.lister.Close()
+	}
 	return errors.Join(serveErr, closeErr)
 }
 

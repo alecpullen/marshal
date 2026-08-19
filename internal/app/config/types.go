@@ -365,8 +365,8 @@ type AgentConfig struct {
 	// [4000, 128000].
 	HistoryBudgetTokens int `toml:"history_budget_tokens"`
 	// SubtaskIterations caps tool iterations for an ad-hoc agent.run child.
-	// Unset defaults to 48; explicit 0 means unlimited (matching
-	// max_tool_iterations semantics); custom agents may override via
+	// 0 means unlimited (default); unset and explicit 0 are equivalent, and
+	// negative values are treated as unset. Custom agents may override via
 	// max_iterations. A subtask that exhausts its budget is salvaged: the
 	// parent receives whatever partial answer the child produced instead of
 	// a hard error.

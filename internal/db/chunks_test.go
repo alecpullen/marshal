@@ -15,6 +15,17 @@ func mustCreateProject(t *testing.T, database *DB, path string) int64 {
 	return id
 }
 
+func TestDecodeVectorRejectsNonMultipleOf4(t *testing.T) {
+	// 5 bytes is not a valid float32 blob (must be multiple of 4).
+	_, err := decodeVector([]byte{1, 2, 3, 4, 5}, 1)
+	if err == nil {
+		t.Fatal("expected error for non-multiple-of-4 blob length, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a multiple") {
+		t.Fatalf("expected 'not a multiple' error, got: %v", err)
+	}
+}
+
 func TestChunkCRUD(t *testing.T) {
 	database := newTestDB(t)
 	projectID := mustCreateProject(t, database, "/tmp/proj")

@@ -56,6 +56,9 @@ func encodeVector(v []float32) []byte {
 
 // decodeVector reverses encodeVector and validates the result length.
 func decodeVector(b []byte, dims int) ([]float32, error) {
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("vector blob length %d is not a multiple of 4", len(b))
+	}
 	v := make([]float32, len(b)/4)
 	for i := range v {
 		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))

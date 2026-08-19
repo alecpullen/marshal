@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,15 @@ import (
 
 	"marshal/internal/db"
 )
+
+func TestDumpOptionsHasNoLimitField(t *testing.T) {
+	typ := reflect.TypeOf(DumpOptions{})
+	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).Name == "Limit" {
+			t.Fatalf("DumpOptions should not have a Limit field")
+		}
+	}
+}
 
 func TestListGenerations(t *testing.T) {
 	database := newTestDB(t)

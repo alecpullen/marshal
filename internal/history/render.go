@@ -24,7 +24,6 @@ type GenerationSummary struct {
 type DumpOptions struct {
 	SessionID     string
 	GenerationSeq int
-	Limit         int // max turns to include; 0 = unlimited
 }
 
 // ListGenerations returns summaries for all generations in a session.
@@ -70,10 +69,6 @@ func DumpGeneration(ctx context.Context, database *db.DB, opts DumpOptions) (str
 	turns, err := database.TurnsForGeneration(gen.ID)
 	if err != nil {
 		return "", fmt.Errorf("dump generation: %w", err)
-	}
-
-	if opts.Limit > 0 && len(turns) > opts.Limit {
-		turns = turns[:opts.Limit]
 	}
 
 	var b strings.Builder

@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+func TestSkippedReturnTypeIsExported(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "huge.bin"), make([]byte, 1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScanner(Config{Root: dir, MaxIndexableFileBytes: 512})
+	_, _ = s.ScanDetailed(context.Background())
+	skipped := s.Skipped()
+	if len(skipped) == 0 {
+		t.Fatal("expected at least one skipped entry")
+	}
+	// The return type must be exported so external callers can use it.
+	var _ SkipEntry = skipped[0]
+	_ = skipped[0].Path
+	_ = skipped[0].Reason
+}
+
 func TestScanDetailedRespectsContextCancellation(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main"), 0644); err != nil {

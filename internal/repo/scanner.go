@@ -25,8 +25,8 @@ type Config struct {
 	MaxIndexableFileBytes int64
 }
 
-// skippedEntry records a file or directory that was skipped during scanning.
-type skippedEntry struct {
+// SkipEntry records a file or directory that was skipped during scanning.
+type SkipEntry struct {
 	Path   string
 	Reason string
 }
@@ -35,7 +35,7 @@ type Scanner struct {
 	config    Config
 	gitignore *Gitignore
 	loadErr   error
-	skipped   []skippedEntry
+	skipped   []SkipEntry
 	warnings  []string
 }
 
@@ -109,7 +109,7 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 		// Users who need indexed symlinks should use hard links or bind
 		// mounts instead.
 		if entry.Type()&os.ModeSymlink != 0 {
-			s.skipped = append(s.skipped, skippedEntry{Path: rel, Reason: "symlink"})
+			s.skipped = append(s.skipped, SkipEntry{Path: rel, Reason: "symlink"})
 			return nil
 		}
 		if rel == "." {
@@ -151,7 +151,7 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 		// Skip files that exceed the configurable size cap.
 		if s.config.MaxIndexableFileBytes > 0 {
 			if info, infoErr := entry.Info(); infoErr == nil && info.Size() > s.config.MaxIndexableFileBytes {
-				s.skipped = append(s.skipped, skippedEntry{Path: rel, Reason: fmt.Sprintf("file too large (%d bytes)", info.Size())})
+				s.skipped = append(s.skipped, SkipEntry{Path: rel, Reason: fmt.Sprintf("file too large (%d bytes)", info.Size())})
 				return nil
 			}
 		}
@@ -204,7 +204,7 @@ func (s *Scanner) ScanDetailed(ctx context.Context) ([]ScannedFile, error) {
 
 // Skipped returns a list of entries that were skipped during the most recent
 // Scan. The caller must not modify the returned slice.
-func (s *Scanner) Skipped() []skippedEntry {
+func (s *Scanner) Skipped() []SkipEntry {
 	return s.skipped
 }
 

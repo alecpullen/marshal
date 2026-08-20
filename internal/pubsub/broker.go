@@ -23,12 +23,16 @@ import (
 	"time"
 )
 
+// defaultSubscriptionBuffer is the per-subscriber buffer size for
+// non-terminal events when WithBufferSize is not specified.
+const defaultSubscriptionBuffer = 16
+
 // Option configures a subscription.
 type Option[T any] func(*subscription[T])
 
 // WithBufferSize sets the per-subscriber buffer for non-terminal events.
-// Default is 16. A full buffer drops the oldest non-terminal event and
-// continues (drop-head, never block the publisher).
+// Default is defaultSubscriptionBuffer. A full buffer drops the oldest
+// non-terminal event and continues (drop-head, never block the publisher).
 func WithBufferSize[T any](n int) Option[T] {
 	return func(s *subscription[T]) {
 		if n >= 0 {
@@ -217,14 +221,14 @@ func (b *Broker[T]) Subscribe(ctx context.Context, opts ...Option[T]) <-chan Eve
 	b.mu.RLock()
 	defaults := b.defaultOpts
 	b.mu.RUnlock()
-	s := newSubscription[T](ctx, 16)
+	s := newSubscription[T](ctx, defaultSubscriptionBuffer)
 	for _, opt := range defaults {
 		opt(s)
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	if s.buffer != 16 {
+	if s.buffer != defaultSubscriptionBuffer {
 		s.ch = make(chan Event[T], s.buffer)
 	}
 

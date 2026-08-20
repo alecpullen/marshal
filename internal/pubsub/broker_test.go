@@ -260,6 +260,12 @@ func TestTerminalSubscriptionDoesNotDropOnTimeout(t *testing.T) {
 	}
 }
 
+func TestDefaultSubscriptionBuffer(t *testing.T) {
+	if defaultSubscriptionBuffer != 16 {
+		t.Fatalf("defaultSubscriptionBuffer = %d, want 16", defaultSubscriptionBuffer)
+	}
+}
+
 // guard against accidental import of strings without use
 var _ = strings.Builder{}
 

@@ -157,9 +157,14 @@ func (c *Container) buildArgs(command, image, workdir string) ([]string, error) 
 	args = append(args, "--user", "65534:65534") // nobody/nogroup: a non-root uid
 
 	// Pass through allowlisted env so the command has PATH/HOME/etc inside
-	// the container. Nil allowlist = use AllowList defaults (PATH, HOME,
-	// etc. minus secrets/dangerous keys), matching the restricted backend.
-	// Explicit-empty allowlist = no env (consistent with restricted mode).
+	// the container.
+	//   - Nil allowlist: use AllowList defaults (PATH, HOME, etc. minus
+	//     secrets/dangerous keys), matching the restricted backend.
+	//   - Explicit-empty allowlist (len=0 and != nil): no env vars are
+	//     passed at all — not even PATH. This is stricter than the
+	//     restricted backend, which inherits PATH for local dev
+	//     convenience. The container backend is designed for full
+	//     isolation, so an explicit-empty allowlist means no env.
 	//
 	// Apply the same secret/dangerous-key filtering the restricted backend
 	// uses: a user-supplied allowlist must not be used to inject secrets,

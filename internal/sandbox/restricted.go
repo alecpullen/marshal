@@ -93,7 +93,12 @@ func (r *Restricted) Run(ctx context.Context, req native.CommandRequest) (native
 // EnvDenylist (r.denySet) is always applied to the final result.
 func (r *Restricted) buildEnv() []string {
 	parent := os.Environ()
-	// Explicit-empty: user explicitly denied all env. Honor it.
+	// Explicit-empty allowlist (len=0 and != nil): the user has
+	// intentionally denied all environment variables. We pass only
+	// PATH (when present and not denied) so the child can find
+	// executables. This is the restricted-backend behavior: local
+	// dev convenience means PATH is still inherited. The container
+	// backend passes nothing for an explicit-empty allowlist.
 	if r.cfg.EnvAllowlist != nil && len(r.cfg.EnvAllowlist) == 0 {
 		if v, ok := os.LookupEnv("PATH"); ok && !r.denySet["PATH"] {
 			return []string{"PATH=" + v}

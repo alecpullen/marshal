@@ -98,8 +98,11 @@ func (v Verifier) Run(ctx context.Context, dir string) (VerifyResult, error) {
 	for _, c := range []string{v.Build, v.Test} {
 		if c != "" {
 			argv, err := shlex.Split(c)
-			if err != nil || len(argv) == 0 {
+			if err != nil {
 				return VerifyResult{}, fmt.Errorf("pipeline verify: cannot parse command %q: %w", c, err)
+			}
+			if len(argv) == 0 {
+				return VerifyResult{}, fmt.Errorf("pipeline verify: empty command %q", c)
 			}
 			commands = append(commands, argv)
 		}

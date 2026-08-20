@@ -5,9 +5,31 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestVerifierRunEmptyCommandError(t *testing.T) {
+	v := Verifier{
+		Build: "", // empty string is skipped
+		Test:  "", // empty string is skipped — but a whitespace-only string triggers the bug
+	}
+	// A whitespace-only string parses to zero args with no shlex error,
+	// producing "cannot parse command \" \": %!w(<nil>)" — wrapping nil.
+	v.Test = " "
+	_, err := v.Run(context.Background(), t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for whitespace-only command, got nil")
+	}
+	// The error should not contain the nil-wrapping artifact.
+	if strings.Contains(err.Error(), "<nil>") {
+		t.Fatalf("error wraps nil err: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty command") {
+		t.Fatalf("error should mention 'empty command', got: %v", err)
+	}
+}
 
 func TestVerifierPasses(t *testing.T) {
 	fake := NewFakeCommandRunner()

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -645,6 +646,23 @@ func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
 	}
 	if !foundHome {
 		t.Error("nil EnvAllowlist should default to including HOME")
+	}
+}
+
+// TestContainerCPUTimeoutFallbackWarning verifies that isTimeoutNotFound
+// correctly detects a container image missing the `timeout` command
+// (TOOLS-MIN-F6).
+func TestContainerCPUTimeoutFallbackWarning(t *testing.T) {
+	err := fmt.Errorf("exit code 127: timeout: not found")
+	if !isTimeoutNotFound(err) {
+		t.Error("expected isTimeoutNotFound to match a 127/not-found error")
+	}
+	err2 := fmt.Errorf("some other error")
+	if isTimeoutNotFound(err2) {
+		t.Error("expected isTimeoutNotFound to NOT match a random error")
+	}
+	if isTimeoutNotFound(nil) {
+		t.Error("expected isTimeoutNotFound to be false for nil error")
 	}
 }
 

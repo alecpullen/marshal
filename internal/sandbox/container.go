@@ -98,7 +98,32 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 	cmd := exec.Command(c.runtimePath, args...)
 	cmd.Env = c.buildContainerEnv()
 
-	return executeCommand(runCtx, cmd, req, metaFor(c.Capabilities(), c.cfg))
+	result, err := executeCommand(runCtx, cmd, req, metaFor(c.Capabilities(), c.cfg))
+	// If CPUSeconds was set and the command failed, check whether it's
+	// because the `timeout` utility is missing from the image. This is
+	// best-effort: the not-found error may be swallowed by the shell
+	// wrapping, but when it surfaces it tells the user why their CPU
+	// limit isn't being enforced (TOOLS-MIN-F6).
+	if c.cfg.CPUSeconds > 0 && err != nil && isTimeoutNotFound(err) && c.logger != nil {
+		c.logger.Warn("container image missing 'timeout' command; CPU limit not enforced",
+			"image", image,
+			"cpu_seconds", c.cfg.CPUSeconds)
+	}
+	return result, err
+}
+
+// isTimeoutNotFound reports whether an error from a container run
+// indicates that the `timeout` command was not found in the image
+// (exit code 127 or "not found" / "not executable" in the error).
+// This means the CPU time limit was not enforced.
+func isTimeoutNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "127") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "not executable")
 }
 
 func (c *Container) buildContainerEnv() []string {

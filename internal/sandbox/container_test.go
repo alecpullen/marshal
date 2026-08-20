@@ -3,7 +3,6 @@ package sandbox
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -651,22 +650,25 @@ func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
 
 // TestContainerCPUTimeoutFallbackWarning verifies that isTimeoutNotFound
 // correctly detects a container image missing the `timeout` command
-// (TOOLS-MIN-F6).
+// (TOOLS-MIN-F6). It inspects captured stderr (not err.Error()), because
+// a real *exec.ExitError from cmd.Wait() only reports "exit status 127"
+// and never carries the command's stderr output.
 func TestContainerCPUTimeoutFallbackWarning(t *testing.T) {
-	err := fmt.Errorf("exit code 127: timeout: not found")
-	if !isTimeoutNotFound(127, err) {
-		t.Error("expected isTimeoutNotFound to match a 127 timeout-not-found error")
+	// A 127 exit code with stderr naming `timeout` must match.
+	if !isTimeoutNotFound(127, "sh: 1: timeout: not found") {
+		t.Error("expected isTimeoutNotFound to match a 127 timeout-not-found stderr")
 	}
 	// A 127 exit code from a non-timeout command must NOT match.
-	if isTimeoutNotFound(127, fmt.Errorf("some other error")) {
-		t.Error("expected isTimeoutNotFound to NOT match a 127 error that doesn't mention timeout")
+	if isTimeoutNotFound(127, "sh: 1: someothercmd: not found") {
+		t.Error("expected isTimeoutNotFound to NOT match a 127 stderr that doesn't mention timeout")
 	}
-	// A non-127 exit code must not match even if the message mentions timeout.
-	if isTimeoutNotFound(1, fmt.Errorf("timeout: not found")) {
+	// A non-127 exit code must not match even if stderr mentions timeout.
+	if isTimeoutNotFound(1, "timeout: not found") {
 		t.Error("expected isTimeoutNotFound to NOT match a non-127 exit code")
 	}
-	if isTimeoutNotFound(0, nil) {
-		t.Error("expected isTimeoutNotFound to be false for nil error")
+	// Empty stderr must not match.
+	if isTimeoutNotFound(127, "") {
+		t.Error("expected isTimeoutNotFound to be false for empty stderr")
 	}
 }
 

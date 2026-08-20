@@ -104,7 +104,7 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 	// best-effort: the not-found error may be swallowed by the shell
 	// wrapping, but when it surfaces it tells the user why their CPU
 	// limit isn't being enforced (TOOLS-MIN-F6).
-	if c.cfg.CPUSeconds > 0 && err != nil && isTimeoutNotFound(result.ExitCode, err) && c.logger != nil {
+	if c.cfg.CPUSeconds > 0 && err != nil && isTimeoutNotFound(result.ExitCode, result.Stderr) && c.logger != nil {
 		c.logger.Warn("container image missing 'timeout' command; CPU limit not enforced",
 			"image", image,
 			"cpu_seconds", c.cfg.CPUSeconds)
@@ -112,22 +112,21 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 	return result, err
 }
 
-// isTimeoutNotFound reports whether an error from a container run
-// indicates that the `timeout` command was not found in the image, so the
-// CPU time limit was not enforced. It requires both a "command not found"
-// exit code (127) AND an error message that mentions `timeout`. This is
-// deliberately narrower than matching any "127" or "not found" substring,
-// which would false-positive on unrelated errors (e.g. an IP address
-// containing 127, a missing image, or a different missing binary inside
-// the container) (TOOLS-MIN-F6).
-func isTimeoutNotFound(exitCode int, err error) bool {
-	if err == nil {
-		return false
-	}
+// isTimeoutNotFound reports whether a container run failed because the
+// `timeout` command was not found in the image, so the CPU time limit was
+// not enforced. It requires both a "command not found" exit code (127)
+// AND captured stderr that mentions `timeout`. The stderr is inspected
+// rather than err.Error() because a real *exec.ExitError from cmd.Wait()
+// only reports "exit status 127" and never carries the command's stderr
+// output. This is deliberately narrower than matching any "127" or "not
+// found" substring, which would false-positive on unrelated errors (e.g.
+// an IP address containing 127, a missing image, or a different missing
+// binary inside the container) (TOOLS-MIN-F6).
+func isTimeoutNotFound(exitCode int, stderr string) bool {
 	if exitCode != 127 {
 		return false
 	}
-	return strings.Contains(err.Error(), "timeout")
+	return strings.Contains(stderr, "timeout")
 }
 
 func (c *Container) buildContainerEnv() []string {

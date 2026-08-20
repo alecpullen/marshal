@@ -35,9 +35,7 @@ func (b *StandaloneBackend) ensureStarted() error {
 	if err != nil {
 		return fmt.Errorf("start playwright: %w", err)
 	}
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(b.headless),
-	})
+	browser, err := pw.Chromium.Launch(standaloneLaunchOptions(b.headless))
 	if err != nil {
 		pw.Stop()
 		return fmt.Errorf("launch chromium: %w", err)
@@ -46,6 +44,31 @@ func (b *StandaloneBackend) ensureStarted() error {
 	b.browser = browser
 	b.startedOnce = true
 	return nil
+}
+
+// standaloneLaunchOptions builds the BrowserTypeLaunchOptions for the
+// standalone Chromium launch. It hardens the launch (TOOLS-MOD-F12):
+//   - --no-sandbox: necessary when running inside a container or when the
+//     user lacks permission to use Chromium's setuid sandbox. Combined
+//     with ChromiumSandbox=false, this disables the sandbox entirely.
+//
+// Note: a dedicated --user-data-dir is intentionally NOT passed here.
+// playwright's Launch API manages its own temporary profile by default and
+// cleans it up on close, so the user's real Chromium profile is never
+// touched. Passing --user-data-dir to Launch is rejected by playwright
+// (it belongs on launchPersistentContext instead).
+//
+// A privilege drop to the "nobody" user is also intentionally NOT applied:
+// playwright-go manages the browser process internally and does not expose
+// SysProcAttr on BrowserTypeLaunchOptions, so we cannot set a Credential.
+// The --no-sandbox + ChromiumSandbox=false flags are the primary hardening;
+// a future custom browser-launch path could add a privilege drop.
+func standaloneLaunchOptions(headless bool) playwright.BrowserTypeLaunchOptions {
+	return playwright.BrowserTypeLaunchOptions{
+		Headless:        playwright.Bool(headless),
+		ChromiumSandbox: playwright.Bool(false),
+		Args:            []string{"--no-sandbox"},
+	}
 }
 
 func (b *StandaloneBackend) NewPage(ctx context.Context) (PageHandle, error) {

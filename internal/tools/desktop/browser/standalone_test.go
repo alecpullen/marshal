@@ -7,6 +7,38 @@ import (
 	"time"
 )
 
+// hasArg reports whether opts.Args contains the exact string a.
+func hasArg(args []string, a string) bool {
+	for _, x := range args {
+		if x == a {
+			return true
+		}
+	}
+	return false
+}
+
+// TestStandaloneLaunchArgs verifies that standaloneLaunchOptions hardens
+// the Chromium launch with --no-sandbox and disables the Chromium sandbox
+// (TOOLS-MOD-F12). A --user-data-dir is intentionally NOT passed: playwright
+// manages its own temp profile for Launch.
+func TestStandaloneLaunchArgs(t *testing.T) {
+	opts := standaloneLaunchOptions(true)
+	if !hasArg(opts.Args, "--no-sandbox") {
+		t.Error("expected --no-sandbox in launch args")
+	}
+	for _, a := range opts.Args {
+		if strings.HasPrefix(a, "--user-data-dir=") {
+			t.Error("expected no --user-data-dir in launch args (playwright manages its own temp profile)")
+		}
+	}
+	if opts.ChromiumSandbox == nil || *opts.ChromiumSandbox {
+		t.Error("expected ChromiumSandbox to be explicitly false")
+	}
+	if opts.Headless == nil || !*opts.Headless {
+		t.Error("expected Headless to be true when requested")
+	}
+}
+
 func TestStandaloneBackendNavigateAndRead(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping browser integration test in short mode")

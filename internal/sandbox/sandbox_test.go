@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -380,6 +381,41 @@ func TestExplicitEmptyAllowlistDocumented(t *testing.T) {
 	}
 	if !strings.Contains(string(containerSrc), "Explicit-empty allowlist") {
 		t.Error("container.go should document explicit-empty allowlist behavior")
+	}
+}
+
+// TestClampUlimit verifies that clampUlimit clamps ulimit values to
+// reasonable bounds (TOOLS-MIN-F20): values below 1 are raised to 1, and
+// values above the system RLIMIT_NOFILE hard limit are lowered to it.
+func TestClampUlimit(t *testing.T) {
+	// Lower bound: values < 1 are clamped to 1.
+	if got := clampUlimit(0, "cpu_seconds"); got != 1 {
+		t.Errorf("clampUlimit(0) = %d, want 1", got)
+	}
+	if got := clampUlimit(-5, "max_processes"); got != 1 {
+		t.Errorf("clampUlimit(-5) = %d, want 1", got)
+	}
+
+	// Upper bound: a value above the RLIMIT_NOFILE hard limit is clamped.
+	var rlimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err != nil {
+		t.Skip("cannot read RLIMIT_NOFILE: " + err.Error())
+	}
+	max := int(rlimit.Max)
+	// RLIM_INFINITY (or a value at/near the int max) means "unlimited" —
+	// there is no finite upper bound to clamp against, so the upper-bound
+	// clamp is untestable here.
+	if max <= 0 || max >= int(^uint(0)>>1) {
+		t.Skip("RLIMIT_NOFILE hard limit is effectively unlimited; upper-bound clamp untestable")
+	}
+	over := max + 1
+	if got := clampUlimit(over, "max_processes"); got != max {
+		t.Errorf("clampUlimit(%d) = %d, want clamped to %d", over, got, max)
+	}
+
+	// In-range values pass through unchanged.
+	if got := clampUlimit(1, "cpu_seconds"); got != 1 {
+		t.Errorf("clampUlimit(1) = %d, want 1", got)
 	}
 }
 

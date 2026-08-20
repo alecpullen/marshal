@@ -4,9 +4,11 @@ package sandbox
 
 import (
 	"errors"
+	"log/slog"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 var (
@@ -41,6 +43,29 @@ func ulimitBlockSize() int {
 	return 512
 }
 
+// clampUlimit clamps a ulimit value to at least 1 and at most the system
+// hard limit for RLIMIT_NOFILE. Values outside this range are clamped and a
+// warning is logged. RLIMIT_NOFILE is used as a conservative upper bound for
+// all ulimit types: a value above the max FD limit is almost certainly a
+// misconfiguration (TOOLS-MIN-F20).
+func clampUlimit(val int, name string) int {
+	if val < 1 {
+		slog.Warn("ulimit value clamped to minimum of 1",
+			"name", name, "original", val)
+		return 1
+	}
+	var rlimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err == nil {
+		max := int(rlimit.Max)
+		if max > 0 && val > max {
+			slog.Warn("ulimit value clamped to system hard limit",
+				"name", name, "original", val, "clamped", max)
+			return max
+		}
+	}
+	return val
+}
+
 // restrictedWrapCommand wraps a command in ulimit caps the restricted config
 // requested. Only positive limits are applied; zero means "unset". The
 // resulting script is `/bin/sh -lc`-runnable.
@@ -68,24 +93,24 @@ func restrictedWrapCommand(command string, cfg Config) string {
 	var pre strings.Builder
 	if cfg.CPUSeconds > 0 {
 		pre.WriteString("ulimit -t ")
-		pre.WriteString(strconv.Itoa(cfg.CPUSeconds))
+		pre.WriteString(strconv.Itoa(clampUlimit(cfg.CPUSeconds, "cpu_seconds")))
 		pre.WriteString("; ")
 	}
 	if cfg.FileSizeLimitMB > 0 {
 		blockSize := ulimitBlockSize()
-		blocks := (cfg.FileSizeLimitMB * 1024 * 1024) / blockSize
+		blocks := int((int64(cfg.FileSizeLimitMB) * 1024 * 1024) / int64(blockSize))
 		pre.WriteString("ulimit -f ")
-		pre.WriteString(strconv.Itoa(blocks))
+		pre.WriteString(strconv.Itoa(clampUlimit(blocks, "file_size_limit")))
 		pre.WriteString("; ")
 	}
 	if cfg.MaxProcesses > 0 {
 		pre.WriteString("ulimit -u ")
-		pre.WriteString(strconv.Itoa(cfg.MaxProcesses))
+		pre.WriteString(strconv.Itoa(clampUlimit(cfg.MaxProcesses, "max_processes")))
 		pre.WriteString("; ")
 	}
 	if cfg.MemoryLimitMB > 0 && ulimitSupportsMem() {
 		pre.WriteString("ulimit -v ")
-		pre.WriteString(strconv.Itoa(cfg.MemoryLimitMB * 1024))
+		pre.WriteString(strconv.Itoa(clampUlimit(cfg.MemoryLimitMB*1024, "memory_limit_mb")))
 		pre.WriteString("; ")
 	}
 	pre.WriteString(command)

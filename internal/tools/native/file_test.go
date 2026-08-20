@@ -1,8 +1,11 @@
 package native
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +19,35 @@ import (
 	"marshal/internal/filetrack"
 	"marshal/internal/tools/registry"
 )
+
+// TestFileWriteNilTrackerWarns verifies that file.write logs a warning
+// when fileTracker is nil and the file already exists (TOOLS-MOD-F13).
+func TestFileWriteNilTrackerWarns(t *testing.T) {
+	dir := t.TempDir()
+	existingPath := filepath.Join(dir, "exists.txt")
+	os.WriteFile(existingPath, []byte("old"), 0644)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	slog.SetDefault(logger)
+	defer slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	ts := &toolSet{
+		root: dir,
+		// fileTracker is nil — the gap we're warning about
+	}
+	tool := ts.fileWriteTool()
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "file.write",
+		Args: json.RawMessage(`{"path":"exists.txt","content":"new"}`),
+	})
+	if err == nil {
+		t.Fatal("expected error for existing file with nil tracker")
+	}
+	if !strings.Contains(logBuf.String(), "nil fileTracker") {
+		t.Errorf("expected warning about nil fileTracker in log, got: %s", logBuf.String())
+	}
+}
 
 func TestFileReadReadsWholeFile(t *testing.T) {
 	root := t.TempDir()

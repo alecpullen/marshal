@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,6 +304,9 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 					return registry.ToolResult{}, fmt.Errorf(
 						"file %s was never read this session; read it before editing", fp.Path)
 				}
+			} else {
+				slog.Warn("file.write_patch with nil fileTracker; TOCTOU check skipped",
+					"path", fp.Path)
 			}
 
 			data, err := os.ReadFile(path)
@@ -386,6 +390,9 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 						return registry.ToolResult{}, changedOnDiskError(path, fp)
 					}
 				}
+			} else {
+				slog.Warn("file.write_patch TOCTOU re-check skipped: nil fileTracker",
+					"path", fp.Path)
 			}
 
 			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
@@ -477,6 +484,8 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 		if exists {
 			original = string(data)
 			if t.fileTracker == nil {
+				slog.Warn("file.write on existing file with nil fileTracker; TOCTOU check skipped",
+					"path", args.Path)
 				return registry.ToolResult{}, fmt.Errorf(
 					"file %s already exists; file.write requires a tracker-backed session to overwrite an existing file", args.Path)
 			}

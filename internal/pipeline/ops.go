@@ -35,7 +35,12 @@ func applyPatchOp(dir string, op *PatchOp) error {
 		return fmt.Errorf("ops patch: validation failed for %s", op.File)
 	}
 	newContent := patch.ApplyPatch(string(content), fp)
-	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+	// Preserve the existing file mode (e.g. executable bit) across patches.
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(path, []byte(newContent), mode); err != nil {
 		return fmt.Errorf("ops patch: write %s: %w", op.File, err)
 	}
 	return nil
@@ -53,7 +58,15 @@ func applyFileOp(dir string, op *FileOp) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("ops file: mkdir for %s: %w", op.Path, err)
 	}
-	if err := os.WriteFile(path, []byte(op.Content), 0o644); err != nil {
+	// Preserve the existing file mode when overwriting (e.g. executable bit).
+	// New files default to 0o644.
+	mode := os.FileMode(0o644)
+	if op.Replace {
+		if info, err := os.Stat(path); err == nil {
+			mode = info.Mode().Perm()
+		}
+	}
+	if err := os.WriteFile(path, []byte(op.Content), mode); err != nil {
 		return fmt.Errorf("ops file: write %s: %w", op.Path, err)
 	}
 	return nil

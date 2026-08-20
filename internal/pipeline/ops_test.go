@@ -120,6 +120,73 @@ func TestApplyFileOpOverwriteWithReplace(t *testing.T) {
 	}
 }
 
+func TestApplyFileOpPreservesExecutableBit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+
+	// First write the file with execute permissions.
+	op := &FileOp{
+		Path:    "script.sh",
+		Content: "#!/bin/sh\necho hi\n",
+	}
+	if err := applyFileOp(dir, op); err != nil {
+		t.Fatalf("applyFileOp: %v", err)
+	}
+
+	// Manually set the executable bit (simulating a file that had +x).
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	// Now overwrite with Replace=true — the executable bit should be preserved.
+	opReplace := &FileOp{
+		Path:    "script.sh",
+		Content: "#!/bin/sh\necho bye\n",
+		Replace: true,
+	}
+	if err := applyFileOp(dir, opReplace); err != nil {
+		t.Fatalf("applyFileOp replace: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	mode := info.Mode().Perm()
+	if mode != 0o755 {
+		t.Fatalf("file mode = %o, want 0o755 (executable bit stripped)", mode)
+	}
+}
+
+func TestApplyPatchOpPreservesExecutableBit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+
+	// Write an executable file.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Apply a patch — the executable bit should be preserved.
+	op := &PatchOp{
+		File:    "script.sh",
+		Search:  "echo old",
+		Replace: "echo new",
+	}
+	if err := applyPatchOp(dir, op); err != nil {
+		t.Fatalf("applyPatchOp: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	mode := info.Mode().Perm()
+	if mode != 0o755 {
+		t.Fatalf("file mode = %o, want 0o755 (executable bit stripped)", mode)
+	}
+}
+
 func TestRunOpPreparePhase(t *testing.T) {
 	dir := t.TempDir()
 	runner := NewFakeCommandRunner()

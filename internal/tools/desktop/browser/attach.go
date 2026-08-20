@@ -38,15 +38,45 @@ func (b *AttachBackend) ensureConnected(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("start playwright: %w", err)
 	}
-	browser, err := pw.Chromium.ConnectOverCDP(b.cdpURL)
-	if err != nil {
-		pw.Stop()
-		return fmt.Errorf("connect to browser at %s: %w", b.cdpURL, err)
+
+	// ConnectOverCDP does not accept a context, so wrap it in a goroutine
+	// and bound it with the configured timeout. Without this, a
+	// non-responsive CDP endpoint hangs indefinitely at playwright's
+	// default (TOOLS-MIN-F22).
+	connectCtx := ctx
+	if b.timeout > 0 {
+		var cancel context.CancelFunc
+		connectCtx, cancel = context.WithTimeout(ctx, b.timeout)
+		defer cancel()
 	}
-	b.pw = pw
-	b.browser = browser
-	b.startedOnce = true
-	return nil
+
+	type connectResult struct {
+		browser playwright.Browser
+		err     error
+	}
+	ch := make(chan connectResult, 1)
+	go func() {
+		browser, err := pw.Chromium.ConnectOverCDP(b.cdpURL)
+		ch <- connectResult{browser, err}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			pw.Stop()
+			return fmt.Errorf("connect to browser at %s: %w", b.cdpURL, res.err)
+		}
+		b.pw = pw
+		b.browser = res.browser
+		b.startedOnce = true
+		return nil
+	case <-connectCtx.Done():
+		// Best-effort: stop playwright to clean up the goroutine. The
+		// goroutine may still complete and write to ch, but we've already
+		// returned.
+		pw.Stop()
+		return fmt.Errorf("connect to browser at %s: timeout after %s", b.cdpURL, b.timeout)
+	}
 }
 
 func (b *AttachBackend) NewPage(ctx context.Context) (PageHandle, error) {

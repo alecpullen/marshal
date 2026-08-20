@@ -25,6 +25,30 @@ func TestAttachBackendMode(t *testing.T) {
 	_ = b.Close()
 }
 
+// TestAttachBackendUsesConfiguredTimeout verifies that ensureConnected
+// bounds the CDP connection with the configured timeout rather than
+// hanging at playwright's default (TOOLS-MIN-F22). A connection to a
+// non-responsive endpoint should fail within the configured duration.
+func TestAttachBackendUsesConfiguredTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires network attempt")
+	}
+	b := &AttachBackend{
+		cdpURL:  "http://127.0.0.1:1/no-such-endpoint",
+		timeout: 200 * time.Millisecond,
+	}
+	start := time.Now()
+	err := b.ensureConnected(context.Background())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected error connecting to non-existent endpoint")
+	}
+	// Should fail within ~200ms, not the playwright default (30s).
+	if elapsed > 5*time.Second {
+		t.Fatalf("attach took %v, should have timed out within ~200ms", elapsed)
+	}
+}
+
 func TestAttachBackendNewPageRequiresRunningBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

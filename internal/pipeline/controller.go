@@ -129,6 +129,14 @@ type Controller struct {
 	UsageTokens int
 }
 
+// noteLedger records a ledger entry, logging a warning if the ledger
+// returns an error instead of silently discarding it.
+func (c *Controller) noteLedger(format string, args ...any) {
+	if err := c.Ledger.Note(format, args...); err != nil {
+		slog.Warn("ledger note failed", "error", err)
+	}
+}
+
 // NewController parses the plan, prepares the run directory, and returns a
 // controller ready to Run. It does not touch git.
 func NewController(opts ControllerOpts) (*Controller, error) {
@@ -236,7 +244,7 @@ func dispatchWithRetry[R any](ctx context.Context, c *Controller, taskN int, pha
 		c.emitPayload(taskN, 0, phase,
 			fmt.Sprintf("retry %d/%d · %s", attempt+1, c.MaxDispatchRetries, shortErr(err)),
 			RetryPayload{Attempt: attempt + 1, MaxAttempts: c.MaxDispatchRetries, Err: shortErr(err)})
-		_ = c.Ledger.Note("Task %d: retry %d/%d after: %v", taskN, attempt+1, c.MaxDispatchRetries, err)
+		c.noteLedger("Task %d: retry %d/%d after: %v", taskN, attempt+1, c.MaxDispatchRetries, err)
 		if sleepErr := c.Sleep(ctx, retryBackoff(attempt)); sleepErr != nil {
 			return zero, sleepErr
 		}
@@ -420,7 +428,7 @@ func (c *Controller) runTaskAgent(ctx context.Context, t TaskSpec, briefPath, di
 		return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
 	}
 	if report.Status == StatusDoneWithConcerns && report.Concerns != "" {
-		_ = c.Ledger.Note("Task %d: implementer concern: %s", t.N, report.Concerns)
+		c.noteLedger("Task %d: implementer concern: %s", t.N, report.Concerns)
 		c.emitPayload(t.N, 0, PhaseImplementing, "", ConcernPayload{Text: report.Concerns})
 	}
 	c.checkpoint("dispatch_finished", t.N, func(cp *Checkpoint) {
@@ -442,7 +450,7 @@ func (c *Controller) runTaskAgent(ctx context.Context, t TaskSpec, briefPath, di
 		}
 		if res.Skipped {
 			const reason = "no build or test command configured"
-			_ = c.Ledger.Note("Task %d: gate skipped (%s)", t.N, reason)
+			c.noteLedger("Task %d: gate skipped (%s)", t.N, reason)
 			c.emitPayload(t.N, round, PhaseVerifying, "skipped", GateSkippedPayload{Reason: reason})
 			break
 		}
@@ -747,7 +755,7 @@ func (c *Controller) openGate(taskN int, question string) error {
 	c.checkpoint(PhaseBlocked, taskN, func(cp *Checkpoint) {
 		cp.GateQuestion = question
 	})
-	_ = c.Ledger.Note("Task %d: gate opened: %s", taskN, question)
+	c.noteLedger("Task %d: gate opened: %s", taskN, question)
 	return ErrHumanGateRequired
 }
 
@@ -790,7 +798,7 @@ func (c *Controller) Answer(text string) {
 			f.Close()
 		}
 	}
-	_ = c.Ledger.Note("Task %d: gate answered: %s", c.nextTask, text)
+	c.noteLedger("Task %d: gate answered: %s", c.nextTask, text)
 	c.checkpoint("gate_answered", c.nextTask, func(cp *Checkpoint) {
 		cp.GateQuestion = c.pendingQuestion
 		cp.GateAnswer = text
@@ -870,12 +878,12 @@ func (c *Controller) preflightReviewInputs(t TaskSpec, pkgPath, verdictPath stri
 func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult) (taskResult, error) {
 	// Skip per-task review for deterministic tasks under adaptive.
 	if c.Strategy == StrategyAdaptive && res.ExecType == ExecDeterministic {
-		_ = c.Ledger.Note("Task %d: review skipped (deterministic execution)", t.N)
+		c.noteLedger("Task %d: review skipped (deterministic execution)", t.N)
 		return res, nil
 	}
 	// Skip per-task review entirely under strict.
 	if c.Strategy == StrategyStrict {
-		_ = c.Ledger.Note("Task %d: review skipped (strict strategy)", t.N)
+		c.noteLedger("Task %d: review skipped (strict strategy)", t.N)
 		return res, nil
 	}
 
@@ -1037,7 +1045,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			return err
 		}
 		c.Worktree = wt
-		_ = c.Ledger.Note("Run started on branch %s at %s", wt.Branch, wt.Path)
+		c.noteLedger("Run started on branch %s at %s", wt.Branch, wt.Path)
 	}
 	// Bind the dispatcher to the run's isolation context now that the
 	// worktree is known: each dispatch builds a fresh registry rooted at the
@@ -1111,7 +1119,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 	if err := c.RunStore.AcquireLock(newLock()); err != nil {
 		if l, ok, _ := c.RunStore.Lock(); ok && l.RunID != c.runID {
-			_ = c.Ledger.Note("Taking over stale lock from run %s (pid %d)", l.RunID, l.PID)
+			c.noteLedger("Taking over stale lock from run %s (pid %d)", l.RunID, l.PID)
 			if err := c.RunStore.TakeoverLock(newLock()); err != nil {
 				return err
 			}
@@ -1138,7 +1146,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		if !ok || head == "" {
 			delete(done, taskN)
 			_ = c.Ledger.MarkIncomplete(taskN)
-			_ = c.Ledger.Note("Task %d: marked incomplete (no commit recorded)", taskN)
+			c.noteLedger("Task %d: marked incomplete (no commit recorded)", taskN)
 			continue
 		}
 		// LogOneline(dir, "<sha>^..<sha>") returns the commit's line when
@@ -1155,7 +1163,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 		delete(done, taskN)
 		_ = c.Ledger.MarkIncomplete(taskN)
-		_ = c.Ledger.Note("Task %d: marked incomplete (commit %s not found)", taskN, head)
+		c.noteLedger("Task %d: marked incomplete (commit %s not found)", taskN, head)
 	}
 	// Recovery: replay checkpoints and reconcile with Git.
 	if c.RunStore != nil {
@@ -1281,7 +1289,7 @@ func (c *Controller) renderBranchReviewPrompt(ctx context.Context, rng string, m
 func (c *Controller) branchReview(ctx context.Context) error {
 	// Strict strategy promises zero model calls: no branch review.
 	if c.Strategy == StrategyStrict {
-		_ = c.Ledger.Note("Branch review skipped (strict strategy)")
+		c.noteLedger("Branch review skipped (strict strategy)")
 		return nil
 	}
 	dir := c.workDir()
@@ -1308,7 +1316,7 @@ func (c *Controller) branchReview(ctx context.Context) error {
 		return fmt.Errorf("pipeline: branch review: %w", err)
 	}
 	if review.Clean() {
-		_ = c.Ledger.Note("Branch review clean (%s)", rng)
+		c.noteLedger("Branch review clean (%s)", rng)
 		c.checkpoint("branch_review_finished", 0, nil)
 		return nil
 	}
@@ -1392,12 +1400,12 @@ func (c *Controller) branchReview(ctx context.Context) error {
 		return fmt.Errorf("pipeline: branch re-review: %w", err)
 	}
 	if review.Clean() {
-		_ = c.Ledger.Note("Branch review clean after one fix (%s)", rng)
+		c.noteLedger("Branch review clean after one fix (%s)", rng)
 		c.checkpoint("branch_review_finished", 0, nil)
 		return nil
 	}
 	for _, f := range review.Blocking() {
-		_ = c.Ledger.Note("Branch review unresolved: [%s] %s", f.Severity, f.Text)
+		c.noteLedger("Branch review unresolved: [%s] %s", f.Severity, f.Text)
 	}
 	return fmt.Errorf("pipeline: branch review still reports %d blocking findings; see %s", len(review.Blocking()), c.Paths.BranchPackage())
 }

@@ -35,6 +35,32 @@ func TestRunTaskDeterministicNilRunner(t *testing.T) {
 	}
 }
 
+// TestLedgerErrorsAreLogged verifies that a ledger write failure is logged
+// as a warning rather than silently discarded.
+func TestLedgerErrorsAreLogged(t *testing.T) {
+	// Capture slog output.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	oldDefault := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(oldDefault)
+
+	// A ledger whose path is a directory cannot be opened for append, so
+	// Note returns an error.
+	c := &Controller{
+		Ledger: Ledger{Path: t.TempDir()},
+	}
+	c.noteLedger("test entry %d", 42)
+
+	output := buf.String()
+	if !strings.Contains(output, "ledger note failed") {
+		t.Fatalf("expected 'ledger note failed' in log output, got: %s", output)
+	}
+	if !strings.Contains(output, "pipeline ledger: open") {
+		t.Fatalf("expected ledger open error in log output, got: %s", output)
+	}
+}
+
 // reportPathRe matches the report-contract line in an implementer or fixer
 // prompt, capturing the absolute path the subagent is told to write to.
 var reportPathRe = regexp.MustCompile(`Write your full report to (\S+)`)

@@ -113,6 +113,12 @@ func recoverSendOnClosed(topic string) {
 	if r == nil {
 		return
 	}
+	// Go does not provide a typed panic for "send on closed channel" —
+	// the runtime panics with a plain string, not an error type, so we
+	// cannot type-assert or errors.As our way to identification. String
+	// matching against the runtime's panic message is the only option
+	// available without parsing the panic stack. This is a known Go
+	// limitation; see https://go.dev/ref/spec#Handling_panics.
 	if err, ok := r.(error); ok && strings.Contains(err.Error(), "send on closed channel") {
 		slog.Default().Debug("publish raced subscription close; event dropped", "topic", topic)
 		return

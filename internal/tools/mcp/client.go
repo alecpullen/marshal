@@ -91,7 +91,12 @@ func (c *Client) buildChildEnv() []string {
 }
 
 func (c *Client) Start(ctx context.Context) error {
-	c.cmd = exec.CommandContext(ctx, c.Command, c.Args...)
+	// Use exec.Command (not exec.CommandContext) so the child process is
+	// NOT killed when ctx is cancelled. The ctx is used only for the
+	// initialize handshake below (which should time out on cancel); the
+	// child process lifecycle is managed by Close(). This decouples the
+	// MCP server's lifetime from the caller's context (TOOLS-MOD-F5).
+	c.cmd = exec.Command(c.Command, c.Args...)
 	c.cmd.Env = c.buildChildEnv()
 
 	stdin, err := c.cmd.StdinPipe()

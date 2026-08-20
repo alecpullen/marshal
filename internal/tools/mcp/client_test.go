@@ -9,9 +9,52 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// TestClientStartContextCancelDoesNotKillChild verifies that cancelling
+// the Start context after the process has started does not kill the child
+// process (TOOLS-MOD-F5). The child process lifecycle is managed by
+// Close(), not by the Start context. With exec.CommandContext, cancelling
+// the context would kill the child; with exec.Command it survives.
+func TestClientStartContextCancelDoesNotKillChild(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockServerMain()
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client := NewClient("mock", exe, []string{"-test.run=TestClientStartContextCancelDoesNotKillChild"}, []string{"BE_MOCK_SERVER=1"})
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Cancel the context — this must NOT kill the child process.
+	cancel()
+
+	// Give the process a moment to see if it survives.
+	time.Sleep(50 * time.Millisecond)
+
+	// The child should still be alive after context cancellation.
+	if client.cmd == nil || client.cmd.Process == nil {
+		t.Fatal("child process not started")
+	}
+	if err := client.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("child process died after context cancel: %v", err)
+	}
+
+	// Close should succeed — the process is still alive and managed by Close.
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close failed after context cancel: %v", err)
+	}
+}
 
 func TestClientCall(t *testing.T) {
 	if os.Getenv("BE_MOCK_SERVER") == "1" {

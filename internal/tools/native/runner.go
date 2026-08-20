@@ -30,14 +30,14 @@ func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, e
 
 	if splitErr == nil && clsErr == nil && len(argv) > 0 &&
 		cls.Risk != registry.RiskDestructive && isShellFree(req.Command) {
-		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.Dir = req.Dir
 		return runCmd(ctx, cmd, req)
 	}
 
 	// Fall through to shell path: commands with shell metacharacters,
 	// destructive commands, or commands that failed to parse.
-	cmd := shellCommand(ctx, req.Command)
+	cmd := shellCommand(req.Command)
 	cmd.Dir = req.Dir
 	return runCmd(ctx, cmd, req)
 }
@@ -48,19 +48,24 @@ func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, e
 // instead of the last stage's success — otherwise piped build/test
 // failures are invisible to the agent. Falls back to /bin/sh when bash
 // is unavailable.
-func shellCommand(ctx context.Context, command string) *exec.Cmd {
+func shellCommand(command string) *exec.Cmd {
 	if bash, err := exec.LookPath("bash"); err == nil {
-		return exec.CommandContext(ctx, bash, "-o", "pipefail", "-lc", command)
+		return exec.Command(bash, "-o", "pipefail", "-lc", command)
 	}
-	return exec.CommandContext(ctx, "/bin/sh", "-lc", command)
+	return exec.Command("/bin/sh", "-lc", command)
 }
 
 // runCmd wires stdout/stderr observers, starts, waits, and returns the result.
+// It runs the child in its own process group so that cancellation kills the
+// entire tree (including grandchildren), not just the direct child
+// (TOOLS-MOD-F8).
 func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResult, error) {
 	stdout := NewBoundedOutput(OutputLimit(req.MaxOutputBytes), req.Stdout)
 	stderr := NewBoundedOutput(OutputLimit(req.MaxOutputBytes), req.Stderr)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+
+	setProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return CommandResult{}, err
@@ -69,7 +74,18 @@ func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResu
 		req.OnStart(cmd.Process.Pid)
 	}
 
-	err := cmd.Wait()
+	// Context-aware wait: kill the process group on cancel/timeout.
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	var waitErr error
+	select {
+	case waitErr = <-waitCh:
+	case <-ctx.Done():
+		_ = killProcessGroup(cmd)
+		waitErr = <-waitCh
+	}
+
 	result := CommandResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
@@ -80,7 +96,7 @@ func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResu
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}
-	return result, err
+	return result, waitErr
 }
 
 // isShellFree reports whether command s contains shell metacharacters.

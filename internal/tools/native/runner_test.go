@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,37 @@ func TestExecRunnerEnforcesTimeout(t *testing.T) {
 	}
 	if elapsed > 10*time.Second {
 		t.Fatalf("command ran %v — timeout not enforced", elapsed)
+	}
+}
+
+// TestExecRunnerKillsProcessGroup verifies that execRunner kills the
+// entire process group on context cancellation, not just the direct child
+// (TOOLS-MOD-F8). A grandchild process (sleep 30) should be killed when
+// the context is cancelled.
+func TestExecRunnerKillsProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are unix-only")
+	}
+	if testing.Short() {
+		t.Skip("process group test requires real process execution")
+	}
+	runner := execRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	dir := t.TempDir()
+
+	start := time.Now()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	_, _ = runner.Run(ctx, CommandRequest{
+		Command: `( sleep 30 ) & echo started; wait`,
+		Dir:     dir,
+	})
+
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("execRunner did not kill process group; elapsed = %v", elapsed)
 	}
 }
 

@@ -128,6 +128,15 @@ func recoverSendOnClosed(topic string) {
 }
 
 // sendBestEffort is for non-terminal subscribers: drop on overflow.
+//
+// The drop-head path has a benign TOCTOU race: between checking the
+// channel length (via the non-blocking receive in the second select)
+// and the retry send, another goroutine may add or remove an event.
+// This means we might drop one extra event or keep one extra event
+// under concurrent access. This is acceptable for non-terminal
+// events — the contract is best-effort delivery, not exact ordering —
+// and the alternative (holding a lock across the drop+send) would
+// serialize all publishers for a single slow subscriber.
 func sendBestEffort[T any](s *subscription[T], ev Event[T]) {
 	if !s.enter() {
 		return

@@ -31,6 +31,29 @@ func backendCases(t *testing.T) []struct {
 	}
 }
 
+// TestResolveConfinedDirVerifiesExists verifies that resolveConfinedDir
+// returns an error when the directory doesn't exist (TOOLS-MIN-F24).
+func TestResolveConfinedDirVerifiesExists(t *testing.T) {
+	nonexistent := filepath.Join(t.TempDir(), "does-not-exist")
+	_, err := resolveConfinedDir(nonexistent)
+	if err == nil {
+		t.Fatal("expected error for non-existent directory")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected error to mention 'does not exist', got: %v", err)
+	}
+
+	// An existing directory resolves fine.
+	existing := t.TempDir()
+	abs, err := resolveConfinedDir(existing)
+	if err != nil {
+		t.Fatalf("resolveConfinedDir on existing dir: %v", err)
+	}
+	if abs != existing {
+		t.Errorf("resolveConfinedDir = %q, want %q", abs, existing)
+	}
+}
+
 func TestSandboxRunCallsOnStartOnce(t *testing.T) {
 	for _, bc := range backendCases(t) {
 		t.Run(bc.name, func(t *testing.T) {

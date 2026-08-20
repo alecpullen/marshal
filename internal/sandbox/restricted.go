@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -160,6 +161,16 @@ func resolveConfinedDir(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("sandbox: working directory %s does not exist", abs)
+		}
+		return "", fmt.Errorf("sandbox: cannot stat working directory %s: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("sandbox: working directory %s is not a directory", abs)
 	}
 	return abs, nil
 }

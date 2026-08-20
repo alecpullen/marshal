@@ -75,6 +75,12 @@ func (b *AttachBackend) ensureConnected(ctx context.Context) error {
 		// goroutine may still complete and write to ch, but we've already
 		// returned.
 		pw.Stop()
+		// Distinguish parent-context cancellation from our own timeout so
+		// the error message is accurate (e.g. not "timeout after 0s" when
+		// the caller cancelled the context).
+		if ctx.Err() != nil {
+			return fmt.Errorf("connect to browser at %s: %w", b.cdpURL, ctx.Err())
+		}
 		return fmt.Errorf("connect to browser at %s: timeout after %s", b.cdpURL, b.timeout)
 	}
 }

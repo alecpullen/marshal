@@ -654,14 +654,18 @@ func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
 // (TOOLS-MIN-F6).
 func TestContainerCPUTimeoutFallbackWarning(t *testing.T) {
 	err := fmt.Errorf("exit code 127: timeout: not found")
-	if !isTimeoutNotFound(err) {
-		t.Error("expected isTimeoutNotFound to match a 127/not-found error")
+	if !isTimeoutNotFound(127, err) {
+		t.Error("expected isTimeoutNotFound to match a 127 timeout-not-found error")
 	}
-	err2 := fmt.Errorf("some other error")
-	if isTimeoutNotFound(err2) {
-		t.Error("expected isTimeoutNotFound to NOT match a random error")
+	// A 127 exit code from a non-timeout command must NOT match.
+	if isTimeoutNotFound(127, fmt.Errorf("some other error")) {
+		t.Error("expected isTimeoutNotFound to NOT match a 127 error that doesn't mention timeout")
 	}
-	if isTimeoutNotFound(nil) {
+	// A non-127 exit code must not match even if the message mentions timeout.
+	if isTimeoutNotFound(1, fmt.Errorf("timeout: not found")) {
+		t.Error("expected isTimeoutNotFound to NOT match a non-127 exit code")
+	}
+	if isTimeoutNotFound(0, nil) {
 		t.Error("expected isTimeoutNotFound to be false for nil error")
 	}
 }

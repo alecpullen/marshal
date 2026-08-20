@@ -35,6 +35,13 @@ func TestClientStartContextCancelDoesNotKillChild(t *testing.T) {
 	if err := client.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
+	// Ensure the child is killed even if a later assertion fails before
+	// Close() runs, so a failed test doesn't orphan the mock server.
+	defer func() {
+		if client.cmd != nil && client.cmd.Process != nil {
+			_ = client.cmd.Process.Kill()
+		}
+	}()
 
 	// Cancel the context — this must NOT kill the child process.
 	cancel()

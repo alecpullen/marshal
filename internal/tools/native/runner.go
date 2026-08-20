@@ -2,8 +2,10 @@ package native
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/google/shlex"
 
@@ -75,6 +77,7 @@ func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResu
 	}
 
 	// Context-aware wait: kill the process group on cancel/timeout.
+	start := time.Now()
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 
@@ -86,12 +89,21 @@ func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResu
 		waitErr = <-waitCh
 	}
 
+	meta := registry.SandboxMeta{
+		OutputTruncated: stdout.Truncated() || stderr.Truncated(),
+		DurationMS:      time.Since(start).Milliseconds(),
+	}
+	if waitErr != nil && ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			meta.KilledReason = "timeout"
+		} else {
+			meta.KilledReason = "cancelled"
+		}
+	}
 	result := CommandResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
-		Meta: registry.SandboxMeta{
-			OutputTruncated: stdout.Truncated() || stderr.Truncated(),
-		},
+		Meta:   meta,
 	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()

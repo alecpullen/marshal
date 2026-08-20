@@ -71,10 +71,12 @@ func (t *toolSet) shellRunTool() registry.Tool {
 
 func (t *toolSet) testRunTool() registry.Tool {
 	tool := registry.Tool{
-		Name:        "test.run",
-		Description: "Run the configured test command in the workspace.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"additionalProperties":false}`),
-		Risk:        registry.RiskCommand,
+		Name: "test.run",
+		Description: "Run the configured test command in the workspace. " +
+			"Pass a `command` parameter to override the configured test command; " +
+			"the override is subject to the same approval policy.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"additionalProperties":false}`),
+		Risk:   registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[testRunArgs](tool, call.Args)

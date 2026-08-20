@@ -13,6 +13,21 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// TestTestRunToolDocumentsCommandOverride verifies that the test.run tool
+// description documents the command parameter override (TOOLS-MOD-F17).
+func TestTestRunToolDocumentsCommandOverride(t *testing.T) {
+	ts := &toolSet{
+		testCommand: "go test ./...",
+	}
+	tool := ts.testRunTool()
+	if !strings.Contains(tool.Description, "command") {
+		t.Errorf("test.run description should mention the command parameter; got: %s", tool.Description)
+	}
+	if !strings.Contains(tool.Description, "override") {
+		t.Errorf("test.run description should mention that command overrides the configured test command; got: %s", tool.Description)
+	}
+}
+
 func TestShellRunInvokesRunnerForAllowedCommand(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0}}

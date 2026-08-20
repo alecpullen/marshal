@@ -435,7 +435,10 @@ func TestContainerBuildArgs_DropsSecretAndDangerousAllowlistKeys(t *testing.T) {
 		runtimePath: "/usr/bin/docker",
 		envDenySet:  make(map[string]bool),
 	}
-	args := c.buildArgs("echo hello", "alpine:latest", "/workspace")
+	args, err := c.buildArgs("echo hello", "alpine:latest", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] != "-e" {
@@ -477,7 +480,10 @@ func TestContainerBuildArgs_RoutesDestructiveThroughShell(t *testing.T) {
 	}
 
 	// rm -rf /tmp/x is shell-free (no metacharacters) but destructive.
-	args := c.buildArgs("rm -rf /tmp/x", "alpine:latest", "/workspace")
+	args, err := c.buildArgs("rm -rf /tmp/x", "alpine:latest", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 
 	// Verify /bin/sh -lc appears in the args (shell path, not argv path).
 	foundShell := false
@@ -517,7 +523,10 @@ func TestContainerBuildArgs_UsesArgvForNonDestructiveShellFree(t *testing.T) {
 	}
 
 	// echo hello is shell-free and non-destructive — should use argv path.
-	args := c.buildArgs("echo hello", "alpine:latest", "/workspace")
+	args, err := c.buildArgs("echo hello", "alpine:latest", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 
 	// Verify /bin/sh does NOT appear in the args (argv path).
 	for _, a := range args {
@@ -584,7 +593,10 @@ func TestContainerBuildArgs_SetsPipefailInShellPath(t *testing.T) {
 		envDenySet:  make(map[string]bool),
 	}
 
-	args := c.buildArgs("go vet ./... 2>&1 | head -50", "golang:alpine", "/workspace")
+	args, err := c.buildArgs("go vet ./... 2>&1 | head -50", "golang:alpine", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 
 	cmdFound := false
 	for i, a := range args {
@@ -610,7 +622,10 @@ func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
 	}
 	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
 
-	args := c.buildArgs("echo hi", "alpine:latest", "/workspace")
+	args, err := c.buildArgs("echo hi", "alpine:latest", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 
 	// Look for -e PATH=... and -e HOME=... in args
 	foundPath := false
@@ -633,6 +648,24 @@ func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
 	}
 }
 
+// TestContainerBuildArgsShlexError verifies that buildArgs does not fall
+// back to strings.Fields when shlex.Split fails (TOOLS-IMP-F1). A command
+// with an unterminated quote should produce an error, not a silently
+// misparsed argv.
+func TestContainerBuildArgsShlexError(t *testing.T) {
+	cfg := Config{Backend: "container", ContainerImage: "alpine:latest"}
+	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
+	// Unterminated quote: shlex.Split returns an error.
+	badCmd := `echo "unterminated`
+	_, err := c.buildArgs(badCmd, "alpine:latest", "/workspace")
+	if err == nil {
+		t.Fatal("expected error from shlex.Split failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse command") {
+		t.Fatalf("expected error to mention parse command, got: %v", err)
+	}
+}
+
 func TestContainerParseQuotedArgs(t *testing.T) {
 	// Test that buildArgs correctly parses a command with quoted arguments.
 	// strings.Fields would split "git commit -m \"fix: update logic\"" into
@@ -640,7 +673,10 @@ func TestContainerParseQuotedArgs(t *testing.T) {
 	cfg := Config{Backend: "container", ContainerImage: "alpine:latest"}
 	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
 
-	args := c.buildArgs(`git commit -m "fix: update logic"`, "alpine:latest", "/workspace")
+	args, err := c.buildArgs(`git commit -m "fix: update logic"`, "alpine:latest", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 
 	// Find the inner command args (after the image name)
 	imgIdx := -1

@@ -83,7 +83,10 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 		image = defaultContainerImage
 	}
 
-	args := c.buildArgs(req.Command, image, workdir)
+	args, err := c.buildArgs(req.Command, image, workdir)
+	if err != nil {
+		return native.CommandResult{Meta: metaFor(c.Capabilities(), c.cfg)}, err
+	}
 	runCtx, cancel := runWithTimeout(ctx, req)
 	defer cancel()
 
@@ -124,7 +127,7 @@ func (c *Container) buildContainerEnv() []string {
 	return env
 }
 
-func (c *Container) buildArgs(command, image, workdir string) []string {
+func (c *Container) buildArgs(command, image, workdir string) ([]string, error) {
 	args := []string{"run", "--rm"}
 
 	// Network policy. --network none is enforced when AllowNetwork=false;
@@ -213,7 +216,7 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	if shellFree {
 		parsed, err := shlex.Split(command)
 		if err != nil {
-			parsed = strings.Fields(command)
+			return nil, fmt.Errorf("parse command %q: %w", command, err)
 		}
 		inner = parsed
 	} else {
@@ -231,7 +234,7 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 		)
 	}
 	args = append(args, inner...)
-	return args
+	return args, nil
 }
 
 // isShellFree reports whether command s contains no shell metacharacters.

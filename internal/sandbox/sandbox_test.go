@@ -371,7 +371,10 @@ func TestRestrictedWrapCommandNoOpWithoutLimits(t *testing.T) {
 
 func TestContainerBuildArgsNetworkDisabled(t *testing.T) {
 	c := &Container{cfg: Config{AllowNetwork: false, MemoryLimitMB: 1024, CPUSeconds: 2, ContainerImage: "alpine:latest"}, runtime: "docker", runtimePath: "/usr/local/bin/docker"}
-	args := c.buildArgs("go test ./...", "alpine:latest", "/work")
+	args, err := c.buildArgs("go test ./...", "alpine:latest", "/work")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--network none") {
 		t.Fatalf("network none missing: %s", joined)
@@ -407,7 +410,10 @@ func TestContainerBuildArgsNetworkDisabled(t *testing.T) {
 
 func TestContainerBuildArgsNetworkAllowedUsesBridge(t *testing.T) {
 	c := &Container{cfg: Config{AllowNetwork: true, ContainerImage: "alpine:latest"}, runtime: "podman", runtimePath: "/usr/local/bin/podman"}
-	args := c.buildArgs("ping example.com", "alpine:latest", "/work")
+	args, err := c.buildArgs("ping example.com", "alpine:latest", "/work")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--network bridge") {
 		t.Fatalf("network bridge missing when allowed: %s", joined)

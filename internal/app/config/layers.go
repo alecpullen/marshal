@@ -11,6 +11,12 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// legacySubtaskIterationsDefault is the old implicit default for
+// agent.subtask_iterations. When a user config still has this value,
+// the loader treats it as unset (0 = unlimited) so the current default
+// applies instead of remaining pinned to the old value.
+const legacySubtaskIterationsDefault = 12
+
 // Layers is the config at each merge level: built-in defaults, defaults+user
 // config, and the fully merged result (defaults+user+project).
 type Layers struct {
@@ -103,9 +109,10 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	}
 	subtaskSet := (userFile.Agent != nil && userFile.Agent.SubtaskIterations != nil) ||
 		(projectFile.Agent != nil && projectFile.Agent.SubtaskIterations != nil)
-	// 12 was the old implicit default. Treat that legacy value as unset so
-	// existing configs receive the current default instead of remaining pinned.
-	if subtaskSet && cfg.Agent.SubtaskIterations == 12 {
+	// legacySubtaskIterationsDefault (12) was the old implicit default.
+	// Treat that legacy value as unset so existing configs receive the
+	// current default instead of remaining pinned.
+	if subtaskSet && cfg.Agent.SubtaskIterations == legacySubtaskIterationsDefault {
 		cfg.Agent.SubtaskIterations = 0
 		subtaskSet = false
 	}

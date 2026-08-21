@@ -71,6 +71,21 @@ func TestLoadLayersAndProvenance(t *testing.T) {
 	}
 }
 
+func TestLegacySubtaskIterationsDefaultReplaced(t *testing.T) {
+	// The old implicit default was 12. When a user explicitly sets
+	// subtask_iterations=12, the loader treats it as unset (0) so the
+	// current default applies instead.
+	opts := LoadOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()}
+	_, layers, err := LoadWithLayers(opts)
+	if err != nil {
+		t.Fatalf("LoadWithLayers: %v", err)
+	}
+	// Default config should have subtask_iterations = 0 (unset/unlimited)
+	if layers.Merged.Agent.SubtaskIterations != 0 {
+		t.Fatalf("expected SubtaskIterations=0 (unset), got %d", layers.Merged.Agent.SubtaskIterations)
+	}
+}
+
 func TestProvenanceOfScalarComparison(t *testing.T) {
 	def := Default()
 	user := def

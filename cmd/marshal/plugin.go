@@ -282,13 +282,15 @@ func runPluginInstall(ctx context.Context, args []string, stdin io.Reader, stdou
 	return nil
 }
 
-// confirm reads one line and accepts only an explicit affirmative.
+// confirm reads one line and accepts only an explicit affirmative,
+// matched case-insensitively ("y", "yes" in any case).
 func confirm(stdin io.Reader) bool {
 	var line string
 	if _, err := fmt.Fscanln(stdin, &line); err != nil {
 		return false
 	}
-	return line == "y" || line == "Y" || line == "yes"
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
 }
 
 func runPluginUpdate(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {

@@ -429,6 +429,28 @@ func TestAtomicReplaceNoMissingWindow(t *testing.T) {
 	}
 }
 
+func TestConfirmCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"y\n", true},
+		{"Y\n", true},
+		{"yes\n", true},
+		{"Yes\n", true},
+		{"YES\n", true},
+		{"n\n", false},
+		{"no\n", false},
+		{"\n", false},
+	}
+	for _, tt := range tests {
+		got := confirm(strings.NewReader(tt.input))
+		if got != tt.want {
+			t.Errorf("confirm(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestPluginInstallShowsExecutableContent(t *testing.T) {
 	chdirProject(t)
 	repo := initFullPluginRepo(t)

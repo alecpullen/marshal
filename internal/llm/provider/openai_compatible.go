@@ -93,11 +93,6 @@ func (p *OpenAICompatible) setHeaders(req *http.Request) {
 	}
 }
 
-func (p *OpenAICompatible) httpError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &ProviderError{Provider: p.name, StatusCode: resp.StatusCode, Body: string(body)}
-}
-
 // Models lists available models via GET {base_url}/models.
 func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
@@ -112,7 +107,7 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, p.httpError(resp)
+		return nil, HTTPError(p.name, resp)
 	}
 
 	var parsed modelsResponseBody
@@ -164,7 +159,7 @@ func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		return nil, p.httpError(resp)
+		return nil, HTTPError(p.name, resp)
 	}
 
 	events := make(chan schema.ChatEvent)

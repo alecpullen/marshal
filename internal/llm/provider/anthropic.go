@@ -72,11 +72,6 @@ func (p *Anthropic) setHeaders(req *http.Request) {
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 }
 
-func (p *Anthropic) httpError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &ProviderError{Provider: p.name, StatusCode: resp.StatusCode, Body: string(body)}
-}
-
 // --- wire types ---
 
 type anthropicCacheControl struct {
@@ -350,7 +345,7 @@ func (p *Anthropic) Chat(ctx context.Context, req schema.ChatRequest) (<-chan sc
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		return nil, p.httpError(resp)
+		return nil, HTTPError(p.name, resp)
 	}
 
 	events := make(chan schema.ChatEvent)
@@ -559,7 +554,7 @@ func (p *Anthropic) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, p.httpError(resp)
+		return nil, HTTPError(p.name, resp)
 	}
 	var parsed anthropicModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {

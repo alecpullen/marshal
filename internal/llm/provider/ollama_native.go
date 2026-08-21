@@ -77,11 +77,6 @@ func (p *OllamaNative) setHeaders(req *http.Request) {
 	}
 }
 
-func (p *OllamaNative) httpError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &ProviderError{Provider: p.name, StatusCode: resp.StatusCode, Body: string(body)}
-}
-
 // ollamaConnHint appends a startup hint when the server is unreachable —
 // the common case for a local Ollama provider.
 func (p *OllamaNative) connHint(err error) error {
@@ -288,7 +283,7 @@ func (p *OllamaNative) Chat(ctx context.Context, req schema.ChatRequest) (<-chan
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		return nil, p.httpError(resp)
+		return nil, HTTPError(p.name, resp)
 	}
 
 	events := make(chan schema.ChatEvent)
@@ -508,7 +503,7 @@ func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, p.httpError(resp)
+		return nil, HTTPError(p.name, resp)
 	}
 	var parsed ollamaTagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {

@@ -1,6 +1,9 @@
 package provider
 
 import (
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"marshal/internal/app/config"
@@ -27,5 +30,27 @@ func TestResolveAPIKey(t *testing.T) {
 	k, err = ResolveAPIKey(config.ProviderConfig{})
 	if err != nil || k != "" {
 		t.Fatalf("no key: got (%q, %v), want (\"\", nil)", k, err)
+	}
+}
+
+func TestHTTPError(t *testing.T) {
+	body := `{"error": "not found"}`
+	resp := &http.Response{
+		StatusCode: 404,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	err := HTTPError("test-provider", resp)
+	pe, ok := err.(*ProviderError)
+	if !ok {
+		t.Fatalf("expected *ProviderError, got %T", err)
+	}
+	if pe.Provider != "test-provider" {
+		t.Errorf("Provider = %q, want test-provider", pe.Provider)
+	}
+	if pe.StatusCode != 404 {
+		t.Errorf("StatusCode = %d, want 404", pe.StatusCode)
+	}
+	if !strings.Contains(pe.Body, "not found") {
+		t.Errorf("Body = %q, want to contain 'not found'", pe.Body)
 	}
 }

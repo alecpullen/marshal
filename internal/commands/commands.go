@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -651,6 +652,30 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					return Text("Export failed: path escapes the working directory")
 				}
 				path := filepath.Join(state.WorkingDir, cleaned)
+				// Resolve symlinks to prevent escapes via symlinked paths.
+				// If the file doesn't exist yet (export creates it), resolve
+				// the parent directory instead.
+				if resolved, err := filepath.EvalSymlinks(path); err == nil {
+					path = resolved
+				} else if !os.IsNotExist(err) {
+					// Other errors (permission denied, etc.) — fail safely.
+					return Text("Export failed: cannot resolve path: " + err.Error())
+				} else {
+					// File doesn't exist — resolve the parent directory.
+					parentResolved, err := filepath.EvalSymlinks(filepath.Dir(path))
+					if err != nil {
+						return Text("Export failed: cannot resolve parent directory: " + err.Error())
+					}
+					path = filepath.Join(parentResolved, filepath.Base(path))
+				}
+				// Verify the resolved path is still within the working directory.
+				wdResolved, err := filepath.EvalSymlinks(state.WorkingDir)
+				if err != nil {
+					wdResolved = state.WorkingDir
+				}
+				if !strings.HasPrefix(path, wdResolved+string(filepath.Separator)) && path != wdResolved {
+					return Text("Export failed: path escapes the working directory via symlink")
+				}
 				redactOn := state.Config.Privacy.RedactSecrets
 				if err := export.Write(state, path, redactOn); err != nil {
 					return Text("Export failed: " + err.Error())

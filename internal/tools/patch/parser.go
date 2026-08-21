@@ -2,6 +2,7 @@ package patch
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -165,6 +166,14 @@ func ParseRepairing(proposal string) (Result, error) {
 		}
 		if replaceMarkerRe.MatchString(trimmed) && inReplace {
 			if currentPath == "" {
+				// Orphan chunk — no File: header preceded this block. This is
+				// the reachable drop point for empty-path chunks (the guard
+				// inside commitChunk is unreachable via ParseRepairing).
+				preview := strings.Join(searchBuffer, "\n")
+				if len(preview) > 80 {
+					preview = preview[:80]
+				}
+				slog.Warn("dropped patch chunk with no File: header", "preview", preview)
 				return Result{}, fmt.Errorf("patch: chunk has no File: header before line %q", line)
 			}
 			inReplace = false

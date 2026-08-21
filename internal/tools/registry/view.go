@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -115,7 +116,9 @@ func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
 		var args struct {
 			Path string `json:"path"`
 		}
-		_ = json.Unmarshal(call.Args, &args)
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return ToolResult{}, fmt.Errorf("file.write in fallback scope could not parse arguments: %w", err)
+		}
 		cleaned := cleanScopePath(args.Path)
 		if !pathInAllowlist(cleaned, allowed) {
 			return ToolResult{}, fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", args.Path)
@@ -132,7 +135,9 @@ func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
 		var args struct {
 			Patch string `json:"patch"`
 		}
-		_ = json.Unmarshal(call.Args, &args)
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			slog.Warn("failed to parse file.write_patch args", "tool", "file.write_patch", "error", err)
+		}
 		res, err := patch.ParseRepairing(args.Patch)
 		if err != nil || len(res.Patches) == 0 {
 			return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope requires a non-empty patch inside the declared allowlist")
@@ -155,11 +160,21 @@ func pathInAllowlist(path string, allowed map[string]bool) bool {
 	if len(allowed) == 0 {
 		return false
 	}
-	if allowed[path] {
+	// Clean the path to normalize "//" → "/" (handles root="/" edge case).
+	cleaned := filepath.Clean(path)
+	if allowed[cleaned] {
 		return true
 	}
 	for root := range allowed {
-		if strings.HasPrefix(path, root+"/") {
+		// Preserve the separator boundary: root "/" must match "/foo" but
+		// not a bare sibling prefix. Trimming the trailing slash then
+		// re-appending "/" keeps the descendant check exact while turning
+		// the root="/" prefix "//" into "/".
+		root = strings.TrimSuffix(root, "/")
+		if cleaned == root {
+			return true
+		}
+		if strings.HasPrefix(cleaned, root+"/") {
 			return true
 		}
 	}

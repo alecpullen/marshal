@@ -187,6 +187,12 @@ func hasFlagInArgs(args []string, names ...string) bool {
 // package managers), or "" if it does not. Checked before the destructive
 // switch: the two tiers never overlap (environment commands touch global
 // state; destructive commands destroy workspace files).
+//
+// Env-mutation detection intentionally runs after user allow rules in the
+// policy evaluation pipeline (see evaluateMCP and evaluateSubjects). User-
+// allowed commands are trusted: if the user explicitly allows "npm install",
+// the environment classification is informational, not a gate. The ordering
+// ensures user trust takes priority over heuristic risk detection.
 func classifyEnvironment(name string, args []string) string {
 	switch name {
 	case "go":

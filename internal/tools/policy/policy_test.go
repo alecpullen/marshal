@@ -1091,3 +1091,26 @@ func TestNonEnvironmentCommandStillAutoApproves(t *testing.T) {
 		t.Fatalf("workspace-local go clean in auto mode = %s, want allow", dec)
 	}
 }
+
+func TestEvaluateMCPDeterministicSameSeverity(t *testing.T) {
+	// Two patterns of the same severity (Allow) that both match the tool name.
+	// The result must be deterministic regardless of map iteration order.
+	cfg := &config.Config{
+		MCP: config.MCPConfig{
+			Policies: map[string]string{
+				"mcp.*":   "allow",
+				"mcp.z-*": "allow",
+			},
+		},
+	}
+
+	var firstReason string
+	for i := 0; i < 1000; i++ {
+		_, reason := evaluateMCP(cfg, nil, "mcp.z-foo", nil)
+		if i == 0 {
+			firstReason = reason
+		} else if reason != firstReason {
+			t.Fatalf("non-deterministic: iteration %d got %q, want %q (first)", i, reason, firstReason)
+		}
+	}
+}

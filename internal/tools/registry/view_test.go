@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -390,5 +391,34 @@ func TestFallbackWriterViewRejectsEmptyAllowlist(t *testing.T) {
 		Args: json.RawMessage(`{"patch":"File: anything.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`),
 	}); err == nil {
 		t.Fatal("empty allowlist must reject every write; got no error")
+	}
+}
+
+func TestPathInAllowlistRootSlash(t *testing.T) {
+	// When root is "/", the joined path should normalize to "/" not "//".
+	allowed := map[string]bool{"/": true}
+	if !pathInAllowlist("/foo/bar", allowed) {
+		t.Error("pathInAllowlist with root=/ should match /foo/bar")
+	}
+}
+
+func TestFallbackWriterFileWriteToolRejectsUnmarshalError(t *testing.T) {
+	allowed := map[string]bool{"/workspace": true}
+	tool := Tool{
+		Name: "file.write",
+		Handler: func(ctx context.Context, call ToolCall) (ToolResult, error) {
+			return ToolResult{Summary: "ok"}, nil
+		},
+	}
+
+	wrapped := fallbackWriterFileWriteTool(tool, allowed)
+	// Pass invalid JSON — the handler should return a parse error instead
+	// of falling through to an empty-path allowlist rejection.
+	_, err := wrapped.Handler(context.Background(), ToolCall{Args: []byte("{invalid json")})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "could not parse arguments") {
+		t.Errorf("expected parse error, got: %v", err)
 	}
 }

@@ -72,6 +72,10 @@ func parseFrontmatter(raw string) (Skill, error) {
 	// Support both TOML (+++) and YAML (---) frontmatter delimiters.
 	// YAML is common in third-party skill suites (e.g. github.com/obra/superpowers).
 
+	// Normalize CRLF to LF so delimiter detection works for both line
+	// endings.
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+
 	const (
 		tomlDelimiter = "+++\n"
 		yamlDelimiter = "---\n"
@@ -82,9 +86,6 @@ func parseFrontmatter(raw string) (Skill, error) {
 		return parseTOMLFrontmatter(raw, tomlDelimiter)
 	case strings.HasPrefix(raw, yamlDelimiter):
 		return parseYAMLFrontmatter(raw, yamlDelimiter)
-	case strings.HasPrefix(raw, "---\r"):
-		// YAML with CRLF line endings.
-		return parseYAMLFrontmatter(raw, "---\r")
 	default:
 		return Skill{}, fmt.Errorf("skill file must start with +++ (TOML) or --- (YAML) delimiter")
 	}

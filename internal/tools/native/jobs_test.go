@@ -742,3 +742,19 @@ func waitForStatus(t *testing.T, jm *JobManager, id string, statusWant JobStatus
 		}
 	}
 }
+
+func TestJobManagerStartRejectsCancelledManagerCtx(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	runner := newFakeRunner()
+	jm := NewJobManager(parentCtx, runner, t.TempDir(), 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	// Cancel the parent context (which cancels managerCtx).
+	parentCancel()
+
+	// Use a fresh call context that is NOT cancelled.
+	_, err := jm.Start(context.Background(), "echo hello", 0)
+	if err == nil {
+		t.Fatal("expected error when managerCtx is cancelled, got nil")
+	}
+}

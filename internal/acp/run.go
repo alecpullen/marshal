@@ -302,7 +302,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 // production dependencies, serves until the connection closes, then
 // performs bounded cleanup.
 func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
-	log := logging.New(stderr, acpLogLevel())
+	log := logging.New(stderr, acpLogLevel(), false)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("acp: find home directory: %w", err)

@@ -514,7 +514,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	} else {
 		logFile = nil
 	}
-	logger := logging.New(logWriter, slog.LevelInfo)
+	logger := logging.New(logWriter, slog.LevelInfo, false)
 
 	globalSkillsDir := filepath.Join(config.UserDir(homeDir), "skills")
 	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")

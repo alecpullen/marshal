@@ -150,6 +150,14 @@ func TestGitignoreNegation(t *testing.T) {
 	}
 }
 
+func TestMatchPatternReturnsErrorOnMalformedPattern(t *testing.T) {
+	p := gitignorePattern{segments: []string{"["}, anchored: true}
+	_, err := matchPattern(p, "foo")
+	if err == nil {
+		t.Fatal("expected error for malformed pattern '['")
+	}
+}
+
 func TestGitignoreMiddleSlashPattern(t *testing.T) {
 	g, err := ParseGitignore("foo/bar\n")
 	if err != nil {

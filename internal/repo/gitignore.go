@@ -3,6 +3,7 @@ package repo
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,7 +97,12 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 			matched := false
 			for i := 1; i <= end; i++ {
 				prefix := strings.Join(pathSegments[:i], "/")
-				if matchPattern(p, prefix) {
+				ok, err := matchPattern(p, prefix)
+				if err != nil {
+					slog.Warn("gitignore pattern error", "error", err, "path", path)
+					continue
+				}
+				if ok {
 					matched = true
 					break
 				}
@@ -106,14 +112,19 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 			}
 			continue
 		}
-		if matchPattern(p, path) {
+		ok, err := matchPattern(p, path)
+		if err != nil {
+			slog.Warn("gitignore pattern error", "error", err, "path", path)
+			continue
+		}
+		if ok {
 			ignored = !p.negate
 		}
 	}
 	return ignored
 }
 
-func matchPattern(p gitignorePattern, path string) bool {
+func matchPattern(p gitignorePattern, path string) (bool, error) {
 	pathSegments := strings.Split(path, "/")
 	starts := []int{0}
 	if !p.anchored {
@@ -127,14 +138,18 @@ func matchPattern(p gitignorePattern, path string) bool {
 		}
 		match := true
 		for i, seg := range p.segments {
-			if matched, _ := filepath.Match(seg, pathSegments[start+i]); !matched {
+			matched, err := filepath.Match(seg, pathSegments[start+i])
+			if err != nil {
+				return false, fmt.Errorf("gitignore pattern %q: %w", seg, err)
+			}
+			if !matched {
 				match = false
 				break
 			}
 		}
 		if match {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

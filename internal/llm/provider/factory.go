@@ -30,7 +30,7 @@ const defaultOllamaKeepAlive = "30m"
 func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool) (Provider, error) {
 	switch pc.Type {
 	case "", "openai_compatible":
-		apiKey, err := resolveAPIKey(pc)
+		apiKey, err := ResolveAPIKey(pc)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
@@ -47,7 +47,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 			LimitsTable:  table,
 		})
 	case "ollama":
-		apiKey, err := resolveAPIKey(pc)
+		apiKey, err := ResolveAPIKey(pc)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
@@ -71,7 +71,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 			LimitsTable:  table,
 		})
 	case "anthropic":
-		apiKey, err := resolveAPIKey(pc)
+		apiKey, err := ResolveAPIKey(pc)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
@@ -109,7 +109,10 @@ func loadLimitsTable(dataDir string, remoteLimitDiscovery bool) *limits.Table {
 	return &table
 }
 
-func resolveAPIKey(pc config.ProviderConfig) (string, error) {
+// ResolveAPIKey returns the effective API key for a provider config: a
+// literal api_key wins over api_key_env; an empty result means no auth,
+// which is normal for local endpoints (Ollama, LM Studio).
+func ResolveAPIKey(pc config.ProviderConfig) (string, error) {
 	if pc.APIKey != "" {
 		return pc.APIKey, nil
 	}

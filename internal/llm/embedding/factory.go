@@ -2,9 +2,9 @@ package embedding
 
 import (
 	"fmt"
-	"os"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/provider"
 )
 
 // NewFromConfig builds an Embedder from a single provider entry and a model
@@ -17,7 +17,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, model string) (Embedde
 	if model == "" {
 		return nil, fmt.Errorf("embedding provider %q: model is required", name)
 	}
-	apiKey, err := resolveAPIKey(pc)
+	apiKey, err := provider.ResolveAPIKey(pc)
 	if err != nil {
 		return nil, fmt.Errorf("embedding provider %q: %w", name, err)
 	}
@@ -33,20 +33,4 @@ func NewFromConfig(name string, pc config.ProviderConfig, model string) (Embedde
 	default:
 		return nil, fmt.Errorf("embedding provider %q: unsupported type %q", name, pc.Type)
 	}
-}
-
-// resolveAPIKey mirrors provider.resolveAPIKey (literal key wins over env
-// lookup; empty is allowed for local endpoints).
-func resolveAPIKey(pc config.ProviderConfig) (string, error) {
-	if pc.APIKey != "" {
-		return pc.APIKey, nil
-	}
-	if pc.APIKeyEnv != "" {
-		v, ok := os.LookupEnv(pc.APIKeyEnv)
-		if !ok || v == "" {
-			return "", fmt.Errorf("environment variable %q (from api_key_env) is not set", pc.APIKeyEnv)
-		}
-		return v, nil
-	}
-	return "", nil
 }

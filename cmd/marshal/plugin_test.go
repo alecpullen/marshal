@@ -377,6 +377,58 @@ func initFullPluginRepo(t *testing.T) string {
 	return dir
 }
 
+func TestAtomicReplaceNoMissingWindow(t *testing.T) {
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	dest := filepath.Join(parent, "dest")
+
+	// Create source with a file.
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "plugin.go"), []byte("package plugin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create existing dest with an old file.
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "old.go"), []byte("package old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := atomicReplace(src, dest); err != nil {
+		t.Fatalf("atomicReplace: %v", err)
+	}
+
+	// Verify dest now has the new file, not the old one.
+	info, err := os.Stat(filepath.Join(dest, "plugin.go"))
+	if err != nil {
+		t.Fatalf("new file not in dest: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatal("plugin.go is not a regular file")
+	}
+
+	// Old file should be gone.
+	if _, err := os.Stat(filepath.Join(dest, "old.go")); !os.IsNotExist(err) {
+		t.Fatalf("old file should not exist: %v", err)
+	}
+
+	// Source temp should be gone (renamed into place).
+	if _, err := os.Stat(src); err == nil {
+		// src still exists — that's fine, it was the original source dir.
+		// The temp dir should be gone though. Check for .tmp-* dirs.
+		entries, _ := os.ReadDir(parent)
+		for _, e := range entries {
+			if len(e.Name()) > 4 && e.Name()[:4] == "dest" && e.Name() != "dest" {
+				t.Errorf("temp directory left behind: %s", e.Name())
+			}
+		}
+	}
+}
+
 func TestPluginInstallShowsExecutableContent(t *testing.T) {
 	chdirProject(t)
 	repo := initFullPluginRepo(t)

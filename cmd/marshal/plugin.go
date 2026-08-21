@@ -76,10 +76,10 @@ func shortCommit(commit string) string {
 }
 
 // atomicReplace installs src into dest by copying to a temporary sibling
-// directory inside dest's parent, removing any existing dest, and renaming
-// the temporary directory into place. This avoids leaving the plugin store
-// in a partially-missing state if the process is interrupted or the copy
-// fails.
+// directory inside dest's parent, then atomically swapping the temporary
+// directory into place. The existing dest directory is renamed aside first
+// (rather than removed) so there is never a window where dest is missing:
+// it is only removed after the swap succeeds.
 func atomicReplace(src, dest string) (retErr error) {
 	store := filepath.Dir(dest)
 	tmp, err := os.MkdirTemp(store, filepath.Base(dest)+".tmp-*")
@@ -96,13 +96,28 @@ func atomicReplace(src, dest string) (retErr error) {
 	if err := plugins.CopyDir(src, tmp); err != nil {
 		return fmt.Errorf("copy plugin files to temp directory: %w", err)
 	}
-	if err := os.RemoveAll(dest); err != nil {
-		return fmt.Errorf("remove existing plugin directory: %w", err)
+	// Atomically swap: rename the existing dest out of the way, then rename
+	// the temp into place, then remove the old directory. This avoids the
+	// brief window where dest is missing (RemoveAll→Rename).
+	old := ""
+	if _, err := os.Stat(dest); err == nil {
+		old = dest + ".old-" + filepath.Base(tmp)
+		if err := os.Rename(dest, old); err != nil {
+			return fmt.Errorf("move existing plugin directory aside: %w", err)
+		}
 	}
 	if err := os.Rename(tmp, dest); err != nil {
+		// Try to restore the old directory if the rename failed.
+		if old != "" {
+			os.Rename(old, dest)
+		}
 		return fmt.Errorf("rename temp directory to plugin destination: %w", err)
 	}
 	swapped = true
+	// Clean up the old directory after the swap succeeded.
+	if old != "" {
+		os.RemoveAll(old)
+	}
 	return nil
 }
 

@@ -148,17 +148,32 @@ func (l Layers) ProvenanceOf(dottedPath string) Provenance {
 	}
 	user, _ := LookupPath(l.User, dottedPath)
 	def, _ := LookupPath(l.Default, dottedPath)
-	if !reflect.DeepEqual(merged, user) {
+	if !valuesEqual(merged, user) {
 		p := Provenance{SetBy: LayerProject, Overrides: LayerDefault}
-		if !reflect.DeepEqual(user, def) {
+		if !valuesEqual(user, def) {
 			p.Overrides = LayerUser
 		}
 		return p
 	}
-	if !reflect.DeepEqual(user, def) {
+	if !valuesEqual(user, def) {
 		return Provenance{SetBy: LayerUser, Overrides: LayerDefault}
 	}
 	return Provenance{SetBy: LayerDefault, Overrides: LayerDefault}
+}
+
+// valuesEqual compares two any values. For scalars (string, int, bool,
+// float64), it uses direct == comparison which is exact and avoids
+// reflect.DeepEqual's overhead and fragility with numeric type mismatches.
+// For slices, maps, and other complex types, it falls back to
+// reflect.DeepEqual, which is the correct tool for deep structural
+// comparison.
+func valuesEqual(a, b any) bool {
+	switch a.(type) {
+	case string, int, bool, float64:
+		return a == b
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // LookupPath walks cfg by dotted TOML tags ("tools.shell.allow_network"),

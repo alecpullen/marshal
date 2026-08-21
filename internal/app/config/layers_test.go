@@ -71,6 +71,18 @@ func TestLoadLayersAndProvenance(t *testing.T) {
 	}
 }
 
+func TestProvenanceOfScalarComparison(t *testing.T) {
+	def := Default()
+	user := def
+	// Change a scalar field in the user layer
+	user.Agent.MaxToolIterations = 999
+	layers := Layers{Default: def, User: user, Merged: user}
+	p := layers.ProvenanceOf("agent.max_tool_iterations")
+	if p.SetBy != LayerUser {
+		t.Fatalf("expected SetBy=LayerUser, got %s", p.SetBy)
+	}
+}
+
 func TestProvenanceReportsOverriddenLayer(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

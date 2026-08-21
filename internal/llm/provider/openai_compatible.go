@@ -33,6 +33,11 @@ type Options struct {
 	// ThinkingBudget is honored only by the native Anthropic backend: token
 	// budget for extended thinking. 0 disables thinking.
 	ThinkingBudget int
+	// ThinkingBudgetMargin is honored only by the native Anthropic
+	// backend: headroom tokens added to the thinking budget when
+	// maxTokens <= budget. 0 = auto (max(2048, maxTokens/4)). -1 = disabled.
+	// Positive values are used directly.
+	ThinkingBudgetMargin int
 }
 
 type OpenAICompatible struct {

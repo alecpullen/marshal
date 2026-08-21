@@ -44,7 +44,7 @@ func TestProviderSuccess(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("Provider err = %v", msg.Err)
@@ -64,7 +64,7 @@ func TestProviderNon200(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for 403 response")
 	}
@@ -72,7 +72,7 @@ func TestProviderNon200(t *testing.T) {
 
 func TestProviderConnectionRefused(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for connection refused")
 	}
@@ -89,7 +89,7 @@ func TestProviderTimeout(t *testing.T) {
 	defer func() { Timeout = old }()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -104,7 +104,7 @@ func TestProviderPreservesModelLimits(t *testing.T) {
 
 	msg := Provider("f", "openai", config.ProviderConfig{
 		Type: "openai_compatible", BaseURL: srv.URL,
-	}, "", false)().(ResultMsg)
+	}, "", false, 0)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("probe: %v", msg.Err)
@@ -140,7 +140,7 @@ func TestProviderFillsLimitsFromOnDiskCache(t *testing.T) {
 
 	msg := Provider("f", "openai", config.ProviderConfig{
 		Type: "openai_compatible", BaseURL: srv.URL,
-	}, dataDir, false)().(ResultMsg)
+	}, dataDir, false, 0)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("probe: %v", msg.Err)

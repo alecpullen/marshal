@@ -51,7 +51,7 @@ func probeAllProviders(s *state, force bool) {
 		if !s.markProbed(name) {
 			continue
 		}
-		s.queueCmd(probe.Provider("discover.profiles."+name, name, pc, s.dataDir, s.cfg.Privacy.RemoteLimitDiscovery))
+		s.queueCmd(probe.Provider("discover.profiles."+name, name, pc, s.dataDir, s.cfg.Privacy.RemoteLimitDiscovery, s.cfg.Agent.ThinkingBudgetMargin))
 	}
 }
 

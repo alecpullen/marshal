@@ -374,6 +374,74 @@ func TestAnthropicChatHTTPError(t *testing.T) {
 	}
 }
 
+func TestAnthropicThinkingBudgetMargin(t *testing.T) {
+	parse := func(t *testing.T, p *Anthropic, req schema.ChatRequest) (budget, maxTokens int, present bool) {
+		t.Helper()
+		body, err := p.buildChatRequestBody(req)
+		if err != nil {
+			t.Fatalf("buildChatRequestBody: %v", err)
+		}
+		var parsed struct {
+			MaxTokens int `json:"max_tokens"`
+			Thinking  *struct {
+				BudgetTokens int `json:"budget_tokens"`
+			} `json:"thinking"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		if parsed.Thinking == nil {
+			return 0, parsed.MaxTokens, false
+		}
+		return parsed.Thinking.BudgetTokens, parsed.MaxTokens, true
+	}
+
+	base := schema.ChatRequest{
+		Model:    "claude-sonnet-4",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	}
+
+	// Explicit margin: budget 4096, margin 8192. With maxTokens unset the
+	// default (8192) is > budget so no bump applies, but with maxTokens set
+	// to the budget it should become budget + margin.
+	p := &Anthropic{name: "test", thinkingBudget: 4096, thinkingBudgetMargin: 8192}
+	req := base
+	req.MaxTokens = ptrInt(4096)
+	budget, maxTokens, present := parse(t, p, req)
+	if !present || budget != 4096 {
+		t.Fatalf("thinking present=%v budget=%d, want present budget 4096", present, budget)
+	}
+	if maxTokens != 4096+8192 {
+		t.Errorf("explicit margin maxTokens = %d, want %d", maxTokens, 4096+8192)
+	}
+
+	// margin=0 (auto): max(2048, maxTokens/4). budget 4096, maxTokens 4096 ->
+	// max(2048, 1024) = 2048, so maxTokens = 4096+2048 = 6144.
+	p2 := &Anthropic{name: "test", thinkingBudget: 4096, thinkingBudgetMargin: 0}
+	req.MaxTokens = ptrInt(4096)
+	b, maxTokens, ok := parse(t, p2, req)
+	if !ok || b != 4096 {
+		t.Fatalf("auto thinking present=%v budget=%d, want present 4096", ok, b)
+	}
+	if maxTokens != 4096+2048 {
+		t.Errorf("auto margin maxTokens = %d, want %d", maxTokens, 4096+2048)
+	}
+
+	// margin=-1 (disabled): maxTokens must not be adjusted.
+	p3 := &Anthropic{name: "test", thinkingBudget: 4096, thinkingBudgetMargin: -1}
+	req = base
+	req.MaxTokens = ptrInt(2048) // less than budget
+	b, maxTokens, ok = parse(t, p3, req)
+	if !ok || b != 4096 {
+		t.Fatalf("disabled thinking present=%v budget=%d, want present 4096", ok, b)
+	}
+	if maxTokens != 2048 {
+		t.Errorf("disabled margin maxTokens = %d, want 2048 (unadjusted)", maxTokens)
+	}
+}
+
+func ptrInt(v int) *int { return &v }
+
 func TestAnthropicThinkingBudgetMapping(t *testing.T) {
 	base := schema.ChatRequest{
 		Model:    "claude-sonnet-4-5",

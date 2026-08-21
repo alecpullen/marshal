@@ -26,12 +26,13 @@ const anthropicDefaultMaxTokens = 8192
 // giving marshal prompt caching, native tool use, and extended thinking —
 // none of which are reachable through the OpenAI-compatible shim.
 type Anthropic struct {
-	name           string
-	baseURL        string
-	apiKey         string
-	httpClient     *http.Client
-	capabilities   schema.ProviderCapabilities
-	thinkingBudget int
+	name                 string
+	baseURL              string
+	apiKey               string
+	httpClient           *http.Client
+	capabilities         schema.ProviderCapabilities
+	thinkingBudget       int
+	thinkingBudgetMargin int
 }
 
 func NewAnthropic(opts Options) (*Anthropic, error) {
@@ -50,12 +51,13 @@ func NewAnthropic(opts Options) (*Anthropic, error) {
 		caps = *opts.Capabilities
 	}
 	return &Anthropic{
-		name:           opts.Name,
-		baseURL:        strings.TrimRight(opts.BaseURL, "/"),
-		apiKey:         opts.APIKey,
-		httpClient:     client,
-		capabilities:   caps,
-		thinkingBudget: opts.ThinkingBudget,
+		name:                 opts.Name,
+		baseURL:              strings.TrimRight(opts.BaseURL, "/"),
+		apiKey:               opts.APIKey,
+		httpClient:           client,
+		capabilities:         caps,
+		thinkingBudget:       opts.ThinkingBudget,
+		thinkingBudgetMargin: opts.ThinkingBudgetMargin,
 	}, nil
 }
 
@@ -285,8 +287,18 @@ func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error)
 		}
 	}
 	if budget > 0 {
-		if maxTokens <= budget {
-			maxTokens = budget + 4096
+		margin := p.thinkingBudgetMargin
+		if margin == 0 {
+			// Auto: max(2048, maxTokens/4).
+			margin = 2048
+			if scaled := maxTokens / 4; scaled > margin {
+				margin = scaled
+			}
+		}
+		if margin > 0 { // -1 means disabled
+			if maxTokens <= budget {
+				maxTokens = budget + margin
+			}
 		}
 		thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
 	}

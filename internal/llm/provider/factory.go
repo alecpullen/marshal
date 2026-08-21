@@ -27,7 +27,12 @@ const defaultOllamaKeepAlive = "30m"
 // remote sources (OpenRouter, LiteLLM) when no usable cache exists. The
 // on-disk cache itself is read whenever dataDir is set — reading it makes
 // no network requests.
-func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool) (Provider, error) {
+//
+// thinkingBudgetMargin is the AgentConfig.ThinkingBudgetMargin value,
+// honored only by the native Anthropic backend. It is threaded separately
+// because NewFromConfig receives a ProviderConfig, which has no access to
+// the [agent] section.
+func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int) (Provider, error) {
 	switch pc.Type {
 	case "", "openai_compatible":
 		apiKey, err := ResolveAPIKey(pc)
@@ -80,11 +85,12 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		}
 		caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false}
 		return NewAnthropic(Options{
-			Name:           name,
-			BaseURL:        pc.BaseURL,
-			APIKey:         apiKey,
-			Capabilities:   &caps,
-			ThinkingBudget: pc.ThinkingBudget,
+			Name:                 name,
+			BaseURL:              pc.BaseURL,
+			APIKey:               apiKey,
+			Capabilities:         &caps,
+			ThinkingBudget:       pc.ThinkingBudget,
+			ThinkingBudgetMargin: thinkingBudgetMargin,
 		})
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)

@@ -306,7 +306,7 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	if !ok {
 		return nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
 	}
-	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery)
+	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery, r.cfg.Agent.ThinkingBudgetMargin)
 	if err != nil {
 		return nil, err
 	}

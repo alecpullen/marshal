@@ -440,7 +440,7 @@ func (m *Model) probeCapabilities(requestID uint64) (tea.Cmd, context.CancelFunc
 	// Capability probing only needs the provider client. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.
-	prov, err := provider.NewFromConfig(m.providerName, m.providerCfg, m.dataDir, probeOnlyLimits)
+	prov, err := provider.NewFromConfig(m.providerName, m.providerCfg, m.dataDir, probeOnlyLimits, m.cfg.Agent.ThinkingBudgetMargin)
 	if err != nil {
 		return nil, nil
 	}
@@ -986,7 +986,7 @@ func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
 }
 
 func (m *Model) runProbe() tea.Cmd {
-	return probe.Provider("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Privacy.RemoteLimitDiscovery)
+	return probe.Provider("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Privacy.RemoteLimitDiscovery, m.cfg.Agent.ThinkingBudgetMargin)
 }
 
 // refreshCmd emits a RefreshMsg naming the providers whose entries the

@@ -23,6 +23,10 @@ func Default() Config {
 		Agent: AgentConfig{
 			ApprovalMode:        "default",
 			MaxTouchedFileBytes: 65536, // 64 KiB
+			// Preserve the long-standing fixed +4096 Anthropic thinking
+			// headroom as the default margin. 0 would switch to the auto
+			// formula, changing behavior for existing setups.
+			ThinkingBudgetMargin: 4096,
 		},
 		Privacy: PrivacyConfig{
 			RemoteProvidersAllowed: false,

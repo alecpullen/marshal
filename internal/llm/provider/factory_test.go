@@ -28,7 +28,7 @@ func TestNewFromConfigUsesLiteralAPIKey(t *testing.T) {
 		BaseURL: server.URL,
 		APIKey:  "literal-key",
 	}
-	p, err := NewFromConfig("test", pc, "", false)
+	p, err := NewFromConfig("test", pc, "", false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestNewFromConfigResolvesAPIKeyEnv(t *testing.T) {
 		BaseURL:   server.URL,
 		APIKeyEnv: "SOME_ENV_VAR",
 	}
-	p, err := NewFromConfig("test", pc, "", false)
+	p, err := NewFromConfig("test", pc, "", false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestNewFromConfigPrefersLiteralAPIKeyOverAPIKeyEnv(t *testing.T) {
 		APIKey:    "literal-key",
 		APIKeyEnv: "SOME_ENV_VAR",
 	}
-	p, err := NewFromConfig("test", pc, "", false)
+	p, err := NewFromConfig("test", pc, "", false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestNewFromConfigErrorsWhenAPIKeyEnvUnset(t *testing.T) {
 		BaseURL:   "http://example.invalid",
 		APIKeyEnv: "DEFINITELY_NOT_SET_ENV_VAR",
 	}
-	_, err := NewFromConfig("test", pc, "", false)
+	_, err := NewFromConfig("test", pc, "", false, 0)
 	if err == nil {
 		t.Fatal("expected NewFromConfig to return an error when api_key_env is unset")
 	}
@@ -144,7 +144,7 @@ func TestNewFromConfigPropagatesToolCallingCapability(t *testing.T) {
 		APIKey:      "literal-key",
 		ToolCalling: true,
 	}
-	p, err := NewFromConfig("test", pc, "", false)
+	p, err := NewFromConfig("test", pc, "", false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestNewFromConfigToolCallingDefaultsToFalse(t *testing.T) {
 		Type:    "openai_compatible",
 		BaseURL: server.URL,
 	}
-	p, err := NewFromConfig("test", pc, "", false)
+	p, err := NewFromConfig("test", pc, "", false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestNewFromConfigErrorsOnUnsupportedProviderType(t *testing.T) {
 		Type:    "native_anthropic",
 		BaseURL: "https://api.anthropic.com",
 	}
-	_, err := NewFromConfig("test", pc, "", false)
+	_, err := NewFromConfig("test", pc, "", false, 0)
 	if err == nil {
 		t.Fatal("expected NewFromConfig to return an error for unsupported provider type")
 	}
@@ -192,7 +192,7 @@ func TestNewFromConfigOllamaNative(t *testing.T) {
 	p, err := NewFromConfig("local", config.ProviderConfig{
 		Type:    "ollama",
 		BaseURL: "http://localhost:11434",
-	}, "", false)
+	}, "", false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestNewFromConfigOllamaNativeExplicitKeepAlive(t *testing.T) {
 		Type:      "ollama",
 		BaseURL:   "http://localhost:11434",
 		KeepAlive: "-1",
-	}, "", false)
+	}, "", false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestNewFromConfigAnthropic(t *testing.T) {
 		BaseURL:        "https://api.anthropic.com",
 		APIKeyEnv:      "MARSHAL_TEST_FACTORY_ANTHROPIC_KEY",
 		ThinkingBudget: 4096,
-	}, "", false)
+	}, "", false, 8192)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -237,6 +237,9 @@ func TestNewFromConfigAnthropic(t *testing.T) {
 	if a.thinkingBudget != 4096 {
 		t.Fatalf("thinkingBudget = %d, want 4096", a.thinkingBudget)
 	}
+	if a.thinkingBudgetMargin != 8192 {
+		t.Fatalf("thinkingBudgetMargin = %d, want 8192", a.thinkingBudgetMargin)
+	}
 	if !a.capabilities.ToolCalling {
 		t.Fatal("anthropic capabilities must advertise ToolCalling")
 	}
@@ -246,7 +249,7 @@ func TestNewFromConfigAnthropicRequiresKey(t *testing.T) {
 	_, err := NewFromConfig("claude", config.ProviderConfig{
 		Type:    "anthropic",
 		BaseURL: "https://api.anthropic.com",
-	}, "", false)
+	}, "", false, 0)
 	if err == nil {
 		t.Fatal("expected error for missing API key, got nil")
 	}
@@ -269,7 +272,7 @@ func TestNewFromConfigReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T) {
 		t.Fatalf("seed limits cache: %v", err)
 	}
 
-	p, err := NewFromConfig("test", config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL}, dataDir, false)
+	p, err := NewFromConfig("test", config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL}, dataDir, false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -306,7 +309,7 @@ func TestNewFromConfigOllamaReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T)
 	p, err := NewFromConfig("ollama", config.ProviderConfig{
 		Type:    "ollama",
 		BaseURL: server.URL,
-	}, dataDir, false)
+	}, dataDir, false, 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}

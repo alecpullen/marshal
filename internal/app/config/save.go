@@ -200,6 +200,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		agent.ParseRepairFeedback = cfg.Agent.ParseRepairFeedback
 	}
 	putKey(&agent.MaxTouchedFileBytes, fileField[int](file.Agent, "MaxTouchedFileBytes"), cfg.Agent.MaxTouchedFileBytes, def.Agent.MaxTouchedFileBytes)
+	putKey(&agent.ThinkingBudgetMargin, fileField[int](file.Agent, "ThinkingBudgetMargin"), cfg.Agent.ThinkingBudgetMargin, def.Agent.ThinkingBudgetMargin)
 	file.Agent = agent
 
 	privacy := &filePrivacy{}

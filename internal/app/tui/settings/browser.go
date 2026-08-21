@@ -34,8 +34,8 @@ const probeOnlyLimits = false
 // Capability probing does not need the limit table (the bulk model probe
 // already populated it), so remote limit-table discovery is always
 // disabled to keep the confirmation screen responsive.
-func probeProviderFor(name string, pc config.ProviderConfig, dataDir string) (provider.Provider, error) {
-	return provider.NewFromConfig(name, pc, dataDir, probeOnlyLimits)
+func probeProviderFor(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int) (provider.Provider, error) {
+	return provider.NewFromConfig(name, pc, dataDir, probeOnlyLimits, thinkingBudgetMargin)
 }
 
 // BrowserOption customizes a BrowserPanel.
@@ -512,7 +512,7 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	// Capability probing only needs the provider client. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.
-	prov, err := probeProviderFor(pending.ProviderName, pc, b.reg.st.dataDir)
+	prov, err := probeProviderFor(pending.ProviderName, pc, b.reg.st.dataDir, b.reg.st.cfg.Agent.ThinkingBudgetMargin)
 	if err != nil {
 		return nil
 	}

@@ -73,6 +73,14 @@ func agentFrame(s *state) *frame {
 				f.Desc = "max sub-agent iterations per task · 0 = unlimited (default)"
 				return f
 			}(),
+			func() *field {
+				f := intField("agent.thinking_budget_margin", "Thinking budget margin",
+					func() int { return s.cfg.Agent.ThinkingBudgetMargin }, 0,
+					func(v int) { s.cfg.Agent.ThinkingBudgetMargin = v })
+				f.TomlPath = "agent.thinking_budget_margin"
+				f.Desc = "Anthropic thinking headroom tokens · 0 = auto (max(2048, max/4)), -1 = disabled"
+				return f
+			}(),
 			{ID: "agent.plan_first", Title: "Plan first", Kind: kindToggle,
 				TomlPath: "agent.plan_first",
 				Desc:     "require a plan step before implementation",

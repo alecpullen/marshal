@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"strings"
 	"testing"
 
 	"marshal/internal/tools/registry"
@@ -254,5 +255,23 @@ No frontmatter here.
 	_, err := parseFrontmatter(raw)
 	if err == nil {
 		t.Fatal("expected error for missing frontmatter delimiter")
+	}
+}
+
+func TestParseFrontmatterTOMLWithCRLF(t *testing.T) {
+	// TOML frontmatter with CRLF line endings.
+	raw := "+++\r\nname = \"my-skill\"\r\ndescription = \"A skill\"\r\n+++\r\n\r\nBody.\r\n"
+	s, err := parseFrontmatter(raw)
+	if err != nil {
+		t.Fatalf("parseFrontmatter with CRLF TOML delimiter: %v", err)
+	}
+	if s.Name != "my-skill" {
+		t.Errorf("name = %q, want %q", s.Name, "my-skill")
+	}
+	if s.Description != "A skill" {
+		t.Errorf("description = %q, want %q", s.Description, "A skill")
+	}
+	if !strings.Contains(s.Body, "Body.") {
+		t.Errorf("body = %q, want it to contain 'Body.'", s.Body)
 	}
 }

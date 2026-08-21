@@ -78,6 +78,13 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 
 // envOr returns the environment variable's value when set and
 // non-empty, else def. An explicitly empty variable means "unset".
+//
+// This is intentional: os.Getenv returns "" for both unset and
+// empty-set variables, so we treat them identically. This means a
+// user cannot override a default with an empty string — they must
+// either set a non-empty value or unset the variable. This prevents
+// accidental empty-string overrides (e.g. from a misconfigured
+// .env file) from silently clearing a default.
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
 		return v

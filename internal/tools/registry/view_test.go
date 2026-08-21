@@ -396,6 +396,14 @@ func TestFallbackWriterViewRejectsEmptyAllowlist(t *testing.T) {
 	}
 }
 
+func TestPathInAllowlistRootSlash(t *testing.T) {
+	// When root is "/", the joined path should normalize to "/" not "//".
+	allowed := map[string]bool{"/": true}
+	if !pathInAllowlist("/foo/bar", allowed) {
+		t.Error("pathInAllowlist with root=/ should match /foo/bar")
+	}
+}
+
 func TestFallbackWriterFileWriteToolLogsUnmarshalError(t *testing.T) {
 	// Capture slog output via a text handler writing to a buffer.
 	var buf bytes.Buffer

@@ -160,11 +160,21 @@ func pathInAllowlist(path string, allowed map[string]bool) bool {
 	if len(allowed) == 0 {
 		return false
 	}
-	if allowed[path] {
+	// Clean the path to normalize "//" → "/" (handles root="/" edge case).
+	cleaned := filepath.Clean(path)
+	if allowed[cleaned] {
 		return true
 	}
 	for root := range allowed {
-		if strings.HasPrefix(path, root+"/") {
+		// Preserve the separator boundary: root "/" must match "/foo" but
+		// not a bare sibling prefix. Trimming the trailing slash then
+		// re-appending "/" keeps the descendant check exact while turning
+		// the root="/" prefix "//" into "/".
+		root = strings.TrimSuffix(root, "/")
+		if cleaned == root {
+			return true
+		}
+		if strings.HasPrefix(cleaned, root+"/") {
 			return true
 		}
 	}

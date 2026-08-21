@@ -54,17 +54,15 @@ func TruncateMiddle(s string, max int) string {
 	if lastSlash := lastRuneIndex(s, '/'); lastSlash >= 0 {
 		basename := s[lastSlash+1:]
 		bnRunes := []rune(basename)
-		if len(bnRunes) < max {
-			// Keep the basename, truncate the prefix.
-			prefixMax := max - 1 - len(bnRunes) // 1 for the "…"
-			if prefixMax > 0 {
-				prefix := []rune(s[:lastSlash])
-				if len(prefix) > prefixMax {
-					prefix = prefix[:prefixMax]
-				}
-				return string(prefix) + "…" + basename
-			}
+		// If the basename fits within max, return just the basename.
+		// No prefix or ellipsis — the basename is the most important part.
+		if len(bnRunes) <= max {
+			return basename
 		}
+		// Basename itself doesn't fit — middle-truncate just the basename.
+		left := (max - 1) / 2
+		right := (max - 1) - left
+		return string(bnRunes[:left]) + "…" + string(bnRunes[len(bnRunes)-right:])
 	}
 	// Fallback: keep roughly half on each side.
 	left := (max - 1) / 2

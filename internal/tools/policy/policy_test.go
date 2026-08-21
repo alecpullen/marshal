@@ -1098,7 +1098,7 @@ func TestEvaluateMCPDeterministicSameSeverity(t *testing.T) {
 	cfg := &config.Config{
 		MCP: config.MCPConfig{
 			Policies: map[string]string{
-				"mcp.*":  "allow",
+				"mcp.*":   "allow",
 				"mcp.z-*": "allow",
 			},
 		},

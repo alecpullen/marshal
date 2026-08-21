@@ -184,6 +184,9 @@ func installSingleFile(source, targetDir, name string) (string, error) {
 	if name == "" {
 		name = skillNameFromPath(source)
 	}
+	if !ValidName(name) {
+		return "", fmt.Errorf("invalid skill name %q", name)
+	}
 	dest := filepath.Join(targetDir, name+".md")
 	data, err := os.ReadFile(source)
 	if err != nil {

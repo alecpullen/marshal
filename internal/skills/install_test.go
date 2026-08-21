@@ -62,6 +62,19 @@ func TestInstallGitRejectsTraversalBundleName(t *testing.T) {
 	}
 }
 
+func TestInstallSingleFileRejectsInvalidName(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "source.md")
+	if err := os.WriteFile(src, []byte("# test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// An invalid name containing a path separator should be rejected.
+	_, err := installSingleFile(src, t.TempDir(), "../escape")
+	if err == nil {
+		t.Fatal("expected error for invalid skill name with path separator")
+	}
+}
+
 func TestLooksLikeGitURL(t *testing.T) {
 	tests := []struct {
 		source string

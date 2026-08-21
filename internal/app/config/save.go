@@ -370,10 +370,12 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 	// Persist provider entries including API keys. This is intentional: the
 	// TUI /settings flow needs to save provider configuration to disk so it
-	// survives restart. The config file lives in the user's config directory
-	// (~/.config/marshal/config.toml) with 0600 permissions. If a user does
-	// not want keys persisted, they should use api_key_env to reference an
-	// environment variable instead of embedding the key directly.
+	// survives restart. Keys are only persisted in the user-global config
+	// (~/.config/marshal/config.toml), which writeUserConfigFile writes with
+	// owner-only 0600 permissions; the project config strips API keys before
+	// persisting. If a user does not want keys persisted, they should use
+	// api_key_env to reference an environment variable instead of embedding
+	// the key directly.
 	if len(cfg.Providers) > 0 {
 		file.Providers = cfg.Providers
 	}

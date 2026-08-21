@@ -170,12 +170,11 @@ func (l Layers) ProvenanceOf(dottedPath string) Provenance {
 	return Provenance{SetBy: LayerDefault, Overrides: LayerDefault}
 }
 
-// valuesEqual compares two any values. For scalars (string, int, bool,
-// float64), it uses direct == comparison which is exact and avoids
-// reflect.DeepEqual's overhead and fragility with numeric type mismatches.
-// For slices, maps, and other complex types, it falls back to
-// reflect.DeepEqual, which is the correct tool for deep structural
-// comparison.
+// valuesEqual compares two any values. For the common scalar types
+// (string, int, bool, float64) it uses direct == comparison, which is exact
+// and avoids reflect.DeepEqual's reflection overhead. Other values —
+// including int64, slices, and maps — fall back to reflect.DeepEqual, which
+// handles deep structural comparison.
 func valuesEqual(a, b any) bool {
 	switch a.(type) {
 	case string, int, bool, float64:

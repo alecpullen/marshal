@@ -84,7 +84,6 @@ func must[T any](raw any) T {
 
 type options struct {
 	now                    func() time.Time
-	configLoader           configLoader
 	configWithLayersLoader func(config.LoadOptions) (config.Config, config.Layers, error)
 	programRunner          ProgramRunner
 	trustResolver          trust.Resolver
@@ -128,7 +127,6 @@ func WithConfigLoader(loader configLoader) Option {
 		if loader == nil {
 			return
 		}
-		opts.configLoader = loader
 		opts.configWithLayersLoader = func(lo config.LoadOptions) (config.Config, config.Layers, error) {
 			cfg, err := loader(lo)
 			if err != nil {
@@ -1367,7 +1365,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 	runOpts := options{
 		now:                    time.Now,
-		configLoader:           config.Load,
 		configWithLayersLoader: config.LoadWithLayers,
 		programRunner:          runProgram,
 	}

@@ -362,7 +362,6 @@ func (rt *Runtime) Close(ctx context.Context) error {
 func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	runOpts := options{
 		now:                    time.Now,
-		configLoader:           config.Load,
 		configWithLayersLoader: config.LoadWithLayers,
 		programRunner:          runProgram,
 	}

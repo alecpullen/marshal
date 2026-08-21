@@ -1,10 +1,14 @@
 // Package catalog holds Marshal's curated, local-friendly table of well-known
 // model context windows and max output tokens. It is a small Go map, never a
-// network fetch (docs/12 F12 R1). Unknown models resolve to (0, 0) so the
-// runner keeps its configured budget rather than guessing.
+// network fetch (docs/12 F12 R1). Unknown models resolve to conservative
+// default specs with a warning so callers still get a usable budget rather
+// than a guessed zero.
 package catalog
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
 
 type entry struct {
 	contextWindow int
@@ -28,16 +32,29 @@ var builtin = map[string]entry{
 	"phi3:14b":              {contextWindow: 128000, maxOutput: 4096},
 }
 
+// Default specs for models not in the catalog. These are conservative
+// values that work with most local models. Users should configure
+// explicit specs in their model preset for accuracy.
+const (
+	defaultContextWindow = 8192
+	defaultMaxOutput     = 4096
+)
+
 // Lookup resolves the context window and max output tokens for a model id.
-// Returns (0, 0) when the model is unknown — callers must treat 0 as
-// "unknown, keep configured budget" and never extrapolate.
+// Unknown models resolve to conservative default specs and log a warning so
+// callers still get a usable budget rather than a zero. An empty model id
+// returns (0, 0) — there is nothing to resolve.
 func Lookup(modelID string) (contextWindow, maxOutput int) {
 	if modelID == "" {
 		return 0, 0
 	}
 	e, ok := builtin[strings.ToLower(modelID)]
 	if !ok {
-		return 0, 0
+		slog.Warn("catalog: model not in catalog, using default specs (configure manually)",
+			"model", modelID,
+			"default_context_window", defaultContextWindow,
+			"default_max_output", defaultMaxOutput)
+		return defaultContextWindow, defaultMaxOutput
 	}
 	return e.contextWindow, e.maxOutput
 }

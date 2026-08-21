@@ -82,14 +82,16 @@ func Resolve(discovered []schema.ModelInfo, modelID string) Limits {
 }
 
 // WithPreset prefers context/output figures already saved for the same
-// provider+model over fresh lookup zeros, so re-picking a model whose
-// limits come back unknown does not show "unknown" when a prior
-// confirmation already set them. Fields resolve independently.
+// provider+model over a catalog guess or unknown, so re-picking a model
+// whose limits came back unknown does not show a guessed default (or
+// "unknown") when a prior confirmation already set them. A non-zero
+// fetched/probed/edited figure is authoritative and is not overwritten.
+// Fields resolve independently.
 func (l Limits) WithPreset(presetContext, presetMaxOutput int) Limits {
-	if l.ContextWindow == 0 && presetContext != 0 {
+	if presetContext != 0 && (l.ContextWindow == 0 || l.ContextSource == SourceCatalog) {
 		l.ContextWindow, l.ContextSource = presetContext, SourcePreset
 	}
-	if l.MaxOutputTokens == 0 && presetMaxOutput != 0 {
+	if presetMaxOutput != 0 && (l.MaxOutputTokens == 0 || l.OutputSource == SourceCatalog) {
 		l.MaxOutputTokens, l.OutputSource = presetMaxOutput, SourcePreset
 	}
 	return l

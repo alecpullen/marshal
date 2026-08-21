@@ -778,7 +778,7 @@ func TestRunPropagatesResolvedLimitsToRequests(t *testing.T) {
 	}
 }
 
-func TestRunLeavesLimitsUnsetWhenUnknown(t *testing.T) {
+func TestRunFallsBackToCatalogDefaultsWhenUnknown(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
 	}}
@@ -803,10 +803,11 @@ func TestRunLeavesLimitsUnsetWhenUnknown(t *testing.T) {
 		t.Fatal("no requests captured")
 	}
 	req := p.Requests[0]
-	if req.MaxTokens != nil {
-		t.Fatalf("MaxTokens = %v, want nil", req.MaxTokens)
+	// Unknown models fall back to the catalog's conservative defaults.
+	if req.MaxTokens == nil || *req.MaxTokens != 4096 {
+		t.Fatalf("MaxTokens = %v, want 4096 (catalog default)", req.MaxTokens)
 	}
-	if req.ContextWindow != nil {
-		t.Fatalf("ContextWindow = %v, want nil", req.ContextWindow)
+	if req.ContextWindow == nil || *req.ContextWindow != 8192 {
+		t.Fatalf("ContextWindow = %v, want 8192 (catalog default)", req.ContextWindow)
 	}
 }

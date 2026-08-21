@@ -60,8 +60,9 @@ func TestResolveModelLimitsNilTableDoesNotPanic(t *testing.T) {
 	window, maxOut := r.resolveModelLimits(routing.ModelPreset{
 		Provider: "openai", Model: "totally-made-up-xyz",
 	})
-	if window != 0 || maxOut != 0 {
-		t.Fatalf("got (%d, %d), want (0, 0) for an unknown model", window, maxOut)
+	// Unknown models fall back to the catalog's conservative defaults.
+	if window != 8192 || maxOut != 4096 {
+		t.Fatalf("got (%d, %d), want (8192, 4096) for an unknown model", window, maxOut)
 	}
 }
 

@@ -31,10 +31,13 @@ func TestResolveFallsBackToCatalogPerField(t *testing.T) {
 	}
 }
 
-func TestResolveUnknownModelIsUnknown(t *testing.T) {
+func TestResolveUnknownModelFallsBackToCatalogDefaults(t *testing.T) {
 	lim := Resolve(nil, "some-unheard-of-model")
-	if lim.ContextWindow != 0 || lim.ContextSource != SourceUnknown {
-		t.Errorf("ContextWindow=%d Source=%q, want 0/unknown", lim.ContextWindow, lim.ContextSource)
+	if lim.ContextWindow != 8192 || lim.ContextSource != SourceCatalog {
+		t.Errorf("ContextWindow=%d Source=%q, want 8192/catalog", lim.ContextWindow, lim.ContextSource)
+	}
+	if lim.MaxOutputTokens != 4096 || lim.OutputSource != SourceCatalog {
+		t.Errorf("MaxOutputTokens=%d Source=%q, want 4096/catalog", lim.MaxOutputTokens, lim.OutputSource)
 	}
 	if lim.ToolCalling != nil || lim.ToolSource != SourceUnknown {
 		t.Errorf("ToolCalling=%v Source=%q, want nil/unknown", lim.ToolCalling, lim.ToolSource)
@@ -58,6 +61,27 @@ func TestWithPresetFillsOnlyUnknownFields(t *testing.T) {
 	}
 	if got.MaxOutputTokens != 4096 || got.OutputSource != SourceFetched {
 		t.Errorf("MaxOutputTokens=%d Source=%q, want unchanged 4096/fetched", got.MaxOutputTokens, got.OutputSource)
+	}
+}
+
+func TestWithPresetOverridesCatalogDefault(t *testing.T) {
+	// A saved preset figure beats the catalog's conservative guess so a
+	// re-picked model does not show a guessed default.
+	lim := Limits{ContextWindow: 8192, ContextSource: SourceCatalog, MaxOutputTokens: 4096, OutputSource: SourceCatalog}
+	got := lim.WithPreset(200000, 8192)
+	if got.ContextWindow != 200000 || got.ContextSource != SourcePreset {
+		t.Errorf("ContextWindow=%d Source=%q, want 200000/preset", got.ContextWindow, got.ContextSource)
+	}
+	if got.MaxOutputTokens != 8192 || got.OutputSource != SourcePreset {
+		t.Errorf("MaxOutputTokens=%d Source=%q, want 8192/preset", got.MaxOutputTokens, got.OutputSource)
+	}
+}
+
+func TestWithPresetDoesNotOverrideFetched(t *testing.T) {
+	lim := Limits{ContextWindow: 256000, ContextSource: SourceFetched, MaxOutputTokens: 4096, OutputSource: SourceFetched}
+	got := lim.WithPreset(200000, 8192)
+	if got.ContextWindow != 256000 || got.ContextSource != SourceFetched {
+		t.Errorf("ContextWindow=%d Source=%q, want unchanged 256000/fetched", got.ContextWindow, got.ContextSource)
 	}
 }
 

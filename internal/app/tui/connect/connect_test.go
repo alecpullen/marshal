@@ -344,6 +344,7 @@ func TestPasteMsgIntoConfirmLimitInput(t *testing.T) {
 	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear the pre-filled catalog default
 	m.Update(tea.PasteMsg{Content: "65536"})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
@@ -1479,11 +1480,12 @@ func TestRejectsNegativeEdit(t *testing.T) {
 func TestEditingAnUnknownFigureResolvesIt(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
-	if m.confirm.Limits.ContextSource != presetflow.SourceUnknown {
-		t.Fatalf("precondition: want unknown, got %q", m.confirm.Limits.ContextSource)
+	if m.confirm.Limits.ContextSource != presetflow.SourceCatalog {
+		t.Fatalf("precondition: want catalog default, got %q", m.confirm.Limits.ContextSource)
 	}
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear the pre-filled catalog default
 	for _, r := range "8192" {
 		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
 	}

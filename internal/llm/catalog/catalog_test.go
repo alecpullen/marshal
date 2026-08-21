@@ -1,6 +1,10 @@
 package catalog
 
-import "testing"
+import (
+	"bytes"
+	"log/slog"
+	"testing"
+)
 
 func TestLookupKnownModel(t *testing.T) {
 	w, out := Lookup("qwen2.5-coder:14b")
@@ -12,10 +16,19 @@ func TestLookupKnownModel(t *testing.T) {
 	}
 }
 
-func TestLookupUnknownModelReturnsZero(t *testing.T) {
-	w, out := Lookup("not-a-real-model:999b")
-	if w != 0 || out != 0 {
-		t.Fatalf("unknown model = (%d,%d), want (0,0)", w, out)
+func TestLookupUnknownModelReturnsDefaults(t *testing.T) {
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	ctx, maxOut := Lookup("unknown-model-xyz")
+	if ctx != 8192 {
+		t.Errorf("unknown model contextWindow = %d, want 8192", ctx)
+	}
+	if maxOut != 4096 {
+		t.Errorf("unknown model maxOutput = %d, want 4096", maxOut)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("unknown-model-xyz")) {
+		t.Errorf("expected warning log mentioning model name, got: %s", buf.String())
 	}
 }
 

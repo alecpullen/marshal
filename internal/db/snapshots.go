@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -118,10 +119,22 @@ func (db *DB) PruneSnapshotsOlderThan(days int) error {
 		return fmt.Errorf("prune snapshots: iterate: %w", err)
 	}
 
-	for _, id := range toDelete {
-		if _, err := db.sqlDB.Exec(`DELETE FROM snapshots WHERE id = ?`, id); err != nil {
-			return fmt.Errorf("prune snapshots: delete id %d: %w", id, err)
-		}
+	if len(toDelete) == 0 {
+		return nil
+	}
+
+	// Delete every pruned snapshot in a single statement so the prune is
+	// atomic: an error cannot leave a partially-pruned set, and we avoid
+	// one DELETE round-trip per snapshot.
+	placeholders := make([]string, len(toDelete))
+	args := make([]any, len(toDelete))
+	for i, id := range toDelete {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	stmt := `DELETE FROM snapshots WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	if _, err := db.sqlDB.Exec(stmt, args...); err != nil {
+		return fmt.Errorf("prune snapshots: delete %d snapshots: %w", len(toDelete), err)
 	}
 	return nil
 }

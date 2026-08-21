@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -26,9 +27,34 @@ func TestDiagnosticsAdapterEmptyCacheFallsBack(t *testing.T) {
 	}
 }
 
-func TestDiagnosticsFileSizeCap(t *testing.T) {
-	if diagnosticsFileCap != 256*1024 {
-		t.Errorf("diagnosticsFileCap = %d, want %d", diagnosticsFileCap, 256*1024)
+func TestReadDiagnosticsFileCapsSize(t *testing.T) {
+	dir := t.TempDir()
+
+	// A small file under the cap is read back in full.
+	small := filepath.Join(dir, "small.go")
+	if err := os.WriteFile(small, []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readDiagnosticsFile(small)
+	if !ok {
+		t.Fatal("small file should be readable")
+	}
+	if string(got) != "package p\n" {
+		t.Fatalf("got %q, want %q", got, "package p\n")
+	}
+
+	// A file larger than the cap is skipped rather than read.
+	large := filepath.Join(dir, "large.go")
+	if err := os.WriteFile(large, make([]byte, diagnosticsFileCap+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readDiagnosticsFile(large); ok {
+		t.Fatal("file exceeding the cap should be skipped")
+	}
+
+	// A missing file is not readable.
+	if _, ok := readDiagnosticsFile(filepath.Join(dir, "nope.go")); ok {
+		t.Fatal("missing file should not be readable")
 	}
 }
 

@@ -426,7 +426,7 @@ SELECT s.id, p.root_path, s.title,
  LIMIT ? OFFSET ?`
 
 // ListSessions returns sessions whose project root matches cwd, newest
-// activity first. cursor is an opaque base64-encoded offset from a previous
+// activity first. cursor is an opaque decimal offset returned by a previous
 // nextCursor; pass "" to start from the beginning. limit defaults to 50 and
 // is clamped to [1, 200]. The returned nextCursor is empty when no more rows
 // remain. A cursor that cannot be decoded returns an error.

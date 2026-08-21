@@ -99,7 +99,7 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 				prefix := strings.Join(pathSegments[:i], "/")
 				ok, err := matchPattern(p, prefix)
 				if err != nil {
-					slog.Warn("gitignore pattern error", "error", err, "path", path)
+					slog.Warn("gitignore pattern error", "error", err, "path", path, "pattern", strings.Join(p.segments, "/"))
 					continue
 				}
 				if ok {
@@ -114,7 +114,7 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 		}
 		ok, err := matchPattern(p, path)
 		if err != nil {
-			slog.Warn("gitignore pattern error", "error", err, "path", path)
+			slog.Warn("gitignore pattern error", "error", err, "path", path, "pattern", strings.Join(p.segments, "/"))
 			continue
 		}
 		if ok {

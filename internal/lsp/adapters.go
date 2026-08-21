@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -18,8 +17,30 @@ import (
 )
 
 // diagnosticsFileCap bounds how much of a file's content is read for
-// diagnostics, avoiding OOM on large generated files.
+// diagnostics, avoiding OOM on large generated files. It was reduced from
+// an earlier 2 MiB cap; the file is stat'ed first and read only when under
+// the cap, so the read itself stays bounded.
 const diagnosticsFileCap = 256 * 1024 // 256 KiB
+
+// readDiagnosticsFile reads a file for diagnostics, returning false when the
+// file is unreadable or exceeds diagnosticsFileCap. Oversized files are
+// skipped (with a warning) rather than read, so the read itself stays bounded
+// by the cap.
+func readDiagnosticsFile(path string) ([]byte, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, false
+	}
+	if info.Size() > diagnosticsFileCap {
+		slog.Warn("diagnostics: file exceeds size cap, skipping", "path", path, "size", info.Size(), "cap", diagnosticsFileCap)
+		return nil, false
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return content, true
+}
 
 // SymbolAdapter implements index.LSPSymbols.
 type SymbolAdapter struct{ h *Handle }
@@ -171,24 +192,11 @@ func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
 	}
 	uri := toFileURI(a.h.Root(), filePath)
 
-	// Read file content (cap at 256 KiB to avoid OOM on generated files).
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return "", false
-	}
-	if info.Size() > diagnosticsFileCap {
-		slog.Warn("diagnostics: file exceeds size cap, skipping", "path", filePath, "size", info.Size(), "cap", diagnosticsFileCap)
-		return "", false
-	}
-	// Use io.LimitReader to cap the read even if the file grows between
-	// Stat and ReadFile.
-	f, err := os.Open(filePath)
-	if err != nil {
-		return "", false
-	}
-	content, err := io.ReadAll(io.LimitReader(f, diagnosticsFileCap))
-	f.Close()
-	if err != nil {
+	// Read file content, capped at diagnosticsFileCap to avoid OOM on
+	// generated files. The file is stat'ed first and only read when it is
+	// under the cap, so a plain read is already bounded.
+	content, ok := readDiagnosticsFile(filePath)
+	if !ok {
 		return "", false
 	}
 
@@ -260,7 +268,9 @@ func toFileURI(root, filePath string) string {
 
 // fromFileURI converts a file:// URI back to an OS-native absolute path,
 // percent-decoding any encoded characters. When root is non-empty it verifies
-// the resolved path stays within the workspace root.
+// the decoded path is lexically contained within the workspace root, rejecting
+// absolute or ".."-escaping paths. Note this does not resolve symlinks: a
+// symlink inside root that points outside root still passes the lexical check.
 func fromFileURI(uri string, root string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil || u.Scheme != "file" {

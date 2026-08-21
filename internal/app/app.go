@@ -83,11 +83,11 @@ func must[T any](raw any) T {
 }
 
 type options struct {
-	now           func() time.Time
-	configLoader  configLoader
-	layersLoader  func(config.LoadOptions) (config.Layers, error)
-	programRunner ProgramRunner
-	trustResolver trust.Resolver
+	now                    func() time.Time
+	configLoader           configLoader
+	configWithLayersLoader func(config.LoadOptions) (config.Config, config.Layers, error)
+	programRunner          ProgramRunner
+	trustResolver          trust.Resolver
 	// deferTrustPrompt moves the folder-trust question into the TUI (the
 	// interactive path). sessionTrusted carries an inline session-trust
 	// answer across the reload loop.
@@ -129,6 +129,14 @@ func WithConfigLoader(loader configLoader) Option {
 			return
 		}
 		opts.configLoader = loader
+		opts.configWithLayersLoader = func(lo config.LoadOptions) (config.Config, config.Layers, error) {
+			cfg, err := loader(lo)
+			if err != nil {
+				return config.Config{}, config.Layers{}, err
+			}
+			layers := config.Layers{Default: cfg, User: cfg, Merged: cfg}
+			return cfg, layers, nil
+		}
 	}
 }
 
@@ -1356,9 +1364,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	}
 
 	runOpts := options{
-		now:           time.Now,
-		configLoader:  config.Load,
-		programRunner: runProgram,
+		now:                    time.Now,
+		configLoader:           config.Load,
+		configWithLayersLoader: config.LoadWithLayers,
+		programRunner:          runProgram,
 	}
 	for _, opt := range opts {
 		opt(&runOpts)

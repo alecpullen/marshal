@@ -10,8 +10,17 @@ import (
 )
 
 func Load(opts LoadOptions) (Config, error) {
+	cfg, _, err := LoadWithLayers(opts)
+	return cfg, err
+}
+
+// LoadWithLayers runs LoadLayers once and returns both the merged Config
+// and the Layers struct. This avoids the double-load that occurs when
+// callers need both Config and Layers but call Load() and LoadLayers()
+// separately (each running the full layer merge internally).
+func LoadWithLayers(opts LoadOptions) (Config, Layers, error) {
 	l, err := LoadLayers(opts)
-	return l.Merged, err
+	return l.Merged, l, err
 }
 
 func loadFile(path string) (configFile, error) {

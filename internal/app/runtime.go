@@ -361,9 +361,10 @@ func (rt *Runtime) Close(ctx context.Context) error {
 // headless transport share one wiring site.
 func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	runOpts := options{
-		now:           time.Now,
-		configLoader:  config.Load,
-		programRunner: runProgram,
+		now:                    time.Now,
+		configLoader:           config.Load,
+		configWithLayersLoader: config.LoadWithLayers,
+		programRunner:          runProgram,
 	}
 	for _, opt := range opts {
 		opt(&runOpts)
@@ -374,9 +375,6 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 // startRuntime is the internal implementation shared by Run and StartRuntime.
 // It expects a fully-resolved options struct — no option iteration.
 func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
-	if runOpts.layersLoader == nil {
-		runOpts.layersLoader = config.LoadLayers
-	}
 	workingDir, err := resolveWorkingDir(runOpts.workingDir)
 	if err != nil {
 		return nil, err
@@ -411,28 +409,18 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 			WorkingDir:        workingDir,
 			SkipProjectConfig: needsPrompt,
 		}
-		cfg, err = runOpts.configLoader(loadOpts)
-		if err == nil {
-			layers, err = runOpts.layersLoader(loadOpts)
-		}
+		cfg, layers, err = runOpts.configWithLayersLoader(loadOpts)
 	} else {
 		resolver := runOpts.trustResolver
 		if resolver == nil {
 			resolver = trust.NewTerminalResolver(trust.NewStore(dataDir))
 		}
-		loader := func(lo config.LoadOptions) (config.Config, error) {
+		loader := func(lo config.LoadOptions) (config.Config, config.Layers, error) {
 			lo.TrustResolver = resolver
-			return runOpts.configLoader(lo)
+			return runOpts.configWithLayersLoader(lo)
 		}
 		loadOpts := config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted}
-		cfg, err = loader(loadOpts)
-		if err == nil {
-			layers, err = runOpts.layersLoader(config.LoadOptions{
-				WorkingDir:    workingDir,
-				Trusted:       &projectTrusted,
-				TrustResolver: resolver,
-			})
-		}
+		cfg, layers, err = loader(loadOpts)
 	}
 	if err != nil {
 		return nil, err

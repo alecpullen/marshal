@@ -3,9 +3,34 @@ package db
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 )
+
+func TestListCursorRoundTrip(t *testing.T) {
+	for _, offset := range []int{0, 1, 42, 1000} {
+		cursor := encodeListCursor(offset)
+		// Cursor should be the plain integer, not base64-encoded.
+		if cursor != strconv.Itoa(offset) {
+			t.Errorf("encodeListCursor(%d) = %q, want %q", offset, cursor, strconv.Itoa(offset))
+		}
+		got, err := decodeListCursor(cursor)
+		if err != nil {
+			t.Fatalf("decodeListCursor(%q): %v", cursor, err)
+		}
+		if got != offset {
+			t.Errorf("decodeListCursor(%q) = %d, want %d", cursor, got, offset)
+		}
+	}
+}
+
+func TestDecodeListCursorEmpty(t *testing.T) {
+	got, err := decodeListCursor("")
+	if err != nil || got != 0 {
+		t.Fatalf("decodeListCursor(\"\") = (%d, %v), want (0, nil)", got, err)
+	}
+}
 
 func TestCreateSessionAndMessages(t *testing.T) {
 	db, err := Open(":memory:")

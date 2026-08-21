@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -492,18 +491,14 @@ func (db *DB) ListSessions(ctx context.Context, cwd, cursor string, limit int) (
 }
 
 func encodeListCursor(offset int) string {
-	return base64.StdEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
+	return strconv.Itoa(offset)
 }
 
 func decodeListCursor(cursor string) (int, error) {
 	if cursor == "" {
 		return 0, nil
 	}
-	dec, err := base64.StdEncoding.DecodeString(cursor)
-	if err != nil {
-		return 0, err
-	}
-	n, err := strconv.Atoi(string(dec))
+	n, err := strconv.Atoi(cursor)
 	if err != nil {
 		return 0, err
 	}

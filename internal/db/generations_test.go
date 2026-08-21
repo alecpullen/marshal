@@ -9,11 +9,17 @@ import (
 // seedSession creates a project and session, returning the session ID.
 func seedSession(t *testing.T, database *DB) string {
 	t.Helper()
+	return seedSessionWithID(t, database, "test-session-gen")
+}
+
+// seedSessionWithID creates a project and a session with the given ID,
+// returning the session ID. Used when a test needs several distinct sessions.
+func seedSessionWithID(t *testing.T, database *DB, sessionID string) string {
+	t.Helper()
 	projectID, err := database.GetOrCreateProject("/test/repo", "test-repo")
 	if err != nil {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
 	}
-	sessionID := "test-session-gen"
 	if err := database.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -118,6 +124,56 @@ func TestGenerationLifecycle(t *testing.T) {
 	}
 	if count != 3 {
 		t.Fatalf("expected 3 turns, got %d", count)
+	}
+}
+
+func TestReconcileSessionGenerationsOnlyClosesSession(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	sessionA := seedSessionWithID(t, db, "session-a")
+	sessionB := seedSessionWithID(t, db, "session-b")
+	now := time.Now().UTC()
+
+	// Begin an open generation in each session.
+	g1 := Generation{ID: "gen-a-open", SessionID: sessionA, Seq: 1, StartedAt: now}
+	if err := db.BeginGeneration(g1); err != nil {
+		t.Fatalf("BeginGeneration g1: %v", err)
+	}
+	g2 := Generation{ID: "gen-b-open", SessionID: sessionB, Seq: 1, StartedAt: now}
+	if err := db.BeginGeneration(g2); err != nil {
+		t.Fatalf("BeginGeneration g2: %v", err)
+	}
+
+	// Reconcile only session A.
+	n, err := db.ReconcileSessionGenerations(sessionA, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("ReconcileSessionGenerations: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 reconciled, got %d", n)
+	}
+
+	// Session A's generation should be closed.
+	gens, err := db.GenerationsForSession(sessionA)
+	if err != nil {
+		t.Fatalf("GenerationsForSession A: %v", err)
+	}
+	for _, g := range gens {
+		if g.ID == "gen-a-open" && g.EndedAt == nil {
+			t.Fatal("expected gen-a-open to be closed")
+		}
+	}
+
+	// Session B's generation should still be open.
+	gens, err = db.GenerationsForSession(sessionB)
+	if err != nil {
+		t.Fatalf("GenerationsForSession B: %v", err)
+	}
+	for _, g := range gens {
+		if g.ID == "gen-b-open" && g.EndedAt != nil {
+			t.Fatal("expected gen-b-open to still be open")
+		}
 	}
 }
 

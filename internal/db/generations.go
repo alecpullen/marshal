@@ -274,6 +274,26 @@ func (db *DB) ReconcileOpenGenerations(at time.Time) (int, error) {
 	return int(n), nil
 }
 
+// ReconcileSessionGenerations closes any generations left open for the
+// specified session (e.g. by a crashed process), setting end_reason to 'error'.
+// Idempotent: a second call is a no-op because no open generations remain for
+// that session.
+func (db *DB) ReconcileSessionGenerations(sessionID string, at time.Time) (int, error) {
+	res, err := db.sqlDB.Exec(
+		`UPDATE session_generations SET ended_at = ?, end_reason = 'error' WHERE ended_at IS NULL AND session_id = ?`,
+		at.UTC().Format(time.RFC3339),
+		sessionID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile session generations: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("reconcile session generations rows: %w", err)
+	}
+	return int(n), nil
+}
+
 // GenerationTurnCount returns the number of archived turns for a generation.
 func (db *DB) GenerationTurnCount(generationID string) (int, error) {
 	var count int

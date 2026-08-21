@@ -29,6 +29,11 @@ func formatMeta(m db.Memory) string {
 
 func formatAge(t time.Time) string {
 	d := time.Since(t)
+	if d < 0 {
+		// Clock skew or a future timestamp: show "just now" rather than a
+		// negative duration.
+		return "just now"
+	}
 	switch {
 	case d < time.Minute:
 		return "just now"

@@ -164,19 +164,22 @@ func TestParseRejectsEmptyPathChunk(t *testing.T) {
 	}
 }
 
-func TestCommitChunkLogsDroppedChunk(t *testing.T) {
+func TestParseRepairingLogsDroppedChunk(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	slog.SetDefault(logger)
 	t.Cleanup(func() { slog.SetDefault(slog.Default()) })
 
-	// A chunk with no File: header — the chunk should be silently dropped
-	// but a warning should be logged.
+	// A chunk with no File: header — ParseRepairing silently drops it
+	// and logs a warning, returning no patches.
 	input := "<<<<<<< SEARCH\nhello\n=======\nworld\n>>>>>>> REPLACE\n"
-	_, err := Parse(input)
-	// Parse returns an error for empty-path chunks (existing behavior).
-	// The test only checks that a warning was logged.
-	_ = err // error is expected
+	res, err := ParseRepairing(input)
+	if err == nil {
+		t.Fatal("expected ParseRepairing to return an error for chunk without File: header")
+	}
+	if len(res.Patches) != 0 {
+		t.Fatalf("expected no patches for chunk without File: header, got %d", len(res.Patches))
+	}
 
 	logOutput := buf.String()
 	if !strings.Contains(logOutput, "dropped") || !strings.Contains(logOutput, "chunk") {

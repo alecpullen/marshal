@@ -117,7 +117,7 @@ func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
-			slog.Warn("failed to parse file.write args", "tool", "file.write", "error", err)
+			return ToolResult{}, fmt.Errorf("file.write in fallback scope could not parse arguments: %w", err)
 		}
 		cleaned := cleanScopePath(args.Path)
 		if !pathInAllowlist(cleaned, allowed) {

@@ -717,10 +717,6 @@ func TestJobOutputSeparatesStdoutAndStderr(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 // waitForStatus polls jm.Output until the job's status is no longer
 // statusWant (i.e. it has transitioned). If expectTerminal is true,
 // it waits until the status IS NOT statusWant (useful for waiting until

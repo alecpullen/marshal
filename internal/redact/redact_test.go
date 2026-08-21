@@ -1,6 +1,9 @@
 package redact
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSecretsMasksAWSKey(t *testing.T) {
 	in := "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY and more"
@@ -219,6 +222,19 @@ func TestSecretsHandlesUnicodeWhitespaceInSecrets(t *testing.T) {
 	}
 	if !contains(out, MaskToken) {
 		t.Fatalf("redaction marker absent: %q", out)
+	}
+}
+
+func TestSecretsTrailingPunctuationRedacted(t *testing.T) {
+	// A high-entropy token followed by punctuation should have the
+	// punctuation consumed, not left exposed after the mask.
+	input := "the key is sk-abc123def456ghi789jkl012mno345pqr678, and that's it"
+	got := Secrets(input)
+	if strings.Contains(got, ",") {
+		t.Errorf("trailing punctuation survived redaction: %s", got)
+	}
+	if strings.Contains(got, "sk-abc123") {
+		t.Errorf("secret token survived redaction: %s", got)
 	}
 }
 

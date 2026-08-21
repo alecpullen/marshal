@@ -82,9 +82,15 @@ func truncateToWords(val string, maxWords int) string {
 // are masked even when no KEY= form is present. Assembled from named parts
 // rather than one long literal so a missing vendor is easy to spot.
 //
-// Only credentials belong here. Stripe's pk_live_ publishable keys are
+// Only credentials belong here. Stripe's pk_live_* publishable keys are
 // deliberately absent: they are designed to ship in client code, and masking
 // them would corrupt legitimate transcripts for no gain.
+//
+// The trailing [^\w\s]* consumes adjacent punctuation (",", ".", ";", "!")
+// so that "token," or "token." is fully redacted rather than leaving the
+// punctuation exposed after the mask. Whitespace is deliberately excluded
+// from that class so a token followed by prose is not merged into the next
+// word, and a token at end-of-line does not swallow the newline.
 var highEntropyToken = regexp.MustCompile(`(?i)\b(` + strings.Join([]string{
 	// OpenAI / Anthropic (covers sk-ant-, sk-proj-).
 	`sk-[A-Za-z0-9_-]{16,}`,
@@ -110,7 +116,7 @@ var highEntropyToken = regexp.MustCompile(`(?i)\b(` + strings.Join([]string{
 	// would match nothing at all on a longer payload, silently leaking the
 	// very thing this pattern exists to catch.
 	`AIza[A-Za-z0-9_-]{35,}`,
-}, "|") + `)\b`)
+}, "|") + `)[^\w\s]*`)
 
 // bearerJWT matches `Bearer <jwt>` authorization headers.
 var bearerJWT = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)

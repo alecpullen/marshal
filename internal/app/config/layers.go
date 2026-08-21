@@ -90,9 +90,11 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		}
 	}
 	// The legacy [agent] provider/model pair is read from the raw file
-	// mirror (the fields no longer exist on AgentConfig). The project file
-	// wins over the user file when both name a pair. TODO: remove this
-	// compatibility shim after one release cycle.
+	// mirror (the fields no longer exist on AgentConfig — they moved to
+	// [providers] and [models.presets]). The project file wins over the
+	// user file when both name a pair. This shim is retained because
+	// existing user configs may still use the old format and would
+	// silently lose their provider/model on upgrade without it.
 	legacyProvider, legacyModel := "", ""
 	if projectFile.Agent != nil && projectFile.Agent.Provider != nil && projectFile.Agent.Model != nil {
 		legacyProvider, legacyModel = *projectFile.Agent.Provider, *projectFile.Agent.Model

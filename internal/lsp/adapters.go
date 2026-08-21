@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"marshal/internal/db"
@@ -136,9 +137,26 @@ func (a *QueryAdapter) locations(ctx context.Context, filePath string, line, col
 }
 
 // DiagnosticsAdapter implements diagnostics.LSPSource.
-type DiagnosticsAdapter struct{ h *Handle }
+type DiagnosticsAdapter struct {
+	h        *Handle
+	versions map[string]int
+	vmu      sync.Mutex
+}
 
-func NewDiagnosticsAdapter(h *Handle) *DiagnosticsAdapter { return &DiagnosticsAdapter{h: h} }
+func NewDiagnosticsAdapter(h *Handle) *DiagnosticsAdapter {
+	return &DiagnosticsAdapter{h: h, versions: make(map[string]int)}
+}
+
+// nextVersion returns the next document version for the given URI,
+// incrementing a per-URI counter. Each didOpen carries an increasing
+// version so servers that compare versions treat each open as a fresh
+// document.
+func (a *DiagnosticsAdapter) nextVersion(uri string) int {
+	a.vmu.Lock()
+	defer a.vmu.Unlock()
+	a.versions[uri]++
+	return a.versions[uri]
+}
 
 func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
 	client, ok := a.h.ServerFor(lang)
@@ -160,9 +178,11 @@ func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
 		return "", false
 	}
 
-	// Open the document so the server publishes diagnostics.
+	// Open the document so the server publishes diagnostics. Each open
+	// carries an increasing version for this URI.
+	version := a.nextVersion(uri)
 	_ = client.Notify("textDocument/didOpen", map[string]any{
-		"textDocument": map[string]any{"uri": uri, "languageId": lang, "version": 1, "text": string(content)},
+		"textDocument": map[string]any{"uri": uri, "languageId": lang, "version": version, "text": string(content)},
 	})
 	opened := true
 	defer func() {

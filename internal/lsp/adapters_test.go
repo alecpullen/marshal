@@ -26,6 +26,25 @@ func TestDiagnosticsAdapterEmptyCacheFallsBack(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsAdapterVersionIncrements(t *testing.T) {
+	// Verify the version tracking map increments per URI and resets to 1
+	// for a fresh URI.
+	da := &DiagnosticsAdapter{versions: make(map[string]int)}
+	v1 := da.nextVersion("file:///test.go")
+	if v1 != 1 {
+		t.Fatalf("first version = %d, want 1", v1)
+	}
+	v2 := da.nextVersion("file:///test.go")
+	if v2 != 2 {
+		t.Fatalf("second version = %d, want 2", v2)
+	}
+	// Different URI starts at 1.
+	v3 := da.nextVersion("file:///other.go")
+	if v3 != 1 {
+		t.Fatalf("first version for new URI = %d, want 1", v3)
+	}
+}
+
 func TestFromFileURIRejectsPathOutsideRoot(t *testing.T) {
 	root := "/workspace/project"
 	uri := "file:///etc/passwd"

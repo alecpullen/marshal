@@ -4,6 +4,30 @@ import (
 	"testing"
 )
 
+func TestMigrationToolAuditAddContentIdempotent(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("first Migrate failed: %v", err)
+	}
+
+	// Manually run the content-column migration a second time to simulate
+	// a re-run. It should be a no-op, not an error.
+	tx, err := db.sqlDB.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := migrationToolAuditAddContent(tx); err != nil {
+		tx.Rollback()
+		t.Fatalf("second migrationToolAuditAddContent should be no-op, got: %v", err)
+	}
+	tx.Commit()
+}
+
 func TestMigrations(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

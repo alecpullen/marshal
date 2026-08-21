@@ -35,9 +35,32 @@ func init() {
 
 // migrationToolAuditAddContent adds a content column to the
 // turn_tool_audit table so the full text of agent.run results can be
-// replayed across turns.
+// replayed across turns. It checks whether the column already exists so
+// re-running the migration is a no-op rather than an error.
 func migrationToolAuditAddContent(tx *sql.Tx) error {
-	_, err := tx.Exec(`ALTER TABLE turn_tool_audit ADD COLUMN content TEXT NOT NULL DEFAULT ''`)
+	// Check if the column already exists before running ALTER TABLE.
+	// This makes the migration idempotent.
+	rows, err := tx.Query("PRAGMA table_info(turn_tool_audit)")
+	if err != nil {
+		return fmt.Errorf("check turn_tool_audit columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		if name == "content" {
+			return nil // Column already exists — no-op.
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate table_info: %w", err)
+	}
+	_, err = tx.Exec(`ALTER TABLE turn_tool_audit ADD COLUMN content TEXT NOT NULL DEFAULT ''`)
 	return err
 } // ToolAuditEntry is the compact summary of a single tool call inside a
 // turn, persisted into the turn_tool_audit table. The Summary field

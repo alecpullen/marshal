@@ -413,11 +413,19 @@ func (s *State) LeafID() int64 {
 }
 
 // ClearMessages removes all messages from the transcript and returns the
-// count of messages that were cleared. The branch tree is NOT reset:
-// leafID, the parent/child maps, and nextMsgID all survive, so the next
-// message forks a new branch off the old leaf and Branches() still
-// reports the old tips — this is what lets /new keep rewind history. It
-// does not affect the audit log, pending approvals, backups, or context
+// count of messages that were cleared. The branch tree is intentionally NOT
+// reset: leafID, the parent/child maps, and nextMsgID all survive, so the
+// next message forks a new branch off the old leaf and Branches() still
+// reports the old tips — this is what lets /new keep rewind history.
+//
+// Memory trade-off: the maps grow monotonically across /new calls within
+// a single session. For long-running sessions with many /new resets, these
+// maps hold metadata for every message ever added. This is bounded by the
+// session lifetime and is acceptable given that a session restart clears
+// everything. If this becomes a concern, a separate ResetBranches method
+// could be added for callers that don't need rewind history.
+//
+// It does not affect the audit log, pending approvals, backups, or context
 // pack.
 func (s *State) ClearMessages() int {
 	s.mu.Lock()

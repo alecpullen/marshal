@@ -26,6 +26,15 @@ func newTestState() *State {
 	return New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
 }
 
+func TestLoggerReturnsCachedDiscard(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Unix(0, 0), Persistence{})
+	l1 := s.Logger()
+	l2 := s.Logger()
+	if l1 != l2 {
+		t.Fatal("Logger() should return the same cached instance when logger is nil")
+	}
+}
+
 func TestSetTodosNoRace(t *testing.T) {
 	dbConn, err := db.Open(":memory:")
 	if err != nil {

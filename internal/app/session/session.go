@@ -560,13 +560,18 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 
 func (s *State) SessionID() string { return s.sessionID }
 
+// discardLogger is allocated once and reused for all State instances that
+// don't have an explicit logger set. Avoids allocating a new slog.Logger
+// on every Logger() call.
+var discardLogger = slog.New(slog.DiscardHandler)
+
 // Logger returns the session logger, never nil. A State built without one
 // (tests, and any caller that skips SetLogger) would otherwise hand back nil
 // and panic at the call site — callers legitimately treat logging as always
 // available, so the fallback belongs here rather than at each use.
 func (s *State) Logger() *slog.Logger {
 	if s.logger == nil {
-		return slog.New(slog.DiscardHandler)
+		return discardLogger
 	}
 	return s.logger
 }

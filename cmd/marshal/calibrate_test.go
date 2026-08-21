@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,7 +16,7 @@ func TestRunCalibrateTokens_FromDBEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err := runCalibrateTokens(context.Background(), []string{"--from-db", "--project", tmp}, &out)
+	err := runCalibrateTokens([]string{"--from-db", "--project", tmp}, &out)
 	if err != nil {
 		t.Fatalf("runCalibrateTokens: %v", err)
 	}
@@ -42,7 +41,7 @@ func TestRunCalibrateTokens_FromDBWithSamples(t *testing.T) {
 	database.Close()
 
 	var out bytes.Buffer
-	if err := runCalibrateTokens(context.Background(), []string{"--from-db", "--project", tmp}, &out); err != nil {
+	if err := runCalibrateTokens([]string{"--from-db", "--project", tmp}, &out); err != nil {
 		t.Fatalf("runCalibrateTokens: %v", err)
 	}
 	if !bytes.Contains(out.Bytes(), []byte("samples:")) {
@@ -83,4 +82,16 @@ func setupCalibrateDBWithProject(t *testing.T, dir string) (*db.DB, int64) {
 		t.Fatal(err)
 	}
 	return database, pid
+}
+
+func TestRunCalibrateTokensNoCtxParam(t *testing.T) {
+	// Verify the function works without a context parameter.
+	// --from-db not set, so it should print usage and return nil.
+	var stdout bytes.Buffer
+	if err := runCalibrateTokens([]string{}, &stdout); err != nil {
+		t.Fatalf("runCalibrateTokens: %v", err)
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("calibrate-tokens")) {
+		t.Errorf("expected usage output, got: %s", stdout.String())
+	}
 }

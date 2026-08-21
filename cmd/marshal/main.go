@@ -47,7 +47,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return historyRunner(ctx, args[1:], stdout)
 	}
 	if len(args) > 0 && args[0] == "calibrate-tokens" {
-		return calibrateRunner(ctx, args[1:], stdout)
+		return calibrateRunner(args[1:], stdout)
 	}
 	if len(args) > 0 && args[0] == "acp" {
 		return acpRunner(ctx, stdin, stdout, stderr)

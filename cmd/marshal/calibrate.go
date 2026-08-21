@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -15,7 +14,7 @@ import (
 // token_calibration rows already recorded for a project (by the per-turn
 // calibration observer when [session.rollover.calibration] enabled = true).
 // Without --from-db it prints a usage hint.
-func runCalibrateTokens(ctx context.Context, args []string, stdout io.Writer) error {
+func runCalibrateTokens(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("calibrate-tokens", flag.ContinueOnError)
 	fs.SetOutput(stdout)
 	fromDB := fs.Bool("from-db", false, "summarize recorded token_calibration rows for the project")

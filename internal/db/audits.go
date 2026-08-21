@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -65,7 +65,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 			// audit row should not be lost because of a marshal
 			// failure (which only happens for unmarshalable types
 			// — defensive).
-			log.Printf("tool_calls audit: LimitsJSON marshal failed: %v", mErr)
+			slog.Warn("tool_calls audit: LimitsJSON marshal failed", "error", mErr)
 			s = "{}"
 		}
 		limitsJSON = s

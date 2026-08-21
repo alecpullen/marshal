@@ -1,6 +1,8 @@
 package patch
 
 import (
+	"bytes"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -159,5 +161,25 @@ func TestParseRejectsEmptyPathChunk(t *testing.T) {
 	_, err := Parse(input)
 	if err == nil {
 		t.Fatal("expected error for chunk with empty path, got nil")
+	}
+}
+
+func TestCommitChunkLogsDroppedChunk(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(slog.Default()) })
+
+	// A chunk with no File: header — the chunk should be silently dropped
+	// but a warning should be logged.
+	input := "<<<<<<< SEARCH\nhello\n=======\nworld\n>>>>>>> REPLACE\n"
+	_, err := Parse(input)
+	// Parse returns an error for empty-path chunks (existing behavior).
+	// The test only checks that a warning was logged.
+	_ = err // error is expected
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "dropped") || !strings.Contains(logOutput, "chunk") {
+		t.Errorf("expected slog warning about dropped chunk, got: %s", logOutput)
 	}
 }

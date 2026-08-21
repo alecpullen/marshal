@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -773,6 +774,40 @@ func TestExportRejectsParentTraversal(t *testing.T) {
 	out := cmd.Handler(state, []string{"../../etc/passwd"}).Text
 	if !strings.Contains(out, "escapes") {
 		t.Fatalf("expected parent traversal to be rejected with 'escapes', got %q", out)
+	}
+}
+
+func TestExportRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests not supported on Windows")
+	}
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	tmpDir := t.TempDir()
+	state.WorkingDir = tmpDir
+
+	// Create an outside file and a symlink inside the workspace pointing at
+	// it. Writing the export through the symlink would escape the working
+	// directory and overwrite the outside file.
+	outside := filepath.Join(t.TempDir(), "outside.html")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmpDir, "escape.html")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	cmd, ok := cmdReg.Lookup("export")
+	if !ok {
+		t.Fatal("export command not registered")
+	}
+	out := cmd.Handler(state, []string{"escape.html"}).Text
+	if !strings.Contains(out, "symlink") && !strings.Contains(out, "escapes") && !strings.Contains(out, "failed") {
+		t.Fatalf("export should reject symlink escape, got: %q", out)
 	}
 }
 

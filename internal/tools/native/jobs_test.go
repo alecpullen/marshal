@@ -717,6 +717,10 @@ func TestJobOutputSeparatesStdoutAndStderr(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 // waitForStatus polls jm.Output until the job's status is no longer
 // statusWant (i.e. it has transitioned). If expectTerminal is true,
 // it waits until the status IS NOT statusWant (useful for waiting until
@@ -740,5 +744,21 @@ func waitForStatus(t *testing.T, jm *JobManager, id string, statusWant JobStatus
 		default:
 			time.Sleep(5 * time.Millisecond)
 		}
+	}
+}
+
+func TestJobManagerStartRejectsCancelledManagerCtx(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	runner := newFakeRunner()
+	jm := NewJobManager(parentCtx, runner, t.TempDir(), 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	// Cancel the parent context (which cancels managerCtx).
+	parentCancel()
+
+	// Use a fresh call context that is NOT cancelled.
+	_, err := jm.Start(context.Background(), "echo hello", 0)
+	if err == nil {
+		t.Fatal("expected error when managerCtx is cancelled, got nil")
 	}
 }

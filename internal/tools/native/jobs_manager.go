@@ -189,8 +189,12 @@ func (m *JobManager) Start(ctx context.Context, command string, timeout time.Dur
 		return "", fmt.Errorf("too many background jobs (max %d)", m.maxJobs)
 	}
 
-	// Reject an already-cancelled call context.
+	// Reject an already-cancelled call context or manager context.
 	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return "", err
+	}
+	if err := m.managerCtx.Err(); err != nil {
 		m.mu.Unlock()
 		return "", err
 	}

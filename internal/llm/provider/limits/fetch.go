@@ -15,6 +15,14 @@ const (
 	fetchTimeout  = 30 * time.Second
 )
 
+// limitsHTTPClient is the dedicated HTTP client used for limit-table
+// fetches. It carries its own timeout so a remote source that hangs cannot
+// tie up the process-global http.DefaultClient (which has no timeout by
+// default) or share connection state with unrelated calls.
+var limitsHTTPClient = &http.Client{
+	Timeout: fetchTimeout,
+}
+
 // Fetch retrieves a limit table from a named public source. Supported
 // sources are "openrouter" and "litellm". No API keys are required.
 func Fetch(ctx context.Context, source string) (map[string]Limit, error) {
@@ -36,7 +44,7 @@ func fetchURL(ctx context.Context, url string, normalize func([]byte) (map[strin
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := limitsHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}

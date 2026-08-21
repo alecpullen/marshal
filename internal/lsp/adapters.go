@@ -126,7 +126,7 @@ func (a *QueryAdapter) locations(ctx context.Context, filePath string, line, col
 	}
 	out := make([]string, 0, len(locs))
 	for _, l := range locs {
-		p, err := fromFileURI(l.URI)
+		p, err := fromFileURI(l.URI, a.h.Root())
 		if err != nil {
 			continue
 		}
@@ -225,13 +225,25 @@ func toFileURI(root, filePath string) string {
 }
 
 // fromFileURI converts a file:// URI back to an OS-native absolute path,
-// percent-decoding any encoded characters.
-func fromFileURI(uri string) (string, error) {
+// percent-decoding any encoded characters. When root is non-empty it verifies
+// the resolved path stays within the workspace root.
+func fromFileURI(uri string, root string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil || u.Scheme != "file" {
 		return "", fmt.Errorf("not a file URI: %q", uri)
 	}
-	return filepath.FromSlash(u.Path), nil
+	path := filepath.FromSlash(u.Path)
+	if root != "" {
+		// Verify the resolved path is within the root.
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return "", fmt.Errorf("path %q not relative to root %q: %w", path, root, err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("path %q is outside workspace root %q", path, root)
+		}
+	}
+	return path, nil
 }
 
 func posParams(root, filePath string, line, col int, extra map[string]any) map[string]any {

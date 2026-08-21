@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 )
 
@@ -22,6 +23,28 @@ func TestDiagnosticsAdapterEmptyCacheFallsBack(t *testing.T) {
 	out, ok := a.Diagnostics("go", "x.go")
 	if ok || out != "" {
 		t.Fatalf("expected ('', false) when no server, got (%q, %v)", out, ok)
+	}
+}
+
+func TestFromFileURIRejectsPathOutsideRoot(t *testing.T) {
+	root := "/workspace/project"
+	uri := "file:///etc/passwd"
+	_, err := fromFileURI(uri, root)
+	if err == nil {
+		t.Fatal("expected error for path outside root")
+	}
+}
+
+func TestFromFileURIAcceptsPathInsideRoot(t *testing.T) {
+	root := "/workspace/project"
+	uri := "file:///workspace/project/src/main.go"
+	got, err := fromFileURI(uri, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.FromSlash("/workspace/project/src/main.go")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

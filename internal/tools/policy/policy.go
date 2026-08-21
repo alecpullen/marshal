@@ -8,6 +8,7 @@ import (
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -309,8 +310,16 @@ func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, 
 		// 2. Pattern match (prefix, wildcard, regex), most restrictive
 		// first — deny returns immediately.
 		if !mcpMatched {
+			// Sort patterns alphabetically for deterministic ordering
+			// when multiple same-severity patterns match.
+			patterns := make([]string, 0, len(cfg.MCP.Policies))
+			for pattern := range cfg.MCP.Policies {
+				patterns = append(patterns, pattern)
+			}
+			sort.Strings(patterns)
 			for _, want := range []Decision{DecisionDeny, DecisionConfirm, DecisionAllow} {
-				for pattern, policyStr := range cfg.MCP.Policies {
+				for _, pattern := range patterns {
+					policyStr := cfg.MCP.Policies[pattern]
 					if Decision(policyStr) != want || !matchMCPPolicy(pattern, toolName) {
 						continue
 					}

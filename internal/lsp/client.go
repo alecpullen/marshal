@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -92,20 +93,9 @@ func readMessage(r *bufio.Reader) ([]byte, error) {
 func trimHeader(line, key string) string {
 	if len(line) >= len(key) && line[:len(key)] == key {
 		v := line[len(key):]
-		return trimSpace(v)
+		return strings.TrimSpace(v)
 	}
 	return ""
-}
-
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[len(s)-1] == '\r' || s[len(s)-1] == '\n' || s[len(s)-1] == ' ') {
-		if s[0] == ' ' {
-			s = s[1:]
-			continue
-		}
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 func (c *Client) readLoop() {

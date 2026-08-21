@@ -11,6 +11,23 @@ import (
 	"time"
 )
 
+func TestTrimHeaderTrimsWhitespace(t *testing.T) {
+	cases := []struct {
+		line, key, want string
+	}{
+		{"Content-Length: 42\r\n", "Content-Length:", "42"},
+		{"Content-Length: 42", "Content-Length:", "42"},
+		{"X: \r\n", "X:", ""},
+		{"X: hello world\r\n", "X:", "hello world"},
+	}
+	for _, c := range cases {
+		got := trimHeader(c.line, c.key)
+		if got != c.want {
+			t.Errorf("trimHeader(%q, %q) = %q, want %q", c.line, c.key, got, c.want)
+		}
+	}
+}
+
 type pipe struct {
 	r *io.PipeReader
 	w *io.PipeWriter

@@ -961,13 +961,15 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 	return adapter
 }
 
-// resolveAuthorPlansDir returns the canonical absolute path of the SDD
-// plans directory under the repository working dir, walking up to the
-// nearest existing ancestor so non-existent plans directories
-// canonicalize into the same namespace as the repository root. A
-// symlinked plans_dir that points outside the repository resolves into a
-// different directory and is rejected by sddplans.DraftPath at authoring
-// time.
+// resolveAuthorPlansDir joins the working directory with the plans
+// directory relative path and canonicalizes the result via repo.Canonical.
+// If the plans directory does not yet exist, repo.Canonical walks up to
+// the nearest existing ancestor, so non-existent plans directories
+// canonicalize into the same namespace as the repository root.
+//
+// Security note: a symlinked plans_dir that points outside the repository
+// resolves into a different directory and is rejected by sddplans.DraftPath
+// at authoring time.
 func resolveAuthorPlansDir(workingDir, plansDirRel string) string {
 	return repo.Canonical(filepath.Join(workingDir, plansDirRel))
 }

@@ -1237,10 +1237,8 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 }
 
 // ledgerSummaryFor condenses a full AuditEvent into the one-line form
-// the cross-turn ledger uses. The exact format is owned by Task 4/A2
-// (ledger.go). This stub returns ResultSummary so the existing test
-// suite keeps passing; the real ledger builder will replace it once
-// Task 4 lands — see the wider plan commit series.
+// used by the cross-turn ledger. It prefers ResultSummary (set by the
+// tool handler) and falls back to the tool name when that is empty.
 func ledgerSummaryFor(ev registry.AuditEvent) string {
 	if ev.ResultSummary != "" {
 		return ev.ResultSummary

@@ -1,6 +1,9 @@
 package provider
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 type ProviderTemplate struct {
 	ID          string
@@ -172,11 +175,18 @@ func Lookup(id string) (ProviderTemplate, bool) {
 	return tpl, ok
 }
 
+// All returns every provider template in a deterministic, ID-sorted order.
+// Templates are stored in a map, so without sorting the returned slice's
+// order would vary between calls (map iteration is randomized), which would
+// make the provider picker and template listings non-deterministic.
 func All() []ProviderTemplate {
 	out := make([]ProviderTemplate, 0, len(templates))
 	for _, tpl := range templates {
 		out = append(out, tpl)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 

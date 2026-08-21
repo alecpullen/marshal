@@ -2,6 +2,25 @@ package provider
 
 import "testing"
 
+func TestAllDeterministic(t *testing.T) {
+	first := All()
+	second := All()
+	if len(first) != len(second) {
+		t.Fatalf("length mismatch: %d vs %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i].ID != second[i].ID {
+			t.Fatalf("order differs at index %d: %q vs %q", i, first[i].ID, second[i].ID)
+		}
+	}
+	// Also verify it's sorted by ID.
+	for i := 1; i < len(first); i++ {
+		if first[i-1].ID > first[i].ID {
+			t.Errorf("not sorted by ID at index %d: %q > %q", i, first[i-1].ID, first[i].ID)
+		}
+	}
+}
+
 func TestLookupKnownTemplates(t *testing.T) {
 	for _, id := range []string{"ollama", "ollama-cloud", "lmstudio", "openrouter", "groq", "openai", "openai_compatible"} {
 		tpl, ok := Lookup(id)

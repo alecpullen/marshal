@@ -128,6 +128,36 @@ func TestRenderSideBySideWide(t *testing.T) {
 	}
 }
 
+func TestRenderSideBySideEvenWidth(t *testing.T) {
+	// On an even-width terminal, the side-by-side split should use the
+	// full width without wasting a character. This validates the split
+	// produces output and each rendered line stays within the target
+	// width.
+	h := Hunk{
+		OldStart: 1,
+		NewStart: 1,
+		Lines: []Line{
+			{Kind: LineRemoved, Content: "old line here"},
+			{Kind: LineAdded, Content: "new line here!"},
+		},
+	}
+	opts := Options{Width: 80, Mode: ModeSideBySide}
+	var b strings.Builder
+	renderSideBySide(&b, h, opts)
+	output := b.String()
+	if len(output) == 0 {
+		t.Fatal("expected non-empty side-by-side output")
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if w := lipgloss.Width(line); w > opts.Width {
+			t.Fatalf("side-by-side line width = %d, want <= %d: %q", w, opts.Width, ansi.Strip(line))
+		}
+	}
+}
+
 func TestRenderModeAutoSelectsSideBySideAt120(t *testing.T) {
 	out := Render(sampleUnified, Options{Width: 160, Mode: ModeAuto, Highlight: false})
 	if !strings.Contains(out, "│") {

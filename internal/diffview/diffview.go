@@ -398,8 +398,13 @@ func computeEmphasis(left, right string) (*lineEmphasis, *lineEmphasis) {
 }
 
 func renderSideBySide(b *strings.Builder, h Hunk, opts Options) int {
-	half := (opts.Width - 3) / 2 // 3 for the " | " separator
-	if half < 20 {
+	// Reserve 3 for the " │ " separator. Give the left side
+	// floor(remaining/2) and the right side ceil(remaining/2) so the full
+	// width is used without wasting a character on even-width terminals.
+	remaining := opts.Width - 3
+	leftHalf := remaining / 2
+	rightHalf := remaining - leftHalf
+	if leftHalf < 20 {
 		return renderUnified(b, h, opts)
 	}
 	lang := detectLanguage(h)
@@ -409,8 +414,8 @@ func renderSideBySide(b *strings.Builder, h Hunk, opts Options) int {
 		if count >= maxRenderLines {
 			return count
 		}
-		lstr := renderSideColumn(p.left, half, removedStyle, remEmphStyle, p.leftEmph, opts.Highlight, lang)
-		rstr := renderSideColumn(p.right, half, addedStyle, addEmphStyle, p.rightEmph, opts.Highlight, lang)
+		lstr := renderSideColumn(p.left, leftHalf, removedStyle, remEmphStyle, p.leftEmph, opts.Highlight, lang)
+		rstr := renderSideColumn(p.right, rightHalf, addedStyle, addEmphStyle, p.rightEmph, opts.Highlight, lang)
 		b.WriteString(lstr)
 		b.WriteString(separatorStyle.Render(" │ "))
 		b.WriteString(rstr)

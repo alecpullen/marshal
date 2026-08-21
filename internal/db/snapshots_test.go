@@ -98,6 +98,50 @@ func TestPruneSnapshotsOlderThan(t *testing.T) {
 	}
 }
 
+// PruneSnapshotsOlderThan must compare timestamps as time.Time values,
+// not as RFC3339 strings. A stored snapshot's created_at is always UTC
+// (SaveSnapshot formats with .UTC()), but pruning must still work when the
+// host runs in a non-UTC zone. We seed snapshots whose stored instant is
+// anchored to a fixed instant and verify pruning behaves correctly with the
+// time-based comparison. Using an instant far in the past guarantees it is
+// pruned regardless of the wall clock.
+func TestPruneSnapshotsOlderThanNonUTCTimestamps(t *testing.T) {
+	db := testSnapshotDB(t)
+
+	tz := time.FixedZone("EST", -5*3600)
+	oldInstant := time.Date(2020, 1, 1, 6, 0, 0, 0, tz) // stored as UTC 11:00Z
+	recentInstant := time.Now().Add(2 * time.Hour)
+
+	if _, err := db.SaveSnapshot("session-old", 1, "old-tz", []string{"a.go"}, oldInstant); err != nil {
+		t.Fatalf("SaveSnapshot old: %v", err)
+	}
+	if _, err := db.SaveSnapshot("session-new", 1, "new-tz", []string{"a.go"}, recentInstant); err != nil {
+		t.Fatalf("SaveSnapshot recent: %v", err)
+	}
+
+	// Prune snapshots older than 1 day: the 2020 snapshot is pruned,
+	// the recent one survives regardless of the local timezone.
+	if err := db.PruneSnapshotsOlderThan(1); err != nil {
+		t.Fatalf("PruneSnapshotsOlderThan: %v", err)
+	}
+
+	_, oldHash, _, err := db.LatestSnapshot("session-old")
+	if err != nil {
+		t.Fatalf("LatestSnapshot old: %v", err)
+	}
+	if oldHash != "" {
+		t.Fatalf("expected old snapshot to be pruned, got hash %q", oldHash)
+	}
+
+	_, newHash, _, err := db.LatestSnapshot("session-new")
+	if err != nil {
+		t.Fatalf("LatestSnapshot new: %v", err)
+	}
+	if newHash != "new-tz" {
+		t.Fatalf("expected recent snapshot to survive, got hash %q", newHash)
+	}
+}
+
 func TestLatestSnapshotNotFound(t *testing.T) {
 	db := testSnapshotDB(t)
 	id, hash, files, err := db.LatestSnapshot("session-1")

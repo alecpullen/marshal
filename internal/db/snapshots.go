@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -86,14 +87,41 @@ func (db *DB) PruneSnapshotsOlderThan(days int) error {
 	if days < 0 {
 		return fmt.Errorf("prune snapshots: days must be >= 0, got %d", days)
 	}
-	cutoff := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
-	res, err := db.sqlDB.Exec(
-		`DELETE FROM snapshots WHERE created_at < ?`, cutoff)
+	cutoff := time.Now().AddDate(0, 0, -days)
+	// Load all snapshots and compare parsed timestamps, not RFC3339 strings.
+	// String comparison breaks with non-UTC timezone offsets.
+	rows, err := db.sqlDB.Query(`SELECT id, created_at FROM snapshots`)
 	if err != nil {
-		return fmt.Errorf("prune snapshots: %w", err)
+		return fmt.Errorf("prune snapshots: query: %w", err)
 	}
-	if _, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("rows affected: %w", err)
+	defer rows.Close()
+
+	var toDelete []int64
+	for rows.Next() {
+		var id int64
+		var createdAt string
+		if err := rows.Scan(&id, &createdAt); err != nil {
+			return fmt.Errorf("prune snapshots: scan: %w", err)
+		}
+		parsed, err := time.Parse(time.RFC3339, createdAt)
+		if err != nil {
+			// Skip unparseable timestamps with a warning rather than
+			// failing the entire prune.
+			slog.Warn("prune snapshots: skipping unparseable timestamp", "value", createdAt, "id", id)
+			continue
+		}
+		if parsed.Before(cutoff) {
+			toDelete = append(toDelete, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("prune snapshots: iterate: %w", err)
+	}
+
+	for _, id := range toDelete {
+		if _, err := db.sqlDB.Exec(`DELETE FROM snapshots WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("prune snapshots: delete id %d: %w", id, err)
+		}
 	}
 	return nil
 }

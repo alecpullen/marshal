@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +16,10 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/repo"
 )
+
+// diagnosticsFileCap bounds how much of a file's content is read for
+// diagnostics, avoiding OOM on large generated files.
+const diagnosticsFileCap = 256 * 1024 // 256 KiB
 
 // SymbolAdapter implements index.LSPSymbols.
 type SymbolAdapter struct{ h *Handle }
@@ -165,15 +171,23 @@ func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
 	}
 	uri := toFileURI(a.h.Root(), filePath)
 
-	// Read file content (cap at 2 MiB to avoid OOM on generated files).
+	// Read file content (cap at 256 KiB to avoid OOM on generated files).
 	info, err := os.Stat(filePath)
 	if err != nil {
 		return "", false
 	}
-	if info.Size() > 2<<20 { // 2 MiB
+	if info.Size() > diagnosticsFileCap {
+		slog.Warn("diagnostics: file exceeds size cap, skipping", "path", filePath, "size", info.Size(), "cap", diagnosticsFileCap)
 		return "", false
 	}
-	content, err := os.ReadFile(filePath)
+	// Use io.LimitReader to cap the read even if the file grows between
+	// Stat and ReadFile.
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", false
+	}
+	content, err := io.ReadAll(io.LimitReader(f, diagnosticsFileCap))
+	f.Close()
 	if err != nil {
 		return "", false
 	}

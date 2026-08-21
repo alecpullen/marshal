@@ -26,6 +26,12 @@ func TestDiagnosticsAdapterEmptyCacheFallsBack(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsFileSizeCap(t *testing.T) {
+	if diagnosticsFileCap != 256*1024 {
+		t.Errorf("diagnosticsFileCap = %d, want %d", diagnosticsFileCap, 256*1024)
+	}
+}
+
 func TestDiagnosticsAdapterVersionIncrements(t *testing.T) {
 	// Verify the version tracking map increments per URI and resets to 1
 	// for a fresh URI.

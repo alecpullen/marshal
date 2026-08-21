@@ -1,6 +1,8 @@
 package pricing
 
 import (
+	"log/slog"
+
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -20,6 +22,9 @@ func Lookup(preset routing.ModelPreset) ModelPricing {
 	if p, ok := builtInTable[preset.Model]; ok {
 		return p
 	}
+	slog.Warn("pricing: model not in pricing table, using zero (configure manually)",
+		"model", preset.Model,
+		"provider", preset.Provider)
 	return ModelPricing{}
 }
 

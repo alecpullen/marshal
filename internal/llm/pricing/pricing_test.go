@@ -1,6 +1,8 @@
 package pricing
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 
 	"marshal/internal/llm/routing"
@@ -18,6 +20,21 @@ func TestLookupLocalModelIsZero(t *testing.T) {
 	p := Lookup(routing.ModelPreset{Model: "qwen2.5-coder:14b", Provider: "ollama"})
 	if p.InputPerMTokCents != 0 || p.OutputPerMTokCents != 0 {
 		t.Errorf("local model should be zero-priced: %+v", p)
+	}
+}
+
+func TestLookupUnknownModelLogsWarning(t *testing.T) {
+	// Capture slog output.
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	preset := routing.ModelPreset{Provider: "test", Model: "unknown-model-xyz"}
+	p := Lookup(preset)
+	if p.InputPerMTokCents != 0 {
+		t.Errorf("unknown model should have zero pricing, got %+v", p)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("unknown-model-xyz")) {
+		t.Errorf("expected warning log mentioning model name, got: %s", buf.String())
 	}
 }
 

@@ -1,8 +1,11 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -390,5 +393,33 @@ func TestFallbackWriterViewRejectsEmptyAllowlist(t *testing.T) {
 		Args: json.RawMessage(`{"patch":"File: anything.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}`),
 	}); err == nil {
 		t.Fatal("empty allowlist must reject every write; got no error")
+	}
+}
+
+func TestFallbackWriterFileWriteToolLogsUnmarshalError(t *testing.T) {
+	// Capture slog output via a text handler writing to a buffer.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(slog.Default()) })
+
+	allowed := map[string]bool{"/workspace": true}
+	tool := Tool{
+		Name: "file.write",
+		Handler: func(ctx context.Context, call ToolCall) (ToolResult, error) {
+			return ToolResult{Summary: "ok"}, nil
+		},
+	}
+
+	wrapped := fallbackWriterFileWriteTool(tool, allowed)
+	// Pass invalid JSON — the unmarshal should fail and log a warning.
+	_, err := wrapped.Handler(context.Background(), ToolCall{Args: []byte("{invalid json")})
+	// The handler still proceeds (path is empty → pathInAllowlist returns false → error).
+	if err == nil {
+		t.Fatal("expected error for invalid JSON with empty path")
+	}
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "failed to parse") || !strings.Contains(logOutput, "file.write") {
+		t.Errorf("expected slog warning about JSON parse failure for file.write, got: %s", logOutput)
 	}
 }

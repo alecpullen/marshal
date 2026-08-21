@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -115,7 +116,9 @@ func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
 		var args struct {
 			Path string `json:"path"`
 		}
-		_ = json.Unmarshal(call.Args, &args)
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			slog.Warn("failed to parse file.write args", "tool", "file.write", "error", err)
+		}
 		cleaned := cleanScopePath(args.Path)
 		if !pathInAllowlist(cleaned, allowed) {
 			return ToolResult{}, fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", args.Path)
@@ -132,7 +135,9 @@ func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
 		var args struct {
 			Patch string `json:"patch"`
 		}
-		_ = json.Unmarshal(call.Args, &args)
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			slog.Warn("failed to parse file.write_patch args", "tool", "file.write_patch", "error", err)
+		}
 		res, err := patch.ParseRepairing(args.Patch)
 		if err != nil || len(res.Patches) == 0 {
 			return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope requires a non-empty patch inside the declared allowlist")

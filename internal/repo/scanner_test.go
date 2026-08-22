@@ -190,12 +190,21 @@ func TestNewScannerContinuesOnBadGitignore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("[\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	// Add a subdirectory so the walk exercises PopTo and Match on the stack
+	// even though the root gitignore failed to parse.
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "a.go"), []byte("package a"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
 	s := NewScanner(Config{Root: dir})
 	if s.loadErr == nil {
 		t.Fatal("expected loadErr to be set for malformed gitignore")
 	}
-	if s.gitignoreStack != nil {
-		t.Fatal("expected gitignoreStack to be nil when parse fails")
+	if s.gitignoreStack == nil {
+		t.Fatal("expected gitignoreStack to be initialized even when parse fails")
 	}
 	// Scan must still succeed (the gitignore rules are simply not applied).
 	if _, err := s.ScanDetailed(context.Background()); err != nil {

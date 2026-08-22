@@ -37,8 +37,12 @@ func (s *GitignoreStack) Push(dir string, g *Gitignore) {
 
 // PopTo removes levels whose directory is not a prefix of dir. This is
 // called when the walk exits a subtree. The dir argument is a
-// slash-separated relative path from the repo root.
+// slash-separated relative path from the repo root. It is safe to call
+// on a nil stack.
 func (s *GitignoreStack) PopTo(dir string) {
+	if s == nil {
+		return
+	}
 	keep := s.levels[:0]
 	for _, lvl := range s.levels {
 		if lvl.dir == "" || dir == lvl.dir || strings.HasPrefix(dir, lvl.dir+"/") {
@@ -51,8 +55,11 @@ func (s *GitignoreStack) PopTo(dir string) {
 // Match reports whether the given path should be ignored. The path is a
 // slash-separated relative path from the repo root. The stack checks all
 // levels from shallowest (root) to deepest. The deepest level that has a
-// matching pattern determines the result.
+// matching pattern determines the result. A nil stack matches nothing.
 func (s *GitignoreStack) Match(path string, isDir bool) bool {
+	if s == nil {
+		return false
+	}
 	ignored := false
 	for _, lvl := range s.levels {
 		// Compute the path relative to this level's directory.

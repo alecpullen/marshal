@@ -110,8 +110,9 @@ func (c *Controller) EndTurn() {
 }
 
 // Due reports whether a rollover is due based on policy and current state.
-// contextWindow is the per-turn compaction budget; when c.ModelContextWindow > 0,
-// the model's full context window is used instead for the percentage calculation.
+// contextWindow is the per-turn compaction threshold; when
+// c.ModelContextWindow > 0, the model's full context window is used
+// instead for the percentage calculation.
 func (c *Controller) Due(ctx context.Context, wire []schema.ChatMessage, contextWindow int) bool {
 	c.mu.Lock()
 	if c.failed {
@@ -130,9 +131,9 @@ func (c *Controller) Due(ctx context.Context, wire []schema.ChatMessage, context
 		return false
 	}
 
-	// Use the model's full context window when set, falling back to the
-	// per-turn compaction budget (contextWindow parameter) for backward
-	// compatibility with callers that pass the correct value directly.
+	// Use the model's full context window when set; otherwise fall back
+	// to the per-turn compaction threshold (contextWindow parameter)
+	// as the denominator for the percentage calculation.
 	window := contextWindow
 	if c.ModelContextWindow > 0 {
 		window = c.ModelContextWindow

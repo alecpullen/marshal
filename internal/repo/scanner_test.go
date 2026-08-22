@@ -10,6 +10,83 @@ import (
 	"testing"
 )
 
+func TestScannerNestedGitignore(t *testing.T) {
+	dir := t.TempDir()
+	// Root .gitignore: ignore *.log
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write root .gitignore: %v", err)
+	}
+	// Subdirectory .gitignore: un-ignore important.log
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, ".gitignore"), []byte("!important.log\n"), 0o644); err != nil {
+		t.Fatalf("write sub .gitignore: %v", err)
+	}
+	// Files
+	if err := os.WriteFile(filepath.Join(subDir, "debug.log"), []byte("debug"), 0o644); err != nil {
+		t.Fatalf("write debug.log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "important.log"), []byte("important"), 0o644); err != nil {
+		t.Fatalf("write important.log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir})
+	scanned, err := scanner.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	paths := make(map[string]bool)
+	for _, f := range scanned {
+		paths[f.Path] = true
+	}
+	if !paths["main.go"] {
+		t.Error("expected main.go to be scanned")
+	}
+	if !paths["sub/important.log"] {
+		t.Error("expected sub/important.log to be scanned (un-ignored by sub .gitignore)")
+	}
+	if paths["sub/debug.log"] {
+		t.Error("sub/debug.log should be ignored by root *.log")
+	}
+}
+
+func TestScannerNestedGitignorePrecedence(t *testing.T) {
+	dir := t.TempDir()
+	// Root .gitignore: ignore foo.txt
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("foo.txt\n"), 0o644); err != nil {
+		t.Fatalf("write root .gitignore: %v", err)
+	}
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	// Sub .gitignore: un-ignore foo.txt
+	if err := os.WriteFile(filepath.Join(subDir, ".gitignore"), []byte("!foo.txt\n"), 0o644); err != nil {
+		t.Fatalf("write sub .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "foo.txt"), []byte("foo"), 0o644); err != nil {
+		t.Fatalf("write foo.txt: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir})
+	scanned, err := scanner.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	paths := make(map[string]bool)
+	for _, f := range scanned {
+		paths[f.Path] = true
+	}
+	if !paths["sub/foo.txt"] {
+		t.Error("expected sub/foo.txt to be scanned (un-ignored by sub .gitignore)")
+	}
+}
+
 func TestSkippedReturnTypeIsExported(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "huge.bin"), make([]byte, 1024), 0o644); err != nil {
@@ -73,8 +150,8 @@ func TestNewScannerContinuesOnBadGitignore(t *testing.T) {
 	if s.loadErr == nil {
 		t.Fatal("expected loadErr to be set for malformed gitignore")
 	}
-	if s.gitignore != nil {
-		t.Fatal("expected gitignore to be nil when parse fails")
+	if s.gitignoreStack != nil {
+		t.Fatal("expected gitignoreStack to be nil when parse fails")
 	}
 	// Scan must still succeed (the gitignore rules are simply not applied).
 	if _, err := s.ScanDetailed(context.Background()); err != nil {

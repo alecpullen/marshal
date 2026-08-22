@@ -91,3 +91,34 @@ func (m modelEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error)
 }
 func (m modelEmbedder) Model() string { return m.name }
 func (m modelEmbedder) Dims() int     { return 2 }
+
+func TestVectorsNoChangesReturnsCache(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+
+	_ = database.ReplaceFileChunks(pid, "a.go", "h", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "a.go", FileHash: "h", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
+		Model: "m", Dim: 2, Vector: []float32{1, 0},
+	}})
+
+	src := NewSemanticSource(database, fakeEmbedder{}, pid)
+
+	// First load.
+	rows1, err := src.vectors()
+	if err != nil || len(rows1) != 1 {
+		t.Fatalf("first vectors() = %#v err=%v", rows1, err)
+	}
+
+	// Second load with no changes — should return the same slice (cache hit).
+	rows2, err := src.vectors()
+	if err != nil {
+		t.Fatalf("second vectors() err: %v", err)
+	}
+	if len(rows2) != 1 || rows2[0].FilePath != "a.go" {
+		t.Fatalf("second vectors() = %#v, want same cached a.go", rows2)
+	}
+	// Verify it's the same cached slice (pointer identity proves no reload).
+	if &rows1[0] != &rows2[0] {
+		t.Fatalf("second vectors() returned a different slice — cache was not reused")
+	}
+}

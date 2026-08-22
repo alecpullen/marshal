@@ -36,19 +36,66 @@ func (s *SemanticSource) vectors() ([]db.VectorRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Full reload on first load, model change, or count/maxID mismatch.
-	// (Incremental loading is added in Task 4; for now this is a correctness
-	// baseline that also handles model changes.)
-	if s.cache == nil || s.embedder.Model() != s.cacheModel || count != s.cacheN || maxID != s.cacheGen {
-		rows, err := s.db.LoadVectors(s.projectID, s.embedder.Model())
+	model := s.embedder.Model()
+
+	// Full reload on first load or model change.
+	if s.cache == nil || model != s.cacheModel {
+		rows, err := s.db.LoadVectors(s.projectID, model)
 		if err != nil {
 			return nil, err
 		}
 		s.cache = rows
 		s.cacheN = count
 		s.cacheGen = maxID
-		s.cacheModel = s.embedder.Model()
+		s.cacheModel = model
+		return s.cache, nil
 	}
+
+	// Fast path: nothing changed.
+	if count == s.cacheN && maxID == s.cacheGen {
+		return s.cache, nil
+	}
+
+	// Incremental: load only new/changed vectors.
+	newRows, err := s.db.LoadVectorsSince(s.projectID, model, s.cacheGen)
+	if err != nil {
+		return nil, err
+	}
+
+	// Identify files affected by new/changed chunks.
+	affected := map[string]bool{}
+	for _, r := range newRows {
+		affected[r.FilePath] = true
+	}
+
+	// Remove old cache entries for affected files (ReplaceFileChunks re-inserts).
+	filtered := s.cache[:0]
+	for _, r := range s.cache {
+		if !affected[r.FilePath] {
+			filtered = append(filtered, r)
+		}
+	}
+
+	// If chunk count decreased, also remove entries for files no longer in DB.
+	if count < s.cacheN {
+		currentFiles, err := s.db.CurrentChunkFiles(s.projectID, model)
+		if err != nil {
+			return nil, err
+		}
+		pruned := filtered[:0]
+		for _, r := range filtered {
+			if currentFiles[r.FilePath] {
+				pruned = append(pruned, r)
+			}
+		}
+		filtered = pruned
+	}
+
+	// Append new rows.
+	s.cache = append(filtered, newRows...)
+	s.cacheN = count
+	s.cacheGen = maxID
+	s.cacheModel = model
 	return s.cache, nil
 }
 

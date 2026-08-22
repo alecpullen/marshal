@@ -2253,3 +2253,40 @@ func TestClearToolCache(t *testing.T) {
 		t.Fatal("entry survived ClearToolCache")
 	}
 }
+
+func TestUpdateContextPackAppliesUnderLock(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+	s.UpdateContextPack(func(p contextpack.Pack) contextpack.Pack {
+		p.Sections = append(p.Sections, contextpack.Section{Kind: contextpack.SectionRepoCard, Content: "card"})
+		return p
+	})
+	s.UpdateContextPack(func(p contextpack.Pack) contextpack.Pack {
+		p.Sections = append(p.Sections, contextpack.Section{Kind: contextpack.SectionPlan, Content: "plan"})
+		return p
+	})
+	pack := s.ContextPack()
+	if len(pack.Sections) != 2 {
+		t.Fatalf("sections = %d, want 2", len(pack.Sections))
+	}
+}
+
+func TestUpdateContextPackConcurrentWritersLoseNothing(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				s.UpdateContextPack(func(p contextpack.Pack) contextpack.Pack {
+					p.Sections = append(p.Sections, contextpack.Section{Content: "x"})
+					return p
+				})
+			}
+		}()
+	}
+	wg.Wait()
+	if got := len(s.ContextPack().Sections); got != 200 {
+		t.Fatalf("sections = %d, want 200 (lost update under concurrency)", got)
+	}
+}

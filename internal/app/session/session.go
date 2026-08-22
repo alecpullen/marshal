@@ -938,6 +938,17 @@ func (s *State) ContextPack() contextpack.Pack {
 	return s.contextPack.Clone()
 }
 
+// UpdateContextPack atomically applies fn to the current pack and stores the
+// result. Use it for every read-modify-write pack update: the
+// ContextPack/SetContextPack pair is not atomic, and concurrent writers
+// (swarm role runners sharing one State, index-completion re-seeds) can
+// otherwise lose each other's sections.
+func (s *State) UpdateContextPack(fn func(contextpack.Pack) contextpack.Pack) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contextPack = fn(s.contextPack.Clone()).Clone()
+}
+
 func (s *State) SetActiveRoute(route RouteInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

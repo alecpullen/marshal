@@ -386,8 +386,9 @@ type AgentConfig struct {
 	MaxTouchedFileBytes int `toml:"max_touched_file_bytes"`
 	// ThinkingBudgetMargin controls the Anthropic thinking budget headroom.
 	// When maxTokens <= thinking budget, maxTokens is bumped to
-	// budget + margin. 0 = auto (max(2048, maxTokens/4)). -1 = disabled
-	// (maxTokens is never adjusted). Positive values are used directly.
+	// budget + margin. 0 = auto (max(2048, maxTokens/4)). Any negative
+	// value (including -1) means disabled (maxTokens is never adjusted).
+	// Positive values are used directly.
 	ThinkingBudgetMargin int `toml:"thinking_budget_margin"`
 }
 

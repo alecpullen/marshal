@@ -35,8 +35,8 @@ type Options struct {
 	ThinkingBudget int
 	// ThinkingBudgetMargin is honored only by the native Anthropic
 	// backend: headroom tokens added to the thinking budget when
-	// maxTokens <= budget. 0 = auto (max(2048, maxTokens/4)). -1 = disabled.
-	// Positive values are used directly.
+	// maxTokens <= budget. 0 = auto (max(2048, maxTokens/4)). Any negative
+	// value (including -1) means disabled. Positive values are used directly.
 	ThinkingBudgetMargin int
 }
 

@@ -264,7 +264,7 @@ func (m Model) inputBarColor() color.Color {
 // gutteredInput renders the textarea with the ▍ state bar prepended to
 // every display line, and overlays the active next-prompt suggestion as
 // grey ghost text immediately after the cursor on the cursor line.
-func (m Model) gutteredInput() string {
+func (m *Model) gutteredInput() string {
 	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render(glyph.Rail)
 	placeholder := m.input.Placeholder
 	if m.input.Value() == "" && m.suggestionGhost() != "" {

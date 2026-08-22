@@ -15,6 +15,23 @@ func TestCursorAtEndOfInputUsesCurrentLineLength(t *testing.T) {
 	}
 }
 
+func TestGutteredInputRestoresPlaceholder(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.suggestion = "yes"
+	m.suggestionDismissed = false
+	m.input.Placeholder = "TEMP"
+
+	_ = m.gutteredInput()
+
+	// The function captures the current placeholder at entry, blanks it
+	// while a suggestion ghost overlays the input, and restores it on exit.
+	// With the value receiver this defer ran on a copy, so the caller's
+	// placeholder was left permanently "" — the bug this guards against.
+	if m.input.Placeholder != "TEMP" {
+		t.Errorf("placeholder should be restored to its entry value after gutteredInput: got %q, want %q", m.input.Placeholder, "TEMP")
+	}
+}
+
 func TestGutteredInputSuggestion(t *testing.T) {
 	t.Run("empty_input_shows_full_suggestion", func(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)

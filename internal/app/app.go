@@ -187,6 +187,21 @@ func startWorker(ctx context.Context, wg *sync.WaitGroup, w worker.Worker, log *
 	}()
 }
 
+// indexEventCompleted is published on Runtime.IndexBroker after every
+// successful index pass (startup scan or watcher rerun).
+const indexEventCompleted = "index.completed"
+
+// namedWorker adapts a function to the worker.Worker contract for production
+// background workers. (app_test.go defines its own workerFunc for the test
+// seam; the names must not collide.)
+type namedWorker struct {
+	name string
+	run  func(ctx context.Context) error
+}
+
+func (w namedWorker) Name() string                  { return w.name }
+func (w namedWorker) Run(ctx context.Context) error { return w.run(ctx) }
+
 // WithSessionID pins the session identifier used when the runtime creates a
 // new database session. When empty, StartRuntime generates a sess_<unixnano>
 // id. Useful for headless transports that want a stable id derived from
@@ -1358,6 +1373,58 @@ func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFo
 	return nil
 }
 
+// buildIndexWorkers assembles the indexing background workers: the
+// fsnotify watcher (only when config.WatchEnabled allows) and the one-shot
+// startup scan (AI-02 — always; hashes+symbols even without embeddings so
+// repo.map/symbols.find work on a fresh project). Every successful pass
+// publishes indexEventCompleted on indexBroker, which triggers the
+// context-pack re-seed in startRuntime.
+func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB, projectID int64, workingDir string, lspAdapter index.LSPSymbols, indexBroker *pubsub.Broker[index.Report], logger *slog.Logger) []worker.Worker {
+	runPass := func(c context.Context) error {
+		cfg := state.Config
+
+		embedder := resolveEmbedderFromConfig(cfg)
+		if embedder != nil {
+			probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
+			defer cancel()
+			if _, err := embedding.Probe(probeCtx, embedder); err != nil {
+				return fmt.Errorf("embedding probe failed: %w", err)
+			}
+		}
+
+		passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
+		defer cancel()
+		rep, err := index.Run(passCtx, index.Deps{
+			DB:       database,
+			Root:     workingDir,
+			Ignore:   cfg.Indexing.Ignore,
+			MaxBytes: cfg.Indexing.MaxIndexableFileBytes,
+			Embedder: embedder,
+			LSP:      lspAdapter,
+			OnProgress: func(msg string) {
+				state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
+			},
+		}, projectID)
+		if err == nil {
+			indexBroker.Publish(indexEventCompleted, rep)
+		}
+		return err
+	}
+
+	var workers []worker.Worker
+	embeddingConfigured := false
+	embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
+	if _, err := embedRouter.ResolveEmbedding(); err == nil {
+		embeddingConfigured = true
+	}
+	if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
+		debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
+		workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
+	}
+	workers = append(workers, namedWorker{name: "startup-index-scan", run: runPass})
+	return workers
+}
+
 func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	if ctx.Err() != nil {
 		return nil
@@ -1612,37 +1679,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
 			}
 
-			if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
-				debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
-				runPass := func(c context.Context) error {
-					cfg := state.Config
-
-					embedder := resolveEmbedderFromConfig(cfg)
-					if embedder != nil {
-						probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
-						defer cancel()
-						if _, err := embedding.Probe(probeCtx, embedder); err != nil {
-							return fmt.Errorf("embedding probe failed: %w", err)
-						}
-					}
-
-					passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
-					defer cancel()
-					_, err := index.Run(passCtx, index.Deps{
-						DB:       database,
-						Root:     workingDir,
-						Ignore:   cfg.Indexing.Ignore,
-						MaxBytes: cfg.Indexing.MaxIndexableFileBytes,
-						Embedder: embedder,
-						LSP:      lspAdapter,
-						OnProgress: func(msg string) {
-							state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
-						},
-					}, projectID)
-					return err
-				}
-				workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
-			}
+			workers = buildIndexWorkers(cfg, state, database, projectID, workingDir, lspAdapter,
+				must[*pubsub.Broker[index.Report]](rt.IndexBroker), logger)
 		}
 		// LSPManager is started inside startRuntime (shared by Run and
 		// StartRuntime) — see runtime.go. Do not start it again here.

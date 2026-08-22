@@ -21,6 +21,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
+	"marshal/internal/index"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
@@ -80,6 +81,7 @@ type Runtime struct {
 	EventBroker       BrokerCloser
 	WorkspaceBroker   BrokerCloser
 	SubagentBroker    BrokerCloser
+	IndexBroker       BrokerCloser
 	MCPManager        MCPCloser
 	Snapshot          SnapshotCloser
 	Logger            *slog.Logger
@@ -296,6 +298,11 @@ func (rt *Runtime) Close(ctx context.Context) error {
 		// 5.6. subagent broker.
 		if rt.SubagentBroker != nil {
 			rt.SubagentBroker.Close()
+		}
+
+		// 5.7. index broker.
+		if rt.IndexBroker != nil {
+			rt.IndexBroker.Close()
 		}
 
 		// 5b. rollover close — end the live generation with session_end.
@@ -549,6 +556,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	eventBroker := pubsub.NewBroker[session.Event]()
 	workspaceBroker := pubsub.NewBroker[session.WorkspaceEvent]()
 	subagentBroker := pubsub.NewBroker[session.SubagentEvent]()
+	indexBroker := pubsub.NewBroker[index.Report]()
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 	state.SetWorkspaceBroker(workspaceBroker)
@@ -593,6 +601,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		EventBroker:        eventBroker,
 		WorkspaceBroker:    workspaceBroker,
 		SubagentBroker:     subagentBroker,
+		IndexBroker:        indexBroker,
 		JobManager:         jobMgr,
 		DesktopCloser:      desktopCloser,
 		CustomAgentFactory: subagentFactory,
@@ -610,6 +619,8 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		workCtx:            workCtx,
 		workCancel:         workCancel,
 	}
+	// AI-01: re-seed the pack's repo sections when an index pass completes.
+	rt.subscribeIndexReseed(indexBroker, database, projectID)
 	// Start the LSP manager's worker loop here so both Run (TUI) and
 	// StartRuntime (ACP/headless) get it, and restart the manager against
 	// the session's active root on every WorkspaceEvent so hover /
@@ -675,6 +686,22 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 		}
 		logger.Info("autoloaded skill", "skill", name)
 	}
+}
+
+// subscribeIndexReseed re-seeds the context pack's repo sections on every
+// completed index pass. Seeding is idempotent (replace-by-kind), so a pass
+// that changed nothing just re-renders identical content. The goroutine
+// ends when the broker closes or workCtx is cancelled.
+func (rt *Runtime) subscribeIndexReseed(indexBroker *pubsub.Broker[index.Report], database *db.DB, projectID int64) {
+	ch := indexBroker.Subscribe(rt.workCtx)
+	go func() {
+		for {
+			if _, ok := <-ch; !ok {
+				return
+			}
+			seedRepoContext(rt.State, database, projectID)
+		}
+	}()
 }
 
 // NewSession creates a brand-new session (new DB row, new SessionID, fresh

@@ -141,6 +141,50 @@ func TestScannerFindsFiles(t *testing.T) {
 	}
 }
 
+func TestScannerMalformedNestedGitignore(t *testing.T) {
+	dir := t.TempDir()
+	// Root .gitignore: ignore *.log
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write root .gitignore: %v", err)
+	}
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	// Malformed .gitignore: invalid glob pattern
+	if err := os.WriteFile(filepath.Join(subDir, ".gitignore"), []byte("[\n"), 0o644); err != nil {
+		t.Fatalf("write sub .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "debug.log"), []byte("debug"), 0o644); err != nil {
+		t.Fatalf("write debug.log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir})
+	scanned, err := scanner.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	// main.go should be scanned
+	paths := make(map[string]bool)
+	for _, f := range scanned {
+		paths[f.Path] = true
+	}
+	if !paths["main.go"] {
+		t.Error("expected main.go to be scanned")
+	}
+	// sub/debug.log should still be ignored by root *.log (malformed sub .gitignore skipped)
+	if paths["sub/debug.log"] {
+		t.Error("sub/debug.log should be ignored by root *.log even with malformed sub .gitignore")
+	}
+	// A warning should be recorded for the malformed .gitignore
+	if len(scanner.Warnings()) == 0 {
+		t.Error("expected at least one warning for malformed nested .gitignore")
+	}
+}
+
 func TestNewScannerContinuesOnBadGitignore(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("[\n"), 0o644); err != nil {

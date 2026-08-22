@@ -767,9 +767,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			steeringArrived = true
 		}
 		if len(steeringPins) > 0 {
-			pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
-			r.State.SetContextPack(pack)
-			messages = r.setContextPackMessage(messages, pack)
+			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+				return contextpack.PinFiles(pack, steeringPins)
+			})
 		}
 
 		if !pressureMessageSent && budget.remainingTools() <= finalizePressureThreshold {

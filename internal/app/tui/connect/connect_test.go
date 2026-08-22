@@ -1577,3 +1577,16 @@ func TestRenderRenameInputTruncatesSafely(t *testing.T) {
 		t.Fatalf("renderRenameInput produced invalid UTF-8: %q", result)
 	}
 }
+
+func TestDoneNilConfirmDoesNotPanic(t *testing.T) {
+	m := &Model{} // confirm is nil (only set once the confirm-limits step is entered)
+	cmd := m.done()
+	if cmd == nil {
+		t.Fatal("done() should return a tea.Cmd")
+	}
+	// Executing the returned closure must not dereference a nil confirm.
+	msg := cmd()
+	if _, ok := msg.(DoneMsg); !ok {
+		t.Fatalf("done() cmd returned %T, want DoneMsg", msg)
+	}
+}

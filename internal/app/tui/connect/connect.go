@@ -1018,14 +1018,21 @@ func (m *Model) refreshCmd() tea.Cmd {
 
 func (m *Model) done() tea.Cmd {
 	return func() tea.Msg {
+		var ctxWin, maxOut int
+		var toolCalling *bool
+		if m.confirm != nil {
+			ctxWin = m.confirm.Limits.ContextWindow
+			maxOut = m.confirm.Limits.MaxOutputTokens
+			toolCalling = m.confirm.Limits.ToolCalling
+		}
 		return DoneMsg{
 			Provider:        m.providerName,
 			Model:           m.modelChosen,
 			ProviderCfg:     m.providerCfg,
 			EnabledRemote:   m.remoteEnabled,
-			ContextWindow:   m.confirm.Limits.ContextWindow,
-			MaxOutputTokens: m.confirm.Limits.MaxOutputTokens,
-			ToolCalling:     m.confirm.Limits.ToolCalling,
+			ContextWindow:   ctxWin,
+			MaxOutputTokens: maxOut,
+			ToolCalling:     toolCalling,
 		}
 	}
 }

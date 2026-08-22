@@ -938,7 +938,7 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
 	resolver := newRoutedProviderResolver(cfg, t.TempDir())
-	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath)
+	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil)
 	if adapter == nil {
 		t.Fatal("buildPipelineController returned nil")
 	}
@@ -3669,5 +3669,65 @@ func TestRuntimeNewSessionResetsState(t *testing.T) {
 	}
 	if !foundOld {
 		t.Fatalf("old session %s not persisted", oldID)
+	}
+}
+
+func TestRoleRunnerWiredWithResolverAndLimits(t *testing.T) {
+	cfg := config.Default()
+	cfg.Project.Name = "role-runner-wiring-test"
+	cfg.Profile.Default = "main"
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "openai_compatible", BaseURL: "http://local/v1", APIKey: "k"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"local/impl": {Provider: "local", Model: "impl", ContextWindow: 32768},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"main": {Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "local/impl"},
+		}},
+	}
+
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	lt := limits.NewTable(nil)
+	spec := roleRunnerSpec{
+		cfg:         cfg,
+		state:       state,
+		pol:         policy.NewEngine(&cfg, nil),
+		resolver:    newRoutedProviderResolver(cfg, ""),
+		reg:         registry.New(),
+		memory:      &dbMemoryProvider{db: database},
+		projectID:   1,
+		limitsTable: &lt,
+		database:    database,
+	}
+
+	r, err := spec.newRunner(agent.RoleImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	if r.RouteResolver == nil {
+		t.Fatal("RouteResolver not wired on role runner")
+	}
+	route, _, err := r.RouteResolver.Resolve("edit")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if route.Preset.Model != "impl" {
+		t.Fatalf("model = %q, want impl", route.Preset.Model)
+	}
+	if r.LimitsTable != &lt {
+		t.Fatal("LimitsTable not wired on role runner")
+	}
+	window, _ := agent.ResolveModelLimits(route.Preset, r.LimitsTable, nil)
+	if window != 32768 {
+		t.Fatalf("window = %d, want 32768 from preset config", window)
 	}
 }

@@ -585,21 +585,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	runner.Pricing = parentPricing
 
-	// Give the runner the merged limit table so a preset with no explicit
-	// context_window still resolves a real window instead of falling
-	// straight through to the eleven-entry local catalog. Cache-only unless
-	// remote limit discovery is enabled; a missing cache leaves it nil and
-	// resolution degrades gracefully.
-	if dataDir != "" {
-		if cfg.Privacy.RemoteLimitDiscovery {
-			if t, err := limits.LoadTable(ctx, dataDir, limits.DefaultTTL); err == nil {
-				runner.LimitsTable = &t
-			}
-		} else if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
-			t := limits.NewTable(c.Table)
-			runner.LimitsTable = &t
-		}
-	}
+	limitsTable := loadLimitsTable(ctx, cfg, dataDir)
+	runner.LimitsTable = limitsTable
 
 	// Defensive: align runner mode with policy engine in case the runner
 	// ever copies the engine instead of sharing it.
@@ -754,7 +741,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			runner.TitleGenerator = agent.NewTitleGenerator(titleProvider, titleRoute.Preset.Model, state)
 		}
 	}
-	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
+	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex, limitsTable)
 
 	var desktopCloser func()
 	if cfg.Desktop.Enabled {
@@ -775,10 +762,33 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 
 	subagentFactory, _ = buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()))
 	pipelineFactory := func(planPath string) tui.AgentRunner {
-		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath)
+		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable)
 	}
 	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner)
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, nil
+}
+
+// loadLimitsTable loads the merged model-limits table so presets without an
+// explicit context_window still resolve a real window instead of falling
+// straight through to the local catalog. Cache-only unless remote limit
+// discovery is enabled; nil when dataDir is empty or no table is available —
+// resolution degrades gracefully (agent.ResolveModelLimits falls back to the
+// catalog).
+func loadLimitsTable(ctx context.Context, cfg config.Config, dataDir string) *limits.Table {
+	if dataDir == "" {
+		return nil
+	}
+	if cfg.Privacy.RemoteLimitDiscovery {
+		if t, err := limits.LoadTable(ctx, dataDir, limits.DefaultTTL); err == nil {
+			return &t
+		}
+		return nil
+	}
+	if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
+		t := limits.NewTable(c.Table)
+		return &t
+	}
+	return nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -795,6 +805,8 @@ type roleRunnerSpec struct {
 	skillIndex  *skills.Index
 	memory      *dbMemoryProvider
 	projectID   int64
+	limitsTable *limits.Table
+	database    *db.DB // nil-safe: only used for pipeline child rollover (Task 7)
 
 	writeGate        agent.WriteGate         // swarm only; nil for SDD
 	metricsObserver  func(agent.TurnMetrics) // swarm only; nil for SDD
@@ -836,6 +848,13 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	}
 	r := agent.NewRunner(p, toolReg, pol, runnerState, route.Preset.Model)
 	r.Role = role
+	// AI-03: without a RouteResolver, resolveRoute returns a zero route and
+	// role runners compact against the 60000-token fallback regardless of
+	// their model's real window, ignore per-role context budgets, and get no
+	// semantic retrieval. The static resolver replays the already-resolved
+	// role route — the same pattern subagent children use (app.go:1287).
+	r.RouteResolver = &staticRouteResolver{route: route, provider: p}
+	r.LimitsTable = s.limitsTable
 	r.WriteGate = s.writeGate
 	r.SkillIndex = s.skillIndex
 	r.MemoryProvider = s.memory
@@ -890,7 +909,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 // the filtered registry view; each role's provider/model comes from the
 // routing profile via ResolveRole (falling back to the implementer preset
 // for unconfigured roles).
-func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *swarm.Orchestrator {
+func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, lt *limits.Table) *swarm.Orchestrator {
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
@@ -902,6 +921,8 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 		skillIndex:  skillIndex,
 		memory:      &dbMemoryProvider{db: database},
 		projectID:   projectID,
+		limitsTable: lt,
+		database:    database,
 
 		writeGate:        &swarm.WriteLock{},
 		metricsObserver:  metricsRecorder(database, projectID, state.SessionID(), state.Logger()),
@@ -916,7 +937,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 // buildPipelineController wires a plan-execution controller for one plan.
 // It is built per run, not at startup: the controller is bound to a single
 // plan file.
-func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string) *pipeline.ControllerAdapter {
+func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, lt *limits.Table) *pipeline.ControllerAdapter {
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
@@ -927,6 +948,8 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		skillIndex:  skillIndex,
 		memory:      &dbMemoryProvider{db: database},
 		projectID:   projectID,
+		limitsTable: lt,
+		database:    database,
 
 		childSession: true,
 	}

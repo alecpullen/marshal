@@ -44,16 +44,22 @@ const (
 // Unknown models resolve to conservative default specs and log a warning so
 // callers still get a usable budget rather than a zero. An empty model id
 // returns (0, 0) — there is nothing to resolve.
-func Lookup(modelID string) (contextWindow, maxOutput int) {
+//
+// logger is optional. When non-nil the "model not in catalog" warning is
+// routed through it (so it lands in the log file rather than stderr); when
+// nil no warning is emitted.
+func Lookup(modelID string, logger *slog.Logger) (contextWindow, maxOutput int) {
 	if modelID == "" {
 		return 0, 0
 	}
 	e, ok := builtin[strings.ToLower(modelID)]
 	if !ok {
-		slog.Warn("catalog: model not in catalog, using default specs (configure manually)",
-			"model", modelID,
-			"default_context_window", defaultContextWindow,
-			"default_max_output", defaultMaxOutput)
+		if logger != nil {
+			logger.Warn("catalog: model not in catalog, using default specs (configure manually)",
+				"model", modelID,
+				"default_context_window", defaultContextWindow,
+				"default_max_output", defaultMaxOutput)
+		}
 		return defaultContextWindow, defaultMaxOutput
 	}
 	return e.contextWindow, e.maxOutput

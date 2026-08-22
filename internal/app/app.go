@@ -668,7 +668,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// Use LLMSummaryProvider as the primary digest provider, falling back to
 	// minimalDigestProvider only when the runner's provider is not available
 	// (branch review finding #1).
-	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable)
+	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable, state.Logger())
 	var digestProvider rollover.DigestProvider
 	switch cfg.Session.Rollover.DigestProvider {
 	case "files":

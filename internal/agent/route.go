@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
@@ -145,7 +146,10 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 // the curated local catalog, which returns conservative defaults for unknown
 // models. A zero return is only possible when the preset's model ID is empty;
 // in that case the caller keeps its configured budget rather than guessing.
-func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table) (window, maxOutput int) {
+//
+// logger is threaded through to catalog.Lookup so the "unknown model" warning
+// lands in the log file rather than stderr; pass nil to suppress it.
+func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table, logger *slog.Logger) (window, maxOutput int) {
 	window = preset.ContextWindow
 	maxOutput = preset.MaxOutputTokens
 
@@ -161,7 +165,7 @@ func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table) (window
 	}
 
 	if window == 0 || maxOutput == 0 {
-		catWindow, catOutput := catalog.Lookup(preset.Model)
+		catWindow, catOutput := catalog.Lookup(preset.Model, logger)
 		if window == 0 {
 			window = catWindow
 		}
@@ -173,7 +177,11 @@ func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table) (window
 }
 
 func (r *Runner) resolveModelLimits(preset routing.ModelPreset) (window, maxOutput int) {
-	return ResolveModelLimits(preset, r.LimitsTable)
+	var logger *slog.Logger
+	if r.State != nil {
+		logger = r.State.Logger()
+	}
+	return ResolveModelLimits(preset, r.LimitsTable, logger)
 }
 
 // mergeMemories injects the project's current durable memories into the

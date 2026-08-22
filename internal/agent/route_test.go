@@ -25,7 +25,7 @@ func TestResolveModelLimitsUsesProvidedTable(t *testing.T) {
 	window, maxOutput := ResolveModelLimits(routing.ModelPreset{
 		Provider: "test-provider",
 		Model:    "model-with-cache-limits",
-	}, &tbl)
+	}, &tbl, nil)
 	if window != 128000 || maxOutput != 8192 {
 		t.Fatalf("ResolveModelLimits() = (%d, %d), want (128000, 8192)", window, maxOutput)
 	}

@@ -607,9 +607,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// paths and unreadable files are silently skipped (see
 	// extractPinnedFiles); the TUI only inserts the literal "@path" text.
 	if pinned := extractPinnedFiles(goal, r, r.ProjectID); len(pinned) > 0 {
-		pack := r.State.ContextPack()
-		pack = contextpack.PinFiles(pack, pinned)
-		r.State.SetContextPack(pack)
+		r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+			return contextpack.PinFiles(pack, pinned)
+		})
 	}
 
 	messages := []schema.ChatMessage{
@@ -667,8 +667,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if route.ContextBudget.MaxRepoContextTokens > 0 {
 				maxTokens = route.ContextBudget.MaxRepoContextTokens
 			}
-			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
-			r.State.SetContextPack(updatedPack)
+			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+				return contextpack.RefreshPlanWithBudget(pack, task.Plan, maxTokens, r.Now)
+			})
+			updatedPack := r.State.ContextPack()
 			r.contextPackMsgIndex = -1
 			r.emittedSkills = nil
 			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config))}

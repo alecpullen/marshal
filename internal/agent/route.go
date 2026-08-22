@@ -118,11 +118,12 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 		Active:    true,
 	})
 	if route.ContextBudget.MaxRepoContextTokens > 0 {
-		pack := r.State.ContextPack()
-		if !pack.IsEmpty() {
-			pack = contextpack.Rebudget(pack, route.ContextBudget.MaxRepoContextTokens, r.Now)
-			r.State.SetContextPack(pack)
-		}
+		r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+			if pack.IsEmpty() {
+				return pack
+			}
+			return contextpack.Rebudget(pack, route.ContextBudget.MaxRepoContextTokens, r.Now)
+		})
 	}
 
 	// F12: resolve the model's context window, preferring explicit config on
@@ -197,15 +198,16 @@ func (r *Runner) mergeMemories(maxTokenOverride int) {
 		return
 	}
 
-	current := r.State.ContextPack()
-	maxTokens := maxTokenOverride
-	if maxTokens <= 0 {
-		maxTokens = current.TokenUsage.MaxTokens
-	}
-	if maxTokens <= 0 {
-		maxTokens = contextpack.DefaultMaxTokens
-	}
-	r.State.SetContextPack(contextpack.MergeMemories(current, memories, maxTokens, r.Now))
+	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+		maxTokens := maxTokenOverride
+		if maxTokens <= 0 {
+			maxTokens = pack.TokenUsage.MaxTokens
+		}
+		if maxTokens <= 0 {
+			maxTokens = contextpack.DefaultMaxTokens
+		}
+		return contextpack.MergeMemories(pack, memories, maxTokens, r.Now)
+	})
 }
 
 // mergeScratchpad injects the session's current scratchpad entries into
@@ -214,12 +216,11 @@ func (r *Runner) mergeMemories(maxTokenOverride int) {
 // content in the context budget.
 func (r *Runner) mergeScratchpad(maxTokenOverride int) {
 	entries := r.State.Scratchpad()
-	current := r.State.ContextPack()
 	if len(entries) == 0 {
 		// Nothing to inject, but we still need to clear a stale projection
 		// if the previous turn left one behind.
 		hasScratchpad := false
-		for _, s := range current.Sections {
+		for _, s := range r.State.ContextPack().Sections {
 			if s.Kind == contextpack.SectionScratchpad {
 				hasScratchpad = true
 				break
@@ -229,18 +230,21 @@ func (r *Runner) mergeScratchpad(maxTokenOverride int) {
 			return
 		}
 	}
-	maxTokens := maxTokenOverride
-	if maxTokens <= 0 {
-		maxTokens = current.TokenUsage.MaxTokens
-	}
-	if maxTokens <= 0 {
-		maxTokens = contextpack.DefaultMaxTokens
-	}
 	cpEntries := make([]contextpack.ScratchpadEntry, len(entries))
 	for i, e := range entries {
 		cpEntries[i] = contextpack.ScratchpadEntry{Key: e.Key, Content: e.Content, Format: e.Format, Updated: e.Updated}
 	}
-	r.State.SetContextPack(contextpack.MergeScratchpad(current, cpEntries, maxTokens, r.State.ScratchpadConfig().ProjectionMaxTokens, r.Now))
+	projectionMax := r.State.ScratchpadConfig().ProjectionMaxTokens
+	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+		maxTokens := maxTokenOverride
+		if maxTokens <= 0 {
+			maxTokens = pack.TokenUsage.MaxTokens
+		}
+		if maxTokens <= 0 {
+			maxTokens = contextpack.DefaultMaxTokens
+		}
+		return contextpack.MergeScratchpad(pack, cpEntries, maxTokens, projectionMax, r.Now)
+	})
 }
 
 // mergeTodos injects the session's current todo list into the context
@@ -249,12 +253,11 @@ func (r *Runner) mergeScratchpad(maxTokenOverride int) {
 // next iteration.
 func (r *Runner) mergeTodos(maxTokenOverride int) {
 	todos := r.State.Todos()
-	current := r.State.ContextPack()
 	if len(todos) == 0 {
 		// Nothing to inject, but we still need to clear a stale projection
 		// if the previous turn left one behind.
 		hasTodos := false
-		for _, s := range current.Sections {
+		for _, s := range r.State.ContextPack().Sections {
 			if s.Kind == contextpack.SectionTodos {
 				hasTodos = true
 				break
@@ -264,18 +267,20 @@ func (r *Runner) mergeTodos(maxTokenOverride int) {
 			return
 		}
 	}
-	maxTokens := maxTokenOverride
-	if maxTokens <= 0 {
-		maxTokens = current.TokenUsage.MaxTokens
-	}
-	if maxTokens <= 0 {
-		maxTokens = contextpack.DefaultMaxTokens
-	}
 	cpTodos := make([]contextpack.TodoItem, len(todos))
 	for i, item := range todos {
 		cpTodos[i] = contextpack.TodoItem{Content: item.Content, Status: item.Status}
 	}
-	r.State.SetContextPack(contextpack.MergeTodos(current, cpTodos, maxTokens, r.Now))
+	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+		maxTokens := maxTokenOverride
+		if maxTokens <= 0 {
+			maxTokens = pack.TokenUsage.MaxTokens
+		}
+		if maxTokens <= 0 {
+			maxTokens = contextpack.DefaultMaxTokens
+		}
+		return contextpack.MergeTodos(pack, cpTodos, maxTokens, r.Now)
+	})
 }
 
 // semanticSource resolves the embedding source for passive semantic context
@@ -319,15 +324,16 @@ func (r *Runner) mergeSemantic(ctx context.Context, goal string, projectID int64
 	if len(snips) == 0 {
 		return
 	}
-	current := r.State.ContextPack()
-	maxTokens := maxTokenOverride
-	if maxTokens <= 0 {
-		maxTokens = current.TokenUsage.MaxTokens
-	}
-	if maxTokens <= 0 {
-		maxTokens = contextpack.DefaultMaxTokens
-	}
-	r.State.SetContextPack(contextpack.MergeSemanticContext(current, snips, maxTokens, r.Now))
+	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+		maxTokens := maxTokenOverride
+		if maxTokens <= 0 {
+			maxTokens = pack.TokenUsage.MaxTokens
+		}
+		if maxTokens <= 0 {
+			maxTokens = contextpack.DefaultMaxTokens
+		}
+		return contextpack.MergeSemanticContext(pack, snips, maxTokens, r.Now)
+	})
 }
 
 // setContextPackMessage ensures messages contains exactly one up-to-date

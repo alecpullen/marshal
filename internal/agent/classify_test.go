@@ -15,6 +15,8 @@ func TestClassify(t *testing.T) {
 		{"run implies command", "Run the test suite", ClassCommand},
 		{"build implies command", "Build the binary and check for errors", ClassCommand},
 		{"edit keyword wins over command keyword", "Fix the tests that run too slowly", ClassEdit},
+		{"runtime does not match run", "Debug the runtime error in the scheduler", ClassQuestion},
+		{"running does not match run", "The process is running fine", ClassQuestion},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

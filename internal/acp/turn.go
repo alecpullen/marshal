@@ -18,6 +18,7 @@ import (
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -224,12 +225,13 @@ type turnProjection struct {
 // toolTextCap bounds args/output text in tool_call wire events.
 const toolTextCap = 4096
 
-// capToolText truncates s to toolTextCap bytes with a visible suffix.
+// capToolText truncates s to toolTextCap runes with a visible suffix.
+// Rune-aware so multi-byte UTF-8 sequences are never split.
 func capToolText(s string) string {
-	if len(s) <= toolTextCap {
+	if len([]rune(s)) <= toolTextCap {
 		return s
 	}
-	return s[:toolTextCap] + "… (truncated)"
+	return strutil.Truncate(s, toolTextCap, false) + "… (truncated)"
 }
 
 // eventToSessionUpdate projects a session event into a session/update

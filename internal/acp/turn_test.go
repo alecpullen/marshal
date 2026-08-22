@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -1902,6 +1903,21 @@ func TestPromptTurnToolCallUpdateErrorStatus(t *testing.T) {
 	}
 	if upd["toolCallId"] != fmt.Sprintf("file.write-%d", time.Unix(2000, 0).UnixNano()) {
 		t.Fatalf("toolCallId = %v, want synthesized id", upd["toolCallId"])
+	}
+}
+
+func TestCapToolTextRuneAware(t *testing.T) {
+	// 4095 ASCII bytes followed by 4-byte emoji puts the byte-oriented
+	// cut at toolTextCap (4096) in the middle of the first emoji, so a
+	// byte-based implementation emits invalid UTF-8. Rune-aware
+	// truncation must never split a multi-byte sequence.
+	long := strings.Repeat("a", 4095) + strings.Repeat("😀", 50)
+	got := capToolText(long)
+	if !utf8.ValidString(got) {
+		t.Fatalf("capToolText produced invalid UTF-8: len=%d", len(got))
+	}
+	if n := len([]rune(got)); n >= len([]rune(long)) {
+		t.Fatalf("capToolText did not truncate: %d runes", n)
 	}
 }
 

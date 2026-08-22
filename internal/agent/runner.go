@@ -318,6 +318,11 @@ type Runner struct {
 	// rollover. When nil, all rollover operations are no-ops.
 	Rollover *Rollover
 
+	// CloseRolloverOnDone, when true, tells RunTask to close the rollover
+	// controller after the task finishes. Used for ephemeral child-session
+	// runners (SDD pipeline roles) so their generation rows get an end timestamp.
+	CloseRolloverOnDone bool
+
 	// turnFinishReason is the provider finish reason of the most recent model
 	// response this turn, stamped onto every audit event by logToolCall. It is
 	// per-turn state: reset at the top of RunTask, never shared across calls.
@@ -607,9 +612,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// paths and unreadable files are silently skipped (see
 	// extractPinnedFiles); the TUI only inserts the literal "@path" text.
 	if pinned := extractPinnedFiles(goal, r, r.ProjectID); len(pinned) > 0 {
-		pack := r.State.ContextPack()
-		pack = contextpack.PinFiles(pack, pinned)
-		r.State.SetContextPack(pack)
+		r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+			return contextpack.PinFiles(pack, pinned)
+		})
 	}
 
 	messages := []schema.ChatMessage{
@@ -649,6 +654,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if _, err := r.Rollover.maybeRollover(ctx, messages, turnThreshold); err != nil {
 				r.State.Logger().Warn("end-of-turn maybe rollover failed", "error", err)
 			}
+			if r.CloseRolloverOnDone && r.Rollover.Controller != nil {
+				if err := r.Rollover.Controller.Close(ctx); err != nil {
+					r.State.Logger().Warn("rollover controller close failed", "error", err)
+				}
+			}
 		}
 	}()
 
@@ -667,8 +677,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if route.ContextBudget.MaxRepoContextTokens > 0 {
 				maxTokens = route.ContextBudget.MaxRepoContextTokens
 			}
-			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
-			r.State.SetContextPack(updatedPack)
+			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+				return contextpack.RefreshPlanWithBudget(pack, task.Plan, maxTokens, r.Now)
+			})
+			updatedPack := r.State.ContextPack()
 			r.contextPackMsgIndex = -1
 			r.emittedSkills = nil
 			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config))}
@@ -765,9 +777,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			steeringArrived = true
 		}
 		if len(steeringPins) > 0 {
-			pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
-			r.State.SetContextPack(pack)
-			messages = r.setContextPackMessage(messages, pack)
+			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+				return contextpack.PinFiles(pack, steeringPins)
+			})
 		}
 
 		if !pressureMessageSent && budget.remainingTools() <= finalizePressureThreshold {

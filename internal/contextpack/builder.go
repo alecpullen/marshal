@@ -213,6 +213,44 @@ func MergeMemories(pack Pack, memories []MemoryNote, maxTokens int, now func() t
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 
+// newRepoSections builds the repo-orientation sections from rendered card
+// and directory-map content. Empty content yields no section.
+func newRepoSections(card, dirMap string) (cardSec, mapSec Section, hasCard, hasMap bool) {
+	if content, ok := trimSectionContent(card); ok {
+		cardSec = Section{Kind: SectionRepoCard, Title: "Repo Card", Priority: 10, Content: content}
+		hasCard = true
+	}
+	if content, ok := trimSectionContent(dirMap); ok {
+		mapSec = Section{Kind: SectionRepoMap, Title: "Directory Map", Priority: 11, Content: content}
+		hasMap = true
+	}
+	return cardSec, mapSec, hasCard, hasMap
+}
+
+// MergeRepoSections replaces any existing repo-card / directory-map sections
+// with fresh ones and rebuilds the pack within maxTokens. The repo sections
+// lead the section list: they are the most foundational context and
+// buildPackFromSections budgets regular sections in slice order, so the card
+// starves last. Idempotent — re-seeding overwrites rather than duplicates.
+func MergeRepoSections(pack Pack, card, dirMap string, maxTokens int, now func() time.Time) Pack {
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
+	cardSec, mapSec, hasCard, hasMap := newRepoSections(card, dirMap)
+	sections := make([]Section, 0, len(pack.Sections)+2)
+	if hasCard {
+		sections = append(sections, cardSec)
+	}
+	if hasMap {
+		sections = append(sections, mapSec)
+	}
+	for _, s := range pack.Sections {
+		if s.Kind == SectionRepoCard || s.Kind == SectionRepoMap {
+			continue
+		}
+		sections = append(sections, s)
+	}
+	return buildPackFromSections(sections, maxTokens, generatedAt)
+}
+
 func newSemanticSection(snippets []FileSnippet) (Section, bool) {
 	var parts []string
 	for _, s := range snippets {

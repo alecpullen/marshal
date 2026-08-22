@@ -187,6 +187,21 @@ func startWorker(ctx context.Context, wg *sync.WaitGroup, w worker.Worker, log *
 	}()
 }
 
+// indexEventCompleted is published on Runtime.IndexBroker after every
+// successful index pass (startup scan or watcher rerun).
+const indexEventCompleted = "index.completed"
+
+// namedWorker adapts a function to the worker.Worker contract for production
+// background workers. (app_test.go defines its own workerFunc for the test
+// seam; the names must not collide.)
+type namedWorker struct {
+	name string
+	run  func(ctx context.Context) error
+}
+
+func (w namedWorker) Name() string                  { return w.name }
+func (w namedWorker) Run(ctx context.Context) error { return w.run(ctx) }
+
 // WithSessionID pins the session identifier used when the runtime creates a
 // new database session. When empty, StartRuntime generates a sess_<unixnano>
 // id. Useful for headless transports that want a stable id derived from
@@ -570,21 +585,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	runner.Pricing = parentPricing
 
-	// Give the runner the merged limit table so a preset with no explicit
-	// context_window still resolves a real window instead of falling
-	// straight through to the eleven-entry local catalog. Cache-only unless
-	// remote limit discovery is enabled; a missing cache leaves it nil and
-	// resolution degrades gracefully.
-	if dataDir != "" {
-		if cfg.Privacy.RemoteLimitDiscovery {
-			if t, err := limits.LoadTable(ctx, dataDir, limits.DefaultTTL); err == nil {
-				runner.LimitsTable = &t
-			}
-		} else if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
-			t := limits.NewTable(c.Table)
-			runner.LimitsTable = &t
-		}
-	}
+	limitsTable := loadLimitsTable(ctx, cfg, dataDir)
+	runner.LimitsTable = limitsTable
 
 	// Defensive: align runner mode with policy engine in case the runner
 	// ever copies the engine instead of sharing it.
@@ -739,7 +741,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			runner.TitleGenerator = agent.NewTitleGenerator(titleProvider, titleRoute.Preset.Model, state)
 		}
 	}
-	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
+	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex, limitsTable)
 
 	var desktopCloser func()
 	if cfg.Desktop.Enabled {
@@ -760,10 +762,33 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 
 	subagentFactory, _ = buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()))
 	pipelineFactory := func(planPath string) tui.AgentRunner {
-		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath)
+		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable)
 	}
 	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner)
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, nil
+}
+
+// loadLimitsTable loads the merged model-limits table so presets without an
+// explicit context_window still resolve a real window instead of falling
+// straight through to the local catalog. Cache-only unless remote limit
+// discovery is enabled; nil when dataDir is empty or no table is available —
+// resolution degrades gracefully (agent.ResolveModelLimits falls back to the
+// catalog).
+func loadLimitsTable(ctx context.Context, cfg config.Config, dataDir string) *limits.Table {
+	if dataDir == "" {
+		return nil
+	}
+	if cfg.Privacy.RemoteLimitDiscovery {
+		if t, err := limits.LoadTable(ctx, dataDir, limits.DefaultTTL); err == nil {
+			return &t
+		}
+		return nil
+	}
+	if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
+		t := limits.NewTable(c.Table)
+		return &t
+	}
+	return nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -780,6 +805,8 @@ type roleRunnerSpec struct {
 	skillIndex  *skills.Index
 	memory      *dbMemoryProvider
 	projectID   int64
+	limitsTable *limits.Table
+	database    *db.DB // nil-safe: only used for pipeline child rollover (Task 7)
 
 	writeGate        agent.WriteGate         // swarm only; nil for SDD
 	metricsObserver  func(agent.TurnMetrics) // swarm only; nil for SDD
@@ -821,6 +848,13 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	}
 	r := agent.NewRunner(p, toolReg, pol, runnerState, route.Preset.Model)
 	r.Role = role
+	// AI-03: without a RouteResolver, resolveRoute returns a zero route and
+	// role runners compact against the 60000-token fallback regardless of
+	// their model's real window, ignore per-role context budgets, and get no
+	// semantic retrieval. The static resolver replays the already-resolved
+	// role route — the same pattern subagent children use (app.go:1287).
+	r.RouteResolver = &staticRouteResolver{route: route, provider: p}
+	r.LimitsTable = s.limitsTable
 	r.WriteGate = s.writeGate
 	r.SkillIndex = s.skillIndex
 	r.MemoryProvider = s.memory
@@ -851,6 +885,43 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		r.PlanFirst = s.cfg.Agent.PlanFirst
 	}
 	r.Pricing = pricing.Lookup(route.Preset, s.state.Logger()) // closes role-runner pricing gap
+	// AI-03: per-runner rollover for pipeline (child-session) runners only.
+	// Each child gets a minted session ID with its own agent_sessions row
+	// (session_generations has a real FK — migrations.go:179-188), so the
+	// controller is the sole writer for its ID. Swarm runners share the
+	// parent session state and run concurrently; per-runner controllers
+	// there would interleave generation rows and race archive cursors, so
+	// they keep the summarize-and-continue fallback (now correctly sized
+	// via the RouteResolver above). Digests use minimalDigestProvider:
+	// ephemeral subagent generations are not worth an LLM call.
+	if s.childSession && s.database != nil && s.cfg.Session.Rollover.Enabled {
+		childSessionID := "sess_sub_" + uuid.New().String()
+		if err := s.database.CreateSession(childSessionID, s.projectID, "sdd:"+string(role), time.Now()); err != nil {
+			if l := s.state.Logger(); l != nil {
+				l.Warn("pipeline child session insert failed; rollover disabled", "role", role, "error", err)
+			}
+		} else {
+			window, _ := agent.ResolveModelLimits(route.Preset, s.limitsTable, s.state.Logger())
+			ctrl, cerr := NewRolloverController(childSessionID, s.cfg.Session.Rollover, s.database, window, minimalDigestProvider{}, nil)
+			switch {
+			case cerr != nil:
+				if l := s.state.Logger(); l != nil {
+					l.Warn("pipeline rollover controller failed; continuing without rollover", "role", role, "error", cerr)
+				}
+			case ctrl == nil:
+				// Rollover disabled between the check above and construction.
+			default:
+				if serr := ctrl.Start(context.Background()); serr != nil {
+					if l := s.state.Logger(); l != nil {
+						l.Warn("pipeline rollover start failed; continuing without rollover", "role", role, "error", serr)
+					}
+				} else {
+					r.Rollover = &agent.Rollover{Controller: ctrl, State: runnerState}
+					r.CloseRolloverOnDone = true
+				}
+			}
+		}
+	}
 	repoInstructions, _ := loadRepoInstructions(s.state.WorkingDir)
 	var customAddendum string
 	if route.CustomAgent != nil {
@@ -875,7 +946,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 // the filtered registry view; each role's provider/model comes from the
 // routing profile via ResolveRole (falling back to the implementer preset
 // for unconfigured roles).
-func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *swarm.Orchestrator {
+func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, lt *limits.Table) *swarm.Orchestrator {
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
@@ -887,6 +958,8 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 		skillIndex:  skillIndex,
 		memory:      &dbMemoryProvider{db: database},
 		projectID:   projectID,
+		limitsTable: lt,
+		database:    database,
 
 		writeGate:        &swarm.WriteLock{},
 		metricsObserver:  metricsRecorder(database, projectID, state.SessionID(), state.Logger()),
@@ -901,7 +974,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 // buildPipelineController wires a plan-execution controller for one plan.
 // It is built per run, not at startup: the controller is bound to a single
 // plan file.
-func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string) *pipeline.ControllerAdapter {
+func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, lt *limits.Table) *pipeline.ControllerAdapter {
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
@@ -912,6 +985,8 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		skillIndex:  skillIndex,
 		memory:      &dbMemoryProvider{db: database},
 		projectID:   projectID,
+		limitsTable: lt,
+		database:    database,
 
 		childSession: true,
 	}
@@ -1358,6 +1433,58 @@ func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFo
 	return nil
 }
 
+// buildIndexWorkers assembles the indexing background workers: the
+// fsnotify watcher (only when config.WatchEnabled allows) and the one-shot
+// startup scan (AI-02 — always; hashes+symbols even without embeddings so
+// repo.map/symbols.find work on a fresh project). Every successful pass
+// publishes indexEventCompleted on indexBroker, which triggers the
+// context-pack re-seed in startRuntime.
+func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB, projectID int64, workingDir string, lspAdapter index.LSPSymbols, indexBroker *pubsub.Broker[index.Report], logger *slog.Logger) []worker.Worker {
+	runPass := func(c context.Context) error {
+		cfg := state.Config
+
+		embedder := resolveEmbedderFromConfig(cfg)
+		if embedder != nil {
+			probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
+			defer cancel()
+			if _, err := embedding.Probe(probeCtx, embedder); err != nil {
+				return fmt.Errorf("embedding probe failed: %w", err)
+			}
+		}
+
+		passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
+		defer cancel()
+		rep, err := index.Run(passCtx, index.Deps{
+			DB:       database,
+			Root:     workingDir,
+			Ignore:   cfg.Indexing.Ignore,
+			MaxBytes: cfg.Indexing.MaxIndexableFileBytes,
+			Embedder: embedder,
+			LSP:      lspAdapter,
+			OnProgress: func(msg string) {
+				state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
+			},
+		}, projectID)
+		if err == nil {
+			indexBroker.Publish(indexEventCompleted, rep)
+		}
+		return err
+	}
+
+	var workers []worker.Worker
+	embeddingConfigured := false
+	embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
+	if _, err := embedRouter.ResolveEmbedding(); err == nil {
+		embeddingConfigured = true
+	}
+	if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
+		debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
+		workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
+	}
+	workers = append(workers, namedWorker{name: "startup-index-scan", run: runPass})
+	return workers
+}
+
 func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	if ctx.Err() != nil {
 		return nil
@@ -1612,37 +1739,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
 			}
 
-			if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
-				debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
-				runPass := func(c context.Context) error {
-					cfg := state.Config
-
-					embedder := resolveEmbedderFromConfig(cfg)
-					if embedder != nil {
-						probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
-						defer cancel()
-						if _, err := embedding.Probe(probeCtx, embedder); err != nil {
-							return fmt.Errorf("embedding probe failed: %w", err)
-						}
-					}
-
-					passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
-					defer cancel()
-					_, err := index.Run(passCtx, index.Deps{
-						DB:       database,
-						Root:     workingDir,
-						Ignore:   cfg.Indexing.Ignore,
-						MaxBytes: cfg.Indexing.MaxIndexableFileBytes,
-						Embedder: embedder,
-						LSP:      lspAdapter,
-						OnProgress: func(msg string) {
-							state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
-						},
-					}, projectID)
-					return err
-				}
-				workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
-			}
+			workers = buildIndexWorkers(cfg, state, database, projectID, workingDir, lspAdapter,
+				must[*pubsub.Broker[index.Report]](rt.IndexBroker), logger)
 		}
 		// LSPManager is started inside startRuntime (shared by Run and
 		// StartRuntime) — see runtime.go. Do not start it again here.

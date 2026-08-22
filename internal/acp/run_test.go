@@ -20,6 +20,25 @@ import (
 	"marshal/internal/db"
 )
 
+func TestRunWithConfigNilStartRuntime(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdin bytes.Buffer
+	var stdout bytes.Buffer
+
+	err := runWithConfig(ctx, &stdin, &stdout, runConfig{
+		// startRuntime intentionally nil.
+		closeRuntime: func(ctx context.Context, rt *app.Runtime) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("runWithConfig should return error when startRuntime is nil")
+	}
+	if !strings.Contains(err.Error(), "startRuntime") {
+		t.Fatalf("error should mention startRuntime, got: %v", err)
+	}
+}
+
 func TestRunInitializeCapabilities(t *testing.T) {
 	t.Run("basic capabilities", func(t *testing.T) {
 		in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}` + "\n")

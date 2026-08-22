@@ -58,6 +58,9 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	if cfg.shutdown <= 0 {
 		cfg.shutdown = connectionShutdownTimeout
 	}
+	if cfg.startRuntime == nil {
+		return fmt.Errorf("acp: startRuntime is not configured")
+	}
 
 	log := cfg.logger
 	if log == nil {

@@ -9,22 +9,28 @@ import (
 
 // Lookup returns the pricing for a given preset. Precedence: config preset
 // pricing (if the preset's Pricing field is set) -> built-in table by
-// model name -> zero (local/unpriced). Pure function, no I/O.
+// model name -> zero (local/unpriced).
 //
 // The preset's Pricing field is typed as `any` on routing.ModelPreset
 // (rather than *ModelPricing) to avoid an import cycle: routing is
 // consumed by pricing, not the other way around. We type-assert back to
 // *ModelPricing here, the only legitimate writer of that field.
-func Lookup(preset routing.ModelPreset) ModelPricing {
+//
+// logger is optional. When non-nil the "model not in pricing table" warning
+// is routed through it (so it lands in the log file rather than stderr);
+// when nil no warning is emitted.
+func Lookup(preset routing.ModelPreset, logger *slog.Logger) ModelPricing {
 	if p, ok := preset.Pricing.(*ModelPricing); ok && p != nil {
 		return *p
 	}
 	if p, ok := builtInTable[preset.Model]; ok {
 		return p
 	}
-	slog.Warn("pricing: model not in pricing table, using zero (configure manually)",
-		"model", preset.Model,
-		"provider", preset.Provider)
+	if logger != nil {
+		logger.Warn("pricing: model not in pricing table, using zero (configure manually)",
+			"model", preset.Model,
+			"provider", preset.Provider)
+	}
 	return ModelPricing{}
 }
 

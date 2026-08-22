@@ -10,26 +10,40 @@ import (
 )
 
 func TestLookupBuiltInTable(t *testing.T) {
-	p := Lookup(routing.ModelPreset{Model: "gpt-4o"})
+	p := Lookup(routing.ModelPreset{Model: "gpt-4o"}, nil)
 	if p.InputPerMTokCents == 0 {
 		t.Error("gpt-4o should have a non-zero input price in the built-in table")
 	}
 }
 
 func TestLookupLocalModelIsZero(t *testing.T) {
-	p := Lookup(routing.ModelPreset{Model: "qwen2.5-coder:14b", Provider: "ollama"})
+	p := Lookup(routing.ModelPreset{Model: "qwen2.5-coder:14b", Provider: "ollama"}, nil)
 	if p.InputPerMTokCents != 0 || p.OutputPerMTokCents != 0 {
 		t.Errorf("local model should be zero-priced: %+v", p)
 	}
 }
 
-func TestLookupUnknownModelLogsWarning(t *testing.T) {
-	// Capture slog output.
+func TestLookupUnknownModelWithNilLoggerNoWarn(t *testing.T) {
 	var buf bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	preset := routing.ModelPreset{Provider: "test", Model: "unknown-model-xyz"}
-	p := Lookup(preset)
+	p := Lookup(preset, nil)
+	if p.InputPerMTokCents != 0 {
+		t.Errorf("unknown model should have zero pricing, got %+v", p)
+	}
+	// With nil logger, no warning should reach the default handler.
+	if buf.Len() > 0 {
+		t.Errorf("expected no log output with nil logger, got: %s", buf.String())
+	}
+}
+
+func TestLookupUnknownModelWithLoggerWarns(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	preset := routing.ModelPreset{Provider: "test", Model: "unknown-model-xyz"}
+	p := Lookup(preset, logger)
 	if p.InputPerMTokCents != 0 {
 		t.Errorf("unknown model should have zero pricing, got %+v", p)
 	}
@@ -46,7 +60,7 @@ func TestLookupConfigOverrideWins(t *testing.T) {
 			OutputPerMTokCents: 999,
 		},
 	}
-	p := Lookup(cfg)
+	p := Lookup(cfg, nil)
 	if p.InputPerMTokCents != 999 {
 		t.Errorf("config override should win: got InputPerMTokCents=%d, want 999", p.InputPerMTokCents)
 	}

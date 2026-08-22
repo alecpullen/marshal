@@ -1,11 +1,15 @@
 package agent
 
-import "marshal/internal/llm/schema"
+import (
+	"unicode/utf8"
+
+	"marshal/internal/llm/schema"
+)
 
 func estimateTokens(messages []schema.ChatMessage) int {
-	chars := 0
+	runes := 0
 	for _, m := range messages {
-		chars += len(m.Content)
+		runes += utf8.RuneCountInString(m.Content)
 	}
-	return chars / 4
+	return runes / 4
 }

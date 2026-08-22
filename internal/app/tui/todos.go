@@ -49,7 +49,7 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 	width = max(width-1, 1)
 	done, inProgress := todoProgress(todos)
 	if done == len(todos) {
-		return chromeRail(mutedStyle().Render(fmt.Sprintf(" "+glyph.OK+" %d tasks done", len(todos))), dimColor)
+		return chromeRail(theme.MutedStyle().Render(fmt.Sprintf(" "+glyph.OK+" %d tasks done", len(todos))), dimColor)
 	}
 	budget := todoPanelBudget(len(todos), frameHeight)
 	if mode == todoPanelCollapsed || budget < 2 {
@@ -72,12 +72,12 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 			lead++
 		}
 		if lead > 1 {
-			summary := mutedStyle().Render(fmt.Sprintf(" "+glyph.OK+" %d done", lead))
+			summary := theme.MutedStyle().Render(fmt.Sprintf(" "+glyph.OK+" %d done", lead))
 			lines = append([]string{summary}, lines[lead:]...)
 			focus = max(focus-lead+1, 0)
 		}
 	}
-	header := mutedStyle().Render(fmt.Sprintf(" tasks %d/%d", done, len(todos)))
+	header := theme.MutedStyle().Render(fmt.Sprintf(" tasks %d/%d", done, len(todos)))
 	body := chrome.ClipLines(lines, focus, max(budget-1, 1), theme.Current())
 	return chromeRailWidth(header+"\n"+body, dimColor, width)
 }

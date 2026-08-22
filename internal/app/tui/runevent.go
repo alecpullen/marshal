@@ -47,12 +47,12 @@ func renderRunEvent(ev session.RunEvent, expanded bool, width int) string {
 	}
 	for _, line := range lines {
 		b.WriteString(continuation())
-		b.WriteString(mutedStyle().Render(ansi.Truncate(line, max(cw, 1), "…")))
+		b.WriteString(theme.MutedStyle().Render(ansi.Truncate(line, max(cw, 1), "…")))
 		b.WriteString("\n")
 	}
 	if hidden > 0 {
 		b.WriteString(continuation())
-		b.WriteString(mutedStyle().Render(fmt.Sprintf("… %d more lines — ctrl+g to expand", hidden)))
+		b.WriteString(theme.MutedStyle().Render(fmt.Sprintf("… %d more lines — ctrl+g to expand", hidden)))
 		b.WriteString("\n")
 	}
 	return b.String()

@@ -4565,7 +4565,9 @@ func loadTheme(tui config.TUIConfig) {
 }
 
 // Style helpers — lazy reads from theme.Current() so theme reloads propagate.
-func mutedStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+// mutedStyle delegates to the shared theme.MutedStyle so the monochrome
+// check lives in one place.
+func mutedStyle() lipgloss.Style { return theme.MutedStyle() }
 func panelTitleStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGEmphasis).Bold(true)
 }

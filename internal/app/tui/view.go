@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"image/color"
-	"regexp"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,12 +16,9 @@ import (
 	"marshal/internal/strutil"
 )
 
-// ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
-// Shared between production rendering helpers and tests that need to
-// inspect visible runes without the styling the borders now carry.
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+// stripANSI removes SGR escape sequences so tests can inspect visible runes
+// without the styling the borders now carry.
+func stripANSI(s string) string { return theme.ANSIRe.ReplaceAllString(s, "") }
 
 const (
 	transcriptFrameRows = 0
@@ -264,7 +260,7 @@ func (m Model) inputBarColor() color.Color {
 // gutteredInput renders the textarea with the ▍ state bar prepended to
 // every display line, and overlays the active next-prompt suggestion as
 // grey ghost text immediately after the cursor on the cursor line.
-func (m Model) gutteredInput() string {
+func (m *Model) gutteredInput() string {
 	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render(glyph.Rail)
 	placeholder := m.input.Placeholder
 	if m.input.Value() == "" && m.suggestionGhost() != "" {

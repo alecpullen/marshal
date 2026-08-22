@@ -3,7 +3,6 @@ package settings
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -13,15 +12,14 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/presetflow"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
 // stripANSI removes ANSI escape sequences from text so test assertions
 // can match visible content without lipgloss styling.
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+func stripANSI(s string) string { return theme.ANSIRe.ReplaceAllString(s, "") }
 
 func TestBrowserFiltersAndRendersRows(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "shell")

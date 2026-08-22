@@ -57,7 +57,7 @@ func Resolve(discovered []schema.ModelInfo, modelID string) Limits {
 	lim.ContextSource, lim.OutputSource = SourceFetched, SourceFetched
 
 	if ctx == 0 || out == 0 {
-		catCtx, catOut := catalog.Lookup(modelID)
+		catCtx, catOut := catalog.Lookup(modelID, nil)
 		if ctx == 0 {
 			lim.ContextWindow, lim.ContextSource = catCtx, SourceCatalog
 		}

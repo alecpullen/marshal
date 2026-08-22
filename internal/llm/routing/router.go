@@ -154,7 +154,7 @@ func IsCanonicalPresetName(name string) bool {
 // catalog and provider base URL. It is used when no explicit
 // [models.presets.<provider>/<model>] override exists.
 func defaultPreset(providerName, modelID, baseURL string) ModelPreset {
-	ctx, out := catalog.Lookup(modelID)
+	ctx, out := catalog.Lookup(modelID, nil)
 	return ModelPreset{
 		Name:            providerName + "/" + modelID,
 		Provider:        providerName,

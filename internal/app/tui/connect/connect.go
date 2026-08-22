@@ -50,7 +50,7 @@ func decodeModelValue(v string) (provider, model string) {
 func titleStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true).Foreground(theme.Current().FGDefault)
 }
-func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func mutedStyle() lipgloss.Style  { return theme.MutedStyle() }
 func hintStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
 func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 func footerStyle() lipgloss.Style { return chrome.TertiaryStyle() }
@@ -1018,14 +1018,21 @@ func (m *Model) refreshCmd() tea.Cmd {
 
 func (m *Model) done() tea.Cmd {
 	return func() tea.Msg {
+		var ctxWin, maxOut int
+		var toolCalling *bool
+		if m.confirm != nil {
+			ctxWin = m.confirm.Limits.ContextWindow
+			maxOut = m.confirm.Limits.MaxOutputTokens
+			toolCalling = m.confirm.Limits.ToolCalling
+		}
 		return DoneMsg{
 			Provider:        m.providerName,
 			Model:           m.modelChosen,
 			ProviderCfg:     m.providerCfg,
 			EnabledRemote:   m.remoteEnabled,
-			ContextWindow:   m.confirm.Limits.ContextWindow,
-			MaxOutputTokens: m.confirm.Limits.MaxOutputTokens,
-			ToolCalling:     m.confirm.Limits.ToolCalling,
+			ContextWindow:   ctxWin,
+			MaxOutputTokens: maxOut,
+			ToolCalling:     toolCalling,
 		}
 	}
 }

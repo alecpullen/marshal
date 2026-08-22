@@ -175,5 +175,5 @@ func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	if ansi.StringWidth(label) > budget && reason != "" {
 		label = base
 	}
-	return gutterPrefix(g, c) + mutedStyle().Render(ansi.Truncate(label, budget, "…"))
+	return gutterPrefix(g, c) + theme.MutedStyle().Render(ansi.Truncate(label, budget, "…"))
 }

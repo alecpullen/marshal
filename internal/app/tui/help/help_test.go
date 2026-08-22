@@ -1,16 +1,15 @@
 package help
 
 import (
-	"regexp"
 	"strings"
 	"testing"
+
+	"marshal/internal/app/tui/theme"
 )
 
 // stripANSI removes all ANSI escape sequences from text so test assertions
 // can match on visible runes without lipgloss styling interfering.
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+func stripANSI(s string) string { return theme.ANSIRe.ReplaceAllString(s, "") }
 
 func TestFooterIdle(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{}))

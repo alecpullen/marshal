@@ -547,7 +547,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
-	parentPricing := pricing.Lookup(route.Preset)
+	parentPricing := pricing.Lookup(route.Preset, state.Logger())
 	subagentFactory, subagentResolver := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing)
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
@@ -668,7 +668,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// Use LLMSummaryProvider as the primary digest provider, falling back to
 	// minimalDigestProvider only when the runner's provider is not available
 	// (branch review finding #1).
-	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable)
+	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable, state.Logger())
 	var digestProvider rollover.DigestProvider
 	switch cfg.Session.Rollover.DigestProvider {
 	case "files":
@@ -758,7 +758,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		desktopCloser = closer
 	}
 
-	subagentFactory, _ = buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset))
+	subagentFactory, _ = buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()))
 	pipelineFactory := func(planPath string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath)
 	}
@@ -850,7 +850,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		}
 		r.PlanFirst = s.cfg.Agent.PlanFirst
 	}
-	r.Pricing = pricing.Lookup(route.Preset) // closes role-runner pricing gap
+	r.Pricing = pricing.Lookup(route.Preset, s.state.Logger()) // closes role-runner pricing gap
 	repoInstructions, _ := loadRepoInstructions(s.state.WorkingDir)
 	var customAddendum string
 	if route.CustomAgent != nil {
@@ -1032,7 +1032,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		if cap := roleToolIterations(cfg, agent.RoleSDDPlanAuthor); cap > 0 {
 			childRunner.MaxToolIterations = cap
 		}
-		childRunner.Pricing = pricing.Lookup(route.Preset)
+		childRunner.Pricing = pricing.Lookup(route.Preset, state.Logger())
 		childRunner.SystemPromptAddendum = repoInstructionsForPlanAuthor
 		return sddauthor.NewRunner(childRunner), nil
 	}
@@ -1159,7 +1159,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			return agent.SubagentModelPreview{
 				Model:    eroute.Preset.Model,
 				Provider: eroute.Preset.Provider,
-				Pricing:  pricing.Lookup(eroute.Preset),
+				Pricing:  pricing.Lookup(eroute.Preset, parentState.Logger()),
 			}, nil
 		}
 		if req.Role != "" && req.Agent == "" && router != nil {
@@ -1167,7 +1167,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 				return agent.SubagentModelPreview{
 					Model:    route.Preset.Model,
 					Provider: route.Preset.Provider,
-					Pricing:  pricing.Lookup(route.Preset),
+					Pricing:  pricing.Lookup(route.Preset, parentState.Logger()),
 				}, nil
 			}
 		}
@@ -1180,7 +1180,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 				return agent.SubagentModelPreview{
 					Model:    route.Preset.Model,
 					Provider: route.Preset.Provider,
-					Pricing:  pricing.Lookup(route.Preset),
+					Pricing:  pricing.Lookup(route.Preset, parentState.Logger()),
 				}, nil
 			}
 		}
@@ -1209,7 +1209,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 				return nil, nil, fmt.Errorf("agent.run: %w", err)
 			}
 			model = eroute.Preset.Model
-			pricingRates = pricing.Lookup(eroute.Preset)
+			pricingRates = pricing.Lookup(eroute.Preset, parentState.Logger())
 			targetRoute = eroute
 		}
 		// Role pinning: applies only when no explicit model/agent was requested,
@@ -1218,7 +1218,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		if req.Role != "" && req.Model == "" && req.Agent == "" && router != nil {
 			if route, ok := router.ResolveRoleIfBound(routing.AgentRole(req.Role)); ok {
 				model = route.Preset.Model
-				pricingRates = pricing.Lookup(route.Preset)
+				pricingRates = pricing.Lookup(route.Preset, parentState.Logger())
 				targetRoute = route
 			}
 		}
@@ -1229,7 +1229,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			}
 			if req.Model == "" {
 				model = route.Preset.Model
-				pricingRates = pricing.Lookup(route.Preset)
+				pricingRates = pricing.Lookup(route.Preset, parentState.Logger())
 				targetRoute = route
 			}
 			if route.CustomAgent != nil {

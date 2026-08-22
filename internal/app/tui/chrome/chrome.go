@@ -14,8 +14,7 @@ import (
 )
 
 func isMonochrome(th theme.Theme) bool {
-	_, ok := th.FGDefault.(lipgloss.NoColor)
-	return ok
+	return theme.IsMonochromeTheme(th)
 }
 
 // Panel draws a gutter-framed panel: a ▍ column down the left with the

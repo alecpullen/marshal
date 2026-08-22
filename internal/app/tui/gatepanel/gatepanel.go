@@ -128,9 +128,4 @@ func (p *Panel) title() string {
 	return fmt.Sprintf("Task %d needs an answer", p.gate.TaskN)
 }
 
-func mutedStyle() lipgloss.Style {
-	if _, mono := theme.Current().FGDefault.(lipgloss.NoColor); mono {
-		return lipgloss.NewStyle()
-	}
-	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
-}
+func mutedStyle() lipgloss.Style { return theme.MutedStyle() }

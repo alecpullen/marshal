@@ -24,7 +24,7 @@ func groupStyle() lipgloss.Style {
 func detailStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 func nowStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary) }
 func badgeStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
-func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func mutedStyle() lipgloss.Style  { return theme.MutedStyle() }
 func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 
 // Item is one pickable row.

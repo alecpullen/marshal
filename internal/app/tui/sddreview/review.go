@@ -73,7 +73,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	pw := layout.PanelWidth(width)
 
 	if maxHeight < 3 {
-		return mutedStyle().Render("Review plan")
+		return theme.MutedStyle().Render("Review plan")
 	}
 
 	var lines []string
@@ -81,11 +81,11 @@ func (p *Panel) View(width, maxHeight int) string {
 	if insp == nil {
 		lines = append(lines, errorStyle().Render("  no inspection available for this candidate"))
 	} else {
-		lines = append(lines, mutedStyle().Render("candidate: "+insp.Plan.Path))
-		lines = append(lines, mutedStyle().Render(fmt.Sprintf(
+		lines = append(lines, theme.MutedStyle().Render("candidate: "+insp.Plan.Path))
+		lines = append(lines, theme.MutedStyle().Render(fmt.Sprintf(
 			"%d task(s) · %d deterministic ops · %d fallback ops · est. %d model calls",
 			len(insp.IR.Tasks), insp.Report.Total.DetOps, insp.Report.Total.AgentOps, insp.Report.Total.EstCalls)))
-		lines = append(lines, mutedStyle().Render("strategy: "+string(insp.EffectiveStrategy)))
+		lines = append(lines, theme.MutedStyle().Render("strategy: "+string(insp.EffectiveStrategy)))
 		if len(insp.Diagnostics) > 0 {
 			lines = append(lines, "")
 			for _, d := range insp.Diagnostics {
@@ -113,27 +113,15 @@ func (p *Panel) View(width, maxHeight int) string {
 	return chrome.PanelWithHints("Review plan", hints, body, pw, ph, true, th)
 }
 
-func isMono() bool {
-	_, ok := theme.Current().FGDefault.(lipgloss.NoColor)
-	return ok
-}
-
-func mutedStyle() lipgloss.Style {
-	if isMono() {
-		return lipgloss.NewStyle()
-	}
-	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
-}
-
 func errorStyle() lipgloss.Style {
-	if isMono() {
+	if theme.IsMonochrome() {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusError)
 }
 
 func warnStyle() lipgloss.Style {
-	if isMono() {
+	if theme.IsMonochrome() {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning)

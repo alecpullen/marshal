@@ -162,7 +162,7 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 	inner := pw - 3
 
 	if maxHeight < 3 {
-		return mutedStyle().Render("Memory")
+		return theme.MutedStyle().Render("Memory")
 	}
 
 	p.syncFilterStyles()
@@ -184,10 +184,10 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 			rows = append(rows, chrome.SelectionStyle().Width(inner).Render(line))
 			continue
 		}
-		rows = append(rows, chrome.Row(marker, title, mutedStyle().Render(age), "", inner))
+		rows = append(rows, chrome.Row(marker, title, theme.MutedStyle().Render(age), "", inner))
 	}
 	if len(p.matches) == 0 && p.loadErr == nil {
-		rows = append(rows, mutedStyle().Render("  no matches"))
+		rows = append(rows, theme.MutedStyle().Render("  no matches"))
 	}
 
 	listH := maxHeight - 3
@@ -198,22 +198,17 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 
 	content := "/ " + p.filter.View() + "\n" + body
 	if p.deleteArmed {
-		content += "\n" + mutedStyle().Render("press ctrl+d again to confirm delete · esc cancel")
+		content += "\n" + theme.MutedStyle().Render("press ctrl+d again to confirm delete · esc cancel")
 	}
 	if p.loadErr != nil {
-		content += "\n" + mutedStyle().Render("load failed: "+p.loadErr.Error())
+		content += "\n" + theme.MutedStyle().Render("load failed: "+p.loadErr.Error())
 	}
 	ph := min(lipgloss.Height(content)+1, maxHeight)
 	return chrome.PanelWithHints("Memory", "⏎ show · ctrl+d delete · esc close", content, pw, ph, true, theme.Current())
 }
 
-func isMono() bool {
-	_, ok := theme.Current().FGDefault.(lipgloss.NoColor)
-	return ok
-}
-
 func (p *BrowserPanel) syncFilterStyles() {
-	if !isMono() {
+	if !theme.IsMonochrome() {
 		return
 	}
 	empty := lipgloss.NewStyle()
@@ -235,11 +230,4 @@ func (p *BrowserPanel) syncFilterStyles() {
 			Color: lipgloss.NoColor{},
 		},
 	})
-}
-
-func mutedStyle() lipgloss.Style {
-	if isMono() {
-		return lipgloss.NewStyle()
-	}
-	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
 }

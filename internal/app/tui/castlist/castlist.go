@@ -206,14 +206,14 @@ func (p *Panel) View(width, maxHeight int) string {
 	inner := pw - 3
 
 	if maxHeight < 3 {
-		return mutedStyle().Render("Cast list")
+		return theme.MutedStyle().Render("Cast list")
 	}
 
 	var rows []string
 
 	// Metadata lines.
 	for _, line := range p.meta {
-		rows = append(rows, mutedStyle().Render(line))
+		rows = append(rows, theme.MutedStyle().Render(line))
 	}
 	if len(p.meta) > 0 {
 		rows = append(rows, "")
@@ -233,7 +233,7 @@ func (p *Panel) View(width, maxHeight int) string {
 		if o.Value == p.strategy || o.DisabledReason == "" {
 			continue
 		}
-		rows = append(rows, mutedStyle().Render("  "+o.Value+": "+o.DisabledReason))
+		rows = append(rows, theme.MutedStyle().Render("  "+o.Value+": "+o.DisabledReason))
 	}
 
 	// Cast rows.
@@ -285,41 +285,29 @@ func renderRow(r Row, inner int) string {
 	return line
 }
 
-func isMono() bool {
-	_, ok := theme.Current().FGDefault.(lipgloss.NoColor)
-	return ok
-}
-
-func mutedStyle() lipgloss.Style {
-	if isMono() {
-		return lipgloss.NewStyle()
-	}
-	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
-}
-
 func detailStyle() lipgloss.Style {
-	if isMono() {
+	if theme.IsMonochrome() {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
 }
 
 func badgeStyle() lipgloss.Style {
-	if isMono() {
+	if theme.IsMonochrome() {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo)
 }
 
 func errorStyle() lipgloss.Style {
-	if isMono() {
+	if theme.IsMonochrome() {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusError)
 }
 
 func warnStyle() lipgloss.Style {
-	if isMono() {
+	if theme.IsMonochrome() {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning)

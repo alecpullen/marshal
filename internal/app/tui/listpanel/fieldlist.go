@@ -18,11 +18,6 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
-func isMono() bool {
-	_, ok := theme.Current().FGDefault.(lipgloss.NoColor)
-	return ok
-}
-
 func flTitleStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 func flValueStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary)
@@ -35,7 +30,7 @@ func flWarnStyle() lipgloss.Style {
 func flOnStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess) }
 func flOffStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 func flHeaderStyle() lipgloss.Style {
-	if isMono() {
+	if theme.IsMonochrome() {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Bold(true).Foreground(theme.Current().AccentSecondary)

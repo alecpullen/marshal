@@ -18,10 +18,26 @@ import (
 
 func TestAcquireReleaseIdempotent(t *testing.T) {
 	var lock WriteLock
+
 	release := lock.Acquire()
 	release()
-	// Second call must not panic.
+	// Second call must not panic and must be a no-op.
 	release()
+
+	// The lock must actually be released by the first call: a regression that
+	// made release a no-op would silently pass the double-call above, so
+	// re-acquire with a non-blocking path and assert it succeeds.
+	acquired := make(chan struct{})
+	go func() {
+		l := lock.Acquire()
+		close(acquired)
+		l()
+	}()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("WriteLock was not released by a prior release(); re-acquire blocked forever")
+	}
 }
 
 func newLockTestState(t *testing.T) *session.State {

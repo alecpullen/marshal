@@ -944,6 +944,12 @@ func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any,
 	if p.SessionID == "" {
 		return nil, fmt.Errorf("acp: session/set_mode requires sessionId")
 	}
+	// Normalize case before validation: ValidApprovalMode lowercases, so
+	// "Auto" passes the check but would then be handed to the runtime as-is,
+	// where the passthrough SetMode rejects anything that isn't lowercase.
+	// Canonicalize here so the applied mode, the response, and the
+	// mode_changed notification all carry the same lowercase value.
+	p.Mode = strings.ToLower(p.Mode)
 	if !policy.ValidApprovalMode(p.Mode) {
 		return nil, invalidParamsError("invalid mode %q: want one of plan, default, edit, copilot, auto", p.Mode)
 	}

@@ -37,6 +37,14 @@ const (
 	ModeAuto    ApprovalMode = "auto"
 )
 
+// approvalModes is the canonical set of recognized interaction modes.
+// ValidApprovalMode is derived from this list; ParseApprovalMode keeps an
+// explicit switch (falling back to ModeDefault for unknown values) and is
+// kept in sync with it via TestApprovalModeParity. The mode surfaces that
+// mirror this set (TUI /mode, ACP session/set_mode) must not drift from what
+// the policy engine accepts.
+var approvalModes = []string{string(ModePlan), string(ModeDefault), string(ModeEdit), string(ModeCopilot), string(ModeAuto)}
+
 // guardrailPatterns are conservative hard-coded command patterns that are
 // always blocked regardless of user allow rules.
 // Note: chmod -r and chown -r were removed from this list in favor of
@@ -1003,11 +1011,13 @@ func ParseApprovalMode(s string) ApprovalMode {
 // cannot distinguish "default" from garbage on its own; callers that must
 // reject unknown modes (e.g. the ACP session/set_mode RPC) use this.
 //
-// Keep the cases in sync with ParseApprovalMode above.
+// Derived from the canonical approvalModes list so it can't drift from
+// ParseApprovalMode above.
 func ValidApprovalMode(s string) bool {
-	switch strings.ToLower(s) {
-	case "plan", "default", "edit", "copilot", "auto":
-		return true
+	for _, m := range approvalModes {
+		if strings.EqualFold(m, s) {
+			return true
+		}
 	}
 	return false
 }

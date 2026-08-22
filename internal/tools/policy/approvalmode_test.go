@@ -16,3 +16,20 @@ func TestValidApprovalMode(t *testing.T) {
 		}
 	}
 }
+
+// TestApprovalModeParity guards against drift between the two functions that
+// read the canonical approvalModes list. Every canonical mode must round-trip
+// through ParseApprovalMode into a string that ValidApprovalMode accepts, and
+// every mode ValidApprovalMode accepts must parse to a non-default non-empty
+// ApprovalMode (i.e. the two must never disagree).
+func TestApprovalModeParity(t *testing.T) {
+	for _, name := range approvalModes {
+		mode := ParseApprovalMode(name)
+		if !ValidApprovalMode(name) {
+			t.Errorf("ParseApprovalMode(%q) = %q but ValidApprovalMode(%q) = false; mode accepted by one but not the other", name, mode, name)
+		}
+		if string(mode) != name {
+			t.Errorf("ParseApprovalMode(%q) = %q, want canonical %q", name, mode, name)
+		}
+	}
+}

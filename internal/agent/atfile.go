@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"marshal/internal/contextpack"
+	"marshal/internal/pathutil"
 )
 
 // atFileRe matches @path tokens anywhere in the user goal. The
@@ -14,7 +15,7 @@ import (
 // itself is captured as a conservative [A-Za-z0-9._/-]+ run so shell
 // metacharacters, "..", and empty paths are excluded at the regex
 // level. Path safety is then enforced again at read time via
-// safeWorkspacePath so a crafted path cannot escape the workspace.
+// pathutil.SafeWorkspacePath so a crafted path cannot escape the workspace.
 var atFileRe = regexp.MustCompile(`(?:^|\s)@([A-Za-z0-9._/\-]+)`)
 
 // pendingFile is a (relative, absolute) path pair that passed the
@@ -73,9 +74,9 @@ func extractPinnedFiles(goal string, r *Runner, projectID int64) []contextpack.F
 		seen[path] = struct{}{}
 		// Defensive containment check — even with the tightened regex,
 		// a path like "valid/../../../etc" could still escape via ".."
-		// within the allowed character class. safeWorkspacePath rejects
-		// any path that resolves outside the working directory.
-		abs, err := safeWorkspacePath(workingDir, path)
+		// within the allowed character class. pathutil.SafeWorkspacePath
+		// rejects any path that resolves outside the working directory.
+		abs, err := pathutil.SafeWorkspacePath(workingDir, path)
 		if err != nil {
 			continue
 		}

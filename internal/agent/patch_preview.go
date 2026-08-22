@@ -3,9 +3,9 @@ package agent
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"marshal/internal/pathutil"
 	"marshal/internal/tools/patch"
 )
 
@@ -26,7 +26,7 @@ func PreviewPatchDiff(workspaceRoot string, patchText string) (string, error) {
 
 	var diffs []string
 	for _, fp := range patches {
-		path, err := safeWorkspacePath(workspaceRoot, fp.Path)
+		path, err := pathutil.SafeWorkspacePath(workspaceRoot, fp.Path)
 		if err != nil {
 			return "", err
 		}
@@ -45,22 +45,4 @@ func PreviewPatchDiff(workspaceRoot string, patchText string) (string, error) {
 		diffs = append(diffs, diff)
 	}
 	return strings.Join(diffs, "\n\n"), nil
-}
-
-// safeWorkspacePath mirrors the workspace path-safety rules used by
-// internal/tools/native (relative paths only, no ".." traversal). It is
-// duplicated here rather than imported because native's resolver is
-// unexported and this package must not import internal/tools/native.
-func safeWorkspacePath(root, rel string) (string, error) {
-	if rel == "" {
-		return "", fmt.Errorf("path is required")
-	}
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path must be relative: %s", rel)
-	}
-	cleaned := filepath.Clean(rel)
-	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path escapes workspace root: %s", rel)
-	}
-	return filepath.Join(root, cleaned), nil
 }

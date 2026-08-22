@@ -168,8 +168,12 @@ func (db *DB) LoadVectors(projectID int64, model string) ([]VectorRow, error) {
 }
 
 // LoadVectorsSince returns chunk vectors with chunk id > sinceChunkID for a
-// project+model. Used for incremental cache updates — ReplaceFileChunks
-// deletes and re-inserts, so changed files always get new IDs > the old max.
+// project+model. Used for incremental cache updates.
+//
+// Invariant: changed files always get new chunk IDs greater than the previous
+// maximum. This holds because the chunks table defines id as an AUTOINCREMENT
+// primary key (see internal/db/migrations.go), so ReplaceFileChunks's delete+
+// re-insert always yields monotonically increasing IDs.
 func (db *DB) LoadVectorsSince(projectID int64, model string, sinceChunkID int64) ([]VectorRow, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT c.id, c.file_path, c.start_line, c.end_line, c.content, e.vector, e.dim

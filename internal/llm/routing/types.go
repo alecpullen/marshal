@@ -195,11 +195,13 @@ type Route struct {
 	CustomAgent   *CustomAgent // nil unless resolved from a RoleBinding.CustomAgent
 	// Window is the resolved model context window for this route (from
 	// preset or catalog). Set per-turn by resolveRoute so the per-turn
-	// threshold derivation tracks the model actually in use. 0 means
-	// unknown.
+	// threshold derivation tracks the model actually in use. 0 means the
+	// model ID was empty and no source resolved a window; the caller
+	// falls back to its configured budget.
 	Window int
 	// MaxOutput is the resolved max output tokens for this route (from
-	// preset or catalog). 0 means unknown.
+	// preset or catalog). 0 means the model ID was empty and no source
+	// resolved a value.
 	MaxOutput int
 }
 

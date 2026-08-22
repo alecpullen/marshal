@@ -142,8 +142,9 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 // ResolveModelLimits resolves a preset's context window and max output tokens.
 // Each field falls back independently: explicit config always wins; then the
 // fetched limits table, which matches across provider naming variance; then
-// the curated local catalog. A zero field means unknown — the caller keeps
-// its configured budget rather than guessing.
+// the curated local catalog, which returns conservative defaults for unknown
+// models. A zero return is only possible when the preset's model ID is empty;
+// in that case the caller keeps its configured budget rather than guessing.
 func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table) (window, maxOutput int) {
 	window = preset.ContextWindow
 	maxOutput = preset.MaxOutputTokens

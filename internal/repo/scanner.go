@@ -32,11 +32,11 @@ type SkipEntry struct {
 }
 
 type Scanner struct {
-	config    Config
-	gitignore *Gitignore
-	loadErr   error
-	skipped   []SkipEntry
-	warnings  []string
+	config         Config
+	gitignoreStack *GitignoreStack
+	loadErr        error
+	skipped        []SkipEntry
+	warnings       []string
 }
 
 // defaultIgnoredDirs is the set of directory names that should always be
@@ -66,14 +66,13 @@ func NewScanner(config Config) *Scanner {
 
 	config.Root = root
 	s := &Scanner{config: config}
-	// Current limitation: only the root .gitignore is loaded.
-	// Per-directory .gitignore files are not yet supported.
 	g, err := LoadGitignore(filepath.Join(root, ".gitignore"))
 	if err != nil {
 		s.loadErr = err
-	} else {
-		s.gitignore = g
 	}
+	// Always initialize the stack, even on root gitignore load failure, so
+	// downstream walk code can call PopTo/Match without nil checks.
+	s.gitignoreStack = NewGitignoreStack(g)
 	return s
 }
 
@@ -115,7 +114,7 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 		if rel == "." {
 			return nil
 		}
-		if s.gitignore != nil && s.gitignore.Match(rel, entry.IsDir()) {
+		if s.gitignoreStack != nil && s.gitignoreStack.Match(rel, entry.IsDir()) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -134,6 +133,14 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 			}
 			if shouldSkipDir(rel) || skip {
 				return fs.SkipDir
+			}
+			// Push per-directory .gitignore onto the stack (root was loaded in NewScanner).
+			s.gitignoreStack.PopTo(rel)
+			giPath := filepath.Join(root, rel, ".gitignore")
+			if gi, giErr := LoadGitignore(giPath); giErr != nil {
+				s.warnings = append(s.warnings, "gitignore: "+giErr.Error())
+			} else {
+				s.gitignoreStack.Push(rel, gi)
 			}
 			return nil
 		}

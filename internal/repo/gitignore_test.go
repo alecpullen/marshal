@@ -150,6 +150,28 @@ func TestGitignoreNegation(t *testing.T) {
 	}
 }
 
+func TestGitignoreMatchDetail(t *testing.T) {
+	g, err := ParseGitignore("*.log\n!important.log\n")
+	if err != nil {
+		t.Fatalf("ParseGitignore failed: %v", err)
+	}
+	// debug.log: matched by *.log, ignored = true
+	matched, ignored := g.MatchDetail("debug.log", false)
+	if !matched || !ignored {
+		t.Errorf("MatchDetail(debug.log) = (%v, %v), want (true, true)", matched, ignored)
+	}
+	// important.log: matched by !important.log (negation), ignored = false
+	matched, ignored = g.MatchDetail("important.log", false)
+	if !matched || ignored {
+		t.Errorf("MatchDetail(important.log) = (%v, %v), want (true, false)", matched, ignored)
+	}
+	// main.go: no pattern matched
+	matched, ignored = g.MatchDetail("main.go", false)
+	if matched || ignored {
+		t.Errorf("MatchDetail(main.go) = (%v, %v), want (false, false)", matched, ignored)
+	}
+}
+
 func TestMatchPatternReturnsErrorOnMalformedPattern(t *testing.T) {
 	p := gitignorePattern{segments: []string{"["}, anchored: true}
 	_, err := matchPattern(p, "foo")

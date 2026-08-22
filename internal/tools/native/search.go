@@ -126,6 +126,24 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 	matchCount := 0
 	capped := false
 
+	// Anchor gitignore rules at the workspace root when the search is scoped
+	// to a subdirectory, so root-level patterns like "*.log" still apply.
+	workspaceRoot := t.activeRoot()
+	if resolved, err := filepath.EvalSymlinks(workspaceRoot); err == nil {
+		workspaceRoot = resolved
+	}
+	gitignoreRoot := start
+	if rel, err := filepath.Rel(workspaceRoot, start); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		gitignoreRoot = workspaceRoot
+	}
+
+	// Load the root .gitignore that anchors the stack for this walk.
+	rootGitignore, rootGiErr := repo.LoadGitignore(filepath.Join(gitignoreRoot, ".gitignore"))
+	if rootGiErr != nil {
+		walkErrs = append(walkErrs, fmt.Errorf("gitignore %s: %w", filepath.Join(gitignoreRoot, ".gitignore"), rootGiErr))
+	}
+	stack := repo.NewGitignoreStack(rootGitignore)
+
 	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, walkErr error) error {
 		// Collect walk errors instead of swallowing them.
 		if walkErr != nil {
@@ -143,14 +161,56 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 			return filepath.SkipAll
 		}
 		// Skip all symlinks — WalkDir does not follow directory symlinks on
-		// most platforms, but this explicit check acts as a belt-and-suspenders
+		// most platforms, but this explicit check is an extra
 		// defense so we never accidentally descend into or read a symlink.
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
+		if path == start {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(start, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		// Path relative to the gitignore root for stack operations.
+		giRel, giRelErr := filepath.Rel(gitignoreRoot, path)
+		if giRelErr != nil {
+			return nil
+		}
+		giRel = filepath.ToSlash(giRel)
+
+		// Never search inside .gitignore files themselves, matching scanner
+		// semantics. Skip the file before applying include/gitignore checks.
+		if filepath.Base(rel) == ".gitignore" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Check gitignore
+		if stack != nil && stack.Match(giRel, entry.IsDir()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if entry.IsDir() {
 			if repo.IsDefaultIgnoredDir(entry.Name()) && path != start {
 				return filepath.SkipDir
+			}
+			// Push per-directory .gitignore, using the gitignore-relative path.
+			stack.PopTo(giRel)
+			giPath := filepath.Join(gitignoreRoot, giRel, ".gitignore")
+			if gi, giErr := repo.LoadGitignore(giPath); giErr != nil {
+				walkErrs = append(walkErrs, fmt.Errorf("gitignore %s: %w", giPath, giErr))
+			} else if gi.Patterns() > 0 {
+				stack.Push(giRel, gi)
 			}
 			return nil
 		}

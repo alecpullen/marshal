@@ -10,6 +10,66 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestRepoSearchNestedGitignore(t *testing.T) {
+	root := t.TempDir()
+	// Root .gitignore: ignore *.log
+	writeFile(t, filepath.Join(root, ".gitignore"), "*.log\n")
+	// Sub .gitignore: un-ignore important.log
+	writeFile(t, filepath.Join(root, "sub", ".gitignore"), "!important.log\n")
+	// Files
+	writeFile(t, filepath.Join(root, "sub", "debug.log"), "needle\n")
+	writeFile(t, filepath.Join(root, "sub", "important.log"), "needle\n")
+	writeFile(t, filepath.Join(root, "main.go"), "needle\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	// sub/debug.log should be ignored by root *.log
+	if strings.Contains(result.Content, "sub/debug.log") {
+		t.Fatalf("Content included gitignored sub/debug.log:\n%s", result.Content)
+	}
+	// sub/important.log should be found (un-ignored by sub .gitignore)
+	if !strings.Contains(result.Content, "sub/important.log") {
+		t.Fatalf("Content missing sub/important.log (should be un-ignored):\n%s", result.Content)
+	}
+	// main.go should be found
+	if !strings.Contains(result.Content, "main.go:1:needle") {
+		t.Fatalf("Content missing main.go:\n%s", result.Content)
+	}
+}
+
+func TestRepoSearchRespectsGitignore(t *testing.T) {
+	root := t.TempDir()
+	// Root .gitignore: ignore *.log
+	writeFile(t, filepath.Join(root, ".gitignore"), "*.log\n")
+	// A .log file at root — should be ignored
+	writeFile(t, filepath.Join(root, "debug.log"), "needle\n")
+	// A .go file at root — should be found
+	writeFile(t, filepath.Join(root, "main.go"), "needle\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if strings.Contains(result.Content, "debug.log") {
+		t.Fatalf("Content included gitignored file debug.log:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "main.go:1:needle") {
+		t.Fatalf("Content missing main.go match:\n%s", result.Content)
+	}
+}
+
 func TestRepoSearchFindsSubstringMatches(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "a.txt"), "alpha\nneedle here\n")
@@ -203,5 +263,53 @@ func TestRepoSearchContextLines(t *testing.T) {
 	}
 	if strings.Contains(result.Content, "one") || strings.Contains(result.Content, "five") {
 		t.Fatalf("context=1 should not include lines 1 or 5:\n%s", result.Content)
+	}
+}
+
+func TestRepoSearchSubdirectoryRespectsRootGitignore(t *testing.T) {
+	root := t.TempDir()
+	// Root .gitignore ignores *.log everywhere.
+	writeFile(t, filepath.Join(root, ".gitignore"), "*.log\n")
+	// Search scoped to sub/ must still apply root rules.
+	writeFile(t, filepath.Join(root, "sub", "debug.log"), "needle\n")
+	writeFile(t, filepath.Join(root, "sub", "main.go"), "needle\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle","path":"sub"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if strings.Contains(result.Content, "debug.log") {
+		t.Fatalf("subdirectory search included root-ignored debug.log:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "sub/main.go:1:needle") {
+		t.Fatalf("subdirectory search missing sub/main.go:\n%s", result.Content)
+	}
+}
+
+func TestRepoSearchExcludesGitignoreFiles(t *testing.T) {
+	root := t.TempDir()
+	// Put the search term inside a .gitignore file.
+	writeFile(t, filepath.Join(root, ".gitignore"), "needle\n")
+	writeFile(t, filepath.Join(root, "main.go"), "needle\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if strings.Contains(result.Content, ".gitignore") {
+		t.Fatalf("search should not return matches inside .gitignore files:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "main.go:1:needle") {
+		t.Fatalf("search missing main.go match:\n%s", result.Content)
 	}
 }

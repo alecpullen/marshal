@@ -84,9 +84,27 @@ func parseGitignorePattern(line string) (gitignorePattern, error) {
 	return p, nil
 }
 
+// Patterns returns the number of patterns in this gitignore.
+func (g *Gitignore) Patterns() int {
+	return len(g.patterns)
+}
+
+// Match returns whether the given path should be ignored according to this
+// .gitignore's patterns. It is a convenience wrapper around MatchDetail that
+// only returns the final ignore state.
 func (g *Gitignore) Match(path string, isDir bool) bool {
+	_, ignored := g.MatchDetail(path, isDir)
+	return ignored
+}
+
+// MatchDetail returns whether any pattern matched (including negation
+// patterns) and the final ignore state. The matched return value
+// distinguishes "no pattern matched" from "a negation pattern matched
+// and un-ignored the path", which the stack needs for precedence.
+func (g *Gitignore) MatchDetail(path string, isDir bool) (matched bool, ignored bool) {
 	path = filepath.ToSlash(path)
-	ignored := false
+	ignored = false
+	matched = false
 	for _, p := range g.patterns {
 		if p.dirOnly {
 			pathSegments := strings.Split(path, "/")
@@ -94,7 +112,7 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 			if !isDir {
 				end = len(pathSegments) - 1
 			}
-			matched := false
+			didMatch := false
 			for i := 1; i <= end; i++ {
 				prefix := strings.Join(pathSegments[:i], "/")
 				ok, err := matchPattern(p, prefix)
@@ -103,11 +121,12 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 					continue
 				}
 				if ok {
-					matched = true
+					didMatch = true
 					break
 				}
 			}
-			if matched {
+			if didMatch {
+				matched = true
 				ignored = !p.negate
 			}
 			continue
@@ -118,10 +137,11 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 			continue
 		}
 		if ok {
+			matched = true
 			ignored = !p.negate
 		}
 	}
-	return ignored
+	return matched, ignored
 }
 
 func matchPattern(p gitignorePattern, path string) (bool, error) {

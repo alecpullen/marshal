@@ -126,6 +126,10 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 	matchCount := 0
 	capped := false
 
+	// Load root .gitignore for the search start directory.
+	rootGitignore, _ := repo.LoadGitignore(filepath.Join(start, ".gitignore"))
+	stack := repo.NewGitignoreStack(rootGitignore)
+
 	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, walkErr error) error {
 		// Collect walk errors instead of swallowing them.
 		if walkErr != nil {
@@ -143,14 +147,40 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 			return filepath.SkipAll
 		}
 		// Skip all symlinks — WalkDir does not follow directory symlinks on
-		// most platforms, but this explicit check acts as a belt-and-suspenders
+		// most platforms, but this explicit check is an extra
 		// defense so we never accidentally descend into or read a symlink.
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
+		if path == start {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(start, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		// Check gitignore
+		if stack != nil && stack.Match(rel, entry.IsDir()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if entry.IsDir() {
 			if repo.IsDefaultIgnoredDir(entry.Name()) && path != start {
 				return filepath.SkipDir
+			}
+			// Push per-directory .gitignore
+			if rel != "." {
+				stack.PopTo(rel)
+				giPath := filepath.Join(start, rel, ".gitignore")
+				if gi, err := repo.LoadGitignore(giPath); err == nil && gi.Patterns() > 0 {
+					stack.Push(rel, gi)
+				}
 			}
 			return nil
 		}

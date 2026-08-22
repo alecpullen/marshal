@@ -84,6 +84,11 @@ func parseGitignorePattern(line string) (gitignorePattern, error) {
 	return p, nil
 }
 
+// Patterns returns the number of patterns in this gitignore.
+func (g *Gitignore) Patterns() int {
+	return len(g.patterns)
+}
+
 // Match returns whether the given path should be ignored according to this
 // .gitignore's patterns. It is a convenience wrapper around MatchDetail that
 // only returns the final ignore state.

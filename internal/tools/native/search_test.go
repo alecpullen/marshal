@@ -10,6 +10,32 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestRepoSearchRespectsGitignore(t *testing.T) {
+	root := t.TempDir()
+	// Root .gitignore: ignore *.log
+	writeFile(t, filepath.Join(root, ".gitignore"), "*.log\n")
+	// A .log file at root — should be ignored
+	writeFile(t, filepath.Join(root, "debug.log"), "needle\n")
+	// A .go file at root — should be found
+	writeFile(t, filepath.Join(root, "main.go"), "needle\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if strings.Contains(result.Content, "debug.log") {
+		t.Fatalf("Content included gitignored file debug.log:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "main.go:1:needle") {
+		t.Fatalf("Content missing main.go match:\n%s", result.Content)
+	}
+}
+
 func TestRepoSearchFindsSubstringMatches(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "a.txt"), "alpha\nneedle here\n")

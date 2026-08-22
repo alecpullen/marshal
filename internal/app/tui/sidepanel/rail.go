@@ -1,7 +1,6 @@
 package sidepanel
 
 import (
-	"regexp"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -22,11 +21,9 @@ const dividerGlyph = "│"
 // gutterCols is how many columns the divider and its trailing space take.
 const gutterCols = 2
 
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
 // StripANSI removes SGR escapes. Exported for tests that assert on visible
 // runes; production code never needs it.
-func StripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+func StripANSI(s string) string { return theme.ANSIRe.ReplaceAllString(s, "") }
 
 // Rail is the ordered section stack.
 type Rail struct{ sections []Section }

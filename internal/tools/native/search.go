@@ -129,8 +129,11 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 	// Anchor gitignore rules at the workspace root when the search is scoped
 	// to a subdirectory, so root-level patterns like "*.log" still apply.
 	workspaceRoot := t.activeRoot()
+	if resolved, err := filepath.EvalSymlinks(workspaceRoot); err == nil {
+		workspaceRoot = resolved
+	}
 	gitignoreRoot := start
-	if start == workspaceRoot || strings.HasPrefix(start, workspaceRoot+string(filepath.Separator)) {
+	if rel, err := filepath.Rel(workspaceRoot, start); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		gitignoreRoot = workspaceRoot
 	}
 

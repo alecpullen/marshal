@@ -68,3 +68,36 @@ func TestGitignoreStackEmpty(t *testing.T) {
 		t.Error("empty stack should not match anything")
 	}
 }
+
+func TestGitignoreStackNestedAnchoredPattern(t *testing.T) {
+	// A leading-slash pattern in a nested .gitignore is anchored to that
+	// .gitignore's directory, matching only direct children.
+	sub, err := ParseGitignore("/root.log\n")
+	if err != nil {
+		t.Fatalf("ParseGitignore: %v", err)
+	}
+	stack := NewGitignoreStack(&Gitignore{})
+	stack.Push("sub", sub)
+
+	if !stack.Match("sub/root.log", false) {
+		t.Error("sub/root.log should be ignored by /root.log in sub/.gitignore")
+	}
+	if stack.Match("sub/deeper/root.log", false) {
+		t.Error("sub/deeper/root.log should NOT be ignored by /root.log in sub/.gitignore")
+	}
+
+	// A bare pattern (no slash) is unanchored and matches at any depth,
+	// just like git.
+	unanchored, err := ParseGitignore("any.log\n")
+	if err != nil {
+		t.Fatalf("ParseGitignore: %v", err)
+	}
+	stack2 := NewGitignoreStack(&Gitignore{})
+	stack2.Push("sub", unanchored)
+	if !stack2.Match("sub/any.log", false) {
+		t.Error("sub/any.log should be ignored by any.log in sub/.gitignore")
+	}
+	if !stack2.Match("sub/deeper/any.log", false) {
+		t.Error("sub/deeper/any.log should be ignored by any.log in sub/.gitignore")
+	}
+}

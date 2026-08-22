@@ -931,15 +931,6 @@ type SetModeParams struct {
 	Mode      string `json:"mode"`
 }
 
-// validApprovalModes are the session-level modes an ACP client may request.
-var validApprovalModes = map[string]bool{
-	"plan":    true,
-	"default": true,
-	"edit":    true,
-	"copilot": true,
-	"auto":    true,
-}
-
 // SetMode handles session/set_mode: it applies the requested approval mode
 // to the session's runtime and broadcasts a mode_changed session/update so
 // every attached client stays in sync.
@@ -953,7 +944,7 @@ func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any,
 	if p.SessionID == "" {
 		return nil, fmt.Errorf("acp: session/set_mode requires sessionId")
 	}
-	if !validApprovalModes[p.Mode] {
+	if !policy.ValidApprovalMode(p.Mode) {
 		return nil, invalidParamsError("invalid mode %q: want one of plan, default, edit, copilot, auto", p.Mode)
 	}
 	rt, ok := m.lookup(p.SessionID)

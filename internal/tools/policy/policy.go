@@ -997,3 +997,17 @@ func ParseApprovalMode(s string) ApprovalMode {
 	}
 	return ModeDefault
 }
+
+// ValidApprovalMode reports whether s names a recognized approval mode.
+// ParseApprovalMode falls back to ModeDefault for unknown values, so it
+// cannot distinguish "default" from garbage on its own; callers that must
+// reject unknown modes (e.g. the ACP session/set_mode RPC) use this.
+//
+// Keep the cases in sync with ParseApprovalMode above.
+func ValidApprovalMode(s string) bool {
+	switch strings.ToLower(s) {
+	case "plan", "default", "edit", "copilot", "auto":
+		return true
+	}
+	return false
+}

@@ -1067,6 +1067,51 @@ func TestSetModeRejectsInvalidMode(t *testing.T) {
 	}
 }
 
+// After the validApprovalModes map was removed, SetMode validation must
+// flow through policy.ValidApprovalMode: every mode the policy layer
+// recognizes is accepted, anything else is rejected before session lookup.
+func TestSetModeAcceptsEveryPolicyMode(t *testing.T) {
+	var mu sync.Mutex
+	var applied []string
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				SetMode: func(mode string) error {
+					mu.Lock()
+					defer mu.Unlock()
+					applied = append(applied, mode)
+					return nil
+				},
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	for _, mode := range []string{"plan", "default", "edit", "copilot", "auto"} {
+		if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_m","mode":"`+mode+`"}`)); err != nil {
+			t.Fatalf("SetMode(%q) error = %v", mode, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(applied) != 5 {
+		t.Fatalf("applied = %v, want all 5 policy modes", applied)
+	}
+}
+
+func TestSetModeRejectsUnknownMode(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_m","mode":"definitely-not-a-mode"}`))
+	if err == nil || !strings.Contains(err.Error(), "invalid mode") {
+		t.Fatalf("err = %v, want invalid mode error", err)
+	}
+}
+
 func TestSetModeUnknownSession(t *testing.T) {
 	manager := NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },

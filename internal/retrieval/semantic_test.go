@@ -55,3 +55,39 @@ func TestSemanticRetrieveOrdersByCosine(t *testing.T) {
 		t.Fatalf("source name = %q", got[0].SourceName)
 	}
 }
+
+func TestVectorsFullReloadOnModelChange(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+
+	_ = database.ReplaceFileChunks(pid, "a.go", "h", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "a.go", FileHash: "h", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
+		Model: "modelA", Dim: 2, Vector: []float32{1, 0},
+	}})
+
+	// Use modelA embedder — first load populates cache.
+	srcA := NewSemanticSource(database, modelEmbedder{"modelA"}, pid)
+	rows, err := srcA.vectors()
+	if err != nil || len(rows) != 1 || rows[0].FilePath != "a.go" {
+		t.Fatalf("first vectors() = %#v err=%v", rows, err)
+	}
+
+	// Switch to modelB embedder — should trigger full reload, returning 0 rows
+	// because no chunks have modelB embeddings.
+	srcB := NewSemanticSource(database, modelEmbedder{"modelB"}, pid)
+	rows, err = srcB.vectors()
+	if err != nil {
+		t.Fatalf("modelB vectors() err: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("modelB vectors() = %d rows, want 0 (no modelB embeddings)", len(rows))
+	}
+}
+
+type modelEmbedder struct{ name string }
+
+func (m modelEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return [][]float32{{1, 0}}, nil
+}
+func (m modelEmbedder) Model() string { return m.name }
+func (m modelEmbedder) Dims() int     { return 2 }

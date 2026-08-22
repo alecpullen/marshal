@@ -15,10 +15,11 @@ type SemanticSource struct {
 	embedder  embedding.Embedder
 	projectID int64
 
-	mu       sync.Mutex
-	cache    []db.VectorRow
-	cacheGen int64 // maxID last loaded
-	cacheN   int   // count last loaded
+	mu         sync.Mutex
+	cache      []db.VectorRow
+	cacheGen   int64  // maxID last loaded
+	cacheN     int    // count last loaded
+	cacheModel string // embedder model when cache was built
 }
 
 func NewSemanticSource(database *db.DB, e embedding.Embedder, projectID int64) *SemanticSource {
@@ -34,12 +35,19 @@ func (s *SemanticSource) vectors() ([]db.VectorRow, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cache == nil || count != s.cacheN || maxID != s.cacheGen {
+
+	// Full reload on first load, model change, or count/maxID mismatch.
+	// (Incremental loading is added in Task 4; for now this is a correctness
+	// baseline that also handles model changes.)
+	if s.cache == nil || s.embedder.Model() != s.cacheModel || count != s.cacheN || maxID != s.cacheGen {
 		rows, err := s.db.LoadVectors(s.projectID, s.embedder.Model())
 		if err != nil {
 			return nil, err
 		}
-		s.cache, s.cacheN, s.cacheGen = rows, count, maxID
+		s.cache = rows
+		s.cacheN = count
+		s.cacheGen = maxID
+		s.cacheModel = s.embedder.Model()
 	}
 	return s.cache, nil
 }

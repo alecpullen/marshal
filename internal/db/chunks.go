@@ -197,6 +197,29 @@ func (db *DB) LoadVectorsSince(projectID int64, model string, sinceChunkID int64
 	return out, rows.Err()
 }
 
+// CurrentChunkFiles returns the set of file paths that currently have chunks
+// for a project+model. Used during incremental cache updates to identify
+// cache entries for files whose chunks were deleted.
+func (db *DB) CurrentChunkFiles(projectID int64, model string) (map[string]bool, error) {
+	rows, err := db.sqlDB.Query(
+		`SELECT DISTINCT c.file_path
+		   FROM chunks c JOIN embeddings e ON e.chunk_id = c.id
+		  WHERE c.project_id = ? AND e.model = ?`, projectID, model)
+	if err != nil {
+		return nil, fmt.Errorf("current chunk files: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		out[path] = true
+	}
+	return out, rows.Err()
+}
+
 // ChunkGeneration returns (row count, max chunk id) for a project — a cheap
 // signal a reader caches on to detect index changes.
 func (db *DB) ChunkGeneration(projectID int64) (int, int64, error) {

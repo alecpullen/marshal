@@ -40,6 +40,11 @@ func Subscribe(fn func(Theme)) {
 
 // Reload sets the current theme and notifies all subscribers. It is safe
 // to call from any goroutine.
+//
+// We copy the listener slice under the lock and call each listener
+// outside the lock to avoid holding the mutex during potentially slow
+// listener callbacks. This is safe because the copy is a snapshot —
+// concurrent additions/removals won't affect this iteration.
 func Reload(th Theme) {
 	mu.Lock()
 	current = th

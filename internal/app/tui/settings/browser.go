@@ -315,8 +315,12 @@ func browserMatches(query, haystack string) bool {
 	return len(fuzzy.Rank(query, []string{haystack})) > 0
 }
 
+// browserDirectMatch reports whether a field's ID/title/desc literally
+// contains the query (case-insensitive). Caller (the filtered sort in
+// FilterFields) only invokes this with a non-empty query, so the empty
+// query short-circuit is omitted here.
 func browserDirectMatch(field *field, query string) bool {
-	return query == "" || strings.Contains(
+	return strings.Contains(
 		strings.ToLower(field.ID+" "+field.Title+" "+field.Desc),
 		strings.ToLower(query),
 	)

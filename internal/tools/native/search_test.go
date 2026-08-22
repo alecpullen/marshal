@@ -10,6 +10,40 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestRepoSearchNestedGitignore(t *testing.T) {
+	root := t.TempDir()
+	// Root .gitignore: ignore *.log
+	writeFile(t, filepath.Join(root, ".gitignore"), "*.log\n")
+	// Sub .gitignore: un-ignore important.log
+	writeFile(t, filepath.Join(root, "sub", ".gitignore"), "!important.log\n")
+	// Files
+	writeFile(t, filepath.Join(root, "sub", "debug.log"), "needle\n")
+	writeFile(t, filepath.Join(root, "sub", "important.log"), "needle\n")
+	writeFile(t, filepath.Join(root, "main.go"), "needle\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	// sub/debug.log should be ignored by root *.log
+	if strings.Contains(result.Content, "sub/debug.log") {
+		t.Fatalf("Content included gitignored sub/debug.log:\n%s", result.Content)
+	}
+	// sub/important.log should be found (un-ignored by sub .gitignore)
+	if !strings.Contains(result.Content, "sub/important.log") {
+		t.Fatalf("Content missing sub/important.log (should be un-ignored):\n%s", result.Content)
+	}
+	// main.go should be found
+	if !strings.Contains(result.Content, "main.go:1:needle") {
+		t.Fatalf("Content missing main.go:\n%s", result.Content)
+	}
+}
+
 func TestRepoSearchRespectsGitignore(t *testing.T) {
 	root := t.TempDir()
 	// Root .gitignore: ignore *.log

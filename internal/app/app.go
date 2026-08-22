@@ -917,6 +917,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 					}
 				} else {
 					r.Rollover = &agent.Rollover{Controller: ctrl, State: runnerState}
+					r.CloseRolloverOnDone = true
 				}
 			}
 		}

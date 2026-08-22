@@ -3788,6 +3788,9 @@ func TestPipelineRoleRunnerGetsRollover(t *testing.T) {
 	if r.Rollover == nil || r.Rollover.Controller == nil {
 		t.Fatal("pipeline role runner should get a rollover controller")
 	}
+	if !r.CloseRolloverOnDone {
+		t.Fatal("pipeline role runner should close its rollover controller when done")
+	}
 
 	// Swarm (shared-session) runner: never — concurrent controllers on the
 	// shared parent session would corrupt generation sequencing.
@@ -3798,6 +3801,9 @@ func TestPipelineRoleRunnerGetsRollover(t *testing.T) {
 	}
 	if r.Rollover != nil {
 		t.Fatal("swarm role runner must not get per-runner rollover")
+	}
+	if r.CloseRolloverOnDone {
+		t.Fatal("swarm role runner must not close a rollover controller it does not own")
 	}
 
 	// Rollover disabled in config: no controller even for pipeline runners.

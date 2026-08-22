@@ -318,6 +318,11 @@ type Runner struct {
 	// rollover. When nil, all rollover operations are no-ops.
 	Rollover *Rollover
 
+	// CloseRolloverOnDone, when true, tells RunTask to close the rollover
+	// controller after the task finishes. Used for ephemeral child-session
+	// runners (SDD pipeline roles) so their generation rows get an end timestamp.
+	CloseRolloverOnDone bool
+
 	// turnFinishReason is the provider finish reason of the most recent model
 	// response this turn, stamped onto every audit event by logToolCall. It is
 	// per-turn state: reset at the top of RunTask, never shared across calls.
@@ -648,6 +653,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			if _, err := r.Rollover.maybeRollover(ctx, messages, turnThreshold); err != nil {
 				r.State.Logger().Warn("end-of-turn maybe rollover failed", "error", err)
+			}
+			if r.CloseRolloverOnDone && r.Rollover.Controller != nil {
+				if err := r.Rollover.Controller.Close(ctx); err != nil {
+					r.State.Logger().Warn("rollover controller close failed", "error", err)
+				}
 			}
 		}
 	}()

@@ -101,3 +101,105 @@ func TestDecodeVectorRejectsWrongLength(t *testing.T) {
 		t.Fatalf("expected mismatch error, got: %v", err)
 	}
 }
+
+func TestLoadVectorsSince(t *testing.T) {
+	database := newTestDB(t)
+	projectID := mustCreateProject(t, database, "/tmp/proj")
+
+	// Insert first file's chunks.
+	if err := database.ReplaceFileChunks(projectID, "a.go", "h1", []ChunkWithVector{{
+		Chunk: Chunk{FilePath: "a.go", FileHash: "h1", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
+		Model: "nomic", Dim: 2, Vector: []float32{0.1, 0.2},
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks a.go: %v", err)
+	}
+
+	// All vectors since 0 should return 1 row.
+	rows, err := database.LoadVectorsSince(projectID, "nomic", 0)
+	if err != nil {
+		t.Fatalf("LoadVectorsSince 0: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FilePath != "a.go" {
+		t.Fatalf("LoadVectorsSince 0 = %#v err=%v", rows, err)
+	}
+
+	// Record the max chunk ID.
+	_, maxID, err := database.ChunkGeneration(projectID)
+	if err != nil {
+		t.Fatalf("ChunkGeneration: %v", err)
+	}
+
+	// Insert second file's chunks.
+	if err := database.ReplaceFileChunks(projectID, "b.go", "h2", []ChunkWithVector{{
+		Chunk: Chunk{FilePath: "b.go", FileHash: "h2", Kind: "code", StartLine: 1, EndLine: 1, Content: "b", TokenCount: 1},
+		Model: "nomic", Dim: 2, Vector: []float32{0.3, 0.4},
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks b.go: %v", err)
+	}
+
+	// LoadVectorsSince maxID should return only the new b.go row.
+	rows, err = database.LoadVectorsSince(projectID, "nomic", maxID)
+	if err != nil {
+		t.Fatalf("LoadVectorsSince maxID: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FilePath != "b.go" {
+		t.Fatalf("LoadVectorsSince maxID = %#v err=%v, want 1 row for b.go", rows, err)
+	}
+
+	// LoadVectorsSince with a very high ID should return nothing.
+	rows, err = database.LoadVectorsSince(projectID, "nomic", 999999)
+	if err != nil {
+		t.Fatalf("LoadVectorsSince 999999: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("LoadVectorsSince 999999 = %d rows, want 0", len(rows))
+	}
+}
+
+func TestCurrentChunkFiles(t *testing.T) {
+	database := newTestDB(t)
+	projectID := mustCreateProject(t, database, "/tmp/proj")
+
+	// Insert two files.
+	if err := database.ReplaceFileChunks(projectID, "a.go", "h1", []ChunkWithVector{{
+		Chunk: Chunk{FilePath: "a.go", FileHash: "h1", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
+		Model: "nomic", Dim: 2, Vector: []float32{0.1, 0.2},
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks a.go: %v", err)
+	}
+	if err := database.ReplaceFileChunks(projectID, "b.go", "h2", []ChunkWithVector{{
+		Chunk: Chunk{FilePath: "b.go", FileHash: "h2", Kind: "code", StartLine: 1, EndLine: 1, Content: "b", TokenCount: 1},
+		Model: "nomic", Dim: 2, Vector: []float32{0.3, 0.4},
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks b.go: %v", err)
+	}
+
+	files, err := database.CurrentChunkFiles(projectID, "nomic")
+	if err != nil {
+		t.Fatalf("CurrentChunkFiles: %v", err)
+	}
+	if !files["a.go"] || !files["b.go"] || len(files) != 2 {
+		t.Fatalf("CurrentChunkFiles = %#v, want {a.go, b.go}", files)
+	}
+
+	// Delete a.go — it should no longer be in the set.
+	if err := database.DeleteFileChunks(projectID, "a.go"); err != nil {
+		t.Fatalf("DeleteFileChunks: %v", err)
+	}
+	files, err = database.CurrentChunkFiles(projectID, "nomic")
+	if err != nil {
+		t.Fatalf("CurrentChunkFiles after delete: %v", err)
+	}
+	if files["a.go"] || !files["b.go"] || len(files) != 1 {
+		t.Fatalf("CurrentChunkFiles after delete = %#v, want {b.go} only", files)
+	}
+
+	// Different model should return empty.
+	files, err = database.CurrentChunkFiles(projectID, "other-model")
+	if err != nil {
+		t.Fatalf("CurrentChunkFiles other model: %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("CurrentChunkFiles other model = %#v, want empty", files)
+	}
+}

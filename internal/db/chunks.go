@@ -167,6 +167,70 @@ func (db *DB) LoadVectors(projectID int64, model string) ([]VectorRow, error) {
 	return out, rows.Err()
 }
 
+// LoadVectorsSince returns chunk vectors with chunk id > sinceChunkID for a
+// project+model. Used for incremental cache updates.
+//
+// Invariant: changed files always get new chunk IDs greater than the previous
+// maximum. This holds because the chunks table defines id as an AUTOINCREMENT
+// primary key (see internal/db/migrations.go), so ReplaceFileChunks's delete+
+// re-insert always yields monotonically increasing IDs.
+//
+// Note: the embeddings table has PRIMARY KEY (chunk_id), so in practice a
+// project currently stores embeddings for exactly one model at a time. The
+// model parameter here is future-proofing and should match the active embedder.
+func (db *DB) LoadVectorsSince(projectID int64, model string, sinceChunkID int64) ([]VectorRow, error) {
+	rows, err := db.sqlDB.Query(
+		`SELECT c.id, c.file_path, c.start_line, c.end_line, c.content, e.vector, e.dim
+		   FROM chunks c JOIN embeddings e ON e.chunk_id = c.id
+		  WHERE c.project_id = ? AND e.model = ? AND c.id > ?`, projectID, model, sinceChunkID)
+	if err != nil {
+		return nil, fmt.Errorf("load vectors since: %w", err)
+	}
+	defer rows.Close()
+	var out []VectorRow
+	for rows.Next() {
+		var r VectorRow
+		var blob []byte
+		var dims int
+		if err := rows.Scan(&r.ChunkID, &r.FilePath, &r.StartLine, &r.EndLine, &r.Content, &blob, &dims); err != nil {
+			return nil, err
+		}
+		vec, err := decodeVector(blob, dims)
+		if err != nil {
+			return nil, fmt.Errorf("load vectors since: %w", err)
+		}
+		r.Vector = vec
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CurrentChunkFiles returns the set of file paths that currently have chunks
+// for a project+model. Used during incremental cache updates to identify
+// cache entries for files whose chunks were deleted.
+//
+// Note: the embeddings table has PRIMARY KEY (chunk_id), so in practice a
+// project currently stores embeddings for exactly one model at a time.
+func (db *DB) CurrentChunkFiles(projectID int64, model string) (map[string]bool, error) {
+	rows, err := db.sqlDB.Query(
+		`SELECT DISTINCT c.file_path
+		   FROM chunks c JOIN embeddings e ON e.chunk_id = c.id
+		  WHERE c.project_id = ? AND e.model = ?`, projectID, model)
+	if err != nil {
+		return nil, fmt.Errorf("current chunk files: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		out[path] = true
+	}
+	return out, rows.Err()
+}
+
 // ChunkGeneration returns (row count, max chunk id) for a project — a cheap
 // signal a reader caches on to detect index changes.
 func (db *DB) ChunkGeneration(projectID int64) (int, int64, error) {

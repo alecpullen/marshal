@@ -12,8 +12,10 @@ type WriteLock struct {
 }
 
 // Acquire blocks until the lock is free and returns the release func.
-// It implements agent.WriteGate.
+// The returned release func is idempotent: calling it more than once is a
+// no-op after the first call. It implements agent.WriteGate.
 func (l *WriteLock) Acquire() (release func()) {
 	l.mu.Lock()
-	return l.mu.Unlock
+	var once sync.Once
+	return func() { once.Do(l.mu.Unlock) }
 }

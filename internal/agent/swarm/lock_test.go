@@ -16,6 +16,14 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestAcquireReleaseIdempotent(t *testing.T) {
+	var lock WriteLock
+	release := lock.Acquire()
+	release()
+	// Second call must not panic.
+	release()
+}
+
 func newLockTestState(t *testing.T) *session.State {
 	t.Helper()
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

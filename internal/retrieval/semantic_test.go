@@ -122,3 +122,77 @@ func TestVectorsNoChangesReturnsCache(t *testing.T) {
 		t.Fatalf("second vectors() returned a different slice — cache was not reused")
 	}
 }
+
+func TestVectorsFileReplace(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+
+	// Insert a.go with content "a".
+	_ = database.ReplaceFileChunks(pid, "a.go", "h1", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "a.go", FileHash: "h1", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
+		Model: "m", Dim: 2, Vector: []float32{1, 0},
+	}})
+
+	src := NewSemanticSource(database, fakeEmbedder{}, pid)
+
+	// First load.
+	rows, err := src.vectors()
+	if err != nil || len(rows) != 1 || rows[0].Content != "a" {
+		t.Fatalf("first vectors() = %#v err=%v", rows, err)
+	}
+
+	// Replace a.go with different content (gets new chunk IDs).
+	_ = database.ReplaceFileChunks(pid, "a.go", "h2", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "a.go", FileHash: "h2", Kind: "code", StartLine: 1, EndLine: 1, Content: "a-replaced", TokenCount: 1},
+		Model: "m", Dim: 2, Vector: []float32{1, 1},
+	}})
+
+	// Second load — old a.go entry should be removed, new one present.
+	rows, err = src.vectors()
+	if err != nil {
+		t.Fatalf("second vectors() err: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("second vectors() = %d rows, want 1", len(rows))
+	}
+	if rows[0].Content != "a-replaced" {
+		t.Fatalf("second vectors() content = %q, want %q", rows[0].Content, "a-replaced")
+	}
+}
+
+func TestVectorsDeletedChunks(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+
+	// Insert two files.
+	_ = database.ReplaceFileChunks(pid, "a.go", "h", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "a.go", FileHash: "h", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
+		Model: "m", Dim: 2, Vector: []float32{1, 0},
+	}})
+	_ = database.ReplaceFileChunks(pid, "b.go", "h", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "b.go", FileHash: "h", Kind: "code", StartLine: 1, EndLine: 1, Content: "b", TokenCount: 1},
+		Model: "m", Dim: 2, Vector: []float32{0, 1},
+	}})
+
+	src := NewSemanticSource(database, fakeEmbedder{}, pid)
+
+	// First load — both files.
+	rows, err := src.vectors()
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("first vectors() = %#v err=%v", rows, err)
+	}
+
+	// Delete a.go's chunks (count decreases).
+	if err := database.DeleteFileChunks(pid, "a.go"); err != nil {
+		t.Fatalf("DeleteFileChunks: %v", err)
+	}
+
+	// Second load — a.go should be gone, b.go should remain.
+	rows, err = src.vectors()
+	if err != nil {
+		t.Fatalf("second vectors() err: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FilePath != "b.go" {
+		t.Fatalf("second vectors() = %#v, want only b.go", rows)
+	}
+}

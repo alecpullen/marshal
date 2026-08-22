@@ -885,6 +885,42 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		r.PlanFirst = s.cfg.Agent.PlanFirst
 	}
 	r.Pricing = pricing.Lookup(route.Preset, s.state.Logger()) // closes role-runner pricing gap
+	// AI-03: per-runner rollover for pipeline (child-session) runners only.
+	// Each child gets a minted session ID with its own agent_sessions row
+	// (session_generations has a real FK — migrations.go:179-188), so the
+	// controller is the sole writer for its ID. Swarm runners share the
+	// parent session state and run concurrently; per-runner controllers
+	// there would interleave generation rows and race archive cursors, so
+	// they keep the summarize-and-continue fallback (now correctly sized
+	// via the RouteResolver above). Digests use minimalDigestProvider:
+	// ephemeral subagent generations are not worth an LLM call.
+	if s.childSession && s.database != nil && s.cfg.Session.Rollover.Enabled {
+		childSessionID := "sess_sub_" + uuid.New().String()
+		if err := s.database.CreateSession(childSessionID, s.projectID, "sdd:"+string(role), time.Now()); err != nil {
+			if l := s.state.Logger(); l != nil {
+				l.Warn("pipeline child session insert failed; rollover disabled", "role", role, "error", err)
+			}
+		} else {
+			window, _ := agent.ResolveModelLimits(route.Preset, s.limitsTable, s.state.Logger())
+			ctrl, cerr := NewRolloverController(childSessionID, s.cfg.Session.Rollover, s.database, window, minimalDigestProvider{}, nil)
+			switch {
+			case cerr != nil:
+				if l := s.state.Logger(); l != nil {
+					l.Warn("pipeline rollover controller failed; continuing without rollover", "role", role, "error", cerr)
+				}
+			case ctrl == nil:
+				// Rollover disabled between the check above and construction.
+			default:
+				if serr := ctrl.Start(context.Background()); serr != nil {
+					if l := s.state.Logger(); l != nil {
+						l.Warn("pipeline rollover start failed; continuing without rollover", "role", role, "error", serr)
+					}
+				} else {
+					r.Rollover = &agent.Rollover{Controller: ctrl, State: runnerState}
+				}
+			}
+		}
+	}
 	repoInstructions, _ := loadRepoInstructions(s.state.WorkingDir)
 	var customAddendum string
 	if route.CustomAgent != nil {

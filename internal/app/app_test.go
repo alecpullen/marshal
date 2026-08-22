@@ -3731,3 +3731,82 @@ func TestRoleRunnerWiredWithResolverAndLimits(t *testing.T) {
 		t.Fatalf("window = %d, want 32768 from preset config", window)
 	}
 }
+
+func TestPipelineRoleRunnerGetsRollover(t *testing.T) {
+	newSpec := func(t *testing.T, rolloverEnabled, childSession bool) (roleRunnerSpec, *db.DB) {
+		t.Helper()
+		cfg := config.Default()
+		cfg.Project.Name = "role-runner-rollover-test"
+		cfg.Profile.Default = "main"
+		cfg.Privacy.RemoteProvidersAllowed = true
+		cfg.Providers = map[string]config.ProviderConfig{
+			"local": {Type: "openai_compatible", BaseURL: "http://local/v1", APIKey: "k"},
+		}
+		cfg.Models.Presets = map[string]routing.ModelPreset{
+			"local/impl": {Provider: "local", Model: "impl", ContextWindow: 32768},
+		}
+		cfg.AgentProfiles = map[string]routing.AgentProfile{
+			"main": {Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "local/impl"},
+			}},
+		}
+		cfg.Session.Rollover.Enabled = rolloverEnabled
+
+		database, err := db.Open(":memory:")
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		t.Cleanup(func() { database.Close() })
+		if err := database.Migrate(); err != nil {
+			t.Fatalf("migrate db: %v", err)
+		}
+		projectID, err := database.GetOrCreateProject(t.TempDir(), "rollover-test")
+		if err != nil {
+			t.Fatalf("create project: %v", err)
+		}
+
+		state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		return roleRunnerSpec{
+			cfg:          cfg,
+			state:        state,
+			pol:          policy.NewEngine(&cfg, nil),
+			resolver:     newRoutedProviderResolver(cfg, ""),
+			reg:          registry.New(),
+			memory:       &dbMemoryProvider{db: database},
+			projectID:    projectID,
+			database:     database,
+			childSession: childSession,
+		}, database
+	}
+
+	// Pipeline (child-session) runner with rollover enabled: controller set.
+	spec, _ := newSpec(t, true, true)
+	r, err := spec.newRunner(agent.RoleImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	if r.Rollover == nil || r.Rollover.Controller == nil {
+		t.Fatal("pipeline role runner should get a rollover controller")
+	}
+
+	// Swarm (shared-session) runner: never — concurrent controllers on the
+	// shared parent session would corrupt generation sequencing.
+	spec, _ = newSpec(t, true, false)
+	r, err = spec.newRunner(agent.RoleImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	if r.Rollover != nil {
+		t.Fatal("swarm role runner must not get per-runner rollover")
+	}
+
+	// Rollover disabled in config: no controller even for pipeline runners.
+	spec, _ = newSpec(t, false, true)
+	r, err = spec.newRunner(agent.RoleImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	if r.Rollover != nil {
+		t.Fatal("rollover disabled in config must mean no controller")
+	}
+}

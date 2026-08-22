@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -109,7 +110,11 @@ func atomicReplace(src, dest string) (retErr error) {
 	if err := os.Rename(tmp, dest); err != nil {
 		// Try to restore the old directory if the rename failed.
 		if old != "" {
-			os.Rename(old, dest)
+			if restoreErr := os.Rename(old, dest); restoreErr != nil {
+				slog.Warn("plugin: failed to restore original directory after rename failure",
+					"dest", dest,
+					"error", restoreErr)
+			}
 		}
 		return fmt.Errorf("rename temp directory to plugin destination: %w", err)
 	}

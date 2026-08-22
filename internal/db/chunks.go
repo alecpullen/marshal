@@ -167,6 +167,36 @@ func (db *DB) LoadVectors(projectID int64, model string) ([]VectorRow, error) {
 	return out, rows.Err()
 }
 
+// LoadVectorsSince returns chunk vectors with chunk id > sinceChunkID for a
+// project+model. Used for incremental cache updates — ReplaceFileChunks
+// deletes and re-inserts, so changed files always get new IDs > the old max.
+func (db *DB) LoadVectorsSince(projectID int64, model string, sinceChunkID int64) ([]VectorRow, error) {
+	rows, err := db.sqlDB.Query(
+		`SELECT c.id, c.file_path, c.start_line, c.end_line, c.content, e.vector, e.dim
+		   FROM chunks c JOIN embeddings e ON e.chunk_id = c.id
+		  WHERE c.project_id = ? AND e.model = ? AND c.id > ?`, projectID, model, sinceChunkID)
+	if err != nil {
+		return nil, fmt.Errorf("load vectors since: %w", err)
+	}
+	defer rows.Close()
+	var out []VectorRow
+	for rows.Next() {
+		var r VectorRow
+		var blob []byte
+		var dims int
+		if err := rows.Scan(&r.ChunkID, &r.FilePath, &r.StartLine, &r.EndLine, &r.Content, &blob, &dims); err != nil {
+			return nil, err
+		}
+		vec, err := decodeVector(blob, dims)
+		if err != nil {
+			return nil, fmt.Errorf("load vectors since: %w", err)
+		}
+		r.Vector = vec
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ChunkGeneration returns (row count, max chunk id) for a project — a cheap
 // signal a reader caches on to detect index changes.
 func (db *DB) ChunkGeneration(projectID int64) (int, int64, error) {

@@ -392,8 +392,15 @@ func TestDiscardRemovesWorktreeAndForceDeletesBranch(t *testing.T) {
 		},
 	})
 
-	if _, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+	res, err := m.Discard(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	if err != nil {
 		t.Fatalf("Discard: %v", err)
+	}
+	// The ACP result layer expects handler results to be JSON-object
+	// shaped; struct{}{} serialises identically but breaks the
+	// map-based convention shared by the other lifecycle handlers.
+	if _, ok := res.(map[string]any); !ok {
+		t.Fatalf("Discard result type = %T, want map[string]any{}", res)
 	}
 	if len(git.Deleted) != 1 || git.Deleted[0] != "f" {
 		t.Errorf("Deleted = %v", git.Deleted)

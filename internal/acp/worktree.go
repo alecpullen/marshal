@@ -476,7 +476,7 @@ func (w *WorktreeManager) Discard(_ context.Context, params json.RawMessage) (an
 		return nil, serverErrorf("delete branch %s: %v", ws.Branch, derr)
 	}
 	rt.State.SetWorkspace(session.Workspace{ProjectRoot: rt.ProjectRoot, ActiveRoot: rt.ProjectRoot})
-	return struct{}{}, nil
+	return map[string]any{}, nil
 }
 
 // PruneResult is the session/worktree_prune result. Pruned lists git's own

@@ -161,14 +161,18 @@ func TestCurrentChunkFiles(t *testing.T) {
 	projectID := mustCreateProject(t, database, "/tmp/proj")
 
 	// Insert two files.
-	_ = database.ReplaceFileChunks(projectID, "a.go", "h1", []ChunkWithVector{{
+	if err := database.ReplaceFileChunks(projectID, "a.go", "h1", []ChunkWithVector{{
 		Chunk: Chunk{FilePath: "a.go", FileHash: "h1", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
 		Model: "nomic", Dim: 2, Vector: []float32{0.1, 0.2},
-	}})
-	_ = database.ReplaceFileChunks(projectID, "b.go", "h2", []ChunkWithVector{{
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks a.go: %v", err)
+	}
+	if err := database.ReplaceFileChunks(projectID, "b.go", "h2", []ChunkWithVector{{
 		Chunk: Chunk{FilePath: "b.go", FileHash: "h2", Kind: "code", StartLine: 1, EndLine: 1, Content: "b", TokenCount: 1},
 		Model: "nomic", Dim: 2, Vector: []float32{0.3, 0.4},
-	}})
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks b.go: %v", err)
+	}
 
 	files, err := database.CurrentChunkFiles(projectID, "nomic")
 	if err != nil {

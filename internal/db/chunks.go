@@ -174,6 +174,10 @@ func (db *DB) LoadVectors(projectID int64, model string) ([]VectorRow, error) {
 // maximum. This holds because the chunks table defines id as an AUTOINCREMENT
 // primary key (see internal/db/migrations.go), so ReplaceFileChunks's delete+
 // re-insert always yields monotonically increasing IDs.
+//
+// Note: the embeddings table has PRIMARY KEY (chunk_id), so in practice a
+// project currently stores embeddings for exactly one model at a time. The
+// model parameter here is future-proofing and should match the active embedder.
 func (db *DB) LoadVectorsSince(projectID int64, model string, sinceChunkID int64) ([]VectorRow, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT c.id, c.file_path, c.start_line, c.end_line, c.content, e.vector, e.dim
@@ -204,6 +208,9 @@ func (db *DB) LoadVectorsSince(projectID int64, model string, sinceChunkID int64
 // CurrentChunkFiles returns the set of file paths that currently have chunks
 // for a project+model. Used during incremental cache updates to identify
 // cache entries for files whose chunks were deleted.
+//
+// Note: the embeddings table has PRIMARY KEY (chunk_id), so in practice a
+// project currently stores embeddings for exactly one model at a time.
 func (db *DB) CurrentChunkFiles(projectID int64, model string) (map[string]bool, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT DISTINCT c.file_path

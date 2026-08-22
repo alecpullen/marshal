@@ -219,3 +219,44 @@ func TestVectorsDeletedChunks(t *testing.T) {
 		t.Fatalf("second vectors() = %#v, want only b.go", rows)
 	}
 }
+
+func TestVectorsDeleteWithNetZeroCount(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+
+	// Start with one file.
+	if err := database.ReplaceFileChunks(pid, "a.go", "h", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "a.go", FileHash: "h", Kind: "code", StartLine: 1, EndLine: 1, Content: "a", TokenCount: 1},
+		Model: "m", Dim: 2, Vector: []float32{1, 0},
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks a.go: %v", err)
+	}
+
+	src := NewSemanticSource(database, fakeEmbedder{}, pid)
+
+	// First load.
+	rows, err := src.vectors()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("first vectors() = %#v err=%v", rows, err)
+	}
+
+	// Delete a.go and add b.go in separate operations. The total chunk count
+	// stays at 1, but a.go must not survive in the cache.
+	if err := database.DeleteFileChunks(pid, "a.go"); err != nil {
+		t.Fatalf("DeleteFileChunks: %v", err)
+	}
+	if err := database.ReplaceFileChunks(pid, "b.go", "h", []db.ChunkWithVector{{
+		Chunk: db.Chunk{FilePath: "b.go", FileHash: "h", Kind: "code", StartLine: 1, EndLine: 1, Content: "b", TokenCount: 1},
+		Model: "m", Dim: 2, Vector: []float32{0, 1},
+	}}); err != nil {
+		t.Fatalf("ReplaceFileChunks b.go: %v", err)
+	}
+
+	rows, err = src.vectors()
+	if err != nil {
+		t.Fatalf("second vectors() err: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FilePath != "b.go" {
+		t.Fatalf("second vectors() = %#v, want only b.go", rows)
+	}
+}

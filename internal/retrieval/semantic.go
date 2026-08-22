@@ -14,12 +14,13 @@ type SemanticSource struct {
 	db        *db.DB
 	projectID int64
 
-	mu         sync.Mutex
-	cache      []db.VectorRow
-	cacheGen   int64  // maxID last loaded
-	cacheN     int    // count last loaded
-	cacheModel string // embedder model when cache was built
-	embedder   embedding.Embedder
+	mu          sync.Mutex
+	cache       []db.VectorRow
+	cacheGen    int64  // maxID last loaded
+	cacheN      int    // count last loaded
+	cacheModel  string // embedder model when cache was built
+	cacheLoaded bool   // true once cache has been populated (even if empty)
+	embedder    embedding.Embedder
 }
 
 func NewSemanticSource(database *db.DB, e embedding.Embedder, projectID int64) *SemanticSource {
@@ -65,7 +66,7 @@ func (s *SemanticSource) vectors() ([]db.VectorRow, error) {
 	// (enforced by the chunks table's AUTOINCREMENT primary key), so changed
 	// files always receive IDs greater than the previous max and the incremental
 	// path can safely load only rows with id > cacheGen.
-	if s.cache == nil || model != s.cacheModel {
+	if !s.cacheLoaded || model != s.cacheModel {
 		rows, err := s.db.LoadVectors(s.projectID, model)
 		if err != nil {
 			return nil, err
@@ -74,6 +75,7 @@ func (s *SemanticSource) vectors() ([]db.VectorRow, error) {
 		s.cacheN = count
 		s.cacheGen = maxID
 		s.cacheModel = model
+		s.cacheLoaded = true
 		return s.cacheCopy(), nil
 	}
 
@@ -81,7 +83,7 @@ func (s *SemanticSource) vectors() ([]db.VectorRow, error) {
 	// (AUTOINCREMENT): if count and maxID both match, no inserts or deletes
 	// occurred since the cache was built.
 	if count == s.cacheN && maxID == s.cacheGen {
-		return append([]db.VectorRow(nil), s.cache...), nil
+		return s.cacheCopy(), nil
 	}
 
 	// Incremental: load only new/changed vectors.
@@ -104,27 +106,28 @@ func (s *SemanticSource) vectors() ([]db.VectorRow, error) {
 		}
 	}
 
-	// If chunk count decreased, also remove entries for files no longer in DB.
-	if count < s.cacheN {
-		currentFiles, err := s.db.CurrentChunkFiles(s.projectID, model)
-		if err != nil {
-			return nil, err
-		}
-		pruned := filtered[:0]
-		for _, r := range filtered {
-			if currentFiles[r.FilePath] {
-				pruned = append(pruned, r)
-			}
-		}
-		filtered = pruned
+	// Always prune entries for files that no longer have any chunks in the DB.
+	// The count heuristic alone is not enough: a deletion of one file combined
+	// with an insertion of another can leave the total count unchanged while
+	// the deleted file's rows stay in the cache.
+	currentFiles, err := s.db.CurrentChunkFiles(s.projectID, model)
+	if err != nil {
+		return nil, err
 	}
+	pruned := filtered[:0]
+	for _, r := range filtered {
+		if currentFiles[r.FilePath] {
+			pruned = append(pruned, r)
+		}
+	}
+	filtered = pruned
 
 	// Append new rows.
 	s.cache = append(filtered, newRows...)
 	s.cacheN = count
 	s.cacheGen = maxID
 	s.cacheModel = model
-	return append([]db.VectorRow(nil), s.cache...), nil
+	return s.cacheCopy(), nil
 }
 
 func (s *SemanticSource) Retrieve(ctx context.Context, q Query) ([]Candidate, error) {

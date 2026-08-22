@@ -504,10 +504,15 @@ func (m *SessionManager) Delete(ctx context.Context, params json.RawMessage) (an
 	return map[string]any{}, nil
 }
 
+// defaultSessionListLimit is the page size used when the client does not
+// provide a positive limit for session/list.
+const defaultSessionListLimit = 50
+
 // listParams is the parameter shape for session/list.
 type listParams struct {
 	Cwd    string `json:"cwd"`
 	Cursor string `json:"cursor,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 
 // List handles session/list. It validates cwd (required, absolute),
@@ -535,7 +540,12 @@ func (m *SessionManager) List(ctx context.Context, params json.RawMessage) (any,
 		return nil, invalidParamsError("%v", err)
 	}
 
-	entries, next, err := m.lister.ListSessions(ctx, p.Cwd, p.Cursor, 0)
+	limit := p.Limit
+	if limit <= 0 {
+		limit = defaultSessionListLimit
+	}
+
+	entries, next, err := m.lister.ListSessions(ctx, p.Cwd, p.Cursor, limit)
 	if err != nil {
 		return nil, err
 	}

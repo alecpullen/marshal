@@ -68,11 +68,16 @@ type fakeLister struct {
 	nextCursor    string
 	err           error
 	deleteExisted bool
+	lastLimit     int
 }
 
 func (f *fakeLister) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error) {
+	f.lastLimit = limit
 	if f.err != nil {
 		return nil, "", f.err
+	}
+	if limit > 0 && limit < len(f.entries) {
+		return f.entries[:limit], "", nil
 	}
 	return f.entries, f.nextCursor, nil
 }
@@ -830,6 +835,75 @@ func TestSessionListProjectsFromLister(t *testing.T) {
 	}
 	if _, hasNext := obj["nextCursor"]; hasNext {
 		t.Fatalf("unexpected nextCursor: %+v", obj["nextCursor"])
+	}
+}
+
+func TestSessionListRespectsClientLimit(t *testing.T) {
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	entries := []db.SessionEntry{
+		{SessionID: "sess_a", Cwd: absCwd, MessageCount: 1},
+		{SessionID: "sess_b", Cwd: absCwd, MessageCount: 2},
+	}
+	lister := &fakeLister{entries: entries}
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Lister:       lister,
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	res, err := m.List(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","limit":1}`))
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if lister.lastLimit != 1 {
+		t.Fatalf("ListSessions limit = %d, want 1", lister.lastLimit)
+	}
+	obj, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("result type %T", res)
+	}
+	sessions, ok := obj["sessions"].([]map[string]any)
+	if !ok {
+		t.Fatalf("sessions type %T", obj["sessions"])
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len = %d, want 1 (limit=1)", len(sessions))
+	}
+	if sessions[0]["sessionId"] != "sess_a" {
+		t.Fatalf("sessions[0] = %+v", sessions[0])
+	}
+}
+
+func TestSessionListDefaultsLimitWhenZeroOrNegative(t *testing.T) {
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	entries := []db.SessionEntry{
+		{SessionID: "sess_a", Cwd: absCwd},
+		{SessionID: "sess_b", Cwd: absCwd},
+		{SessionID: "sess_c", Cwd: absCwd},
+	}
+	lister := &fakeLister{entries: entries}
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Lister:       lister,
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	for _, limit := range []int{0, -5} {
+		body := `{"cwd":"` + absCwd + `"`
+		if limit != 0 {
+			body += fmt.Sprintf(`,"limit":%d`, limit)
+		}
+		body += `}`
+		if _, err := m.List(context.Background(), json.RawMessage(body)); err != nil {
+			t.Fatalf("List(limit=%d): %v", limit, err)
+		}
+		if lister.lastLimit != defaultSessionListLimit {
+			t.Fatalf("limit=%d: ListSessions limit = %d, want %d", limit, lister.lastLimit, defaultSessionListLimit)
+		}
 	}
 }
 

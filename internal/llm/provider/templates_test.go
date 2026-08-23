@@ -145,6 +145,28 @@ func TestLocalTemplatesNeedNoKey(t *testing.T) {
 	}
 }
 
+func TestLocalToolCapableTemplatesAdvertiseToolCalling(t *testing.T) {
+	for _, id := range []string{"ollama", "ollama-cloud"} {
+		tpl, ok := Lookup(id)
+		if !ok {
+			t.Fatalf("template %q not found", id)
+		}
+		if !tpl.ToolCalling {
+			t.Errorf("template %q ToolCalling = false, want true", id)
+		}
+	}
+	// Deployment-dependent local servers stay envelope by default.
+	for _, id := range []string{"lmstudio", "vllm", "llamacpp", "openai_compatible"} {
+		tpl, ok := Lookup(id)
+		if !ok {
+			t.Fatalf("template %q not found", id)
+		}
+		if tpl.ToolCalling {
+			t.Errorf("template %q ToolCalling = true, want false", id)
+		}
+	}
+}
+
 func TestUniqueNameNoCollision(t *testing.T) {
 	got := UniqueName("ollama", map[string]bool{})
 	if got != "ollama" {

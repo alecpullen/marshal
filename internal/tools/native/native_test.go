@@ -45,9 +45,6 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"codebase_search":    registry.RiskReadOnly,
 		"json.query":         registry.RiskReadOnly,
 		"csv.inspect":        registry.RiskReadOnly,
-		"references":         registry.RiskReadOnly,
-		"definition":         registry.RiskReadOnly,
-		"hover":              registry.RiskReadOnly,
 		"workspace.worktree": registry.RiskWorkspaceWrite,
 	}
 	if got := reg.List(); len(got) != len(want) {
@@ -234,5 +231,46 @@ func assertTimeout(t *testing.T, got time.Duration, want time.Duration) {
 	t.Helper()
 	if got != want {
 		t.Fatalf("timeout = %s, want %s", got, want)
+	}
+}
+
+type fakeLSPQuerier struct{}
+
+func (fakeLSPQuerier) Definition(ctx context.Context, filePath string, line, col int) ([]string, bool) {
+	return nil, false
+}
+
+func (fakeLSPQuerier) References(ctx context.Context, filePath string, line, col int) ([]string, bool) {
+	return nil, false
+}
+
+func (fakeLSPQuerier) Hover(ctx context.Context, filePath string, line, col int) (string, bool) {
+	return "", false
+}
+
+func TestRegisterAllGatesLSPToolsOnQuerier(t *testing.T) {
+	lspNames := []string{"references", "definition", "hover"}
+
+	// Without a querier the LSP tools are not registered at all — they
+	// could only ever return "no lsp".
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range lspNames {
+		if _, ok := reg.Lookup(name); ok {
+			t.Fatalf("expected %s to be omitted when LSP querier is nil", name)
+		}
+	}
+
+	// With a querier they register normally.
+	reg = registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, LSP: fakeLSPQuerier{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range lspNames {
+		if _, ok := reg.Lookup(name); !ok {
+			t.Fatalf("expected %s to be registered when LSP querier is set", name)
+		}
 	}
 }

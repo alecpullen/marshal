@@ -198,10 +198,17 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.codebaseSearchTool(),
 		tools.jsonQueryTool(),
 		tools.csvInspectTool(),
-		tools.referencesTool(),
-		tools.definitionTool(),
-		tools.hoverTool(),
 		tools.workspaceWorktreeTool(),
+	}
+	// references/definition/hover answer through the LSP querier; with no
+	// server wired they could only ever return "no lsp", so they are not
+	// registered at all.
+	if tools.lsp != nil {
+		all = append(all,
+			tools.referencesTool(),
+			tools.definitionTool(),
+			tools.hoverTool(),
+		)
 	}
 	if tools.sessionState != nil {
 		all = append(all,

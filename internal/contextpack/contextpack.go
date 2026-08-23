@@ -7,15 +7,16 @@ const DefaultMaxTokens = 12000
 type SectionKind string
 
 const (
-	SectionRepoCard    SectionKind = "repo_card"
-	SectionRepoMap     SectionKind = "repo_map"
-	SectionMemory      SectionKind = "memory"
-	SectionPlan        SectionKind = "plan"
-	SectionScratchpad  SectionKind = "scratchpad"
-	SectionTodos       SectionKind = "todos"
-	SectionFileSnippet SectionKind = "file_snippet"
-	SectionToolOutput  SectionKind = "tool_output"
-	SectionSemantic    SectionKind = "semantic"
+	SectionRepoCard         SectionKind = "repo_card"
+	SectionRepoMap          SectionKind = "repo_map"
+	SectionMemory           SectionKind = "memory"
+	SectionPlan             SectionKind = "plan"
+	SectionScratchpad       SectionKind = "scratchpad"
+	SectionTodos            SectionKind = "todos"
+	SectionFileSnippet      SectionKind = "file_snippet"
+	SectionToolOutput       SectionKind = "tool_output"
+	SectionSemantic         SectionKind = "semantic"
+	SectionSessionSummaries SectionKind = "session_summaries"
 )
 
 type Pack struct {

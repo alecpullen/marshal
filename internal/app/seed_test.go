@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -84,4 +85,82 @@ func TestSeedRepoContextSeedsCardAndMap(t *testing.T) {
 
 func TestSeedRepoContextNilArgs(t *testing.T) {
 	seedRepoContext(nil, nil, 0) // must not panic
+}
+
+func TestSeedSessionSummaries(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(t.TempDir(), "seed-test")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	t0 := time.Unix(100, 0)
+	if err := database.CreateSession("prior-1", projectID, "Parser work", t0); err != nil {
+		t.Fatalf("create prior session: %v", err)
+	}
+	if err := database.EndSession("prior-1", t0.Add(time.Hour), "Built the expression parser."); err != nil {
+		t.Fatalf("end prior session: %v", err)
+	}
+
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), t0.Add(2*time.Hour), session.Persistence{})
+
+	seedSessionSummaries(state, database, projectID)
+	pack := state.ContextPack()
+	found := false
+	for _, s := range pack.Sections {
+		if s.Kind == contextpack.SectionSessionSummaries {
+			found = true
+			if !strings.Contains(s.Content, "Parser work") || !strings.Contains(s.Content, "Built the expression parser.") {
+				t.Fatalf("section content = %q", s.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no session_summaries section seeded")
+	}
+
+	// Re-seeding replaces, never duplicates (same contract as repo sections).
+	seedSessionSummaries(state, database, projectID)
+	n := 0
+	for _, s := range state.ContextPack().Sections {
+		if s.Kind == contextpack.SectionSessionSummaries {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("session_summaries sections = %d, want 1", n)
+	}
+}
+
+func TestSeedSessionSummariesNoHistory(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(t.TempDir(), "seed-test")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+
+	seedSessionSummaries(state, database, projectID)
+	if !state.ContextPack().IsEmpty() {
+		t.Fatal("no history must seed nothing")
+	}
+}
+
+func TestSeedSessionSummariesNilArgs(t *testing.T) {
+	seedSessionSummaries(nil, nil, 0) // must not panic
 }

@@ -128,6 +128,54 @@ func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) er
 	return nil
 }
 
+// SessionSummary is a lightweight projection of an ended session for
+// start-of-session orientation injection.
+type SessionSummary struct {
+	SessionID string
+	Title     string
+	EndedAt   time.Time
+	Summary   string
+}
+
+// RecentSessionSummaries returns ended sessions with a non-empty summary for
+// the project, newest ended_at first. excludeSessionID (typically the
+// just-started session) is skipped; pass "" to exclude nothing.
+func (db *DB) RecentSessionSummaries(projectID int64, excludeSessionID string, limit int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		limit = 3
+	}
+	rows, err := db.sqlDB.Query(
+		`SELECT id, COALESCE(title, ''), ended_at, summary
+		 FROM agent_sessions
+		 WHERE project_id = ? AND id != ? AND ended_at IS NOT NULL
+		   AND summary IS NOT NULL AND summary != ''
+		 ORDER BY ended_at DESC LIMIT ?`,
+		projectID, excludeSessionID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query session summaries: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionSummary
+	for rows.Next() {
+		var s SessionSummary
+		var endedAt string
+		if err := rows.Scan(&s.SessionID, &s.Title, &endedAt, &s.Summary); err != nil {
+			return nil, fmt.Errorf("scan session summary: %w", err)
+		}
+		parsed, err := time.Parse(time.RFC3339, endedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse ended_at: %w", err)
+		}
+		s.EndedAt = parsed.UTC()
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session summaries: %w", err)
+	}
+	return out, nil
+}
+
 // UpdateSessionWorkspace records the session's active workspace root,
 // worktree branch, the branch the worktree is destined to merge into, and
 // the commit the worktree branch started from. All four are stored empty

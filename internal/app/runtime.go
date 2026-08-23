@@ -547,6 +547,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// AI-01: seed the context pack with repo orientation from the index.
 	// No-op on a fresh project until the startup scan's re-seed lands.
 	seedRepoContext(state, database, projectID)
+	seedSessionSummaries(state, database, projectID)
 
 	autoloadSkills(cfg, skillIndex, state, logger)
 
@@ -700,6 +701,7 @@ func (rt *Runtime) subscribeIndexReseed(indexBroker *pubsub.Broker[index.Report]
 				return
 			}
 			seedRepoContext(rt.State, database, projectID)
+			seedSessionSummaries(rt.State, database, projectID)
 		}
 	}()
 }
@@ -738,6 +740,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	}
 	autoloadSkills(rt.Config, rt.SkillIndex, newState, rt.Logger)
 	seedRepoContext(newState, db, rt.ProjectID)
+	seedSessionSummaries(newState, db, rt.ProjectID)
 
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunner(
 		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir,

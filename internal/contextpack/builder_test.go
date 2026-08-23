@@ -46,3 +46,15 @@ func TestNewMemorySectionCapsAtTwenty(t *testing.T) {
 		t.Fatalf("memory lines = %d, want 20", n)
 	}
 }
+
+func TestMergeSessionSummaries(t *testing.T) {
+	pack := MergeSessionSummaries(Pack{}, "Recent sessions (prior work):\n- a: did a", 0, nil)
+	if len(pack.Sections) != 1 || pack.Sections[0].Kind != SectionSessionSummaries {
+		t.Fatalf("sections = %+v", pack.Sections)
+	}
+	// Empty content removes the section.
+	pack = MergeSessionSummaries(pack, "", 0, nil)
+	if len(pack.Sections) != 0 {
+		t.Fatalf("empty content must drop the section, got %+v", pack.Sections)
+	}
+}

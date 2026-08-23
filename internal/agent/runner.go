@@ -283,6 +283,10 @@ type Runner struct {
 	// first user turn to produce a short session title (F13). Fire-and-forget.
 	TitleGenerator TitleGenerator
 
+	// tokenRatio scales estimateTokens toward provider-reported prompt
+	// tokens. 0 means unset (raw estimates). See calibration.go.
+	tokenRatio float64
+
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
 
@@ -804,13 +808,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// Deliver the body of any skill loaded since the last iteration.
 		messages = r.appendSkillBodies(messages)
 
-		if turnThreshold > 0 && estimateTokens(messages) > turnThreshold {
+		if turnThreshold > 0 && r.calibratedEstimate(messages) > turnThreshold {
 			// D2: prune superseded tool outputs first. Most overflows are
 			// 2-3 huge tool results, especially re-reads of the same
 			// file. Pruning before summarizing is cheaper, preserves the
 			// most recent copy, and often drops us back below the
 			// threshold without needing the LLM at all.
-			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && estimateTokens(prunedMsgs) <= turnThreshold {
+			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(prunedMsgs) <= turnThreshold {
 				messages = prunedMsgs
 				r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
 				continue
@@ -824,6 +828,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// fall back to summarizeAndContinue when disabled.
 			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
 				messages = fresh
+				r.resetTokenRatio()
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
 				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)

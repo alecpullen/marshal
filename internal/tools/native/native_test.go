@@ -265,23 +265,36 @@ func TestRegisterAllDefersConfigAndDataTools(t *testing.T) {
 		deferred[tool.Name] = true
 	}
 
-	// All 29 config.* tools are deferred.
-	configCount := 0
-	for name := range deferred {
+	// Derive the expected deferred set from the registry instead of
+	// hard-coding counts, so adding/removing a config.* tool fails with an
+	// actionable message rather than a stale magic number. The invariant is:
+	// every registered config.* tool is deferred, and the deferred set is
+	// exactly {all config.*} ∪ {csv.inspect, json.query}.
+	all := make(map[string]bool)
+	for _, tool := range reg.List() {
+		all[tool.Name] = true
+	}
+	configNames := []string{}
+	for name := range all {
 		if strings.HasPrefix(name, "config.") {
-			configCount++
+			configNames = append(configNames, name)
+			if !deferred[name] {
+				t.Fatalf("expected config.* tool %s to be deferred", name)
+			}
 		}
 	}
-	if configCount != 29 {
-		t.Fatalf("deferred config.* tools = %d, want 29", configCount)
+
+	wantDeferred := map[string]bool{"csv.inspect": true, "json.query": true}
+	for _, name := range configNames {
+		wantDeferred[name] = true
 	}
-	for _, name := range []string{"config.read", "csv.inspect", "json.query"} {
+	if len(deferred) != len(wantDeferred) {
+		t.Fatalf("len(ListDeferred()) = %d, want %d (config.* + csv.inspect + json.query)", len(deferred), len(wantDeferred))
+	}
+	for name := range wantDeferred {
 		if !deferred[name] {
 			t.Fatalf("expected %s to be deferred", name)
 		}
-	}
-	if len(deferred) != 31 {
-		t.Fatalf("len(ListDeferred()) = %d, want 31 (29 config.* + csv.inspect + json.query)", len(deferred))
 	}
 
 	// Core tools are never deferred.

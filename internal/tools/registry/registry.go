@@ -81,7 +81,8 @@ func (r *Registry) List() []Tool {
 
 // ListDeferred returns all registered tools flagged with Deferred=true,
 // sorted by name. Used by the prompt builder and disclosure tools to
-// enumerate MCP tools hidden from the default tool list.
+// enumerate deferred tools (native config.*/data tools and MCP tools)
+// hidden from the default tool list.
 func (r *Registry) ListDeferred() []Tool {
 	return r.listWhere(func(t Tool) bool { return t.Deferred })
 }
@@ -89,7 +90,8 @@ func (r *Registry) ListDeferred() []Tool {
 // ListLoaded returns the subset of all tools whose name appears in the
 // provided loaded-names set, sorted by name. Names that are not registered
 // are silently skipped; the prompt builder uses this to expand the visible
-// tool list once the agent opts in to specific MCP tools via tools.select.
+// tool list once the agent opts in to specific deferred tools (config.*,
+// data tools, or MCP tools) via tools.select.
 func (r *Registry) ListLoaded(names []string) []Tool {
 	if len(names) == 0 {
 		return nil

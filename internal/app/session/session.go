@@ -1423,10 +1423,12 @@ func (s *State) HasActiveSkill(name string) bool {
 	return s.activeSkills[name]
 }
 
-// LoadedToolNames returns a sorted copy of the MCP tool names the agent
-// has explicitly opted into via tools.select during this session. The
-// agent prompt builder uses this to expand the deferred tool list back
-// into the prompt once the agent confirms it needs a particular tool.
+// LoadedToolNames returns a sorted copy of the deferred tool names the
+// agent has explicitly opted into via tools.select during this session.
+// The agent prompt builder uses this to expand the deferred tool list back
+// into the prompt once the agent confirms it needs a particular tool. This
+// covers both native deferred tools (config.*, csv.inspect, json.query) and
+// MCP tools.
 func (s *State) LoadedToolNames() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1438,10 +1440,10 @@ func (s *State) LoadedToolNames() []string {
 	return names
 }
 
-// AddLoadedToolNames records that the agent has opted into the given MCP
-// tool names for the remainder of the session. Names are de-duplicated;
-// unknown names are accepted without error so callers can pass through
-// the full requested set.
+// AddLoadedToolNames records that the agent has opted into the given
+// deferred tool names for the remainder of the session. Names are
+// de-duplicated; unknown names are accepted without error so callers can
+// pass through the full requested set.
 func (s *State) AddLoadedToolNames(names []string) {
 	if len(names) == 0 {
 		return

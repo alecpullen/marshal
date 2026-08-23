@@ -370,18 +370,35 @@ func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred [
 // custom-agent system-prompt addendum appended after the role addendum.
 // roster is the rendered agent/model roster used when agent.run is
 // available so the model knows which provider/model pairs are valid.
-func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum, workingDir, roster)
+//
+// loadedNames are the deferred tools the agent has opted into via
+// tools.select for this session. They are rendered as available tools
+// (and excluded from the "not loaded" announcement) so the system prompt
+// stays accurate after tools.select, which matters most in JSON/envelope
+// mode where the tool list exists only as this text. Pass r.State's
+// LoadedToolNames().
+func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string, loadedNames ...string) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum, workingDir, roster, loadedNames...)
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
 // runner to advertise deferred tools the agent hasn't loaded yet but may
 // want to opt into). Tests that pass nil get the old behavior with no
 // announcement appended.
-func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string) schema.ChatMessage {
+//
+// loadedNames are deferred tools the agent already opted into via
+// tools.select. They render as available tools rather than remaining in the
+// "not loaded" announcement. Variadic so existing callers (and the older
+// BuildSystemPrompt*/buildSystemPrompt call sites) need no change.
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string, loadedNames ...string) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
+	}
+
+	loaded := make(map[string]bool, len(loadedNames))
+	for _, name := range loadedNames {
+		loaded[name] = true
 	}
 
 	var b strings.Builder
@@ -405,10 +422,13 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	}
 	b.WriteString("\n\nAvailable tools:\n")
 	for _, tool := range tools {
-		// Deferred tools are announced compactly below via
+		// Deferred tools the agent hasn't loaded are announced compactly via
 		// writeDeferredAnnouncement; listing them in full here would
-		// double-pay the prompt cost deferral exists to save.
-		if tool.Deferred {
+		// double-pay the prompt cost deferral exists to save. Loaded
+		// deferred tools, though, must appear here so the agent knows it has
+		// opted in and can call them — especially in JSON/envelope mode,
+		// where this text is the only tool representation.
+		if tool.Deferred && !loaded[tool.Name] {
 			continue
 		}
 		line := fmt.Sprintf("- %s (%s): %s", tool.Name, tool.Risk, tool.Description)
@@ -420,7 +440,15 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	if mode == policy.ModeDefault {
 		b.WriteString("- mode.request: Ask the user to switch to an editing mode (edit, copilot, or auto) so you can make changes.\n")
 	}
-	writeDeferredAnnouncement(&b, deferredTools)
+	// Don't advertise tools the agent has already loaded as still "not
+	// loaded" — that would tell the model a tool it now has is unavailable.
+	var notLoaded []registry.Tool
+	for _, tool := range deferredTools {
+		if !loaded[tool.Name] {
+			notLoaded = append(notLoaded, tool)
+		}
+	}
+	writeDeferredAnnouncement(&b, notLoaded)
 	activeMap := make(map[string]bool, len(activeSkills))
 	for _, name := range activeSkills {
 		activeMap[name] = true

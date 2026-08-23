@@ -1006,3 +1006,38 @@ func TestBuildSystemPromptSkipsDeferredToolsInList(t *testing.T) {
 		t.Fatalf("deferred tool missing from the deferred announcement:\n%s", content[announceIdx:])
 	}
 }
+
+func TestBuildSystemPromptLoadedDeferredToolMovesToAvailableList(t *testing.T) {
+	loadedTool := registry.Tool{
+		Name:        "config.read",
+		Risk:        registry.RiskReadOnly,
+		Description: "Read the current Marshal configuration.",
+		Deferred:    true,
+	}
+	unloadedTool := registry.Tool{
+		Name:        "config.providers.set",
+		Risk:        registry.RiskWorkspaceWrite,
+		Description: "Set a provider.",
+		Deferred:    true,
+	}
+	// config.read is opted into via tools.select; config.providers.set is not.
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, []registry.Tool{loadedTool, unloadedTool}, []registry.Tool{loadedTool, unloadedTool}, nil, nil, false, policy.ModeEdit, "", "", "", "config.read")
+	content := msg.Content
+
+	availableIdx := strings.Index(content, "Available tools:\n")
+	announceIdx := strings.Index(content, "Additional tools are available")
+	if availableIdx < 0 || announceIdx < 0 {
+		t.Fatalf("prompt missing expected sections:\n%s", content)
+	}
+	listSection := content[availableIdx:announceIdx]
+	announceSection := content[announceIdx:]
+	if !strings.Contains(listSection, "config.read") {
+		t.Fatalf("loaded deferred tool should appear in the Available tools list:\n%s", listSection)
+	}
+	if strings.Contains(announceSection, "config.read") {
+		t.Fatalf("loaded deferred tool should be excluded from the not-loaded announcement:\n%s", announceSection)
+	}
+	if !strings.Contains(announceSection, "config.providers.set") {
+		t.Fatalf("unloaded deferred tool missing from the announcement:\n%s", announceSection)
+	}
+}

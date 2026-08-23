@@ -663,7 +663,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	messages := []schema.ChatMessage{
-		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config)),
+		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), r.State.LoadedToolNames()...),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
 	messages = r.appendSkillBodies(messages)
@@ -728,7 +728,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			updatedPack := r.State.ContextPack()
 			r.contextPackMsgIndex = -1
 			r.emittedSkills = nil
-			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config))}
+			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), r.State.LoadedToolNames()...)}
 			messages = r.setContextPackMessage(messages, updatedPack)
 			messages = r.appendSkillBodies(messages)
 			if r.role() == RoleGeneral {
@@ -751,6 +751,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	task.Status = TaskStatusExecuting
 	lastRenderedSkills := r.State.ActiveSkills()
+	lastRenderedLoadedTools := r.State.LoadedToolNames()
 	pressureMessageSent := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
@@ -835,9 +836,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 
 		currentSkills := r.State.ActiveSkills()
-		if skillsChanged(lastRenderedSkills, currentSkills) {
-			messages[0] = BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config))
+		currentLoadedTools := r.State.LoadedToolNames()
+		if skillsChanged(lastRenderedSkills, currentSkills) || loadedToolsChanged(lastRenderedLoadedTools, currentLoadedTools) {
+			messages[0] = BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), currentLoadedTools...)
 			lastRenderedSkills = currentSkills
+			lastRenderedLoadedTools = currentLoadedTools
 		}
 
 		// Refresh the scratchpad projection before the next model call so
@@ -1393,19 +1396,33 @@ func (r *Runner) checkStall(ctx context.Context, p provider.Provider, model stri
 }
 
 func skillsChanged(prev, curr []string) bool {
-	if len(prev) != len(curr) {
-		return true
+	return !stringSetsEqual(prev, curr)
+}
+
+// loadedToolsChanged reports whether the set of deferred tools opted into
+// via tools.select differs between two snapshots. The system prompt renders
+// loaded tools as available (and drops them from the "not loaded"
+// announcement), so a change here requires rebuilding the prompt text to
+// stay accurate — especially in JSON/envelope mode where that text is the
+// agent's only view of its tool set.
+func loadedToolsChanged(prev, curr []string) bool {
+	return !stringSetsEqual(prev, curr)
+}
+
+func stringSetsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	prevSet := make(map[string]bool, len(prev))
-	for _, s := range prev {
-		prevSet[s] = true
+	set := make(map[string]bool, len(a))
+	for _, s := range a {
+		set[s] = true
 	}
-	for _, s := range curr {
-		if !prevSet[s] {
-			return true
+	for _, s := range b {
+		if !set[s] {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // Chat calls the runner's provider with the given messages and returns

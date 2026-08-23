@@ -1669,7 +1669,7 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	}
 }
 
-func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
+func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 	model.busy = true
@@ -4526,7 +4526,7 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 	}
 }
 
-func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
+func TestIntentionalAgentCancellationDoesNotSetNotice(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 	model.busy = true
@@ -4542,7 +4542,7 @@ func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
 	}
 }
 
-func TestSuccessfulTurnClearsProviderError(t *testing.T) {
+func TestSuccessfulTurnClearsNotice(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 	model.busy = true
@@ -7242,7 +7242,7 @@ func TestNoCacheDirIsHarmless(t *testing.T) {
 // error that surfaces ("provider %q: chat request failed: ...") does not
 // wrap context.Canceled. Treating it as a provider fault pinned a bogus
 // error banner under the transcript until the next successful turn.
-func TestCancelledTurnDoesNotSetProviderError(t *testing.T) {
+func TestCancelledTurnDoesNotSetNotice(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true
 	m.cancelling = true
@@ -7262,7 +7262,7 @@ func TestCancelledTurnDoesNotSetProviderError(t *testing.T) {
 
 // A genuine provider failure on a turn the user did not cancel must still
 // raise the banner.
-func TestUncancelledProviderFailureSetsProviderError(t *testing.T) {
+func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true
 

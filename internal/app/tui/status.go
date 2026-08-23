@@ -282,7 +282,10 @@ func (m Model) statusRightSegment() string {
 	if m.hasPendingApproval() {
 		return warningStyle().Render(glyph.Warning + " approval")
 	}
-	if _, ok := m.state.Notice(); ok {
+	if n, ok := m.state.Notice(); ok {
+		if n.Severity == session.SeverityWarn {
+			return warningStyle().Render(glyph.Warning + " warning")
+		}
 		return errorStyle().Render("✘ error")
 	}
 	return help.Footer(m.footerHints())

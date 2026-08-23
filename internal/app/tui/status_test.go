@@ -63,7 +63,7 @@ func TestStatusLineShowsApprovalState(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsProviderError(t *testing.T) {
+func TestStatusLineShowsErrorNotice(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "connection refused"})
 	line := m.renderStatusLine(100)

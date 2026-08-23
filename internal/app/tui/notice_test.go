@@ -159,3 +159,49 @@ func TestEscDismissesNoticeWhenIdle(t *testing.T) {
 		t.Fatal("esc should dismiss the notice")
 	}
 }
+
+// Regression: the notice banner is rendered into the transcript, so
+// dismissing it must repaint the viewport. Before the notice was folded
+// into transcriptHash, refreshViewport early-returned on an unchanged hash
+// and the banner stayed on screen after esc-dismiss (and after the TTL
+// auto-dismiss) until an unrelated transcript change forced a repaint.
+func TestEscDismissRepaintsBannerAway(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetNotice(session.Notice{Category: session.NoticeInternal, Message: "boom"})
+	m.refreshViewport()
+	if plain := stripANSI(m.viewport.View()); !strings.Contains(plain, "boom") {
+		t.Fatalf("banner should be visible before dismiss:\n%s", plain)
+	}
+
+	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(Model)
+	if !handled {
+		t.Fatal("esc with a visible notice should be handled")
+	}
+	m.refreshViewport()
+	if plain := stripANSI(m.viewport.View()); strings.Contains(plain, "boom") {
+		t.Fatalf("banner must be repainted away after esc-dismiss:\n%s", plain)
+	}
+}
+
+// Regression: the TTL auto-dismiss path in handleAgentTick must also
+// repaint the banner away. The tick dismisses the notice and then exits
+// through the !busy && !successPulse && !noticePending guard, so the
+// repaint relies on the notice being folded into transcriptHash.
+func TestTickDismissRepaintsBannerAway(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "down", SetAt: time.Unix(100, 0)})
+	m.now = func() time.Time { return time.Unix(100, 0) }
+	m.refreshViewport()
+	if plain := stripANSI(m.viewport.View()); !strings.Contains(plain, "down") {
+		t.Fatalf("banner should be visible before TTL:\n%s", plain)
+	}
+
+	m.now = func() time.Time { return time.Unix(100+int64(noticeBannerDuration/time.Second)+1, 0) }
+	updated, _ := m.handleAgentTick(agentTickMsg{})
+	m = updated
+	m.refreshViewport()
+	if plain := stripANSI(m.viewport.View()); strings.Contains(plain, "down") {
+		t.Fatalf("banner must be repainted away after TTL auto-dismiss:\n%s", plain)
+	}
+}

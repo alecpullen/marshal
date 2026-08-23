@@ -191,7 +191,7 @@ func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
 	}
 }
 
-func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
+func TestNoticeShowsInlineNotFullScreen(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "connection refused"})

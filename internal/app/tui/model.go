@@ -3007,7 +3007,8 @@ func (m *Model) refreshViewport() {
 		m.todosDismissed = false
 	}
 	queued := m.state.SteeringQueue()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc)
+	notice, noticeUp := m.state.Notice()
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp)
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -4630,9 +4631,14 @@ func browserGlyphStyle() lipgloss.Style {
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
+	// The notice banner is rendered into the transcript, so its presence
+	// and identity must bust the viewport cache: without this, esc-dismiss
+	// and the TTL auto-dismiss repaint nothing (the hash is unchanged) and
+	// the banner stays on screen until an unrelated transcript change.
+	fmt.Fprintf(h, "notice=%t|%d|%s|%d|%s|", noticeUp, notice.SetAt.UnixNano(), notice.Category.String(), notice.Severity, notice.Message)
 	// Live state: without the spinner frame and the active tool call the
 	// early-return in refreshViewport freezes the ▸ row for the whole
 	// duration of a long tool call (e.g. agent.run).

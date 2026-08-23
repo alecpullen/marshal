@@ -133,7 +133,10 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 			if rt.Runner == nil {
 				reason := "agent runner not built"
 				if rt.State != nil {
-					if n, ok := rt.State.Notice(); ok {
+					// Only surface provider-originated notices as the
+					// rejection reason; an internal notice (e.g. a
+					// command-registration bug) is not a runner problem.
+					if n, ok := rt.State.Notice(); ok && n.Category == session.NoticeProvider {
 						reason = n.Message
 					}
 				}

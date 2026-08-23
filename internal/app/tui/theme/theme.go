@@ -83,6 +83,10 @@ type Theme struct {
 	StatusWarning   color.Color
 	StatusSuccess   color.Color
 	StatusInfo      color.Color
+
+	// Tier records the colour tier this Theme was resolved for. See
+	// tier.go; the zero value is Tier256.
+	Tier ColorTier
 }
 
 // warmSunset256 is the default dark-theme palette (Warm Sunset) resolved
@@ -128,6 +132,7 @@ var warmSunset16 = Theme{
 	StatusWarning:   lipgloss.Color("3"),
 	StatusSuccess:   lipgloss.Color("2"),
 	StatusInfo:      lipgloss.Color("6"),
+	Tier:            Tier16,
 }
 
 // monochromeTheme returns a Theme where every slot is lipgloss.NoColor{},
@@ -151,6 +156,7 @@ func monochromeTheme() Theme {
 		StatusWarning:   lipgloss.NoColor{},
 		StatusSuccess:   lipgloss.NoColor{},
 		StatusInfo:      lipgloss.NoColor{},
+		Tier:            TierMono,
 	}
 }
 
@@ -241,9 +247,12 @@ var presets16 = map[string]Theme{
 func sixteenFor(name string, base Theme) Theme {
 	if t, ok := presets16[name]; ok {
 		separatePairs(&t)
+		t.Tier = Tier16
 		return t
 	}
-	return downsampleTo16(base)
+	out := downsampleTo16(base)
+	out.Tier = Tier16
+	return out
 }
 
 // Names returns the list of preset names sorted lexicographically for a

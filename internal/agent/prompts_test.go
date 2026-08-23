@@ -146,6 +146,10 @@ func TestNativePatchFormatIncludesChainedExample(t *testing.T) {
 		">>>>>>> REPLACE",
 		"File: internal/app/config/types_test.go",
 		"prefer the file.write tool",
+		"Unified diffs",
+		"--- a/internal/app/config/types.go",
+		"+++ b/internal/app/config/types.go",
+		"@@ -1,4 +1,5 @@",
 	} {
 		if !strings.Contains(nativePatchFormat, want) {
 			t.Errorf("nativePatchFormat missing %q", want)
@@ -165,7 +169,7 @@ func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
 		`"type": "ask_user"`,
 		"<<<<<<< SEARCH",
 		">>>>>>> REPLACE",
-		"Do not use unified diff syntax",
+		"Unified diffs are also accepted but search/replace is preferred",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("system prompt missing expected content %q\n%s", want, content)
@@ -968,5 +972,13 @@ func TestBuildSystemPromptOmitsRosterWithoutAgentRun(t *testing.T) {
 	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", "", RenderAgentRoster(cfg))
 	if strings.Contains(msg.Content, "## Agents and models") {
 		t.Fatalf("roster should not appear without agent.run:\n%s", msg.Content)
+	}
+}
+
+func TestPromptsNoLongerForbidUnifiedDiff(t *testing.T) {
+	for _, s := range []string{baseOutputFormat, nativePatchFormat} {
+		if strings.Contains(s, "Do not use unified diff") {
+			t.Error("prompt still forbids unified diffs")
+		}
 	}
 }

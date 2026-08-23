@@ -898,3 +898,66 @@ func TestFileWriteRejectsPathEscapingRoot(t *testing.T) {
 		t.Fatal("expected error for path escaping the root")
 	}
 }
+
+func TestFileWritePatchToolAcceptsUnifiedDiff(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	orig := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
+	writeFile(t, filePath, orig)
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	args := `{"patch": "--- a/app.go\n+++ b/app.go\n@@ -3,3 +3,3 @@\n func main() {\n-\tprintln(\"hello\")\n+\tprintln(\"patched\")\n }"}`
+	res, err := invokeTool(t, reg, "file.write_patch", args)
+	if err != nil {
+		t.Fatalf("handler failed: %v", err)
+	}
+	if !strings.Contains(res.Content, "converted unified diff") {
+		t.Fatalf("expected conversion repair note in result content, got: %s", res.Content)
+	}
+	if !reflect.DeepEqual(res.FilesChanged, []string{"app.go"}) {
+		t.Fatalf("FilesChanged = %#v, want %#v", res.FilesChanged, []string{"app.go"})
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read file failed: %v", err)
+	}
+	if !strings.Contains(string(data), "println(\"patched\")") {
+		t.Fatalf("file content not patched: %s", string(data))
+	}
+}
+
+func TestFileWritePatchToolUnifiedDiffSearchMiss(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	writeFile(t, filePath, "package main\n\nfunc main() {}\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	args := `{"patch": "--- a/app.go\n+++ b/app.go\n@@ -1,2 +1,2 @@\n-no such line\n+replacement\n tail"}`
+	_, err := invokeTool(t, reg, "file.write_patch", args)
+	if err == nil || !strings.Contains(err.Error(), "search block not found") {
+		t.Fatalf("err = %v, want the existing search-miss error with nearest-region hint", err)
+	}
+}
+
+func TestFileWritePatchDescriptionMentionsUnifiedDiff(t *testing.T) {
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+	tool, ok := reg.Lookup("file.write_patch")
+	if !ok {
+		t.Fatal("file.write_patch not registered")
+	}
+	if !strings.Contains(tool.Description, "Unified diff") {
+		t.Fatalf("description missing unified-diff acceptance: %s", tool.Description)
+	}
+}

@@ -254,8 +254,9 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			"Each block edits one file; chain multiple blocks in a single call to edit several files at once. " +
 			"The SEARCH block must match the current file content exactly. " +
 			"To create a new file, use an empty SEARCH block. " +
+			"Unified diff format (---/+++/@@ hunks) is also accepted and converted internally. " +
 			"Always read before editing a file if you have not already done so this session. " +
-			"Every block must end with >>>>>>> REPLACE.",
+			"Every SEARCH/REPLACE block must end with >>>>>>> REPLACE; unified diffs use standard ---/+++/@@ syntax.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string","description":` +
 			t.pathDescription("search/replace patch blocks; each block's `File:` header is a file path relative to the workspace") +
 			`}},"required":["patch"],"additionalProperties":false}`),

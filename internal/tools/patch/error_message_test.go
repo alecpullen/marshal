@@ -34,9 +34,17 @@ func TestParseErrorsNameWhatIsMissing(t *testing.T) {
 			want:  []string{"File:", "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE"},
 		},
 		{
-			name:  "unified diff is rejected with format guidance",
-			input: "--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n",
-			want:  []string{"<<<<<<< SEARCH"},
+			name:  "mixed formats are rejected with format guidance",
+			input: "--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\nFile: b.go\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n",
+			want:  []string{"mixed formats"},
+		},
+		{
+			// SEARCH/REPLACE first, diff hunks trailing: the block parser
+			// must reject rather than silently drop the diff text after the
+			// last REPLACE marker (regression: the diff edit was discarded).
+			name:  "mixed formats with search/replace first are rejected",
+			input: "File: b.go\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n",
+			want:  []string{"mixed formats"},
 		},
 	}
 	for _, tc := range cases {

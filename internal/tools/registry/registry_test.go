@@ -405,3 +405,37 @@ func testTool(name string) Tool {
 		},
 	}
 }
+
+func TestReplaceUpserts(t *testing.T) {
+	r := New()
+	mk := func(name, summary string) Tool {
+		return Tool{
+			Name: name, Risk: RiskReadOnly,
+			Schema: json.RawMessage(`{"type":"object"}`),
+			Handler: func(context.Context, ToolCall) (ToolResult, error) {
+				return ToolResult{Summary: summary}, nil
+			},
+		}
+	}
+	if err := r.Register(mk("x", "old")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := r.Register(mk("x", "new")); err == nil {
+		t.Fatal("duplicate Register should fail")
+	}
+	if err := r.Replace(mk("x", "new")); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	tool, _ := r.Lookup("x")
+	res, _ := tool.Handler(context.Background(), ToolCall{})
+	if res.Summary != "new" {
+		t.Fatalf("handler after Replace = %q, want %q", res.Summary, "new")
+	}
+	// Replace on a missing name behaves like Register.
+	if err := r.Replace(mk("y", "fresh")); err != nil {
+		t.Fatalf("Replace on missing name: %v", err)
+	}
+	if _, ok := r.Lookup("y"); !ok {
+		t.Fatal("Replace on missing name should register the tool")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
@@ -26,14 +27,24 @@ type TodoStore interface {
 
 type todoWriteArgs struct {
 	Todos []TodoItem `json:"todos"`
-	Force bool       `json:"force,omitempty"`
+}
+
+// TodoWriteTool builds the todo.write tool bound to the given session
+// state. Subagent factories use it to rebind the tool to a child's own
+// session so its task list never overwrites the parent's.
+func TodoWriteTool(state *session.State) registry.Tool {
+	return newTodoWriteTool(state)
 }
 
 func (t *toolSet) todoWriteTool() registry.Tool {
+	return newTodoWriteTool(t.sessionState)
+}
+
+func newTodoWriteTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
 		Name:        "todo.write",
-		Description: "Replace the entire session todo list. Use for any task with 3+ steps or multiple requirements; mark items completed immediately, never batch-complete at the end.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}},"force":{"type":"boolean","description":"When true, allows dropping unfinished todos from the list without marking them completed first. Use when the user explicitly requests dropping or reorganizing items."}},"required":["todos"],"additionalProperties":false}`),
+		Description: "Replace the session todo list. Use for any task with 3+ steps or multiple requirements; mark items completed immediately, never batch-complete at the end. Unfinished items omitted from the new list are kept automatically (carried over); completed items may be dropped.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -45,9 +56,7 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 			// registry.ValidateArgs only checks that the arguments are a
 			// JSON object — the declared schema's "required" is not
 			// enforced — so content has to be checked here, the same way
-			// status already is. Without this a model that names the field
-			// anything other than "content" writes a list of empty items
-			// and the todo panel draws glyphs with no text next to them.
+			// status already is.
 			if strings.TrimSpace(item.Content) == "" {
 				return registry.ToolResult{}, fmt.Errorf("todo %d has empty content; each item needs a non-empty %q string describing the task", i+1, "content")
 			}
@@ -57,43 +66,41 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 				return registry.ToolResult{}, fmt.Errorf("invalid todo status %q; use pending|in_progress|completed", item.Status)
 			}
 		}
-		if t.sessionState == nil {
+		if state == nil {
 			return registry.ToolResult{}, fmt.Errorf("todo store not available")
 		}
-		store := TodoStore(t.sessionState)
+		store := TodoStore(state)
 
-		// The drop guard is a safety net against accidental loss of
-		// unfinished work. It is skipped when the caller explicitly sets
-		// force=true (e.g. the user asked to drop or reorganize items).
-		if !args.Force {
-			var dropped []string
-			newContents := map[string]int{}
-			for _, item := range args.Todos {
-				newContents[strings.TrimSpace(item.Content)]++
+		// Auto-carry: unfinished items missing from the submitted list are
+		// kept (appended with their status) instead of erroring. The old
+		// drop-guard fired during ordinary reorganisation and forced a
+		// retry loop with the model.
+		submitted := map[string]bool{}
+		for _, item := range args.Todos {
+			submitted[strings.TrimSpace(item.Content)] = true
+		}
+		var carried []string
+		for _, old := range store.Todos() {
+			if old.Status == TodoCompleted {
+				continue
 			}
-			for _, old := range store.Todos() {
-				if old.Status == TodoCompleted {
-					continue
-				}
-				key := strings.TrimSpace(old.Content)
-				if newContents[key] == 0 {
-					dropped = append(dropped, old.Content)
-					continue
-				}
-				newContents[key]--
-			}
-			if len(dropped) > 0 {
-				return registry.ToolResult{}, fmt.Errorf("refusing to drop %d unfinished todo(s): %s; include them in the new list, mark them completed first, or set force=true to override", len(dropped), strings.Join(dropped, "; "))
+			if !submitted[strings.TrimSpace(old.Content)] {
+				carried = append(carried, old.Content)
+				args.Todos = append(args.Todos, TodoItem{Content: old.Content, Status: old.Status})
 			}
 		}
 
 		if err := store.SetTodos(args.Todos); err != nil {
 			return registry.ToolResult{}, err
 		}
-		return registry.ToolResult{
+		result := registry.ToolResult{
 			Summary: fmt.Sprintf("tasks updated · %d items", len(args.Todos)),
 			Content: fmt.Sprintf("%d todo(s) recorded", len(args.Todos)),
-		}, nil
+		}
+		if len(carried) > 0 {
+			result.Content += fmt.Sprintf("; carried over %d unfinished item(s): %s", len(carried), strings.Join(carried, "; "))
+		}
+		return result, nil
 	}
 	return tool
 }

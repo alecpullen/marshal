@@ -240,7 +240,7 @@ For parallel read-only work, you may return multiple tool calls in one response 
 
 {"rationale": "Read both files at once.", "actions": [{"type": "tool_call", "tool": "file.read", "args": {"path": "a.go", "start_line": 1, "end_line": 60}}, {"type": "tool_call", "tool": "file.read", "args": {"path": "b.go", "start_line": 1, "end_line": 60}}]}
 
-For patch actions use search/replace blocks, one block per file. Do not use unified diff syntax.`
+For patch actions use search/replace blocks, one block per file. Unified diffs are also accepted but search/replace is preferred.`
 
 const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.
 
@@ -266,7 +266,7 @@ Rules:
 - Use one block per file. To edit multiple files in one call, chain blocks back-to-back in the same patch string.
 - Every SEARCH block must be unique within its file; do not repeat the same SEARCH text for the same file.
 - To create a new file, use an empty SEARCH section.
-- Do not use unified diff syntax.
+- Unified diffs (---/+++/@@ hunks) are also accepted and converted internally, but prefer the SEARCH/REPLACE format above.
 - Every block must end with the line >>>>>>> REPLACE.
 
 Example (two files chained in one patch):
@@ -287,7 +287,18 @@ func TestTypes(t *testing.T) {
     t.Run("digest provider", func(t *testing.T) {
         // TODO
     })
->>>>>>> REPLACE`
+>>>>>>> REPLACE
+
+A unified diff is also accepted (converted internally):
+
+--- a/internal/app/config/types.go
++++ b/internal/app/config/types.go
+@@ -1,4 +1,5 @@
+ const (
++	DefaultDigestTimeout  = 30
+ 	DefaultIdleTimeout    = 60
+ 	DefaultTokenBudget    = 8000
+ )`
 
 func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	var b strings.Builder

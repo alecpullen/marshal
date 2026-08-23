@@ -947,3 +947,17 @@ func TestFileWritePatchToolUnifiedDiffSearchMiss(t *testing.T) {
 		t.Fatalf("err = %v, want the existing search-miss error with nearest-region hint", err)
 	}
 }
+
+func TestFileWritePatchDescriptionMentionsUnifiedDiff(t *testing.T) {
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+	tool, ok := reg.Lookup("file.write_patch")
+	if !ok {
+		t.Fatal("file.write_patch not registered")
+	}
+	if !strings.Contains(tool.Description, "Unified diff") {
+		t.Fatalf("description missing unified-diff acceptance: %s", tool.Description)
+	}
+}

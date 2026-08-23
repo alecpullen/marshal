@@ -116,11 +116,18 @@ func summarySuffix(path string, bySummary map[string]string) string {
 // groupExportedSymbols indexes symbols by file path, keeping only the
 // exported top-level functions, methods, and types useful for repo-map
 // orientation. Imports and unexported symbols are excluded here; both
-// remain fully queryable via symbols.find.
+// remain fully queryable via symbols.find. Export rules are per-language
+// (see isExportedName).
 func groupExportedSymbols(symbols []db.Symbol) map[string][]db.Symbol {
 	byFile := map[string][]db.Symbol{}
+	langByFile := map[string]string{}
 	for _, s := range symbols {
-		if s.Kind == "import" || !isExportedName(s.Name) {
+		lang, ok := langByFile[s.FilePath]
+		if !ok {
+			lang = DetectLanguage(s.FilePath)
+			langByFile[s.FilePath] = lang
+		}
+		if s.Kind == "import" || !isExportedName(lang, s.Name) {
 			continue
 		}
 		byFile[s.FilePath] = append(byFile[s.FilePath], s)
@@ -140,7 +147,20 @@ func exportedSymbolSuffix(path string, byFile map[string][]db.Symbol) string {
 	return " (" + strings.Join(names, ", ") + ")"
 }
 
-func isExportedName(name string) bool {
-	r, _ := utf8.DecodeRuneInString(name)
-	return unicode.IsUpper(r)
+// isExportedName reports whether a symbol belongs in the repo map. Export
+// rules are per-language: Go uses the first-rune-uppercase convention;
+// Python treats underscore-prefixed names as private; TypeScript/JS and
+// Rust include all top-level symbols (module/export/pub semantics aren't
+// recoverable without deeper parsing). Unknown languages fall back to the
+// Go rule.
+func isExportedName(lang, name string) bool {
+	switch lang {
+	case "python":
+		return !strings.HasPrefix(name, "_")
+	case "typescript", "javascript", "rust":
+		return true
+	default:
+		r, _ := utf8.DecodeRuneInString(name)
+		return unicode.IsUpper(r)
+	}
 }

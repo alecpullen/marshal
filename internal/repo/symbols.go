@@ -97,11 +97,6 @@ func ExtractSymbols(ctx context.Context, lang, path string, source []byte) ([]db
 	return symbols, nil
 }
 
-// Stub replaced by symbols_rust.go in the follow-up task.
-func extractRustDeclaration(path string, node *sitter.Node, source []byte) []db.Symbol {
-	return nil
-}
-
 func extractDeclaration(path string, node *sitter.Node, source []byte) []db.Symbol {
 	switch node.Type() {
 	case "function_declaration":

@@ -93,3 +93,40 @@ func TestRenderDirectoryMapTruncatesLongSummaries(t *testing.T) {
 		t.Fatalf("truncated summary must carry an ellipsis:\n%s", out)
 	}
 }
+
+func TestIsExportedNamePerLanguage(t *testing.T) {
+	cases := []struct {
+		lang, name string
+		want       bool
+	}{
+		{"go", "Foo", true},
+		{"go", "foo", false},
+		{"python", "public_func", true},
+		{"python", "_private", false},
+		{"typescript", "add", true},
+		{"javascript", "arrow", true},
+		{"rust", "top", true},
+		{"ruby", "whatever", false}, // unknown language: conservative Go rule
+		{"", "Foo", true},
+	}
+	for _, tc := range cases {
+		if got := isExportedName(tc.lang, tc.name); got != tc.want {
+			t.Errorf("isExportedName(%q, %q) = %v, want %v", tc.lang, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestGroupExportedSymbolsPerLanguage(t *testing.T) {
+	byFile := groupExportedSymbols([]db.Symbol{
+		{FilePath: "a.py", Kind: "function", Name: "public_func"},
+		{FilePath: "a.py", Kind: "function", Name: "_private"},
+		{FilePath: "a.py", Kind: "import", Name: "os"},
+		{FilePath: "b.ts", Kind: "function", Name: "add"},
+	})
+	if got := byFile["a.py"]; len(got) != 1 || got[0].Name != "public_func" {
+		t.Fatalf("a.py exported = %+v, want only public_func", got)
+	}
+	if got := byFile["b.ts"]; len(got) != 1 || got[0].Name != "add" {
+		t.Fatalf("b.ts exported = %+v, want only add", got)
+	}
+}

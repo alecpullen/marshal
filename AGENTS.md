@@ -102,7 +102,7 @@ internal/llm/pricing/                 — per-model token pricing table
 
 Repo intelligence
 internal/repo/                        — repo scanner, file hashing, gitignore, repo map/card
-internal/repo/symbols.go              — tree-sitter Go symbol extraction
+internal/repo/symbols.go              — tree-sitter symbol extraction (Go, TS/JS, Python, Rust)
 internal/index/                       — chunking, embedding indexer, file watcher
 internal/retrieval/                   — semantic retrieval over embeddings
 internal/lsp/                         — LSP client/manager with symbol, query, diagnostics adapters

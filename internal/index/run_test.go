@@ -106,3 +106,59 @@ func TestRunIndexesFilesSymbolsEmbeddings(t *testing.T) {
 		t.Fatalf("nil-embedder report = %+v err=%v", rep2, err)
 	}
 }
+
+func TestRunIndexesPythonAndTypeScriptSymbols(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.py"), []byte("def top():\n    return 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.ts"), []byte("function add(a, b) { return a + b; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, root)
+
+	_, err := Run(context.Background(), Deps{DB: database, Root: root}, pid)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	syms, err := database.GetSymbols(pid, 0)
+	if err != nil {
+		t.Fatalf("GetSymbols: %v", err)
+	}
+	var pyOK, tsOK bool
+	for _, s := range syms {
+		if s.FilePath == "a.py" && s.Kind == "function" && s.Name == "top" && s.Source == "treesitter" {
+			pyOK = true
+		}
+		if s.FilePath == "b.ts" && s.Kind == "function" && s.Name == "add" && s.Source == "treesitter" {
+			tsOK = true
+		}
+	}
+	if !pyOK || !tsOK {
+		t.Fatalf("missing treesitter symbols (py=%v, ts=%v) in %+v", pyOK, tsOK, syms)
+	}
+}
+
+func TestRunPrefersLSPForPythonToo(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.py"), []byte("def top():\n    return 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, root)
+
+	_, err := Run(context.Background(), Deps{DB: database, Root: root, LSP: fakeLSP{lang: "python"}}, pid)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	syms, err := database.GetSymbols(pid, 0)
+	if err != nil {
+		t.Fatalf("GetSymbols: %v", err)
+	}
+	for _, s := range syms {
+		if s.Source != "lsp" {
+			t.Fatalf("expected LSP to win for python, got %#v", s)
+		}
+	}
+}

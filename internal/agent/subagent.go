@@ -78,8 +78,9 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summar
 }
 
 // SubtaskScopeView returns a registry view for a subtask child. It excludes
-// agent.run (nested subagents are forbidden), deferred MCP tools (the child
-// should not auto-load arbitrary MCP surfaces during an ad-hoc task), and
+// agent.run (nested subagents are forbidden), deferred tools (MCP tools
+// above the disclosure threshold and low-use native tools — the child
+// should not auto-load arbitrary tool surfaces during an ad-hoc task), and
 // question.ask plus its alias ask_user (a subtask runs in its own orphaned
 // child session.State that no ACP client or TUI ever sees — there is no live
 // user who could answer a question, so the call would block forever). All

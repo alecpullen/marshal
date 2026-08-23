@@ -351,9 +351,10 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 }
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
-// list of deferred MCP tools appended as a compact announcement. The
-// runner passes the registry's ListDeferred() so the agent can see what
-// it might want to opt into via tools.select.
+// list of deferred tools (MCP servers above the disclosure threshold, plus
+// low-use native tools such as config.*) appended as a compact
+// announcement. The runner passes the registry's ListDeferred() so the
+// agent can see what it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
 	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "", "")
 }
@@ -374,8 +375,8 @@ func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferr
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
-// runner to advertise MCP tools the agent hasn't loaded yet but may want
-// to opt into). Tests that pass nil get the old behavior with no
+// runner to advertise deferred tools the agent hasn't loaded yet but may
+// want to opt into). Tests that pass nil get the old behavior with no
 // announcement appended.
 func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
@@ -404,6 +405,12 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	}
 	b.WriteString("\n\nAvailable tools:\n")
 	for _, tool := range tools {
+		// Deferred tools are announced compactly below via
+		// writeDeferredAnnouncement; listing them in full here would
+		// double-pay the prompt cost deferral exists to save.
+		if tool.Deferred {
+			continue
+		}
 		line := fmt.Sprintf("- %s (%s): %s", tool.Name, tool.Risk, tool.Description)
 		if hint := summarizeToolSchema(tool.Schema); hint != "" {
 			line += " — " + hint
@@ -488,9 +495,10 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	}
 }
 
-// deferredAnnouncementCap caps the number of deferred MCP tools listed
-// in the system prompt so a single huge MCP server doesn't drown the
-// agent's available context. Once exceeded, an "and N more" suffix tells
+// deferredAnnouncementCap caps the number of deferred tools listed
+// in the system prompt so a large deferred set (a huge MCP server, the
+// config.* family) doesn't drown the agent's available context. Once
+// exceeded, an "and N more" suffix tells
 // the agent it can call tools.select with a specific name to opt in to
 // any of the remaining tools.
 const deferredAnnouncementCap = 40

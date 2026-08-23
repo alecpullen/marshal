@@ -196,10 +196,15 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
 		tools.codebaseSearchTool(),
-		tools.jsonQueryTool(),
-		tools.csvInspectTool(),
 		tools.workspaceWorktreeTool(),
 	}
+	// csv.inspect and json.query are low-use; defer them behind tools.select
+	// alongside the config.* tools so they don't occupy the prompt each turn.
+	csvTool := tools.csvInspectTool()
+	csvTool.Deferred = true
+	jsonTool := tools.jsonQueryTool()
+	jsonTool.Deferred = true
+	all = append(all, csvTool, jsonTool)
 	// references/definition/hover answer through the LSP querier; with no
 	// server wired they could only ever return "no lsp", so they are not
 	// registered at all.

@@ -248,6 +248,82 @@ func (fakeLSPQuerier) Hover(ctx context.Context, filePath string, line, col int)
 	return "", false
 }
 
+func TestRegisterAllDefersConfigAndDataTools(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  t.TempDir(),
+		CommandRunner:  &fakeRunner{},
+		SessionState:   state,
+		ConfigReloader: func(config.Config) error { return nil },
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	deferred := make(map[string]bool)
+	for _, tool := range reg.ListDeferred() {
+		deferred[tool.Name] = true
+	}
+
+	// All 29 config.* tools are deferred.
+	configCount := 0
+	for name := range deferred {
+		if strings.HasPrefix(name, "config.") {
+			configCount++
+		}
+	}
+	if configCount != 29 {
+		t.Fatalf("deferred config.* tools = %d, want 29", configCount)
+	}
+	for _, name := range []string{"config.read", "csv.inspect", "json.query"} {
+		if !deferred[name] {
+			t.Fatalf("expected %s to be deferred", name)
+		}
+	}
+	if len(deferred) != 31 {
+		t.Fatalf("len(ListDeferred()) = %d, want 31 (29 config.* + csv.inspect + json.query)", len(deferred))
+	}
+
+	// Core tools are never deferred.
+	for _, name := range []string{"file.read", "file.write_patch", "shell.run", "test.run", "repo.search", "tools.select"} {
+		if deferred[name] {
+			t.Fatalf("expected %s to stay non-deferred", name)
+		}
+	}
+}
+
+func TestToolsSelectLoadsDeferredNativeTool(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  t.TempDir(),
+		CommandRunner:  &fakeRunner{},
+		SessionState:   state,
+		ConfigReloader: func(config.Config) error { return nil },
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if _, err := invokeTool(t, reg, "tools.select", `{"names":["config.read"]}`); err != nil {
+		t.Fatalf("tools.select: %v", err)
+	}
+	found := false
+	for _, name := range state.LoadedToolNames() {
+		if name == "config.read" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("LoadedToolNames() = %v, want config.read present", state.LoadedToolNames())
+	}
+
+	// A deferred tool dispatches normally once selected — deferral is a
+	// prompt-level concern, not an execution gate.
+	if _, err := invokeTool(t, reg, "config.read", `{}`); err != nil {
+		t.Fatalf("config.read dispatch after select: %v", err)
+	}
+}
+
 func TestRegisterAllGatesLSPToolsOnQuerier(t *testing.T) {
 	lspNames := []string{"references", "definition", "hover"}
 

@@ -27,7 +27,7 @@ func newConfigToolSet(t toolSet) (toolSet, error) {
 // this initial version returns only config.read. Later tasks append the
 // section write tools.
 func (t *toolSet) configTools() []registry.Tool {
-	return []registry.Tool{
+	tools := []registry.Tool{
 		t.configReadTool(),
 		t.configAgentSetTool(),
 		t.configPrivacySetTool(),
@@ -58,6 +58,12 @@ func (t *toolSet) configTools() []registry.Tool {
 		t.configCustomAgentsSetTool(),
 		t.configCustomAgentsDeleteTool(),
 	}
+	// Config tools are numerous and low-use; defer them behind tools.select
+	// so they don't occupy the system prompt on every turn.
+	for i := range tools {
+		tools[i].Deferred = true
+	}
+	return tools
 }
 
 // configWriteEnvelope is the common shape every section write tool's args

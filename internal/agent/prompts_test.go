@@ -982,3 +982,27 @@ func TestPromptsNoLongerForbidUnifiedDiff(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSystemPromptSkipsDeferredToolsInList(t *testing.T) {
+	deferredTool := registry.Tool{
+		Name:        "config.read",
+		Risk:        registry.RiskReadOnly,
+		Description: "Read the current Marshal configuration.",
+		Deferred:    true,
+	}
+	msg := BuildSystemPromptWithDeferred(RoleGeneral, []registry.Tool{deferredTool}, []registry.Tool{deferredTool}, nil, nil, false)
+	content := msg.Content
+
+	availableIdx := strings.Index(content, "Available tools:\n")
+	announceIdx := strings.Index(content, "Additional tools are available")
+	if availableIdx < 0 || announceIdx < 0 {
+		t.Fatalf("prompt missing expected sections:\n%s", content)
+	}
+	listSection := content[availableIdx:announceIdx]
+	if strings.Contains(listSection, "config.read") {
+		t.Fatalf("deferred tool should not appear in the Available tools list:\n%s", listSection)
+	}
+	if !strings.Contains(content[announceIdx:], "config.read") {
+		t.Fatalf("deferred tool missing from the deferred announcement:\n%s", content[announceIdx:])
+	}
+}

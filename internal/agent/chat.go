@@ -406,9 +406,10 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 	defs := make([]schema.ToolDefinition, 0, len(tools)+1)
 	hasAskUser := false
 	for _, tool := range tools {
-		// Deferred MCP tools are hidden from the agent's prompt by default
-		// and only revealed once the agent explicitly opts in via
-		// tools.select. Native tools are never deferred.
+		// Deferred tools — MCP tools above the disclosure threshold and
+		// low-use native tools (config.*, csv.inspect, json.query) — are
+		// hidden from the agent's prompt by default and only revealed once
+		// the agent explicitly opts in via tools.select.
 		if deferred[tool.Name] && !loaded[tool.Name] {
 			continue
 		}

@@ -14,6 +14,9 @@ type clickTarget struct {
 	key          itemKey
 	isActiveTool bool
 	subagent     *session.SubagentView
+	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
+	// independently of the transcript when the wheel is over it.
+	isLiveRegion bool
 }
 
 // clickRegion is a half-open [startLine, endLine) range of content lines in
@@ -98,11 +101,52 @@ func (m *Model) handleTodoPanelClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	return nil, true
 }
 
-// handleTranscriptClick toggles the transcript block under a left click, if
-// any. handled reports whether the click landed on a region (regardless of
-// whether that region was already at its target state — a click always
-// consumes the event once it's inside the viewport bounds, matching the
-// wheel-scroll handling right above it in Update).
+// scrollLiveRegionAt routes a wheel event to a bounded live region when the
+// cursor is over one, and reports whether it consumed the event.
+//
+// It returns true even when the region is already at the end of its travel:
+// the alternative is that scrolling past a region's top silently starts
+// scrolling the transcript underneath it, which reads as the region
+// "jumping" out from under the cursor.
+func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
+	line, ok := m.contentLineForClick(msg.X, msg.Y)
+	if !ok {
+		return false
+	}
+	target, ok := m.regionAt(line)
+	if !ok || !target.isLiveRegion {
+		return false
+	}
+	var delta int
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		delta = 1 // scroll back through the region's history
+	case tea.MouseWheelDown:
+		delta = -1
+	default:
+		return false
+	}
+	if m.regionOffset == nil {
+		m.regionOffset = map[itemKey]int{}
+	}
+	cur := m.regionOffset[target.key]
+	next := min(max(cur+delta, 0), maxRegionOffset)
+	if next != cur {
+		m.regionOffset[target.key] = next
+		// Belt and braces alongside the transcriptHash change in Step 6:
+		// force the rebuild so the scroll is felt on this very event rather
+		// than on the next tick.
+		m.lastTranscriptHash = 0
+		m.refreshViewport()
+	}
+	return true
+}
+
+// handleTranscriptClick toggles the expand state of the transcript block
+// under a left click, if any. handled reports whether the click landed on a
+// region (regardless of whether that region was already at its target state
+// — a click always consumes the event once it's inside the viewport bounds,
+// matching the wheel-scroll handling right above it in Update).
 func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return nil, false

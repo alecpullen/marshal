@@ -30,6 +30,12 @@ func itemKeyForGroup(events []registry.AuditEvent) itemKey {
 	return itemKey{ts: events[0].Timestamp, kind: session.KindAudit}
 }
 
+// liveThinkingKey is the synthetic identity of the in-progress thinking
+// region. It is not a transcript item, so it has no timestamp of its own;
+// real thinking items always carry a non-zero timestamp, so the zero time
+// cannot collide with one.
+var liveThinkingKey = itemKey{kind: session.KindThinking}
+
 // isExpanded reports the effective expanded state for key: the per-item
 // override if one has been clicked, otherwise the global ctrl+g default.
 func (m *Model) isExpanded(key itemKey) bool {

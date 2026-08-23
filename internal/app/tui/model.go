@@ -145,6 +145,12 @@ const (
 	// plan" row. It is a sentinel, never a path: the handler writes a template
 	// into the plans directory rather than trying to run it.
 	sddScaffoldPlanValue = "__sdd_scaffold_plan__"
+
+	// maxRegionOffset bounds how far back a live region can be scrolled.
+	// liveregion.Render clamps for display, so an offset past the head is
+	// harmless to render — this only stops the stored value running away so
+	// far that scrolling back down takes hundreds of wheel events.
+	maxRegionOffset = 40
 )
 
 type Model struct {
@@ -318,6 +324,11 @@ type Model struct {
 	// isn't logged to the audit log until it completes. Reset to false
 	// whenever a new tool starts; see refreshViewport.
 	activeToolExpanded bool
+	// regionOffset holds the per-region body scroll offset for bounded live
+	// regions (see internal/app/tui/liveregion), keyed the same way
+	// itemExpanded is. Rebuilt-and-pruned on every refreshViewport, so a
+	// finished region's entry does not leak.
+	regionOffset map[itemKey]int
 	// activeToolStartedAt tracks the in-flight tool call's StartedAt so
 	// refreshViewport can detect "a new tool started" and reset
 	// activeToolExpanded. Zero when no tool is active.
@@ -1949,6 +1960,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Button == tea.MouseWheelLeft || msg.Button == tea.MouseWheelRight {
 			return m, nil
 		}
+		// A bounded live region under the cursor scrolls its own body
+		// instead of the transcript. This must stay below the horizontal
+		// guard: above it, a sideways pan would be consumed here and the
+		// vertical-only invariant would be lost.
+		if m.scrollLiveRegionAt(msg) {
+			return m, nil
+		}
 		// Only delivered when tui.mouse_capture is on (see View). AltScreen
 		// leaves no terminal scrollback, so without this the wheel does
 		// nothing at all.
@@ -2315,6 +2333,11 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		// Vertical-only transcript: swallow horizontal wheel pans so they
 		// never shift the view sideways.
 		if msg.Button == tea.MouseWheelLeft || msg.Button == tea.MouseWheelRight {
+			return *m, nil, true
+		}
+		// A bounded live region under the cursor scrolls its own body
+		// instead of the transcript. Must stay below the horizontal guard.
+		if m.scrollLiveRegionAt(msg) {
 			return *m, nil, true
 		}
 		var vpCmd tea.Cmd
@@ -3008,7 +3031,7 @@ func (m *Model) refreshViewport() {
 	}
 	queued := m.state.SteeringQueue()
 	notice, noticeUp := m.state.Notice()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp)
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset)
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -3016,6 +3039,7 @@ func (m *Model) refreshViewport() {
 
 	blocks := make([]string, 0, len(items)+4)
 	regions := make([]clickRegion, 0, len(items))
+	seenRegions := map[itemKey]bool{}
 	lineCursor := 0
 	// addBlock appends s to blocks (if non-empty) and, when target is
 	// non-nil, records the content-line range it occupies so a later click
@@ -3055,17 +3079,22 @@ func (m *Model) refreshViewport() {
 		} else {
 			key := itemKeyFor(entry.Item)
 			expanded := m.isExpanded(key)
-			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, 0, m.viewport.Width())
+			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, m.regionOffset[key], m.viewport.Width())
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
 				target = &clickTarget{key: key}
 			case session.KindSubagent:
 				if entry.Item.Subagent != nil && entry.Item.Subagent.Child != nil {
-					target = &clickTarget{subagent: entry.Item.Subagent}
+					target = &clickTarget{
+						key:          key,
+						subagent:     entry.Item.Subagent,
+						isLiveRegion: entry.Item.Subagent.Status == session.SubagentRunning,
+					}
 				}
 			}
 			addBlock(s, target)
+			seenRegions[key] = true
 		}
 	}
 	if inProgress.Active && inProgress.Reasoning != "" {
@@ -3073,9 +3102,10 @@ func (m *Model) refreshViewport() {
 			inProgress.Reasoning,
 			m.activeSpinnerFrame(session.ActivityThinking),
 			m.now().Sub(inProgress.StartedAt),
-			0,
+			m.regionOffset[liveThinkingKey],
 			m.viewport.Width(),
-		), nil)
+		), &clickTarget{key: liveThinkingKey, isLiveRegion: true})
+		seenRegions[liveThinkingKey] = true
 	}
 	if act := transcriptState.Activity(); act.Kind == session.ActivityReconnecting && act.Label != "" {
 		addBlock(renderReconnectNotice(act.Label, m.activeSpinnerFrame(session.ActivityReconnecting), m.viewport.Width()), nil)
@@ -3099,6 +3129,14 @@ func (m *Model) refreshViewport() {
 	}
 	if len(queued) > 0 {
 		addBlock(renderQueuedMessages(queued, m.viewport.Width()), nil)
+	}
+
+	// Drop offsets for regions that are no longer rendered, so a finished
+	// subagent's entry does not leak for the rest of the session.
+	for k := range m.regionOffset {
+		if !seenRegions[k] {
+			delete(m.regionOffset, k)
+		}
 	}
 
 	m.clickRegions = regions
@@ -4641,7 +4679,7 @@ func browserGlyphStyle() lipgloss.Style {
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
 	// The notice banner is rendered into the transcript, so its presence
@@ -4653,6 +4691,25 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	// early-return in refreshViewport freezes the ▸ row for the whole
 	// duration of a long tool call (e.g. agent.run).
 	fmt.Fprintf(h, "spin=%s|atc=%s|%s|%d|", spinnerFrame, atc.Name, atc.Args, atc.StartedAt.UnixNano())
+	// Bounded live regions scroll independently, and their offsets live on
+	// the Model rather than in items — so without this a scroll changes no
+	// hashed input, refreshViewport early-returns, and the region visibly
+	// does not move. Same class of bug as the notice banner above.
+	// Sorted: map iteration order is randomised, and an unstable hash would
+	// rebuild the viewport on every call.
+	roKeys := make([]itemKey, 0, len(regionOffsets))
+	for k := range regionOffsets {
+		roKeys = append(roKeys, k)
+	}
+	sort.Slice(roKeys, func(i, j int) bool {
+		if !roKeys[i].ts.Equal(roKeys[j].ts) {
+			return roKeys[i].ts.Before(roKeys[j].ts)
+		}
+		return roKeys[i].kind < roKeys[j].kind
+	})
+	for _, k := range roKeys {
+		fmt.Fprintf(h, "roff=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionOffsets[k])
+	}
 	for _, item := range items {
 		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())
 		if item.Message != nil {

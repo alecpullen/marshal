@@ -73,4 +73,10 @@ const (
 	// clicked open.
 	DisclosureCollapsed = "▹"
 	DisclosureExpanded  = "▿"
+
+	// Job marks out-of-band background work: a shell job that outlives the
+	// turn that spawned it. Distinct from Rail (▍), which marks a contained
+	// region, so the actor class reads from the left two columns.
+	// U+2506, Box Drawing — single-cell, broad terminal-font coverage.
+	Job = "┆"
 )

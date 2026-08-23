@@ -568,6 +568,32 @@ func TestJobOutputAndListTools(t *testing.T) {
 	}
 }
 
+func TestJobEventCarriesSnapshot(t *testing.T) {
+	jm := NewJobManager(context.Background(), newFakeRunner(), "", 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	broker := pubsub.NewBroker[JobEvent]()
+	t.Cleanup(broker.Close)
+	subCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := broker.Subscribe(subCtx)
+	jm.SetBroker(broker)
+
+	if _, err := jm.Start(context.Background(), "sleep 1", 5*time.Second); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case ev := <-ch:
+		if len(ev.Payload.Jobs) == 0 {
+			t.Fatal("JobEvent.Jobs is empty; the lane cannot render without it")
+		}
+		if ev.Payload.Jobs[0].Command == "" {
+			t.Fatal("JobEvent.Jobs carries no command")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no JobEvent published")
+	}
+}
+
 func TestJobManagerPublishesViaBroker(t *testing.T) {
 	jm := NewJobManager(context.Background(), newFakeRunner(), "", 25, time.Hour, 100000)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })

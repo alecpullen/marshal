@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,11 @@ var ErrJobManagerClosed = errors.New("job manager is closed")
 type JobEvent struct {
 	Count int
 	Delta int
+	// Jobs is a snapshot of every tracked job at publish time. The TUI's
+	// job lane needs per-job detail (command, status, elapsed), which a
+	// bare count cannot supply. Published by value; consumers must not
+	// mutate it.
+	Jobs []JobInfo
 }
 
 // JobStatus describes the lifecycle state of a background shell job.
@@ -439,13 +445,23 @@ func (m *JobManager) Shutdown(ctx context.Context) error {
 func (m *JobManager) notifyChange() {
 	m.mu.Lock()
 	count := 0
+	snapshot := make([]JobInfo, 0, len(m.jobs))
 	for _, j := range m.jobs {
 		j.mu.Lock()
 		if j.info.Status == StatusRunning {
 			count++
 		}
+		snapshot = append(snapshot, j.info)
 		j.mu.Unlock()
 	}
+	// m.jobs is a map, so iteration order is random. Sort for a stable
+	// lane: oldest first, ID as tie-break.
+	sort.Slice(snapshot, func(i, j int) bool {
+		if !snapshot[i].StartedAt.Equal(snapshot[j].StartedAt) {
+			return snapshot[i].StartedAt.Before(snapshot[j].StartedAt)
+		}
+		return snapshot[i].ID < snapshot[j].ID
+	})
 	delta := count - m.lastNotified
 	m.lastNotified = count
 	onChange := m.onChange
@@ -455,7 +471,7 @@ func (m *JobManager) notifyChange() {
 		onChange(count)
 	}
 	if broker != nil {
-		broker.Publish("jobs", JobEvent{Count: count, Delta: delta})
+		broker.Publish("jobs", JobEvent{Count: count, Delta: delta, Jobs: snapshot})
 	}
 }
 

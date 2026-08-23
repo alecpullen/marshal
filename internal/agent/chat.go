@@ -370,6 +370,9 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	if r.CalibrationObserver != nil && usage != nil {
 		r.CalibrationObserver(messages, usage.PromptTokens)
 	}
+	if usage != nil && usage.PromptTokens > 0 {
+		r.notePromptTokens(messages, usage.PromptTokens)
+	}
 	if usage != nil {
 		r.withStats(func(s *turnStats) {
 			s.m.PromptTokens += usage.PromptTokens

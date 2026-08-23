@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -32,5 +33,34 @@ func TestEstimateTokensRuneAware(t *testing.T) {
 	}
 	if got != 2 {
 		t.Fatalf("estimateTokens = %d, want 2 (8 runes / 4)", got)
+	}
+}
+
+func TestEstimateTokensCountsToolCallArgs(t *testing.T) {
+	args := strings.Repeat("x", 4000) // 4000 bytes ≈ 1000 tokens at runes/4
+	msgs := []schema.ChatMessage{{
+		Role:    schema.RoleAssistant,
+		Content: "",
+		ToolCalls: []schema.ToolCall{
+			{ID: "call_1", Name: "file.write", Args: json.RawMessage(args)},
+		},
+	}}
+	got := estimateTokens(msgs)
+	want := (4000 + len("call_1") + len("file.write")) / 4
+	if got != want {
+		t.Fatalf("estimateTokens = %d, want %d (args + name + ID counted)", got, want)
+	}
+}
+
+func TestEstimateTokensCountsToolCallIDOnResults(t *testing.T) {
+	msgs := []schema.ChatMessage{{
+		Role:       schema.RoleTool,
+		Content:    strings.Repeat("y", 100),
+		ToolCallID: "call_1",
+	}}
+	got := estimateTokens(msgs)
+	want := (100 + len("call_1")) / 4
+	if got != want {
+		t.Fatalf("estimateTokens = %d, want %d (ToolCallID counted)", got, want)
 	}
 }

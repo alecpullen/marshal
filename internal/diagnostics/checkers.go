@@ -75,9 +75,21 @@ func (c *Checker) Check(files []string, language string) (string, error) {
 	lsp := c.lsp
 	c.mu.Unlock()
 	if lsp != nil && len(files) > 0 {
-		if out, ok := lsp.Diagnostics(language, files[0]); ok {
-			return out, nil
+		var b strings.Builder
+		for _, f := range files {
+			out, ok := lsp.Diagnostics(language, f)
+			if !ok {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(out)
 		}
+		if b.Len() > 0 {
+			return b.String(), nil
+		}
+		// LSP had nothing for any edited file — fall through to commands.
 	}
 	tmpl, ok := c.commands[language]
 	if !ok {
@@ -90,21 +102,31 @@ func (c *Checker) Check(files []string, language string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cmdStr := strings.ReplaceAll(tmpl, "{package}", inferPackage(files))
-	parts := strings.Fields(cmdStr)
-	cmd := parts[0]
-	cmdArgs := parts[1:]
-	out, err := c.runner(ctx, cmd, cmdArgs...)
-	if ctx.Err() == context.DeadlineExceeded {
-		return "diagnostics skipped (timeout)", nil
+	pkgs := inferPackages(files)
+	if !strings.Contains(tmpl, "{package}") {
+		// A placeholder-free template is package-agnostic; running it once
+		// per dir would only duplicate output.
+		pkgs = pkgs[:1]
 	}
-	if err != nil && len(out) == 0 {
-		return "", fmt.Errorf("checker %s: %w", cmd, err)
+	var outputs []string
+	for _, pkg := range pkgs {
+		cmdStr := strings.ReplaceAll(tmpl, "{package}", pkg)
+		parts := strings.Fields(cmdStr)
+		out, err := c.runner(ctx, parts[0], parts[1:]...)
+		if ctx.Err() == context.DeadlineExceeded {
+			return "diagnostics skipped (timeout)", nil
+		}
+		if err != nil && len(out) == 0 {
+			return "", fmt.Errorf("checker %s: %w", parts[0], err)
+		}
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			outputs = append(outputs, trimmed)
+		}
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 1 && lines[0] == "" {
+	if len(outputs) == 0 {
 		return "diagnostics: none", nil
 	}
+	lines := strings.Split(strings.Join(outputs, "\n"), "\n")
 	if len(lines) > maxDiagnosticsLines {
 		lines = lines[:maxDiagnosticsLines]
 		lines = append(lines, "...")
@@ -112,10 +134,22 @@ func (c *Checker) Check(files []string, language string) (string, error) {
 	return "diagnostics:\n" + strings.Join(lines, "\n"), nil
 }
 
-func inferPackage(files []string) string {
+// inferPackages returns one "./<dir>" per distinct directory in files,
+// order-preserving. Empty input checks the whole project, preserving the
+// original inferPackage fallback.
+func inferPackages(files []string) []string {
 	if len(files) == 0 {
-		return "./..."
+		return []string{"./..."}
 	}
-	dir := filepath.Dir(files[0])
-	return "./" + dir
+	seen := make(map[string]bool, len(files))
+	var pkgs []string
+	for _, f := range files {
+		pkg := "./" + filepath.Dir(f)
+		if seen[pkg] {
+			continue
+		}
+		seen[pkg] = true
+		pkgs = append(pkgs, pkg)
+	}
+	return pkgs
 }

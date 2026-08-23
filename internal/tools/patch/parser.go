@@ -56,6 +56,12 @@ func Parse(proposal string) ([]FilePatch, error) {
 // dropped — models reach for the divider as the closing marker, and leaving
 // it in silently corrupts the replacement text.
 func ParseRepairing(proposal string) (Result, error) {
+	// Unified diffs route to a dedicated converter; detection is
+	// whole-proposal (see looksLikeUnifiedDiff in unified.go).
+	if looksLikeUnifiedDiff(proposal) {
+		return parseUnifiedDiff(proposal)
+	}
+
 	var patches []FilePatch
 	var repairs []string
 	lines := strings.Split(strings.ReplaceAll(proposal, "\r\n", "\n"), "\n")

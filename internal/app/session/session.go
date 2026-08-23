@@ -242,9 +242,10 @@ type State struct {
 	workspace       Workspace
 	workspaceBroker *pubsub.Broker[WorkspaceEvent]
 
-	runningJobs     int
-	subagentDepth   int
-	subagentConcurr int
+	runningJobs            int
+	subagentDepth          int
+	subagentConcurr        int
+	subagentMaxConcurrency int
 	// subagents is the registry of subagent summary cards (see subagents.go)
 	// surfaced in the parent transcript; subagentBroker publishes their
 	// lifecycle events so the TUI re-renders without polling.
@@ -519,6 +520,22 @@ func WithDepth(d int) Option {
 	}
 }
 
+// WithSubagentMaxConcurrency sets the cap on parallel agent.run children
+// for this session, sourced from agent.max_concurrent_subagents. Values
+// <= 0 keep the built-in default (3); values above 8 clamp to 8.
+func WithSubagentMaxConcurrency(n int) Option {
+	return func(s *State) {
+		switch {
+		case n <= 0:
+			// keep the default
+		case n > 8:
+			s.subagentMaxConcurrency = 8
+		default:
+			s.subagentMaxConcurrency = n
+		}
+	}
+}
+
 // WithClock overrides the function used to stamp scratchpad entry
 // timestamps. Tests pass a frozen clock so entries written back-to-back
 // share an Updated value and ordering is deterministic; the default is
@@ -536,27 +553,28 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	scratchpadCfg := cfg.Scratchpad
 	scratchpadCfg.ApplyDefaults()
 	s := &State{
-		Config:           cfg,
-		WorkingDir:       workingDir,
-		StartedAt:        now,
-		now:              time.Now,
-		db:               p.DB,
-		sessionID:        p.SessionID,
-		logger:           p.Logger,
-		ctx:              ctx,
-		cancel:           cancel,
-		turnToolCache:    make(map[string]registry.ToolResult),
-		activity:         Activity{Kind: ActivityIdle},
-		activeSkills:     make(map[string]bool),
-		loadedTools:      make(map[string]bool),
-		parentOf:         make(map[int64]int64),
-		childrenOf:       make(map[int64][]int64),
-		msgByID:          make(map[int64]Message),
-		dbIDToImID:       make(map[int64]int64),
-		nextMsgID:        1,
-		workspace:        Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
-		scratchpad:       make(map[string]db.ScratchpadEntry),
-		scratchpadConfig: scratchpadCfg,
+		Config:                 cfg,
+		WorkingDir:             workingDir,
+		StartedAt:              now,
+		now:                    time.Now,
+		db:                     p.DB,
+		sessionID:              p.SessionID,
+		logger:                 p.Logger,
+		ctx:                    ctx,
+		cancel:                 cancel,
+		turnToolCache:          make(map[string]registry.ToolResult),
+		activity:               Activity{Kind: ActivityIdle},
+		activeSkills:           make(map[string]bool),
+		loadedTools:            make(map[string]bool),
+		parentOf:               make(map[int64]int64),
+		childrenOf:             make(map[int64][]int64),
+		msgByID:                make(map[int64]Message),
+		dbIDToImID:             make(map[int64]int64),
+		nextMsgID:              1,
+		workspace:              Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
+		scratchpad:             make(map[string]db.ScratchpadEntry),
+		scratchpadConfig:       scratchpadCfg,
+		subagentMaxConcurrency: defaultSubagentMaxConcurrency,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -704,9 +722,9 @@ func (s *State) publishEvent(typ string, payload Event) {
 }
 
 // Subagent depth/concurrency bookkeeping. agent.run uses these to enforce the
-// hard limits documented in Milestone P (depth 1, concurrency 2). They live
-// on the shared session state so any agent.run invocation — even concurrent
-// ones from different Go routines — sees the same counters.
+// hard limits documented in Milestone P (depth 1). They live on the shared
+// session state so any agent.run invocation — even concurrent ones from
+// different Go routines — sees the same counters.
 //
 // Depth is a property of the session itself (set at construction via
 // WithDepth): a top-level agent has depth 0; a child subagent launched from
@@ -717,16 +735,21 @@ func (s *State) publishEvent(typ string, payload Event) {
 //
 // Concurrency is a runtime counter on the parent session: the number of
 // in-flight agent.run children the parent has launched. EnterSubagent
-// increments it; ExitSubagent decrements it. The concurrency guard caps
-// parallel sibling subagents the same parent may have running at once.
+// increments it; ExitSubagent decrements it. The cap is configurable per
+// session via WithSubagentMaxConcurrency (sourced from
+// agent.max_concurrent_subagents); the default is 3.
 const (
-	subagentMaxDepth       = 1
-	subagentMaxConcurrency = 2
+	subagentMaxDepth = 1
+	// defaultSubagentMaxConcurrency is the built-in cap on parallel
+	// agent.run children; per-session override via
+	// WithSubagentMaxConcurrency (sourced from
+	// agent.max_concurrent_subagents).
+	defaultSubagentMaxConcurrency = 3
 )
 
 var (
 	ErrSubagentDepthLimit       = fmt.Errorf("session: subagent depth limit exceeded (max %d)", subagentMaxDepth)
-	ErrSubagentConcurrencyLimit = fmt.Errorf("session: subagent concurrency limit exceeded (max %d)", subagentMaxConcurrency)
+	ErrSubagentConcurrencyLimit = errors.New("session: subagent concurrency limit exceeded")
 	ErrSessionQuiescing         = errors.New("session is quiescing")
 )
 
@@ -742,8 +765,8 @@ func (s *State) EnterSubagent() error {
 	if s.subagentDepth >= subagentMaxDepth {
 		return ErrSubagentDepthLimit
 	}
-	if s.subagentConcurr >= subagentMaxConcurrency {
-		return ErrSubagentConcurrencyLimit
+	if s.subagentConcurr >= s.subagentMaxConcurrency {
+		return fmt.Errorf("%w (max %d)", ErrSubagentConcurrencyLimit, s.subagentMaxConcurrency)
 	}
 	s.subagentConcurr++
 	return nil
@@ -871,6 +894,14 @@ func (s *State) SubagentConcurrency() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.subagentConcurr
+}
+
+// SubagentMaxConcurrency returns the session's configured cap on parallel
+// agent.run children. Exposed for tool description generation and tests.
+func (s *State) SubagentMaxConcurrency() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subagentMaxConcurrency
 }
 
 // SetSubagentConcurrency is a test-only override that lets unit tests

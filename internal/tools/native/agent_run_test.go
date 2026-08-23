@@ -109,7 +109,7 @@ func TestAgentRunToolRejectsWhenDepthLimitReached(t *testing.T) {
 
 func TestAgentRunToolRejectsWhenConcurrencyLimitReached(t *testing.T) {
 	reg := registry.New()
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithSubagentMaxConcurrency(2))
 	state.SetSubagentConcurrency(2)
 
 	factory := func(_ agent.SubagentRequest) (*agent.Runner, *session.State, error) {

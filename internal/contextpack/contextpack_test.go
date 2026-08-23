@@ -39,13 +39,40 @@ func TestRenderUsesStableSectionFormat(t *testing.T) {
 		"Project context pack:",
 		"## Repo Card",
 		"Source: repo.card",
-		"Estimated tokens: 4",
 		"Project: marshal",
 		"## Current Plan",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("Render() missing %q:\n%s", want, rendered)
 		}
+	}
+	// Per-section metadata and the pack-level token estimate are prompt
+	// noise on every turn; only truncation surfaces the estimate.
+	for _, unwanted := range []string{"Kind:", "Estimated tokens:"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Fatalf("Render() should not contain %q for a non-truncated pack:\n%s", unwanted, rendered)
+		}
+	}
+}
+
+func TestRenderShowsTokenEstimateOnlyWhenTruncated(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 12000, Truncated: true},
+	}
+
+	rendered := Render(pack)
+	if !strings.Contains(rendered, "Truncated: true") {
+		t.Fatalf("Render() missing truncation note:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Estimated tokens: 12000/12000") {
+		t.Fatalf("Render() missing pack-level token estimate for truncated pack:\n%s", rendered)
+	}
+	// Per-section token lines are dropped even when the pack is truncated.
+	if strings.Contains(rendered, "Estimated tokens: 4\n") {
+		t.Fatalf("Render() should drop per-section token lines:\n%s", rendered)
 	}
 }
 

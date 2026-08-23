@@ -3055,7 +3055,7 @@ func (m *Model) refreshViewport() {
 		} else {
 			key := itemKeyFor(entry.Item)
 			expanded := m.isExpanded(key)
-			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, m.viewport.Width())
+			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, 0, m.viewport.Width())
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
@@ -3069,7 +3069,13 @@ func (m *Model) refreshViewport() {
 		}
 	}
 	if inProgress.Active && inProgress.Reasoning != "" {
-		addBlock(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()), nil)
+		addBlock(renderThinkingBox(
+			inProgress.Reasoning,
+			m.activeSpinnerFrame(session.ActivityThinking),
+			m.now().Sub(inProgress.StartedAt),
+			0,
+			m.viewport.Width(),
+		), nil)
 	}
 	if act := transcriptState.Activity(); act.Kind == session.ActivityReconnecting && act.Label != "" {
 		addBlock(renderReconnectNotice(act.Label, m.activeSpinnerFrame(session.ActivityReconnecting), m.viewport.Width()), nil)

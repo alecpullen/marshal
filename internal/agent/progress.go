@@ -153,28 +153,6 @@ func (t *progressTracker) assess() assessment {
 	return assessProgressing
 }
 
-// lastSuccessfulMutation reports whether the most recent recorded call was a
-// successful mutating call (a verification call is not a mutation). Used to
-// re-arm the verification nudge: once the model acts again after being
-// nudged, a fresh mutation deserves a fresh nudge rather than a silently
-// flagged final answer.
-func (t *progressTracker) lastSuccessfulMutation() bool {
-	if len(t.history) == 0 {
-		return false
-	}
-	e := t.history[len(t.history)-1]
-	if e.name == idleEntryName || !e.ok {
-		return false
-	}
-	if e.name == "test.run" || e.name == "diagnostics.check" {
-		return false
-	}
-	if e.name == "shell.run" && looksLikeVerificationCommand(e.args) {
-		return false
-	}
-	return mutating(categorize(e.name))
-}
-
 // repeatReminder returns escalating guidance to append to a repeated call's
 // tool result. Putting the reminder in the result (not a separate system
 // message) keeps it adjacent to the evidence the model is ignoring.

@@ -1506,10 +1506,4 @@ func (r *Runner) unverifiedMutation() (callEntry, bool) {
 	return r.tracker.unverifiedMutation()
 }
 
-// lastSuccessfulMutation exposes the tracker's re-arm check under the runner's
-// tracker mutex.
-func (r *Runner) lastSuccessfulMutation() bool {
-	r.trackerMu.Lock()
-	defer r.trackerMu.Unlock()
-	return r.tracker.lastSuccessfulMutation()
-}
+

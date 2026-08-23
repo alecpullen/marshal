@@ -582,6 +582,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		r.turnRequestOptions.contextWindow = nil
 	}
 	r.turnRequestOptions.thinking = route.Preset.Thinking
+	r.turnRequestOptions.temperature = route.Preset.Temperature
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
 	}()

@@ -56,6 +56,7 @@ type turnRequestOptions struct {
 	maxTokens     *int
 	contextWindow *int
 	thinking      string
+	temperature   *float64
 }
 
 func intPtr(v int) *int { return &v }
@@ -328,6 +329,7 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		ResponseFormat: responseFormat,
 		Tools:          tools,
 		Thinking:       thinking,
+		Temperature:    r.turnRequestOptions.temperature,
 	})
 	if err != nil {
 		return chatResult{}, err

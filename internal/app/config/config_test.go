@@ -954,6 +954,9 @@ max_repo_context_tokens = 48000
 	if preset.ContextWindow != 32768 || preset.MaxOutputTokens != 4096 {
 		t.Fatalf("preset numeric fields = %#v", preset)
 	}
+	if preset.Temperature == nil || *preset.Temperature != 0.1 {
+		t.Fatalf("preset temperature = %v, want 0.1 parsed from TOML", preset.Temperature)
+	}
 	profile := cfg.AgentProfiles["local_balanced"]
 	if profile.Roles[routing.RoleRepoScout].Preset != "ollama/qwen2.5-coder:14b" || profile.Roles[routing.RoleImplementer].Preset != "ollama/qwen2.5-coder:14b" {
 		t.Fatalf("profile roles = %#v", profile.Roles)

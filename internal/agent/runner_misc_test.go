@@ -1316,6 +1316,47 @@ func TestThinkingGatedOnProviderCapability(t *testing.T) {
 	}
 }
 
+func TestChatOnceSendsPresetTemperature(t *testing.T) {
+	temp := 0.2
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	runner := NewRunner(p, reg, pol, newTestState(t), "test-model")
+	runner.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "m", Temperature: &temp},
+	}}
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.Requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if p.Requests[0].Temperature == nil || *p.Requests[0].Temperature != 0.2 {
+		t.Fatalf("request Temperature = %v, want 0.2", p.Requests[0].Temperature)
+	}
+
+	// Unset preset temperature sends nothing — the provider default applies.
+	p2 := &agenttest.ScriptedProvider{
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+	}
+	runner2 := NewRunner(p2, reg, pol, newTestState(t), "test-model")
+	runner2.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "m"},
+	}}
+	if err := runner2.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p2.Requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if p2.Requests[0].Temperature != nil {
+		t.Fatalf("request Temperature = %v, want nil", *p2.Requests[0].Temperature)
+	}
+}
+
 func TestLengthTruncatedJSONActionIsRefusedNotExecuted(t *testing.T) {
 	executed := false
 	p := &agenttest.ScriptedProvider{

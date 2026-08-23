@@ -141,7 +141,17 @@ func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 	// The route reports the rung that supplied the binding: a fallback to
 	// the implementer preset surfaces as RoleImplementer (the pre-existing
 	// contract), and a fast-rung resolution surfaces as RoleFast.
-	return r.resolvePresetBinding(binding.Preset, from, profile.Name)
+	route, err := r.resolvePresetBinding(binding.Preset, from, profile.Name)
+	if err != nil {
+		return Route{}, err
+	}
+	// Defaults follow the REQUESTED role, not the fallback rung that supplied
+	// the binding: a planner falling back to the implementer preset still gets
+	// planner (nil) temperature, not 0.2.
+	if route.Preset.Temperature == nil {
+		route.Preset.Temperature = RoleDefaultTemperature(role)
+	}
+	return route, nil
 }
 
 // IsCanonicalPresetName reports whether name is exactly "<provider>/<model>".

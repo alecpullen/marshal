@@ -121,6 +121,10 @@ type ModelPreset struct {
 	// endpoints and to budget_tokens on Anthropic. Ignored when the provider
 	// reports no reasoning capability.
 	Thinking string `toml:"thinking,omitempty"`
+	// Temperature optionally overrides the provider's default sampling
+	// temperature for this preset. Nil sends nothing on the wire — the
+	// provider default applies.
+	Temperature *float64 `toml:"temperature,omitempty"`
 	// Pricing is an optional per-preset override for the built-in pricing
 	// table in the pricing package. Nil means "use the built-in table by
 	// Model name (or zero if the model is unpriced)". Set to a non-nil

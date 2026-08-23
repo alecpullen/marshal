@@ -602,7 +602,7 @@ func TestParallelAgentRunPreservesSiblingsOnPreToolError(t *testing.T) {
 // concurrency-limit error for the third.
 func TestParallelAgentRunConcurrencyLimitRejectsThird(t *testing.T) {
 	reg := registry.New()
-	state := newTestState(t)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{}, session.WithSubagentMaxConcurrency(2))
 
 	gate := make(chan struct{})
 	factory := func(req SubagentRequest) (*Runner, *session.State, error) {

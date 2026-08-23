@@ -870,7 +870,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	runnerState := s.state
 	pol := s.pol
 	if s.childSession {
-		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1))
+		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(s.state.Config.Agent.MaxConcurrentSubagents))
 		// No UI watches a child session's pending approvals, so an
 		// unattended runner's approval could sit unanswered indefinitely.
 		// Unattended runners therefore evaluate under an auto-approving
@@ -1094,7 +1094,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		// A fresh child session keeps the authoring turn's tool noise out of
 		// the parent transcript. Depth is parent+1 so any nested subagent
 		// attempt is rejected by the child's own depth guard.
-		childState := session.New(cfg, state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1))
+		childState := session.New(cfg, state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents))
 		childPol := pol.Clone()
 		childPol.SetApprovalMode(policy.ModeAuto)
 
@@ -1296,7 +1296,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 	})
 
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
-		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
+		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents))
 		roReg := agent.SubtaskScopeView(parentReg)
 		role := agent.RoleSubtask
 		model := defaultModel

@@ -26,6 +26,46 @@ func newTestState() *State {
 	return New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
 }
 
+func TestEnterSubagentDefaultCapIsThree(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
+	for i := 0; i < 3; i++ {
+		if err := s.EnterSubagent(); err != nil {
+			t.Fatalf("EnterSubagent #%d = %v, want nil (default cap 3)", i+1, err)
+		}
+	}
+	err := s.EnterSubagent()
+	if !errors.Is(err, ErrSubagentConcurrencyLimit) {
+		t.Fatalf("4th EnterSubagent = %v, want ErrSubagentConcurrencyLimit", err)
+	}
+	if !strings.Contains(err.Error(), "(max 3)") {
+		t.Fatalf("error = %q, want the configured cap in the message", err)
+	}
+}
+
+func TestWithSubagentMaxConcurrencyOverrides(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{}, WithSubagentMaxConcurrency(1))
+	if err := s.EnterSubagent(); err != nil {
+		t.Fatalf("first EnterSubagent = %v", err)
+	}
+	if err := s.EnterSubagent(); !errors.Is(err, ErrSubagentConcurrencyLimit) {
+		t.Fatalf("second EnterSubagent = %v, want limit at configured cap 1", err)
+	}
+	if got := s.SubagentMaxConcurrency(); got != 1 {
+		t.Fatalf("SubagentMaxConcurrency = %d, want 1", got)
+	}
+}
+
+func TestWithSubagentMaxConcurrencyClamps(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{}, WithSubagentMaxConcurrency(99))
+	if got := s.SubagentMaxConcurrency(); got != 8 {
+		t.Fatalf("SubagentMaxConcurrency = %d, want clamp to 8", got)
+	}
+	s0 := New(config.Default(), t.TempDir(), time.Now(), Persistence{}, WithSubagentMaxConcurrency(0))
+	if got := s0.SubagentMaxConcurrency(); got != 3 {
+		t.Fatalf("SubagentMaxConcurrency(0) = %d, want default 3", got)
+	}
+}
+
 func TestLoggerReturnsCachedDiscard(t *testing.T) {
 	s := New(config.Default(), t.TempDir(), time.Unix(0, 0), Persistence{})
 	l1 := s.Logger()

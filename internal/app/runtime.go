@@ -523,7 +523,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 
 	pluginCommands := loadPluginContents(&cfg, skillIndex, homeDir, workingDir, projectTrusted, logger)
 
-	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
+	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger}, session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents))
 	state.SetTrusted(projectTrusted)
 	// Surface the merged-config layering snapshot to commands and the TUI.
 	// startRuntime already produced `layers` via LoadLayers; copying it
@@ -732,7 +732,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("create session: %w", err)
 	}
 
-	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger})
+	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, session.WithSubagentMaxConcurrency(rt.Config.Agent.MaxConcurrentSubagents))
 	if name != "" {
 		newState.SetTitleManual(name)
 	}

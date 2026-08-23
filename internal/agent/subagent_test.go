@@ -46,13 +46,13 @@ func TestSubagentDepthLimit(t *testing.T) {
 }
 
 // TestSubagentConcurrencyLimit exercises the concurrency guard end-to-end:
-// a parent at depth=0 admits two in-flight subagents, then rejects a third
-// with ErrSubagentConcurrencyLimit (not ErrSubagentDepthLimit). We spawn
-// the first two via direct EnterSubagent/ExitSubagent calls in goroutines
-// blocked on a release channel, then attempt a third admission via the
-// normal agent.run handler.
+// a parent at depth=0 admits two in-flight subagents under a configured cap
+// of 2, then rejects a third with ErrSubagentConcurrencyLimit (not
+// ErrSubagentDepthLimit). We spawn the first two via direct
+// EnterSubagent/ExitSubagent calls in goroutines blocked on a release
+// channel, then attempt a third admission via the normal agent.run handler.
 func TestSubagentConcurrencyLimit(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithSubagentMaxConcurrency(2))
 	if got := state.SubagentDepth(); got != 0 {
 		t.Fatalf("initial depth = %d, want 0", got)
 	}
@@ -105,6 +105,18 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 	wg.Wait()
 	if got := state.SubagentConcurrency(); got != 0 {
 		t.Fatalf("concurrency after release = %d, want 0", got)
+	}
+}
+
+func TestSubagentToolDescriptionStatesConfiguredCap(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithSubagentMaxConcurrency(5))
+	factory := func(_ SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, nil, nil }
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
+	if !strings.Contains(tool.Description, "Maximum concurrency: 5") {
+		t.Fatalf("description does not state the configured cap:\n%s", tool.Description)
+	}
+	if strings.Contains(tool.Description, "concurrency: 2") {
+		t.Fatal("description still carries the old hardcoded cap")
 	}
 }
 

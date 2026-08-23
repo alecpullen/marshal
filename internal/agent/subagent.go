@@ -179,9 +179,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	// State the configured cap, not a hardcoded number: the session enforces
+	// exactly this, and a stale description teaches the model to batch the
+	// wrong number of parallel calls.
+	concurrency := state.SubagentMaxConcurrency()
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Multiple agent.run calls in a single response run in parallel (max 2 in flight); sibling writes are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.",
+		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: %d. Multiple agent.run calls in a single response run in parallel (max %d in flight); sibling writes are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.", concurrency, concurrency),
 		Schema: json.RawMessage(
 			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),

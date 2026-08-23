@@ -140,10 +140,6 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 		currentPath = ""
 	}
 
-	mixedErr := func() error {
-		return fmt.Errorf("patch: mixed formats — proposal contains both unified diff hunks and SEARCH/REPLACE blocks; use one format per call")
-	}
-
 	// hunkLine consumes one body line of the open hunk.
 	hunkLine := func(line, trimmed string) error {
 		prefix := line[0]

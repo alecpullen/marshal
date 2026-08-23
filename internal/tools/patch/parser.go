@@ -34,6 +34,32 @@ type PatchChunk struct {
 	Replace string
 }
 
+// mixedErr is the teaching error for a proposal that mixes unified diff
+// hunks and SEARCH/REPLACE blocks in one call.
+func mixedErr() error {
+	return fmt.Errorf("patch: mixed formats — proposal contains both unified diff hunks and SEARCH/REPLACE blocks; use one format per call")
+}
+
+// unifiedDiffLine reports whether lines[i] opens or continues a unified diff
+// section (a ---/+++ header pair, a @@ hunk header, or a "diff --git"
+// opener). Used by the SEARCH/REPLACE parser to reject a proposal that leads
+// with search/replace blocks and trails diff hunks, which the block parser
+// would otherwise silently ignore.
+func unifiedDiffLine(lines []string, i int) bool {
+	line := lines[i]
+	trimmed := strings.TrimSpace(line)
+	if hunkHeaderRe.MatchString(trimmed) {
+		return true
+	}
+	if strings.HasPrefix(line, "diff --git ") {
+		return true
+	}
+	if strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ") {
+		return true
+	}
+	return false
+}
+
 // Parse reads a SEARCH/REPLACE proposal. Repairs holds a note for every
 // deviation it healed rather than rejected, so the caller can tell the model
 // what it got wrong without forcing a whole new proposal.
@@ -146,7 +172,7 @@ func ParseRepairing(proposal string) (Result, error) {
 		}
 	}
 
-	for _, line := range lines {
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "File:") {
 			if err := flushChunk("the next File: line"); err != nil {
@@ -173,7 +199,7 @@ func ParseRepairing(proposal string) (Result, error) {
 		if replaceMarkerRe.MatchString(trimmed) && inReplace {
 			if currentPath == "" {
 				// Orphan chunk — no File: header preceded this block. This is
-				// the reachable drop point for empty-path chunks (the guard
+				// the reachable drop point for an empty-path chunk (the guard
 				// inside commitChunk is unreachable via ParseRepairing).
 				preview := strings.Join(searchBuffer, "\n")
 				if len(preview) > 80 {
@@ -185,6 +211,15 @@ func ParseRepairing(proposal string) (Result, error) {
 			inReplace = false
 			commitChunk()
 			continue
+		}
+
+		// Outside any block, a diff header/hunk means the model mixed
+		// formats (search/replace first, diff hunks trailing). The block
+		// parser would otherwise silently ignore the diff text after the
+		// last REPLACE marker. Diff-looking lines inside a block are still
+		// content — they are consumed above, never reaching here.
+		if !inSearch && !inReplace && unifiedDiffLine(lines, i) {
+			return Result{}, mixedErr()
 		}
 
 		if inSearch {

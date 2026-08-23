@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -59,6 +60,28 @@ func chatReq(stream bool) schema.ChatRequest {
 		Model:    "test-model",
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 		Stream:   stream,
+	}
+}
+
+// A transport failure (server unreachable) must come back as the typed
+// *RequestError so the UI can classify it with errors.As instead of
+// matching on message text.
+func TestChatTransportFailureReturnsRequestError(t *testing.T) {
+	p := newTestProvider(t, "http://127.0.0.1:1") // closed port: connection refused
+	_, err := p.Chat(context.Background(), chatReq(false))
+	if err == nil {
+		t.Fatal("Chat() err = nil, want a transport failure")
+	}
+	var reqErr *RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("Chat() err = %T %v, want a *RequestError in the chain", err, err)
+	}
+	if reqErr.Provider != "test" {
+		t.Fatalf("RequestError.Provider = %q, want %q", reqErr.Provider, "test")
+	}
+	// Message text must be unchanged from the pre-type wrap format.
+	if !strings.Contains(err.Error(), "provider \"test\": chat request failed:") {
+		t.Fatalf("error text changed: %v", err)
 	}
 }
 

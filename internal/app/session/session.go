@@ -191,6 +191,8 @@ type State struct {
 	messages        []Message
 	inProgress      InProgressMessage
 	providerErr     error
+	notice          Notice
+	noticeSet       bool
 	pendingApproval *PendingToolCall
 	pendingQuestion *PendingQuestion
 	activeToolCall  *ActiveToolCall

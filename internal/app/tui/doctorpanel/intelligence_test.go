@@ -86,8 +86,10 @@ func TestComputeIntelligenceEmbeddings(t *testing.T) {
 	}
 
 	// One embedded chunk: ok.
-	if err := database.SeedEmbeddedChunkForTest(projectID, "a.go"); err != nil {
-		t.Fatalf("seed embedded chunk: %v", err)
+	if err := database.ReplaceFileChunks(projectID, "a.go", "h1", []db.ChunkWithVector{
+		{Chunk: db.Chunk{FilePath: "a.go", FileHash: "h1", Kind: "code", StartLine: 1, EndLine: 3, Content: "package x", TokenCount: 2}, Model: "test-embed", Dim: 4, Vector: []float32{1, 2, 3, 4}},
+	}); err != nil {
+		t.Fatalf("replace file chunks: %v", err)
 	}
 	checks = ComputeIntelligence(cfg, database, projectID)
 	if c := checkByName(checks, "Embeddings"); c.Status != "ok" {

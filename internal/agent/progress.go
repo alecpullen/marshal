@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 )
@@ -152,6 +153,28 @@ func (t *progressTracker) assess() assessment {
 	return assessProgressing
 }
 
+// lastSuccessfulMutation reports whether the most recent recorded call was a
+// successful mutating call (a verification call is not a mutation). Used to
+// re-arm the verification nudge: once the model acts again after being
+// nudged, a fresh mutation deserves a fresh nudge rather than a silently
+// flagged final answer.
+func (t *progressTracker) lastSuccessfulMutation() bool {
+	if len(t.history) == 0 {
+		return false
+	}
+	e := t.history[len(t.history)-1]
+	if e.name == idleEntryName || !e.ok {
+		return false
+	}
+	if e.name == "test.run" || e.name == "diagnostics.check" {
+		return false
+	}
+	if e.name == "shell.run" && looksLikeVerificationCommand(e.args) {
+		return false
+	}
+	return mutating(categorize(e.name))
+}
+
 // repeatReminder returns escalating guidance to append to a repeated call's
 // tool result. Putting the reminder in the result (not a separate system
 // message) keeps it adjacent to the evidence the model is ignoring.
@@ -186,10 +209,19 @@ var verificationCommandPatterns = []*regexp.Regexp{
 // looksLikeVerificationCommand reports whether a shell.run args payload is a
 // test/vet/lint/build invocation. shell.run is dual-use: it is how models
 // both mutate (install, generate, delete) and verify (go test), so the
-// finalize gate cannot treat every shell call as a mutation.
+// finalize gate cannot treat every shell call as a mutation. Only the
+// "command" field is matched — matching the whole args JSON would let an
+// unrelated field (e.g. a background note or an env hint containing the word
+// "pytest") count as verification and let a mutation masquerade as one.
 func looksLikeVerificationCommand(args string) bool {
+	var a struct {
+		Command string `json:"command"`
+	}
+	if len(args) == 0 || json.Unmarshal([]byte(args), &a) != nil {
+		return false
+	}
 	for _, p := range verificationCommandPatterns {
-		if p.MatchString(args) {
+		if p.MatchString(a.Command) {
 			return true
 		}
 	}
@@ -198,27 +230,34 @@ func looksLikeVerificationCommand(args string) bool {
 
 // unverifiedMutation reports the last successful mutating call and whether
 // it lacks any later verification call. Verification means test.run,
-// diagnostics.check, or a test-like shell.run. Only successful calls count:
-// a failed mutation changes nothing. Note that "verification" here means the
-// model ran a verification command, not that the command passed — test.run
-// and shell.run report a non-zero exit as a successful tool result (exit code
-// in the content, nil error), so a red test still counts as a verification
-// attempt. The finalize gate deliberately does not loop until tests pass; it
-// nudges once and then flags the answer as unverified.
+// diagnostics.check, or a test-like shell.run. Only a SUCCESSFUL mutation
+// counts (a failed mutation changes nothing, so it cannot arm the gate), but
+// a verification call counts whether or not it succeeded: test.run and
+// shell.run surface a non-zero exit as a tool error, so a red test is recorded
+// as a failed call — and it must still satisfy the gate. Otherwise a model
+// that honestly runs tests, finds them red, and reports "tests still fail"
+// would be penalized identically to one that never verified at all, which is
+// the opposite of what the gate is for. The finalize gate deliberately does
+// not loop until tests pass; it nudges once and then flags the answer as
+// unverified.
 func (t *progressTracker) unverifiedMutation() (callEntry, bool) {
 	lastMutationIdx := -1
 	lastVerifyIdx := -1
 	var lastMutation callEntry
 	for i, e := range t.history {
-		if e.name == idleEntryName || !e.ok {
+		if e.name == idleEntryName {
 			continue
 		}
-		if e.name == "test.run" || e.name == "diagnostics.check" ||
-			(e.name == "shell.run" && looksLikeVerificationCommand(e.args)) {
+		isVerification := e.name == "test.run" || e.name == "diagnostics.check" ||
+			(e.name == "shell.run" && looksLikeVerificationCommand(e.args))
+		if isVerification {
+			// A verification call satisfies the gate regardless of whether it
+			// passed (see the comment above): ok is intentionally not checked
+			// here.
 			lastVerifyIdx = i
 			continue
 		}
-		if mutating(categorize(e.name)) {
+		if e.ok && mutating(categorize(e.name)) {
 			lastMutationIdx = i
 			lastMutation = e
 		}

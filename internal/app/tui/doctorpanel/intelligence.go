@@ -21,7 +21,11 @@ type Check struct {
 // ComputeIntelligence derives subsystem liveness from config and the project
 // DB. It deliberately uses no live runtime state: LSP detection is a PATH
 // probe (no servers are started), and the watcher row reports configured
-// behavior rather than goroutine liveness.
+// behavior rather than goroutine liveness. The PATH probe is intentionally
+// synchronous on the /doctor dispatch: it only ever stats a handful of
+// default/configured server binaries, which is far cheaper than the async
+// tea.Cmd plumbing it would otherwise need, and it runs only when the user
+// explicitly invokes /doctor.
 func ComputeIntelligence(cfg config.Config, database *db.DB, projectID int64) []Check {
 	return []Check{
 		indexCheck(database, projectID),
@@ -36,7 +40,12 @@ func indexCheck(database *db.DB, projectID int64) Check {
 		return Check{Name: "Index", Status: "off", Detail: "database unavailable"}
 	}
 	files, err := database.CountFiles(projectID)
-	if err != nil || files == 0 {
+	if err != nil {
+		// A real read failure (locked DB, schema mismatch) is a problem to
+		// surface, not something to hide behind "index never ran".
+		return Check{Name: "Index", Status: "warn", Detail: "could not read index: " + err.Error()}
+	}
+	if files == 0 {
 		return Check{Name: "Index", Status: "off", Detail: "index never ran — repo map and symbol tools have no data"}
 	}
 	detail := fmt.Sprintf("%d files", files)

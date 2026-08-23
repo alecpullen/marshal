@@ -1013,6 +1013,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if execErr != nil {
 				return task, r.fail(task, execErr)
 			}
+			// Re-arm the verification nudge when the model made a fresh
+			// successful mutation after being nudged once: a new change
+			// deserves its own nudge rather than a silently flagged final
+			// answer. The overhead cap still bounds how many nudges a turn
+			// can burn.
+			if verificationNudgeSent && r.lastSuccessfulMutation() {
+				verificationNudgeSent = false
+			}
 			// Every call this turn was rejected before running: nothing was
 			// accomplished, so the turn is overhead, not work.
 			if invalidArgs := r.invalidArgsCount(); invalidArgs > 0 && invalidArgs == len(res.ToolCalls) {
@@ -1194,6 +1202,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
 				return task, r.fail(task, err)
+			}
+			// Re-arm the verification nudge when the model made a fresh
+			// successful mutation after being nudged once: a new change
+			// deserves its own nudge rather than a silently flagged final
+			// answer. The overhead cap still bounds how many nudges a turn
+			// can burn.
+			if verificationNudgeSent && r.lastSuccessfulMutation() {
+				verificationNudgeSent = false
 			}
 			messages = append(messages, resultMsgs...)
 			var finalized *Task
@@ -1468,4 +1484,12 @@ func (r *Runner) unverifiedMutation() (callEntry, bool) {
 	r.trackerMu.Lock()
 	defer r.trackerMu.Unlock()
 	return r.tracker.unverifiedMutation()
+}
+
+// lastSuccessfulMutation exposes the tracker's re-arm check under the runner's
+// tracker mutex.
+func (r *Runner) lastSuccessfulMutation() bool {
+	r.trackerMu.Lock()
+	defer r.trackerMu.Unlock()
+	return r.tracker.lastSuccessfulMutation()
 }

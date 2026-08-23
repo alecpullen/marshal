@@ -47,24 +47,3 @@ func (db *DB) countRows(query string, args ...any) (int, error) {
 	}
 	return n, nil
 }
-
-// SeedEmbeddedChunkForTest inserts one chunk with a matching embedding row.
-// It exists so tests outside this package can set up embedding-presence
-// state without reaching unexported internals.
-func (db *DB) SeedEmbeddedChunkForTest(projectID int64, path string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := db.sqlDB.Exec(
-		`INSERT INTO chunks (project_id, file_path, file_hash, kind, start_line, end_line, content, token_count, created_at)
-		 VALUES (?, ?, 'h1', 'func', 1, 3, 'package x', 2, ?)`, projectID, path, now)
-	if err != nil {
-		return err
-	}
-	chunkID, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	_, err = db.sqlDB.Exec(
-		`INSERT INTO embeddings (chunk_id, model, dim, vector) VALUES (?, 'test-embed', 4, ?)`,
-		chunkID, []byte{1, 2, 3, 4})
-	return err
-}

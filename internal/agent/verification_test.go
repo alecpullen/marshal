@@ -63,10 +63,40 @@ func TestUnverifiedMutation_FailedCallsDoNotCount(t *testing.T) {
 	if _, fire := tr.unverifiedMutation(); fire {
 		t.Fatal("failed mutation must not arm the gate")
 	}
+	// A red test is a FAILED call (test.run surfaces a non-zero exit as a
+	// tool error), but it must still satisfy the gate: the model ran a
+	// verification command, which is what the gate checks. Otherwise an
+	// honest model that runs tests and reports "tests still fail" would be
+	// penalized identically to one that never verified.
 	tr.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
 	tr.record("test.run", `{"command":"go test ./..."}`, hashToolResult("exit 1"), false)
-	if _, fire := tr.unverifiedMutation(); !fire {
-		t.Fatal("failed verification must not satisfy the gate")
+	if _, fire := tr.unverifiedMutation(); fire {
+		t.Fatal("a failed verification run must still satisfy the gate")
+	}
+}
+
+func TestUnverifiedMutation_FailedVerificationStillSatisfiesGate(t *testing.T) {
+	tr := newProgressTracker()
+	tr.record("file.write", `{"path":"a.go","content":"x"}`, hashToolResult("ok"), true)
+	tr.record("shell.run", `{"command":"go test ./..."}`, hashToolResult("exit 2"), false)
+	if _, fire := tr.unverifiedMutation(); fire {
+		t.Fatal("a failing test-like shell.run must still satisfy the gate")
+	}
+}
+
+func TestLooksLikeVerificationCommandMatchesCommandFieldOnly(t *testing.T) {
+	// A verification keyword in the command field counts.
+	if !looksLikeVerificationCommand(`{"command":"go test ./..."}`) {
+		t.Fatal("'go test ./...' must count as verification")
+	}
+	// A verification keyword in an UNRELATED field must not count, or a
+	// mutation could masquerade as a verification while doing real work.
+	if looksLikeVerificationCommand(`{"command":"rm -rf build","note":"run pytest later"}`) {
+		t.Fatal("a mutation whose only 'pytest' mention is in a non-command field must not count as verification")
+	}
+	// Empty or non-JSON args are not verification.
+	if looksLikeVerificationCommand("") || looksLikeVerificationCommand("not json") {
+		t.Fatal("empty or malformed args must not count as verification")
 	}
 }
 

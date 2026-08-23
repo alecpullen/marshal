@@ -43,8 +43,12 @@ func New(state *session.State, diags []config.Diagnostic, checks []Check) *Panel
 func diagsToFields(diags []config.Diagnostic, checks []Check) []*listpanel.Field {
 	out := make([]*listpanel.Field, 0, len(diags)+len(checks)+3)
 	if len(diags) == 0 {
+		// Scoped to config problems: the Intelligence section below can still
+		// legitimately report subsystem warnings (e.g. the index watcher is
+		// off), so an unconditional "No problems found." would read as a
+		// contradiction next to it.
 		out = append(out, &listpanel.Field{
-			ID: "clean", Title: "No problems found.", Kind: listpanel.KindScalar,
+			ID: "clean", Title: "No config problems found.", Kind: listpanel.KindScalar,
 			GetStr: func() string { return "" },
 		})
 	} else {

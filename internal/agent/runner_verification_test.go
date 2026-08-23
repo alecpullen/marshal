@@ -14,16 +14,21 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// regPatchAndTest registers the tools the gate tests need. All are
-// RiskReadOnly so the policy engine never intercepts: unverifiedMutation is
-// name-based (categorize), so declared risk is irrelevant here.
+// regPatchAndTest registers the tools the gate tests need. test.run is
+// declared RiskCommand to mirror its production classification, so the tests
+// exercise the real policy-approval path (gatePolicy auto-approves) rather
+// than bypassing it with RiskReadOnly. unverifiedMutation is name-based
+// (categorize), so the declared risk of the other tools is irrelevant to it.
 func regPatchAndTest(t *testing.T) *registry.Registry {
 	t.Helper()
 	reg := registry.New()
-	for _, name := range []string{"file.read", "file.write_patch", "test.run"} {
+	for _, name := range []string{"file.read", "file.write_patch"} {
 		if err := reg.Register(registry.Tool{Name: name, Risk: registry.RiskReadOnly, Handler: nopHandler}); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
+	}
+	if err := reg.Register(registry.Tool{Name: "test.run", Risk: registry.RiskCommand, Handler: nopHandler}); err != nil {
+		t.Fatalf("register test.run: %v", err)
 	}
 	return reg
 }
@@ -165,7 +170,39 @@ func TestJSONFinalAfterUnverifiedPatchGetsNudgeThenSalvaged(t *testing.T) {
 	}
 }
 
-// The JSON-envelope path also gains the zero-tool-call grounding nudge it
+// A fresh successful mutation after the nudge re-arms it, so a model that
+// makes a second change after being nudged gets nudged again rather than a
+// silently flagged final answer.
+func TestNativeSecondMutationAfterNudgeReArmsGate(t *testing.T) {
+	state := newTestState(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"patched", "Done.", "patched again", "Still done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"File: a.go\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"}`)}},
+			nil, // final attempt 1: unverified — nudge
+			{{ID: "c2", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"File: b.go\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE"}`)}},
+			nil, // final attempt 2: still unverified — nudged again (re-armed)
+			{{ID: "c3", Name: "test.run", Args: json.RawMessage(`{"command":"go test ./..."}`)}},
+			nil, // final attempt 3: verified — clean
+		},
+	}
+	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+
+	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty (the second mutation got re-nudged, then verified)", task.SalvagedReason)
+	}
+	if !transcriptContains(state, "have not verified") {
+		t.Fatal("expected the verification nudge to fire after the re-armed mutation")
+	}
+}
+
+// The JSON-envelope path also gains zero-tool-call grounding nudge it
 // previously lacked.
 func TestJSONEditTaskRequiresToolCallBeforeCompletion(t *testing.T) {
 	state := newTestState(t)

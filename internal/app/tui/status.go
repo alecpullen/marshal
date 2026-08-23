@@ -80,7 +80,7 @@ func (m Model) renderStatusLine(width int) string {
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
-	if right != "" && !m.hasPendingApproval() && m.state.ProviderError() == nil {
+	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() {
 		fits := func(s string) bool {
 			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
 		}
@@ -284,10 +284,18 @@ func (m Model) statusRightSegment() string {
 	if m.hasPendingApproval() {
 		return warningStyle().Render(glyph.Warning + " approval")
 	}
-	if m.state.ProviderError() != nil {
+	if _, ok := m.state.Notice(); ok {
 		return errorStyle().Render("✘ error")
 	}
 	return help.Footer(m.footerHints())
+}
+
+// noticeVisible reports whether a session notice is currently up. The
+// error indicator in statusRightSegment is never shed for width, so the
+// hint-cluster drop logic must skip it when a notice is visible.
+func (m Model) noticeVisible() bool {
+	_, ok := m.state.Notice()
+	return ok
 }
 
 // footerHints snapshots the mode flags the hint cluster needs. This is

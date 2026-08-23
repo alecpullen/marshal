@@ -99,7 +99,12 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 
 	route, resolvedProvider, err := r.RouteResolver.Resolve(string(task.Class))
 	if err != nil {
-		r.State.SetProviderError(err)
+		r.State.SetNotice(session.Notice{
+			Category: session.NoticeProvider,
+			Severity: session.SeverityError,
+			Message:  err.Error(),
+			Source:   "route",
+		})
 		r.State.SetActiveRoute(session.RouteInfo{})
 		return turnProvider, turnModel, routing.Route{}
 	}
@@ -423,7 +428,12 @@ func (r *Runner) appendSkillBodies(messages []schema.ChatMessage) []schema.ChatM
 
 func (r *Runner) fail(task *Task, err error) error {
 	task.Status = TaskStatusFailed
-	r.State.SetProviderError(err)
+	r.State.SetNotice(session.Notice{
+		Category: session.NoticeProvider,
+		Severity: session.SeverityError,
+		Message:  err.Error(),
+		Source:   "agent",
+	})
 	r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Agent failed: %s", err.Error()), session.ContentTypePlain)
 	return err
 }

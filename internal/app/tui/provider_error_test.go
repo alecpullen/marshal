@@ -3,57 +3,58 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
-	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/connect"
 )
 
-// The provider-error banner must clear on every recovery path, not only on
-// a successful turn. A successful /connect is the banner's own suggested
-// remedy, so leaving the error set afterwards is contradictory.
-func TestApplyConnectDoneSuccessClearsProviderError(t *testing.T) {
+// The provider notice must clear on every recovery path, not only on a
+// successful turn. A successful /connect is the banner's own suggested
+// remedy, so leaving the notice set afterwards is contradictory.
+func TestApplyConnectDoneSuccessClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetProviderError(errors.New("provider request timed out"))
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "provider request timed out"})
 
 	m.applyConnectDone(connect.DoneMsg{Provider: "openai", Model: "gpt-4o"})
 
-	if err := m.state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil after successful /connect", err)
+	if _, ok := m.state.Notice(); ok {
+		t.Fatal("notice should be cleared after successful /connect")
 	}
 }
 
 // A successful save+reload rebuilt the provider runtime, which proves
-// provider construction works with the new config — the stale error must
+// provider construction works with the new config — the stale notice must
 // be cleared.
-func TestPersistAndReloadSuccessClearsProviderError(t *testing.T) {
+func TestPersistAndReloadSuccessClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
 	m.configReloader = func(config.Config) error { return nil }
-	m.state.SetProviderError(errors.New("provider request timed out"))
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
 	saveErr, reloadErr := m.persistAndReload(m.state.Config)
 	if saveErr != nil || reloadErr != nil {
 		t.Fatalf("persistAndReload = (%v, %v), want (nil, nil)", saveErr, reloadErr)
 	}
-	if err := m.state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil after successful reload", err)
+	if _, ok := m.state.Notice(); ok {
+		t.Fatal("notice should be cleared after successful reload")
 	}
 }
 
-// A failed reload proves nothing about the provider — the error banner
-// must stay so the user keeps seeing why the agent is unavailable.
-func TestPersistAndReloadFailureRetainsProviderError(t *testing.T) {
+// A failed reload proves nothing about the provider — the notice must
+// stay so the user keeps seeing why the agent is unavailable.
+func TestPersistAndReloadFailureRetainsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
 	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
-	m.state.SetProviderError(errors.New("provider request timed out"))
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
 	_, reloadErr := m.persistAndReload(m.state.Config)
 	if reloadErr == nil {
 		t.Fatal("persistAndReload reloadErr = nil, want the reload error")
 	}
-	if err := m.state.ProviderError(); err == nil {
-		t.Fatal("ProviderError() = nil, want the original error retained after failed reload")
+	if _, ok := m.state.Notice(); !ok {
+		t.Fatal("notice = none, want the original notice retained after failed reload")
 	}
 }
 
@@ -101,71 +102,58 @@ func TestSuccessfulReloadKeepsExistingRunner(t *testing.T) {
 	}
 }
 
-// A new turn optimistically clears the stale provider-error banner: the user
-// submitting another prompt is trying again, and if this turn also fails the
-// finished handler re-sets it.
-func TestStartAgentRunClearsProviderError(t *testing.T) {
+// A new turn optimistically clears a stale provider notice: the user
+// submitting another prompt is trying again, and if this turn also fails
+// the finished handler re-sets it.
+func TestStartAgentRunClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetProviderError(errors.New("provider unreachable"))
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider unreachable"})
 
 	_, cmd := m.startAgentRun(&testAgentRunner{}, "retry")
 	if cmd == nil {
 		t.Fatal("startAgentRun returned no command")
 	}
-	if err := m.state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil after a new turn starts", err)
-	}
-	if !m.providerErrShownAt.IsZero() {
-		t.Fatal("providerErrShownAt should be zeroed on new turn start")
+	if _, ok := m.state.Notice(); ok {
+		t.Fatal("provider notice should be cleared on new turn start")
 	}
 }
 
-// A failed turn sets the banner and stamps when it was shown.
-func TestAgentFinishedErrorSetsBannerAndTimestamp(t *testing.T) {
+// ClearNotice is category-scoped: a new turn must NOT clear an unrelated
+// internal notice.
+func TestStartAgentRunKeepsUnrelatedNotice(t *testing.T) {
 	m := newTestModel(t)
-	m.now = func() time.Time { return time.Unix(200, 0) }
+	m.state.SetNotice(session.Notice{Category: session.NoticeInternal, Message: "command registration failed"})
 
-	updated, _ := m.handleAgentFinished(agentFinishedMsg{err: errors.New("provider request timed out")})
-	m = updated
-	if m.state.ProviderError() == nil {
-		t.Fatal("ProviderError() = nil, want the failed-turn error set")
-	}
-	if m.providerErrShownAt != time.Unix(200, 0) {
-		t.Fatalf("providerErrShownAt = %v, want the failure timestamp", m.providerErrShownAt)
-	}
-}
-
-// The banner auto-dismisses once it has been up past providerErrorBannerDuration.
-func TestAgentTickAutoDismissesStaleProviderError(t *testing.T) {
-	m := newTestModel(t)
-	m.state.SetProviderError(errors.New("provider unreachable"))
-	m.providerErrShownAt = time.Unix(100, 0)
-	m.now = func() time.Time { return time.Unix(100+int64(providerErrorBannerDuration/time.Second)+1, 0) }
-
-	updated, _ := m.handleAgentTick(agentTickMsg{})
-	m = updated
-	if err := m.state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil after the banner duration elapsed", err)
-	}
-	if !m.providerErrShownAt.IsZero() {
-		t.Fatal("providerErrShownAt should be zeroed after auto-dismiss")
-	}
-}
-
-// A banner younger than the duration must stay up, and the tick must keep
-// running while it is present (failed turns never set successPulse).
-func TestAgentTickKeepsYoungProviderErrorAndContinues(t *testing.T) {
-	m := newTestModel(t)
-	m.state.SetProviderError(errors.New("provider unreachable"))
-	m.providerErrShownAt = time.Unix(100, 0)
-	m.now = func() time.Time { return time.Unix(100, 0) } // 0ms elapsed
-
-	updated, cmd := m.handleAgentTick(agentTickMsg{})
-	m = updated
-	if m.state.ProviderError() == nil {
-		t.Fatal("ProviderError() = nil, want the young banner retained")
-	}
+	_, cmd := m.startAgentRun(&testAgentRunner{}, "retry")
 	if cmd == nil {
-		t.Fatal("tick returned no command — must keep ticking while a dismissable banner is up")
+		t.Fatal("startAgentRun returned no command")
+	}
+	n, ok := m.state.Notice()
+	if !ok || n.Category != session.NoticeInternal {
+		t.Fatal("internal notice must survive a new turn start")
+	}
+}
+
+// A cancelled turn clears a stale provider notice (the user retried);
+// the cancellation itself never sets one.
+func TestCancelledTurnClearsProviderNotice(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.cancelling = true
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "stale"})
+
+	updated, _ := m.handleAgentFinished(agentFinishedMsg{err: errors.New("stream aborted")})
+	m = updated
+	if _, ok := m.state.Notice(); ok {
+		t.Fatal("cancelled turn should clear the stale provider notice, not set a new one")
+	}
+	var found bool
+	for _, msg := range m.state.Messages() {
+		if strings.Contains(msg.Content, "cancelled") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("cancelled turn should still add the 'Agent turn cancelled.' message")
 	}
 }

@@ -1662,7 +1662,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// The broker is created in runtime.go regardless of provider state.
 		tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
 		tuiOpts = append(tuiOpts, tui.WithSubagentBroker(ctx, subagentBroker))
-		if state.ProviderError() == nil {
+		if n, ok := state.Notice(); !ok || n.Category != session.NoticeProvider {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))

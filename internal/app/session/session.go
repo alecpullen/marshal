@@ -190,7 +190,6 @@ type State struct {
 	mu              sync.Mutex
 	messages        []Message
 	inProgress      InProgressMessage
-	providerErr     error
 	notice          Notice
 	noticeSet       bool
 	pendingApproval *PendingToolCall
@@ -892,24 +891,6 @@ func (s *State) LoadError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.loadErr
-}
-
-// SetProviderError records the most recent provider-level failure (HTTP
-// error, malformed response, connection failure, etc.) for display in the
-// TUI. Passing nil clears it — callers should clear on the next
-// successful call. Nothing in this milestone calls this yet; it exists so
-// a future agent loop has a place to report provider failures without
-// further session.State changes.
-func (s *State) SetProviderError(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.providerErr = err
-}
-
-func (s *State) ProviderError() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.providerErr
 }
 
 // SetLayers stores the merged-config layering snapshot. Called once by

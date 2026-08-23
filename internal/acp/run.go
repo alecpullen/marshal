@@ -133,8 +133,8 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 			if rt.Runner == nil {
 				reason := "agent runner not built"
 				if rt.State != nil {
-					if perr := rt.State.ProviderError(); perr != nil {
-						reason = perr.Error()
+					if n, ok := rt.State.Notice(); ok {
+						reason = n.Message
 					}
 				}
 				log.Warn("acp: session has no runner; rejecting prompt",

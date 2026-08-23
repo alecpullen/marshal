@@ -767,26 +767,6 @@ func renderPlanBlock(content string, width int) string {
 	return b.String()
 }
 
-func renderProviderError(err error, width int) string {
-	cw := contentWidth(width)
-	wrapped := ansi.Wrap("provider: "+err.Error(), cw, WrapBreakpoints)
-	lines := strings.Split(wrapped, "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	gutter := gutterPrefix(glyph.Error, errorColor)
-	var b strings.Builder
-	b.WriteString(gutter)
-	b.WriteString(errorStyle().Render(lines[0]))
-	b.WriteString("\n")
-	for _, line := range lines[1:] {
-		b.WriteString(continuation())
-		b.WriteString(mutedStyle().Render(line))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // renderActiveToolCall shows the in-flight tool as a spinner line with a
 // hairline gutter — no border. Command tools get a $ line and, when a
 // sandbox backend is active, an isolation-status line, both dim-indented

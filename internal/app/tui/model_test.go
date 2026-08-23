@@ -1683,8 +1683,9 @@ func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a non-nil cmd (tickCmd) after agentFinishedMsg to re-arm the pulse-clearing tick")
 	}
-	if err := state.ProviderError(); err == nil || err.Error() != "boom" {
-		t.Fatalf("ProviderError() = %v, want an error wrapping %q", err, "boom")
+	n, ok := state.Notice()
+	if !ok || n.Message != "boom" {
+		t.Fatalf("Notice() = (%v, %v), want a notice with message %q", n, ok, "boom")
 	}
 }
 
@@ -4536,8 +4537,8 @@ func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
 	if model.busy {
 		t.Fatal("model.busy = true, want false after agentFinishedMsg")
 	}
-	if err := state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil for context.Canceled", err)
+	if _, ok := state.Notice(); ok {
+		t.Fatalf("Notice() set for context.Canceled, want none")
 	}
 }
 
@@ -4545,7 +4546,7 @@ func TestSuccessfulTurnClearsProviderError(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 	model.busy = true
-	state.SetProviderError(errors.New("provider request timed out"))
+	state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
 	updated, _ := model.Update(agentFinishedMsg{err: nil})
 	model = updated.(Model)
@@ -4553,8 +4554,8 @@ func TestSuccessfulTurnClearsProviderError(t *testing.T) {
 	if model.busy {
 		t.Fatal("model.busy = true, want false after agentFinishedMsg")
 	}
-	if err := state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil after a successful turn", err)
+	if _, ok := state.Notice(); ok {
+		t.Fatalf("Notice() = set, want nil after a successful turn")
 	}
 }
 
@@ -7251,8 +7252,8 @@ func TestCancelledTurnDoesNotSetProviderError(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if err := m.state.ProviderError(); err != nil {
-		t.Fatalf("cancelled turn set a provider error banner: %v", err)
+	if n, ok := m.state.Notice(); ok {
+		t.Fatalf("cancelled turn set a notice banner: %v", n)
 	}
 	if m.cancelling {
 		t.Fatal("cancelling flag should be cleared")
@@ -7268,8 +7269,8 @@ func TestUncancelledProviderFailureSetsProviderError(t *testing.T) {
 	updated, _ := m.Update(agentFinishedMsg{err: errors.New("connection refused")})
 	m = updated.(Model)
 
-	if m.state.ProviderError() == nil {
-		t.Fatal("provider failure should set the error banner")
+	if _, ok := m.state.Notice(); !ok {
+		t.Fatal("provider failure should set the notice banner")
 	}
 }
 

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -239,12 +238,16 @@ func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 }
 
 func TestRenderProviderErrorInline(t *testing.T) {
-	out := renderProviderError(errors.New("connection refused"), 80)
+	out := renderNotice(session.Notice{
+		Category: session.NoticeProvider,
+		Severity: session.SeverityError,
+		Message:  "connection refused",
+	}, 80)
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "✗") {
 		t.Fatalf("provider error missing ✗ gutter:\n%s", out)
 	}
-	if !strings.Contains(plain, "provider: connection refused") {
+	if !strings.Contains(plain, "provider") || !strings.Contains(plain, "connection refused") {
 		t.Fatalf("provider error missing error text:\n%s", out)
 	}
 }
@@ -1017,7 +1020,7 @@ func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 		"system notice":  renderSystemNotice("note", 80),
 		"tool result":    renderToolResultLine("line1\nline2", 80),
 		"plan block":     renderPlanBlock("step 1", 80),
-		"provider error": renderProviderError(errors.New("boom"), 80),
+		"provider error": renderNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "boom"}, 80),
 		"queued":         renderQueuedMessages([]string{"q1"}, 80),
 		"active tool": renderActiveToolCall(
 			session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Unix(100, 0)},

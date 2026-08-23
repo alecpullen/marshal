@@ -557,8 +557,8 @@ func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) 
 	if fallbackProvider.Requests[0].Model != "fallback-model" {
 		t.Fatalf("fallback request model = %q, want fallback-model", fallbackProvider.Requests[0].Model)
 	}
-	if got := state.ProviderError(); !errors.Is(got, resolverErr) {
-		t.Fatalf("ProviderError = %v, want %v", got, resolverErr)
+	if n, ok := state.Notice(); !ok || n.Category != session.NoticeProvider {
+		t.Fatalf("Notice = (%v, %v), want a provider notice after resolver error", n, ok)
 	}
 	if route := state.ActiveRoute(); route.Active {
 		t.Fatalf("ActiveRoute = %#v, want inactive after resolver error fallback", route)

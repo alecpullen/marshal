@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,7 +67,7 @@ func TestStatusLineShowsApprovalState(t *testing.T) {
 
 func TestStatusLineShowsProviderError(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetProviderError(errors.New("connection refused"))
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "connection refused"})
 	line := m.renderStatusLine(100)
 	if !strings.Contains(line, "✘ error") {
 		t.Fatalf("status line missing error state:\n%s", line)

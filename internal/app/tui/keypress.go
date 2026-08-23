@@ -154,6 +154,16 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.refreshViewport()
 			return *m, nil, true
 		}
+		// An idle esc dismisses the notice banner: there is no turn to
+		// cancel and the banner is the most recent thing asking for
+		// attention. Busy turns fall through to cancelTurn as before.
+		if !m.busy {
+			if _, ok := m.state.Notice(); ok {
+				m.state.DismissNotice()
+				m.refreshViewport()
+				return *m, nil, true
+			}
+		}
 		m.resetHistoryNav()
 		m.cancelTurn()
 		return *m, nil, true

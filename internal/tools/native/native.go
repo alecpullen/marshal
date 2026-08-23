@@ -180,6 +180,8 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.repoSearchTool(),
 		tools.gitStatusTool(),
 		tools.gitDiffTool(),
+		tools.gitLogTool(),
+		tools.gitBlameTool(),
 		tools.shellRunTool(),
 		tools.testRunTool(),
 		tools.repoIndexTool(),

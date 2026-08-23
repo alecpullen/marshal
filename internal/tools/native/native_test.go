@@ -31,6 +31,8 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"symbols.find":       registry.RiskReadOnly,
 		"git.status":         registry.RiskReadOnly,
 		"git.diff":           registry.RiskReadOnly,
+		"git.log":            registry.RiskReadOnly,
+		"git.blame":          registry.RiskReadOnly,
 		"shell.run":          registry.RiskCommand,
 		"test.run":           registry.RiskCommand,
 		"todo.write":         registry.RiskWorkspaceWrite,

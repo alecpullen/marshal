@@ -46,6 +46,28 @@ func TestDefaultScoutFocusesCoverCodeTestsDocs(t *testing.T) {
 	}
 }
 
+func TestSwarmPromptsPinContractMarkers(t *testing.T) {
+	ts := NewTaskState("do the goal")
+	checks := []struct {
+		name    string
+		prompt  string
+		markers []string
+	}{
+		{"planner", plannerPrompt(ts), []string{"## Output contract", "numbered plan"}},
+		{"scout", scoutPrompt(ts, DefaultScoutFocuses[0]), []string{"## Output contract", "read-only"}},
+		{"implementer", implementerPrompt(ts), []string{"## Output contract", "Do NOT run git.commit"}},
+		{"tester", testerPrompt(ts), []string{"TEST_FAILURES_JSON:", "VERDICT: PASS", "VERDICT: FAIL", "## Output contract"}},
+		{"reviewer", reviewerPrompt(ts), []string{"APPROVE", "## Output contract"}},
+	}
+	for _, c := range checks {
+		for _, marker := range c.markers {
+			if !strings.Contains(c.prompt, marker) {
+				t.Errorf("%s prompt missing marker %q", c.name, marker)
+			}
+		}
+	}
+}
+
 func TestTesterPromptDemandsVerdict(t *testing.T) {
 	ts := NewTaskState("add a regression test")
 	p := testerPrompt(ts)

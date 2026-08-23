@@ -283,6 +283,12 @@ type Runner struct {
 	// first user turn to produce a short session title (F13). Fire-and-forget.
 	TitleGenerator TitleGenerator
 
+	// Classifier, when set, is consulted once per Run when keyword
+	// classification falls through to ClassQuestion. Intended as a cheap
+	// one-shot router-role call (NewModelClassifier). Errors and unrecognized
+	// answers leave the keyword class in place. Nil disables it.
+	Classifier func(ctx context.Context, goal string) (TaskClass, error)
+
 	// tokenRatio scales estimateTokens toward provider-reported prompt
 	// tokens. 0 means unset (raw estimates). See calibration.go.
 	tokenRatio float64
@@ -573,6 +579,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		task.Class = TaskClass(fc)
 	} else {
 		task.Class = Classify(goal)
+		if task.Class == ClassQuestion && r.Classifier != nil {
+			if class, err := r.Classifier(ctx, goal); err == nil {
+				switch class {
+				case ClassEdit, ClassCommand, ClassQuestion:
+					task.Class = class
+				}
+			}
+		}
 	}
 	turnProvider, turnModel, route := r.resolveRoute(task)
 	if route.MaxOutput > 0 {

@@ -427,6 +427,53 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 }
 
+func TestBuildAgentRunnerWiresRouterClassifierWhenDistinct(t *testing.T) {
+	ctx := context.Background()
+
+	// Main route binds to the test-provider preset; RoleRouter binds to a
+	// distinct provider+model, so the classifier must be wired (AI-07).
+	cfg := nativeToolAgentConfig("test-provider")
+	cfg.Providers["router-provider"] = config.ProviderConfig{
+		Type:        "openai_compatible",
+		BaseURL:     "http://localhost:11434/v1",
+		APIKey:      "test-key",
+		ToolCalling: true,
+	}
+	cfg.Models.Presets["router-model"] = routing.ModelPreset{
+		Name:        "router-model",
+		Provider:    "router-provider",
+		Model:       "router-model",
+		ToolCalling: "native",
+		LocalOnly:   true,
+	}
+	cfg.AgentProfiles[cfg.Profile.Default].Roles[routing.RoleRouter] = routing.RoleBinding{Preset: "router-model"}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.Classifier == nil {
+		t.Fatal("Classifier = nil, want non-nil when a distinct router role is bound")
+	}
+}
+
+func TestBuildAgentRunnerSkipsRouterClassifierOnSameModel(t *testing.T) {
+	ctx := context.Background()
+	// RoleRouter falls back to the implementer preset (same provider+model
+	// as the active turn route) — a single-model backend cannot interleave
+	// two calls, so the classifier must stay nil (AI-07).
+	cfg := nativeToolAgentConfig("test-provider")
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.Classifier != nil {
+		t.Fatal("Classifier != nil, want nil when router role resolves to the same provider+model")
+	}
+}
+
 func TestBuildAgentRunnerExposesPlanAuthorFactory(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("test-provider")

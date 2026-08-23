@@ -741,6 +741,18 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			runner.TitleGenerator = agent.NewTitleGenerator(titleProvider, titleRoute.Preset.Model, state)
 		}
 	}
+
+	// AI-07: wire the router-role classifier for keyword-miss goals. Skip when
+	// the router role resolves to the same provider+model as the active turn
+	// route — a single-model local backend cannot interleave two calls (same
+	// rule as the title generator above).
+	if routerRoute, routerProvider, routerErr := resolver.ResolveRole(routing.RoleRouter); routerErr == nil && routerRoute.Preset.Model != "" {
+		if routerRoute.Preset.Provider == route.Preset.Provider && routerRoute.Preset.Model == route.Preset.Model {
+			runner.Classifier = nil
+		} else if routerProvider != nil {
+			runner.Classifier = agent.NewModelClassifier(routerProvider, routerRoute.Preset.Model)
+		}
+	}
 	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex, limitsTable)
 
 	var desktopCloser func()

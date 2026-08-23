@@ -1128,6 +1128,11 @@ func New(state *session.State, opts ...Option) Model {
 		opt(&m)
 	}
 
+	// bubbles maps wheel-left/right to horizontal panning; step 0 disables
+	// it at the viewport level too (the wheel events are already dropped in
+	// Update, this covers any other path that forwards mouse messages).
+	m.viewport.SetHorizontalStep(0)
+
 	// Seed the in-session discovered map from the on-disk cache so the
 	// model picker opens instantly with the last-seen lists when the
 	// config hash still matches.
@@ -1939,6 +1944,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.MouseWheelMsg:
+		// Vertical-only transcript: sideways trackpad pans and diagonal
+		// scrolls must not shift the view horizontally.
+		if msg.Button == tea.MouseWheelLeft || msg.Button == tea.MouseWheelRight {
+			return m, nil
+		}
 		// Only delivered when tui.mouse_capture is on (see View). AltScreen
 		// leaves no terminal scrollback, so without this the wheel does
 		// nothing at all.
@@ -2302,6 +2312,11 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.MouseWheelMsg:
+		// Vertical-only transcript: swallow horizontal wheel pans so they
+		// never shift the view sideways.
+		if msg.Button == tea.MouseWheelLeft || msg.Button == tea.MouseWheelRight {
+			return *m, nil, true
+		}
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		switch msg.Button {

@@ -15,6 +15,47 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestWrapOverwideLinesWrapsLongCodeLine(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	out := wrapOverwideLines("  "+long, 80)
+	for _, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > 80 {
+			t.Fatalf("line width = %d, want <= 80: %q", w, line)
+		}
+	}
+	// Continuation lines keep the original indent so wrapped code still
+	// reads as indented code.
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("line %d lost its indent: %q", i, line)
+		}
+	}
+}
+
+func TestWrapOverwideLinesLeavesShortLinesAlone(t *testing.T) {
+	in := "short line\nanother"
+	if out := wrapOverwideLines(in, 80); out != in {
+		t.Fatalf("short lines were modified: %q", out)
+	}
+}
+
+// glamour's WithWordWrap does not cover fenced code blocks; the
+// post-processing in renderMarkdownWithMargin must catch them so no
+// transcript line is wider than the viewport.
+func TestRenderMarkdownWrapsCodeBlockLines(t *testing.T) {
+	md := "before\n\n```go\n" + strings.Repeat("y", 200) + "\n```\n"
+	out, ok := renderMarkdown(md, 80)
+	if !ok {
+		t.Skip("glamour renderer unavailable")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > 80 {
+			t.Fatalf("rendered line width = %d, want <= 80", w)
+		}
+	}
+}
+
 func TestRendererCacheEvicts(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		_ = getRenderer(60+i*7, 0)

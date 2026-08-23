@@ -7873,3 +7873,19 @@ func TestSDDNewFromLastPlanToPreflight(t *testing.T) {
 		t.Fatalf("expected *sddreview.Panel, got %T", m.dock.Panel())
 	}
 }
+
+// The transcript is vertical-only: horizontal wheel pans (trackpad
+// sideways gestures, diagonal scrolls) must not shift the view.
+func TestHorizontalWheelIsIgnored(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 30)
+	m.viewport.SetContent(strings.Repeat(strings.Repeat("z", 300)+"\n", 100))
+
+	for _, button := range []tea.MouseButton{tea.MouseWheelLeft, tea.MouseWheelRight} {
+		updated, _ := m.Update(tea.MouseWheelMsg{Button: button})
+		m = updated.(Model)
+		if off := m.viewport.XOffset(); off != 0 {
+			t.Fatalf("xOffset = %d after %v, want 0 (vertical-only)", off, button)
+		}
+	}
+}

@@ -5493,6 +5493,32 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 	}
 }
 
+func TestTodoPanelFollowsDrilledSubagent(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.state.SetTodos([]native.TodoItem{{Content: "parent task", Status: native.TodoPending}}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	childState := session.New(m.state.Config, t.TempDir(), time.Now(), session.Persistence{})
+	if err := childState.SetTodos([]native.TodoItem{{Content: "child task", Status: native.TodoInProgress}}); err != nil {
+		t.Fatalf("child SetTodos: %v", err)
+	}
+
+	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: childState})
+	body := m.renderTodoPanel()
+	if !strings.Contains(body, "child task") {
+		t.Fatalf("drilled panel must show the child's todos:\n%s", body)
+	}
+	if strings.Contains(body, "parent task") {
+		t.Fatalf("drilled panel must not show the parent's todos:\n%s", body)
+	}
+
+	m.viewStack = nil
+	body = m.renderTodoPanel()
+	if !strings.Contains(body, "parent task") {
+		t.Fatalf("undrilled panel must show the parent's todos:\n%s", body)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

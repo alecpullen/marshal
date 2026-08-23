@@ -146,6 +146,19 @@ func todosAllDone(todos []native.TodoItem) bool {
 	return done == len(todos)
 }
 
+// viewedTodos returns the todo list of the session the transcript is
+// currently showing: the drilled-in subagent's list while drilling, the
+// parent's otherwise. Mirrors the transcriptState pattern used for the
+// active-tool row.
+func (m Model) viewedTodos() []native.TodoItem {
+	if len(m.viewStack) > 0 {
+		if child := m.viewStack[len(m.viewStack)-1].Child; child != nil {
+			return child.Todos()
+		}
+	}
+	return m.state.Todos()
+}
+
 // cycleTodoPanelMode advances the pinned todo panel's visibility cycle:
 // expanded → collapsed → hidden. Used by Ctrl+T.
 func (m *Model) cycleTodoPanelMode() {

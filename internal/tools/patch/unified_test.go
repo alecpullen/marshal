@@ -13,6 +13,7 @@ func TestLooksLikeUnifiedDiff(t *testing.T) {
 	}{
 		{"hunk header", "--- a/x.go\n+++ b/x.go\n@@ -1,2 +1,3 @@\n ctx\n+added\n ctx2", true},
 		{"header pair only", "--- a/x.go\n+++ b/x.go", true},
+		{"header pair non-path", "--- legacy\n+++ modern", false},
 		{"search replace", "File: x.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE", false},
 		{"markdown divider in search", "File: x.md\n<<<<<<< SEARCH\ntitle\n=====\n=======\ntitle2\n=====\n>>>>>>> REPLACE", false},
 		{"empty", "", false},
@@ -164,8 +165,8 @@ func TestParseUnifiedDiffUnprefixedPaths(t *testing.T) {
 }
 
 func TestParseUnifiedDiffRemovedDashDashContent(t *testing.T) {
-	// A removed line whose content starts with "-- " renders as "--- ..." and
-	// must stay hunk body unless the next line opens a +++ header pair.
+	// A removed line whose content starts with "-- " must stay as hunk body
+	// unless the next line opens a real +++ header pair.
 	proposal := "--- a/f.go\n" +
 		"+++ b/f.go\n" +
 		"@@ -1,2 +1,1 @@\n" +
@@ -177,6 +178,67 @@ func TestParseUnifiedDiffRemovedDashDashContent(t *testing.T) {
 	}
 	if got := res.Patches[0].Chunks[0].Search; got != "-- deprecated flag\nctx" {
 		t.Fatalf("search = %q, want the -- line kept as content", got)
+	}
+}
+
+func TestParseUnifiedDiffRemovedDashDashFollowedByAdded(t *testing.T) {
+	// A removed line "-- deprecated" (rendered "--- deprecated") followed by
+	// an added line "++ new" (rendered "+++ new") must both stay as hunk
+	// body — the ---/+++ pair lookahead must not mistake them for a file
+	// header pair (regression: the edit was silently dropped).
+	proposal := "--- a/f.go\n" +
+		"+++ b/f.go\n" +
+		"@@ -1,2 +1,2 @@\n" +
+		"--- deprecated\n" +
+		"+++ new\n" +
+		" ctx\n"
+	res, err := ParseRepairing(proposal)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 1 {
+		t.Fatalf("patches = %d, want 1", len(res.Patches))
+	}
+	ch := res.Patches[0].Chunks[0]
+	if ch.Search != "-- deprecated\nctx" || ch.Replace != "++ new\nctx" {
+		t.Fatalf("chunk = %#v, want both lines kept as content", ch)
+	}
+}
+
+func TestParseUnifiedDiffAddedPlusPlusAtHunkEnd(t *testing.T) {
+	// An added line whose content starts with "++ " (rendered "+++ foo") at
+	// the end of a hunk, followed by the next hunk's @@ header, must stay as
+	// content — not be mistaken for a new-file section header that drops the
+	// line and fabricates a spurious file patch (regression).
+	proposal := "--- a/x.go\n" +
+		"+++ b/x.go\n" +
+		"@@ -1,2 +1,3 @@\n" +
+		" ctx\n" +
+		"-removed\n" +
+		"+++ foo\n" +
+		"@@ -5,2 +5,2 @@\n" +
+		" tail\n" +
+		"-omega\n" +
+		"+OMEGA\n"
+	res, err := ParseRepairing(proposal)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 1 {
+		t.Fatalf("patches = %d, want 1 (no spurious file patch)", len(res.Patches))
+	}
+	if res.Patches[0].Path != "x.go" {
+		t.Fatalf("path = %q, want x.go", res.Patches[0].Path)
+	}
+	chunks := res.Patches[0].Chunks
+	if len(chunks) != 2 {
+		t.Fatalf("chunks = %d, want 2", len(chunks))
+	}
+	if chunks[0].Search != "ctx\nremoved" || chunks[0].Replace != "ctx\n++ foo" {
+		t.Fatalf("chunk[0] = %#v, want the ++ foo line kept as added content", chunks[0])
+	}
+	if chunks[1].Search != "tail\nomega" || chunks[1].Replace != "tail\nOMEGA" {
+		t.Fatalf("chunk[1] = %#v", chunks[1])
 	}
 }
 

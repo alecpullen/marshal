@@ -35,12 +35,15 @@ var elisionLines = map[string]bool{
 }
 
 // looksLikeUnifiedDiff reports whether the proposal should be parsed as a
-// unified diff: it contains a full @@ hunk header, a ---/+++ header pair, or
-// a "diff --git" section opener (which carries rename-only diffs that have no
-// hunks). The hunk-header shape is specific enough that a search/replace
-// proposal only misfires when the searched content itself holds a bare
-// "@@ -1,2 +1,2 @@" line (e.g. patching a file that contains a diff) — an
-// accepted risk.
+// unified diff: it contains a full @@ hunk header, a "diff --git" section
+// opener (which carries rename-only diffs that have no hunks), or a ---/+++
+// header pair whose paths look like real diff paths (a/…, b/…, /dev/null).
+// The header-pair check is deliberately narrow so a search/replace SEARCH
+// block that happens to contain diff-like lines is not misrouted; only a
+// pair that looks like a genuine file header routes. The hunk-header shape
+// is specific enough that a search/replace proposal only misfires when the
+// searched content itself holds a bare "@@ -1,2 +1,2 @@" line — an accepted
+// risk.
 func looksLikeUnifiedDiff(proposal string) bool {
 	lines := strings.Split(strings.ReplaceAll(proposal, "\r\n", "\n"), "\n")
 	for i, line := range lines {
@@ -50,7 +53,10 @@ func looksLikeUnifiedDiff(proposal string) bool {
 		if strings.HasPrefix(line, "diff --git ") {
 			return true
 		}
-		if strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ") {
+		if strings.HasPrefix(line, "--- ") && i+1 < len(lines) &&
+			isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "---"))) &&
+			strings.HasPrefix(lines[i+1], "+++ ") &&
+			isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(lines[i+1], "+++"))) {
 			return true
 		}
 	}
@@ -172,12 +178,19 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 				// Next file section — fall out of the switch into header
 				// handling below, which commits the finished file.
 				commitHunk()
-			case strings.HasPrefix(line, "--- ") && strings.HasPrefix(next, "+++ "):
+			case strings.HasPrefix(line, "--- ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "---"))) &&
+				strings.HasPrefix(next, "+++ ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(next, "+++"))):
 				// Header pair for the next file — fall out of the switch
 				// into header handling below.
 				commitHunk()
-			case strings.HasPrefix(line, "+++ ") && hunkHeaderRe.MatchString(strings.TrimSpace(next)):
-				// New file section with the --- line omitted.
+			case len(searchBuf) == 0 && len(replaceBuf) == 0 &&
+				strings.HasPrefix(line, "+++ ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "+++"))) &&
+				hunkHeaderRe.MatchString(strings.TrimSpace(next)):
+				// New file section with the --- line omitted. Only fires
+				// when the +++ line is the first body line of the hunk
+				// (empty buffers), so an added line like "++ foo" (rendered
+				// "+++ foo") at the end of a hunk is never mistaken for a
+				// header.
 				commitHunk()
 			default:
 				if err := hunkLine(line, trimmed); err != nil {
@@ -236,6 +249,23 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 
 func elisionErr(path string) error {
 	return fmt.Errorf("patch: elided lines are not supported inside diff hunks (%s); include every context line in full", path)
+}
+
+// isDiffHeaderPath reports whether a ---/+++ header value looks like a real
+// diff path (a/…, b/…, or /dev/null) rather than hunk body content that
+// happens to start with "-- " or "++ ". This keeps removed lines like
+// "--- flag" (content "-- flag") and added lines like "+++ foo" (content
+// "++ foo") inside the hunk instead of being mistaken for file headers.
+// Unprefixed bare filenames are deliberately excluded: git always emits
+// a/ or b/ prefixes, and a bare name is far more likely to be hunk content.
+// (Top-level ---/+++ headers without prefixes are still handled by the
+// outer switch, which does not consult this helper.)
+func isDiffHeaderPath(p string) bool {
+	p = strings.Trim(p, `"`)
+	if p == "/dev/null" {
+		return true
+	}
+	return strings.HasPrefix(p, "a/") || strings.HasPrefix(p, "b/")
 }
 
 // stripDiffPrefix turns a diff header path ("b/internal/foo.go", possibly

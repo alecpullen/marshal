@@ -42,14 +42,20 @@ type Memory struct {
 
 // SaveMemory inserts a new memory row with confidence "tentative". A row whose
 // normalized content matches an existing memory (same project, same
-// content_hash) is refreshed in place — updated_at and source_session_id move
-// forward, no new row — instead of duplicating.
+// content_hash) is refreshed in place instead of duplicating: its kind is
+// promoted to the current classification, its source session moves to the
+// current writer, and updated_at only ever moves forward (never regresses),
+// preserving most-recent ordering for rankMemories.
 func (db *DB) SaveMemory(projectID int64, kind, content, sourceSessionID string, now time.Time) error {
 	nowStr := now.UTC().Format(time.RFC3339)
 	hash := MemoryContentHash(content)
 	res, err := db.sqlDB.Exec(
-		`UPDATE memories SET updated_at = ?, source_session_id = ? WHERE project_id = ? AND content_hash = ?`,
-		nowStr, sourceSessionID, projectID, hash,
+		`UPDATE memories
+		 SET kind = ?,
+		     source_session_id = ?,
+		     updated_at = CASE WHEN julianday(updated_at) < julianday(?) THEN ? ELSE updated_at END
+		 WHERE project_id = ? AND content_hash = ?`,
+		kind, sourceSessionID, nowStr, nowStr, projectID, hash,
 	)
 	if err != nil {
 		return fmt.Errorf("refresh memory: %w", err)

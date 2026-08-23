@@ -117,6 +117,64 @@ func TestSaveMemoryDeduplicatesByContentHash(t *testing.T) {
 	}
 }
 
+func TestSaveMemoryRefreshPromotesKind(t *testing.T) {
+	db := openMigratedTest(t)
+	projectID, err := db.GetOrCreateProject("/tmp/proj-kind", "proj-kind")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := db.CreateSession("sess-1", projectID, "", time.Unix(0, 0).UTC()); err != nil {
+		t.Fatalf("CreateSession sess-1: %v", err)
+	}
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if err := db.SaveMemory(projectID, "fact", "uses SQLite for persistence", "sess-1", now); err != nil {
+		t.Fatalf("first SaveMemory: %v", err)
+	}
+	// Same normalized content re-classified as architecture must NOT stay fact.
+	if err := db.SaveMemory(projectID, "architecture", "uses SQLite for persistence", "sess-1", now.Add(time.Hour)); err != nil {
+		t.Fatalf("reclassified SaveMemory: %v", err)
+	}
+	memories, err := db.GetMemories(projectID)
+	if err != nil {
+		t.Fatalf("GetMemories: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Fatalf("len(memories) = %d, want 1 (still deduped)", len(memories))
+	}
+	if memories[0].Kind != "architecture" {
+		t.Errorf("Kind = %q, want %q (kind promoted on refresh)", memories[0].Kind, "architecture")
+	}
+}
+
+func TestSaveMemoryRefreshDoesNotRegressUpdatedAt(t *testing.T) {
+	db := openMigratedTest(t)
+	projectID, err := db.GetOrCreateProject("/tmp/proj-ts", "proj-ts")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := db.CreateSession("sess-1", projectID, "", time.Unix(0, 0).UTC()); err != nil {
+		t.Fatalf("CreateSession sess-1: %v", err)
+	}
+	first := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if err := db.SaveMemory(projectID, "fact", "content", "sess-1", first); err != nil {
+		t.Fatalf("first SaveMemory: %v", err)
+	}
+	// A later save with an earlier clock must not move updated_at backwards.
+	if err := db.SaveMemory(projectID, "fact", "content", "sess-1", first.Add(-time.Hour)); err != nil {
+		t.Fatalf("regressed-clock SaveMemory: %v", err)
+	}
+	memories, err := db.GetMemories(projectID)
+	if err != nil {
+		t.Fatalf("GetMemories: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Fatalf("len(memories) = %d, want 1", len(memories))
+	}
+	if !memories[0].UpdatedAt.Equal(first) {
+		t.Errorf("UpdatedAt = %v, want %v (must not regress)", memories[0].UpdatedAt, first)
+	}
+}
+
 func TestSaveMemoryDistinctContentStillInserts(t *testing.T) {
 	db := openMigratedTest(t)
 	projectID, err := db.GetOrCreateProject("/tmp/proj-distinct", "proj-distinct")

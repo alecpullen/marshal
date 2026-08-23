@@ -48,6 +48,7 @@ func merge(cfg *Config, file configFile) error {
 		}
 		set(&cfg.Agent.MaxTouchedFileBytes, file.Agent.MaxTouchedFileBytes)
 		set(&cfg.Agent.ThinkingBudgetMargin, file.Agent.ThinkingBudgetMargin)
+		set(&cfg.Agent.MaxConcurrentSubagents, file.Agent.MaxConcurrentSubagents)
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)

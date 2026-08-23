@@ -201,6 +201,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 	putKey(&agent.MaxTouchedFileBytes, fileField[int](file.Agent, "MaxTouchedFileBytes"), cfg.Agent.MaxTouchedFileBytes, def.Agent.MaxTouchedFileBytes)
 	putKey(&agent.ThinkingBudgetMargin, fileField[int](file.Agent, "ThinkingBudgetMargin"), cfg.Agent.ThinkingBudgetMargin, def.Agent.ThinkingBudgetMargin)
+	putKey(&agent.MaxConcurrentSubagents, fileField[int](file.Agent, "MaxConcurrentSubagents"), cfg.Agent.MaxConcurrentSubagents, def.Agent.MaxConcurrentSubagents)
 	file.Agent = agent
 
 	privacy := &filePrivacy{}

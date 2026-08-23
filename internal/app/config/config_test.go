@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"marshal/internal/llm/routing"
+	"marshal/internal/strutil"
 	"marshal/internal/trust"
 
 	"github.com/pelletier/go-toml/v2"
@@ -550,11 +551,27 @@ func TestSwarmBudgetDefaults(t *testing.T) {
 	if cfg.Swarm.Budget.MaxFixRounds != 3 {
 		t.Errorf("MaxFixRounds default = %d, want 3", cfg.Swarm.Budget.MaxFixRounds)
 	}
-	if cfg.Swarm.Budget.MaxTotalTokens != 120000 {
-		t.Errorf("MaxTotalTokens default = %d, want 120000", cfg.Swarm.Budget.MaxTotalTokens)
+	if cfg.Swarm.Budget.MaxTotalTokens != 500000 {
+		t.Errorf("MaxTotalTokens default = %d, want 500000", cfg.Swarm.Budget.MaxTotalTokens)
 	}
 	if cfg.Swarm.Budget.ToolIters == nil {
 		t.Fatal("ToolIters default should be an empty map, got nil")
+	}
+}
+
+func TestMaxConcurrentSubagentsDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Agent.MaxConcurrentSubagents != 3 {
+		t.Fatalf("MaxConcurrentSubagents default = %d, want 3", cfg.Agent.MaxConcurrentSubagents)
+	}
+}
+
+func TestMaxConcurrentSubagentsMerge(t *testing.T) {
+	merged := Default()
+	file := configFile{Agent: &fileAgent{MaxConcurrentSubagents: strutil.Ptr(5)}}
+	merge(&merged, file)
+	if merged.Agent.MaxConcurrentSubagents != 5 {
+		t.Fatalf("merged MaxConcurrentSubagents = %d, want 5", merged.Agent.MaxConcurrentSubagents)
 	}
 }
 

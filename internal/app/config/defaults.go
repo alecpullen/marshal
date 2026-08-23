@@ -21,8 +21,9 @@ func Default() Config {
 			Default: "local_balanced",
 		},
 		Agent: AgentConfig{
-			ApprovalMode:        "default",
-			MaxTouchedFileBytes: 65536, // 64 KiB
+			ApprovalMode:           "default",
+			MaxTouchedFileBytes:    65536, // 64 KiB
+			MaxConcurrentSubagents: 3,
 			// Preserve the long-standing fixed +4096 Anthropic thinking
 			// headroom as the default margin. 0 would switch to the auto
 			// formula, changing behavior for existing setups.
@@ -106,7 +107,7 @@ func Default() Config {
 		Swarm: SwarmConfig{
 			Budget: SwarmBudgetConfig{
 				MaxFixRounds:   3,
-				MaxTotalTokens: 120000,
+				MaxTotalTokens: 500000,
 				ToolIters:      map[string]int{},
 			},
 		},

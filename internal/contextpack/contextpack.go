@@ -52,8 +52,10 @@ type FileSnippet struct {
 // contextpack, never needs to depend on internal/knowledge (the two
 // packages must not import each other — see the Milestone N design doc).
 type MemoryNote struct {
-	Kind    string
-	Content string
+	Kind       string
+	Content    string
+	Confidence string    // mirrors db confidence values; "stale" is dropped at render
+	UpdatedAt  time.Time // zero sorts oldest within a kind/confidence rung
 }
 
 // ScratchpadEntry is contextpack's own view of a scratchpad entry —

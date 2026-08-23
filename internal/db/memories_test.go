@@ -77,6 +77,95 @@ func TestGetMemoriesEmptyProject(t *testing.T) {
 	}
 }
 
+func TestSaveMemoryDeduplicatesByContentHash(t *testing.T) {
+	db := openMigratedTest(t)
+	projectID, err := db.GetOrCreateProject("/tmp/proj-dedup", "proj-dedup")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := db.CreateSession("sess-1", projectID, "", time.Unix(0, 0).UTC()); err != nil {
+		t.Fatalf("CreateSession sess-1: %v", err)
+	}
+	if err := db.CreateSession("sess-2", projectID, "", time.Unix(0, 0).UTC()); err != nil {
+		t.Fatalf("CreateSession sess-2: %v", err)
+	}
+	first := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if err := db.SaveMemory(projectID, "fact", "The  repo   uses SQLite.", "sess-1", first); err != nil {
+		t.Fatalf("first SaveMemory: %v", err)
+	}
+	// Whitespace/case variant of the same content must NOT insert a new row.
+	second := first.Add(time.Hour)
+	if err := db.SaveMemory(projectID, "fact", "the repo uses sqlite.", "sess-2", second); err != nil {
+		t.Fatalf("second SaveMemory: %v", err)
+	}
+	memories, err := db.GetMemories(projectID)
+	if err != nil {
+		t.Fatalf("GetMemories: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Fatalf("len(memories) = %d, want 1", len(memories))
+	}
+	m := memories[0]
+	if m.SourceSessionID != "sess-2" {
+		t.Errorf("SourceSessionID = %q, want sess-2 (refreshed)", m.SourceSessionID)
+	}
+	if !m.UpdatedAt.Equal(second) {
+		t.Errorf("UpdatedAt = %v, want %v (refreshed)", m.UpdatedAt, second)
+	}
+	if !m.CreatedAt.Equal(first) {
+		t.Errorf("CreatedAt = %v, want %v (unchanged)", m.CreatedAt, first)
+	}
+}
+
+func TestSaveMemoryDistinctContentStillInserts(t *testing.T) {
+	db := openMigratedTest(t)
+	projectID, err := db.GetOrCreateProject("/tmp/proj-distinct", "proj-distinct")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := db.CreateSession("sess", projectID, "", time.Unix(0, 0).UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now()
+	if err := db.SaveMemory(projectID, "fact", "Alpha.", "sess", now); err != nil {
+		t.Fatalf("SaveMemory alpha: %v", err)
+	}
+	if err := db.SaveMemory(projectID, "fact", "Beta.", "sess", now); err != nil {
+		t.Fatalf("SaveMemory beta: %v", err)
+	}
+	memories, err := db.GetMemories(projectID)
+	if err != nil {
+		t.Fatalf("GetMemories: %v", err)
+	}
+	if len(memories) != 2 {
+		t.Fatalf("len(memories) = %d, want 2", len(memories))
+	}
+}
+
+func TestMemoryContentHashNormalization(t *testing.T) {
+	a := MemoryContentHash("The  Repo\nuses\tSQLite.")
+	b := MemoryContentHash("the repo uses sqlite.")
+	if a != b {
+		t.Fatalf("hashes differ for normalized-equal content: %q vs %q", a, b)
+	}
+	if c := MemoryContentHash("different"); c == a {
+		t.Fatal("hashes equal for different content")
+	}
+}
+
+func openMigratedTest(t *testing.T) *DB {
+	t.Helper()
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	return db
+}
+
 func TestSetMemoryConfidenceTransitions(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

@@ -339,7 +339,7 @@ func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, 
 		if m.Confidence == db.MemoryConfidenceStale {
 			continue
 		}
-		notes = append(notes, contextpack.MemoryNote{Kind: m.Kind, Content: m.Content})
+		notes = append(notes, contextpack.MemoryNote{Kind: m.Kind, Content: m.Content, Confidence: m.Confidence, UpdatedAt: m.UpdatedAt})
 	}
 	return notes, nil
 }

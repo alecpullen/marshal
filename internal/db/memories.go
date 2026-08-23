@@ -1,8 +1,11 @@
 package db
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,6 +17,19 @@ const (
 	MemoryConfidenceStale     = "stale"
 )
 
+// NormalizeMemoryContent canonicalizes memory text for dedup: lowercase,
+// whitespace-collapsed, trimmed.
+func NormalizeMemoryContent(content string) string {
+	return strings.Join(strings.Fields(strings.ToLower(content)), " ")
+}
+
+// MemoryContentHash returns the SHA-256 hex digest of the normalized content.
+// Shared by SaveMemory dedup and the content_hash migration backfill.
+func MemoryContentHash(content string) string {
+	sum := sha256.Sum256([]byte(NormalizeMemoryContent(content)))
+	return hex.EncodeToString(sum[:])
+}
+
 type Memory struct {
 	ID              int64
 	Kind            string // "fact", "architecture", "decision"
@@ -24,13 +40,27 @@ type Memory struct {
 	UpdatedAt       time.Time
 }
 
-// SaveMemory inserts a new memory row with confidence "tentative".
+// SaveMemory inserts a new memory row with confidence "tentative". A row whose
+// normalized content matches an existing memory (same project, same
+// content_hash) is refreshed in place — updated_at and source_session_id move
+// forward, no new row — instead of duplicating.
 func (db *DB) SaveMemory(projectID int64, kind, content, sourceSessionID string, now time.Time) error {
 	nowStr := now.UTC().Format(time.RFC3339)
-	_, err := db.sqlDB.Exec(
-		`INSERT INTO memories (project_id, kind, content, confidence, source_session_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		projectID, kind, content, MemoryConfidenceTentative, sourceSessionID, nowStr, nowStr,
+	hash := MemoryContentHash(content)
+	res, err := db.sqlDB.Exec(
+		`UPDATE memories SET updated_at = ?, source_session_id = ? WHERE project_id = ? AND content_hash = ?`,
+		nowStr, sourceSessionID, projectID, hash,
+	)
+	if err != nil {
+		return fmt.Errorf("refresh memory: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return nil
+	}
+	_, err = db.sqlDB.Exec(
+		`INSERT INTO memories (project_id, kind, content, content_hash, confidence, source_session_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		projectID, kind, content, hash, MemoryConfidenceTentative, sourceSessionID, nowStr, nowStr,
 	)
 	if err != nil {
 		return fmt.Errorf("save memory: %w", err)

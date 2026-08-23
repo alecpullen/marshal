@@ -290,6 +290,56 @@ var migrations []func(*sql.Tx) error
 
 func init() {
 	migrations = append(migrations, migrateScratchpadEntries)
+	migrations = append(migrations, migrateMemoryContentHash)
+}
+
+// migrateMemoryContentHash (version 2) adds memories.content_hash, backfills
+// it from normalized content, drops older duplicate rows (keeping the lowest
+// id per project+hash), and enforces dedup with a partial unique index.
+func migrateMemoryContentHash(tx *sql.Tx) error {
+	var hasCol int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'content_hash'`).Scan(&hasCol); err != nil {
+		return err
+	}
+	if hasCol == 0 {
+		if _, err := tx.Exec(`ALTER TABLE memories ADD COLUMN content_hash TEXT`); err != nil {
+			return err
+		}
+	}
+	rows, err := tx.Query(`SELECT id, content FROM memories WHERE content_hash IS NULL`)
+	if err != nil {
+		return err
+	}
+	type memoryRow struct {
+		id      int64
+		content string
+	}
+	var pending []memoryRow
+	for rows.Next() {
+		var r memoryRow
+		if err := rows.Scan(&r.id, &r.content); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, r := range pending {
+		if _, err := tx.Exec(`UPDATE memories SET content_hash = ? WHERE id = ?`, MemoryContentHash(r.content), r.id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM memories WHERE content_hash IS NOT NULL AND id NOT IN (
+		SELECT MIN(id) FROM memories WHERE content_hash IS NOT NULL GROUP BY project_id, content_hash
+	)`); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_project_hash ON memories(project_id, content_hash) WHERE content_hash IS NOT NULL`)
+	return err
 }
 
 func migrateScratchpadEntries(tx *sql.Tx) error {

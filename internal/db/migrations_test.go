@@ -28,6 +28,91 @@ func TestMigrationToolAuditAddContentIdempotent(t *testing.T) {
 	tx.Commit()
 }
 
+func TestMigrationMemoryContentHashIdempotent(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("first Migrate failed: %v", err)
+	}
+
+	// Re-running the migration body must be a no-op, not an error.
+	tx, err := db.sqlDB.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := migrateMemoryContentHash(tx); err != nil {
+		tx.Rollback()
+		t.Fatalf("second migrateMemoryContentHash should be no-op, got: %v", err)
+	}
+	tx.Commit()
+}
+
+func TestMigrationMemoryContentHashBackfillsAndDedupes(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	// Create the base schema WITHOUT the migration (the content_hash column
+	// is only added by migrateMemoryContentHash). The schema constant
+	// contains the projects/memories CREATE TABLEs but not content_hash.
+	if _, err := db.sqlDB.Exec(schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	// Pre-migration rows: insert by hand with no content_hash, one duplicate.
+	// FK enforcement is ON, so create the referenced project and session
+	// rows first (source_session_id references agent_sessions).
+	if _, err := db.sqlDB.Exec(
+		`INSERT INTO projects (root_path, name, created_at, updated_at) VALUES ('/tmp/proj-mig', 'proj-mig', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := db.sqlDB.Exec(
+		`INSERT INTO agent_sessions (id, project_id, started_at) VALUES ('s', 1, '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	for _, content := range []string{"Alpha.", "alpha.", "Beta."} {
+		if _, err := db.sqlDB.Exec(
+			`INSERT INTO memories (project_id, kind, content, confidence, source_session_id, created_at, updated_at)
+			 VALUES (1, 'fact', ?, 'tentative', 's', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, content,
+		); err != nil {
+			t.Fatalf("insert memory %q: %v", content, err)
+		}
+	}
+
+	// Apply the memory content_hash migration body directly.
+	tx, err := db.sqlDB.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := migrateMemoryContentHash(tx); err != nil {
+		tx.Rollback()
+		t.Fatalf("migrateMemoryContentHash failed: %v", err)
+	}
+	tx.Commit()
+
+	var nulls int
+	if err := db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memories WHERE content_hash IS NULL`).Scan(&nulls); err != nil {
+		t.Fatalf("count nulls: %v", err)
+	}
+	if nulls != 0 {
+		t.Fatalf("content_hash NULL rows = %d, want 0", nulls)
+	}
+	var total int
+	if err := db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&total); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("rows after dedup = %d, want 2 (oldest Alpha kept)", total)
+	}
+}
+
 func TestMigrations(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

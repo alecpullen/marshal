@@ -3,6 +3,7 @@ package contextpack
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -177,7 +178,62 @@ func newPlanSection(plan []string) (Section, bool) {
 	}, true
 }
 
+// maxMemoryNotes bounds how many memory lines reach the pack; overflow is
+// dropped whole-entry, never truncated mid-line.
+const maxMemoryNotes = 20
+
+// Rank values mirror db memory kinds/confidences. contextpack must not import
+// internal/db (circular dependency), so the strings are literals here.
+func memoryKindRank(kind string) int {
+	switch kind {
+	case "architecture":
+		return 0
+	case "decision":
+		return 1
+	case "fact":
+		return 2
+	}
+	return 3
+}
+
+func memoryConfidenceRank(confidence string) int {
+	switch confidence {
+	case "confirmed":
+		return 0
+	case "tentative":
+		return 1
+	}
+	return 2
+}
+
+// rankMemories filters stale notes, orders by kind priority then confidence
+// then recency, and caps the result. Deterministic: sort is stable and the
+// comparators fully order distinct inputs by UpdatedAt.
+func rankMemories(memories []MemoryNote) []MemoryNote {
+	out := make([]MemoryNote, 0, len(memories))
+	for _, m := range memories {
+		if m.Confidence == "stale" {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if ki, kj := memoryKindRank(out[i].Kind), memoryKindRank(out[j].Kind); ki != kj {
+			return ki < kj
+		}
+		if ci, cj := memoryConfidenceRank(out[i].Confidence), memoryConfidenceRank(out[j].Confidence); ci != cj {
+			return ci < cj
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	if len(out) > maxMemoryNotes {
+		out = out[:maxMemoryNotes]
+	}
+	return out
+}
+
 func newMemorySection(memories []MemoryNote) (Section, bool) {
+	memories = rankMemories(memories)
 	var lines []string
 	for _, m := range memories {
 		content := strings.TrimSpace(m.Content)

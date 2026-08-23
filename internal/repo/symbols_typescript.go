@@ -16,7 +16,7 @@ func extractTSDeclaration(path string, node *sitter.Node, source []byte) []db.Sy
 	switch node.Type() {
 	case "function_declaration", "generator_function_declaration":
 		return []db.Symbol{funcSymbol(path, node, source, "function", "")}
-	case "class_declaration", "interface_declaration", "enum_declaration", "type_alias_declaration":
+	case "class_declaration", "abstract_class_declaration", "interface_declaration", "enum_declaration", "type_alias_declaration":
 		return append([]db.Symbol{funcSymbol(path, node, source, "type", "")}, tsClassMethods(path, node, source)...)
 	case "lexical_declaration":
 		return tsArrowFunctions(path, node, source)
@@ -33,11 +33,11 @@ func extractTSDeclaration(path string, node *sitter.Node, source []byte) []db.Sy
 	}
 }
 
-// tsClassMethods extracts method_definitions from a class_declaration body,
-// stamped with the class name as Receiver. (Interfaces and enums have no
-// method bodies worth indexing; their members are skipped.)
+// tsClassMethods extracts method_definitions from a class or abstract class
+// body, stamped with the class name as Receiver. (Interfaces and enums have
+// no method bodies worth indexing; their members are skipped.)
 func tsClassMethods(path string, node *sitter.Node, source []byte) []db.Symbol {
-	if node.Type() != "class_declaration" {
+	if node.Type() != "class_declaration" && node.Type() != "abstract_class_declaration" {
 		return nil
 	}
 	className := ""

@@ -38,6 +38,23 @@ func TestExtractSymbolsRust(t *testing.T) {
 	assertHasSymbol(t, got, db.Symbol{FilePath: "sample.rs", Kind: "import", Name: "std::io", Signature: "use std::io;", LineStart: 1})
 }
 
+func TestExtractSymbolsRustSkipsModContents(t *testing.T) {
+	// Items nested inside a `mod inner { … }` block are intentionally out of
+	// scope (only top-level declarations are walked). Pin that behavior so a
+	// future inlining of mod bodies is a deliberate change.
+	source := []byte("fn top() {}\nmod inner {\n    fn nested() {}\n}\n")
+	got, err := ExtractSymbols(context.Background(), "rust", "mod.rs", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "mod.rs", Kind: "function", Name: "top"})
+	for _, s := range got {
+		if s.Name == "nested" {
+			t.Fatalf("expected mod contents to be skipped, got symbol %+v", s)
+		}
+	}
+}
+
 func TestExtractSymbolsRustToleratesSyntaxError(t *testing.T) {
 	source := []byte("fn broken( {}\nfn valid() {}\n")
 	got, err := ExtractSymbols(context.Background(), "rust", "broken.rs", source)

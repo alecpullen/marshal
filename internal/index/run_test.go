@@ -115,6 +115,9 @@ func TestRunIndexesPythonAndTypeScriptSymbols(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "b.ts"), []byte("function add(a, b) { return a + b; }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "c.rs"), []byte("fn top() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	database := newTestDB(t)
 	pid := mustCreateProject(t, database, root)
 
@@ -126,7 +129,7 @@ func TestRunIndexesPythonAndTypeScriptSymbols(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSymbols: %v", err)
 	}
-	var pyOK, tsOK bool
+	var pyOK, tsOK, rustOK bool
 	for _, s := range syms {
 		if s.FilePath == "a.py" && s.Kind == "function" && s.Name == "top" && s.Source == "treesitter" {
 			pyOK = true
@@ -134,9 +137,12 @@ func TestRunIndexesPythonAndTypeScriptSymbols(t *testing.T) {
 		if s.FilePath == "b.ts" && s.Kind == "function" && s.Name == "add" && s.Source == "treesitter" {
 			tsOK = true
 		}
+		if s.FilePath == "c.rs" && s.Kind == "function" && s.Name == "top" && s.Source == "treesitter" {
+			rustOK = true
+		}
 	}
-	if !pyOK || !tsOK {
-		t.Fatalf("missing treesitter symbols (py=%v, ts=%v) in %+v", pyOK, tsOK, syms)
+	if !pyOK || !tsOK || !rustOK {
+		t.Fatalf("missing treesitter symbols (py=%v, ts=%v, rust=%v) in %+v", pyOK, tsOK, rustOK, syms)
 	}
 }
 

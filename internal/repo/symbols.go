@@ -71,8 +71,11 @@ func extractorFor(lang string) func(path string, node *sitter.Node, source []byt
 // ExtractSymbols parses source with the tree-sitter grammar for lang and
 // returns the functions, methods, types, and imports it finds. Unsupported
 // languages return nil, nil. Tree-sitter produces a partial tree around
-// syntax errors, so a malformed region of the file does not prevent
-// extraction of symbols from the rest of it.
+// syntax errors, so for most languages a malformed region of the file does
+// not prevent extraction of symbols from the rest of it. (TypeScript is the
+// exception: its vendored grammar swallows everything after a leading
+// malformed declaration into an ERROR node, so a broken top-level statement
+// hides later symbols.)
 func ExtractSymbols(ctx context.Context, lang, path string, source []byte) ([]db.Symbol, error) {
 	language := languageFor(lang, path)
 	extract := extractorFor(lang)

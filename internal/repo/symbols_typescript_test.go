@@ -35,6 +35,29 @@ func TestExtractSymbolsTypeScript(t *testing.T) {
 	assertHasSymbol(t, got, db.Symbol{FilePath: "sample.ts", Kind: "import", Name: "./foo", Signature: "import { foo } from './foo';", LineStart: 1})
 }
 
+func TestExtractSymbolsTypeScriptAbstractClass(t *testing.T) {
+	// The vendored TS grammar parses `abstract class` as an
+	// abstract_class_declaration (a distinct node type from
+	// class_declaration). Both the type and its methods must be indexed.
+	source := []byte("abstract class Abs { abstract m(): void; run(): number { return 1; } }\n")
+	got, err := ExtractSymbols(context.Background(), "typescript", "abstract.ts", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "abstract.ts", Kind: "type", Name: "Abs", Signature: "abstract class Abs", LineStart: 1})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "abstract.ts", Kind: "method", Name: "run", Receiver: "Abs", Signature: "run(): number", LineStart: 1})
+}
+
+func TestExtractSymbolsTypeScriptExportedAbstractClass(t *testing.T) {
+	source := []byte("export abstract class Abs { m(): void {} }\n")
+	got, err := ExtractSymbols(context.Background(), "typescript", "abstract.ts", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "abstract.ts", Kind: "type", Name: "Abs", Signature: "abstract class Abs", LineStart: 1})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "abstract.ts", Kind: "method", Name: "m", Receiver: "Abs", Signature: "m(): void", LineStart: 1})
+}
+
 func TestExtractSymbolsJavaScript(t *testing.T) {
 	source := []byte("import { x } from './x';\nfunction top(a) { return a; }\nconst arrow = (a) => a * 2;\nclass C { m() { return 1; } }\n")
 	got, err := ExtractSymbols(context.Background(), "javascript", "sample.js", source)

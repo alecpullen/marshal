@@ -109,9 +109,10 @@ func lspCheck(cfg config.Config) Check {
 }
 
 func watcherCheck(cfg config.Config) Check {
-	// The watcher auto-enables once embeddings are configured (semantic
-	// search needs the index to stay fresh), or when explicitly enabled.
-	if config.WatchEnabled(cfg.Indexing.Watch, embeddingsConfigured(cfg)) || embeddingsConfigured(cfg) {
+	// Match the runtime rule exactly: an explicit watch value wins; otherwise
+	// the watcher stays off even when embeddings are configured, so indexing
+	// never auto-starts in the background. See config.WatchEnabled.
+	if config.WatchEnabled(cfg.Indexing.Watch, embeddingsConfigured(cfg)) {
 		return Check{Name: "Watcher", Status: "ok", Detail: "index refreshes on file changes"}
 	}
 	return Check{Name: "Watcher", Status: "warn", Detail: "off — index refreshes only at startup; set indexing.watch = true"}

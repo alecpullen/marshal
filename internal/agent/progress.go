@@ -197,10 +197,14 @@ func looksLikeVerificationCommand(args string) bool {
 }
 
 // unverifiedMutation reports the last successful mutating call and whether
-// it lacks any later successful verification call. Verification means
-// test.run, diagnostics.check, or a test-like shell.run. Only successful
-// calls count: a failed mutation changes nothing, and a failed verification
-// verifies nothing.
+// it lacks any later verification call. Verification means test.run,
+// diagnostics.check, or a test-like shell.run. Only successful calls count:
+// a failed mutation changes nothing. Note that "verification" here means the
+// model ran a verification command, not that the command passed — test.run
+// and shell.run report a non-zero exit as a successful tool result (exit code
+// in the content, nil error), so a red test still counts as a verification
+// attempt. The finalize gate deliberately does not loop until tests pass; it
+// nudges once and then flags the answer as unverified.
 func (t *progressTracker) unverifiedMutation() (callEntry, bool) {
 	lastMutationIdx := -1
 	lastVerifyIdx := -1

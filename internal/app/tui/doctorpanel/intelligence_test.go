@@ -94,9 +94,18 @@ func TestComputeIntelligenceEmbeddings(t *testing.T) {
 		t.Fatalf("Embeddings = %+v, want ok after an embedding landed", c)
 	}
 
-	// Watcher auto-enables once embeddings are configured.
+	// Embeddings alone do NOT enable the watcher (matches config.WatchEnabled:
+	// an explicit watch value wins, otherwise the watcher stays off).
+	if c := checkByName(checks, "Watcher"); c.Status != "warn" {
+		t.Fatalf("Watcher = %+v, want warn (embeddings alone do not enable it)", c)
+	}
+
+	// An explicit watch value enables it.
+	on := true
+	cfg.Indexing.Watch = &on
+	checks = ComputeIntelligence(cfg, database, projectID)
 	if c := checkByName(checks, "Watcher"); c.Status != "ok" {
-		t.Fatalf("Watcher = %+v, want ok (auto-enabled with embeddings)", c)
+		t.Fatalf("Watcher = %+v, want ok (explicit watch=true)", c)
 	}
 }
 

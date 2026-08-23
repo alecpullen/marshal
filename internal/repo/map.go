@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"marshal/internal/db"
+	"marshal/internal/strutil"
 )
 
 // RenderDirectoryMap renders a simple indented directory tree from a file
@@ -32,10 +33,11 @@ func RenderDirectoryMap(files []db.FileIndex, symbols []db.Symbol, maxFiles int)
 	}
 
 	bySymbolFile := groupExportedSymbols(symbols)
+	bySummary := summariesByFile(files)
 
 	var b strings.Builder
 	var fileCount int
-	renderNode(&b, tree, "", &fileCount, maxFiles, bySymbolFile)
+	renderNode(&b, tree, "", &fileCount, maxFiles, bySymbolFile, bySummary)
 
 	if fileCount > maxFiles {
 		fmt.Fprintf(&b, "\n... (%d more files)\n", fileCount-maxFiles)
@@ -65,7 +67,7 @@ func insertPath(node *dirNode, parts []string, fullPath string) {
 	insertPath(child, parts[1:], fullPath)
 }
 
-func renderNode(b *strings.Builder, node *dirNode, prefix string, fileCount *int, maxFiles int, bySymbolFile map[string][]db.Symbol) {
+func renderNode(b *strings.Builder, node *dirNode, prefix string, fileCount *int, maxFiles int, bySymbolFile map[string][]db.Symbol, bySummary map[string]string) {
 	dirs := make([]string, 0, len(node.children))
 	for name := range node.children {
 		dirs = append(dirs, name)
@@ -73,19 +75,42 @@ func renderNode(b *strings.Builder, node *dirNode, prefix string, fileCount *int
 	sort.Strings(dirs)
 	for _, name := range dirs {
 		fmt.Fprintf(b, "%s%s/\n", prefix, name)
-		renderNode(b, node.children[name], prefix+"  ", fileCount, maxFiles, bySymbolFile)
+		renderNode(b, node.children[name], prefix+"  ", fileCount, maxFiles, bySymbolFile, bySummary)
 	}
 
 	sort.Strings(node.files)
 	for _, fullPath := range node.files {
 		if *fileCount < maxFiles {
-			fmt.Fprintf(b, "%s%s%s\n", prefix, filepath.Base(fullPath), exportedSymbolSuffix(fullPath, bySymbolFile))
+			fmt.Fprintf(b, "%s%s%s%s\n", prefix, filepath.Base(fullPath), exportedSymbolSuffix(fullPath, bySymbolFile), summarySuffix(fullPath, bySummary))
 		}
 		// fileCount counts every file (including the ones we skip because we
 		// hit maxFiles), so that the truncation note at the bottom is exact.
 		// Directories are intentionally not counted.
 		*fileCount++
 	}
+}
+
+// summaryMaxChars bounds the per-file summary suffix so the map stays compact.
+const summaryMaxChars = 80
+
+// summariesByFile indexes non-empty, whitespace-collapsed file summaries by path.
+func summariesByFile(files []db.FileIndex) map[string]string {
+	out := map[string]string{}
+	for _, f := range files {
+		if s := strings.Join(strings.Fields(f.Summary), " "); s != "" {
+			out[f.Path] = s
+		}
+	}
+	return out
+}
+
+// summarySuffix renders " — <summary>" truncated to summaryMaxChars, or "".
+func summarySuffix(path string, bySummary map[string]string) string {
+	s := bySummary[path]
+	if s == "" {
+		return ""
+	}
+	return " — " + strutil.Truncate(s, summaryMaxChars, true)
 }
 
 // groupExportedSymbols indexes symbols by file path, keeping only the

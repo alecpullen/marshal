@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -29,12 +30,12 @@ func TestExecutionContextPaths(t *testing.T) {
 
 func TestRegistryFactoryScopeFull(t *testing.T) {
 	// This test verifies the scope filtering logic using a mock factory.
-	factory := func(ctx ExecutionContext, scope RegistryScope) (*registry.Registry, error) {
+	factory := func(ctx ExecutionContext, scope RegistryScope, _ *session.State) (*registry.Registry, error) {
 		reg := registry.New()
 		// In real wiring, tools are registered here.
 		return reg, nil
 	}
-	reg, err := factory(ExecutionContext{}, ScopeFull)
+	reg, err := factory(ExecutionContext{}, ScopeFull, nil)
 	if err != nil {
 		t.Fatalf("factory ScopeFull: %v", err)
 	}
@@ -44,11 +45,11 @@ func TestRegistryFactoryScopeFull(t *testing.T) {
 }
 
 func TestRegistryFactoryScopeReadOnly(t *testing.T) {
-	factory := func(ctx ExecutionContext, scope RegistryScope) (*registry.Registry, error) {
+	factory := func(ctx ExecutionContext, scope RegistryScope, _ *session.State) (*registry.Registry, error) {
 		reg := registry.New()
 		return reg, nil
 	}
-	reg, err := factory(ExecutionContext{}, ScopeReadOnly)
+	reg, err := factory(ExecutionContext{}, ScopeReadOnly, nil)
 	if err != nil {
 		t.Fatalf("factory ScopeReadOnly: %v", err)
 	}

@@ -138,13 +138,12 @@ func TestPipelineRunExecResolvesArtifactsUnderRunRoot(t *testing.T) {
 		ArtifactRoot:  artifactRoot,
 		ArtifactAlias: "@run",
 	}
-	regFactory := func(ctx ExecutionContext, scope RegistryScope) (*registry.Registry, error) {
-		childState := session.New(config.Default(), ctx.WorkspaceRoot, time.Now(), session.Persistence{})
+	regFactory := func(ctx ExecutionContext, scope RegistryScope, runnerState *session.State) (*registry.Registry, error) {
 		childReg := registry.New()
 		if err := native.RegisterAll(childReg, native.Options{
 			WorkspaceRoot: ctx.WorkspaceRoot,
 			CommandRunner: &nativeCmdRunner{},
-			SessionState:  childState,
+			SessionState:  runnerState,
 			Config:        config.Default(),
 			NamedRoots:    ctx.NamedRoots(),
 		}); err != nil {
@@ -180,6 +179,51 @@ func TestPipelineRunExecResolvesArtifactsUnderRunRoot(t *testing.T) {
 	// And it must NOT be under the main checkout.
 	if _, err := os.Stat(filepath.Join(root, "task-1-brief.md")); err == nil {
 		t.Error("artifact leaked into the main checkout")
+	}
+}
+
+// The registry built for a dispatch must bind todo.write to the runner's
+// own session — the state the summary card and drill-down show — not an
+// orphaned per-registry state nothing renders.
+func TestPipelineRunExecTodosLandOnRunnerState(t *testing.T) {
+	root := t.TempDir()
+	execCtx := ExecutionContext{RepoRoot: root, WorkspaceRoot: root}
+	regFactory := func(ctx ExecutionContext, scope RegistryScope, runnerState *session.State) (*registry.Registry, error) {
+		childReg := registry.New()
+		if err := native.RegisterAll(childReg, native.Options{
+			WorkspaceRoot: ctx.WorkspaceRoot,
+			CommandRunner: &nativeCmdRunner{},
+			SessionState:  runnerState,
+			Config:        config.Default(),
+		}); err != nil {
+			return nil, err
+		}
+		return childReg, nil
+	}
+	var runnerState *session.State
+	d := Dispatcher{
+		Factory: func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+			p := &agenttest.ScriptedProvider{Responses: []string{
+				`{"rationale":"track work","action":{"type":"tool_call","tool":"todo.write","args":{"todos":[{"content":"write brief","status":"in_progress"}]}}}`,
+				`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
+			}}
+			pol := policy.NewEngine(&config.Config{}, nil)
+			pol.SetApprovalMode(policy.ModeAuto)
+			runnerState = session.New(config.Default(), execCtx.WorkspaceRoot, time.Now(), session.Persistence{})
+			runner := agent.NewRunner(p, registry.New(), pol, runnerState, "test-model")
+			runner.Role = role
+			return runner, nil
+		},
+		ExecCtx:         execCtx,
+		RegistryFactory: regFactory,
+	}
+
+	if _, err := d.runExec(context.Background(), agent.RoleImplementer, swarm.ScopeFull, "impl", "do the thing"); err != nil {
+		t.Fatalf("runExec: %v", err)
+	}
+	todos := runnerState.Todos()
+	if len(todos) != 1 || todos[0].Content != "write brief" {
+		t.Fatalf("runner state todos = %+v, want the todo.write item visible on the runner's session", todos)
 	}
 }
 

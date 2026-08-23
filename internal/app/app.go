@@ -1147,18 +1147,18 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 }
 
 // makePipelineRegistryFactory returns a RegistryFactory that builds a fresh
-// tool registry bound to a per-dispatch execution context. Each dispatch
-// creates its own child session and native toolset so handlers close over
-// the correct worktree root and artifact aliases rather than the parent
-// session's project root. The returned registry is then filtered by scope.
+// tool registry bound to a per-dispatch execution context. The dispatcher
+// passes the runner's own child session so stateful tools (todo.write,
+// scratchpad) land where the drill-down card renders; the native toolset
+// still closes over the per-dispatch worktree root and artifact aliases.
+// The returned registry is then filtered by scope.
 //
 // ScopeFallback narrows file.write_patch to the controller-supplied
 // allowlist (set on Dispatcher.FallbackAllowedFiles immediately before
 // each fallback dispatch) so the marshal.agent fallback cannot modify
 // parts of the worktree outside its declared scope.
 func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry) pipeline.RegistryFactory {
-	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope) (*registry.Registry, error) {
-		childState := session.New(cfg, ctx.WorkspaceRoot, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1))
+	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope, childState *session.State) (*registry.Registry, error) {
 		childReg := registry.New()
 		nativeOpts := native.Options{
 			WorkspaceRoot:  ctx.WorkspaceRoot,
@@ -1380,6 +1380,11 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			caps = childProvider.Capabilities(context.Background())
 		}
 		decoding := resolveActionDecoding(toolCalling, caps)
+		// Rebind todo.write to the child's own session: a subagent's task
+		// list must not overwrite the parent's visible list.
+		if err := roReg.Replace(native.TodoWriteTool(childState)); err != nil {
+			parentState.Logger().Warn("subagent: todo rebind failed; child shares parent todos", "error", err)
+		}
 		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
 		child.Role = role
 		child.MaxToolIterations = iters

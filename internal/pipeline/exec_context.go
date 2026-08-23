@@ -3,6 +3,7 @@ package pipeline
 import (
 	"path/filepath"
 
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -32,10 +33,12 @@ func (c ExecutionContext) NamedRoots() map[string]string {
 }
 
 // RegistryFactory builds a fresh tool registry bound to the given execution
-// context and session scope. Each dispatch creates its own registry so
-// native tool handlers close over the correct workspace root and artifact
-// aliases rather than the parent session's project root.
-type RegistryFactory func(ctx ExecutionContext, scope RegistryScope) (*registry.Registry, error)
+// context, session scope, and the runner's own session state. Each dispatch
+// creates its own registry so native tool handlers close over the correct
+// workspace root and artifact aliases rather than the parent session's
+// project root; stateful tools (todo.write, scratchpad.*) land on the
+// runner's session, which is what the drill-down card renders.
+type RegistryFactory func(ctx ExecutionContext, scope RegistryScope, state *session.State) (*registry.Registry, error)
 
 // RegistryScope controls which tools are available to the built registry,
 // mirroring swarm.RegistryScope for the pipeline's simpler read-only /

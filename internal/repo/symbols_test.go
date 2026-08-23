@@ -14,7 +14,7 @@ func NewScanner(root string) *Scanner {
 	return &Scanner{root: root}
 }
 `)
-	got, err := ExtractSymbols(context.Background(), "scanner.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "scanner.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func (s Scanner) Value() int {
 	return 0
 }
 `)
-	got, err := ExtractSymbols(context.Background(), "scanner.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "scanner.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -74,7 +74,7 @@ func Valid() int {
 	return 1
 }
 `)
-	got, err := ExtractSymbols(context.Background(), "broken.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "broken.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -94,7 +94,7 @@ type Matcher interface {
 
 type ID int
 `)
-	got, err := ExtractSymbols(context.Background(), "types.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "types.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -111,7 +111,7 @@ type (
 	Bar string
 )
 `)
-	got, err := ExtractSymbols(context.Background(), "types.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "types.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -126,7 +126,7 @@ type Alias = int
 
 type Another = string
 `)
-	got, err := ExtractSymbols(context.Background(), "aliases.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "aliases.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -142,7 +142,7 @@ type (
 	AliasType = string
 )
 `)
-	got, err := ExtractSymbols(context.Background(), "types.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "types.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestExtractSymbolsImportsSingle(t *testing.T) {
 
 import "fmt"
 `)
-	got, err := ExtractSymbols(context.Background(), "imports.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "imports.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -170,12 +170,27 @@ import (
 	bar "example.com/bar"
 )
 `)
-	got, err := ExtractSymbols(context.Background(), "imports.go", source)
+	got, err := ExtractSymbols(context.Background(), "go", "imports.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
 	assertHasSymbol(t, got, db.Symbol{FilePath: "imports.go", Kind: "import", Name: "fmt", Signature: `"fmt"`, LineStart: 4, LineEnd: 4})
 	assertHasSymbol(t, got, db.Symbol{FilePath: "imports.go", Kind: "import", Name: "example.com/bar", Signature: `bar "example.com/bar"`, LineStart: 5, LineEnd: 5})
+}
+
+func TestExtractSymbolsUnsupportedLanguageReturnsNil(t *testing.T) {
+	got, err := ExtractSymbols(context.Background(), "ruby", "x.rb", []byte("def foo; end\n"))
+	if err != nil || got != nil {
+		t.Fatalf("ExtractSymbols(ruby) = %v, %v; want nil, nil", got, err)
+	}
+	if SupportedLanguage("ruby") {
+		t.Fatal("SupportedLanguage(ruby) = true, want false")
+	}
+	for _, lang := range []string{"go", "javascript", "typescript", "python", "rust"} {
+		if !SupportedLanguage(lang) {
+			t.Fatalf("SupportedLanguage(%q) = false, want true", lang)
+		}
+	}
 }
 
 // assertHasSymbol fails the test unless got contains a symbol matching

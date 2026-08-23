@@ -74,10 +74,10 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 				continue
 			}
 		}
-		if sf.Language != "go" {
+		if !repo.SupportedLanguage(sf.Language) {
 			continue
 		}
-		fileSyms, extractErr := repo.ExtractSymbols(ctx, sf.Path, sf.Content)
+		fileSyms, extractErr := repo.ExtractSymbols(ctx, sf.Language, sf.Path, sf.Content)
 		if extractErr != nil {
 			rep.Warnings = append(rep.Warnings, sf.Path+": parse error")
 			continue

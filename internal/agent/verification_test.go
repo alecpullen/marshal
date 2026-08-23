@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestUnverifiedMutation_NoHistory(t *testing.T) {
 	tr := newProgressTracker()
@@ -51,9 +54,9 @@ func TestUnverifiedMutation_TestLikeShellCountsAsVerification(t *testing.T) {
 
 func TestUnverifiedMutation_NonTestShellIsMutation(t *testing.T) {
 	tr := newProgressTracker()
-	tr.record("shell.run", `{"command":"mkdir scratch"}`, hashToolResult(""), true)
+	tr.record("shell.run", `{"command":"rm -rf build"}`, hashToolResult(""), true)
 	if _, fire := tr.unverifiedMutation(); !fire {
-		t.Fatal("non-test shell.run is a mutation and must fire the gate")
+		t.Fatal("non-test, non-housekeeping shell.run is a mutation and must fire the gate")
 	}
 }
 
@@ -115,5 +118,74 @@ func TestUnverifiedMutation_ReadsNeverFire(t *testing.T) {
 	tr.record("repo.search", `{"query":"foo"}`, hashToolResult("y"), true)
 	if _, fire := tr.unverifiedMutation(); fire {
 		t.Fatal("read-only history must not fire the gate")
+	}
+}
+
+func TestLooksLikeHousekeepingCommand(t *testing.T) {
+	housekeeping := []string{
+		"git add .", "git commit -m msg", "git push origin main", "git fetch",
+		"git pull --rebase", "git tag v1.2.3",
+		"git status", "git log --oneline", "git show HEAD", "git diff --stat", "git branch -a",
+		"mkdir scratch", "cp a.go b.go", "mv a.go sub/", "touch x", "chmod +x run.sh", "ln -s a b",
+		"gofmt -w .", "go mod tidy", "go mod download",
+		"npm install", "npm ci", "pnpm install", "pnpm add lodash",
+		"yarn install", "yarn add react", "pip install requests",
+	}
+	for _, cmd := range housekeeping {
+		if !looksLikeHousekeepingCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
+			t.Errorf("%q must be housekeeping", cmd)
+		}
+	}
+	// Working-tree-changing and verification commands are NOT housekeeping.
+	notHousekeeping := []string{
+		"rm -rf build", "git checkout main", "git switch feature", "git restore .",
+		"go test ./...", "go generate ./...", "python codegen.py",
+	}
+	for _, cmd := range notHousekeeping {
+		if looksLikeHousekeepingCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
+			t.Errorf("%q must not be housekeeping", cmd)
+		}
+	}
+	// Only the command field is matched; empty/malformed args are not housekeeping.
+	if looksLikeHousekeepingCommand(`{"note":"git commit later"}`) {
+		t.Error("a non-command field mentioning a housekeeping command must not count")
+	}
+	if looksLikeHousekeepingCommand("") || looksLikeHousekeepingCommand("not json") {
+		t.Error("empty or malformed args must not be housekeeping")
+	}
+}
+
+func TestUnverifiedMutation_HousekeepingDoesNotArmOrSatisfy(t *testing.T) {
+	// Housekeeping alone never arms the gate.
+	tr := newProgressTracker()
+	tr.record("shell.run", `{"command":"mkdir scratch"}`, hashToolResult(""), true)
+	if _, fire := tr.unverifiedMutation(); fire {
+		t.Fatal("housekeeping shell.run must not arm the gate")
+	}
+	// Edit → verify → commit is clean: housekeeping after verification does
+	// not re-arm.
+	tr2 := newProgressTracker()
+	tr2.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
+	tr2.record("test.run", `{"command":"go test ./..."}`, hashToolResult("ok"), true)
+	tr2.record("shell.run", `{"command":"git commit -m done"}`, hashToolResult(""), true)
+	if _, fire := tr2.unverifiedMutation(); fire {
+		t.Fatal("git commit after a verification must not re-arm the gate")
+	}
+	// Housekeeping does not satisfy the gate for an earlier mutation.
+	tr3 := newProgressTracker()
+	tr3.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
+	tr3.record("shell.run", `{"command":"git commit -m done"}`, hashToolResult(""), true)
+	if _, fire := tr3.unverifiedMutation(); !fire {
+		t.Fatal("git commit is not a verification; the earlier mutation must still fire")
+	}
+}
+
+func TestUnverifiedMutation_TreeChangingCommandsStillArm(t *testing.T) {
+	for _, cmd := range []string{"rm -rf build", "git checkout main", "git switch feature", "git restore ."} {
+		tr := newProgressTracker()
+		tr.record("shell.run", fmt.Sprintf(`{"command":%q}`, cmd), hashToolResult(""), true)
+		if _, fire := tr.unverifiedMutation(); !fire {
+			t.Fatalf("%q changes working-tree content and must arm the gate", cmd)
+		}
 	}
 }

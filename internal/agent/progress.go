@@ -153,28 +153,6 @@ func (t *progressTracker) assess() assessment {
 	return assessProgressing
 }
 
-// lastSuccessfulMutation reports whether the most recent recorded call was a
-// successful mutating call (a verification call is not a mutation). Used to
-// re-arm the verification nudge: once the model acts again after being
-// nudged, a fresh mutation deserves a fresh nudge rather than a silently
-// flagged final answer.
-func (t *progressTracker) lastSuccessfulMutation() bool {
-	if len(t.history) == 0 {
-		return false
-	}
-	e := t.history[len(t.history)-1]
-	if e.name == idleEntryName || !e.ok {
-		return false
-	}
-	if e.name == "test.run" || e.name == "diagnostics.check" {
-		return false
-	}
-	if e.name == "shell.run" && looksLikeVerificationCommand(e.args) {
-		return false
-	}
-	return mutating(categorize(e.name))
-}
-
 // repeatReminder returns escalating guidance to append to a repeated call's
 // tool result. Putting the reminder in the result (not a separate system
 // message) keeps it adjacent to the evidence the model is ignoring.
@@ -228,6 +206,40 @@ func looksLikeVerificationCommand(args string) bool {
 	return false
 }
 
+// housekeepingCommandPatterns match shell.run command payloads that change
+// no code behavior: VCS bookkeeping and read-only queries, file
+// housekeeping, formatters, and package installs. They must neither arm nor
+// satisfy the verification gate. Deliberately conservative: commands that
+// alter working-tree CONTENT (rm, git checkout/switch/restore) are not here
+// and still arm the gate.
+var housekeepingCommandPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bgit\s+(add|commit|tag|push|fetch|pull|status|log|show|diff|branch)\b`),
+	regexp.MustCompile(`\b(mkdir|cp|mv|touch|chmod|ln)\b`),
+	regexp.MustCompile(`\bgofmt\b`),
+	regexp.MustCompile(`\bgo\s+mod\s+(tidy|download|vendor)\b`),
+	regexp.MustCompile(`\bnpm\s+(install|ci)\b`),
+	regexp.MustCompile(`\b(pnpm|yarn)\s+(install|add)\b`),
+	regexp.MustCompile(`\bpip\s+install\b`),
+}
+
+// looksLikeHousekeepingCommand reports whether a shell.run args payload is
+// a housekeeping command. Like looksLikeVerificationCommand, only the
+// "command" field is matched.
+func looksLikeHousekeepingCommand(args string) bool {
+	var a struct {
+		Command string `json:"command"`
+	}
+	if len(args) == 0 || json.Unmarshal([]byte(args), &a) != nil {
+		return false
+	}
+	for _, p := range housekeepingCommandPatterns {
+		if p.MatchString(a.Command) {
+			return true
+		}
+	}
+	return false
+}
+
 // unverifiedMutation reports the last successful mutating call and whether
 // it lacks any later verification call. Verification means test.run,
 // diagnostics.check, or a test-like shell.run. Only a SUCCESSFUL mutation
@@ -255,6 +267,11 @@ func (t *progressTracker) unverifiedMutation() (callEntry, bool) {
 			// passed (see the comment above): ok is intentionally not checked
 			// here.
 			lastVerifyIdx = i
+			continue
+		}
+		if e.name == "shell.run" && looksLikeHousekeepingCommand(e.args) {
+			// Housekeeping (git commit, mkdir, installs) changes no code
+			// behavior: it neither arms the gate nor satisfies it.
 			continue
 		}
 		if e.ok && mutating(categorize(e.name)) {

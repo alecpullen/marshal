@@ -9,11 +9,9 @@ import (
 	"marshal/internal/llm/schema"
 )
 
-// A Question-class task is still subject to the verification gate: if it
-// mutates and then refuses to run a verification, its final answer must be
-// salvaged (flagged unverified), not accepted as a trusted completion. The
-// salvage condition is `|| needsVerification`, which is class-independent.
-func TestNativeQuestionTaskWithUnverifiedMutationIsSalvaged(t *testing.T) {
+// A Question-class task that mutates and then declines to verify gets one
+// nudge; its second final is accepted as a normal completion (no salvage).
+func TestNativeQuestionTaskWithUnverifiedMutationIsAcceptedAfterNudge(t *testing.T) {
 	state := newTestState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Answer.", "Still the answer."},
@@ -34,16 +32,17 @@ func TestNativeQuestionTaskWithUnverifiedMutationIsSalvaged(t *testing.T) {
 	if task.Summary != "Still the answer." {
 		t.Fatalf("Summary = %q, want the third response", task.Summary)
 	}
-	if task.SalvagedReason != string(reasonUnverified) {
-		t.Fatalf("SalvagedReason = %q, want %q (mutating question must be flagged unverified)", task.SalvagedReason, reasonUnverified)
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty (unverified-after-nudge is accepted, not salvaged)", task.SalvagedReason)
 	}
 	if !transcriptContains(state, "have not verified") {
 		t.Fatal("expected a verification-nudge system message in the transcript")
 	}
 }
 
-// Same guarantee on the JSON-envelope path.
-func TestJSONQuestionFinalWithUnverifiedMutationIsSalvaged(t *testing.T) {
+// A Question-class task that mutates and then declines to verify gets one
+// nudge; its second final is accepted as a normal completion (no salvage).
+func TestJSONQuestionFinalWithUnverifiedMutationIsAcceptedAfterNudge(t *testing.T) {
 	state := newTestState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
@@ -62,8 +61,8 @@ func TestJSONQuestionFinalWithUnverifiedMutationIsSalvaged(t *testing.T) {
 	if task.Summary != "Still the answer." {
 		t.Fatalf("Summary = %q", task.Summary)
 	}
-	if task.SalvagedReason != string(reasonUnverified) {
-		t.Fatalf("SalvagedReason = %q, want %q", task.SalvagedReason, reasonUnverified)
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty (unverified-after-nudge is accepted, not salvaged)", task.SalvagedReason)
 	}
 	if !transcriptContains(state, "have not verified") {
 		t.Fatal("expected a verification-nudge system message in the transcript")

@@ -39,17 +39,23 @@ var elisionLines = map[string]bool{
 // looksLikeUnifiedDiff reports whether the proposal should be parsed as a
 // unified diff: it contains a full @@ hunk header, a "diff --git" section
 // opener (which carries rename-only diffs that have no hunks), or a ---/+++
-// header pair. The header-pair shape is specific enough that a search/replace
-// proposal only misfires when the searched content itself holds a consecutive
-// "--- …"/"+++ …" pair (e.g. patching a file that documents a diff) — an
-// accepted risk, the same class as a bare "@@ -1,2 +1,2 @@" line. Routing on
-// the pair keeps a header-only proposal (no hunks) reaching the diff parser,
-// which reports the "no hunks" teaching error rather than a misleading
-// "no SEARCH/REPLACE blocks" one.
+// header pair. Only diff markers that appear BEFORE any SEARCH/REPLACE
+// marker (File:, <<<<<<< SEARCH) count — a search/replace proposal starts
+// with one of those, so its searched content can never trigger routing even
+// if it contains diff-looking lines (e.g. patching a file that documents a
+// diff). Routing on the header pair keeps a header-only proposal (no hunks)
+// reaching the diff parser, which reports the "no hunks" teaching error
+// rather than a misleading "no SEARCH/REPLACE blocks" one.
 func looksLikeUnifiedDiff(proposal string) bool {
 	lines := strings.Split(strings.ReplaceAll(proposal, "\r\n", "\n"), "\n")
 	for i, line := range lines {
-		if hunkHeaderRe.MatchString(strings.TrimSpace(line)) {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "File:") || searchMarkerRe.MatchString(trimmed) {
+			// A SEARCH/REPLACE block has begun; anything after this is
+			// content, not a diff header.
+			return false
+		}
+		if hunkHeaderRe.MatchString(trimmed) {
 			return true
 		}
 		if strings.HasPrefix(line, "diff --git ") {
@@ -195,6 +201,10 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 			case line == "":
 				// git emits a single space for an empty context line;
 				// models often emit a truly empty line instead. Heal it.
+				// A healed blank is a context line, so it consumes one old
+				// and one new line from the hunk's declared counts.
+				oldRemaining--
+				newRemaining--
 				searchBuf = append(searchBuf, "")
 				replaceBuf = append(replaceBuf, "")
 				continue
@@ -204,21 +214,23 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 				searchBuf, replaceBuf = nil, nil
 				oldRemaining, newRemaining = parseHunkCounts(trimmed)
 				continue
-			case oldRemaining == 0 && newRemaining == 0 && strings.HasPrefix(line, "diff --git "):
+			case oldRemaining <= 0 && newRemaining <= 0 && strings.HasPrefix(line, "diff --git "):
 				// Next file section — fall out of the switch into header
 				// handling below, which commits the finished file.
 				commitHunk()
-			case oldRemaining == 0 && newRemaining == 0 &&
+			case oldRemaining <= 0 && newRemaining <= 0 &&
 				strings.HasPrefix(line, "--- ") && strings.HasPrefix(next, "+++ "):
 				// Header pair for the next file — fall out of the switch
 				// into header handling below.
 				commitHunk()
-			case oldRemaining == 0 && newRemaining == 0 &&
+			case oldRemaining <= 0 && newRemaining <= 0 &&
 				strings.HasPrefix(line, "+++ ") && hunkHeaderRe.MatchString(strings.TrimSpace(next)):
 				// New file section with the --- line omitted. Only fires
-				// once the current hunk is complete, so an added line like
-				// "++ b/foo" (rendered "+++ b/foo") inside a hunk is never
-				// mistaken for a header.
+				// once the current hunk's declared counts are exhausted, so
+				// an added line like "++ b/foo" (rendered "+++ b/foo")
+				// inside a hunk is never mistaken for a header. <= 0 (not
+				// == 0) tolerates models that over-emit body lines beyond
+				// the @@ header's counts.
 				commitHunk()
 			default:
 				if err := hunkLine(line, trimmed); err != nil {

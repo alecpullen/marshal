@@ -303,6 +303,37 @@ func TestParseUnifiedDiffAddedPathLikeLineAtHunkEnd(t *testing.T) {
 	}
 }
 
+func TestParseUnifiedDiffBlankLineThenHeader(t *testing.T) {
+	// A healed blank context line must consume its old/new counts, so a real
+	// ---/+++ header pair for the next file is not swallowed as hunk content
+	// (regression: the second file's patch was silently dropped).
+	proposal := "--- a/x.go\n" +
+		"+++ b/x.go\n" +
+		"@@ -1,2 +1,2 @@\n" +
+		" ctx\n" +
+		"\n" +
+		"-old\n" +
+		"+new\n" +
+		"--- a/y.go\n" +
+		"+++ b/y.go\n" +
+		"@@ -1,1 +1,1 @@\n" +
+		"-alpha\n" +
+		"+ALPHA\n"
+	res, err := ParseRepairing(proposal)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 2 {
+		t.Fatalf("patches = %d, want 2 (x.go + y.go)", len(res.Patches))
+	}
+	if res.Patches[0].Path != "x.go" || res.Patches[1].Path != "y.go" {
+		t.Fatalf("paths = %q, %q", res.Patches[0].Path, res.Patches[1].Path)
+	}
+	if res.Patches[0].Chunks[0].Search != "ctx\n\nold" {
+		t.Fatalf("x.go search = %q, want the blank line kept as context", res.Patches[0].Chunks[0].Search)
+	}
+}
+
 func TestParseUnifiedDiffRemovedPathLikeFollowedByAdded(t *testing.T) {
 	// A removed line "-- b/foo" (rendered "--- b/foo") followed by an added
 	// line "++ b/bar" (rendered "+++ b/bar") must both stay as hunk body —
@@ -405,6 +436,21 @@ func TestParseRepairingKeepsDiffTextInsideSearchBlocks(t *testing.T) {
 		t.Fatalf("ParseRepairing: %v", err)
 	}
 	if len(res.Patches) != 1 || res.Patches[0].Chunks[0].Search != "--- a/legacy" {
+		t.Fatalf("patches = %#v, want one search/replace chunk", res.Patches)
+	}
+}
+
+func TestParseRepairingKeepsHunkHeaderInsideSearchBlocks(t *testing.T) {
+	// A search/replace proposal whose SEARCH content contains a bare "@@"
+	// hunk header (e.g. patching a file that documents a diff) must not be
+	// routed to the diff parser (regression: it was rejected as mixed
+	// formats).
+	proposal := "File: d.txt\n<<<<<<< SEARCH\n@@ -1,2 +1,2 @@\nold\n=======\nnew\n>>>>>>> REPLACE"
+	res, err := ParseRepairing(proposal)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 1 || res.Patches[0].Chunks[0].Search != "@@ -1,2 +1,2 @@\nold" {
 		t.Fatalf("patches = %#v, want one search/replace chunk", res.Patches)
 	}
 }

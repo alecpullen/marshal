@@ -303,7 +303,8 @@ type Runner struct {
 	tokenRatio float64
 
 	// semTracker tracks tool-referenced paths for mid-turn semantic
-	// re-queries (AI-10). Per-turn; nil outside Run.
+	// re-queries (AI-10). Per-RunTask; nil outside Run. Guarded by its own
+	// mutex because read-only tools mutate it from parallel goroutines.
 	semTracker *semanticRequeryTracker
 
 	// RunTaskFunc overrides RunTask for testing (see the named type below).

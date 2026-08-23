@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"marshal/internal/contextpack"
 	"marshal/internal/retrieval"
@@ -41,7 +42,11 @@ const semanticRequeryThreshold = 3
 // during a turn and the semantic snippets already merged into the pack, so a
 // re-query can target what the agent just discovered without re-injecting
 // what it has already seen.
+//
+// The tracker is mutated from parallel tool-execution goroutines (read-only
+// tools run concurrently in executeActions), so every access is guarded by mu.
 type semanticRequeryTracker struct {
+	mu       sync.Mutex
 	seen     map[string]bool // referenced paths + snippet paths already represented
 	snippets []contextpack.FileSnippet
 	pending  []string // newly referenced paths since the last re-query
@@ -53,6 +58,8 @@ func newSemanticRequeryTracker() *semanticRequeryTracker {
 
 // note records tool-referenced paths; first-seen ones queue toward a re-query.
 func (t *semanticRequeryTracker) note(paths []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for _, p := range paths {
 		if t.seen[p] {
 			continue
@@ -64,6 +71,8 @@ func (t *semanticRequeryTracker) note(paths []string) {
 
 // addSnippets records snippets as represented in the pack.
 func (t *semanticRequeryTracker) addSnippets(snips []contextpack.FileSnippet) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for _, s := range snips {
 		t.seen[s.Path] = true
 	}
@@ -77,11 +86,17 @@ func (t *semanticRequeryTracker) addSnippets(snips []contextpack.FileSnippet) {
 // retry every iteration. Nil source / empty index is a silent no-op.
 func (r *Runner) maybeRequerySemantic(ctx context.Context, goal string, src retrieval.Source, maxTokenOverride int) {
 	t := r.semTracker
-	if t == nil || len(t.pending) < semanticRequeryThreshold {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if len(t.pending) < semanticRequeryThreshold {
+		t.mu.Unlock()
 		return
 	}
 	pending := t.pending
 	t.pending = nil
+	t.mu.Unlock()
 	if src == nil {
 		return
 	}
@@ -91,6 +106,7 @@ func (r *Runner) maybeRequerySemantic(ctx context.Context, goal string, src retr
 	}
 	snips := retrieveSemanticContext(ctx, goal+" "+strings.Join(names, " "), src)
 	var fresh []contextpack.FileSnippet
+	t.mu.Lock()
 	for _, s := range snips {
 		if t.seen[s.Path] {
 			continue
@@ -98,10 +114,15 @@ func (r *Runner) maybeRequerySemantic(ctx context.Context, goal string, src retr
 		fresh = append(fresh, s)
 	}
 	if len(fresh) == 0 {
+		t.mu.Unlock()
 		return
 	}
-	t.addSnippets(fresh)
+	for _, s := range fresh {
+		t.seen[s.Path] = true
+	}
+	t.snippets = append(t.snippets, fresh...)
 	all := append([]contextpack.FileSnippet(nil), t.snippets...)
+	t.mu.Unlock()
 	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
 		maxTokens := maxTokenOverride
 		if maxTokens <= 0 {

@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"marshal/internal/contextpack"
@@ -55,6 +57,30 @@ func TestRequeryTrackerCountsNewPathsOnce(t *testing.T) {
 	tr.note([]string{"a.go"}) // dup — not counted again
 	if len(tr.pending) != 2 {
 		t.Fatalf("pending = %v, want [a.go b.go]", tr.pending)
+	}
+}
+
+// TestRequeryTrackerConcurrentNote guards the parallel tool-execution path:
+// read-only tools (file.read/file.page) run concurrently in executeActions
+// and each calls note on the shared tracker. Without the internal mutex this
+// races on the seen map and pending slice. Run with -race to exercise it.
+func TestRequeryTrackerConcurrentNote(t *testing.T) {
+	tr := newSemanticRequeryTracker()
+	const goroutines = 32
+	const pathsPer = 50
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < pathsPer; i++ {
+				tr.note([]string{fmt.Sprintf("pkg/file_%d_%d.go", g, i)})
+			}
+		}(g)
+	}
+	wg.Wait()
+	if len(tr.pending) != goroutines*pathsPer {
+		t.Fatalf("pending = %d, want %d", len(tr.pending), goroutines*pathsPer)
 	}
 }
 

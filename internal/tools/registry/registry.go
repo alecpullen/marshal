@@ -52,6 +52,15 @@ func (r *Registry) Register(tool Tool) error {
 	return nil
 }
 
+// Replace upserts a tool: any existing registration of the same name is
+// removed, then the tool is registered fresh (all Register validation
+// applies). Used to rebind a scoped view's tool to a different session —
+// e.g. a subagent's todo.write bound to the child's own state.
+func (r *Registry) Replace(tool Tool) error {
+	delete(r.tools, tool.Name)
+	return r.Register(tool)
+}
+
 func (r *Registry) Lookup(name string) (Tool, bool) {
 	tool, ok := r.tools[name]
 	if !ok {

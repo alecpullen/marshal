@@ -102,7 +102,10 @@ func TestTodoWriteAllowsMultipleInProgress(t *testing.T) {
 	}
 }
 
-func TestTodoWriteRejectsDroppingUnfinishedItems(t *testing.T) {
+// The drop-guard is gone: an unfinished item omitted from a new list is
+// carried over automatically rather than refused. Completed items may be
+// dropped freely.
+func TestTodoWriteCarriesOmittedUnfinishedItem(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
 	tools := &toolSet{sessionState: state}
 	tool := tools.todoWriteTool()
@@ -120,46 +123,26 @@ func TestTodoWriteRejectsDroppingUnfinishedItems(t *testing.T) {
 			{"content": "done", "status": "completed"},
 		},
 	})
-	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
-	if err == nil {
-		t.Fatal("expected error when dropping unfinished todo")
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
+	if err != nil {
+		t.Fatalf("omitting an unfinished item should auto-carry, not error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "force=true") {
-		t.Fatalf("error should mention the force=true override option: %v", err)
-	}
-	if got := state.Todos(); len(got) != 2 {
-		t.Fatalf("state should not have been modified, got %d items", len(got))
-	}
-}
-
-func TestTodoWriteForceDropsUnfinishedItems(t *testing.T) {
-	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
-	tools := &toolSet{sessionState: state}
-	tool := tools.todoWriteTool()
-
-	if err := state.SetTodos([]db.TodoItem{
-		{Content: "keep me", Status: TodoPending},
-		{Content: "done", Status: TodoCompleted},
-	}); err != nil {
-		t.Fatalf("seed todos: %v", err)
-	}
-
-	args, _ := json.Marshal(map[string]any{
-		"todos": []map[string]string{
-			{"content": "done", "status": "completed"},
-			{"content": "new task", "status": "in_progress"},
-		},
-		"force": true,
-	})
-	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: args}); err != nil {
-		t.Fatalf("force=true should allow dropping: %v", err)
+	if !strings.Contains(res.Content, "carried over 1 unfinished") {
+		t.Fatalf("result should note the carry-over, got %q", res.Content)
 	}
 	got := state.Todos()
 	if len(got) != 2 {
-		t.Fatalf("expected 2 items (done + new), got %d", len(got))
+		t.Fatalf("expected 2 items (done + carried keep me), got %d", len(got))
 	}
-	if got[0].Content != "done" || got[1].Content != "new task" {
-		t.Fatalf("unexpected todos: %+v", got)
+	contents := map[string]string{}
+	for _, item := range got {
+		contents[item.Content] = item.Status
+	}
+	if contents["keep me"] != TodoPending {
+		t.Fatalf("carried item lost or status changed: %+v", contents)
+	}
+	if contents["done"] != TodoCompleted {
+		t.Fatalf("completed item should be kept when submitted: %+v", contents)
 	}
 }
 
@@ -206,5 +189,52 @@ func TestTodoWriteAllowsKeepingUnfinishedItem(t *testing.T) {
 	}
 	if got := state.Todos(); len(got) != 2 {
 		t.Fatalf("expected two items, got %d", len(got))
+	}
+}
+
+func TestTodoWriteAutoCarriesUnfinishedItems(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	if err := state.SetTodos([]db.TodoItem{
+		{Content: "old pending", Status: "pending"},
+		{Content: "old in progress", Status: "in_progress"},
+		{Content: "old done", Status: "completed"},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	tool := TodoWriteTool(state)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "todo.write",
+		Args: []byte(`{"todos":[{"content":"new task","status":"pending"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("todo.write returned error, want auto-carry success: %v", err)
+	}
+	got := state.Todos()
+	// Completed items may be dropped; unfinished ones are carried.
+	contents := map[string]string{}
+	for _, item := range got {
+		contents[item.Content] = item.Status
+	}
+	if _, ok := contents["old done"]; ok {
+		t.Error("completed item should be droppable, was carried")
+	}
+	if contents["old pending"] != "pending" {
+		t.Errorf("carried item lost or status changed: %v", contents)
+	}
+	if contents["old in progress"] != "in_progress" {
+		t.Errorf("in-progress item lost or status changed: %v", contents)
+	}
+	if contents["new task"] != "pending" {
+		t.Errorf("new item missing: %v", contents)
+	}
+	if !strings.Contains(res.Content, "carried over 2 unfinished") {
+		t.Errorf("result should note the carry-over, got %q", res.Content)
+	}
+}
+
+func TestTodoWriteSchemaHasNoForce(t *testing.T) {
+	tool := TodoWriteTool(session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	if strings.Contains(string(tool.Schema), "force") {
+		t.Fatal("force parameter must be removed from the schema")
 	}
 }

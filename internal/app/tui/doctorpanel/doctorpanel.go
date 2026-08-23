@@ -32,39 +32,50 @@ type Panel struct {
 
 var _ dock.Panel = (*Panel)(nil)
 
-// New builds a panel from diagnostics.
-func New(state *session.State, diags []config.Diagnostic) *Panel {
+// New builds a panel from diagnostics and intelligence-subsystem checks.
+func New(state *session.State, diags []config.Diagnostic, checks []Check) *Panel {
 	root := listpanel.NewFrame("Doctor", func() []*listpanel.Field {
-		return diagsToFields(diags)
+		return diagsToFields(diags, checks)
 	})
 	return &Panel{state: state, diags: diags, stack: listpanel.NewPaneStack(root)}
 }
 
-func diagsToFields(diags []config.Diagnostic) []*listpanel.Field {
-	out := make([]*listpanel.Field, 0, len(diags)+2)
+func diagsToFields(diags []config.Diagnostic, checks []Check) []*listpanel.Field {
+	out := make([]*listpanel.Field, 0, len(diags)+len(checks)+3)
 	if len(diags) == 0 {
 		out = append(out, &listpanel.Field{
 			ID: "clean", Title: "No problems found.", Kind: listpanel.KindScalar,
 			GetStr: func() string { return "" },
 		})
-		return out
-	}
-	var errs, warns []config.Diagnostic
-	for _, d := range diags {
-		switch d.Severity {
-		case config.SeverityError:
-			errs = append(errs, d)
-		case config.SeverityWarning:
-			warns = append(warns, d)
+	} else {
+		var errs, warns []config.Diagnostic
+		for _, d := range diags {
+			switch d.Severity {
+			case config.SeverityError:
+				errs = append(errs, d)
+			case config.SeverityWarning:
+				warns = append(warns, d)
+			}
+		}
+		if len(errs) > 0 {
+			out = append(out, &listpanel.Field{ID: "herrors", Title: "Errors", Kind: listpanel.KindHeader})
+			out = append(out, diagRows(errs, true)...)
+		}
+		if len(warns) > 0 {
+			out = append(out, &listpanel.Field{ID: "hwarnings", Title: "Warnings", Kind: listpanel.KindHeader})
+			out = append(out, diagRows(warns, true)...)
 		}
 	}
-	if len(errs) > 0 {
-		out = append(out, &listpanel.Field{ID: "herrors", Title: "Errors", Kind: listpanel.KindHeader})
-		out = append(out, diagRows(errs, true)...)
-	}
-	if len(warns) > 0 {
-		out = append(out, &listpanel.Field{ID: "hwarnings", Title: "Warnings", Kind: listpanel.KindHeader})
-		out = append(out, diagRows(warns, true)...)
+	if len(checks) > 0 {
+		out = append(out, &listpanel.Field{ID: "hintelligence", Title: "Intelligence", Kind: listpanel.KindHeader})
+		for _, c := range checks {
+			c := c
+			out = append(out, &listpanel.Field{
+				ID: "intel." + strings.ToLower(c.Name), Title: c.Name, Kind: listpanel.KindScalar,
+				Desc:   c.Detail,
+				GetStr: func() string { return c.Status },
+			})
+		}
 	}
 	return out
 }

@@ -65,7 +65,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 					}
 					// Re-run /doctor to refresh the panel.
 					diags := config.Diagnose(m.state.Config, m.state.Layers())
-					m.dock.Open(doctorpanel.New(m.state, diags))
+					checks := doctorpanel.ComputeIntelligence(m.state.Config, m.memoryDB, m.memoryProject)
+					m.dock.Open(doctorpanel.New(m.state, diags, checks))
 				}
 			}
 			m.resetInput()

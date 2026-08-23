@@ -59,6 +59,87 @@ type fakeLSPSource struct {
 
 func (f fakeLSPSource) Diagnostics(string, string) (string, bool) { return f.out, f.ok }
 
+type lspStubFunc func(lang, filePath string) (string, bool)
+
+func (f lspStubFunc) Diagnostics(lang, filePath string) (string, bool) { return f(lang, filePath) }
+
+func TestInferPackages(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []string
+		want  []string
+	}{
+		{"empty falls back to all", nil, []string{"./..."}},
+		{"single file", []string{"internal/agent/runner.go"}, []string{"./internal/agent"}},
+		{"same dir deduped", []string{"a/x.go", "a/y.go"}, []string{"./a"}},
+		{"distinct dirs order-preserving", []string{"b/z.go", "a/x.go", "b/w.go"}, []string{"./b", "./a"}},
+	}
+	for _, c := range cases {
+		got := inferPackages(c.files)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: inferPackages = %v, want %v", c.name, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s: inferPackages = %v, want %v", c.name, got, c.want)
+			}
+		}
+	}
+}
+
+func TestCheckRunsPerDistinctPackage(t *testing.T) {
+	var ran []string
+	c := NewChecker(map[string]string{"go": "govet {package}"})
+	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		ran = append(ran, strings.Join(args, " "))
+		return []byte("issue near " + args[len(args)-1]), nil
+	}
+	out, err := c.Check([]string{"a/x.go", "a/y.go", "b/z.go"}, "go")
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(ran) != 2 || ran[0] != "./a" || ran[1] != "./b" {
+		t.Fatalf("checker runs = %v, want [./a ./b]", ran)
+	}
+	if !strings.Contains(out, "./a") || !strings.Contains(out, "./b") {
+		t.Fatalf("output %q missing findings from both packages", out)
+	}
+}
+
+func TestCheckPlaceholderFreeTemplateRunsOnce(t *testing.T) {
+	runs := 0
+	c := NewChecker(map[string]string{"go": "govet"})
+	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		runs++
+		return nil, nil
+	}
+	if _, err := c.Check([]string{"a/x.go", "b/z.go"}, "go"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("runs = %d, want 1 (no {package} placeholder)", runs)
+	}
+}
+
+func TestCheckLSPConsultsEveryFile(t *testing.T) {
+	c := NewChecker(nil)
+	var seen []string
+	c.SetLSPSource(lspStubFunc(func(lang, filePath string) (string, bool) {
+		seen = append(seen, filePath)
+		return "diag for " + filePath, true
+	}))
+	out, err := c.Check([]string{"a/x.go", "b/z.go"}, "go")
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "a/x.go" || seen[1] != "b/z.go" {
+		t.Fatalf("LSP consulted %v, want both files", seen)
+	}
+	if !strings.Contains(out, "diag for a/x.go") || !strings.Contains(out, "diag for b/z.go") {
+		t.Fatalf("output %q missing per-file diagnostics", out)
+	}
+}
+
 func TestCheckerPrefersLSP(t *testing.T) {
 	c := NewChecker(nil) // no command checkers configured
 	c.SetLSPSource(fakeLSPSource{out: "a.go:1: oops", ok: true})

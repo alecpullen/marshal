@@ -145,6 +145,7 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	cfg.Agent.MaxToolIterations = 8
 	cfg.Agent.MaxRetries = 2
 	cfg.Agent.ReconnectMaxWaitSeconds = 300
+	cfg.Agent.MaxConcurrentSubagents = 7
 	cfg.Tools.Shell.DefaultTimeoutSeconds = 45
 	cfg.Tools.Shell.MaxOutputBytes = 98765
 	cfg.Tools.Shell.AllowNetwork = true
@@ -180,7 +181,7 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 
 	if loaded.Agent.MaxToolIterations != 8 || loaded.Agent.MaxRetries != 2 ||
-		loaded.Agent.ReconnectMaxWaitSeconds != 300 {
+		loaded.Agent.ReconnectMaxWaitSeconds != 300 || loaded.Agent.MaxConcurrentSubagents != 7 {
 		t.Fatalf("agent settings = %+v", loaded.Agent)
 	}
 	shell := loaded.Tools.Shell

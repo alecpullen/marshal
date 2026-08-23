@@ -53,6 +53,7 @@ type fileAgent struct {
 	ParseRepairFeedback      *bool   `toml:"parse_repair_feedback"`
 	MaxTouchedFileBytes      *int    `toml:"max_touched_file_bytes"`
 	ThinkingBudgetMargin     *int    `toml:"thinking_budget_margin"`
+	MaxConcurrentSubagents   *int    `toml:"max_concurrent_subagents"`
 }
 
 type filePrivacy struct {

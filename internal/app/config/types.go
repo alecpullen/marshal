@@ -371,6 +371,10 @@ type AgentConfig struct {
 	// parent receives whatever partial answer the child produced instead of
 	// a hard error.
 	SubtaskIterations int `toml:"subtask_iterations"`
+	// MaxConcurrentSubagents caps parallel agent.run children per session.
+	// 0 (or negative) = built-in default (3, aligned with the default swarm
+	// scout count); values above 8 clamp to 8 at the session seam.
+	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
 	// ApprovalMode is the active interaction/approval mode: "plan",
 	// "default", "edit", "copilot", or "auto". Default "default". See
 	// docs/superpowers/specs/2026-07-24-approval-modes-design.md.

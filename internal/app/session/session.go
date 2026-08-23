@@ -255,7 +255,7 @@ type State struct {
 	runEvents []RunEvent
 	// jobExits is the transcript record of background jobs finishing.
 	// In-memory only, never persisted.
-	jobExits []JobExit
+	jobExits  []JobExit
 	turnUsage turnUsage
 	title     string
 	titleSet  bool

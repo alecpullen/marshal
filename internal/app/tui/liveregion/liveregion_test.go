@@ -71,11 +71,11 @@ func TestLongSingleLineStillRespectsCap(t *testing.T) {
 
 func TestRowsMatchesRender(t *testing.T) {
 	cases := map[string]Spec{
-		"empty body":  {Glyph: "*", Title: "t", MaxRows: 4, Width: 40},
-		"short body":  {Glyph: "*", Title: "t", Body: []string{"a"}, MaxRows: 4, Width: 40},
-		"over cap":    spec([]string{"a", "b", "c", "d", "e", "f", "g"}),
-		"no meta":     {Glyph: "*", Title: "t", Body: []string{"a", "b"}, Footer: "f", MaxRows: 4, Width: 40},
-		"no footer":   {Glyph: "*", Title: "t", Meta: "m", Body: []string{"a", "b"}, MaxRows: 4, Width: 40},
+		"empty body":       {Glyph: "*", Title: "t", MaxRows: 4, Width: 40},
+		"short body":       {Glyph: "*", Title: "t", Body: []string{"a"}, MaxRows: 4, Width: 40},
+		"over cap":         spec([]string{"a", "b", "c", "d", "e", "f", "g"}),
+		"no meta":          {Glyph: "*", Title: "t", Body: []string{"a", "b"}, Footer: "f", MaxRows: 4, Width: 40},
+		"no footer":        {Glyph: "*", Title: "t", Meta: "m", Body: []string{"a", "b"}, MaxRows: 4, Width: 40},
 		"cap below chrome": {Glyph: "*", Title: "t", Meta: "m", Footer: "f", MaxRows: 1, Width: 40},
 	}
 	for name, s := range cases {

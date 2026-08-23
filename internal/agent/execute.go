@@ -375,6 +375,13 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		return []schema.ChatMessage{msg}, nil
 	}
 
+	// Record referenced paths only on success: a denied, hook-blocked, or
+	// failed read never actually surfaced content to the agent, so it must
+	// not count toward the mid-turn semantic re-query threshold (AI-10).
+	if r.semTracker != nil {
+		r.semTracker.note(referencedPathsForTool(toolName, argsMap))
+	}
+
 	summarized := SummarizeToolResult(toolName, result, 0) // per-tool line limits only; 0 keeps the default char cap out of play here
 	summarized = spillToolResult(r.State.WorkingDir, toolName, summarized, r.toolResultChars())
 	// A tool that mutated anything invalidates every cached read: serving

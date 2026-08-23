@@ -25,6 +25,69 @@ func TestListCursorRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRecentSessionSummaries(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	pid, err := db.GetOrCreateProject("/tmp/proj-summ", "proj-summ")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	t0 := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	mk := func(id, title string, started, ended time.Time, summary string) {
+		if err := db.CreateSession(id, pid, title, started); err != nil {
+			t.Fatalf("CreateSession %s: %v", id, err)
+		}
+		if err := db.EndSession(id, ended, summary); err != nil {
+			t.Fatalf("EndSession %s: %v", id, err)
+		}
+	}
+	mk("s1", "First", t0, t0.Add(time.Hour), "Built the parser.")
+	mk("s2", "Second", t0.Add(2*time.Hour), t0.Add(3*time.Hour), "Added tests.")
+	mk("s3", "Third", t0.Add(4*time.Hour), t0.Add(5*time.Hour), "Fixed the bug.")
+	mk("s4", "Empty", t0.Add(6*time.Hour), t0.Add(7*time.Hour), "") // skipped: empty summary
+	if err := db.CreateSession("current", pid, "Current", t0.Add(8*time.Hour)); err != nil {
+		t.Fatalf("CreateSession current: %v", err)
+	} // not ended → not returned
+
+	got, err := db.RecentSessionSummaries(pid, "current", 3)
+	if err != nil {
+		t.Fatalf("RecentSessionSummaries: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3 (s4 skipped: empty summary)", len(got))
+	}
+	if got[0].SessionID != "s3" || got[1].SessionID != "s2" || got[2].SessionID != "s1" {
+		t.Fatalf("order = %v, want newest ended first [s3 s2 s1]", []string{got[0].SessionID, got[1].SessionID, got[2].SessionID})
+	}
+	if got[0].Summary != "Fixed the bug." || got[0].Title != "Third" {
+		t.Fatalf("row = %+v", got[0])
+	}
+
+	limited, err := db.RecentSessionSummaries(pid, "", 2)
+	if err != nil {
+		t.Fatalf("RecentSessionSummaries limit: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("limit: len = %d, want 2", len(limited))
+	}
+	// Exclusion actually excludes.
+	excl, err := db.RecentSessionSummaries(pid, "s3", 5)
+	if err != nil {
+		t.Fatalf("RecentSessionSummaries exclude: %v", err)
+	}
+	for _, s := range excl {
+		if s.SessionID == "s3" {
+			t.Fatal("excluded session s3 was returned")
+		}
+	}
+}
+
 func TestDecodeListCursorEmpty(t *testing.T) {
 	got, err := decodeListCursor("")
 	if err != nil || got != 0 {

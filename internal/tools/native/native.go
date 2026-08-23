@@ -220,6 +220,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())
 	}
+	if tools.db != nil {
+		all = append(all, tools.memoryWriteTool())
+	}
 	// agent.run is registered separately by app.Run after the policy engine
 	// is constructed; the native toolset does not have access to the engine
 	// until then. See internal/app/app.go.

@@ -270,6 +270,11 @@ type Runner struct {
 	// collection output; counter bookkeeping still runs.
 	MetricsObserver func(TurnMetrics)
 
+	// CompactionObserver, when set, is invoked after each successful
+	// compaction/rollover rebuild of the wire history. Used to schedule
+	// knowledge extraction at natural checkpoints. Nil disables.
+	CompactionObserver func()
+
 	Snapshotter      Snapshotter
 	SnapshotRecorder SnapshotRecorder
 
@@ -296,6 +301,11 @@ type Runner struct {
 	// execution, so it needs no lock (and is deliberately not part of
 	// CopyFrom).
 	tokenRatio float64
+
+	// semTracker tracks tool-referenced paths for mid-turn semantic
+	// re-queries (AI-10). Per-RunTask; nil outside Run. Guarded by its own
+	// mutex because read-only tools mutate it from parallel goroutines.
+	semTracker *semanticRequeryTracker
 
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
@@ -616,6 +626,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.turnRequestOptions.temperature = route.Preset.Temperature
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
+		r.semTracker = nil
 	}()
 	r.withStats(func(s *turnStats) {
 		s.m.Provider = turnProvider.Name()
@@ -632,6 +643,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		"threshold", turnThreshold,
 		"source", budgetSource)
 	r.turnToolResultChars = deriveToolResultChars(turnThreshold)
+	r.semTracker = newSemanticRequeryTracker()
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
@@ -831,6 +843,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// the context pack of subsequent turns.
 		r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 		r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
+		r.maybeRequerySemantic(ctx, goal, r.semanticSource(r.ProjectID), route.ContextBudget.MaxRepoContextTokens)
 		messages = r.setContextPackMessage(messages, r.State.ContextPack())
 		// Deliver the body of any skill loaded since the last iteration.
 		messages = r.appendSkillBodies(messages)
@@ -856,6 +869,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
 				messages = fresh
 				r.resetTokenRatio()
+				if r.CompactionObserver != nil {
+					r.CompactionObserver()
+				}
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
 				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)
@@ -1389,4 +1405,18 @@ func changedFilesForTool(toolName string, argsMap map[string]interface{}) []stri
 		files = append(files, p.Path)
 	}
 	return files
+}
+
+// referencedPathsForTool returns the workspace paths a tool call reads or
+// writes — the trigger signal for mid-turn semantic re-queries (AI-10).
+// Reads add file.read/file.page; writes reuse changedFilesForTool.
+func referencedPathsForTool(toolName string, argsMap map[string]interface{}) []string {
+	switch toolName {
+	case "file.read", "file.page":
+		if path, ok := argsMap["path"].(string); ok && path != "" {
+			return []string{path}
+		}
+		return nil
+	}
+	return changedFilesForTool(toolName, argsMap)
 }

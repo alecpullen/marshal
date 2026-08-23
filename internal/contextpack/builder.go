@@ -307,6 +307,31 @@ func MergeRepoSections(pack Pack, card, dirMap string, maxTokens int, now func()
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 
+// newSessionSummariesSection builds the prior-work section. Priority 16:
+// just below memories (15), so it starves first under budget pressure.
+func newSessionSummariesSection(content string) (Section, bool) {
+	content, ok := trimSectionContent(content)
+	if !ok {
+		return Section{}, false
+	}
+	return Section{
+		Kind:     SectionSessionSummaries,
+		Title:    "Recent Sessions",
+		Priority: 16,
+		Content:  content,
+	}, true
+}
+
+// MergeSessionSummaries replaces any existing session-summaries section with
+// one built from content, then rebuilds the pack within maxTokens. Mirrors
+// MergeMemories' replace-and-rebuild shape.
+func MergeSessionSummaries(pack Pack, content string, maxTokens int, now func() time.Time) Pack {
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
+	sec, ok := newSessionSummariesSection(content)
+	sections := replaceSection(pack.Sections, SectionSessionSummaries, sec, ok, SectionPlan, SectionFileSnippet, SectionToolOutput)
+	return buildPackFromSections(sections, maxTokens, generatedAt)
+}
+
 func newSemanticSection(snippets []FileSnippet) (Section, bool) {
 	var parts []string
 	for _, s := range snippets {

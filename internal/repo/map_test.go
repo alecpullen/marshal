@@ -63,3 +63,33 @@ func TestRenderDirectoryMapExcludesUnexportedAndImports(t *testing.T) {
 		t.Errorf("expected no inline suffix for unexported/import-only file:\n%s", out)
 	}
 }
+
+func TestRenderDirectoryMapIncludesSummaries(t *testing.T) {
+	files := []db.FileIndex{
+		{Path: "cmd/marshal/main.go", Language: "go"},
+		{Path: "internal/agent/runner.go", Language: "go", Summary: "Agent turn loop and runner orchestration."},
+		{Path: "internal/agent/chat.go", Language: "go", Summary: "Streaming chat plumbing.\nSecond line is collapsed."},
+	}
+	out := RenderDirectoryMap(files, nil, 0)
+	if !strings.Contains(out, "runner.go — Agent turn loop and runner orchestration.") {
+		t.Fatalf("map missing summary suffix:\n%s", out)
+	}
+	if !strings.Contains(out, "chat.go — Streaming chat plumbing. Second line is collapsed.") {
+		t.Fatalf("summary newlines must be collapsed:\n%s", out)
+	}
+	if strings.Contains(out, "main.go —") {
+		t.Fatalf("file without summary must not get a suffix:\n%s", out)
+	}
+}
+
+func TestRenderDirectoryMapTruncatesLongSummaries(t *testing.T) {
+	long := strings.Repeat("word ", 40) // 200 chars
+	files := []db.FileIndex{{Path: "a/x.go", Summary: long}}
+	out := RenderDirectoryMap(files, nil, 0)
+	if strings.Contains(out, long) {
+		t.Fatalf("summary was not truncated:\n%s", out)
+	}
+	if !strings.Contains(out, "…") {
+		t.Fatalf("truncated summary must carry an ellipsis:\n%s", out)
+	}
+}

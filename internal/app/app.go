@@ -582,7 +582,28 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.RouteResolver = resolver
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
-	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
+	recorder := metricsRecorder(database, projectID, state.SessionID(), state.Logger())
+	scheduler := &knowledgeScheduler{
+		run: func(ctx context.Context, in knowledge.ExtractInput) { knowledge.Extract(ctx, in) },
+		input: func() knowledge.ExtractInput {
+			return knowledge.ExtractInput{
+				DB:                  database,
+				ProjectID:           projectID,
+				SessionID:           state.SessionID(),
+				RouteResolver:       resolver,
+				WorkingDir:          state.WorkingDir,
+				MaxTouchedFileBytes: state.Config.Agent.MaxTouchedFileBytes,
+				Messages:            state.Messages(),
+				AuditLog:            state.AuditLog(),
+				Logger:              state.Logger(),
+			}
+		},
+	}
+	runner.MetricsObserver = func(m agent.TurnMetrics) {
+		recorder(m)
+		scheduler.OnTurn()
+	}
+	runner.CompactionObserver = scheduler.OnCompaction
 	runner.Pricing = parentPricing
 
 	limitsTable := loadLimitsTable(ctx, cfg, dataDir)

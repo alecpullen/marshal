@@ -1517,3 +1517,47 @@ func TestThinkingSummaryStaysUnboundedAndFlat(t *testing.T) {
 		t.Fatal("thinking summary is history and must not be tinted")
 	}
 }
+
+func TestJobExitRowSuccess(t *testing.T) {
+	e := session.JobExit{ID: "job-2", Command: "go test ./...", ExitCode: 0, Duration: 107 * time.Second}
+	plain := ansi.Strip(renderJobExit(e, false, 80))
+	for _, want := range []string{"job-2", "go test ./...", "exit 0"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q in %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, glyph.Error) {
+		t.Errorf("a clean exit must not use the error glyph: %q", plain)
+	}
+}
+
+func TestJobExitRowFailure(t *testing.T) {
+	e := session.JobExit{ID: "job-3", Command: "make", ExitCode: 2, Duration: time.Second}
+	plain := ansi.Strip(renderJobExit(e, false, 80))
+	if !strings.Contains(plain, glyph.Error) {
+		t.Errorf("a non-zero exit must use the error glyph: %q", plain)
+	}
+	if !strings.Contains(plain, "exit 2") {
+		t.Errorf("missing exit code: %q", plain)
+	}
+}
+
+func TestJobExitExpandsToOutput(t *testing.T) {
+	e := session.JobExit{ID: "job-4", Command: "make", ExitCode: 1, Output: "undefined reference to foo"}
+	if strings.Contains(ansi.Strip(renderJobExit(e, false, 80)), "undefined reference") {
+		t.Error("collapsed row must not show the output")
+	}
+	if !strings.Contains(ansi.Strip(renderJobExit(e, true, 80)), "undefined reference") {
+		t.Error("expanded row must show the output")
+	}
+}
+
+// A job exit is history and must be flat.
+func TestJobExitRowIsNotTinted(t *testing.T) {
+	theme.Reload(theme.LoadFor(false, "xterm-256color"))
+	t.Cleanup(func() { theme.Reload(theme.LoadFor(false, "xterm-256color")) })
+	e := session.JobExit{ID: "job-2", Command: "go test ./...", Duration: time.Second}
+	if strings.Contains(renderJobExit(e, false, 80), "48;5;") {
+		t.Fatal("flat = history: a job exit row must not be tinted")
+	}
+}

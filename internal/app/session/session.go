@@ -83,6 +83,10 @@ const (
 	// failure, a review finding, a commit). Rendered inline so it
 	// interleaves with the subagent cards it explains.
 	KindRunEvent
+	// KindJobExit is a background shell job finishing. Appended to the end
+	// of the const block deliberately: the values are used as map keys and
+	// hashed, so inserting in the middle would renumber the existing kinds.
+	KindJobExit
 )
 
 type TranscriptItem struct {
@@ -96,6 +100,8 @@ type TranscriptItem struct {
 	Subagent *SubagentView
 	// RunEvent is set when Kind == KindRunEvent.
 	RunEvent *RunEvent
+	// JobExit is set when Kind == KindJobExit.
+	JobExit *JobExit
 }
 
 type ActivityKind string
@@ -247,6 +253,9 @@ type State struct {
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent
+	// jobExits is the transcript record of background jobs finishing.
+	// In-memory only, never persisted.
+	jobExits []JobExit
 	turnUsage turnUsage
 	title     string
 	titleSet  bool
@@ -1313,6 +1322,15 @@ func (s *State) Transcript() []TranscriptItem {
 			Timestamp: ev.At,
 			Kind:      KindRunEvent,
 			RunEvent:  &ev,
+		})
+	}
+
+	for i := range s.jobExits {
+		e := s.jobExits[i]
+		items = append(items, TranscriptItem{
+			Timestamp: e.At,
+			Kind:      KindJobExit,
+			JobExit:   &e,
 		})
 	}
 

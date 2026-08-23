@@ -569,8 +569,58 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 			return ""
 		}
 		return renderRunEvent(*item.RunEvent, detailExpanded, width)
+	case session.KindJobExit:
+		if item.JobExit == nil {
+			return ""
+		}
+		return renderJobExit(*item.JobExit, detailExpanded, width)
 	}
 	return ""
+}
+
+// renderJobExit renders a finished background job as one settled transcript
+// row, expanding to its buffered output. It is history, so it is flat: the
+// tint marks activity, not severity.
+func renderJobExit(e session.JobExit, expanded bool, width int) string {
+	g, style := glyph.Job, statusOkStyle()
+	gutterColor := theme.Current().FGMuted
+	if e.ExitCode != 0 {
+		g, style = glyph.Error, errorStyle()
+		gutterColor = theme.Current().StatusError
+	}
+	parts := []string{e.ID, e.Command, fmt.Sprintf("exit %d", e.ExitCode)}
+	if e.Duration > 0 {
+		parts = append(parts, formatElapsed(e.Duration))
+	}
+	head := strings.Join(parts, dimSeparator)
+	if e.Output != "" {
+		if expanded {
+			head += " " + glyph.DisclosureExpanded
+		} else {
+			head += " " + glyph.DisclosureCollapsed
+		}
+	}
+	cw := contentWidth(width)
+	var b strings.Builder
+	for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
+		if i == 0 {
+			b.WriteString(gutterPrefix(g, gutterColor))
+		} else {
+			b.WriteString(continuation())
+		}
+		b.WriteString(style.Render(hl))
+		b.WriteString("\n")
+	}
+	if expanded && e.Output != "" {
+		for _, line := range strings.Split(strings.TrimRight(e.Output, "\n"), "\n") {
+			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
+				b.WriteString(continuation())
+				b.WriteString(mutedStyle().Render(wl))
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
 }
 
 // subagentTailBudget is how many logical tail lines to pull from a running

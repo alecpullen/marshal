@@ -2945,7 +2945,7 @@ func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
 	factory, _ := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1, pricing.ModelPricing{})
-	child, _, err := factory(agent.SubagentRequest{Agent: "my-scout"})
+	child, childState, err := factory(agent.SubagentRequest{Agent: "my-scout"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
@@ -2956,13 +2956,17 @@ func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 		t.Fatal("child.MetricsObserver should be set so subagent turns persist to turn_metrics")
 	}
 	if child.UsageObserver == nil {
-		t.Fatal("child.UsageObserver should be set so subagent usage rolls up to the parent session")
+		t.Fatal("child.UsageObserver should be set so subagent usage is recorded on the child session")
 	}
-	// The UsageObserver folds into the parent session's running total.
+	// Child usage lands on the child's own state (visible when drilled in)
+	// and must NOT inflate the parent's turn-usage counter, which the
+	// status bar shows as live parent-turn context use.
 	child.UsageObserver(schema.TokenUsage{PromptTokens: 100, CompletionTokens: 50})
-	used, _ := parentState.TurnUsage()
-	if used != 150 {
-		t.Fatalf("parent usage after child observe = %d, want 150", used)
+	if used, _ := parentState.TurnUsage(); used != 0 {
+		t.Fatalf("parent turn usage = %d, want 0 — child tokens must not move the parent counter", used)
+	}
+	if used, _ := childState.TurnUsage(); used != 150 {
+		t.Fatalf("child turn usage = %d, want 150", used)
 	}
 }
 

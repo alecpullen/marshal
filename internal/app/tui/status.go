@@ -155,7 +155,7 @@ func (m Model) modeSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, turn=4, branch=5, dir=5,
+//	mode=0, untrusted=0, route=1, local=2, ctx=3, branch=5, dir=5,
 //	swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
@@ -179,15 +179,13 @@ func (m Model) statusLeftSegments() []statusSeg {
 		}
 	}
 
-	if pack := m.state.ContextPack(); !pack.IsEmpty() {
-		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
-			strutil.CompactTokens(pack.TokenUsage.EstimatedTokens),
-			strutil.CompactTokens(pack.TokenUsage.MaxTokens))), priority: 3})
-	}
-
+	// Live context use: tokens of the parent's latest model call vs the
+	// resolved model window. Subagent usage is recorded on the child's own
+	// session state (see buildSubagentFactory) and never folded in here, so
+	// the number cannot inflate past the window.
 	if used, window := m.state.TurnUsage(); window > 0 {
-		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("turn %s/%s",
-			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 4})
+		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
+			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
 	}
 
 	if leaves := m.state.Branches(); len(leaves) > 1 {

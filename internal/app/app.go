@@ -1402,13 +1402,14 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
 		child.WriteGate = writeLock
-		// Fold the child's token usage into the parent session's running
-		// total so /context and the session usage view include subagent
-		// work. The child session is separate; this is additive to the
-		// parent's own turns, not a double-count.
+		// Record child usage on the child's own session state (visible in
+		// the drilled-in view). It must NOT fold into the parent's
+		// turn-usage counter: the status bar shows that counter as live
+		// parent-turn context use, and folding made it inflate past the
+		// window and snap back. Session-level rollups come from
+		// turn_metrics, which MetricsObserver already feeds.
 		child.UsageObserver = func(usage schema.TokenUsage) {
-			used, _ := parentState.TurnUsage()
-			parentState.SetTurnUsage(used + usage.PromptTokens + usage.CompletionTokens)
+			childState.SetTurnUsage(usage.PromptTokens + usage.CompletionTokens)
 		}
 		return child, childState, nil
 	}, modelResolver

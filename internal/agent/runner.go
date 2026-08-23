@@ -656,6 +656,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.semTracker = newSemanticRequeryTracker()
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
+	// Auto-load matching skills before the first prompt build so their
+	// bodies ride the existing appendSkillBodies path.
+	r.maybeAutoLoadSkills(ctx, goal)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 

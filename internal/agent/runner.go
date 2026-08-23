@@ -1013,11 +1013,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if execErr != nil {
 				return task, r.fail(task, execErr)
 			}
-			// Re-arm the verification nudge when the model made a fresh
-			// successful mutation after being nudged once: a new change
-			// deserves its own nudge rather than a silently flagged final
-			// answer. The overhead cap still bounds how many nudges a turn
-			// can burn.
+			// Re-arm the verification nudge when, after being nudged once,
+			// the model's most recent recorded call was another successful
+			// mutation: that fresh change deserves its own nudge rather than
+			// a silently flagged final answer. (Only the immediately-last
+			// call is checked, so a read following a mutation does not
+			// re-arm — the model was nudged and then chose not to verify.)
+			// The overhead cap still bounds how many nudges a turn can burn.
 			if verificationNudgeSent && r.lastSuccessfulMutation() {
 				verificationNudgeSent = false
 			}
@@ -1203,11 +1205,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if err != nil {
 				return task, r.fail(task, err)
 			}
-			// Re-arm the verification nudge when the model made a fresh
-			// successful mutation after being nudged once: a new change
-			// deserves its own nudge rather than a silently flagged final
-			// answer. The overhead cap still bounds how many nudges a turn
-			// can burn.
+			// Re-arm the verification nudge when, after being nudged once,
+			// the model's most recent call was another successful mutation:
+			// that fresh change deserves its own nudge rather than a
+			// silently flagged final answer. (Only the immediately-last call
+			// is checked — a read following a mutation does not re-arm.)
+			// The overhead cap still bounds how many nudges a turn can burn.
 			if verificationNudgeSent && r.lastSuccessfulMutation() {
 				verificationNudgeSent = false
 			}

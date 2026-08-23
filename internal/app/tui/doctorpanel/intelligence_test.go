@@ -26,12 +26,17 @@ func testIntelligenceDB(t *testing.T) (*db.DB, int64) {
 	return database, projectID
 }
 
-func checkByName(checks []Check, name string) Check {
+// checkByName returns the check with the given name, failing the test if it
+// is missing so a renamed subsystem produces a clear "missing check" error
+// instead of a confusing zero-valued Check comparison.
+func checkByName(t *testing.T, checks []Check, name string) Check {
+	t.Helper()
 	for _, c := range checks {
 		if c.Name == name {
 			return c
 		}
 	}
+	t.Fatalf("no check named %q in %+v", name, checks)
 	return Check{}
 }
 
@@ -42,16 +47,16 @@ func TestComputeIntelligenceEmptyProject(t *testing.T) {
 	if len(checks) != 4 {
 		t.Fatalf("checks = %d, want 4 (Index, Embeddings, LSP, Watcher)", len(checks))
 	}
-	if c := checkByName(checks, "Index"); c.Status != "off" {
+	if c := checkByName(t, checks, "Index"); c.Status != "off" {
 		t.Fatalf("Index = %+v, want off (never indexed)", c)
 	}
-	if c := checkByName(checks, "Embeddings"); c.Status != "off" {
+	if c := checkByName(t, checks, "Embeddings"); c.Status != "off" {
 		t.Fatalf("Embeddings = %+v, want off (not configured)", c)
 	}
-	if c := checkByName(checks, "LSP"); c.Status != "off" {
+	if c := checkByName(t, checks, "LSP"); c.Status != "off" {
 		t.Fatalf("LSP = %+v, want off (nothing on PATH)", c)
 	}
-	if c := checkByName(checks, "Watcher"); c.Status != "warn" {
+	if c := checkByName(t, checks, "Watcher"); c.Status != "warn" {
 		t.Fatalf("Watcher = %+v, want warn (off with no embeddings)", c)
 	}
 }
@@ -67,7 +72,7 @@ func TestComputeIntelligencePopulatedIndex(t *testing.T) {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
 	checks := ComputeIntelligence(config.Config{}, database, projectID)
-	c := checkByName(checks, "Index")
+	c := checkByName(t, checks, "Index")
 	if c.Status != "ok" || !strings.Contains(c.Detail, "2 files") {
 		t.Fatalf("Index = %+v, want ok with file count", c)
 	}
@@ -81,7 +86,7 @@ func TestComputeIntelligenceEmbeddings(t *testing.T) {
 
 	// Configured but nothing embedded yet: warn.
 	checks := ComputeIntelligence(cfg, database, projectID)
-	if c := checkByName(checks, "Embeddings"); c.Status != "warn" {
+	if c := checkByName(t, checks, "Embeddings"); c.Status != "warn" {
 		t.Fatalf("Embeddings = %+v, want warn (configured, no embeddings)", c)
 	}
 
@@ -92,13 +97,13 @@ func TestComputeIntelligenceEmbeddings(t *testing.T) {
 		t.Fatalf("replace file chunks: %v", err)
 	}
 	checks = ComputeIntelligence(cfg, database, projectID)
-	if c := checkByName(checks, "Embeddings"); c.Status != "ok" {
+	if c := checkByName(t, checks, "Embeddings"); c.Status != "ok" {
 		t.Fatalf("Embeddings = %+v, want ok after an embedding landed", c)
 	}
 
 	// Embeddings alone do NOT enable the watcher (matches config.WatchEnabled:
 	// an explicit watch value wins, otherwise the watcher stays off).
-	if c := checkByName(checks, "Watcher"); c.Status != "warn" {
+	if c := checkByName(t, checks, "Watcher"); c.Status != "warn" {
 		t.Fatalf("Watcher = %+v, want warn (embeddings alone do not enable it)", c)
 	}
 
@@ -106,7 +111,7 @@ func TestComputeIntelligenceEmbeddings(t *testing.T) {
 	on := true
 	cfg.Indexing.Watch = &on
 	checks = ComputeIntelligence(cfg, database, projectID)
-	if c := checkByName(checks, "Watcher"); c.Status != "ok" {
+	if c := checkByName(t, checks, "Watcher"); c.Status != "ok" {
 		t.Fatalf("Watcher = %+v, want ok (explicit watch=true)", c)
 	}
 }
@@ -119,16 +124,38 @@ func TestComputeIntelligenceLSPConfiguredButMissing(t *testing.T) {
 		"go": {Command: "definitely-not-a-real-binary-xyz"},
 	}
 	checks := ComputeIntelligence(cfg, database, projectID)
-	c := checkByName(checks, "LSP")
+	c := checkByName(t, checks, "LSP")
 	if c.Status != "warn" || !strings.Contains(c.Detail, "not on PATH") {
 		t.Fatalf("LSP = %+v, want warn naming the missing server", c)
+	}
+}
+
+// The LSP "off" detail must not claim a tree-sitter fallback when
+// indexing.use_treesitter is disabled.
+func TestComputeIntelligenceLSPOffRespectsUseTreesitter(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	database, projectID := testIntelligenceDB(t)
+
+	cfg := config.Config{}
+	cfg.Indexing.UseTreesitter = true
+	checks := ComputeIntelligence(cfg, database, projectID)
+	c := checkByName(t, checks, "LSP")
+	if c.Status != "off" || !strings.Contains(c.Detail, "fall back to tree-sitter") {
+		t.Fatalf("LSP = %+v, want off with tree-sitter fallback wording", c)
+	}
+
+	cfg.Indexing.UseTreesitter = false
+	checks = ComputeIntelligence(cfg, database, projectID)
+	c = checkByName(t, checks, "LSP")
+	if c.Status != "off" || strings.Contains(c.Detail, "fall back to tree-sitter") {
+		t.Fatalf("LSP = %+v, want off WITHOUT the tree-sitter fallback claim", c)
 	}
 }
 
 func TestComputeIntelligenceNilDB(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	checks := ComputeIntelligence(config.Config{}, nil, 0)
-	if c := checkByName(checks, "Index"); c.Status != "off" || !strings.Contains(c.Detail, "unavailable") {
+	if c := checkByName(t, checks, "Index"); c.Status != "off" || !strings.Contains(c.Detail, "unavailable") {
 		t.Fatalf("Index = %+v, want off/database-unavailable", c)
 	}
 }

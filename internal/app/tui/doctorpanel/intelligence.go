@@ -95,7 +95,12 @@ func lspCheck(cfg config.Config) Check {
 	}
 	effective := lsp.DetectServers(configured, disabled)
 	if len(effective) == 0 {
-		return Check{Name: "LSP", Status: "off", Detail: "no language servers found on PATH — symbols/diagnostics fall back to tree-sitter"}
+		// The tree-sitter fallback is itself gated on indexing.use_treesitter;
+		// don't claim a fallback that isn't enabled.
+		if cfg.Indexing.UseTreesitter {
+			return Check{Name: "LSP", Status: "off", Detail: "no language servers found on PATH — symbols fall back to tree-sitter"}
+		}
+		return Check{Name: "LSP", Status: "off", Detail: "no language servers found on PATH and tree-sitter is off — symbol lookup has no source"}
 	}
 	var found, missing []string
 	for lang, spec := range effective {
@@ -120,9 +125,11 @@ func lspCheck(cfg config.Config) Check {
 func watcherCheck(cfg config.Config) Check {
 	// Match the runtime rule exactly: an explicit watch value wins; otherwise
 	// the watcher stays off even when embeddings are configured, so indexing
-	// never auto-starts in the background. See config.WatchEnabled.
+	// never auto-starts in the background. See config.WatchEnabled. This row
+	// is derived purely from config, not live goroutine state, so it reports
+	// the configured behavior rather than asserting a running process.
 	if config.WatchEnabled(cfg.Indexing.Watch, embeddingsConfigured(cfg)) {
-		return Check{Name: "Watcher", Status: "ok", Detail: "index refreshes on file changes"}
+		return Check{Name: "Watcher", Status: "ok", Detail: "watch = true — index refreshes on file changes when the session runs background workers"}
 	}
 	return Check{Name: "Watcher", Status: "warn", Detail: "off — index refreshes only at startup; set indexing.watch = true"}
 }

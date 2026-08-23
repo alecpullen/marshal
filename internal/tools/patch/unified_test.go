@@ -13,7 +13,7 @@ func TestLooksLikeUnifiedDiff(t *testing.T) {
 	}{
 		{"hunk header", "--- a/x.go\n+++ b/x.go\n@@ -1,2 +1,3 @@\n ctx\n+added\n ctx2", true},
 		{"header pair only", "--- a/x.go\n+++ b/x.go", true},
-		{"header pair non-path", "--- legacy\n+++ modern", false},
+		{"header pair non-path", "--- legacy\n+++ modern", true},
 		{"search replace", "File: x.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE", false},
 		{"markdown divider in search", "File: x.md\n<<<<<<< SEARCH\ntitle\n=====\n=======\ntitle2\n=====\n>>>>>>> REPLACE", false},
 		{"empty", "", false},
@@ -263,6 +263,67 @@ func TestParseUnifiedDiffAddedPlusPlusAtHunkEnd(t *testing.T) {
 	}
 	if chunks[1].Search != "tail\nomega" || chunks[1].Replace != "tail\nOMEGA" {
 		t.Fatalf("chunk[1] = %#v", chunks[1])
+	}
+}
+
+func TestParseUnifiedDiffAddedPathLikeLineAtHunkEnd(t *testing.T) {
+	// An added line whose content starts with "++ b/" (rendered "+++ b/foo")
+	// at the end of a hunk, followed by the next hunk's @@ header, must stay
+	// as content — the line-count tracking must not mistake it for a new-file
+	// header even though it looks like a diff path (regression).
+	proposal := "--- a/x.go\n" +
+		"+++ b/x.go\n" +
+		"@@ -1,2 +1,3 @@\n" +
+		" ctx\n" +
+		"-removed\n" +
+		"+++ b/foo\n" +
+		"@@ -5,2 +5,2 @@\n" +
+		" tail\n" +
+		"-omega\n" +
+		"+OMEGA\n"
+	res, err := ParseRepairing(proposal)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 1 {
+		t.Fatalf("patches = %d, want 1 (no spurious file patch)", len(res.Patches))
+	}
+	if res.Patches[0].Path != "x.go" {
+		t.Fatalf("path = %q, want x.go", res.Patches[0].Path)
+	}
+	chunks := res.Patches[0].Chunks
+	if len(chunks) != 2 {
+		t.Fatalf("chunks = %d, want 2", len(chunks))
+	}
+	if chunks[0].Search != "ctx\nremoved" || chunks[0].Replace != "ctx\n++ b/foo" {
+		t.Fatalf("chunk[0] = %#v, want the ++ b/foo line kept as added content", chunks[0])
+	}
+	if chunks[1].Search != "tail\nomega" || chunks[1].Replace != "tail\nOMEGA" {
+		t.Fatalf("chunk[1] = %#v", chunks[1])
+	}
+}
+
+func TestParseUnifiedDiffRemovedPathLikeFollowedByAdded(t *testing.T) {
+	// A removed line "-- b/foo" (rendered "--- b/foo") followed by an added
+	// line "++ b/bar" (rendered "+++ b/bar") must both stay as hunk body —
+	// the ---/+++ pair lookahead must not mistake them for a file header pair
+	// even though both look like diff paths (regression).
+	proposal := "--- a/f.go\n" +
+		"+++ b/f.go\n" +
+		"@@ -1,2 +1,2 @@\n" +
+		"--- b/foo\n" +
+		"+++ b/bar\n" +
+		" ctx\n"
+	res, err := ParseRepairing(proposal)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 1 {
+		t.Fatalf("patches = %d, want 1", len(res.Patches))
+	}
+	ch := res.Patches[0].Chunks[0]
+	if ch.Search != "-- b/foo\nctx" || ch.Replace != "++ b/bar\nctx" {
+		t.Fatalf("chunk = %#v, want both lines kept as content", ch)
 	}
 }
 

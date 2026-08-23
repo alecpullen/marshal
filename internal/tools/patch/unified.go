@@ -3,6 +3,7 @@ package patch
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,7 @@ import (
 
 var (
 	hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`)
+	hunkCountsRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 	renameRe     = regexp.MustCompile(`^(rename from|rename to) `)
 )
 
@@ -37,13 +39,13 @@ var elisionLines = map[string]bool{
 // looksLikeUnifiedDiff reports whether the proposal should be parsed as a
 // unified diff: it contains a full @@ hunk header, a "diff --git" section
 // opener (which carries rename-only diffs that have no hunks), or a ---/+++
-// header pair whose paths look like real diff paths (a/…, b/…, /dev/null).
-// The header-pair check is deliberately narrow so a search/replace SEARCH
-// block that happens to contain diff-like lines is not misrouted; only a
-// pair that looks like a genuine file header routes. The hunk-header shape
-// is specific enough that a search/replace proposal only misfires when the
-// searched content itself holds a bare "@@ -1,2 +1,2 @@" line — an accepted
-// risk.
+// header pair. The header-pair shape is specific enough that a search/replace
+// proposal only misfires when the searched content itself holds a consecutive
+// "--- …"/"+++ …" pair (e.g. patching a file that documents a diff) — an
+// accepted risk, the same class as a bare "@@ -1,2 +1,2 @@" line. Routing on
+// the pair keeps a header-only proposal (no hunks) reaching the diff parser,
+// which reports the "no hunks" teaching error rather than a misleading
+// "no SEARCH/REPLACE blocks" one.
 func looksLikeUnifiedDiff(proposal string) bool {
 	lines := strings.Split(strings.ReplaceAll(proposal, "\r\n", "\n"), "\n")
 	for i, line := range lines {
@@ -53,14 +55,30 @@ func looksLikeUnifiedDiff(proposal string) bool {
 		if strings.HasPrefix(line, "diff --git ") {
 			return true
 		}
-		if strings.HasPrefix(line, "--- ") && i+1 < len(lines) &&
-			isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "---"))) &&
-			strings.HasPrefix(lines[i+1], "+++ ") &&
-			isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(lines[i+1], "+++"))) {
+		if strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ") {
 			return true
 		}
 	}
 	return false
+}
+
+// parseHunkCounts extracts the old/new line counts from a @@ hunk header.
+// A missing count means 1 (git's default). The header shape is already
+// validated by hunkHeaderRe before this is called.
+func parseHunkCounts(header string) (oldCount, newCount int) {
+	m := hunkCountsRe.FindStringSubmatch(header)
+	if m == nil {
+		return 0, 0
+	}
+	oldCount = 1
+	if m[2] != "" {
+		oldCount, _ = strconv.Atoi(m[2])
+	}
+	newCount = 1
+	if m[4] != "" {
+		newCount, _ = strconv.Atoi(m[4])
+	}
+	return oldCount, newCount
 }
 
 func parseUnifiedDiff(proposal string) (Result, error) {
@@ -79,6 +97,13 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 	var searchBuf, replaceBuf []string
 	inHunk := false
 	sawHunk := false
+	// Remaining old/new lines in the open hunk, from its @@ header. A
+	// ---/+++ line is only a file header once the hunk is complete (both
+	// counts zero); until then it is hunk body content, however much it
+	// looks like a header. This is the reliable disambiguator — path-prefix
+	// shape alone cannot tell "--- a/foo" the header from "-- a/foo" the
+	// removed line.
+	var oldRemaining, newRemaining int
 
 	commitHunk := func() {
 		if !inHunk {
@@ -122,17 +147,21 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 			if elisionLines[strings.TrimSpace(body)] {
 				return elisionErr(currentPath)
 			}
+			oldRemaining--
+			newRemaining--
 			searchBuf = append(searchBuf, body)
 			replaceBuf = append(replaceBuf, body)
 		case '-':
 			if elisionLines[strings.TrimSpace(body)] {
 				return elisionErr(currentPath)
 			}
+			oldRemaining--
 			searchBuf = append(searchBuf, body)
 		case '+':
 			if elisionLines[strings.TrimSpace(body)] {
 				return elisionErr(currentPath)
 			}
+			newRemaining--
 			replaceBuf = append(replaceBuf, body)
 		default:
 			// A SEARCH/REPLACE marker here means the model mixed formats.
@@ -156,9 +185,9 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 			next = lines[i+1]
 		}
 
-		// Hunk body is checked first while a hunk is open: removed lines
-		// like "--- flag" (content "-- flag") collide with file headers,
-		// so a real header pair is recognized by lookahead instead.
+		// Hunk body is checked first while a hunk is open. A ---/+++ line is
+		// only a file header once the hunk is complete (counts zero); inside
+		// an open hunk it is content, however much it looks like a header.
 		if inHunk {
 			switch {
 			case strings.HasPrefix(line, `\ No newline at end of file`):
@@ -173,23 +202,23 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 				commitHunk()
 				inHunk = true
 				searchBuf, replaceBuf = nil, nil
+				oldRemaining, newRemaining = parseHunkCounts(trimmed)
 				continue
-			case strings.HasPrefix(line, "diff --git "):
+			case oldRemaining == 0 && newRemaining == 0 && strings.HasPrefix(line, "diff --git "):
 				// Next file section — fall out of the switch into header
 				// handling below, which commits the finished file.
 				commitHunk()
-			case strings.HasPrefix(line, "--- ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "---"))) &&
-				strings.HasPrefix(next, "+++ ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(next, "+++"))):
+			case oldRemaining == 0 && newRemaining == 0 &&
+				strings.HasPrefix(line, "--- ") && strings.HasPrefix(next, "+++ "):
 				// Header pair for the next file — fall out of the switch
 				// into header handling below.
 				commitHunk()
-			case strings.HasPrefix(line, "+++ ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "+++"))) &&
-				hunkHeaderRe.MatchString(strings.TrimSpace(next)):
-				// New file section with the --- line omitted. isDiffHeaderPath
-				// keeps an added line like "++ foo" (rendered "+++ foo") from
-				// being mistaken for a header, so this fires for any genuine
-				// +++ b/… header followed by a hunk, including after an
-				// earlier hunk in the same proposal.
+			case oldRemaining == 0 && newRemaining == 0 &&
+				strings.HasPrefix(line, "+++ ") && hunkHeaderRe.MatchString(strings.TrimSpace(next)):
+				// New file section with the --- line omitted. Only fires
+				// once the current hunk is complete, so an added line like
+				// "++ b/foo" (rendered "+++ b/foo") inside a hunk is never
+				// mistaken for a header.
 				commitHunk()
 			default:
 				if err := hunkLine(line, trimmed); err != nil {
@@ -231,6 +260,7 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 			inHunk = true
 			sawHunk = true
 			searchBuf, replaceBuf = nil, nil
+			oldRemaining, newRemaining = parseHunkCounts(trimmed)
 		default:
 			// Stray prose between sections: tolerate.
 		}
@@ -248,23 +278,6 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 
 func elisionErr(path string) error {
 	return fmt.Errorf("patch: elided lines are not supported inside diff hunks (%s); include every context line in full", path)
-}
-
-// isDiffHeaderPath reports whether a ---/+++ header value looks like a real
-// diff path (a/…, b/…, or /dev/null) rather than hunk body content that
-// happens to start with "-- " or "++ ". This keeps removed lines like
-// "--- flag" (content "-- flag") and added lines like "+++ foo" (content
-// "++ foo") inside the hunk instead of being mistaken for file headers.
-// Unprefixed bare filenames are deliberately excluded: git always emits
-// a/ or b/ prefixes, and a bare name is far more likely to be hunk content.
-// (Top-level ---/+++ headers without prefixes are still handled by the
-// outer switch, which does not consult this helper.)
-func isDiffHeaderPath(p string) bool {
-	p = strings.Trim(p, `"`)
-	if p == "/dev/null" {
-		return true
-	}
-	return strings.HasPrefix(p, "a/") || strings.HasPrefix(p, "b/")
 }
 
 // stripDiffPrefix turns a diff header path ("b/internal/foo.go", possibly

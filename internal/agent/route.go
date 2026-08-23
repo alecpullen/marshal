@@ -324,6 +324,9 @@ func (r *Runner) mergeSemantic(ctx context.Context, goal string, projectID int64
 	if len(snips) == 0 {
 		return
 	}
+	if r.semTracker != nil {
+		r.semTracker.addSnippets(snips)
+	}
 	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
 		maxTokens := maxTokenOverride
 		if maxTokens <= 0 {

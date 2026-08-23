@@ -1268,6 +1268,24 @@ func TestChangedFilesForToolFileWrite(t *testing.T) {
 	}
 }
 
+func TestReferencedPathsForTool(t *testing.T) {
+	if got := referencedPathsForTool("file.read", map[string]interface{}{"path": "a.go"}); len(got) != 1 || got[0] != "a.go" {
+		t.Fatalf("file.read = %v, want [a.go]", got)
+	}
+	if got := referencedPathsForTool("file.page", map[string]interface{}{"path": "b.go"}); len(got) != 1 || got[0] != "b.go" {
+		t.Fatalf("file.page = %v, want [b.go]", got)
+	}
+	if got := referencedPathsForTool("file.read", map[string]interface{}{}); got != nil {
+		t.Fatalf("file.read no path = %v, want nil", got)
+	}
+	if got := referencedPathsForTool("file.write", map[string]interface{}{"path": "c.go", "content": "x"}); len(got) != 1 || got[0] != "c.go" {
+		t.Fatalf("file.write = %v, want [c.go] (delegates to changedFilesForTool)", got)
+	}
+	if got := referencedPathsForTool("shell.run", map[string]interface{}{"command": "ls"}); got != nil {
+		t.Fatalf("shell.run = %v, want nil", got)
+	}
+}
+
 func TestThinkingGatedOnProviderCapability(t *testing.T) {
 	// A preset thinking value must be sent only when the provider reports a
 	// reasoning capability; otherwise it is dropped before the wire request.

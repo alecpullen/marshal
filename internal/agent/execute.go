@@ -347,6 +347,10 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 	}
 
+	if r.semTracker != nil {
+		r.semTracker.note(referencedPathsForTool(toolName, argsMap))
+	}
+
 	if r.WriteGate != nil && tool.Risk != registry.RiskReadOnly {
 		release := r.WriteGate.Acquire()
 		defer release()

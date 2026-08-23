@@ -51,16 +51,27 @@ func transcriptContains(state interface{ Messages() []session.Message }, needle 
 	return false
 }
 
-// A final answer after a patch with no verification run must be nudged once,
-// then accepted-but-flagged unverified on the second attempt.
-func TestNativeFinalAfterUnverifiedPatchGetsNudgeThenSalvaged(t *testing.T) {
+func transcriptCount(state interface{ Messages() []session.Message }, needle string) int {
+	n := 0
+	for _, m := range state.Messages() {
+		n += strings.Count(m.Content, needle)
+	}
+	return n
+}
+
+// A final answer after a patch with no verification run is nudged once;
+// if the model finals again without verifying, the answer is accepted as a
+// NORMAL completion — the nudge is the whole enforcement. Salvaging the
+// final punished models that used the nudge's escape hatch and added
+// transcript noise without changing behavior.
+func TestNativeFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
 	state := newTestState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Done.", "Still done."},
 		ToolCalls: [][]schema.ToolCall{
 			{{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"File: a.go\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"}`)}},
 			nil, // first final attempt: unverified — nudge
-			nil, // second final attempt: accepted but flagged
+			nil, // second final attempt: accepted normally
 		},
 	}
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
@@ -77,8 +88,8 @@ func TestNativeFinalAfterUnverifiedPatchGetsNudgeThenSalvaged(t *testing.T) {
 	if task.Summary != "Still done." {
 		t.Fatalf("Summary = %q, want the third response", task.Summary)
 	}
-	if task.SalvagedReason != string(reasonUnverified) {
-		t.Fatalf("SalvagedReason = %q, want %q", task.SalvagedReason, reasonUnverified)
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty (unverified-after-nudge is accepted, not salvaged)", task.SalvagedReason)
 	}
 	if !transcriptContains(state, "have not verified") {
 		t.Fatal("expected a verification-nudge system message in the transcript")
@@ -138,9 +149,9 @@ func TestNativeReadOnlyTurnIsClean(t *testing.T) {
 	}
 }
 
-// The JSON-envelope final path gets the same gate: patch action, unverified
-// final → nudge, second final → salvaged accept.
-func TestJSONFinalAfterUnverifiedPatchGetsNudgeThenSalvaged(t *testing.T) {
+// The JSON-envelope final path applies the same rule: nudge once, then
+// accept normally.
+func TestJSONFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
 	state := newTestState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
@@ -162,28 +173,27 @@ func TestJSONFinalAfterUnverifiedPatchGetsNudgeThenSalvaged(t *testing.T) {
 	if task.Summary != "Still done." {
 		t.Fatalf("Summary = %q, want the third response", task.Summary)
 	}
-	if task.SalvagedReason != string(reasonUnverified) {
-		t.Fatalf("SalvagedReason = %q, want %q", task.SalvagedReason, reasonUnverified)
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty (unverified-after-nudge is accepted, not salvaged)", task.SalvagedReason)
 	}
 	if !transcriptContains(state, "have not verified") {
 		t.Fatal("expected a verification-nudge system message in the transcript")
 	}
 }
 
-// A fresh successful mutation after the nudge re-arms it, so a model that
-// makes a second change after being nudged gets nudged again rather than a
-// silently flagged final answer.
-func TestNativeSecondMutationAfterNudgeReArmsGate(t *testing.T) {
+// The nudge fires at most once per turn. A model that is nudged and then
+// edits again is NOT nudged a second time; its next final is accepted
+// normally. Re-arming produced repeated transcript noise without changing
+// model behavior.
+func TestNativeSecondMutationAfterNudgeStaysCapped(t *testing.T) {
 	state := newTestState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Done.", "patched again", "Still done."},
 		ToolCalls: [][]schema.ToolCall{
 			{{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"File: a.go\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"}`)}},
-			nil, // final attempt 1: unverified — nudge
+			nil, // final attempt 1: unverified — nudge (the only one)
 			{{ID: "c2", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"File: b.go\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE"}`)}},
-			nil, // final attempt 2: still unverified — nudged again (re-armed)
-			{{ID: "c3", Name: "test.run", Args: json.RawMessage(`{"command":"go test ./..."}`)}},
-			nil, // final attempt 3: verified — clean
+			nil, // final attempt 2: still unverified — accepted, no second nudge
 		},
 	}
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
@@ -194,11 +204,14 @@ func TestNativeSecondMutationAfterNudgeReArmsGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTask err = %v", err)
 	}
-	if task.SalvagedReason != "" {
-		t.Fatalf("SalvagedReason = %q, want empty (the second mutation got re-nudged, then verified)", task.SalvagedReason)
+	if task.Summary != "Still done." {
+		t.Fatalf("Summary = %q, want the fourth response", task.Summary)
 	}
-	if !transcriptContains(state, "have not verified") {
-		t.Fatal("expected the verification nudge to fire after the re-armed mutation")
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty", task.SalvagedReason)
+	}
+	if n := transcriptCount(state, "have not verified"); n != 1 {
+		t.Fatalf("verification nudge count = %d, want exactly 1 per turn", n)
 	}
 }
 
@@ -231,5 +244,41 @@ func TestJSONEditTaskRequiresToolCallBeforeCompletion(t *testing.T) {
 	}
 	if !transcriptContains(state, "have not made any tool calls") {
 		t.Fatal("expected a grounding-nudge system message in the transcript")
+	}
+}
+
+// Edit → test.run → git commit → final is clean: the commit is
+// housekeeping and must not re-arm the gate after verification.
+func TestNativeVerificationThenCommitIsClean(t *testing.T) {
+	state := newTestState(t)
+	reg := regPatchAndTest(t)
+	if err := reg.Register(registry.Tool{Name: "shell.run", Risk: registry.RiskCommand, Handler: nopHandler}); err != nil {
+		t.Fatalf("register shell.run: %v", err)
+	}
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"patched", "tested", "committed", "Done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"p"}`)}},
+			{{ID: "c2", Name: "test.run", Args: json.RawMessage(`{"command":"go test ./..."}`)}},
+			{{ID: "c3", Name: "shell.run", Args: json.RawMessage(`{"command":"git commit -m done"}`)}},
+			nil,
+		},
+	}
+	r := NewRunner(p, reg, gatePolicy(), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+
+	task, err := r.RunTask(context.Background(), "fix, test, and commit")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.Summary != "Done." {
+		t.Fatalf("Summary = %q", task.Summary)
+	}
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty (commit after verification is housekeeping)", task.SalvagedReason)
+	}
+	if transcriptContains(state, "have not verified") {
+		t.Fatal("gate must not fire when verification ran before a housekeeping commit")
 	}
 }

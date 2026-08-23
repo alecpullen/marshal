@@ -958,9 +958,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
 					continue
 				}
-				// Verification gate: a turn that changed something must have
-				// verified those changes before finishing. One nudge, then
-				// the answer is accepted but flagged unverified below.
+				// Verification gate: a turn that changed something should have
+				// verified those changes before finishing. One nudge per turn;
+				// a repeat final is accepted normally below.
 				lastMutation, needsVerification := r.unverifiedMutation()
 				if needsVerification && !verificationNudgeSent {
 					verificationNudgeSent = true
@@ -979,17 +979,22 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					messages = next
 					continue
 				}
-				if (toolCallCountThisTurn == 0 && task.Class != ClassQuestion) || needsVerification {
-					// Already nudged once to verify with a tool call, and
-					// still didn't make one: accept the answer (retrying
-					// further only produced a MORE confident, not a more
-					// honest, response in testing) but flag it as unverified
-					// rather than a trusted completion, and exclude it from
-					// future history replay (see buildHistoryMessages).
+				if toolCallCountThisTurn == 0 && task.Class != ClassQuestion {
+					// Zero-tool-call grounding: already nudged once and still
+					// no tool call — accept the answer (retrying further only
+					// produced a MORE confident, not a more honest, response
+					// in testing) but flag it as unverified rather than a
+					// trusted completion, and exclude it from future history
+					// replay (see buildHistoryMessages).
 					task.SalvagedReason = string(reasonUnverified)
 					r.State.AddMessageSalvaged(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, string(reasonUnverified))
 					return task, nil
 				}
+				// needsVerification may still be true here: the model was
+				// nudged once and declined. Accept as a normal completion —
+				// the nudge is the whole enforcement; salvaging the final
+				// punished models that used the nudge's own escape hatch and
+				// added transcript noise without changing behavior.
 				r.State.AddMessageFinalWithUsage(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
 				return task, nil
 			}
@@ -1027,16 +1032,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls)
 			if execErr != nil {
 				return task, r.fail(task, execErr)
-			}
-			// Re-arm the verification nudge when, after being nudged once,
-			// the model's most recent recorded call was another successful
-			// mutation: that fresh change deserves its own nudge rather than
-			// a silently flagged final answer. (Only the immediately-last
-			// call is checked, so a read following a mutation does not
-			// re-arm — the model was nudged and then chose not to verify.)
-			// The overhead cap still bounds how many nudges a turn can burn.
-			if verificationNudgeSent && r.lastSuccessfulMutation() {
-				verificationNudgeSent = false
 			}
 			// Every call this turn was rejected before running: nothing was
 			// accomplished, so the turn is overhead, not work.
@@ -1207,7 +1202,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = next
 				continue
 			}
-			if (toolCallCountThisTurn == 0 && task.Class != ClassQuestion) || needsVerification {
+			if toolCallCountThisTurn == 0 && task.Class != ClassQuestion {
+				// Zero-tool-call grounding only; an unverified-after-nudge
+				// final is accepted normally, same as the native path.
 				task.SalvagedReason = string(reasonUnverified)
 				r.State.AddMessageSalvaged(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, string(reasonUnverified))
 				return task, nil
@@ -1219,15 +1216,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
 				return task, r.fail(task, err)
-			}
-			// Re-arm the verification nudge when, after being nudged once,
-			// the model's most recent call was another successful mutation:
-			// that fresh change deserves its own nudge rather than a
-			// silently flagged final answer. (Only the immediately-last call
-			// is checked — a read following a mutation does not re-arm.)
-			// The overhead cap still bounds how many nudges a turn can burn.
-			if verificationNudgeSent && r.lastSuccessfulMutation() {
-				verificationNudgeSent = false
 			}
 			messages = append(messages, resultMsgs...)
 			var finalized *Task

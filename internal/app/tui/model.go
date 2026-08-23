@@ -2499,7 +2499,7 @@ func (m Model) liveStripRows() int {
 // The all-done summary is suppressed once the user has started another
 // turn (spec: the summary "clears on the next user turn").
 func (m Model) renderTodoPanel() string {
-	todos := m.state.Todos()
+	todos := m.viewedTodos()
 	if m.todosDismissed && todosAllDone(todos) {
 		return ""
 	}
@@ -3027,7 +3027,7 @@ func (m *Model) refreshViewport() {
 	}
 	busy := m.busy || activeTool || streamLen > 0
 
-	todos := m.state.Todos()
+	todos := m.viewedTodos()
 	if sig := todoSignature(todos); sig != m.todosSig {
 		m.todosSig = sig
 		m.todosDismissed = false

@@ -198,10 +198,26 @@ func TestTickDismissRepaintsBannerAway(t *testing.T) {
 	}
 
 	m.now = func() time.Time { return time.Unix(100+int64(noticeBannerDuration/time.Second)+1, 0) }
-	updated, _ := m.handleAgentTick(agentTickMsg{})
-	m = updated
-	m.refreshViewport()
+	updated, _ := m.Update(agentTickMsg{})
+	m = updated.(Model)
 	if plain := stripANSI(m.viewport.View()); strings.Contains(plain, "down") {
 		t.Fatalf("banner must be repainted away after TTL auto-dismiss:\n%s", plain)
+	}
+}
+
+// A warning-severity notice renders with the warning glyph and style,
+// and the status bar renders the "⚠ warning" segment. This covers the
+// otherwise-dead warn branches in renderNotice and statusRightSegment.
+func TestRenderWarnNotice(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetNotice(session.Notice{Category: session.NoticeConfig, Severity: session.SeverityWarn, Message: "old config key ignored"})
+	m.refreshViewport()
+	plain := stripANSI(m.viewport.View())
+	if !strings.Contains(plain, "old config key ignored") {
+		t.Fatalf("warn banner message missing:\n%s", plain)
+	}
+	status := stripANSI(m.statusRightSegment())
+	if !strings.Contains(status, "warning") {
+		t.Fatalf("status segment should show warning, got %q", status)
 	}
 }

@@ -3792,6 +3792,10 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 	if n, ok := m.state.Notice(); ok {
 		if m.now().Sub(n.SetAt) >= noticeBannerDuration {
 			m.state.DismissNotice()
+			// The banner is rendered into the transcript; dismissing it
+			// must repaint the viewport or the stale banner stays on screen
+			// until an unrelated transcript change.
+			m.refreshViewport()
 		} else {
 			noticePending = true
 		}
@@ -4638,7 +4642,7 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	// and identity must bust the viewport cache: without this, esc-dismiss
 	// and the TTL auto-dismiss repaint nothing (the hash is unchanged) and
 	// the banner stays on screen until an unrelated transcript change.
-	fmt.Fprintf(h, "notice=%t|%d|%s|%d|%s|", noticeUp, notice.SetAt.UnixNano(), notice.Category.String(), notice.Severity, notice.Message)
+	fmt.Fprintf(h, "notice=%t|%d|%s|%d|%s|%s|", noticeUp, notice.SetAt.UnixNano(), notice.Category.String(), notice.Severity, notice.Message, notice.Hint)
 	// Live state: without the spinner frame and the active tool call the
 	// early-return in refreshViewport freezes the ▸ row for the whole
 	// duration of a long tool call (e.g. agent.run).

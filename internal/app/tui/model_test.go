@@ -7240,8 +7240,7 @@ func TestNoCacheDirIsHarmless(t *testing.T) {
 
 // Cancelling a turn aborts the provider stream mid-flight, and the transport
 // error that surfaces ("provider %q: chat request failed: ...") does not
-// wrap context.Canceled. Treating it as a provider fault pinned a bogus
-// error banner under the transcript until the next successful turn.
+// wrap context.Canceled. A cancelled turn must not set a notice banner.
 func TestCancelledTurnDoesNotSetNotice(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true

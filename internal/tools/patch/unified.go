@@ -183,14 +183,13 @@ func parseUnifiedDiff(proposal string) (Result, error) {
 				// Header pair for the next file — fall out of the switch
 				// into header handling below.
 				commitHunk()
-			case len(searchBuf) == 0 && len(replaceBuf) == 0 &&
-				strings.HasPrefix(line, "+++ ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "+++"))) &&
+			case strings.HasPrefix(line, "+++ ") && isDiffHeaderPath(strings.TrimSpace(strings.TrimPrefix(line, "+++"))) &&
 				hunkHeaderRe.MatchString(strings.TrimSpace(next)):
-				// New file section with the --- line omitted. Only fires
-				// when the +++ line is the first body line of the hunk
-				// (empty buffers), so an added line like "++ foo" (rendered
-				// "+++ foo") at the end of a hunk is never mistaken for a
-				// header.
+				// New file section with the --- line omitted. isDiffHeaderPath
+				// keeps an added line like "++ foo" (rendered "+++ foo") from
+				// being mistaken for a header, so this fires for any genuine
+				// +++ b/… header followed by a hunk, including after an
+				// earlier hunk in the same proposal.
 				commitHunk()
 			default:
 				if err := hunkLine(line, trimmed); err != nil {

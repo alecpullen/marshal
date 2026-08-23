@@ -205,6 +205,30 @@ func TestParseUnifiedDiffRemovedDashDashFollowedByAdded(t *testing.T) {
 	}
 }
 
+func TestParseUnifiedDiffNewFileOmittedDashAfterHunk(t *testing.T) {
+	// A new-file section whose --- line is omitted, following an earlier
+	// hunk on another file, must still parse as two patches — the +++ b/…
+	// header must not be swallowed as hunk body (regression).
+	proposal := "--- a/old.go\n" +
+		"+++ b/old.go\n" +
+		"@@ -1,1 +1,1 @@\n" +
+		"-x\n" +
+		"+y\n" +
+		"+++ b/new.go\n" +
+		"@@ -0,0 +1,1 @@\n" +
+		"+z\n"
+	res, err := ParseRepairing(proposal)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 2 {
+		t.Fatalf("patches = %d, want 2 (old.go + new.go)", len(res.Patches))
+	}
+	if res.Patches[0].Path != "old.go" || res.Patches[1].Path != "new.go" {
+		t.Fatalf("paths = %q, %q", res.Patches[0].Path, res.Patches[1].Path)
+	}
+}
+
 func TestParseUnifiedDiffAddedPlusPlusAtHunkEnd(t *testing.T) {
 	// An added line whose content starts with "++ " (rendered "+++ foo") at
 	// the end of a hunk, followed by the next hunk's @@ header, must stay as

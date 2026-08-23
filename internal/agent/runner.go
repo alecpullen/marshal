@@ -270,6 +270,11 @@ type Runner struct {
 	// collection output; counter bookkeeping still runs.
 	MetricsObserver func(TurnMetrics)
 
+	// CompactionObserver, when set, is invoked after each successful
+	// compaction/rollover rebuild of the wire history. Used to schedule
+	// knowledge extraction at natural checkpoints. Nil disables.
+	CompactionObserver func()
+
 	Snapshotter      Snapshotter
 	SnapshotRecorder SnapshotRecorder
 
@@ -856,6 +861,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
 				messages = fresh
 				r.resetTokenRatio()
+				if r.CompactionObserver != nil {
+					r.CompactionObserver()
+				}
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
 				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)

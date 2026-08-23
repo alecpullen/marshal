@@ -379,6 +379,22 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	}
 }
 
+func TestBuildAgentRunnerWiresKnowledgeSchedulerObservers(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("test-provider")
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.MetricsObserver == nil {
+		t.Fatal("MetricsObserver should be set so turns drive the knowledge scheduler")
+	}
+	if runner.CompactionObserver == nil {
+		t.Fatal("CompactionObserver should be set so compaction triggers knowledge extraction")
+	}
+}
+
 func TestBuildAgentRunnerPassesMaxToolIterationsThrough(t *testing.T) {
 	ctx := context.Background()
 

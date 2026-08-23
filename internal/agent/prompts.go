@@ -226,6 +226,8 @@ Examples:
 
 {"rationale": "The file is large; read only the section I need.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "internal/agent/prompts.go", "start_line": 1, "end_line": 80}}}
 
+{"rationale": "Locate where memory merging is implemented.", "action": {"type": "tool_call", "tool": "repo.search", "args": {"query": "func.*mergeMemories", "mode": "regex", "include": "*.go"}}}
+
 {"rationale": "Replace the placeholder patch example with a concrete search/replace block.", "action": {"type": "patch", "content": "File: path/to/file.go\n<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE"}}
 
 {"rationale": "The task is finished and all tests pass.", "action": {"type": "final", "content": "Updated the system prompt with few-shot examples for every action type."}}
@@ -391,7 +393,11 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	}
 	b.WriteString("\n\nAvailable tools:\n")
 	for _, tool := range tools {
-		b.WriteString(fmt.Sprintf("- %s (%s): %s\n", tool.Name, tool.Risk, tool.Description))
+		line := fmt.Sprintf("- %s (%s): %s", tool.Name, tool.Risk, tool.Description)
+		if hint := summarizeToolSchema(tool.Schema); hint != "" {
+			line += " — " + hint
+		}
+		b.WriteString(line + "\n")
 	}
 	if mode == policy.ModeDefault {
 		b.WriteString("- mode.request: Ask the user to switch to an editing mode (edit, copilot, or auto) so you can make changes.\n")

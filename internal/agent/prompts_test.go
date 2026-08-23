@@ -22,6 +22,26 @@ func dummyTools() []registry.Tool {
 	}
 }
 
+func TestBuildSystemPromptIncludesToolArgHints(t *testing.T) {
+	tools := []registry.Tool{{
+		Name:        "file.read",
+		Risk:        registry.RiskReadOnly,
+		Description: "Read a file.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+	}}
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
+	want := "- file.read (read_only): Read a file. — args: path:string"
+	if !strings.Contains(msg.Content, want) {
+		t.Fatalf("system prompt missing arg hint %q", want)
+	}
+}
+
+func TestBaseOutputFormatIncludesSearchFewShot(t *testing.T) {
+	if !strings.Contains(baseOutputFormat, `"tool": "repo.search"`) {
+		t.Fatal("baseOutputFormat missing repo.search few-shot")
+	}
+}
+
 func TestBuildSystemPromptListsTools(t *testing.T) {
 	msg := BuildSystemPrompt(RoleGeneral, []registry.Tool{
 		{Name: "file.read", Description: "Read a workspace file.", Risk: registry.RiskReadOnly},

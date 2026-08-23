@@ -291,6 +291,10 @@ type Runner struct {
 
 	// tokenRatio scales estimateTokens toward provider-reported prompt
 	// tokens. 0 means unset (raw estimates). See calibration.go.
+	// Written by notePromptTokens and read by calibratedEstimate on the
+	// single Run/RunTask goroutine; never touched from parallel tool
+	// execution, so it needs no lock (and is deliberately not part of
+	// CopyFrom).
 	tokenRatio float64
 
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
@@ -487,6 +491,15 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.DigestModel = other.DigestModel
 	r.Pricing = other.Pricing
 	r.SystemPromptAddendum = other.SystemPromptAddendum
+
+	// Refresh session-scoped hooks from the rebuilt runner so a config
+	// reload picks up routing/role changes. CopyFrom is the only path that
+	// mutates a live runner in place (app.reloadAgentRuntime) — without
+	// these, reloads keep stale TitleGenerator/Classifier closures bound to
+	// the old route.
+	r.HookRunner = other.HookRunner
+	r.TitleGenerator = other.TitleGenerator
+	r.Classifier = other.Classifier
 }
 
 func (r *Runner) role() AgentRole {

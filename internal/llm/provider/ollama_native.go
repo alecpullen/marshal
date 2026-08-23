@@ -279,7 +279,7 @@ func (p *OllamaNative) Chat(ctx context.Context, req schema.ChatRequest) (<-chan
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, p.connHint(fmt.Errorf("provider %q: chat request failed: %w", p.name, err))
+		return nil, p.connHint(&RequestError{Provider: p.name, Op: "chat request failed", Err: err})
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,6 +14,47 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/registry"
 )
+
+func TestWrapOverwideLinesWrapsLongCodeLine(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	out := wrapOverwideLines("  "+long, 80)
+	for _, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > 80 {
+			t.Fatalf("line width = %d, want <= 80: %q", w, line)
+		}
+	}
+	// Continuation lines keep the original indent so wrapped code still
+	// reads as indented code.
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("line %d lost its indent: %q", i, line)
+		}
+	}
+}
+
+func TestWrapOverwideLinesLeavesShortLinesAlone(t *testing.T) {
+	in := "short line\nanother"
+	if out := wrapOverwideLines(in, 80); out != in {
+		t.Fatalf("short lines were modified: %q", out)
+	}
+}
+
+// glamour's WithWordWrap does not cover fenced code blocks; the
+// post-processing in renderMarkdownWithMargin must catch them so no
+// transcript line is wider than the viewport.
+func TestRenderMarkdownWrapsCodeBlockLines(t *testing.T) {
+	md := "before\n\n```go\n" + strings.Repeat("y", 200) + "\n```\n"
+	out, ok := renderMarkdown(md, 80)
+	if !ok {
+		t.Skip("glamour renderer unavailable")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > 80 {
+			t.Fatalf("rendered line width = %d, want <= 80", w)
+		}
+	}
+}
 
 func TestRendererCacheEvicts(t *testing.T) {
 	for i := 0; i < 20; i++ {
@@ -35,26 +75,43 @@ func TestTranscriptHashDistinguishesContent(t *testing.T) {
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "hello", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{})
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false)
 	b := transcriptHash([]session.TranscriptItem{
 		{
 			Kind:      session.KindMessage,
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "goodbye", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{})
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false)
 	if a == b {
 		t.Fatal("hash should differ for different content")
 	}
 }
 
 func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
-	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{})
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}); got == base {
+	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{}, session.Notice{}, false)
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}, session.Notice{}, false); got == base {
 		t.Fatal("hash must change with the spinner frame — otherwise the live tool row freezes")
 	}
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}); got == base {
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}, session.Notice{}, false); got == base {
 		t.Fatal("hash must change with the active tool call")
+	}
+}
+
+// The notice banner is rendered into the transcript, so its presence and
+// identity must bust the viewport cache. Without this, esc-dismiss and the
+// TTL auto-dismiss repaint nothing and the banner stays on screen.
+func TestTranscriptHashCoversNotice(t *testing.T) {
+	base := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false)
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom"}, true); got == base {
+		t.Fatal("hash must change when a notice appears")
+	}
+	up := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, true)
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(200, 0)}, true); got == up {
+		t.Fatal("hash must change with the notice timestamp")
+	}
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, false); got == up {
+		t.Fatal("hash must change when a notice is dismissed")
 	}
 }
 
@@ -238,13 +295,17 @@ func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 	}
 }
 
-func TestRenderProviderErrorInline(t *testing.T) {
-	out := renderProviderError(errors.New("connection refused"), 80)
+func TestRenderNoticeInline(t *testing.T) {
+	out := renderNotice(session.Notice{
+		Category: session.NoticeProvider,
+		Severity: session.SeverityError,
+		Message:  "connection refused",
+	}, 80)
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "✗") {
 		t.Fatalf("provider error missing ✗ gutter:\n%s", out)
 	}
-	if !strings.Contains(plain, "provider: connection refused") {
+	if !strings.Contains(plain, "provider") || !strings.Contains(plain, "connection refused") {
 		t.Fatalf("provider error missing error text:\n%s", out)
 	}
 }
@@ -1017,7 +1078,7 @@ func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 		"system notice":  renderSystemNotice("note", 80),
 		"tool result":    renderToolResultLine("line1\nline2", 80),
 		"plan block":     renderPlanBlock("step 1", 80),
-		"provider error": renderProviderError(errors.New("boom"), 80),
+		"provider error": renderNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "boom"}, 80),
 		"queued":         renderQueuedMessages([]string{"q1"}, 80),
 		"active tool": renderActiveToolCall(
 			session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Unix(100, 0)},

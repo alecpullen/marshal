@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -192,15 +191,15 @@ func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
 	}
 }
 
-func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
+func TestNoticeShowsInlineNotFullScreen(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	m.state.SetProviderError(errors.New("connection refused"))
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "connection refused"})
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 	view := m.View().Content
 
-	if !strings.Contains(view, "✗") || !strings.Contains(view, "provider: connection refused") {
+	if !strings.Contains(view, "✗") || !strings.Contains(view, "connection refused") {
 		t.Fatalf("provider error not rendered inline:\n%s", view)
 	}
 	if !strings.Contains(view, "hello") {

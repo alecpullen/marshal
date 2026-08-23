@@ -160,7 +160,7 @@ func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("provider %q: chat request failed: %w", p.name, err)
+		return nil, &RequestError{Provider: p.name, Op: "chat request failed", Err: err}
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()

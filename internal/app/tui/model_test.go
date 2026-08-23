@@ -1669,7 +1669,7 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	}
 }
 
-func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
+func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 	model.busy = true
@@ -1683,8 +1683,9 @@ func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a non-nil cmd (tickCmd) after agentFinishedMsg to re-arm the pulse-clearing tick")
 	}
-	if err := state.ProviderError(); err == nil || err.Error() != "boom" {
-		t.Fatalf("ProviderError() = %v, want an error wrapping %q", err, "boom")
+	n, ok := state.Notice()
+	if !ok || n.Message != "boom" {
+		t.Fatalf("Notice() = (%v, %v), want a notice with message %q", n, ok, "boom")
 	}
 }
 
@@ -4525,7 +4526,7 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 	}
 }
 
-func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
+func TestIntentionalAgentCancellationDoesNotSetNotice(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 	model.busy = true
@@ -4536,16 +4537,16 @@ func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
 	if model.busy {
 		t.Fatal("model.busy = true, want false after agentFinishedMsg")
 	}
-	if err := state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil for context.Canceled", err)
+	if _, ok := state.Notice(); ok {
+		t.Fatalf("Notice() set for context.Canceled, want none")
 	}
 }
 
-func TestSuccessfulTurnClearsProviderError(t *testing.T) {
+func TestSuccessfulTurnClearsNotice(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 	model.busy = true
-	state.SetProviderError(errors.New("provider request timed out"))
+	state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
 	updated, _ := model.Update(agentFinishedMsg{err: nil})
 	model = updated.(Model)
@@ -4553,8 +4554,8 @@ func TestSuccessfulTurnClearsProviderError(t *testing.T) {
 	if model.busy {
 		t.Fatal("model.busy = true, want false after agentFinishedMsg")
 	}
-	if err := state.ProviderError(); err != nil {
-		t.Fatalf("ProviderError() = %v, want nil after a successful turn", err)
+	if _, ok := state.Notice(); ok {
+		t.Fatalf("Notice() = set, want nil after a successful turn")
 	}
 }
 
@@ -7239,9 +7240,8 @@ func TestNoCacheDirIsHarmless(t *testing.T) {
 
 // Cancelling a turn aborts the provider stream mid-flight, and the transport
 // error that surfaces ("provider %q: chat request failed: ...") does not
-// wrap context.Canceled. Treating it as a provider fault pinned a bogus
-// error banner under the transcript until the next successful turn.
-func TestCancelledTurnDoesNotSetProviderError(t *testing.T) {
+// wrap context.Canceled. A cancelled turn must not set a notice banner.
+func TestCancelledTurnDoesNotSetNotice(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true
 	m.cancelling = true
@@ -7251,8 +7251,8 @@ func TestCancelledTurnDoesNotSetProviderError(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if err := m.state.ProviderError(); err != nil {
-		t.Fatalf("cancelled turn set a provider error banner: %v", err)
+	if n, ok := m.state.Notice(); ok {
+		t.Fatalf("cancelled turn set a notice banner: %v", n)
 	}
 	if m.cancelling {
 		t.Fatal("cancelling flag should be cleared")
@@ -7261,15 +7261,15 @@ func TestCancelledTurnDoesNotSetProviderError(t *testing.T) {
 
 // A genuine provider failure on a turn the user did not cancel must still
 // raise the banner.
-func TestUncancelledProviderFailureSetsProviderError(t *testing.T) {
+func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true
 
 	updated, _ := m.Update(agentFinishedMsg{err: errors.New("connection refused")})
 	m = updated.(Model)
 
-	if m.state.ProviderError() == nil {
-		t.Fatal("provider failure should set the error banner")
+	if _, ok := m.state.Notice(); !ok {
+		t.Fatal("provider failure should set the notice banner")
 	}
 }
 
@@ -7870,5 +7870,21 @@ func TestSDDNewFromLastPlanToPreflight(t *testing.T) {
 	m = runAuthoringCmd(t, m, cmd)
 	if _, ok := m.dock.Panel().(*sddreview.Panel); !ok {
 		t.Fatalf("expected *sddreview.Panel, got %T", m.dock.Panel())
+	}
+}
+
+// The transcript is vertical-only: horizontal wheel pans (trackpad
+// sideways gestures, diagonal scrolls) must not shift the view.
+func TestHorizontalWheelIsIgnored(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 30)
+	m.viewport.SetContent(strings.Repeat(strings.Repeat("z", 300)+"\n", 100))
+
+	for _, button := range []tea.MouseButton{tea.MouseWheelLeft, tea.MouseWheelRight} {
+		updated, _ := m.Update(tea.MouseWheelMsg{Button: button})
+		m = updated.(Model)
+		if off := m.viewport.XOffset(); off != 0 {
+			t.Fatalf("xOffset = %d after %v, want 0 (vertical-only)", off, button)
+		}
 	}
 }

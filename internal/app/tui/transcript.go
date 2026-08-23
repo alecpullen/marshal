@@ -125,7 +125,41 @@ func renderMarkdownWithMargin(content string, width int, margin uint) (out strin
 	if err != nil {
 		return "", false
 	}
-	return rendered, true
+	return wrapOverwideLines(rendered, width), true
+}
+
+// wrapOverwideLines soft-wraps any rendered line wider than width.
+// glamour's WithWordWrap does not apply to fenced code blocks, so without
+// this a long code line overflows the transcript — and with horizontal
+// scrolling disabled its tail would be unreachable. Continuation lines
+// keep the original line's indent so wrapped code still reads as code.
+// ANSI styling is preserved by ansi.Wrap.
+func wrapOverwideLines(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if ansi.StringWidth(line) <= width {
+			continue
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
+		body := strings.TrimLeft(line, " ")
+		wrapWidth := width - ansi.StringWidth(indent)
+		if wrapWidth < 20 {
+			// Degenerate mostly-indent line: wrapping at the residual width
+			// would shred it; wrap the whole line at full width instead.
+			indent = ""
+			body = line
+			wrapWidth = width
+		}
+		parts := strings.Split(ansi.Wrap(body, wrapWidth, WrapBreakpoints), "\n")
+		for j := range parts {
+			parts[j] = indent + parts[j]
+		}
+		lines[i] = strings.Join(parts, "\n")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // dedentMarkdown strips the whitespace prefix common to every non-blank line
@@ -763,26 +797,6 @@ func renderPlanBlock(content string, width int) string {
 			b.WriteString(wl)
 			b.WriteString("\n")
 		}
-	}
-	return b.String()
-}
-
-func renderProviderError(err error, width int) string {
-	cw := contentWidth(width)
-	wrapped := ansi.Wrap("provider: "+err.Error(), cw, WrapBreakpoints)
-	lines := strings.Split(wrapped, "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	gutter := gutterPrefix(glyph.Error, errorColor)
-	var b strings.Builder
-	b.WriteString(gutter)
-	b.WriteString(errorStyle().Render(lines[0]))
-	b.WriteString("\n")
-	for _, line := range lines[1:] {
-		b.WriteString(continuation())
-		b.WriteString(mutedStyle().Render(line))
-		b.WriteString("\n")
 	}
 	return b.String()
 }

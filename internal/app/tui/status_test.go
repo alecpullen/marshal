@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,13 +31,11 @@ func newStatusTestModel(t *testing.T) Model {
 func TestStatusLineShowsRouteAndContext(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
-	m.state.SetContextPack(contextpack.Pack{
-		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 18000, MaxTokens: 32000},
-		Sections:   []contextpack.Section{{Title: "x", EstimatedTokens: 18000}},
-	})
+	m.state.SetTurnBudget(128000, 100000, "derived")
+	m.state.SetTurnUsage(42000)
 
 	line := m.renderStatusLine(100)
-	for _, want := range []string{"default", "qwen2.5-coder:14b @ ollama", "local", "ctx 18k/32k"} {
+	for _, want := range []string{"default", "qwen2.5-coder:14b @ ollama", "local", "ctx 42k/128k"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("status line missing %q:\n%s", want, line)
 		}
@@ -66,9 +63,9 @@ func TestStatusLineShowsApprovalState(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsProviderError(t *testing.T) {
+func TestStatusLineShowsErrorNotice(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetProviderError(errors.New("connection refused"))
+	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "connection refused"})
 	line := m.renderStatusLine(100)
 	if !strings.Contains(line, "✘ error") {
 		t.Fatalf("status line missing error state:\n%s", line)
@@ -200,14 +197,13 @@ func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 	m := newViewTestModel(t, 50, 24)
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder-7b", Provider: "ollama", LocalOnly: true})
-	m.state.SetContextPack(contextpack.Pack{
-		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 1000, MaxTokens: 8000},
-		Sections:   []contextpack.Section{{Title: "ctx", EstimatedTokens: 1000}},
-	})
+	m.state.SetTurnBudget(128000, 100000, "derived")
+	m.state.SetTurnUsage(42000)
 	line := m.renderStatusLine(55)
-	// mode + route must remain; ctx segment should be dropped (priority 3 vs 0/1/2).
-	// Width 55 is narrow enough that even after dropping the footer hints
-	// (now dropped first on narrow terminals), ctx still doesn't fit.
+	// mode + route must remain; the ctx segment should be dropped (priority
+	// 3 vs 0/1/2). Width 55 is narrow enough that even after dropping the
+	// footer hints (now dropped first on narrow terminals), ctx still
+	// doesn't fit.
 	if !strings.Contains(line, "qwen") || !strings.Contains(line, "ollama") {
 		t.Fatalf("route dropped on narrow line:\n%s", line)
 	}
@@ -694,5 +690,21 @@ func TestStatusLineDropsHintsBeforePathAndWorktree(t *testing.T) {
 	}
 	if strings.Contains(narrow, "Tab mode") {
 		t.Fatalf("narrow status line should have dropped footer hints before worktree:\n%s", narrow)
+	}
+}
+
+// The pack segment is gone from the status bar: pack composition lives in
+// /context and the side rail. A built pack must not add a second ctx-ish
+// number next to the live-usage one.
+func TestStatusLineHasNoPackSegment(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetContextPack(contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 18000, MaxTokens: 32000},
+		Sections:   []contextpack.Section{{Title: "x", EstimatedTokens: 18000}},
+	})
+
+	line := m.renderStatusLine(100)
+	if strings.Contains(line, "18k/32k") {
+		t.Fatalf("pack estimate must not appear in the status line:\n%s", line)
 	}
 }

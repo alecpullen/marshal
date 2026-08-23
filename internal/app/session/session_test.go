@@ -182,32 +182,6 @@ func TestShutdownCancelsState(t *testing.T) {
 	}
 }
 
-func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
-	state := newTestState()
-
-	testErr := errors.New("provider connection failed")
-	state.SetProviderError(testErr)
-
-	got := state.ProviderError()
-	if !errors.Is(got, testErr) {
-		t.Fatalf("ProviderError() = %v, want %v", got, testErr)
-	}
-}
-
-func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
-	state := newTestState()
-
-	testErr := errors.New("provider connection failed")
-	state.SetProviderError(testErr)
-
-	state.SetProviderError(nil)
-
-	got := state.ProviderError()
-	if got != nil {
-		t.Fatalf("ProviderError() = %v, want nil", got)
-	}
-}
-
 func TestStatePendingApprovalAndSessionRules(t *testing.T) {
 	state := newTestState()
 

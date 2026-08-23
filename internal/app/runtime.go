@@ -568,16 +568,28 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
 	if err != nil {
-		state.SetProviderError(err)
+		state.SetNotice(session.Notice{
+			Category: session.NoticeProvider,
+			Severity: session.SeverityError,
+			Message:  err.Error(),
+			Hint:     "Fix the provider configuration, then apply any settings change or restart to retry.",
+			Source:   "startup",
+		})
 	}
 
 	cmdReg := commands.New()
-	// Surfaced via state.SetProviderError rather than aborting startRuntime,
-	// matching the buildAgentRunner error handling immediately above: a
+	// Surfaced as an internal notice rather than aborting startRuntime: a
 	// registration failure here is a programming error (duplicate/invalid
-	// command), not a reason to fail the whole runtime construction.
+	// command), not a provider problem and not a reason to fail the whole
+	// runtime construction.
 	if regErr := commands.RegisterAll(cmdReg, toolReg); regErr != nil {
-		state.SetProviderError(regErr)
+		state.SetNotice(session.Notice{
+			Category: session.NoticeInternal,
+			Severity: session.SeverityError,
+			Message:  regErr.Error(),
+			Hint:     "This is a bug — please report it: a built-in command failed to register.",
+			Source:   "command-registration",
+		})
 	}
 	for _, cmd := range pluginCommands {
 		if regErr := cmdReg.Register(cmd); regErr != nil {
@@ -749,7 +761,13 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		// Roll back the empty session row so /sessions stays clean.
 		_, _ = db.DeleteSession(context.Background(), sessionID)
 		rt.Logger.Warn("new session: runner build failed; keeping previous session", "error", err)
-		rt.State.SetProviderError(err)
+		rt.State.SetNotice(session.Notice{
+			Category: session.NoticeProvider,
+			Severity: session.SeverityError,
+			Message:  err.Error(),
+			Hint:     "The previous session is still active. Fix the provider configuration and try /session new again.",
+			Source:   "session-new",
+		})
 		return nil, nil, nil, nil, nil, nil, err
 	}
 

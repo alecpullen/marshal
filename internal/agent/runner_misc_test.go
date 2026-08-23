@@ -508,8 +508,8 @@ func TestRunFailsAfterExhaustingRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error after exhausting retries, got nil")
 	}
-	if state.ProviderError() == nil {
-		t.Fatal("expected ProviderError to be set")
+	if _, ok := state.Notice(); !ok {
+		t.Fatal("expected a notice to be set")
 	}
 }
 

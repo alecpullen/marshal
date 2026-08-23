@@ -1,12 +1,17 @@
 package tui
 
-import "marshal/internal/app/session"
+import (
+	"marshal/internal/app/session"
+	"marshal/internal/tools/native"
+)
 
 // jobCountMsg is the tea.Msg the job broker pump emits when a JobEvent
 // arrives. Handling it sets the model's cached job count so the status
-// line renders without polling session.State.
+// line renders without polling session.State. jobs carries the JobInfo
+// snapshot so the job lane can render per-job detail.
 type jobCountMsg struct {
 	count int
+	jobs  []native.JobInfo
 }
 
 // steeringMsg is the tea.Msg the steering broker pump emits when a

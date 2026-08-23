@@ -21,7 +21,7 @@ func pumpJobEvents(ch <-chan pubsub.Event[native.JobEvent]) tea.Cmd {
 		if !ok {
 			return nil // broker closed / ctx cancelled → pump stops
 		}
-		return jobCountMsg{count: ev.Payload.Count}
+		return jobCountMsg{count: ev.Payload.Count, jobs: ev.Payload.Jobs}
 	}
 }
 

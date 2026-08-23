@@ -248,6 +248,9 @@ type Model struct {
 	jobBroker *pubsub.Broker[native.JobEvent]
 	jobEvents <-chan pubsub.Event[native.JobEvent]
 	jobCount  int
+	// jobs is the cached JobInfo snapshot from the latest JobEvent, used by
+	// the job lane above the input. Nil/empty when no broker is wired.
+	jobs []native.JobInfo
 
 	// F16: steering broker pump. steeringBroker is the F16 message broker;
 	// the pump cmd returned from Init (and re-armed from Update on each
@@ -1280,7 +1283,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.jobLaneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -2452,7 +2455,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.jobLaneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -2552,7 +2555,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.jobLaneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -3742,6 +3745,7 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 // handleRuntimeMessage.
 func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 	m.jobCount = msg.count
+	m.jobs = msg.jobs
 	flushCmd := m.flushPendingModelOptions()
 	// Re-arm the pump: exactly one in-flight subscription at a time
 	// (F19 R2). Return nil if no broker is wired so the cmd chain

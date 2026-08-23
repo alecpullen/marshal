@@ -97,9 +97,7 @@ func ExtractSymbols(ctx context.Context, lang, path string, source []byte) ([]db
 	return symbols, nil
 }
 
-// Stubs replaced by symbols_python.go / symbols_rust.go in the follow-up
-// tasks.
-func extractPyDeclaration(path string, node *sitter.Node, source []byte) []db.Symbol { return nil }
+// Stub replaced by symbols_rust.go in the follow-up task.
 func extractRustDeclaration(path string, node *sitter.Node, source []byte) []db.Symbol {
 	return nil
 }

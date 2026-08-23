@@ -15,6 +15,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/liveregion"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/diffview"
 	"marshal/internal/strutil"
@@ -365,34 +366,29 @@ func formatThinkDuration(d time.Duration) string {
 	return fmt.Sprintf("%.0fs", d.Seconds())
 }
 
-// renderThinkingBox renders live reasoning as a compact inline line. It
-// intentionally returns nothing until reasoning text has arrived; providers
-// that do not stream reasoning should not get an empty thinking panel.
-func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
+// renderThinkingBox renders live reasoning as a bounded region. It returns
+// nothing until reasoning text has arrived; providers that do not stream
+// reasoning should not get an empty thinking panel.
+func renderThinkingBox(reasoning, spinnerFrame string, elapsed time.Duration, offset, width int) string {
 	reasoning = strings.TrimSpace(reasoning)
 	if reasoning == "" {
 		return ""
 	}
-	cw := contentWidth(width)
-	lines := strings.Split(reasoning, "\n")
-	tailLines := lines
-	if len(lines) > 3 {
-		tailLines = lines[len(lines)-3:]
+	right := ""
+	if elapsed > 0 {
+		right = formatElapsed(elapsed)
 	}
-	var b strings.Builder
-	header := spinnerLabel(spinnerFrame, "thinking")
-	b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
-	b.WriteString(thinkingLineStyle().Render(header))
-	b.WriteString("\n")
-	for _, line := range tailLines {
-		wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
-		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(gutterPrefix(glyph.Rail, dimColor))
-			b.WriteString(thinkingLineStyle().Render(wl))
-			b.WriteString("\n")
-		}
-	}
-	return b.String()
+	return liveregion.Render(liveregion.Spec{
+		Glyph:      spinnerFrame,
+		GlyphColor: dimColor,
+		Title:      "thinking",
+		Right:      right,
+		Body:       strings.Split(reasoning, "\n"),
+		MaxRows:    liveregion.ThinkingRows,
+		Offset:     offset,
+		Live:       true,
+		Width:      width,
+	}, theme.Current())
 }
 
 // renderReconnectNotice renders the live "connection lost — retrying"
@@ -541,7 +537,7 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, width int) string {
+func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, offset, width int) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
@@ -567,7 +563,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 		if item.Subagent == nil {
 			return ""
 		}
-		return renderSubagentCard(*item.Subagent, detailExpanded, spinnerFrame, width)
+		return renderSubagentCard(*item.Subagent, detailExpanded, spinnerFrame, offset, width)
 	case session.KindRunEvent:
 		if item.RunEvent == nil {
 			return ""
@@ -577,98 +573,128 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 	return ""
 }
 
-// renderSubagentCard renders a subagent's one-line status card in the
-// parent transcript: status glyph, label, live tool-call count and elapsed
-// time while running (duration when finished), plus a hint that clicking
-// drills into the subagent's own transcript. When expanded (ctrl+g or a
-// per-item override) the subagent's final summary is appended below.
-func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame string, width int) string {
-	g := spinnerFrame
-	gutterColor := accentColor
-	style := statusBusyStyle()
-	switch v.Status {
-	case session.SubagentDone:
-		g = glyph.OK
-		gutterColor = theme.Current().FGMuted
-		style = statusOkStyle()
-	case session.SubagentFailed:
-		g = glyph.Error
-		gutterColor = theme.Current().StatusError
-		style = errorStyle()
-	}
-	if g == "" {
-		g = glyph.Running
-	}
-	gutter := gutterPrefix(g, gutterColor)
+// subagentTailBudget is how many logical tail lines to pull from a running
+// child. liveregion windows them to the visible rows, so this only needs to
+// be generous enough that there is material to scroll back through.
+const subagentTailBudget = 40
 
-	// The head line no longer prepends glyph.Agent — the gutter carries
-	// the sole status indicator (spinner for running, ✓ for done, ✗ for
-	// failed).
-	head := v.Label
-	if v.Model != "" {
-		if v.Provider != "" {
-			head += dimSeparator + fmt.Sprintf("%s @ %s", v.Model, v.Provider)
-		} else {
-			head += dimSeparator + v.Model
-		}
-	}
-	if v.Fallback {
-		head += dimSeparator + mutedStyle().Render("(fallback)")
-	}
-	if v.SalvagedReason != "" {
-		head += dimSeparator + mutedStyle().Render(fmt.Sprintf("(salvaged: %s)", v.SalvagedReason))
-	}
-	if v.TokensUsed > 0 {
-		head += dimSeparator + strutil.CompactTokens(v.TokensUsed) + " tok"
-	}
-	if v.ToolCalls > 0 {
-		head += dimSeparator + fmt.Sprintf("%d tool calls", v.ToolCalls)
-	}
-	if v.Status == session.SubagentRunning && v.CurrentTool != "" {
-		head += dimSeparator + v.CurrentTool
-	}
+// renderSubagentCard renders a subagent as a bounded, tinted region while
+// it runs, and as one flat settled row once it finishes.
+//
+// A finished card is deliberately not routed through liveregion: it is
+// history, it is a single row, and pushing it through a component named for
+// live content would mean adding a "make it look settled" flag to that
+// component's API.
+func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame string, offset, width int) string {
+	th := theme.Current()
+	live := v.Status == session.SubagentRunning
+
+	// Duration: elapsed while running, total once finished.
 	var dur string
-	if v.Status == session.SubagentRunning {
+	if live {
 		dur = formatElapsed(max(time.Since(v.StartedAt), 0))
 	} else if !v.EndedAt.IsZero() {
 		dur = formatElapsed(max(v.EndedAt.Sub(v.StartedAt), 0))
 	}
-	if dur != "" {
-		head += dimSeparator + dur
+
+	// Metrics move off the identity row onto the meta row, so the label
+	// reads as a name rather than as the head of a long sentence.
+	var meta []string
+	if v.Model != "" {
+		if v.Provider != "" {
+			meta = append(meta, fmt.Sprintf("%s @ %s", v.Model, v.Provider))
+		} else {
+			meta = append(meta, v.Model)
+		}
 	}
-	if v.Child != nil {
-		head += dimSeparator + "click to inspect"
+	if v.Fallback {
+		meta = append(meta, "(fallback)")
+	}
+	if v.SalvagedReason != "" {
+		meta = append(meta, fmt.Sprintf("(salvaged: %s)", v.SalvagedReason))
+	}
+	if v.TokensUsed > 0 {
+		meta = append(meta, strutil.CompactTokens(v.TokensUsed)+" tok")
+	}
+	if v.ToolCalls > 0 {
+		meta = append(meta, fmt.Sprintf("%d tool calls", v.ToolCalls))
+	}
+	if live && v.CurrentTool != "" {
+		meta = append(meta, v.CurrentTool)
 	}
 
+	var out string
+	if live {
+		g := spinnerFrame
+		if g == "" {
+			g = glyph.Running
+		}
+		spec := liveregion.Spec{
+			Glyph:      g,
+			GlyphColor: th.AccentPrimary,
+			Title:      v.Label,
+			Right:      dur,
+			Meta:       strings.Join(meta, dimSeparator),
+			Body:       subagentTailLines(v.Child, subagentTailBudget),
+			MaxRows:    liveregion.SubagentRows,
+			Offset:     offset,
+			Live:       true,
+			Width:      width,
+		}
+		if v.Child != nil {
+			spec.Footer = "ctrl+f to drill in"
+		}
+		out = liveregion.Render(spec, th)
+	} else {
+		out = settledSubagentRow(v, expanded, dur, meta, width)
+	}
+
+	if expanded && v.Summary != "" {
+		cw := contentWidth(width)
+		var b strings.Builder
+		b.WriteString(out)
+		for _, line := range strings.Split(ansi.Wrap(v.Summary, cw, WrapBreakpoints), "\n") {
+			b.WriteString(continuation())
+			b.WriteString(mutedStyle().Render(line))
+			b.WriteString("\n")
+		}
+		out = b.String()
+	}
+	return out
+}
+
+// settledSubagentRow renders a finished subagent as one flat gutter row:
+// label, outcome, metrics, duration, and a disclosure marker when there is
+// a summary to expand.
+func settledSubagentRow(v session.SubagentView, expanded bool, dur string, meta []string, width int) string {
+	g, gutterColor, style := glyph.OK, theme.Current().FGMuted, statusOkStyle()
+	word := "done"
+	if v.Status == session.SubagentFailed {
+		g, gutterColor, style = glyph.Error, theme.Current().StatusError, errorStyle()
+		word = "failed"
+	}
+	parts := append([]string{v.Label, word}, meta...)
+	if dur != "" {
+		parts = append(parts, dur)
+	}
+	head := strings.Join(parts, dimSeparator)
+	if v.Summary != "" {
+		if expanded {
+			head += " " + glyph.DisclosureExpanded
+		} else {
+			head += " " + glyph.DisclosureCollapsed
+		}
+	}
 	cw := contentWidth(width)
 	var b strings.Builder
-	headWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
-	for i, hl := range strings.Split(headWrapped, "\n") {
+	for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
 		if i == 0 {
-			b.WriteString(gutter)
+			b.WriteString(gutterPrefix(g, gutterColor))
 		} else {
 			b.WriteString(continuation())
 		}
 		b.WriteString(style.Render(hl))
 		b.WriteString("\n")
-	}
-	if v.Status == session.SubagentRunning && v.Child != nil {
-		for _, line := range subagentTailLines(v.Child, 5) {
-			wrapped := ansi.Wrap(line, cw, WrapBreakpoints)
-			for _, wl := range strings.Split(wrapped, "\n") {
-				b.WriteString(continuation())
-				b.WriteString(dimStyle().Render(wl))
-				b.WriteString("\n")
-			}
-		}
-	}
-	if expanded && v.Summary != "" {
-		wrapped := ansi.Wrap(v.Summary, cw, WrapBreakpoints)
-		for _, line := range strings.Split(wrapped, "\n") {
-			b.WriteString(continuation())
-			b.WriteString(mutedStyle().Render(line))
-			b.WriteString("\n")
-		}
 	}
 	return b.String()
 }

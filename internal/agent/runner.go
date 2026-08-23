@@ -14,6 +14,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
+	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
@@ -216,6 +217,11 @@ type Runner struct {
 	ForceClass         string // if set, overrides Classify() in Run()
 	SkillIndex         *skills.Index
 
+	// SkillEmbedder overrides embedder resolution for maybeAutoLoadSkills.
+	// Nil means resolve from config (unconfigured = auto-load silently off).
+	// Tests inject a fake; production leaves this nil.
+	SkillEmbedder embedding.Embedder
+
 	// Pricing holds the resolved per-token-category rates for the active
 	// model, used by emitMetrics to compute EstimatedCostCents. Set by
 	// app.go from the resolved route preset via pricing.Lookup. Zero value
@@ -307,6 +313,9 @@ type Runner struct {
 	// re-queries (AI-10). Per-RunTask; nil outside Run. Guarded by its own
 	// mutex because read-only tools mutate it from parallel goroutines.
 	semTracker *semanticRequeryTracker
+
+	// skillRanker caches skill-description vectors for the session.
+	skillRanker *skillRanker
 
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc

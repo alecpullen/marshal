@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/catalog"
@@ -283,16 +284,14 @@ func (r *Runner) mergeTodos(maxTokenOverride int) {
 	})
 }
 
-// semanticSource resolves the embedding source for passive semantic context
-// injection. Returns nil when embeddings are not configured (graceful-off).
-func (r *Runner) semanticSource(projectID int64) retrieval.Source {
-	if r.RouteResolver == nil {
-		return nil
-	}
-	// Build a fresh StaticRouter from the runner's config to resolve the
-	// embedding role. The runner's RouteResolver interface does not expose
+// resolveEmbedder builds an embedder from the configured embedding preset.
+// Returns nil when embeddings are unconfigured or the backend cannot be
+// constructed (graceful-off). Construction is cheap (struct init); the cost
+// is in Embed calls.
+func resolveEmbedder(cfg config.Config) embedding.Embedder {
+	// Build a fresh StaticRouter from the config to resolve the embedding
+	// role. The runner's RouteResolver interface does not expose
 	// ResolveEmbedding, so we reconstruct the router from the config.
-	cfg := r.State.Config
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	route, err := router.ResolveEmbedding()
 	if err != nil {
@@ -304,6 +303,19 @@ func (r *Runner) semanticSource(projectID int64) retrieval.Source {
 	}
 	embedder, err := embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
 	if err != nil {
+		return nil
+	}
+	return embedder
+}
+
+// semanticSource resolves the embedding source for passive semantic context
+// injection. Returns nil when embeddings are not configured (graceful-off).
+func (r *Runner) semanticSource(projectID int64) retrieval.Source {
+	if r.RouteResolver == nil {
+		return nil
+	}
+	embedder := resolveEmbedder(r.State.Config)
+	if embedder == nil {
 		return nil
 	}
 	db := r.State.DB()

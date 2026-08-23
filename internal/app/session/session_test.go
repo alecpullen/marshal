@@ -182,8 +182,6 @@ func TestShutdownCancelsState(t *testing.T) {
 	}
 }
 
-
-
 func TestStatePendingApprovalAndSessionRules(t *testing.T) {
 	state := newTestState()
 

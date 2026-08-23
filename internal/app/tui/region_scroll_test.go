@@ -126,3 +126,46 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	}
 	_ = strings.TrimSpace("")
 }
+
+// Full-path test: a wheel event routed through Update over a live region
+// must change the region's offset AND repaint the viewport, without
+// scrolling the transcript underneath. This exercises the wheel→offset→
+// repaint chain that TestRegionScrollRepaintsViewport only covers by
+// setting the offset directly.
+func TestWheelOverLiveRegionScrollsRegionAndRepaints(t *testing.T) {
+	m := newTestModel(t)
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	child.BeginStreaming()
+	for i := 0; i < 40; i++ {
+		child.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
+	}
+	v := m.state.RegisterSubagent("reviewer", child)
+	m.refreshViewport()
+
+	key := itemKey{ts: v.StartedAt, kind: session.KindSubagent}
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.key == key && r.target.isLiveRegion {
+			region, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("expected a live-region click region for the running subagent")
+	}
+
+	// Aim the wheel at the middle of the region's content lines.
+	top := m.scrollHintRows()
+	y := top + region.startLine + (region.endLine-region.startLine)/2 - m.viewport.YOffset()
+
+	before := m.viewport.GetContent()
+	out, _ := m.Update(tea.MouseWheelMsg{X: 1, Y: y, Button: tea.MouseWheelUp})
+	mm := asModel(t, out)
+
+	if got := mm.regionOffset[key]; got != 1 {
+		t.Fatalf("region offset = %d, want 1 after one wheel-up", got)
+	}
+	if after := mm.viewport.GetContent(); after == before {
+		t.Fatal("scrolling a live region did not repaint the viewport")
+	}
+}

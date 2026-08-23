@@ -3776,6 +3776,11 @@ func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 	}
 	m.jobCount = msg.count
 	m.jobs = msg.jobs
+	// A job exit row was appended to the transcript above; repaint now so it
+	// renders even when the user is idle (no tick, notice, or pulse would
+	// otherwise trigger a rebuild). Without this the exit stays invisible
+	// until some unrelated event refreshes the viewport.
+	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
 	// Re-arm the pump: exactly one in-flight subscription at a time
 	// (F19 R2). Return nil if no broker is wired so the cmd chain

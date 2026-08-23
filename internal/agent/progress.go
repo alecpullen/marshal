@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 )
 
 type toolCategory string
@@ -71,6 +72,7 @@ const idleStallThreshold = 3
 type callEntry struct {
 	name string
 	args string
+	ok   bool // whether the call executed successfully; idle sentinels are always false
 }
 
 // progressTracker counts repeats of identical (tool, args, output) signatures.
@@ -109,7 +111,7 @@ func (t *progressTracker) record(name, normalizedArgs, resultHash string, succes
 	t.counts[key]++
 	t.lastRepeat = t.counts[key]
 	t.idleRun = 0
-	t.history = append(t.history, callEntry{name: name, args: normalizedArgs})
+	t.history = append(t.history, callEntry{name: name, args: normalizedArgs, ok: success})
 	return t.lastRepeat
 }
 
@@ -117,7 +119,7 @@ func (t *progressTracker) record(name, normalizedArgs, resultHash string, succes
 // silence (empty responses, declined ask_user).
 func (t *progressTracker) recordIdle(reason string) {
 	t.idleRun++
-	t.history = append(t.history, callEntry{name: idleEntryName, args: reason})
+	t.history = append(t.history, callEntry{name: idleEntryName, args: reason, ok: false})
 }
 
 // resetCounts clears repeat streaks after the user has given fresh guidance,
@@ -166,4 +168,59 @@ func repeatReminder(count int, name, args string) string {
 	default:
 		return ""
 	}
+}
+
+// verificationCommandPatterns match shell.run argument payloads that are
+// themselves a verification step (running tests, vet, lint, or a build).
+// Matching happens against the raw normalized args JSON, e.g.
+// {"command":"go test ./..."}.
+var verificationCommandPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bgo\s+(test|vet|build)\b`),
+	regexp.MustCompile(`\bnpm\s+(run\s+)?test\b`),
+	regexp.MustCompile(`\b(pnpm|yarn)\s+(run\s+)?test\b`),
+	regexp.MustCompile(`\bpytest\b`),
+	regexp.MustCompile(`\bcargo\s+(test|check|clippy|build)\b`),
+	regexp.MustCompile(`\bmake\s+(test|check)\b`),
+}
+
+// looksLikeVerificationCommand reports whether a shell.run args payload is a
+// test/vet/lint/build invocation. shell.run is dual-use: it is how models
+// both mutate (install, generate, delete) and verify (go test), so the
+// finalize gate cannot treat every shell call as a mutation.
+func looksLikeVerificationCommand(args string) bool {
+	for _, p := range verificationCommandPatterns {
+		if p.MatchString(args) {
+			return true
+		}
+	}
+	return false
+}
+
+// unverifiedMutation reports the last successful mutating call and whether
+// it lacks any later successful verification call. Verification means
+// test.run, diagnostics.check, or a test-like shell.run. Only successful
+// calls count: a failed mutation changes nothing, and a failed verification
+// verifies nothing.
+func (t *progressTracker) unverifiedMutation() (callEntry, bool) {
+	lastMutationIdx := -1
+	lastVerifyIdx := -1
+	var lastMutation callEntry
+	for i, e := range t.history {
+		if e.name == idleEntryName || !e.ok {
+			continue
+		}
+		if e.name == "test.run" || e.name == "diagnostics.check" ||
+			(e.name == "shell.run" && looksLikeVerificationCommand(e.args)) {
+			lastVerifyIdx = i
+			continue
+		}
+		if mutating(categorize(e.name)) {
+			lastMutationIdx = i
+			lastMutation = e
+		}
+	}
+	if lastMutationIdx < 0 {
+		return callEntry{}, false
+	}
+	return lastMutation, lastVerifyIdx < lastMutationIdx
 }

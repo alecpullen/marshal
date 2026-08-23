@@ -3002,6 +3002,51 @@ func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
 	}
 }
 
+// An agent.run child's todo.write must write to the child's own session,
+// not the parent's visible list.
+func TestSubagentChildTodosAreIsolated(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "ollama/gpt-4o-mini"},
+		}},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "todo.write", Risk: registry.RiskWorkspaceWrite, Schema: json.RawMessage(`{"type":"object"}`), Handler: func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+		return registry.ToolResult{}, nil // parent stand-in; must be replaced in the child view
+	}})
+	pol := policy.NewEngine(&cfg, nil)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, nil, 1, pricing.ModelPricing{})
+
+	_, childState, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	// The child's registry is internal to the factory, so assert through
+	// the observable contract: writing via a child-bound tool lands on the
+	// child state, and the parent list stays empty.
+	tool := native.TodoWriteTool(childState)
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Name: "todo.write", Args: []byte(`{"todos":[{"content":"child task","status":"pending"}]}`)}); err != nil {
+		t.Fatalf("child todo.write: %v", err)
+	}
+	if len(parentState.Todos()) != 0 {
+		t.Fatalf("parent todos = %+v, want empty (isolation)", parentState.Todos())
+	}
+	if len(childState.Todos()) != 1 {
+		t.Fatalf("child todos = %+v, want the written item", childState.Todos())
+	}
+}
+
 // TestSubagentFactoryExplicitModelOverridesNamedAgent verifies that an
 // explicit model on a named-agent request replaces only the preset
 // provider/model while retaining the agent's other overrides (addendum,

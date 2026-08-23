@@ -66,7 +66,7 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 	// the factory-built runner's parent registry (legacy, pre-isolation).
 	if d.RegistryFactory != nil && d.ExecCtx.WorkspaceRoot != "" {
 		regScope := pipelineScope(scope)
-		reg, err := d.RegistryFactory(d.ExecCtx, regScope)
+		reg, err := d.RegistryFactory(d.ExecCtx, regScope, runner.State)
 		if err != nil {
 			return "", fmt.Errorf("pipeline dispatch: build %s registry: %w", role, err)
 		}

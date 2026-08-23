@@ -40,6 +40,7 @@ const (
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 	maxConsecutiveParseFailures = 3
 	groundingNudgeMessage       = "You have not made any tool calls this turn, but this task requires code changes or commands. If the work is already done from an earlier turn, verify it now with a tool call (for example, re-read the changed file or re-run the test command) before declaring completion. Otherwise, use the appropriate tool to make the change now."
+	verificationNudgeMessage    = "You made changes this session (last: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
 	// emptyModelResponsePlaceholder stands in for a truly empty model
 	// response when recording the assistant's turn in the conversation.
 	// Some providers reject the next request outright if any assistant
@@ -762,6 +763,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
+	verificationNudgeSent := false
 	budget := newTurnBudget(r.MaxToolIterations, task.Class, len(task.Plan))
 	r.turnBudget = budget
 	defer func() { r.turnBudget = nil }()
@@ -941,6 +943,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
 					continue
 				}
+				// Verification gate: a turn that changed something must have
+				// verified those changes before finishing. One nudge, then
+				// the answer is accepted but flagged unverified below.
+				lastMutation, needsVerification := r.unverifiedMutation()
+				if needsVerification && !verificationNudgeSent {
+					verificationNudgeSent = true
+					budget.overhead++
+					countIterations()
+					msg := fmt.Sprintf(verificationNudgeMessage, lastMutation.name, SummarizeToolArgs(lastMutation.name, json.RawMessage(lastMutation.args)))
+					r.State.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: msg})
+					continue
+				}
 				task.Summary = res.Text
 				task.Status = TaskStatusCompleted
 				if next, continued, err := runTurnEnd(messages, task); err != nil {
@@ -949,7 +964,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					messages = next
 					continue
 				}
-				if toolCallCountThisTurn == 0 && task.Class != ClassQuestion {
+				if (toolCallCountThisTurn == 0 && task.Class != ClassQuestion) || needsVerification {
 					// Already nudged once to verify with a tool call, and
 					// still didn't make one: accept the answer (retrying
 					// further only produced a MORE confident, not a more
@@ -1138,6 +1153,27 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		switch action.Type {
 		case ActionAnswer, ActionFinal:
+			// Grounding, same rule as the native path: a non-question task
+			// that made no tool calls at all gets one nudge.
+			if toolCallCountThisTurn == 0 && task.Class != ClassQuestion && !groundingNudgeSent {
+				groundingNudgeSent = true
+				budget.overhead++
+				countIterations()
+				r.State.AddMessage(session.RoleSystem, groundingNudgeMessage, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
+				continue
+			}
+			// Verification gate, same rule as the native path.
+			lastMutation, needsVerification := r.unverifiedMutation()
+			if needsVerification && !verificationNudgeSent {
+				verificationNudgeSent = true
+				budget.overhead++
+				countIterations()
+				msg := fmt.Sprintf(verificationNudgeMessage, lastMutation.name, SummarizeToolArgs(lastMutation.name, json.RawMessage(lastMutation.args)))
+				r.State.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: msg})
+				continue
+			}
 			task.Summary = action.Content
 			task.Status = TaskStatusCompleted
 			if next, continued, err := runTurnEnd(messages, task); err != nil {
@@ -1145,6 +1181,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			} else if continued {
 				messages = next
 				continue
+			}
+			if (toolCallCountThisTurn == 0 && task.Class != ClassQuestion) || needsVerification {
+				task.SalvagedReason = string(reasonUnverified)
+				r.State.AddMessageSalvaged(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, string(reasonUnverified))
+				return task, nil
 			}
 			r.State.AddMessageFinalWithUsage(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
 			return task, nil
@@ -1419,4 +1460,12 @@ func referencedPathsForTool(toolName string, argsMap map[string]interface{}) []s
 		return nil
 	}
 	return changedFilesForTool(toolName, argsMap)
+}
+
+// unverifiedMutation exposes the tracker's verification-gate scan under the
+// runner's tracker mutex.
+func (r *Runner) unverifiedMutation() (callEntry, bool) {
+	r.trackerMu.Lock()
+	defer r.trackerMu.Unlock()
+	return r.tracker.unverifiedMutation()
 }

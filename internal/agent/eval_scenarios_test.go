@@ -19,7 +19,7 @@ func evalRegistry(t *testing.T) *registry.Registry {
 	fakes := []registry.Tool{
 		{Name: "file.read", Risk: registry.RiskReadOnly},
 		{Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite},
-		{Name: "demo.test", Risk: registry.RiskReadOnly},
+		{Name: "test.run", Risk: registry.RiskReadOnly},
 	}
 	for _, tool := range fakes {
 		tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -30,6 +30,14 @@ func evalRegistry(t *testing.T) *registry.Registry {
 		}
 	}
 	return reg
+}
+
+// evalPolicy returns a policy engine that auto-approves shell/test commands
+// so the edit scenario can run test.run as its verification step.
+func evalPolicy() *policy.PolicyEngine {
+	cfg := &config.Config{}
+	cfg.Tools.Shell.AutoApprove = true
+	return policy.NewEngine(cfg, nil)
 }
 
 func evalRead(path string) string {
@@ -81,7 +89,7 @@ func TestEvalScenarios(t *testing.T) {
 			responses: []string{
 				evalRead("a.go"),
 				`{"rationale":"apply","action":{"type":"patch","content":"File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}}`,
-				`{"rationale":"validate","action":{"type":"tool_call","tool":"demo.test","args":{}}}`,
+				`{"rationale":"validate","action":{"type":"tool_call","tool":"test.run","args":{"command":"go test ./..."}}}`,
 				finalAnswer,
 			},
 			forceClass: ClassEdit,
@@ -176,7 +184,7 @@ func TestEvalScenarios(t *testing.T) {
 			reg := evalRegistry(t)
 			p := &agenttest.ScriptedProvider{Responses: tc.responses}
 			state := newTestState(t)
-			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+			r := NewRunner(p, reg, evalPolicy(), state, "test-model")
 			r.SetForceClass(string(tc.forceClass))
 			if tc.role != "" {
 				r.Role = tc.role

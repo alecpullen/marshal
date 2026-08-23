@@ -876,8 +876,11 @@ func TestPlanningStepSkippedByDefault(t *testing.T) {
 	if err := runner.Run(context.Background(), "rename the function"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if p.Calls != 1 {
-		t.Fatalf("provider called %d times, want 1 (no separate planning round-trip)", p.Calls)
+	// No separate planning round-trip: the single edit-class final with zero
+	// tool calls is nudged once (grounding), then accepted-but-flagged
+	// unverified. ScriptedProvider repeats the last response, so Calls = 2.
+	if p.Calls != 2 {
+		t.Fatalf("provider called %d times, want 2 (final + grounding nudge repeat)", p.Calls)
 	}
 	if len(state.Plan()) != 0 {
 		t.Fatalf("plan was set without PlanFirst: %v", state.Plan())
@@ -899,8 +902,10 @@ func TestPlanningStepRunsWhenPlanFirstEnabled(t *testing.T) {
 	if err := runner.Run(context.Background(), "rename the function"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if p.Calls != 2 {
-		t.Fatalf("provider called %d times, want 2 (plan + answer)", p.Calls)
+	// plan + answer, then the zero-tool-call edit final is nudged once and
+	// the repeated answer is accepted-but-flagged unverified.
+	if p.Calls != 3 {
+		t.Fatalf("provider called %d times, want 3 (plan + answer + nudge repeat)", p.Calls)
 	}
 	if len(state.Plan()) == 0 {
 		t.Fatal("PlanFirst=true did not set a plan")

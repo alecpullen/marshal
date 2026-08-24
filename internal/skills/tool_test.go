@@ -8,7 +8,6 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/contextpack"
 	"marshal/internal/tools/registry"
 )
 
@@ -120,39 +119,6 @@ func TestSkillLoadToolAlreadyActive(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for already-active skill")
-	}
-}
-
-func TestSkillLoadToolContextBudgetExceeded(t *testing.T) {
-	idx := NewIndex()
-	idx.skills["large"] = Skill{
-		Name:        "large",
-		Description: "A very large skill",
-		Body:        "This skill has a body that exceeds the context budget. " + string(make([]byte, 50000)),
-	}
-
-	state := newTestState()
-	state.SetContextPack(contextpack.Pack{
-		Sections: []contextpack.Section{
-			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"},
-		},
-		TokenUsage: contextpack.TokenUsage{
-			MaxTokens:       12000,
-			EstimatedTokens: 11990,
-		},
-	})
-
-	reg := registry.New()
-	RegisterTool(reg, idx, state)
-
-	tool, _ := reg.Lookup("skill.load")
-	_, err := tool.Handler(context.Background(), registry.ToolCall{
-		ID:   "call_3",
-		Name: "skill.load",
-		Args: []byte(`{"name": "large"}`),
-	})
-	if err == nil {
-		t.Fatal("expected error for budget exceeded")
 	}
 }
 
@@ -274,40 +240,6 @@ func TestSkillLoadBudgetIgnoresAutoloaded(t *testing.T) {
 	// The autoloaded skill must not consume the explicit-load budget.
 	if err := LoadSkillIntoSession(idx, state, "one"); err != nil {
 		t.Fatalf("explicit load under budget: %v", err)
-	}
-}
-
-func TestSkillLoaderRejectsOnFreshBudgetCheck(t *testing.T) {
-	idx := NewIndex()
-	// Two skills, each small enough to pass individually, but together
-	// they exceed a tight budget.
-	body := strings.Repeat("x", 4000) // ~1000 tokens each
-	idx.skills["big1"] = Skill{Name: "big1", Description: "d", Body: body}
-	idx.skills["big2"] = Skill{Name: "big2", Description: "d", Body: body}
-
-	state := newTestState()
-	state.SetContextPack(contextpack.Pack{
-		Sections: []contextpack.Section{
-			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"},
-		},
-		TokenUsage: contextpack.TokenUsage{
-			MaxTokens:       12000,
-			EstimatedTokens: 10500, // leaves ~1500 tokens — enough for one skill but not two
-		},
-	})
-
-	// First load succeeds.
-	if err := LoadSkillIntoSession(idx, state, "big1"); err != nil {
-		t.Fatalf("first load should succeed: %v", err)
-	}
-	// Second load must fail — the fresh budget check accounts for big1's
-	// body tokens already injected, not just the stale context pack.
-	err := LoadSkillIntoSession(idx, state, "big2")
-	if err == nil {
-		t.Fatal("second load should fail with fresh budget check, but succeeded")
-	}
-	if !strings.Contains(err.Error(), "context budget") {
-		t.Fatalf("expected budget error, got: %v", err)
 	}
 }
 

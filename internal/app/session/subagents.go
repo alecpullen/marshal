@@ -405,6 +405,22 @@ func (s *State) SubagentActivityTail(n int) []string {
 	if n <= 0 {
 		return nil
 	}
+	// Narration is what the child says it is doing, in its own words. It is
+	// a better answer to "what is this agent up to" than streamed
+	// reasoning, which is verbose and caught mid-thought. Falls through to
+	// reasoning, then audit summaries, when the model sends no preamble.
+	if msgs := s.Messages(); len(msgs) > 0 {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].ContentType != ContentTypeNarration {
+				continue
+			}
+			lines := strings.Split(strings.TrimSpace(msgs[i].Content), "\n")
+			if len(lines) > n {
+				lines = lines[len(lines)-n:]
+			}
+			return lines
+		}
+	}
 	ip := s.InProgress()
 	if ip.Reasoning != "" {
 		// M-4: only scan the trailing portion to avoid splitting a

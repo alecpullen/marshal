@@ -25,6 +25,7 @@ type AuditEvent struct {
 	ResultSummary   string
 	ResultContent   string
 	FilesChanged    []string
+	Symbols         []SymbolRef
 	CommandExitCode *int
 	Error           string
 	Sandbox         SandboxMeta
@@ -69,6 +70,7 @@ func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, a
 		ResultSummary: result.Summary,
 		ResultContent: result.Content,
 		FilesChanged:  append([]string(nil), result.FilesChanged...),
+		Symbols:       append([]SymbolRef(nil), result.Symbols...),
 		Sandbox:       result.Sandbox,
 	}
 	if event.ToolName == "" {

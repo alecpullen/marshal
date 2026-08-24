@@ -352,6 +352,38 @@ func TestFileWritePatchTool(t *testing.T) {
 	}
 }
 
+// Attribution must reach the ToolResult, and must never fail a write that
+// otherwise succeeded.
+func TestWritePatchRecordsSymbols(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	orig := "package main\n\nfunc Alpha() int {\n\treturn 1\n}\n\nfunc Beta() int {\n\treturn 2\n}\n"
+	if err := os.WriteFile(filePath, []byte(orig), 0644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	// Patch Alpha's body.
+	args := `{"patch": "File: app.go\n<<<<<<< SEARCH\n\treturn 1\n=======\n\treturn 11\n>>>>>>> REPLACE"}`
+	res, err := invokeTool(t, reg, "file.write_patch", args)
+	if err != nil {
+		t.Fatalf("handler failed: %v", err)
+	}
+	if res.Error != "" {
+		t.Fatalf("write_patch reported an error: %s", res.Error)
+	}
+	if len(res.Symbols) == 0 {
+		t.Fatal("expected symbols on the ToolResult")
+	}
+	if res.Symbols[0].Name != "Alpha" {
+		t.Fatalf("attributed to %q, want Alpha", res.Symbols[0].Name)
+	}
+}
+
 func TestWritePatch_NewFileCreation(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "new.txt")

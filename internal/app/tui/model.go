@@ -332,6 +332,12 @@ type Model struct {
 	// itemExpanded is. Rebuilt-and-pruned on every refreshViewport, so a
 	// finished region's entry does not leak.
 	regionOffset map[itemKey]int
+	// refFinder resolves blast radius; nil when LSP is unavailable.
+	refFinder ReferenceFinder
+	// callers caches reference lookups per audit item. A present-but-empty
+	// entry is a negative result and must not be re-queried.
+	callers      map[itemKey][]string
+	callersAsked map[itemKey]bool
 	// activeToolStartedAt tracks the in-flight tool call's StartedAt so
 	// refreshViewport can detect "a new tool started" and reset
 	// activeToolExpanded. Zero when no tool is active.
@@ -1591,7 +1597,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -3034,7 +3040,7 @@ func (m *Model) refreshViewport() {
 	}
 	queued := m.state.SteeringQueue()
 	notice, noticeUp := m.state.Notice()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset)
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers)
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -3082,7 +3088,7 @@ func (m *Model) refreshViewport() {
 		} else {
 			key := itemKeyFor(entry.Item)
 			expanded := m.isExpanded(key)
-			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, m.regionOffset[key], m.viewport.Width())
+			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, m.regionOffset[key], m.callers[key], m.viewport.Width())
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
@@ -3139,6 +3145,16 @@ func (m *Model) refreshViewport() {
 	for k := range m.regionOffset {
 		if !seenRegions[k] {
 			delete(m.regionOffset, k)
+		}
+	}
+	// Prune cached callers (and the asked marker) for items no longer in
+	// the transcript. This is what makes rollback correct for free: a
+	// rewound audit event leaves the transcript, so its blast-radius cache
+	// goes with it rather than re-rendering stale callers at moved lines.
+	for k := range m.callers {
+		if !seenRegions[k] {
+			delete(m.callers, k)
+			delete(m.callersAsked, k)
 		}
 	}
 
@@ -3664,6 +3680,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
+	// Issue blast-radius lookups for any edit rows the turn just settled.
+	// tea.Batch drops nil entries, so this is a no-op with no finder or no
+	// newly-seen resolved symbols.
+	cmds = append(cmds, m.callerQueryCmds())
 	return m, tea.Batch(cmds...)
 }
 
@@ -3884,11 +3904,14 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 		}
 	}
 	if !m.busy && !m.successPulse && !noticePending {
-		return m, nil
+		// Even when idle, newly-settled edit rows may still need their
+		// blast-radius lookups issued; the query cmds no-op when there is
+		// nothing left to ask.
+		return m, m.callerQueryCmds()
 	}
 	m.updateViewportHeight()
 	m.refreshViewport()
-	return m, tickCmd()
+	return m, tea.Batch(tickCmd(), m.callerQueryCmds())
 }
 
 // handleSpinnerTick handles a spinnerTickMsg, shared by Update and
@@ -3932,6 +3955,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSpinnerTick(msg)
 	case suggestionMsg:
 		return m.handleSuggestionMsg(msg)
+	case callersMsg:
+		return m.handleCallers(msg)
 	}
 	return m, nil
 }
@@ -4718,7 +4743,7 @@ func browserGlyphStyle() lipgloss.Style {
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
 	// The notice banner is rendered into the transcript, so its presence
@@ -4748,6 +4773,25 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	})
 	for _, k := range roKeys {
 		fmt.Fprintf(h, "roff=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionOffsets[k])
+	}
+	// Cached blast-radius results render into the transcript but live on the
+	// Model rather than in items, so without this an arriving result changes
+	// no hashed input, refreshViewport early-returns, and the callers line
+	// never appears. Same class of bug as the region offsets above. Sorted:
+	// map iteration is randomised, and an unstable hash would rebuild the
+	// viewport on every call.
+	cKeys := make([]itemKey, 0, len(callers))
+	for k := range callers {
+		cKeys = append(cKeys, k)
+	}
+	sort.Slice(cKeys, func(i, j int) bool {
+		if !cKeys[i].ts.Equal(cKeys[j].ts) {
+			return cKeys[i].ts.Before(cKeys[j].ts)
+		}
+		return cKeys[i].kind < cKeys[j].kind
+	})
+	for _, k := range cKeys {
+		fmt.Fprintf(h, "callers=%d|%d|%d|", k.ts.UnixNano(), k.kind, len(callers[k]))
 	}
 	for _, item := range items {
 		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())

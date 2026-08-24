@@ -56,6 +56,12 @@ type Data struct {
 	// testable without a live session.
 	Rules []string
 
+	// Skills is the session's currently active skills, held directly so the
+	// section is testable without a live session. This is cumulative state
+	// — what is loaded right now — as distinct from the per-turn transcript
+	// line, which records what loaded at one point.
+	Skills []string
+
 	// Swarm is the swarm run progress, held directly so tests don't need a
 	// live session.
 	Swarm session.SwarmProgress

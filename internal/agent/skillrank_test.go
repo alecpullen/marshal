@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"marshal/internal/agent/agenttest"
+	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
 )
@@ -204,5 +205,53 @@ func TestRunTaskAutoLoadsMatchingSkill(t *testing.T) {
 	}
 	if !transcriptContains(state, "write the test first") {
 		t.Fatal("skill body should be present in the session transcript")
+	}
+}
+
+// Auto-load must leave exactly one aggregate record per turn, naming what
+// it loaded — not one per skill, which is what the quiet flag exists to
+// avoid.
+func TestAutoLoadEmitsOneAggregateRecord(t *testing.T) {
+	state := newTestState(t)
+	idx := skills.NewIndex()
+	idx.Set("tdd", skills.Skill{Name: "tdd", Description: "test-driven development workflow", Body: "write the test first"})
+	idx.Set("lint", skills.Skill{Name: "lint", Description: "bulk lint fixing", Body: "fix lints"})
+	e, _ := rankFixture()
+
+	r := NewRunner(&agenttest.ScriptedProvider{}, regPatchAndTest(t), gatePolicy(), state, "test-model")
+	r.SkillIndex = idx
+	r.SkillEmbedder = e
+
+	r.maybeAutoLoadSkills(context.Background(), "fix the flaky test")
+
+	var autoCount int
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeSkillAuto {
+			autoCount++
+		}
+	}
+	if autoCount != 1 {
+		t.Fatalf("want 1 aggregate skill-auto record, got %d", autoCount)
+	}
+}
+
+// A turn that loads nothing must write nothing.
+func TestAutoLoadSilentWhenNothingLoaded(t *testing.T) {
+	state := newTestState(t)
+	idx := skills.NewIndex()
+	idx.Set("cooking", skills.Skill{Name: "cooking", Description: "recipes for dinner", Body: "preheat oven"})
+	e, _ := rankFixture()
+
+	r := NewRunner(&agenttest.ScriptedProvider{}, regPatchAndTest(t), gatePolicy(), state, "test-model")
+	r.SkillIndex = idx
+	r.SkillEmbedder = e
+
+	// "fix the flaky test" does not match "cooking" (cos = 0, below threshold)
+	r.maybeAutoLoadSkills(context.Background(), "fix the flaky test")
+
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeSkillAuto {
+			t.Fatalf("no skill should load for an unrelated goal, found skill-auto record: %q", m.Content)
+		}
 	}
 }

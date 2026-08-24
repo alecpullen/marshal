@@ -62,6 +62,15 @@ const (
 	// Same split as ContentTypeSkillBody: reaches the model, invisible to
 	// the reader.
 	ContentTypeSubagentReport ContentType = "subagent_report"
+	// ContentTypeSkillAuto records the skills the ranker auto-loaded at the
+	// start of one turn. Content is the newline-separated skill names.
+	//
+	// Auto-loaded skills are loaded quietly (internal/skills/tool.go) so the
+	// transcript is not cluttered with one tag per skill. This is the
+	// aggregate replacement: one line per turn, naming that turn's additions.
+	// Distinct from ContentTypeSkill, which is the tag an explicit
+	// skill.load tool call still posts.
+	ContentTypeSkillAuto ContentType = "skill_auto"
 )
 
 // Message is a single turn in the session transcript. Messages form an

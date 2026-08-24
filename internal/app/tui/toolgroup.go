@@ -74,6 +74,9 @@ func mergeableAuditEvent(item *session.TranscriptItem) *registry.AuditEvent {
 // toolTarget returns the short human-facing subject of a tool call — the
 // path it read, the command it ran, the query it searched for.
 func toolTarget(event registry.AuditEvent) string {
+	if s := symbolSubject(event); s != "" {
+		return s
+	}
 	if len(event.FilesChanged) > 0 {
 		return event.FilesChanged[0]
 	}

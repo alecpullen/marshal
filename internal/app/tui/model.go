@@ -1355,6 +1355,7 @@ func (m *Model) rebuildRail() {
 		sidepanel.SDDSection{},
 		sidepanel.ContextSection{},
 		sidepanel.ChangedSection{},
+		sidepanel.WorkingSetSection{},
 		sidepanel.ToolsSection{},
 		sidepanel.RulesSection{},
 		sidepanel.RepoSection{},

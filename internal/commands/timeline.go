@@ -87,7 +87,9 @@ func timelineDoc(state *session.State) Result {
 
 	var snaps []db.SnapshotRow
 	if database := state.DB(); database != nil {
-		if rows, err := database.ListSnapshots(state.SessionID()); err == nil {
+		if rows, err := database.ListSnapshots(state.SessionID()); err != nil {
+			state.Logger().Warn("timeline: list snapshots failed", "error", err)
+		} else {
 			snaps = rows
 		}
 	}

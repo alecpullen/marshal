@@ -519,7 +519,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				msgs := state.Messages()
 				var turns []session.Message
 				for _, m := range msgs {
-					if m.Role == session.RoleUser {
+					if m.Role == session.RoleUser && m.ContentType != session.ContentTypeSubagentReport {
 						turns = append(turns, m)
 					}
 				}
@@ -546,7 +546,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					// Rewind does not move it, so keying on it restored the
 					// files to the present and quietly did nothing.
 					var hash string
-					if snaps, err := database.ListSnapshots(state.SessionID()); err == nil {
+					if snaps, err := database.ListSnapshots(state.SessionID()); err != nil {
+						state.Logger().Warn("rewind: list snapshots failed", "error", err)
+					} else {
 						for _, e := range BuildTimeline(msgs, snaps, state.LeafID()) {
 							if e.MsgID == target.ID {
 								hash = e.SnapshotHash
@@ -554,7 +556,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 							}
 						}
 					}
-					if hash != "" {
+					if hash == "" {
+						restoreWarning = " Note: no snapshot to restore files to for this turn — files were left as-is."
+					} else {
 						if rerr := sp.Restore(context.Background(), hash); rerr != nil {
 							restoreWarning = fmt.Sprintf(" Warning: file restore failed — %s. Your files were not rewound, but the conversation branch was.", rerr)
 						}

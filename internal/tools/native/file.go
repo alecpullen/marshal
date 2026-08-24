@@ -327,6 +327,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 		// Generate diff to display in session
 		var diffs []string
 		var backups []session.BackupFile
+		var symbols []registry.SymbolRef
 
 		// Apply for real
 		for _, fp := range patches {
@@ -371,6 +372,9 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			})
 
 			patched := patch.ApplyPatch(original, fp)
+			if diff != "" {
+				symbols = append(symbols, symbolsForEdit(ctx, fp.Path, patched, diff)...)
+			}
 			if strings.Contains(original, "\r\n") {
 				// Normalize safely: collapse existing CRLF to LF first so a
 				// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
@@ -435,6 +439,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			Summary:      fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
 			Content:      content,
 			FilesChanged: append([]string(nil), paths...),
+			Symbols:      symbols,
 		}, nil
 	}
 	return tool
@@ -580,6 +585,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			Summary:      fmt.Sprintf("Wrote %s", args.Path),
 			Content:      diff,
 			FilesChanged: []string{args.Path},
+			Symbols:      symbolsForEdit(ctx, args.Path, content, diff),
 		}
 		if t.diagnostics != nil {
 			diag, _ := t.diagnostics.Check([]string{args.Path}, languageOf([]string{args.Path}))

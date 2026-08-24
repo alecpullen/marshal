@@ -582,7 +582,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// writes must serialize on the same gate. The lock is the caller's
 	// (buildAgentRunnerWithLock passes the runtime's stable lock so a config
 	// reload reuses the same gate in-flight children already hold).
-	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock)
+	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts)
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
 		subagentResolver,
@@ -821,7 +821,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		desktopCloser = closer
 	}
 
-	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock)
+	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts)
 	pipelineFactory := func(planPath string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable)
 	}
@@ -1251,7 +1251,7 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 // runner and every agent.run child share one gate. (Keeping this wrapper
 // avoids churning the ~25 test call sites.)
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
-	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{})
+	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{}, native.Options{})
 }
 
 // buildSubagentFactoryWithLock returns a closure that constructs a fresh
@@ -1275,7 +1275,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 // writeLock is the shared swarm.WriteLock every child runner serializes its
 // writes on. Production passes the parent runner's own gate so parent and
 // background children (which outlive the spawning turn) serialize together.
-func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
+func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock, baseNativeOpts native.Options) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
 	// A child tool ceiling is opt-in. An unset value, like an explicit zero,
 	// leaves the child unlimited. Negative values are treated as unset.
 	subtaskIters := cfg.Agent.SubtaskIterations
@@ -1336,7 +1336,37 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents))
-		roReg := agent.SubtaskScopeView(parentReg)
+		// The child needs its own native toolset, not a filtered view of the
+		// parent's. SubtaskScopeView re-registers the parent's existing Tool
+		// values, whose handlers close over the parent's toolSet — so a
+		// filtered view still writes into the parent's session state. That is
+		// how a child's shell output ended up streaming into the parent's
+		// in-flight agent.await row.
+		//
+		// The test wrapper passes an empty baseNativeOpts (no WorkspaceRoot),
+		// so we fall back to the old SubtaskScopeView view there — those tests
+		// only inspect model/pricing/iterations and never execute a tool.
+		var roReg *registry.Registry
+		if baseNativeOpts.WorkspaceRoot != "" {
+			childOpts := baseNativeOpts
+			childOpts.SessionState = childState    // per-agent: active call, output, approvals
+			childOpts.WorkspaceState = parentState // per-workspace: backups, active root
+			childReg := registry.New()
+			if err := native.RegisterAll(childReg, childOpts); err != nil {
+				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)
+			}
+			// Copy non-native tools (MCP, skills, desktop) from the parent's
+			// scoped registry so the child still sees them. SubtaskScopeView
+			// already removed agent.run/agent.await/agent.output/question.ask/ask_user.
+			for _, tool := range agent.SubtaskScopeView(parentReg).List() {
+				if _, exists := childReg.Lookup(tool.Name); !exists {
+					_ = childReg.Register(tool)
+				}
+			}
+			roReg = childReg
+		} else {
+			roReg = agent.SubtaskScopeView(parentReg)
+		}
 		role := agent.RoleSubtask
 		model := defaultModel
 		childProvider := parentProvider

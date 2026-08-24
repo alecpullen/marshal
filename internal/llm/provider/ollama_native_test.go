@@ -576,3 +576,23 @@ func TestOllamaWireCaptureMarksEmptyChunks(t *testing.T) {
 		t.Fatalf("terminal done chunk wrongly flagged:\n%s", data)
 	}
 }
+
+func TestOllamaProbeCapabilitiesReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"capabilities":["tools","thinking"],"model_info":{}}`)
+	}))
+	defer server.Close()
+
+	p, err := NewOllamaNative(Options{Name: "probe-test", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOllamaNative: %v", err)
+	}
+	caps := p.ProbeCapabilities(context.Background(), "m")
+	if caps.Reasoning == nil || !*caps.Reasoning {
+		t.Fatalf("Reasoning = %v, want true for a thinking-capable model", caps.Reasoning)
+	}
+	if caps.ToolCalling == nil || !*caps.ToolCalling {
+		t.Fatalf("ToolCalling = %v, want true", caps.ToolCalling)
+	}
+}

@@ -88,18 +88,21 @@ func NormalizeOpenRouter(data []byte) (map[string]Limit, error) {
 		}
 		maxOut := m.TopProvider.MaxCompletionTokens
 
-		var toolCalling *bool
+		var toolCalling, reasoning *bool
 		if m.SupportedParameters != nil {
-			supportsTools := false
+			supportsTools, supportsReasoning := false, false
 			for _, param := range m.SupportedParameters {
-				if param == "tools" {
+				switch param {
+				case "tools":
 					supportsTools = true
-					break
+				case "reasoning", "include_reasoning":
+					supportsReasoning = true
 				}
 			}
 			toolCalling = &supportsTools
+			reasoning = &supportsReasoning
 		}
-		out[m.ID] = Limit{ContextWindow: cw, MaxOutputTokens: maxOut, ToolCalling: toolCalling}
+		out[m.ID] = Limit{ContextWindow: cw, MaxOutputTokens: maxOut, ToolCalling: toolCalling, Reasoning: reasoning}
 	}
 	return out, nil
 }
@@ -132,6 +135,7 @@ func NormalizeLiteLLM(data []byte) (map[string]Limit, error) {
 		MaxInputTokens          json.RawMessage `json:"max_input_tokens"`
 		MaxOutputTokens         json.RawMessage `json:"max_output_tokens"`
 		SupportsFunctionCalling *bool           `json:"supports_function_calling"`
+		SupportsReasoning       *bool           `json:"supports_reasoning"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse litellm response: %w", err)
@@ -153,7 +157,8 @@ func NormalizeLiteLLM(data []byte) (map[string]Limit, error) {
 			lim.MaxOutputTokens = mo
 		}
 		lim.ToolCalling = v.SupportsFunctionCalling
-		if lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 || lim.ToolCalling != nil {
+		lim.Reasoning = v.SupportsReasoning
+		if lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 || lim.ToolCalling != nil || lim.Reasoning != nil {
 			out[id] = lim
 		}
 	}

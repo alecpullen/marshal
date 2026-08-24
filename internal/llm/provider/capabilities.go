@@ -3,11 +3,14 @@ package provider
 import "context"
 
 // ModelCapabilities is a per-model capability signal a provider can report
-// beyond its bulk Models() call. ToolCalling nil means not reported;
-// ContextWindow 0 means not reported.
+// beyond its bulk Models() call. ToolCalling/Reasoning nil means not
+// reported; ContextWindow 0 means not reported.
 type ModelCapabilities struct {
 	ToolCalling   *bool
 	ContextWindow int
+	// Reasoning reports whether the model can think; nil when the probe
+	// could not tell.
+	Reasoning *bool
 }
 
 // CapabilityProber is implemented by providers that can probe a single

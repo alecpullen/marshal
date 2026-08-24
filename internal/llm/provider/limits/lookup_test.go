@@ -108,7 +108,7 @@ func TestKnownTrueForToolCallingOnly(t *testing.T) {
 	}
 }
 
-func TestMergeToolCallingAnyTrueWins(t *testing.T) {
+func TestMergeTriStateAnyTrueWins(t *testing.T) {
 	trueVal, falseVal := true, false
 	a := map[string]Limit{"openai/gpt-4o": {ContextWindow: 100000, ToolCalling: &falseVal}}
 	b := map[string]Limit{"openai/gpt-4o": {ContextWindow: 128000, ToolCalling: &trueVal}}
@@ -123,7 +123,7 @@ func TestMergeToolCallingAnyTrueWins(t *testing.T) {
 	}
 }
 
-func TestMergeToolCallingFalseOnlyWhenBothSourcesSayFalse(t *testing.T) {
+func TestMergeTriStateFalseOnlyWhenBothSourcesSayFalse(t *testing.T) {
 	falseVal := false
 	a := map[string]Limit{"openai/gpt-4o": {ContextWindow: 100000, ToolCalling: &falseVal}}
 	b := map[string]Limit{"openai/gpt-4o": {ContextWindow: 128000, ToolCalling: &falseVal}}
@@ -135,7 +135,7 @@ func TestMergeToolCallingFalseOnlyWhenBothSourcesSayFalse(t *testing.T) {
 	}
 }
 
-func TestMergeToolCallingUnreportedDoesNotOverrideKnown(t *testing.T) {
+func TestMergeTriStateUnreportedDoesNotOverrideKnown(t *testing.T) {
 	trueVal := true
 	a := map[string]Limit{"openai/gpt-4o": {ContextWindow: 100000, ToolCalling: &trueVal}}
 	b := map[string]Limit{"openai/gpt-4o": {ContextWindow: 128000, ToolCalling: nil}}

@@ -93,6 +93,7 @@ func (p *OllamaNative) connHint(err error) error {
 // callers then fall back to the provider-level config value.
 type ollamaModelCaps struct {
 	tools         bool
+	thinking      bool
 	contextWindow int
 	known         bool
 }
@@ -414,19 +415,21 @@ func (p *OllamaNative) modelSupportsTools(ctx context.Context, model string) boo
 	return caps.tools
 }
 
-// ProbeCapabilities reports model's tool-calling support and context
-// window, probed via /api/show and cached per model. ToolCalling is nil
-// when the server's response omitted the capabilities field entirely (old
-// servers). ContextWindow is 0 when model_info reported no
-// *.context_length key.
+// ProbeCapabilities reports model's tool-calling support, context window,
+// and thinking support, probed via /api/show and cached per model.
+// ToolCalling/Reasoning are nil when the server's response omitted the
+// capabilities field entirely (old servers). ContextWindow is 0 when
+// model_info reported no *.context_length key.
 func (p *OllamaNative) ProbeCapabilities(ctx context.Context, model string) ModelCapabilities {
 	caps := p.cachedCaps(ctx, model)
-	var toolCalling *bool
+	var toolCalling, reasoning *bool
 	if caps.known {
 		t := caps.tools
 		toolCalling = &t
+		th := caps.thinking
+		reasoning = &th
 	}
-	return ModelCapabilities{ToolCalling: toolCalling, ContextWindow: caps.contextWindow}
+	return ModelCapabilities{ToolCalling: toolCalling, ContextWindow: caps.contextWindow, Reasoning: reasoning}
 }
 
 func (p *OllamaNative) probeModelCaps(ctx context.Context, model string) ollamaModelCaps {
@@ -459,6 +462,9 @@ func (p *OllamaNative) probeModelCaps(ctx context.Context, model string) ollamaM
 	for _, c := range parsed.Capabilities {
 		if c == "tools" {
 			caps.tools = true
+		}
+		if c == "thinking" {
+			caps.thinking = true
 		}
 	}
 	return caps

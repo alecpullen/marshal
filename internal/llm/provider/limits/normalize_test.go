@@ -46,3 +46,42 @@ func TestStripRoleSuffix(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeOpenRouterReasoning(t *testing.T) {
+	body := []byte(`{"data":[
+		{"id":"acme/thinker","context_length":1000,"supported_parameters":["tools","reasoning"]},
+		{"id":"acme/plain","context_length":1000,"supported_parameters":["tools"]},
+		{"id":"acme/unreported","context_length":1000}
+	]}`)
+	out, err := NormalizeOpenRouter(body)
+	if err != nil {
+		t.Fatalf("NormalizeOpenRouter: %v", err)
+	}
+	if r := out["acme/thinker"].Reasoning; r == nil || !*r {
+		t.Fatalf("thinker Reasoning = %v, want true", r)
+	}
+	if r := out["acme/plain"].Reasoning; r == nil || *r {
+		t.Fatalf("plain Reasoning = %v, want false", r)
+	}
+	if r := out["acme/unreported"].Reasoning; r != nil {
+		t.Fatalf("unreported Reasoning = %v, want nil", r)
+	}
+}
+
+func TestNormalizeLiteLLMReasoning(t *testing.T) {
+	body := []byte(`{
+		"acme/thinker": {"max_input_tokens": 1000, "supports_reasoning": true},
+		"acme/only-reasoning": {"supports_reasoning": false}
+	}`)
+	out, err := NormalizeLiteLLM(body)
+	if err != nil {
+		t.Fatalf("NormalizeLiteLLM: %v", err)
+	}
+	if r := out["acme/thinker"].Reasoning; r == nil || !*r {
+		t.Fatalf("thinker Reasoning = %v, want true", r)
+	}
+	// An entry carrying only a reasoning signal is still kept.
+	if r := out["acme/only-reasoning"].Reasoning; r == nil || *r {
+		t.Fatalf("only-reasoning Reasoning = %v, want false", r)
+	}
+}

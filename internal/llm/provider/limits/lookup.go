@@ -65,8 +65,8 @@ func (t Table) normalized() map[string]Limit {
 }
 
 // smallest merges two candidate limits field-by-field, preferring the
-// smaller non-zero token-limit value and combining ToolCalling via
-// mergeToolCalling.
+// smaller non-zero token-limit value and combining ToolCalling/Reasoning
+// via mergeTriState.
 func smallest(a, b Limit) Limit {
 	out := a
 	if a.ContextWindow == 0 || (b.ContextWindow != 0 && b.ContextWindow < a.ContextWindow) {
@@ -75,18 +75,19 @@ func smallest(a, b Limit) Limit {
 	if a.MaxOutputTokens == 0 || (b.MaxOutputTokens != 0 && b.MaxOutputTokens < a.MaxOutputTokens) {
 		out.MaxOutputTokens = b.MaxOutputTokens
 	}
-	out.ToolCalling = mergeToolCalling(a.ToolCalling, b.ToolCalling)
+	out.ToolCalling = mergeTriState(a.ToolCalling, b.ToolCalling)
+	out.Reasoning = mergeTriState(a.Reasoning, b.Reasoning)
 	return out
 }
 
 func known(lim Limit) bool {
-	return lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 || lim.ToolCalling != nil
+	return lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 || lim.ToolCalling != nil || lim.Reasoning != nil
 }
 
-// mergeToolCalling combines two possibly-nil tool-calling signals: any
-// confirmed true wins, false only if every reporting source says false,
-// nil only if neither source reported anything.
-func mergeToolCalling(a, b *bool) *bool {
+// mergeTriState combines two possibly-nil boolean signals: any confirmed
+// true wins, false only if every reporting source says false, nil only if
+// neither source reported anything.
+func mergeTriState(a, b *bool) *bool {
 	if a == nil {
 		return b
 	}
@@ -237,7 +238,8 @@ func merge(a, b map[string]Limit) map[string]Limit {
 			// Prefer provider-specific smaller output limit when both exist.
 			existing.MaxOutputTokens = v.MaxOutputTokens
 		}
-		existing.ToolCalling = mergeToolCalling(existing.ToolCalling, v.ToolCalling)
+		existing.ToolCalling = mergeTriState(existing.ToolCalling, v.ToolCalling)
+		existing.Reasoning = mergeTriState(existing.Reasoning, v.Reasoning)
 		out[k] = existing
 	}
 	return out

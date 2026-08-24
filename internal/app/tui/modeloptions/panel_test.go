@@ -35,7 +35,7 @@ func testConfig() config.Config {
 
 func TestPanelShowsActivePresetFields(t *testing.T) {
 	cfg := testConfig()
-	p := New(cfg, "active")
+	p := New(cfg, "active", true)
 	view := p.View(80, 12)
 	if !strings.Contains(view, "active") {
 		t.Fatalf("view missing preset name:\n%s", view)
@@ -51,7 +51,7 @@ func TestPanelShowsActivePresetFields(t *testing.T) {
 func TestPanelEmitsCopiedCandidateOnCommit(t *testing.T) {
 	cfg := testConfig()
 	original := cfg.Models.Presets["active"].ContextWindow
-	p := New(cfg, "active")
+	p := New(cfg, "active", true)
 
 	// Navigate to context row (cursor starts at row 0).
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -84,7 +84,7 @@ func TestPanelEmitsCopiedCandidateOnCommit(t *testing.T) {
 
 func TestPanelZeroMeansAutomatic(t *testing.T) {
 	cfg := testConfig()
-	p := New(cfg, "active")
+	p := New(cfg, "active", true)
 
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	p.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
@@ -102,7 +102,7 @@ func TestPanelZeroMeansAutomatic(t *testing.T) {
 
 func TestPanelRejectsNegativeValues(t *testing.T) {
 	cfg := testConfig()
-	p := New(cfg, "active")
+	p := New(cfg, "active", true)
 
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	p.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
@@ -128,7 +128,7 @@ func TestPanelRejectsNegativeValues(t *testing.T) {
 
 func TestPanelThinkingDescriptor(t *testing.T) {
 	cfg := testConfig()
-	p := New(cfg, "active")
+	p := New(cfg, "active", true)
 
 	// Find the thinking descriptor.
 	var d *descriptor
@@ -164,12 +164,30 @@ func TestPanelThinkingDescriptor(t *testing.T) {
 
 func TestPanelEscClosesAtRoot(t *testing.T) {
 	cfg := testConfig()
-	p := New(cfg, "active")
+	p := New(cfg, "active", true)
 	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
 		t.Fatal("expected a command from Esc at root")
 	}
 	if _, ok := cmd().(ClosedMsg); !ok {
 		t.Fatalf("expected ClosedMsg, got %T", cmd())
+	}
+}
+
+func TestPanelHidesThinkingRowWhenReasoningUnsupported(t *testing.T) {
+	cfg := testConfig()
+	for _, d := range New(cfg, "active", false).descriptors() {
+		if d.id == "thinking" {
+			t.Fatal("thinking row must be hidden when reasoning is known-unsupported")
+		}
+	}
+	found := false
+	for _, d := range New(cfg, "active", true).descriptors() {
+		if d.id == "thinking" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("thinking row must be visible when support is unknown or confirmed")
 	}
 }

@@ -653,42 +653,34 @@ func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
-	base := schema.ChatRequest{
-		Model:    "test-model",
-		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	newReq := func(thinking string) schema.ChatRequest {
+		return schema.ChatRequest{
+			Model:    "m",
+			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+			Thinking: thinking,
+		}
 	}
-
-	// "high" passes through verbatim.
-	body, err := buildChatRequestBody(base, false)
-	if err != nil {
-		t.Fatalf("buildChatRequestBody: %v", err)
-	}
-	base.Thinking = "high"
-	body, err = buildChatRequestBody(base, false)
-	if err != nil {
-		t.Fatalf("buildChatRequestBody: %v", err)
-	}
-	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		t.Fatalf("parse body: %v", err)
-	}
-	if string(parsed["reasoning_effort"]) != `"high"` {
-		t.Fatalf("reasoning_effort = %s, want \"high\"", string(parsed["reasoning_effort"]))
-	}
-
-	// "off" and "" omit the key.
-	for _, thinking := range []string{"off", ""} {
-		base.Thinking = thinking
-		body, err = buildChatRequestBody(base, false)
+	// Known and unknown effort values pass through verbatim — the valid set
+	// varies by backend and the panel now gates visibility on resolved
+	// support, so the wire layer does not second-guess it.
+	for _, effort := range []string{"low", "medium", "high", "minimal", "xhigh"} {
+		body, err := buildChatRequestBody(newReq(effort), false)
 		if err != nil {
-			t.Fatalf("buildChatRequestBody(%q): %v", thinking, err)
+			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
-		var fresh map[string]json.RawMessage
-		if err := json.Unmarshal(body, &fresh); err != nil {
-			t.Fatalf("parse body: %v", err)
+		if !strings.Contains(string(body), `"reasoning_effort":"`+effort+`"`) {
+			t.Fatalf("effort %q not passed through: %s", effort, body)
 		}
-		if _, ok := fresh["reasoning_effort"]; ok {
-			t.Fatalf("reasoning_effort present for thinking=%q: %s", thinking, string(fresh["reasoning_effort"]))
+	}
+	// off/default/empty omit the field entirely: chat-completions reasoning
+	// models have no wire-level off.
+	for _, effort := range []string{"off", "default", ""} {
+		body, err := buildChatRequestBody(newReq(effort), false)
+		if err != nil {
+			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
+		}
+		if strings.Contains(string(body), "reasoning_effort") {
+			t.Fatalf("effort %q must be omitted: %s", effort, body)
 		}
 	}
 }

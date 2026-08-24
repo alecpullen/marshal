@@ -54,23 +54,28 @@ type descriptor struct {
 // window and max output tokens. It owns a private copy of the config and
 // emits ChangedMsg with a fresh candidate copy whenever a value commits.
 type Panel struct {
-	cfg        config.Config
-	presetName string
-	fields     *listpanel.FieldList
+	cfg                config.Config
+	presetName         string
+	fields             *listpanel.FieldList
 
-	changed bool
+	reasoningSupported bool
+	changed            bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
 
 // New creates a model-options panel for the named preset in the provided
 // config. Changes mutate an internal copy of cfg; callers receive a fresh
-// copy in ChangedMsg.Config.
-func New(cfg config.Config, presetName string) *Panel {
+// copy in ChangedMsg.Config. reasoningSupported controls whether the
+// "Thinking effort" row appears at all: callers resolve it via
+// provider.ResolveReasoningSupport and pass true whenever support is
+// unknown — hiding a working control is worse than showing a dead one.
+func New(cfg config.Config, presetName string, reasoningSupported bool) *Panel {
 	cfg = cloneConfig(cfg)
 	p := &Panel{
-		cfg:        cfg,
-		presetName: presetName,
+		cfg:                cfg,
+		presetName:         presetName,
+		reasoningSupported: reasoningSupported,
 	}
 	p.fields = listpanel.NewFieldList(p.buildFields)
 	return p
@@ -145,7 +150,7 @@ func (p *Panel) buildFields() []*listpanel.Field {
 }
 
 func (p *Panel) descriptors() []descriptor {
-	return []descriptor{
+	ds := []descriptor{
 		{
 			id:          "context_window",
 			title:       "Context window",
@@ -175,7 +180,9 @@ func (p *Panel) descriptors() []descriptor {
 			getBool:     func(m routing.ModelPreset) bool { return m.LocalOnly },
 			setBool:     func(m *routing.ModelPreset, v bool) { m.LocalOnly = v },
 		},
-		{
+	}
+	if p.reasoningSupported {
+		ds = append(ds, descriptor{
 			id:          "thinking",
 			title:       "Thinking effort",
 			description: "Reasoning effort for thinking-capable models; default leaves the wire untouched.",
@@ -192,8 +199,9 @@ func (p *Panel) descriptors() []descriptor {
 				}
 				m.Thinking = v
 			},
-		},
+		})
 	}
+	return ds
 }
 
 // Config returns the panel's current working config copy.

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -10,6 +11,9 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/presetflow"
+	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/limits"
 )
 
 // pendingModelOptionsState tracks a model-options config candidate that was
@@ -21,6 +25,37 @@ type pendingModelOptionsState struct {
 	retry      bool
 }
 
+// resolveReasoningSupport reports whether the preset's model is known to
+// accept a thinking-effort control, so the model-options panel can hide the
+// row when it would be a no-op. Any resolution failure leaves the row
+// visible: hiding a working control is worse than showing a dead one.
+// Limit discovery is cache-only — a keypress must never trigger a remote
+// limits refresh — and the capability probe is bounded by
+// presetflow.CapabilityProbeTimeout.
+func (m *Model) resolveReasoningSupport(presetName string) bool {
+	preset, ok := m.state.Config.Models.Presets[presetName]
+	if !ok {
+		return true
+	}
+	pc, ok := m.state.Config.Providers[preset.Provider]
+	if !ok {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), presetflow.CapabilityProbeTimeout)
+	defer cancel()
+	prov, err := provider.NewFromConfig(preset.Provider, pc, m.dataDir, false, m.state.Config.Agent.ThinkingBudgetMargin)
+	if err != nil {
+		return true
+	}
+	var table *limits.Table
+	if cache, err := limits.Load(m.dataDir); err == nil && len(cache.Table) > 0 {
+		t := limits.NewTable(cache.Table)
+		table = &t
+	}
+	supported, _ := provider.ResolveReasoningSupport(ctx, prov, preset.Provider, preset.Model, table)
+	return supported
+}
+
 // openModelOptions opens the model-options panel for the active route's preset.
 func (m *Model) openModelOptions() {
 	route := m.state.ActiveRoute()
@@ -30,14 +65,14 @@ func (m *Model) openModelOptions() {
 	}
 	presetName := route.Preset
 	if m.pendingModelOptions != nil && m.pendingModelOptions.presetName == presetName {
-		m.dock.Open(modeloptions.New(m.pendingModelOptions.cfg, presetName))
+		m.dock.Open(modeloptions.New(m.pendingModelOptions.cfg, presetName, m.resolveReasoningSupport(presetName)))
 		return
 	}
 	if _, ok := m.state.Config.Models.Presets[presetName]; !ok {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Preset %q is not configured.", presetName), session.ContentTypePlain)
 		return
 	}
-	m.dock.Open(modeloptions.New(m.state.Config, presetName))
+	m.dock.Open(modeloptions.New(m.state.Config, presetName, m.resolveReasoningSupport(presetName)))
 }
 
 // openModelOptionsForProvider opens a picker listing the model pairs that use

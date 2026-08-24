@@ -84,7 +84,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		if apiKey == "" {
 			return nil, fmt.Errorf("provider %q: anthropic providers require api_key or api_key_env", name)
 		}
-		caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false}
+		caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false, Reasoning: true}
 		return NewAnthropic(Options{
 			Name:                 name,
 			BaseURL:              pc.BaseURL,

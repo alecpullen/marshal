@@ -325,3 +325,17 @@ func TestNewFromConfigOllamaReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T)
 			models[0].ContextWindow, models[0].MaxOutputTokens)
 	}
 }
+
+func TestNewFromConfigAnthropicReportsReasoning(t *testing.T) {
+	p, err := NewFromConfig("anthropic", config.ProviderConfig{
+		Type:    "anthropic",
+		BaseURL: "https://api.anthropic.com",
+		APIKey:  "test-key",
+	}, "", false, 0)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if !p.Capabilities(t.Context()).Reasoning {
+		t.Fatal("anthropic provider must report Reasoning capability; NewFromConfig currently strips it")
+	}
+}

@@ -1704,6 +1704,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
+		tuiOpts = append(tuiOpts, tui.WithDataDir(filepath.Join(homeDir, ".local", "share", "marshal")))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
 		if rt.LSPManager != nil {

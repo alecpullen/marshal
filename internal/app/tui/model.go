@@ -190,6 +190,7 @@ type Model struct {
 	memoryDB      *db.DB
 	memoryProject int64
 	homeDir       string
+	dataDir       string
 	workDir       string
 	skillIndex    *skills.Index
 	cmdRegistry   *commands.Registry
@@ -542,6 +543,13 @@ func WithHomeDir(homeDir string) Option {
 	return func(m *Model) {
 		m.homeDir = homeDir
 	}
+}
+
+// WithDataDir sets the application data directory. The model-options panel
+// reads the on-disk limits cache from it when resolving per-model
+// capability support.
+func WithDataDir(dataDir string) Option {
+	return func(m *Model) { m.dataDir = dataDir }
 }
 
 func WithWorkingDir(workDir string) Option {
@@ -1729,7 +1737,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case cmdName == "model-options":
 			// Open the model-options editor for the picked model pair.
-			m.dock.Open(modeloptions.New(m.state.Config, pm.Value))
+			m.dock.Open(modeloptions.New(m.state.Config, pm.Value, m.resolveReasoningSupport(pm.Value)))
 			m.refreshViewport()
 			return m, nil
 		case cmdName == "mode" && pm.Value == "sdd":

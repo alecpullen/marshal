@@ -208,13 +208,15 @@ func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte
 	if req.Stream {
 		streamOpts = &streamOptions{IncludeUsage: true}
 	}
-	// reasoning_effort: pass through low/medium/high verbatim. "off" and ""
-	// are omitted — chat-completions reasoning models have no wire-level off,
-	// so the field is simply not sent (documented on the preset field).
-	reasoningEffort := ""
-	switch req.Thinking {
-	case "low", "medium", "high":
-		reasoningEffort = req.Thinking
+	// reasoning_effort: pass through any non-empty effort value verbatim —
+	// the valid set varies by backend (low/medium/high, minimal, …) and the
+	// model-options panel gates visibility on resolved support, so the wire
+	// layer does not second-guess values. "off"/"default" mean "leave the
+	// wire untouched": chat-completions reasoning models have no wire-level
+	// off, so the field is simply not sent.
+	reasoningEffort := req.Thinking
+	if reasoningEffort == "off" || reasoningEffort == "default" {
+		reasoningEffort = ""
 	}
 	// reasoning.summary: opt-in per provider config. The OpenAI Responses
 	// API documents summary:"auto"; chat-completions-compatible gateways

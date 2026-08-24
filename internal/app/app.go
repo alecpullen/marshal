@@ -575,6 +575,14 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
+	if err := reg.Register(agent.NewSubagentAwaitTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
+	}
+	if err := reg.Register(agent.NewSubagentOutputTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
+	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	repoInstructions, _ := loadRepoInstructions(state.WorkingDir)
 	runner.SystemPromptAddendum = composeAddendum(repoInstructions, "")

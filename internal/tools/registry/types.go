@@ -52,6 +52,23 @@ type ToolCall struct {
 
 type ToolHandler func(ctx context.Context, call ToolCall) (ToolResult, error)
 
+// SymbolRef identifies one symbol a tool call touched.
+//
+// Line and Col are the position of the symbol's *name*, in LSP's 0-based
+// convention, so a references query can be issued without re-deriving it.
+// Resolved is false when the position could not be determined; consumers
+// must then use the name for display only and must NOT issue a query — a
+// query at a guessed position returns confidently wrong results.
+type SymbolRef struct {
+	File     string
+	Name     string
+	Kind     string // "function", "method", "type"
+	Receiver string // e.g. "*Scanner"; empty for non-methods
+	Line     int    // 0-based (LSP)
+	Col      int    // 0-based
+	Resolved bool
+}
+
 type ToolResult struct {
 	Summary         string
 	Content         string
@@ -59,6 +76,9 @@ type ToolResult struct {
 	FilesChanged    []string
 	CommandExitCode *int
 	Sandbox         SandboxMeta
+	// Symbols are the symbols this call touched, when the tool and the
+	// file's language support attribution. Always safe to be empty.
+	Symbols []SymbolRef
 }
 
 // SandboxMeta records how a command was executed under the Milestone Q

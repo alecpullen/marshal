@@ -24,6 +24,14 @@ import (
 // Note the honesty limit of the remote feeds: they report WHETHER reasoning
 // is supported, never WHICH effort values. The dynamic part of the UI is
 // show/hide; the value set stays a hardcoded fallback.
+//
+// Step 3 is currently speculative for the built-in providers: OllamaNative
+// short-circuits at step 1 (factory sets caps.Reasoning=false because Ollama's
+// think toggle is not reasoning_effort), and OpenAICompatible does not
+// implement CapabilityProber. The step exists so a future provider (or an
+// OpenAICompatible prober) can supply per-model knowledge without changing
+// the resolver contract. The Ollama ProbeCapabilities.Reasoning plumbing is
+// tested but has no live consumer today.
 func ResolveReasoningSupport(ctx context.Context, prov Provider, providerName, modelID string, table *limits.Table) (supported, known bool) {
 	caps := prov.Capabilities(ctx)
 	if !caps.Reasoning {

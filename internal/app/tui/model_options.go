@@ -32,6 +32,15 @@ type pendingModelOptionsState struct {
 // Limit discovery is cache-only — a keypress must never trigger a remote
 // limits refresh — and the capability probe is bounded by
 // presetflow.CapabilityProbeTimeout.
+//
+// Caveat: the limits table is a unified on-disk cache fed by OpenRouter and
+// LiteLLM, keyed by upstream provider/model ids. Lookup accepts variant and
+// unambiguous-prefix matches, so a marshal provider name (e.g. "litellm")
+// serving a fine-tuned non-reasoning variant of a model may inherit the
+// upstream's Reasoning verdict. The panel's "hide only when known" policy
+// makes this self-consistent — the row is hidden only when the table reports
+// a definite yes/no — but a false "no" is possible. The fail-open direction
+// is to show the row, which a variant match cannot override.
 func (m *Model) resolveReasoningSupport(presetName string) bool {
 	preset, ok := m.state.Config.Models.Presets[presetName]
 	if !ok {

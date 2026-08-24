@@ -15,12 +15,20 @@ import (
 // (the default) disables capture entirely. Responses only — request bodies
 // carry conversation content and API keys travel in headers, so neither is
 // ever written.
+//
+// Capture files are not managed or rotated: each Chat call creates one file
+// named <provider>-<timestamp>.stream. A long session with capture enabled
+// will accumulate files unbounded, so the caller is responsible for cleaning
+// the directory (e.g. a cron job or manual rm). This is intentional — the
+// feature is a debugging aid, not a persistent log.
 const wireCaptureEnvVar = "MARSHAL_WIRE_CAPTURE"
 
 // wireCapture tees one Chat response body into a file and accepts marker
-// annotations from the decode loop. newWireCapture returns nil when capture
-// is disabled or the capture file cannot be created: capture is a debugging
-// aid and must never fail a request.
+// annotations from the decode loop. Marker lines ([unrecognized-chunk] …)
+// are interleaved into the teed byte stream, so a capture file is a debug
+// log, not a verbatim replayable stream. newWireCapture returns nil when
+// capture is disabled or the capture file cannot be created: capture is a
+// debugging aid and must never fail a request.
 type wireCapture struct {
 	mu sync.Mutex
 	f  *os.File

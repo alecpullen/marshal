@@ -117,9 +117,10 @@ type ModelPreset struct {
 	LocalOnly       bool   `toml:"local_only"`
 	// Thinking controls reasoning effort: "" = provider default (nothing is
 	// sent on the wire), "off" disables thinking where the provider allows
-	// it, "low"/"medium"/"high" map to reasoning_effort on OpenAI-compatible
-	// endpoints and to budget_tokens on Anthropic. Ignored when the provider
-	// reports no reasoning capability.
+	// it, and any other value (low/medium/high, minimal, etc.) is passed
+	// through verbatim as reasoning_effort on OpenAI-compatible endpoints
+	// and as budget_tokens on Anthropic. Ignored when the provider reports
+	// no reasoning capability.
 	Thinking string `toml:"thinking,omitempty"`
 	// Temperature optionally overrides the provider's default sampling
 	// temperature for this preset. Nil sends nothing on the wire — the

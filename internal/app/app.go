@@ -1446,6 +1446,15 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
 		child.WriteGate = writeLock
+		// C-1: wire the snapshot service onto the child runner so its
+		// pre-write snapshots are recorded against the child's own session
+		// ID. Without this, a background child can clobber files with no
+		// rollback coverage — the parent's dispatch-time snapshot records
+		// changedFilesForTool("agent.run", ...) which is always empty.
+		if snap := parentState.Snapshotter(); snap != nil {
+			child.Snapshotter = snap
+			child.SnapshotRecorder = database
+		}
 		// A background child's writes must drop the parent's cached reads;
 		// the child's own ClearToolCache only covers its own session.
 		child.CacheInvalidator = parentState.ClearToolCache

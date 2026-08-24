@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +69,11 @@ type SubagentView struct {
 	// SalvagedReason is non-empty when the subagent hit a budget ceiling
 	// and its summary is partial. The TUI card renders this as a marker.
 	SalvagedReason string
+
+	// Error carries the failure text when Status == SubagentFailed so
+	// agent.await / agent.output can report why the child failed. Empty
+	// for running or successful subagents.
+	Error string
 }
 
 // SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
@@ -103,6 +110,7 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 	}
 	s.mu.Lock()
 	s.subagents = append(s.subagents, v)
+	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
 	if broker != nil {
@@ -130,6 +138,7 @@ func (s *State) RegisterSubagentWithMeta(label string, child *State, meta Subage
 	}
 	s.mu.Lock()
 	s.subagents = append(s.subagents, v)
+	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
 	if broker != nil {
@@ -217,8 +226,21 @@ func (s *State) AddSubagentTokens(id int64, n int) {
 	}
 }
 
-// err != nil), records its end time and final summary, and republishes so
-// the card flips from the running spinner to its terminal state.
+// maxRetainedChildStates caps how many completed subagent Child State
+// pointers are retained for drill-down. Older completed children have
+// their Child pointer nilled so the full transcript/audit-log is GC'd.
+// The summary, status, and metadata (small strings) are always retained.
+const maxRetainedChildStates = 10
+
+// FinishSubagent marks a subagent view finished (or failed, when
+// err != nil), records its end time and final summary, closes its done
+// channel so WaitSubagent callers unblock, and republishes so the card
+// flips from the running spinner to its terminal state.
+//
+// M-3: after marking the subagent finished, nil out the Child pointer on
+// older completed subagents beyond maxRetainedChildStates so their full
+// State objects (transcript, audit log, thinking log) can be garbage
+// collected. The summary and status are retained for the card display.
 func (s *State) FinishSubagent(id int64, summary string, err error) {
 	s.mu.Lock()
 	var updated SubagentView
@@ -229,6 +251,7 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 			s.subagents[i].Summary = summary
 			if err != nil {
 				s.subagents[i].Status = SubagentFailed
+				s.subagents[i].Error = err.Error()
 			} else {
 				s.subagents[i].Status = SubagentDone
 			}
@@ -237,8 +260,26 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 			break
 		}
 	}
+	// M-3: release Child State pointers on older completed subagents.
+	var completed int
+	for i := len(s.subagents) - 1; i >= 0; i-- {
+		if s.subagents[i].Status != SubagentRunning && s.subagents[i].Child != nil {
+			completed++
+			if completed > maxRetainedChildStates {
+				s.subagents[i].Child = nil
+			}
+		}
+	}
+	var done chan struct{}
+	if found {
+		done = s.subagentDone[id]
+		delete(s.subagentDone, id)
+	}
 	broker := s.subagentBroker
 	s.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
 	if found && broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: updated})
 	}
@@ -315,4 +356,82 @@ func (s *State) SetSubagentBroker(b *pubsub.Broker[SubagentEvent]) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.subagentBroker = b
+}
+
+// WaitSubagent blocks until the subagent with the given ID finishes (or the
+// caller's context ends) and returns its final view. A subagent that has
+// already finished returns immediately, so callers can fetch results from
+// earlier turns. Unknown IDs return an error.
+func (s *State) WaitSubagent(ctx context.Context, id int64) (SubagentView, error) {
+	s.mu.Lock()
+	for i := range s.subagents {
+		if s.subagents[i].ID != id {
+			continue
+		}
+		v := s.subagents[i]
+		done := s.subagentDone[id]
+		s.mu.Unlock()
+		if v.Status != SubagentRunning || done == nil {
+			return v, nil
+		}
+		select {
+		case <-done:
+			v, _ = s.Subagent(id)
+			return v, nil
+		case <-ctx.Done():
+			return SubagentView{}, ctx.Err()
+		}
+	}
+	s.mu.Unlock()
+	return SubagentView{}, fmt.Errorf("session: unknown subagent id %d", id)
+}
+
+// maxReasoningTailBytes caps how much of the in-progress reasoning buffer
+// SubagentActivityTail scans. The reasoning buffer can grow unboundedly
+// within one model call; without this cap, splitting it into lines would
+// copy the entire buffer on every agent.output call or TUI frame.
+const maxReasoningTailBytes = 8192
+
+// SubagentActivityTail returns up to n lines summarising what a running
+// subagent is currently doing. It prefers the trailing end of streamed
+// reasoning, then recent audit-log result summaries. It lives here (rather
+// than duplicated in the agent and TUI packages) so the two consumers —
+// agent.output and the TUI card — cannot drift apart.
+//
+// M-4: only the trailing maxReasoningTailBytes of the reasoning buffer are
+// scanned, so a very long reasoning stream does not cause the tail to
+// copy the entire buffer on every call.
+func (s *State) SubagentActivityTail(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	ip := s.InProgress()
+	if ip.Reasoning != "" {
+		// M-4: only scan the trailing portion to avoid splitting a
+		// potentially huge buffer on every call.
+		tail := ip.Reasoning
+		if len(tail) > maxReasoningTailBytes {
+			tail = tail[len(tail)-maxReasoningTailBytes:]
+			// Drop the partial first line so we start at a line boundary.
+			if idx := strings.IndexByte(tail, '\n'); idx >= 0 {
+				tail = tail[idx+1:]
+			}
+		}
+		lines := strings.Split(strings.TrimSpace(tail), "\n")
+		if len(lines) > n {
+			lines = lines[len(lines)-n:]
+		}
+		return lines
+	}
+	log := s.AuditLog()
+	if len(log) == 0 {
+		return nil
+	}
+	var out []string
+	for i := len(log) - 1; i >= 0 && len(out) < n; i-- {
+		if log[i].ResultSummary != "" {
+			out = append([]string{log[i].ResultSummary}, out...)
+		}
+	}
+	return out
 }

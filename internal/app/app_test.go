@@ -3928,3 +3928,73 @@ func TestPipelineRoleRunnerGetsRollover(t *testing.T) {
 		t.Fatal("rollover disabled in config must mean no controller")
 	}
 }
+
+// fakeSnapshotter is a minimal Snapshotter for testing child-runner wiring.
+type fakeSnapshotter struct{ tracked bool }
+
+func (f *fakeSnapshotter) Track(ctx context.Context) (string, error) {
+	f.tracked = true
+	return "fake-hash", nil
+}
+func (f *fakeSnapshotter) Diff(ctx context.Context, hash string) (string, error) {
+	return "", nil
+}
+func (f *fakeSnapshotter) Restore(ctx context.Context, hash string) error { return nil }
+
+// TestBuildSubagentFactoryWiresSnapshotter verifies C-1: when the parent
+// session has a Snapshotter, the child runner gets it (and the DB recorder)
+// so pre-write snapshots are recorded against the child's session ID.
+func TestBuildSubagentFactoryWiresSnapshotter(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	snap := &fakeSnapshotter{}
+	state.SetSnapshotter(snap)
+	reg := registry.New()
+
+	factory, _ := buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Snapshotter == nil {
+		t.Fatal("child.Snapshotter = nil, want the parent's snapshot service")
+	}
+	if child.SnapshotRecorder == nil {
+		t.Fatal("child.SnapshotRecorder = nil, want the DB recorder")
+	}
+}
+
+// TestBuildSubagentFactoryNoSnapshotterWhenParentHasNone verifies that when
+// the parent session has no Snapshotter, the child also gets none (no nil
+// dereference).
+func TestBuildSubagentFactoryNoSnapshotterWhenParentHasNone(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+
+	factory, _ := buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Snapshotter != nil {
+		t.Fatal("child.Snapshotter should be nil when parent has none")
+	}
+	if child.SnapshotRecorder != nil {
+		t.Fatal("child.SnapshotRecorder should be nil when parent has no snapshotter")
+	}
+}

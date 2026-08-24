@@ -414,6 +414,10 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 	}()
 
 	// Wait until both subagents have entered exec, proving concurrency.
+	// The parent turn returns immediately after dispatch (async), so Run
+	// may finish before the children enter — that is expected and not a
+	// failure.
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		enteredMu.Lock()
 		n := len(entered)
@@ -421,11 +425,10 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 		if n >= 2 {
 			break
 		}
-		select {
-		case err := <-runErr:
-			t.Fatalf("Run finished early with %d entered: %v", n, err)
-		case <-time.After(10 * time.Millisecond):
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for both subagents to enter; entered=%d", n)
 		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	close(gate)
@@ -433,31 +436,43 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 		t.Fatalf("Run error: %v", err)
 	}
 
+	// The children finish in the background; wait for both to complete.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, v := range state.Subagents() {
+		if _, err := state.WaitSubagent(ctx, v.ID); err != nil {
+			t.Fatalf("WaitSubagent: %v", err)
+		}
+	}
+
 	enteredMu.Lock()
 	defer enteredMu.Unlock()
 	if len(entered) != 2 {
 		t.Fatalf("entered = %d, want 2", len(entered))
 	}
-
-	// Verify the tool-result messages sent back to the model preserve
-	// the original call order.
-	if len(p.Requests) < 2 {
-		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
-	}
-	var resultOrder []string
-	for _, m := range p.Requests[1].Messages {
-		if strings.Contains(m.Content, "done: alpha") {
-			resultOrder = append(resultOrder, "alpha")
-		}
-		if strings.Contains(m.Content, "done: beta") {
-			resultOrder = append(resultOrder, "beta")
-		}
-	}
-	if len(resultOrder) != 2 || resultOrder[0] != "alpha" || resultOrder[1] != "beta" {
-		t.Fatalf("result order = %v, want [alpha beta]", resultOrder)
-	}
 	if len(exited) != 2 {
 		t.Fatalf("exited = %d, want 2", len(exited))
+	}
+
+	// Both completion reports must be queued for the model — the async
+	// replacement for the old synchronous tool-result assertion. Order is
+	// completion order (children finish in the background), so only
+	// presence is asserted, not sequence.
+	reports := state.SubagentReports()
+	if len(reports) != 2 {
+		t.Fatalf("subagent report queue = %d reports, want 2", len(reports))
+	}
+	foundAlpha, foundBeta := false, false
+	for _, r := range reports {
+		if strings.Contains(r, "done: alpha") {
+			foundAlpha = true
+		}
+		if strings.Contains(r, "done: beta") {
+			foundBeta = true
+		}
+	}
+	if !foundAlpha || !foundBeta {
+		t.Fatalf("report queue missing a completion: %v", reports)
 	}
 }
 
@@ -502,25 +517,32 @@ func TestParallelAgentRunPreservesSiblingsOnError(t *testing.T) {
 		t.Fatalf("Run error: %v", err)
 	}
 
-	// The successful result should appear in the tool-result messages sent
-	// back to the model; the failed one should produce a tool-error message.
-	if len(p.Requests) < 2 {
-		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
-	}
-	foundOK, foundErr := false, false
-	for _, m := range p.Requests[1].Messages {
-		if strings.Contains(m.Content, "ok: ok") {
-			foundOK = true
+	// The children finish in the background. The failed one surfaces a
+	// failure view and a failure steering message; the successful one a done
+	// view and a completion steering message. Both are delivered to the
+	// model via the steering queue on the next turn.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, v := range state.Subagents() {
+		if _, err := state.WaitSubagent(ctx, v.ID); err != nil {
+			t.Fatalf("WaitSubagent: %v", err)
 		}
-		if strings.Contains(m.Content, "boom") {
+	}
+
+	foundOK, foundErr := false, false
+	for _, v := range state.Subagents() {
+		if v.Status == session.SubagentFailed && strings.Contains(v.Error, "boom") {
 			foundErr = true
+		}
+		if v.Status == session.SubagentDone && strings.Contains(v.Summary, "ok: ok") {
+			foundOK = true
 		}
 	}
 	if !foundOK {
-		t.Fatal("successful sibling result missing from tool results")
+		t.Fatal("successful sibling result missing from subagent views")
 	}
 	if !foundErr {
-		t.Fatal("failed sibling error missing from tool results")
+		t.Fatal("failed sibling error missing from subagent views")
 	}
 }
 
@@ -581,19 +603,25 @@ func TestParallelAgentRunPreservesSiblingsOnPreToolError(t *testing.T) {
 		t.Fatalf("Run error: %v", err)
 	}
 
-	// The successful result should appear in the tool-result messages sent
-	// back to the model.
-	if len(p.Requests) < 2 {
-		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
+	// The "fail" call is halted at the pre-tool stage, so it never spawns a
+	// child. The "ok" call spawns a child that completes in the background;
+	// its result is delivered to the model via the steering queue.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, v := range state.Subagents() {
+		if _, err := state.WaitSubagent(ctx, v.ID); err != nil {
+			t.Fatalf("WaitSubagent: %v", err)
+		}
 	}
+
 	foundOK := false
-	for _, m := range p.Requests[1].Messages {
-		if strings.Contains(m.Content, "ok: ok") {
+	for _, v := range state.Subagents() {
+		if v.Status == session.SubagentDone && strings.Contains(v.Summary, "ok: ok") {
 			foundOK = true
 		}
 	}
 	if !foundOK {
-		t.Fatal("successful sibling result missing from tool results — discarded by partial batch error")
+		t.Fatal("successful sibling result missing from subagent views — discarded by partial batch error")
 	}
 }
 

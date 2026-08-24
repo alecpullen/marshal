@@ -264,6 +264,14 @@ type Runner struct {
 	// serialisation is performed (default single-agent behaviour).
 	WriteGate WriteGate
 
+	// CacheInvalidator, when non-nil, runs after every non-read-only tool
+	// completes, in addition to clearing this runner's own session tool
+	// cache. agent.run children wire it to the PARENT session's
+	// ClearToolCache: execute.go only sees its own state's writes, so a
+	// background child's edits would otherwise leave the parent serving
+	// cached pre-write reads.
+	CacheInvalidator func()
+
 	UsageObserver UsageObserver
 
 	// CalibrationObserver, when set, receives the wire messages and the
@@ -550,6 +558,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	// I-2: clear the subagent report queue at turn end. A child that
+	// finishes after the final loop-top drain pushes its report to the
+	// queue AND persists it as a RoleUser message. Without this clear,
+	// the next turn would double-deliver: once from the queue drain and
+	// once from buildHistoryMessages replaying the persisted message.
+	// Discarding the queue here is safe because the persisted message is
+	// the durable copy.
+	defer r.State.ClearSubagentReports()
 
 	priorTranscript := r.State.Messages()
 	firstTurn := len(priorTranscript) <= 1
@@ -834,6 +850,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 			steeringArrived = true
+		}
+		// Drain background subagent completion reports alongside steering.
+		// These are machine-generated (never user-typed), so they do not
+		// count as a user intervention for the doom-loop guard, but they
+		// must reach the model wire the same way: injected as user messages
+		// at the next loop-top. They live in a separate queue so a
+		// turn-cancel (ClearSteering) cannot drop them.
+		for _, msg := range r.State.DrainSubagentReports() {
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 		}
 		if len(steeringPins) > 0 {
 			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
@@ -1505,5 +1530,3 @@ func (r *Runner) unverifiedMutation() (callEntry, bool) {
 	defer r.trackerMu.Unlock()
 	return r.tracker.unverifiedMutation()
 }
-
-

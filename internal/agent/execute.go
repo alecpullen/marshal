@@ -389,6 +389,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// Deliberately blunt — path-scoped invalidation can come later.
 	if tool.Risk != registry.RiskReadOnly {
 		r.State.ClearToolCache()
+		if r.CacheInvalidator != nil {
+			r.CacheInvalidator()
+		}
 	}
 	if tool.Cacheable {
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)

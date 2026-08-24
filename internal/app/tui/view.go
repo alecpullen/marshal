@@ -107,6 +107,9 @@ func (m *Model) viewString() string {
 		if lane := m.renderJobLane(); lane != "" {
 			rows = append(rows, lane)
 		}
+		if lane := m.renderAgentLane(); lane != "" {
+			rows = append(rows, lane)
+		}
 		if dockView != "" {
 			rows = append(rows, dockView)
 		}

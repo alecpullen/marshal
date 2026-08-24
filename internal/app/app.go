@@ -433,7 +433,21 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
+// buildAgentRunner is the test-facing form: children serialize on a private
+// lock. Production uses buildAgentRunnerWithLock so the parent runner and
+// every agent.run child share the runtime's stable WriteLock across config
+// reloads. (Keeping this wrapper avoids churning the ~25 test call sites.)
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, sddauthor.Factory, error) {
+	return buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, configReloader, homeDir, &swarm.WriteLock{})
+}
+
+// buildAgentRunnerWithLock is the production form of buildAgentRunner. It
+// takes the runtime's stable WriteLock so the parent runner and every
+// agent.run child serialize writes on the same gate, and so a config reload
+// (which rebuilds the runner and the subagent factory) reuses the same lock
+// that in-flight background children from the pre-reload generation already
+// hold.
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, sddauthor.Factory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -563,7 +577,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	parentPricing := pricing.Lookup(route.Preset, state.Logger())
-	subagentFactory, subagentResolver := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing)
+	// One write lock shared by the parent runner and every agent.run child:
+	// background children outlive the spawning turn, so parent and child
+	// writes must serialize on the same gate. The lock is the caller's
+	// (buildAgentRunnerWithLock passes the runtime's stable lock so a config
+	// reload reuses the same gate in-flight children already hold).
+	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock)
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
 		subagentResolver,
@@ -575,7 +594,16 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
+	if err := reg.Register(agent.NewSubagentAwaitTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
+	}
+	if err := reg.Register(agent.NewSubagentOutputTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
+	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
+	runner.WriteGate = writeLock
 	repoInstructions, _ := loadRepoInstructions(state.WorkingDir)
 	runner.SystemPromptAddendum = composeAddendum(repoInstructions, "")
 	runner.SkillIndex = skillIndex
@@ -793,7 +821,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		desktopCloser = closer
 	}
 
-	subagentFactory, _ = buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()))
+	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock)
 	pipelineFactory := func(planPath string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable)
 	}
@@ -1218,13 +1246,21 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 	return policy.ParseApprovalMode(s)
 }
 
-// buildSubagentFactory returns a closure that constructs a fresh child
-// Runner for an agent.run invocation. The closure captures the parent's
-// provider, policy engine, and base registry; per call it spins up a new
-// session.State (so the child's transcript does not pollute the parent's
-// message log), a filtered registry view (read-only + network, no nested
-// agent.run), and binds RoleSubtask so the system prompt enforces the
-// appropriate scope. The child session's depth is parent+1 so its own
+// buildSubagentFactory is the test-facing form: children serialize on a
+// private lock. Production uses buildSubagentFactoryWithLock so the parent
+// runner and every agent.run child share one gate. (Keeping this wrapper
+// avoids churning the ~25 test call sites.)
+func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
+	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{})
+}
+
+// buildSubagentFactoryWithLock returns a closure that constructs a fresh
+// child Runner for an agent.run invocation. The closure captures the
+// parent's provider, policy engine, and base registry; per call it spins up
+// a new session.State (so the child's transcript does not pollute the
+// parent's message log), a filtered registry view (read-only + network, no
+// nested agent.run), and binds RoleSubtask so the system prompt enforces
+// the appropriate scope. The child session's depth is parent+1 so its own
 // depth guard rejects any attempt to spawn nested subagents.
 //
 // When the request names a custom agent, the factory resolves it via the
@@ -1235,7 +1271,11 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 // role, falling back to the default model when the role is unbound. Both
 // named-agent and ad-hoc paths wire Pricing, UsageObserver, and MetricsObserver
 // so subagent token usage and cost are visible to the parent session.
-func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
+//
+// writeLock is the shared swarm.WriteLock every child runner serializes its
+// writes on. Production passes the parent runner's own gate so parent and
+// background children (which outlive the spawning turn) serialize together.
+func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
 	// A child tool ceiling is opt-in. An unset value, like an explicit zero,
 	// leaves the child unlimited. Negative values are treated as unset.
 	subtaskIters := cfg.Agent.SubtaskIterations
@@ -1244,7 +1284,6 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 	}
 	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
 	repoInstructionsForSubagent, _ := loadRepoInstructions(parentState.WorkingDir)
-	writeLock := &swarm.WriteLock{}
 
 	// Model resolver for the consent gate — mirrors the factory's model
 	// resolution without building a runner. Used by agent.run's handler to
@@ -1407,6 +1446,18 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
 		child.WriteGate = writeLock
+		// C-1: wire the snapshot service onto the child runner so its
+		// pre-write snapshots are recorded against the child's own session
+		// ID. Without this, a background child can clobber files with no
+		// rollback coverage — the parent's dispatch-time snapshot records
+		// changedFilesForTool("agent.run", ...) which is always empty.
+		if snap := parentState.Snapshotter(); snap != nil {
+			child.Snapshotter = snap
+			child.SnapshotRecorder = database
+		}
+		// A background child's writes must drop the parent's cached reads;
+		// the child's own ClearToolCache only covers its own session.
+		child.CacheInvalidator = parentState.ClearToolCache
 		// Record child usage on the child's own session state (visible in
 		// the drilled-in view). It must NOT fold into the parent's
 		// turn-usage counter: the status bar shows that counter as live
@@ -1877,7 +1928,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
+	// Reuse the runtime's stable WriteLock: in-flight background children
+	// from the pre-reload generation hold it, so the rebuilt parent and
+	// subagent factory must serialize on the same gate.
+	lock := rt.WriteLock
+	if lock == nil {
+		lock = &swarm.WriteLock{}
+	}
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)

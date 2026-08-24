@@ -1231,6 +1231,43 @@ func TestSteeringQueuePushDrainClear(t *testing.T) {
 	}
 }
 
+// TestSubagentReportQueueSeparateFromSteering guards C1: a background
+// subagent's completion report lives in its own queue, so ClearSteering
+// (turn-cancel, Ctrl+X) and PopSteering (blank-Enter follow-up) must never
+// drop it.
+func TestSubagentReportQueueSeparateFromSteering(t *testing.T) {
+	state := newTestState()
+	state.PushSubagentReport("[subagent 1 finished] the report")
+	state.PushSteering("human steering")
+
+	// ClearSteering drops only the human steering, not the report.
+	state.ClearSteering()
+	if got := state.SteeringQueue(); len(got) != 0 {
+		t.Fatalf("steering queue = %v, want empty after clear", got)
+	}
+	if got := state.SubagentReports(); len(got) != 1 {
+		t.Fatalf("subagent report queue = %v, want the report preserved", got)
+	}
+
+	// PopSteering (blank-Enter follow-up) also leaves the report intact.
+	state.PushSteering("another steer")
+	if _, ok := state.PopSteering(); !ok {
+		t.Fatal("PopSteering returned ok=false")
+	}
+	if got := state.SubagentReports(); len(got) != 1 {
+		t.Fatalf("subagent report queue = %v, want the report preserved after PopSteering", got)
+	}
+
+	// DrainSubagentReports returns and clears only the report queue.
+	drained := state.DrainSubagentReports()
+	if len(drained) != 1 || drained[0] != "[subagent 1 finished] the report" {
+		t.Fatalf("DrainSubagentReports = %v, want the report", drained)
+	}
+	if got := state.SubagentReports(); len(got) != 0 {
+		t.Fatalf("subagent report queue = %v, want empty after drain", got)
+	}
+}
+
 func TestSteeringQueuePublishesQueueLenAfterDrainPopAndClear(t *testing.T) {
 	state := newTestState()
 	broker := pubsub.NewBroker[SteeringEvent]()
@@ -2302,5 +2339,93 @@ func TestUpdateContextPackConcurrentWritersLoseNothing(t *testing.T) {
 	wg.Wait()
 	if got := len(s.ContextPack().Sections); got != 200 {
 		t.Fatalf("sections = %d, want 200 (lost update under concurrency)", got)
+	}
+}
+
+// TestFinishSubagentReleasesOldChildStates guards M-3: completed subagent
+// Child State pointers beyond maxRetainedChildStates are nilled so their
+// full State objects can be garbage collected.
+func TestFinishSubagentReleasesOldChildStates(t *testing.T) {
+	state := newTestState()
+	// Register and finish maxRetainedChildStates+5 subagents.
+	total := maxRetainedChildStates + 5
+	for i := 0; i < total; i++ {
+		child := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+		view := state.RegisterSubagent(fmt.Sprintf("child-%d", i), child)
+		state.FinishSubagent(view.ID, fmt.Sprintf("done-%d", i), nil)
+	}
+	views := state.Subagents()
+	if len(views) != total {
+		t.Fatalf("subagents = %d, want %d", len(views), total)
+	}
+	// The most recent maxRetainedChildStates completed children should
+	// still have their Child pointer; older ones should be nil.
+	var withChild, withoutChild int
+	for _, v := range views {
+		if v.Child != nil {
+			withChild++
+		} else {
+			withoutChild++
+		}
+	}
+	if withChild > maxRetainedChildStates {
+		t.Fatalf("retained Child pointers = %d, want at most %d", withChild, maxRetainedChildStates)
+	}
+	if withoutChild != 5 {
+		t.Fatalf("released Child pointers = %d, want 5", withoutChild)
+	}
+}
+
+// TestSubagentActivityTailCapsReasoningBuffer guards M-4: the reasoning
+// tail is capped to maxReasoningTailBytes so a very long reasoning buffer
+// does not get fully copied on every call.
+func TestSubagentActivityTailCapsReasoningBuffer(t *testing.T) {
+	state := newTestState()
+	// Build a reasoning buffer well over the cap.
+	line := strings.Repeat("a", 100)
+	var huge strings.Builder
+	for i := 0; i < 200; i++ { // 200 lines * 100 bytes = 20KB > 8KB cap
+		huge.WriteString(line)
+		huge.WriteString("\n")
+	}
+	state.BeginStreaming()
+	state.AppendThinking(huge.String())
+
+	// Request 5 tail lines — should return 5, not scan the whole buffer.
+	tail := state.SubagentActivityTail(5)
+	if len(tail) != 5 {
+		t.Fatalf("tail = %d lines, want 5", len(tail))
+	}
+	for _, l := range tail {
+		if len(l) != 100 {
+			t.Fatalf("tail line length = %d, want 100 (full line from trailing portion)", len(l))
+		}
+	}
+}
+
+// TestShutdownCancelsRunningSubagentsAndClearsReports guards M-5: on
+// Shutdown, running subagents are cancelled and the report queue is
+// cleared so late reports don't end up in a garbage transcript.
+func TestShutdownCancelsRunningSubagentsAndClearsReports(t *testing.T) {
+	state := newTestState()
+	cancelled := make(chan struct{})
+	childState := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+	view := state.RegisterSubagent("running child", childState)
+	state.SetSubagentCancel(view.ID, func() {
+		close(cancelled)
+	})
+	state.PushSubagentReport("[subagent 1 finished] stale report")
+
+	state.Shutdown()
+
+	// The report queue should be cleared.
+	if got := state.SubagentReports(); len(got) != 0 {
+		t.Fatalf("report queue after shutdown = %v, want empty", got)
+	}
+	// The cancel function should have been called.
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("running subagent was not cancelled on shutdown")
 	}
 }

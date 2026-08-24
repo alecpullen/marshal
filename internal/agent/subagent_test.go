@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -135,39 +136,40 @@ func TestSubagentCancelPropagatesToExec(t *testing.T) {
 		}),
 	)
 
-	handlerErr := make(chan error, 1)
-	go func() {
-		_, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
-		handlerErr <- err
-	}()
-
-	// Wait for the subagent to register so we have an ID to cancel.
-	var viewID int64
-	for {
-		views := state.Subagents()
-		if len(views) == 1 {
-			viewID = views[0].ID
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
 	}
-	if !state.CancelSubagent(viewID) {
-		t.Fatal("CancelSubagent returned false")
+	if !strings.Contains(res.Summary, "started as subagent") {
+		t.Fatalf("summary = %q, want a started handle", res.Summary)
 	}
 
-	err := <-handlerErr
-	if err == nil {
-		t.Fatal("expected cancellation error, got nil")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", err)
-	}
 	views := state.Subagents()
 	if len(views) != 1 {
 		t.Fatalf("expected one subagent view, got %d", len(views))
 	}
-	if views[0].Status != session.SubagentFailed {
-		t.Fatalf("status = %v, want SubagentFailed", views[0].Status)
+	if !state.CancelSubagent(views[0].ID) {
+		t.Fatal("CancelSubagent returned false")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, views[0].ID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	if view.Status != session.SubagentFailed {
+		t.Fatalf("status = %v, want SubagentFailed", view.Status)
+	}
+	if !strings.Contains(view.Error, "context canceled") {
+		t.Fatalf("view.Error = %q, want context.Canceled text", view.Error)
+	}
+	// The failure is also delivered to the model via the subagent report
+	// queue (separate from the human steering queue so a turn-cancel
+	// cannot drop it).
+	q := state.SubagentReports()
+	if len(q) != 1 || !strings.Contains(q[0], "failed") {
+		t.Fatalf("subagent report queue = %v, want one failure message", q)
 	}
 }
 
@@ -192,19 +194,12 @@ func TestSubagentUsageObserverComposesAndUpdatesCard(t *testing.T) {
 			return "done", "", nil
 		}),
 	)
-	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
-	if err != nil {
-		t.Fatalf("handler: %v", err)
-	}
+	_, view := runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"y"}`)
 	if parentUsage != 15 {
 		t.Fatalf("parent usage observer got %d, want 15", parentUsage)
 	}
-	views := state.Subagents()
-	if len(views) != 1 {
-		t.Fatalf("expected one subagent view, got %d", len(views))
-	}
-	if views[0].TokensUsed != 15 {
-		t.Fatalf("card TokensUsed = %d, want 15", views[0].TokensUsed)
+	if view.TokensUsed != 15 {
+		t.Fatalf("card TokensUsed = %d, want 15", view.TokensUsed)
 	}
 }
 
@@ -221,25 +216,27 @@ func TestSubagentSalvageSurfacesInResultAndCard(t *testing.T) {
 			return "partial report", "exhausted", nil
 		}),
 	)
-	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
-	if err != nil {
-		t.Fatalf("handler: %v", err)
+	res, view := runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"y"}`)
+	// The immediate result is a handle; the salvage detail travels with the
+	// completion delivery.
+	if !strings.Contains(res.Summary, "started as subagent") {
+		t.Fatalf("immediate summary = %q, want a started handle", res.Summary)
 	}
-	if !strings.Contains(res.Summary, "salvaged: exhausted") {
-		t.Fatalf("summary = %q, want salvaged marker", res.Summary)
+	if view.SalvagedReason != "exhausted" {
+		t.Fatalf("SalvagedReason = %q, want exhausted", view.SalvagedReason)
 	}
-	if !strings.Contains(res.Content, "partial report") {
-		t.Fatalf("content missing report: %q", res.Content)
+	q := state.SubagentReports()
+	if len(q) != 1 {
+		t.Fatalf("subagent report queue = %v, want exactly one completion message", q)
 	}
-	if !strings.Contains(res.Content, " Raise [agent] subtask_iterations") {
-		t.Fatalf("content missing remedy hint: %q", res.Content)
+	if !strings.Contains(q[0], "salvaged: exhausted") {
+		t.Fatalf("report message = %q, want salvaged marker", q[0])
 	}
-	views := state.Subagents()
-	if len(views) != 1 {
-		t.Fatalf("expected one subagent view, got %d", len(views))
+	if !strings.Contains(q[0], "partial report") {
+		t.Fatalf("report message missing report: %q", q[0])
 	}
-	if views[0].SalvagedReason != "exhausted" {
-		t.Fatalf("SalvagedReason = %q, want exhausted", views[0].SalvagedReason)
+	if !strings.Contains(q[0], " Raise [agent] subtask_iterations") {
+		t.Fatalf("report message missing remedy hint: %q", q[0])
 	}
 }
 
@@ -346,18 +343,14 @@ func TestNewSubagentToolAgentArgResolves(t *testing.T) {
 		}}
 		return r, nil, nil
 	}
-	tool := NewSubagentTool(factory, nil, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
-	res, err := tool.Handler(context.Background(), registry.ToolCall{
-		Args: json.RawMessage(`{"prompt":"do it","description":"d","agent":"my-scout"}`),
-	})
-	if err != nil {
-		t.Fatalf("handler: %v", err)
-	}
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
+	res, _ := runAsyncSubagent(t, tool, state, `{"prompt":"do it","description":"d","agent":"my-scout"}`)
 	if called != "my-scout" {
 		t.Fatalf("factory called with %q, want my-scout", called)
 	}
-	if !strings.Contains(res.Summary, "subagent completed") {
-		t.Fatalf("summary = %q", res.Summary)
+	if !strings.Contains(res.Summary, "started as subagent") {
+		t.Fatalf("summary = %q, want a started handle", res.Summary)
 	}
 }
 
@@ -739,5 +732,249 @@ func TestSubagentModelConsentSerialized(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handler %d: %v", i, err)
 		}
+	}
+}
+
+// runAsyncSubagent invokes the agent.run handler and blocks until the
+// spawned child finishes, returning the immediate tool result and the
+// finished view. Registration is synchronous, so the view exists as soon
+// as the handler returns.
+func runAsyncSubagent(t *testing.T, tool registry.Tool, state *session.State, args string) (registry.ToolResult, session.SubagentView) {
+	t.Helper()
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(args)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	views := state.Subagents()
+	if len(views) == 0 {
+		t.Fatal("no subagent view registered")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, views[len(views)-1].ID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	return res, view
+}
+
+// TestAgentRunReturnsImmediately guards the async contract: the handler
+// returns a handle while the child is still running, holds the concurrency
+// slot for the child's whole life, and releases it on completion.
+func TestAgentRunReturnsImmediately(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	release := make(chan struct{})
+	// M1: release the child on any early failure so the spawned goroutine
+	// does not leak (it blocks on <-release). Guarded so the normal
+	// close(release) below and the cleanup cannot double-close.
+	var releaseOnce sync.Once
+	releaseChild := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseChild)
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, state, nil },
+		nil,
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			select {
+			case <-release:
+				return "done", "", nil
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
+		}),
+	)
+
+	type outcome struct {
+		res registry.ToolResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
+		done <- outcome{res, err}
+	}()
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("handler: %v", out.err)
+		}
+		if !strings.Contains(out.res.Summary, "started as subagent") {
+			t.Fatalf("summary = %q, want a started handle", out.res.Summary)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler blocked on the child; agent.run must return immediately")
+	}
+
+	if got := state.SubagentConcurrency(); got != 1 {
+		t.Fatalf("concurrency while child runs = %d, want 1", got)
+	}
+	releaseChild()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, state.Subagents()[0].ID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	if view.Status != session.SubagentDone {
+		t.Fatalf("status = %v, want SubagentDone", view.Status)
+	}
+	if got := state.SubagentConcurrency(); got != 0 {
+		t.Fatalf("concurrency after completion = %d, want 0", got)
+	}
+}
+
+// TestSubagentSurvivesToolCallContextCancel guards the context parentage:
+// the child derives from the session context, so the end of the parent
+// turn (or Esc cancelling it) must not kill a running background child.
+func TestSubagentSurvivesToolCallContextCancel(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	release := make(chan struct{})
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, state, nil },
+		nil,
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			select {
+			case <-release:
+				return "done", "", nil
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
+		}),
+	)
+
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	res, err := tool.Handler(callCtx, registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "started as subagent") {
+		t.Fatalf("summary = %q, want a started handle", res.Summary)
+	}
+
+	cancelCall() // the parent turn ended or was Esc-cancelled
+	time.Sleep(50 * time.Millisecond)
+	views := state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("registered subagents = %d, want 1", len(views))
+	}
+	if views[0].Status != session.SubagentRunning {
+		t.Fatalf("status = %v after tool-call cancel; the background child must survive", views[0].Status)
+	}
+
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, views[0].ID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	if view.Status != session.SubagentDone || view.Summary != "done" {
+		t.Fatalf("view = %+v, want done/%q", view, "done")
+	}
+}
+
+// TestSubagentCompletionDeliversNoticeAndSteering guards completion
+// delivery: a system notice in the transcript for the user, and a steering
+// message for the model (the only channel that reaches the wire from both
+// a busy turn and an idle session — RoleSystem messages never replay).
+func TestSubagentCompletionDeliversNoticeAndSteering(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, state, nil },
+		nil,
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			return "the report", "", nil
+		}),
+	)
+	_, view := runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"y"}`)
+	if view.Summary != "the report" {
+		t.Fatalf("view.Summary = %q, want %q", view.Summary, "the report")
+	}
+
+	q := state.SubagentReports()
+	if len(q) != 1 {
+		t.Fatalf("subagent report queue = %v, want exactly one completion message", q)
+	}
+	want := fmt.Sprintf("[subagent %d finished] the report", view.ID)
+	if q[0] != want {
+		t.Fatalf("report message = %q, want %q", q[0], want)
+	}
+
+	msgs := state.Messages()
+	// The completion goroutine adds a RoleSystem notice (for the TUI)
+	// and a RoleUser message (the durable report for the model wire).
+	// The RoleUser message is last because it is added after the
+	// RoleSystem notice.
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleUser {
+		t.Fatalf("last transcript message role = %q, want RoleUser (durable report)", last.Role)
+	}
+	if !strings.Contains(last.Content, "[subagent") || !strings.Contains(last.Content, "finished") {
+		t.Fatalf("durable report = %q, want a [subagent N finished] message", last.Content)
+	}
+	// The RoleSystem notice is the second-to-last message.
+	notice := msgs[len(msgs)-2]
+	if notice.Role != session.RoleSystem {
+		t.Fatalf("second-to-last message role = %q, want system notice", notice.Role)
+	}
+	if !strings.Contains(notice.Content, "✓") || !strings.Contains(notice.Content, "subagent") {
+		t.Fatalf("notice = %q, want a ✓ completion notice", notice.Content)
+	}
+}
+
+// TestSubagentCompletionPersistsRoleUser guards I-1: the completion report
+// is persisted as a RoleUser message so it survives rollover/restart and
+// is replayed by buildHistoryMessages (which only replays RoleUser and
+// final RoleAssistant, never RoleSystem).
+func TestSubagentCompletionPersistsRoleUser(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, state, nil },
+		nil,
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			return "durable result", "", nil
+		}),
+	)
+	_, view := runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"y"}`)
+
+	msgs := state.Messages()
+	var userReport *session.Message
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == session.RoleUser && strings.Contains(msgs[i].Content, "[subagent") {
+			userReport = &msgs[i]
+			break
+		}
+	}
+	if userReport == nil {
+		t.Fatal("no RoleUser message with the report found in transcript")
+	}
+	want := fmt.Sprintf("[subagent %d finished] durable result", view.ID)
+	if !strings.Contains(userReport.Content, want) {
+		t.Fatalf("persisted report = %q, want to contain %q", userReport.Content, want)
+	}
+}
+
+// TestSubagentReportQueueClearedAtTurnEnd guards I-2: the report queue
+// is cleared at turn end so a late-finishing child's report is not
+// double-delivered in the next turn (the persisted RoleUser message is
+// the durable copy that buildHistoryMessages replays).
+func TestSubagentReportQueueClearedAtTurnEnd(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	// Simulate a report pushed after the turn's final loop-top drain.
+	state.PushSubagentReport("[subagent 1 finished] late report")
+	if got := state.SubagentReports(); len(got) != 1 {
+		t.Fatalf("queue before clear = %v, want 1", got)
+	}
+	// ClearSubagentReports is called by the runner's defer at turn end.
+	state.ClearSubagentReports()
+	if got := state.SubagentReports(); len(got) != 0 {
+		t.Fatalf("queue after clear = %v, want empty", got)
 	}
 }

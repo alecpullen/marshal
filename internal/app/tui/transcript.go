@@ -981,6 +981,11 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 			head += dimSeparator + hookHint
 		}
+	} else if s := searchSubject(event); s != "" {
+		head = s
+		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
+			head += dimSeparator + hookHint
+		}
 	} else if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 		head += dimSeparator + hookHint
 	}

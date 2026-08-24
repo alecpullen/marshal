@@ -147,6 +147,77 @@ func TestTestRunIsShellFamily(t *testing.T) {
 	}
 }
 
+func searchEvent(tool, query, summary string) registry.AuditEvent {
+	return registry.AuditEvent{
+		ToolName:      tool,
+		Args:          json.RawMessage(`{"query":` + strconv.Quote(query) + `}`),
+		ResultSummary: summary,
+	}
+}
+
+func TestSearchSubjectLeadsWithQuery(t *testing.T) {
+	got := searchSubject(searchEvent("repo.search", "gutterPrefix", "4 matches"))
+	if !strings.Contains(got, "gutterPrefix") {
+		t.Fatalf("search row must carry the query: %q", got)
+	}
+	if !strings.HasPrefix(got, "search ") {
+		t.Fatalf("search row must keep a short qualifier: %q", got)
+	}
+	if strings.Contains(got, "Search repo") {
+		t.Fatalf("the verbose display name should be replaced: %q", got)
+	}
+}
+
+func TestEverySearchToolHasADistinctQualifier(t *testing.T) {
+	tools := []string{"repo.search", "codebase.search", "symbols.find", "json.query", "csv.inspect"}
+	seen := map[string]string{}
+	for _, tool := range tools {
+		q, ok := searchQualifier(tool)
+		if !ok || q == "" {
+			t.Fatalf("%s has no qualifier", tool)
+		}
+		if prev, dup := seen[q]; dup {
+			t.Fatalf("%s and %s share the qualifier %q", prev, tool, q)
+		}
+		seen[q] = tool
+	}
+}
+
+func TestNonSearchToolHasNoQualifier(t *testing.T) {
+	for _, n := range []string{"shell.run", "file.read", "git.status"} {
+		if _, ok := searchQualifier(n); ok {
+			t.Errorf("%s must not have a search qualifier", n)
+		}
+	}
+}
+
+func TestSearchRowKeepsItsSummary(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(searchEvent("repo.search", "gutterPrefix", "4 matches"), false, nil, 100))
+	if !strings.Contains(out, "4 matches") {
+		t.Fatalf("search row must keep its outcome summary:\n%s", out)
+	}
+	if !strings.Contains(out, "gutterPrefix") {
+		t.Fatalf("search row must carry the query:\n%s", out)
+	}
+}
+
+func TestSymbolsFindPrefersSymbolSubject(t *testing.T) {
+	e := searchEvent("symbols.find", "renderSubagentCard", "3 found")
+	e.Symbols = []registry.SymbolRef{{File: "transcript.go", Name: "renderSubagentCard", Kind: "function"}}
+	out := stripANSI(renderCompletedToolCall(e, false, nil, 100))
+	if !strings.Contains(out, "transcript.go › renderSubagentCard()") {
+		t.Fatalf("symbol attribution must win over the search qualifier:\n%s", out)
+	}
+}
+
+func TestSearchRowWithNoQueryFallsBack(t *testing.T) {
+	e := registry.AuditEvent{ToolName: "repo.search", ResultSummary: "no matches"}
+	out := stripANSI(renderCompletedToolCall(e, false, nil, 100))
+	if !strings.Contains(out, "no matches") {
+		t.Fatalf("a query-less search row must still render its summary:\n%s", out)
+	}
+}
+
 func TestNonMigratedToolsUnchanged(t *testing.T) {
 	for _, tool := range []string{"git.status", "agent.run", "web.fetch", "todos"} {
 		e := registry.AuditEvent{ToolName: tool, ResultSummary: "did a thing"}

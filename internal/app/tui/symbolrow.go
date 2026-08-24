@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"marshal/internal/tools/registry"
@@ -47,6 +48,42 @@ func shellSubject(event registry.AuditEvent) string {
 		parts = append(parts, formatElapsed(event.Duration))
 	}
 	return strings.Join(parts, dimSeparator)
+}
+
+// searchQualifiers gives each ◈ tool a short, distinguishable label.
+//
+// toolCategoryGlyph maps five tools onto ◈ (toolnames.go), so unlike the
+// shell family the glyph cannot stand alone here: a literal grep and a
+// semantic search answer different questions and cost very different
+// amounts, and a reader must be able to tell them apart at a glance.
+var searchQualifiers = map[string]string{
+	"repo.search":    "search",
+	"codebase.search": "semantic",
+	"symbols.find":   "symbols",
+	"json.query":     "json",
+	"csv.inspect":    "csv",
+}
+
+// searchQualifier returns the short label for a search-family tool.
+func searchQualifier(name string) (string, bool) {
+	q, ok := searchQualifiers[name]
+	return q, ok
+}
+
+// searchSubject renders `search "gutterPrefix"` — the qualifier plus the
+// query. The outcome stays in ResultSummary, which these tools already
+// phrase well ("4 matches", "no matches", "3 found"), and the caller
+// appends it.
+func searchSubject(event registry.AuditEvent) string {
+	q, ok := searchQualifier(event.ToolName)
+	if !ok {
+		return ""
+	}
+	target := toolTarget(event)
+	if target == "" {
+		return ""
+	}
+	return q + " " + strconv.Quote(target)
 }
 
 // symbolSubject renders "path › A(), B() +2" for an event carrying symbol

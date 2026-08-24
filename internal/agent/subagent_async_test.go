@@ -321,3 +321,47 @@ func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 		t.Fatal("file.read must remain visible to subtasks")
 	}
 }
+
+// TestAgentAwaitReturnsImmediatelyForApprovalPendingChild guards I-3:
+// agent.await on a child pending user approval returns immediately with a
+// liveness notice instead of blocking the parent turn indefinitely.
+func TestAgentAwaitReturnsImmediatelyForApprovalPendingChild(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	release := make(chan struct{})
+	run, await, _ := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+		// Simulate the child waiting for user approval.
+		childState := state.Subagents()[0].Child
+		childState.SetPendingApproval(&session.PendingToolCall{
+			ID:   "test-approval",
+			Name: "shell.run",
+		})
+		<-release
+		return "done after approval", "", nil
+	})
+	run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)})
+	viewID := state.Subagents()[0].ID
+
+	// await should return immediately (not block) with the approval notice.
+	done := make(chan registry.ToolResult, 1)
+	go func() {
+		res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, viewID))})
+		if err != nil {
+			t.Errorf("await: %v", err)
+		}
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		if !strings.Contains(res.Summary, "waiting for user approval") {
+			t.Fatalf("await summary = %q, want approval-pending notice", res.Summary)
+		}
+		if !strings.Contains(res.Content, "shell.run") {
+			t.Fatalf("await content = %q, want tool name", res.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("await blocked instead of returning immediately for approval-pending child")
+	}
+	close(release)
+	// Let the child finish to avoid a goroutine leak.
+	state.WaitSubagent(context.Background(), viewID)
+}

@@ -39,6 +39,22 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("%s requires \"id\" or \"all\": true", tool.Name)
 		}
 		if !args.All {
+			// I-3: before blocking, check if the child is pending user
+			// approval. If so, return immediately with a liveness notice
+			// instead of blocking the parent turn indefinitely — the child
+			// is waiting on the same user, and blocking here would tie up
+			// the parent with no way for the user to address the approval
+			// through the parent's turn.
+			if v, ok := state.Subagent(args.ID); ok {
+				if v.Status == session.SubagentRunning && v.Child != nil {
+					if pa := v.Child.PendingApproval(); pa != nil {
+						return registry.ToolResult{
+							Summary: fmt.Sprintf("subagent %d is waiting for user approval", args.ID),
+							Content: fmt.Sprintf("Subagent %d (%s) is blocked waiting for user approval of %s. It will continue once the approval is resolved. You can continue other work and call agent.await again later, or address the approval in the subagent's panel.", args.ID, v.Label, pa.Name),
+						}, nil
+					}
+				}
+			}
 			// Single-ID wait.
 			v, err := state.WaitSubagent(ctx, args.ID)
 			if err != nil {

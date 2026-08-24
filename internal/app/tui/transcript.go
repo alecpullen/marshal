@@ -958,7 +958,17 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 	}
 	gutter := gutterPrefix(g, gutterColor)
 	head := DisplayToolName(event.ToolName)
-	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
+	// Subject-first for file and symbol tools that carry attribution: the
+	// tool name is the least interesting thing on such a row. Falls back to
+	// the tool-name-first shape whenever there are no symbols, which is
+	// every language without a tree-sitter grammar and every whole-file
+	// rewrite — so the fallback is the common path, not a degraded one.
+	if subject := symbolSubject(event); subject != "" && subjectFirstTool(event.ToolName) {
+		head = subject
+		if stat := diffStat(event.ResultContent); stat != "" {
+			head += dimSeparator + stat
+		}
+	} else if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 		head += dimSeparator + hookHint
 	}
 	if event.Error != "" {

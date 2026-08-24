@@ -168,10 +168,11 @@ func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	}
 
 	events := make(chan schema.ChatEvent)
+	capture := newWireCapture(p.name)
 	if req.Stream {
-		go streamChatEvents(resp.Body, events)
+		go streamChatEvents(capture.wrap(resp.Body), capture, events)
 	} else {
-		go readChatResponse(resp.Body, events)
+		go readChatResponse(capture.wrap(resp.Body), events)
 	}
 	return events, nil
 }
@@ -332,7 +333,7 @@ func tokenUsageFrom(u *usageBody) *schema.TokenUsage {
 	return out
 }
 
-func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
+func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
 
@@ -360,10 +361,15 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New(chunk.Error.Message)}
 			return
 		}
+		recognized := false
 		if chunk.Usage != nil {
 			usage = tokenUsageFrom(chunk.Usage)
+			recognized = true
 		}
 		if len(chunk.Choices) == 0 {
+			if !recognized {
+				capture.annotate("[unrecognized-chunk]", data)
+			}
 			continue
 		}
 		choice := chunk.Choices[0]
@@ -378,9 +384,11 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			reasoning += d.Text
 		}
 		if reasoning != "" {
+			recognized = true
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: reasoning}
 		}
 		if choice.Delta.Content != "" {
+			recognized = true
 			content, thinking := thinkParser.feed(choice.Delta.Content)
 			if thinking != "" {
 				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: thinking}
@@ -388,6 +396,9 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			if content != "" {
 				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
 			}
+		}
+		if len(choice.Delta.ToolCalls) > 0 {
+			recognized = true
 		}
 		for _, call := range choice.Delta.ToolCalls {
 			buf := toolBuffers[call.Index]
@@ -398,7 +409,11 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			buf.append(call)
 		}
 		if choice.FinishReason != "" {
+			recognized = true
 			finishReason = choice.FinishReason
+		}
+		if !recognized {
+			capture.annotate("[unrecognized-chunk]", data)
 		}
 	}
 	if err := dec.Err(); err != nil {

@@ -264,6 +264,14 @@ type Runner struct {
 	// serialisation is performed (default single-agent behaviour).
 	WriteGate WriteGate
 
+	// CacheInvalidator, when non-nil, runs after every non-read-only tool
+	// completes, in addition to clearing this runner's own session tool
+	// cache. agent.run children wire it to the PARENT session's
+	// ClearToolCache: execute.go only sees its own state's writes, so a
+	// background child's edits would otherwise leave the parent serving
+	// cached pre-write reads.
+	CacheInvalidator func()
+
 	UsageObserver UsageObserver
 
 	// CalibrationObserver, when set, receives the wire messages and the

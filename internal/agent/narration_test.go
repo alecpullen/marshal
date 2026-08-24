@@ -89,6 +89,48 @@ func TestNarrationRecordedForTextWithToolCalls(t *testing.T) {
 	}
 }
 
+// Narration must not swallow the thinking/reasoning summary. AddMessage
+// clears inProgress, so LogThinking must run before the narration AddMessage.
+func TestNarrationDoesNotSwallowThinking(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Thinking:      []string{"I should check the guard first."},
+		Responses:     []string{"Checking the guard first.", "all done"},
+		ToolCalls:     [][]schema.ToolCall{{{ID: "tc1", Name: "noop.tool", Args: json.RawMessage(`{}`)}}, nil},
+		FinishReasons: []string{"tool_calls", "stop"},
+		ProviderCaps:  schema.ProviderCapabilities{},
+	}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "noop.tool", Description: "does nothing", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.NativeTools = true
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var thinkText string
+	for _, item := range state.Transcript() {
+		if item.Kind == session.KindThinking && item.Thinking != nil {
+			thinkText = item.Thinking.Text
+			break
+		}
+	}
+	if thinkText == "" {
+		t.Fatal("thinking entry was swallowed by narration AddMessage")
+	}
+	if thinkText != "I should check the guard first." {
+		t.Fatalf("thinking text = %q, want %q", thinkText, "I should check the guard first.")
+	}
+}
+
 // Empty text with tool calls must not produce a narration message.
 func TestNarrationNotRecordedForEmptyTextWithToolCalls(t *testing.T) {
 	p := &agenttest.ScriptedProvider{

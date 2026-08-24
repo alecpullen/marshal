@@ -1044,6 +1044,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			consecutiveEmpty = 0
 			countIterations()
 
+			// Log thinking BEFORE AddMessage, which clears inProgress.
+			if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && inProgress.Reasoning != "" {
+				r.State.LogThinking(session.ThinkingEntry{
+					Text:      inProgress.Reasoning,
+					Duration:  time.Since(inProgress.StartedAt),
+					StartedAt: inProgress.StartedAt,
+				})
+			}
+
 			// The model's own narration of what it is about to do. It
 			// already arrives here alongside the tool calls and, until now,
 			// went only into the model's message history — so the user saw
@@ -1062,13 +1071,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
 			toolCallCountThisTurn += len(res.ToolCalls)
-			if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && inProgress.Reasoning != "" {
-				r.State.LogThinking(session.ThinkingEntry{
-					Text:      inProgress.Reasoning,
-					Duration:  time.Since(inProgress.StartedAt),
-					StartedAt: inProgress.StartedAt,
-				})
-			}
 
 			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls)
 			if execErr != nil {

@@ -166,8 +166,8 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 func (t *toolSet) configAgentSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.agent.set",
-		Description: "Set fields in the [agent] section of the Marshal config (max_tool_iterations, max_retries, max_turn_context_tokens, max_structured_output_chars, plan_first, subtask_iterations, approval_mode). Omitted fields are preserved. Use scope=\"global\" to write to the user-global config (requires explicit approval).",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"],"description":"project (default) or global"},"max_tool_iterations":{"type":"integer"},"max_retries":{"type":"integer"},"max_turn_context_tokens":{"type":"integer"},"max_structured_output_chars":{"type":"integer"},"plan_first":{"type":"boolean"},"subtask_iterations":{"type":"integer"},"approval_mode":{"type":"string"}},"additionalProperties":false}`),
+		Description: "Set fields in the [agent] section of the Marshal config (max_tool_iterations, max_retries, max_turn_context_tokens, max_structured_output_chars, max_concurrent_subagents, plan_first, subtask_iterations, approval_mode). Omitted fields are preserved. Use scope=\"global\" to write to the user-global config (requires explicit approval).",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"],"description":"project (default) or global"},"max_tool_iterations":{"type":"integer"},"max_retries":{"type":"integer"},"max_turn_context_tokens":{"type":"integer"},"max_structured_output_chars":{"type":"integer"},"max_concurrent_subagents":{"type":"integer"},"plan_first":{"type":"boolean"},"subtask_iterations":{"type":"integer"},"approval_mode":{"type":"string"}},"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -177,6 +177,7 @@ func (t *toolSet) configAgentSetTool() registry.Tool {
 			MaxRetries               *int    `json:"max_retries"`
 			MaxTurnContextTokens     *int    `json:"max_turn_context_tokens"`
 			MaxStructuredOutputChars *int    `json:"max_structured_output_chars"`
+			MaxConcurrentSubagents   *int    `json:"max_concurrent_subagents"`
 			PlanFirst                *bool   `json:"plan_first"`
 			SubtaskIterations        *int    `json:"subtask_iterations"`
 			ApprovalMode             *string `json:"approval_mode"`
@@ -202,6 +203,9 @@ func (t *toolSet) configAgentSetTool() registry.Tool {
 			}
 			if args.MaxStructuredOutputChars != nil {
 				cfg.Agent.MaxStructuredOutputChars = *args.MaxStructuredOutputChars
+			}
+			if args.MaxConcurrentSubagents != nil {
+				cfg.Agent.MaxConcurrentSubagents = *args.MaxConcurrentSubagents
 			}
 			if args.PlanFirst != nil {
 				cfg.Agent.PlanFirst = *args.PlanFirst

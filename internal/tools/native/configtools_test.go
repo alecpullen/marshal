@@ -93,6 +93,50 @@ func TestConfigAgentSetProjectScope(t *testing.T) {
 	}
 }
 
+func TestConfigAgentSetMaxConcurrentSubagents(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := config.ProjectConfigPath(dir)
+
+	cfg := config.Default()
+
+	var reloaded *config.Config
+	ts := toolSet{
+		config:     cfg,
+		configPath: cfgPath,
+		configReloader: func(c config.Config) error {
+			cc := c
+			reloaded = &cc
+			return nil
+		},
+	}
+	reg := registry.New()
+	tools, err := newConfigToolSet(ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(tools.configAgentSetTool()); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := reg.Lookup("config.agent.set")
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID:   "1",
+		Name: "config.agent.set",
+		Args: json.RawMessage(`{"max_concurrent_subagents":5}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "reloaded") {
+		t.Fatalf("expected reloaded receipt, got: %s", res.Summary)
+	}
+	if reloaded == nil {
+		t.Fatal("reloader never ran")
+	}
+	if reloaded.Agent.MaxConcurrentSubagents != 5 {
+		t.Fatalf("max_concurrent_subagents not applied: %d", reloaded.Agent.MaxConcurrentSubagents)
+	}
+}
+
 func TestConfigAgentSetRejectsProviderModel(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")

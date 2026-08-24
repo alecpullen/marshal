@@ -456,6 +456,7 @@ provider = "ollama"
 model = "qwen3-coder"
 max_tool_iterations = 32
 max_retries = 5
+max_concurrent_subagents = 7
 reconnect_max_wait_seconds = 180
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
@@ -471,6 +472,9 @@ reconnect_max_wait_seconds = 180
 	}
 	if cfg.Agent.MaxRetries != 5 {
 		t.Fatalf("Agent.MaxRetries = %d, want 5", cfg.Agent.MaxRetries)
+	}
+	if cfg.Agent.MaxConcurrentSubagents != 7 {
+		t.Fatalf("Agent.MaxConcurrentSubagents = %d, want 7", cfg.Agent.MaxConcurrentSubagents)
 	}
 	if cfg.Agent.ReconnectMaxWaitSeconds != 180 {
 		t.Fatalf("Agent.ReconnectMaxWaitSeconds = %d, want 180", cfg.Agent.ReconnectMaxWaitSeconds)

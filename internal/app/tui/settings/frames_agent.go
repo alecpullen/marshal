@@ -58,6 +58,14 @@ func agentFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
+				f := intField("agent.max_concurrent_subagents", "Max concurrent subagents",
+					func() int { return s.cfg.Agent.MaxConcurrentSubagents }, 0,
+					func(v int) { s.cfg.Agent.MaxConcurrentSubagents = v })
+				f.TomlPath = "agent.max_concurrent_subagents"
+				f.Desc = "parallel agent.run children per session · 0 = default (3)"
+				return f
+			}(),
+			func() *field {
 				f := intField("agent.max_tool_result_chars", "Max tool result chars",
 					func() int { return s.cfg.Agent.MaxToolResultChars }, 0,
 					func(v int) { s.cfg.Agent.MaxToolResultChars = v })

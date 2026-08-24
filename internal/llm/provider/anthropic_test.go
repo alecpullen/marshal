@@ -1,10 +1,14 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -554,5 +558,60 @@ func TestAnthropicEmptyContentReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(gotErr.Error(), "empty content") {
 		t.Fatalf("error should mention 'empty content', got: %v", gotErr)
+	}
+}
+
+func TestAnthropicWireCaptureMarksUnknownEventTypes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MARSHAL_WIRE_CAPTURE", dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"weird_future_event\",\"x\":1}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	p, err := NewAnthropic(Options{Name: "wiretest-anthropic", BaseURL: server.URL, APIKey: "k"})
+	if err != nil {
+		t.Fatalf("NewAnthropic: %v", err)
+	}
+	events, err := p.Chat(context.Background(), schema.ChatRequest{
+		Model:    "claude-test",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	var sb strings.Builder
+	for ev := range events {
+		if ev.Type == schema.ChatEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		sb.WriteString(ev.Delta)
+	}
+	if sb.String() != "hi" {
+		t.Fatalf("streamed content = %q, want %q", sb.String(), "hi")
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "wiretest-anthropic-*.stream"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected one capture file, got %v (err=%v)", matches, err)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	if !strings.Contains(string(data), "weird_future_event") {
+		t.Fatalf("capture missing raw event:\n%s", data)
+	}
+	if !strings.Contains(string(data), "[unrecognized-chunk]") {
+		t.Fatalf("capture missing marker for unknown event type:\n%s", data)
+	}
+	if strings.Contains(string(data), "[unrecognized-chunk] {\"type\":\"content_block_stop\"") {
+		t.Fatalf("known no-op event wrongly flagged:\n%s", data)
 	}
 }

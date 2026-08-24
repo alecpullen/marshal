@@ -1,10 +1,14 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -519,5 +523,56 @@ func TestOllamaStreamingToolCallNotDuplicated(t *testing.T) {
 	wantArgs := `{"city":"SF"}`
 	if string(toolCalls[0].Args) != wantArgs {
 		t.Errorf("tool call args = %q, want %q", string(toolCalls[0].Args), wantArgs)
+	}
+}
+
+func TestOllamaWireCaptureMarksEmptyChunks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MARSHAL_WIRE_CAPTURE", dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprint(w, "{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":false}\n")
+		fmt.Fprint(w, "{\"message\":{\"role\":\"assistant\"},\"done\":false}\n")
+		fmt.Fprint(w, "{\"message\":{\"role\":\"assistant\"},\"done\":true,\"done_reason\":\"stop\"}\n")
+	}))
+	defer server.Close()
+
+	p, err := NewOllamaNative(Options{Name: "wiretest-ollama", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOllamaNative: %v", err)
+	}
+	events, err := p.Chat(context.Background(), schema.ChatRequest{
+		Model:    "m",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	var sb strings.Builder
+	for ev := range events {
+		if ev.Type == schema.ChatEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		sb.WriteString(ev.Delta)
+	}
+	if sb.String() != "hi" {
+		t.Fatalf("streamed content = %q, want %q", sb.String(), "hi")
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "wiretest-ollama-*.stream"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected one capture file, got %v (err=%v)", matches, err)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	if !strings.Contains(string(data), "[unrecognized-chunk] {\"message\":{\"role\":\"assistant\"},\"done\":false}") {
+		t.Fatalf("capture missing marker for empty chunk:\n%s", data)
+	}
+	if strings.Contains(string(data), "[unrecognized-chunk] {\"message\":{\"role\":\"assistant\"},\"done\":true") {
+		t.Fatalf("terminal done chunk wrongly flagged:\n%s", data)
 	}
 }

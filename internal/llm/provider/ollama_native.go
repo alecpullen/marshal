@@ -287,10 +287,11 @@ func (p *OllamaNative) Chat(ctx context.Context, req schema.ChatRequest) (<-chan
 	}
 
 	events := make(chan schema.ChatEvent)
+	capture := newWireCapture(p.name)
 	if req.Stream {
-		go p.streamChatEvents(resp.Body, events)
+		go p.streamChatEvents(capture.wrap(resp.Body), capture, events)
 	} else {
-		go p.readChatResponse(resp.Body, events)
+		go p.readChatResponse(capture.wrap(resp.Body), events)
 	}
 	return events, nil
 }
@@ -324,7 +325,7 @@ func (p *OllamaNative) readChatResponse(body io.ReadCloser, events chan<- schema
 
 // streamChatEvents consumes Ollama's NDJSON stream: one JSON object per
 // line, terminated by an object with done:true carrying token counts.
-func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
+func (p *OllamaNative) streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
 
@@ -370,6 +371,9 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema
 		if chunk.Done {
 			finishReason = chunk.DoneReason
 			usage = ollamaUsageFrom(chunk)
+		}
+		if !chunk.Done && chunk.Message.Thinking == "" && chunk.Message.Content == "" && len(chunk.Message.ToolCalls) == 0 {
+			capture.annotate("[unrecognized-chunk]", line)
 		}
 	}
 	if err := scanner.Err(); err != nil {

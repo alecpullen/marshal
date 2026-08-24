@@ -361,10 +361,11 @@ func (p *Anthropic) Chat(ctx context.Context, req schema.ChatRequest) (<-chan sc
 	}
 
 	events := make(chan schema.ChatEvent)
+	capture := newWireCapture(p.name)
 	if req.Stream {
-		go p.streamChatEvents(resp.Body, events)
+		go p.streamChatEvents(capture.wrap(resp.Body), capture, events)
 	} else {
-		go p.readChatResponse(resp.Body, events)
+		go p.readChatResponse(capture.wrap(resp.Body), events)
 	}
 	return events, nil
 }
@@ -439,7 +440,7 @@ type anthropicBlockBuffer struct {
 
 // streamChatEvents consumes the Messages API SSE stream: typed events walk
 // content blocks by index, with tool_use input arriving as JSON fragments.
-func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
+func (p *Anthropic) streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
 
@@ -492,6 +493,8 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.Ch
 				if buf := blocks[ev.Index]; buf != nil {
 					buf.args.WriteString(ev.Delta.PartialJSON)
 				}
+			default:
+				capture.annotate("[unrecognized-chunk]", data)
 			}
 		case "message_delta":
 			if ev.Delta != nil && ev.Delta.StopReason != "" {
@@ -503,8 +506,11 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.Ch
 		case "error":
 			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("stream error event: %s", data)}
 			return
+		case "content_block_stop", "message_stop", "ping":
+			// Known no-op events: nothing to do, nothing to flag.
+		default:
+			capture.annotate("[unrecognized-chunk]", data)
 		}
-		// content_block_stop, message_stop, ping: no action needed.
 	}
 	if err := dec.Err(); err != nil {
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}

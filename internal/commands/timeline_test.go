@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
@@ -218,4 +220,80 @@ func TestTimelineEmptySessionExplains(t *testing.T) {
 	if !strings.Contains(res.Text, "No turns") {
 		t.Fatalf("empty session should explain, got %q", res.Text)
 	}
+}
+
+// /rewind restored files to before the CURRENT turn rather than before the
+// TARGET turn, because turnIndex is a session counter that Rewind does not
+// move. Rewinding to an early turn therefore restored almost nothing while
+// reporting success.
+func TestRewindRestoresToTheTargetTurnNotTheCurrentOne(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/test/repo", "test-repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sessionID := "test-session-" + t.Name()
+	if err := database.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Capture the reference clock before adding messages. Snapshots are
+	// stored with second precision (RFC3339) while messages keep their
+	// in-memory nanosecond times, so both snapshots must be clearly
+	// outside the message window or the pairing becomes ambiguous when
+	// they all land in the same wall-clock second.
+	now := time.Now().UTC()
+
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{
+		DB: database, SessionID: sessionID,
+	})
+	state.AddMessage(session.RoleUser, "turn1", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a1", session.ContentTypeMarkdown)
+	state.AddMessage(session.RoleUser, "turn2", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a2", session.ContentTypeMarkdown)
+
+	// Save two snapshots at different turn indices. The "early" snapshot
+	// is the one that should be restored when rewinding to turn 1; the
+	// "late" one is strictly after every message so it can never win the
+	// timestamp pairing for turn 1.
+	if _, err := database.SaveSnapshot(sessionID, 1, "hash-early", []string{"a.go"}, now.Add(-1*time.Hour)); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if _, err := database.SaveSnapshot(sessionID, 3, "hash-late", []string{"b.go"}, now.Add(1*time.Hour)); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	// Inject a snapshotter that records the hash it was asked to restore.
+	rec := &recordingSnapshotter{}
+	state.SetSnapshotter(rec)
+
+	reg := New()
+	toolReg := registry.New()
+	RegisterAll(reg, toolReg)
+	cmd, _ := reg.Lookup("rewind")
+	res := cmd.Handler(state, []string{"1"})
+	if !strings.Contains(res.Text, "Rewound") {
+		t.Fatalf("expected rewind success, got: %q", res.Text)
+	}
+	if rec.restoredHash != "hash-early" {
+		t.Fatalf("expected restore of hash-early (the target turn's snapshot), got %q", rec.restoredHash)
+	}
+}
+
+type recordingSnapshotter struct{ restoredHash string }
+
+func (r *recordingSnapshotter) Track(ctx context.Context) (string, error) { return "", nil }
+func (r *recordingSnapshotter) Diff(ctx context.Context, hash string) (string, error) {
+	return "", nil
+}
+func (r *recordingSnapshotter) Restore(ctx context.Context, hash string) error {
+	r.restoredHash = hash
+	return nil
 }

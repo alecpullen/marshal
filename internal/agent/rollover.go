@@ -90,6 +90,32 @@ func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage
 	return r.rollover(ctx, wire, "compact context")
 }
 
+// continueInstruction is the message appended after a compaction digest.
+// It is shared by the rollover and summarizeAndContinue paths so the two
+// compaction routes cannot drift.
+//
+// When recall_history is registered the instruction names it: the digest
+// is deliberately lossy, and at the moment detail has just been
+// compressed away the model is at its least likely to remember that a
+// retrieval tool exists. Naming it here is the difference between the
+// model re-deriving lost work and looking it up.
+func continueInstruction(recallAvailable bool) string {
+	base := "Continue the task from that summary. Do not repeat work the summary marks as completed."
+	if !recallAvailable {
+		return base
+	}
+	return base + " The summary is lossy: if you need a specific detail from earlier — an exact command, an error message, a file path, a decision and its reasoning — call recall_history to search the archived transcript rather than guessing or redoing the work."
+}
+
+// hasTool reports whether a tool is registered for this turn.
+func (r *Runner) hasTool(name string) bool {
+	if r == nil || r.Registry == nil {
+		return false
+	}
+	_, ok := r.Registry.Lookup(name)
+	return ok
+}
+
 // rolloverAndContinue is the unified intra-turn compaction entry point. When
 // rollover is enabled it archives, optionally rolls over, and returns a short
 // fresh window matching summarizeAndContinue's shape: [systemPrompt,
@@ -127,7 +153,7 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + seedDigest},
-		schema.ChatMessage{Role: schema.RoleUser, Content: "Continue the task from that summary. Do not repeat work the summary marks as completed."},
+		schema.ChatMessage{Role: schema.RoleUser, Content: continueInstruction(r.hasTool("recall_history"))},
 	)
 	return fresh, nil
 }

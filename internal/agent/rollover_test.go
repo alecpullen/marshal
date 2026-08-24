@@ -490,6 +490,19 @@ func TestRolloverAndContinueNilRollover(t *testing.T) {
 	}
 }
 
+// TestCompactionTellsTheModelItCanRecall verifies that the continue
+// instruction names recall_history when that tool is available, and never
+// advertises it when it is disabled.
+func TestCompactionTellsTheModelItCanRecall(t *testing.T) {
+	fresh := continueInstruction(true)
+	if !strings.Contains(fresh, "recall_history") {
+		t.Errorf("continue instruction does not mention recall_history: %q", fresh)
+	}
+	if plain := continueInstruction(false); strings.Contains(plain, "recall_history") {
+		t.Errorf("must not advertise a disabled tool: %q", plain)
+	}
+}
+
 // TestRolloverMaybeRolloverErrorPropagation verifies that Rollover errors
 // are propagated correctly.
 func TestRolloverMaybeRolloverErrorPropagation(t *testing.T) {

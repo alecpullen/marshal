@@ -1082,7 +1082,10 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 					continue
 				}
 				b.WriteString(nestedRail())
-				b.WriteString(line)
+				// Clip rather than wrap: diffview does not hard-clamp to the
+				// width it is given, and a wrapped continuation carries no
+				// nested rail, so an over-wide line breaks the chrome.
+				b.WriteString(ansi.Truncate(line, nestedContentWidth(width), "…"))
 				b.WriteString("\n")
 			}
 			if elided > 0 {

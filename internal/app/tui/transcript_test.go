@@ -835,6 +835,24 @@ func TestCompletedToolCallCapsBodyLinesPerFile(t *testing.T) {
 	}
 }
 
+// A long diff line must be clipped, not wrapped: a wrapped continuation
+// carries no nested rail and breaks the chrome.
+func TestDiffLinesAreTruncatedNotWrapped(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	diff := "--- a/x.go\n+++ b/x.go\n@@ -1,1 +1,2 @@\n+" + long + "\n"
+	event := registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultContent: diff,
+		FilesChanged:  []string{"x.go"},
+	}
+	const width = 80
+	for i, line := range strings.Split(strings.TrimRight(renderCompletedToolCall(event, true, nil, width), "\n"), "\n") {
+		if got := ansi.StringWidth(line); got > width {
+			t.Fatalf("row %d is %d cells wide, want <= %d — it will wrap and break the rail", i, got, width)
+		}
+	}
+}
+
 func TestCompletedToolCallCapsFilesShown(t *testing.T) {
 	var diff string
 	for i := 0; i < 7; i++ {

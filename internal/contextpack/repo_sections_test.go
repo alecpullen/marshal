@@ -46,8 +46,9 @@ func TestMergeRepoSectionsSkipsEmptyContent(t *testing.T) {
 func TestMergeRepoSectionsStarvesMapBeforeCard(t *testing.T) {
 	card := "Project: x"
 	mapContent := strings.Repeat("dir/\n  file.go (Func)\n", 200) // large
-	// Budget fits the card but not the map.
-	budget := EstimateTokens(card) + 2
+	// Budget fits the card but not the map. The card (priority 10) is
+	// allocated before the map and gets its full share.
+	budget := EstimateTokens(card) * 2
 	pack := MergeRepoSections(Pack{}, card, mapContent, budget, nil)
 	if len(pack.Sections) == 0 || pack.Sections[0].Kind != SectionRepoCard {
 		t.Fatalf("card should survive starvation, got %+v", pack.Sections)

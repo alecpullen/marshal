@@ -124,9 +124,13 @@ func TestRefreshPlanRespectsMaxTokensAndMarksTruncated(t *testing.T) {
 	pack := Pack{
 		Sections: []Section{
 			{Kind: SectionRepoCard, Title: "Repo Card", Content: strings.Repeat("r", 8), EstimatedTokens: 2},
-			{Kind: SectionFileSnippet, Title: "internal/app/app.go", Content: strings.Repeat("s", 16), EstimatedTokens: 4},
+			// A realistic file-snippet priority (30) so the plan (20)
+			// sorts before it and survives budget pressure. Budget 10:
+			// the fairness cap gives each section a share of 5, which
+			// fits the truncation marker plus a sliver of plan content.
+			{Kind: SectionFileSnippet, Title: "internal/app/app.go", Content: strings.Repeat("s", 16), EstimatedTokens: 4, Priority: 30},
 		},
-		TokenUsage: TokenUsage{MaxTokens: 8, EstimatedTokens: 6},
+		TokenUsage: TokenUsage{MaxTokens: 10, EstimatedTokens: 6},
 	}
 
 	updated := RefreshPlan(pack, []string{strings.Repeat("p", 32)}, func() time.Time { return time.Unix(200, 0).UTC() })

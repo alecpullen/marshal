@@ -70,7 +70,7 @@ func (m *Model) callerQueryCmds() tea.Cmd {
 			continue
 		}
 		m.callersAsked[key] = true
-		cmds = append(cmds, queryCallersCmd(m.ctx, m.refFinder, key, ref))
+		cmds = append(cmds, queryCallersCmd(m.lspCtx, m.refFinder, key, ref))
 	}
 	if len(cmds) == 0 {
 		return nil

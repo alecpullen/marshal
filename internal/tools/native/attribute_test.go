@@ -55,6 +55,34 @@ func TestSymbolsForEditConvertsToZeroBasedLines(t *testing.T) {
 	}
 }
 
+// The diff header may spell the path differently from the tool's own (e.g.
+// absolute vs relative, or a "b/" prefix the tool already stripped). When
+// the diff covers exactly one file, the fallback must attribute to it even
+// though the direct path lookup misses.
+func TestSymbolsForEditSingleFileFallbackHeuristic(t *testing.T) {
+	// The tool's path is absolute ("/abs/p.go") but the diff header carries
+	// "b/p.go", so the direct DiffRanges(diff)["/abs/p.go"] lookup misses and
+	// the single-file fallback must kick in.
+	diff := "--- a/p.go\n+++ b/p.go\n@@ -3,3 +3,3 @@\n-\treturn 1\n+\treturn 11\n"
+	refs := symbolsForEdit(context.Background(), "/abs/p.go", attrSrc, diff)
+	if len(refs) == 0 {
+		t.Fatal("single-file fallback must attribute despite the path mismatch")
+	}
+	if refs[0].Name != "Alpha" {
+		t.Fatalf("attributed to %q, want Alpha", refs[0].Name)
+	}
+}
+
+// A multi-file diff whose header paths all miss the tool's path must not
+// fall back: with more than one file there is no way to know which is the
+// edited one, so attributing to a guess would be wrong.
+func TestSymbolsForEditMultiFileDiffDoesNotFallback(t *testing.T) {
+	diff := "--- a/p.go\n+++ b/p.go\n@@ -3,3 +3,3 @@\n-\treturn 1\n+\treturn 11\n--- a/q.go\n+++ b/q.go\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+	if refs := symbolsForEdit(context.Background(), "/abs/p.go", attrSrc, diff); len(refs) != 0 {
+		t.Fatalf("multi-file diff must not fall back to a single-file guess, got %+v", refs)
+	}
+}
+
 func TestSymbolsForEditUnsupportedLanguageIsEmpty(t *testing.T) {
 	diff := "--- a/a.rb\n+++ b/a.rb\n@@ -1,1 +1,1 @@\n-x\n+y\n"
 	if refs := symbolsForEdit(context.Background(), "a.rb", "def foo\nend\n", diff); len(refs) != 0 {

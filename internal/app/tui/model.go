@@ -164,8 +164,16 @@ type Model struct {
 	// request. Nil when the runtime has no provider.
 	planAuthorFactory PlanAuthorFactory
 	ctx               context.Context
-	busy              bool
-	configReloader    ConfigReloader
+	// lspCtx is the context for background LSP reference lookups. It is
+	// derived from context.Background() rather than m.ctx because m.ctx is
+	// the program's cancellable turn context and can be nil or replaced on
+	// a provider-build failure; the LSP queries must outlive a turn but be
+	// cancelled on shutdown so a lingering lookup never leaks past exit.
+	// lspCancel is called from beginShutdown.
+	lspCtx         context.Context
+	lspCancel      context.CancelFunc
+	busy           bool
+	configReloader ConfigReloader
 	// runnerSource exposes the runtime's current runner after a config
 	// reload. Used to recover from a startup provider-build failure, where
 	// the TUI was constructed without a runner: the first successful reload
@@ -1147,6 +1155,12 @@ func New(state *session.State, opts ...Option) Model {
 	for _, opt := range opts {
 		opt(&m)
 	}
+
+	// The LSP reference-lookup context is independent of m.ctx (the program's
+	// cancellable turn context, which can be nil or replaced on a
+	// provider-build failure). It is cancelled on shutdown so a lingering
+	// lookup never leaks past exit.
+	m.lspCtx, m.lspCancel = context.WithCancel(context.Background())
 
 	// bubbles maps wheel-left/right to horizontal panning; step 0 disables
 	// it at the viewport level too (the wheel events are already dropped in
@@ -3580,6 +3594,10 @@ func (m *Model) beginShutdown() tea.Cmd {
 	if m.agentCancel != nil {
 		m.agentCancel()
 		m.agentCancel = nil
+	}
+	if m.lspCancel != nil {
+		m.lspCancel()
+		m.lspCancel = nil
 	}
 	m.queuedCount = 0
 	m.state.ResolvePendingForShutdown()

@@ -72,7 +72,7 @@ func TestTranscriptIndentContract(t *testing.T) {
 		}, width)},
 		{"completed tool call", renderCompletedToolCall(registry.AuditEvent{
 			ToolName: "file.read", ResultSummary: "ok",
-		}, false, width)},
+		}, false, nil, width)},
 		{"thinking summary", renderThinkingSummary("reasoned", time.Second, false, width)},
 		{"agent markdown", renderAgentMarkdown("plain paragraph", width)},
 		{"tool group with wrapped bullets", renderToolGroup([]registry.AuditEvent{

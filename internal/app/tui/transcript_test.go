@@ -76,25 +76,25 @@ func TestTranscriptHashDistinguishesContent(t *testing.T) {
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "hello", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
 	b := transcriptHash([]session.TranscriptItem{
 		{
 			Kind:      session.KindMessage,
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "goodbye", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
 	if a == b {
 		t.Fatal("hash should differ for different content")
 	}
 }
 
 func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
-	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{}, session.Notice{}, false, nil)
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}, session.Notice{}, false, nil); got == base {
+	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}, session.Notice{}, false, nil, nil); got == base {
 		t.Fatal("transcript hash must change with the spinner frame — otherwise the live tool row freezes")
 	}
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}, session.Notice{}, false, nil); got == base {
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}, session.Notice{}, false, nil, nil); got == base {
 		t.Fatal("hash must change with the active tool call")
 	}
 }
@@ -103,15 +103,15 @@ func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
 // identity must bust the viewport cache. Without this, esc-dismiss and the
 // TTL auto-dismiss repaint nothing and the banner stays on screen.
 func TestTranscriptHashCoversNotice(t *testing.T) {
-	base := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil)
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom"}, true, nil); got == base {
+	base := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom"}, true, nil, nil); got == base {
 		t.Fatal("hash must change when a notice appears")
 	}
-	up := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, true, nil)
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(200, 0)}, true, nil); got == up {
+	up := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, true, nil, nil)
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(200, 0)}, true, nil, nil); got == up {
 		t.Fatal("hash must change with the notice timestamp")
 	}
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, false, nil); got == up {
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, false, nil, nil); got == up {
 		t.Fatal("hash must change when a notice is dismissed")
 	}
 }
@@ -346,7 +346,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 				StartedAt: time.Now(),
 			},
 		}
-		result := renderTranscriptItem(item, false, "⠋", 0, width)
+		result := renderTranscriptItem(item, false, "⠋", 0, nil, width)
 		if !strings.Contains(result, "thought for 2s") {
 			t.Errorf("expected thinking summary, got: %s", result)
 		}
@@ -360,7 +360,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 				ResultSummary: "file contents here",
 			},
 		}
-		result := renderTranscriptItem(item, false, "⠋", 0, width)
+		result := renderTranscriptItem(item, false, "⠋", 0, nil, width)
 		if !strings.Contains(result, "Read file") {
 			t.Errorf("expected completed tool call, got: %s", result)
 		}
@@ -385,7 +385,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 			Kind:    session.KindMessage,
 			Message: &msg,
 		}
-		result := renderTranscriptItem(item, false, "⠋", 0, width)
+		result := renderTranscriptItem(item, false, "⠋", 0, nil, width)
 		if !strings.Contains(result, "thought for 1s") {
 			t.Errorf("expected thinking summary before message, got: %s", result)
 		}
@@ -420,14 +420,14 @@ func TestUserMessageUsesCoralGutter(t *testing.T) {
 }
 
 func TestCompletedToolCallUsesGutterGlyphs(t *testing.T) {
-	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, false, 40))
+	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, false, nil, 40))
 	if !strings.Contains(ok, "·") {
 		t.Fatalf("successful tool call should show · gutter: %q", ok)
 	}
 	if strings.Contains(ok, "done") {
 		t.Fatalf("successful tool call should not say 'done': %q", ok)
 	}
-	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, false, 40))
+	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, false, nil, 40))
 	if !strings.Contains(bad, "✗") {
 		t.Fatalf("failed tool call should show ✗ gutter: %q", bad)
 	}
@@ -442,7 +442,7 @@ func TestRenderCompletedToolCallShowsHookBlockedIndicator(t *testing.T) {
 			Decision: "block",
 			Reason:   "lint gate",
 		}},
-	}, false, 80))
+	}, false, nil, 80))
 	if !strings.Contains(out, "hook blocked") {
 		t.Fatalf("rendered tool call missing hook blocked indicator: %q", out)
 	}
@@ -456,7 +456,7 @@ func TestRenderCompletedToolCallShowsHookRewroteIndicator(t *testing.T) {
 			Event:   "pre_tool_use",
 			Rewrote: true,
 		}},
-	}, false, 80))
+	}, false, nil, 80))
 	if !strings.Contains(out, "hook rewrote") {
 		t.Fatalf("rendered tool call missing hook rewrote indicator: %q", out)
 	}
@@ -470,7 +470,7 @@ func TestRenderCompletedToolCallShowsHookFailedOpenIndicator(t *testing.T) {
 			Event:      "pre_tool_use",
 			FailedOpen: true,
 		}},
-	}, false, 80))
+	}, false, nil, 80))
 	if !strings.Contains(out, "hook failed-open") {
 		t.Fatalf("rendered tool call missing hook failed-open indicator: %q", out)
 	}
@@ -484,7 +484,7 @@ func TestRenderCompletedToolCallShowsHookCountIndicator(t *testing.T) {
 			{Event: "pre_tool_use"},
 			{Event: "pre_tool_use"},
 		},
-	}, false, 80))
+	}, false, nil, 80))
 	if !strings.Contains(out, "hooks 2") {
 		t.Fatalf("rendered tool call missing hooks 2 indicator: %q", out)
 	}
@@ -596,7 +596,7 @@ func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 		ToolName:      "browser.navigate",
 		ResultSummary: "Navigated to https://example.com",
 	}
-	out := renderCompletedToolCall(event, false, 80)
+	out := renderCompletedToolCall(event, false, nil, 80)
 	stripped := stripANSI(out)
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("browser completed tool call should not render 🌐:\n%s", out)
@@ -704,7 +704,7 @@ func TestCompletedFileWritePatchRendersDiff(t *testing.T) {
 		ResultSummary: "Applied patches to: a.go",
 		ResultContent: "--- a.go\n+++ a.go\n@@ -1 +1 @@\n-old\n+new\n",
 	}
-	out := stripANSI(renderCompletedToolCall(event, false, 80))
+	out := stripANSI(renderCompletedToolCall(event, false, nil, 80))
 	if !strings.Contains(out, "Edit file") {
 		t.Fatalf("missing pretty tool name: %q", out)
 	}
@@ -728,7 +728,7 @@ func TestCompletedFileWritePatchTruncatesLongDiff(t *testing.T) {
 		ResultSummary: "Applied patches to: a.go",
 		ResultContent: long.String(),
 	}
-	out := stripANSI(renderCompletedToolCall(event, false, 80))
+	out := stripANSI(renderCompletedToolCall(event, false, nil, 80))
 	if !strings.Contains(out, "a.go") {
 		t.Fatalf("missing file stat header: %q", out)
 	}
@@ -784,7 +784,7 @@ func TestCompletedToolCallRendersEveryFileInMultiFilePatch(t *testing.T) {
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
 		ResultContent: diff,
-	}, false, 80))
+	}, false, nil, 80))
 	for _, path := range []string{"alpha.go", "beta.go", "gamma.go"} {
 		if !strings.Contains(out, path) {
 			t.Fatalf("diff output missing stat header for %s:\n%s", path, out)
@@ -805,7 +805,7 @@ func TestCompletedToolCallCapsBodyLinesPerFile(t *testing.T) {
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
 		ResultContent: diff,
-	}, false, 80))
+	}, false, nil, 80))
 	if !strings.Contains(out, "more lines") {
 		t.Fatalf("expected per-file elision of lines:\n%s", out)
 	}
@@ -820,7 +820,7 @@ func TestCompletedToolCallCapsFilesShown(t *testing.T) {
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
 		ResultContent: diff,
-	}, false, 80))
+	}, false, nil, 80))
 	if !strings.Contains(out, "… 1 more files") {
 		t.Fatalf("expected file-cap elision line:\n%s", out)
 	}
@@ -855,7 +855,7 @@ func TestCompletedToolCallHidesResultContentWhenCollapsed(t *testing.T) {
 		ToolName:      "agent.run",
 		ResultSummary: "subagent completed",
 		ResultContent: "full subagent report body",
-	}, false, 80))
+	}, false, nil, 80))
 	if strings.Contains(out, "full subagent report body") {
 		t.Fatalf("collapsed row must not render result content:\n%s", out)
 	}
@@ -866,7 +866,7 @@ func TestCompletedToolCallExpandsResultContent(t *testing.T) {
 		ToolName:      "agent.run",
 		ResultSummary: "subagent completed",
 		ResultContent: "full subagent report body",
-	}, true, 80))
+	}, true, nil, 80))
 	if !strings.Contains(out, "full subagent report body") {
 		t.Fatalf("expanded row must render result content:\n%s", out)
 	}
@@ -880,7 +880,7 @@ func TestCompletedFailedDiffToolShowsFailureDetailsWhenExpanded(t *testing.T) {
 		Args:            []byte(`{"path":"a.go"}`),
 		CommandExitCode: &exitCode,
 		ResultContent:   "patch output",
-	}, true, 80))
+	}, true, nil, 80))
 	if !strings.Contains(out, "(exit code 2)") || !strings.Contains(out, `args: {"path":"a.go"}`) {
 		t.Fatalf("expanded failed diff tool must show failure details:\n%s", out)
 	}
@@ -895,7 +895,7 @@ func TestCompletedToolCallCapsExpandedResultContent(t *testing.T) {
 		ToolName:      "agent.run",
 		ResultSummary: "subagent completed",
 		ResultContent: strings.Join(lines, "\n"),
-	}, true, 80))
+	}, true, nil, 80))
 	if !strings.Contains(out, "… 8 more lines") {
 		t.Fatalf("expanded content must be capped with an elision marker:\n%s", out)
 	}
@@ -908,7 +908,7 @@ func TestCompletedToolCallFitsWidthWithWideRunes(t *testing.T) {
 	out := renderCompletedToolCall(registry.AuditEvent{
 		ToolName:      "file.read",
 		ResultSummary: "読み込み完了 — これは幅を超えるとても長い日本語のサマリーです",
-	}, false, 40)
+	}, false, nil, 40)
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if w := ansi.StringWidth(line); w > 40 {
 			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
@@ -930,11 +930,11 @@ func TestActiveToolCallFitsWidthWithWideRunes(t *testing.T) {
 }
 
 func TestCompletedToolCallUsesCategoryGlyph(t *testing.T) {
-	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok"}, false, 40))
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok"}, false, nil, 40))
 	if !strings.Contains(out, "≡") {
 		t.Fatalf("file.read row should use the ≡ gutter: %q", out)
 	}
-	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", Error: "boom"}, false, 40))
+	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", Error: "boom"}, false, nil, 40))
 	if !strings.Contains(bad, "✗") {
 		t.Fatalf("error state must win over the category glyph: %q", bad)
 	}
@@ -1008,7 +1008,7 @@ func TestCompletedToolCallWrapsLongSummary(t *testing.T) {
 	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
 		ToolName:      "file.read",
 		ResultSummary: long,
-	}, false, 30))
+	}, false, nil, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) < 2 {
 		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
@@ -1029,7 +1029,7 @@ func TestCompletedToolCallWrapsLongError(t *testing.T) {
 	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
 		ToolName: "shell.run",
 		Error:    long,
-	}, false, 30))
+	}, false, nil, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) < 2 {
 		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
@@ -1056,12 +1056,12 @@ func TestRenderCompletedToolCallExpandedShowsFullDiff(t *testing.T) {
 		ResultContent: diff.String(),
 	}
 
-	collapsed := renderCompletedToolCall(event, false, 80)
+	collapsed := renderCompletedToolCall(event, false, nil, 80)
 	if !strings.Contains(collapsed, "more lines") {
 		t.Fatal("expected collapsed diff to elide lines")
 	}
 
-	expanded := renderCompletedToolCall(event, true, 80)
+	expanded := renderCompletedToolCall(event, true, nil, 80)
 	if strings.Contains(expanded, "more lines") {
 		t.Fatalf("expected expanded diff to show every line, got: %s", expanded)
 	}
@@ -1134,23 +1134,23 @@ func TestThinkingSummaryShowsDisclosureGlyphOnlyWhenExpandable(t *testing.T) {
 
 func TestCompletedToolCallShowsDisclosureGlyphWhenResultContentPresent(t *testing.T) {
 	withResult := registry.AuditEvent{ToolName: "file.read", ResultContent: "some content"}
-	collapsed := renderCompletedToolCall(withResult, false, 80)
+	collapsed := renderCompletedToolCall(withResult, false, nil, 80)
 	if !strings.Contains(collapsed, glyph.DisclosureCollapsed) {
 		t.Fatal("expected the collapsed disclosure glyph when ResultContent is present")
 	}
-	expanded := renderCompletedToolCall(withResult, true, 80)
+	expanded := renderCompletedToolCall(withResult, true, nil, 80)
 	if !strings.Contains(expanded, glyph.DisclosureExpanded) {
 		t.Fatal("expected the expanded disclosure glyph when ResultContent is present")
 	}
 
 	withoutResult := registry.AuditEvent{ToolName: "file.read"}
-	rendered := renderCompletedToolCall(withoutResult, false, 80)
+	rendered := renderCompletedToolCall(withoutResult, false, nil, 80)
 	if strings.Contains(rendered, glyph.DisclosureCollapsed) || strings.Contains(rendered, glyph.DisclosureExpanded) {
 		t.Fatal("expected no disclosure glyph when there is nothing to expand")
 	}
 
 	failed := registry.AuditEvent{ToolName: "shell.run", Error: "boom"}
-	if out := renderCompletedToolCall(failed, false, 80); !strings.Contains(out, glyph.DisclosureCollapsed) {
+	if out := renderCompletedToolCall(failed, false, nil, 80); !strings.Contains(out, glyph.DisclosureCollapsed) {
 		t.Fatal("expected the collapsed disclosure glyph when Error is set")
 	}
 }
@@ -1159,7 +1159,7 @@ func TestCompletedToolCallExpandedShowsFailureDetail(t *testing.T) {
 	longArgs := `{"command": "run a very long command that keeps going and going until it wraps well past the sixty cell budget of this test renderer"}`
 	event := registry.AuditEvent{ToolName: "shell.run", Error: "boom", Args: []byte(longArgs)}
 
-	expanded := stripANSI(renderCompletedToolCall(event, true, 60))
+	expanded := stripANSI(renderCompletedToolCall(event, true, nil, 60))
 	if !strings.Contains(expanded, "error: boom") {
 		t.Fatalf("expected the error detail line, got:\n%q", expanded)
 	}
@@ -1172,7 +1172,7 @@ func TestCompletedToolCallExpandedShowsFailureDetail(t *testing.T) {
 		}
 	}
 
-	collapsed := stripANSI(renderCompletedToolCall(event, false, 60))
+	collapsed := stripANSI(renderCompletedToolCall(event, false, nil, 60))
 	if strings.Contains(collapsed, "args: ") {
 		t.Fatalf("collapsed render should not contain the args body:\n%q", collapsed)
 	}

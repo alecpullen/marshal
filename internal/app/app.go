@@ -433,7 +433,21 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
+// buildAgentRunner is the test-facing form: children serialize on a private
+// lock. Production uses buildAgentRunnerWithLock so the parent runner and
+// every agent.run child share the runtime's stable WriteLock across config
+// reloads. (Keeping this wrapper avoids churning the ~25 test call sites.)
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, sddauthor.Factory, error) {
+	return buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, configReloader, homeDir, &swarm.WriteLock{})
+}
+
+// buildAgentRunnerWithLock is the production form of buildAgentRunner. It
+// takes the runtime's stable WriteLock so the parent runner and every
+// agent.run child serialize writes on the same gate, and so a config reload
+// (which rebuilds the runner and the subagent factory) reuses the same lock
+// that in-flight background children from the pre-reload generation already
+// hold.
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, sddauthor.Factory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -565,8 +579,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	parentPricing := pricing.Lookup(route.Preset, state.Logger())
 	// One write lock shared by the parent runner and every agent.run child:
 	// background children outlive the spawning turn, so parent and child
-	// writes must serialize on the same gate.
-	writeLock := &swarm.WriteLock{}
+	// writes must serialize on the same gate. The lock is the caller's
+	// (buildAgentRunnerWithLock passes the runtime's stable lock so a config
+	// reload reuses the same gate in-flight children already hold).
 	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock)
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
@@ -1904,7 +1919,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
+	// Reuse the runtime's stable WriteLock: in-flight background children
+	// from the pre-reload generation hold it, so the rebuilt parent and
+	// subagent factory must serialize on the same gate.
+	lock := rt.WriteLock
+	if lock == nil {
+		lock = &swarm.WriteLock{}
+	}
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)

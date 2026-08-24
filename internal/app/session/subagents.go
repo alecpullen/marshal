@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -362,4 +363,34 @@ func (s *State) WaitSubagent(ctx context.Context, id int64) (SubagentView, error
 	}
 	s.mu.Unlock()
 	return SubagentView{}, fmt.Errorf("session: unknown subagent id %d", id)
+}
+
+// SubagentActivityTail returns up to n lines summarising what a running
+// subagent is currently doing. It prefers the trailing end of streamed
+// reasoning, then recent audit-log result summaries. It lives here (rather
+// than duplicated in the agent and TUI packages) so the two consumers —
+// agent.output and the TUI card — cannot drift apart.
+func (s *State) SubagentActivityTail(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	ip := s.InProgress()
+	if ip.Reasoning != "" {
+		lines := strings.Split(strings.TrimSpace(ip.Reasoning), "\n")
+		if len(lines) > n {
+			lines = lines[len(lines)-n:]
+		}
+		return lines
+	}
+	log := s.AuditLog()
+	if len(log) == 0 {
+		return nil
+	}
+	var out []string
+	for i := len(log) - 1; i >= 0 && len(out) < n; i-- {
+		if log[i].ResultSummary != "" {
+			out = append([]string{log[i].ResultSummary}, out...)
+		}
+	}
+	return out
 }

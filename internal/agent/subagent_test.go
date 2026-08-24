@@ -164,10 +164,12 @@ func TestSubagentCancelPropagatesToExec(t *testing.T) {
 	if !strings.Contains(view.Error, "context canceled") {
 		t.Fatalf("view.Error = %q, want context.Canceled text", view.Error)
 	}
-	// The failure is also delivered to the model via the steering queue.
-	q := state.SteeringQueue()
+	// The failure is also delivered to the model via the subagent report
+	// queue (separate from the human steering queue so a turn-cancel
+	// cannot drop it).
+	q := state.SubagentReports()
 	if len(q) != 1 || !strings.Contains(q[0], "failed") {
-		t.Fatalf("steering queue = %v, want one failure message", q)
+		t.Fatalf("subagent report queue = %v, want one failure message", q)
 	}
 }
 
@@ -223,18 +225,18 @@ func TestSubagentSalvageSurfacesInResultAndCard(t *testing.T) {
 	if view.SalvagedReason != "exhausted" {
 		t.Fatalf("SalvagedReason = %q, want exhausted", view.SalvagedReason)
 	}
-	q := state.SteeringQueue()
+	q := state.SubagentReports()
 	if len(q) != 1 {
-		t.Fatalf("steering queue = %v, want exactly one completion message", q)
+		t.Fatalf("subagent report queue = %v, want exactly one completion message", q)
 	}
 	if !strings.Contains(q[0], "salvaged: exhausted") {
-		t.Fatalf("steering message = %q, want salvaged marker", q[0])
+		t.Fatalf("report message = %q, want salvaged marker", q[0])
 	}
 	if !strings.Contains(q[0], "partial report") {
-		t.Fatalf("steering message missing report: %q", q[0])
+		t.Fatalf("report message missing report: %q", q[0])
 	}
 	if !strings.Contains(q[0], " Raise [agent] subtask_iterations") {
-		t.Fatalf("steering message missing remedy hint: %q", q[0])
+		t.Fatalf("report message missing remedy hint: %q", q[0])
 	}
 }
 
@@ -762,14 +764,24 @@ func runAsyncSubagent(t *testing.T, tool registry.Tool, state *session.State, ar
 func TestAgentRunReturnsImmediately(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	release := make(chan struct{})
+	// M1: release the child on any early failure so the spawned goroutine
+	// does not leak (it blocks on <-release). Guarded so the normal
+	// close(release) below and the cleanup cannot double-close.
+	var releaseOnce sync.Once
+	releaseChild := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseChild)
 	tool := NewSubagentTool(
 		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, state, nil },
 		nil,
 		registry.New(),
 		state,
 		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
-			<-release
-			return "done", "", nil
+			select {
+			case <-release:
+				return "done", "", nil
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
 		}),
 	)
 
@@ -797,7 +809,7 @@ func TestAgentRunReturnsImmediately(t *testing.T) {
 	if got := state.SubagentConcurrency(); got != 1 {
 		t.Fatalf("concurrency while child runs = %d, want 1", got)
 	}
-	close(release)
+	releaseChild()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	view, err := state.WaitSubagent(ctx, state.Subagents()[0].ID)
@@ -884,13 +896,13 @@ func TestSubagentCompletionDeliversNoticeAndSteering(t *testing.T) {
 		t.Fatalf("view.Summary = %q, want %q", view.Summary, "the report")
 	}
 
-	q := state.SteeringQueue()
+	q := state.SubagentReports()
 	if len(q) != 1 {
-		t.Fatalf("steering queue = %v, want exactly one completion message", q)
+		t.Fatalf("subagent report queue = %v, want exactly one completion message", q)
 	}
 	want := fmt.Sprintf("[subagent %d finished] the report", view.ID)
 	if q[0] != want {
-		t.Fatalf("steering message = %q, want %q", q[0], want)
+		t.Fatalf("report message = %q, want %q", q[0], want)
 	}
 
 	msgs := state.Messages()

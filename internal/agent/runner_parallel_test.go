@@ -453,6 +453,27 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 	if len(exited) != 2 {
 		t.Fatalf("exited = %d, want 2", len(exited))
 	}
+
+	// Both completion reports must be queued for the model — the async
+	// replacement for the old synchronous tool-result assertion. Order is
+	// completion order (children finish in the background), so only
+	// presence is asserted, not sequence.
+	reports := state.SubagentReports()
+	if len(reports) != 2 {
+		t.Fatalf("subagent report queue = %d reports, want 2", len(reports))
+	}
+	foundAlpha, foundBeta := false, false
+	for _, r := range reports {
+		if strings.Contains(r, "done: alpha") {
+			foundAlpha = true
+		}
+		if strings.Contains(r, "done: beta") {
+			foundBeta = true
+		}
+	}
+	if !foundAlpha || !foundBeta {
+		t.Fatalf("report queue missing a completion: %v", reports)
+	}
 }
 
 // TestParallelAgentRunPreservesSiblingsOnError verifies that when one of

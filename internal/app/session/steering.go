@@ -69,7 +69,10 @@ func (s *State) PopSteering() (string, bool) {
 }
 
 // ClearSteering drops all queued messages without returning them. Used
-// by the TUI's Ctrl+X clear and the interrupt path (cancelTurn).
+// by the TUI's Ctrl+X clear and the interrupt path (cancelTurn). It only
+// clears human steering; machine-generated subagent reports live in a
+// separate queue (see subagent_reports.go) so a turn-cancel cannot drop
+// a background child's completion report.
 func (s *State) ClearSteering() {
 	s.mu.Lock()
 	s.steeringQueue = nil

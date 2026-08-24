@@ -1231,6 +1231,43 @@ func TestSteeringQueuePushDrainClear(t *testing.T) {
 	}
 }
 
+// TestSubagentReportQueueSeparateFromSteering guards C1: a background
+// subagent's completion report lives in its own queue, so ClearSteering
+// (turn-cancel, Ctrl+X) and PopSteering (blank-Enter follow-up) must never
+// drop it.
+func TestSubagentReportQueueSeparateFromSteering(t *testing.T) {
+	state := newTestState()
+	state.PushSubagentReport("[subagent 1 finished] the report")
+	state.PushSteering("human steering")
+
+	// ClearSteering drops only the human steering, not the report.
+	state.ClearSteering()
+	if got := state.SteeringQueue(); len(got) != 0 {
+		t.Fatalf("steering queue = %v, want empty after clear", got)
+	}
+	if got := state.SubagentReports(); len(got) != 1 {
+		t.Fatalf("subagent report queue = %v, want the report preserved", got)
+	}
+
+	// PopSteering (blank-Enter follow-up) also leaves the report intact.
+	state.PushSteering("another steer")
+	if _, ok := state.PopSteering(); !ok {
+		t.Fatal("PopSteering returned ok=false")
+	}
+	if got := state.SubagentReports(); len(got) != 1 {
+		t.Fatalf("subagent report queue = %v, want the report preserved after PopSteering", got)
+	}
+
+	// DrainSubagentReports returns and clears only the report queue.
+	drained := state.DrainSubagentReports()
+	if len(drained) != 1 || drained[0] != "[subagent 1 finished] the report" {
+		t.Fatalf("DrainSubagentReports = %v, want the report", drained)
+	}
+	if got := state.SubagentReports(); len(got) != 0 {
+		t.Fatalf("subagent report queue = %v, want empty after drain", got)
+	}
+}
+
 func TestSteeringQueuePublishesQueueLenAfterDrainPopAndClear(t *testing.T) {
 	state := newTestState()
 	broker := pubsub.NewBroker[SteeringEvent]()

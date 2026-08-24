@@ -750,31 +750,14 @@ func settledSubagentRow(v session.SubagentView, expanded bool, dur string, meta 
 }
 
 // subagentTailLines returns up to n dim continuation lines summarising
-// what a running subagent is currently doing. It prefers the trailing end
-// of streamed reasoning, then recent audit-log result summaries.
+// what a running subagent is currently doing. It delegates to the shared
+// session implementation so the TUI card and agent.output read the same
+// tail source and cannot drift.
 func subagentTailLines(child *session.State, n int) []string {
-	if child == nil || n <= 0 {
+	if child == nil {
 		return nil
 	}
-	ip := child.InProgress()
-	if ip.Reasoning != "" {
-		lines := strings.Split(strings.TrimSpace(ip.Reasoning), "\n")
-		if len(lines) > n {
-			lines = lines[len(lines)-n:]
-		}
-		return lines
-	}
-	log := child.AuditLog()
-	if len(log) == 0 {
-		return nil
-	}
-	var out []string
-	for i := len(log) - 1; i >= 0 && len(out) < n; i-- {
-		if log[i].ResultSummary != "" {
-			out = append([]string{log[i].ResultSummary}, out...)
-		}
-	}
-	return out
+	return child.SubagentActivityTail(n)
 }
 
 func renderSkillTag(name string, width int) string {

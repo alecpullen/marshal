@@ -843,6 +843,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 			steeringArrived = true
 		}
+		// Drain background subagent completion reports alongside steering.
+		// These are machine-generated (never user-typed), so they do not
+		// count as a user intervention for the doom-loop guard, but they
+		// must reach the model wire the same way: injected as user messages
+		// at the next loop-top. They live in a separate queue so a
+		// turn-cancel (ClearSteering) cannot drop them.
+		for _, msg := range r.State.DrainSubagentReports() {
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+		}
 		if len(steeringPins) > 0 {
 			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
 				return contextpack.PinFiles(pack, steeringPins)

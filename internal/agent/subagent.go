@@ -278,13 +278,23 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			state.AddSubagentTokens(view.ID, u.PromptTokens+u.CompletionTokens)
 		}
 		go func() {
-			defer state.ExitSubagent()
 			defer cancel()
+			// I1: a panic in the child (cfg.exec, a tool handler, the SQLite
+			// write path) must not crash the whole process. The child now runs
+			// on a bare goroutine with no parent-runner panic handling, so
+			// recover here and surface the failure as a failed subagent.
+			defer func() {
+				if r := recover(); r != nil {
+					state.Logger().Error("subagent panicked", "id", view.ID, "panic", r)
+					state.PushSubagentReport(fmt.Sprintf("[subagent %d failed] subagent %d (%s) panicked: %v", view.ID, view.ID, args.Description, r))
+					state.ExitSubagent()
+					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
+				}
+			}()
 			summary, salvagedReason, runErr := cfg.exec(childCtx, child, args.Prompt)
 			if salvagedReason != "" {
 				state.SetSubagentSalvaged(view.ID, salvagedReason)
 			}
-			state.FinishSubagent(view.ID, summary, runErr)
 			errText := ""
 			if runErr != nil {
 				errText = runErr.Error()
@@ -292,28 +302,37 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			summaryLine, content := subagentResultText(view.ID, args.Description, summary, salvagedReason, errText)
 			// Completion delivery is two-channel and unconditional.
 			// The transcript notice is for the user and appears immediately
-			// (the repaint rides the FinishSubagent broker event). The
-			// steering push is for the model: RoleSystem transcript messages
-			// never replay into the wire (buildHistoryMessages only replays
-			// user turns and final answers) and session mail is
-			// transcript-only, so the steering queue is the one channel that
-			// reaches the model from a busy turn (drained as a user message
-			// at the next loop-top) and from an idle session (drained at the
-			// next turn's start, or submitted as the follow-up turn on a
-			// blank Enter).
+			// (the repaint rides the FinishSubagent broker event). The report
+			// push is for the model: RoleSystem transcript messages never
+			// replay into the wire (buildHistoryMessages only replays user
+			// turns and final answers) and session mail is transcript-only, so
+			// the subagent report queue is the one channel that reaches the
+			// model from a busy turn (drained as a user message at the next
+			// loop-top) and from an idle session (drained at the next turn's
+			// start). It is deliberately separate from the human steering
+			// queue so a turn-cancel (ClearSteering) or blank-Enter follow-up
+			// (PopSteering) can never drop a background child's report.
 			mark, verb := "✓", "finished"
 			if runErr != nil {
 				mark, verb = "✗", "failed"
 			}
 			state.AddMessage(session.RoleSystem, mark+" "+summaryLine, session.ContentTypePlain)
-			steering := fmt.Sprintf("[subagent %d %s] %s", view.ID, verb, content)
+			report := fmt.Sprintf("[subagent %d %s] %s", view.ID, verb, content)
 			if salvagedReason != "" {
 				// The salvage marker lives on the summary line; fold it into
-				// the steering message so the model sees the partial-report
+				// the report message so the model sees the partial-report
 				// caveat alongside the report body.
-				steering = fmt.Sprintf("[subagent %d %s] %s\n\n%s", view.ID, verb, summaryLine, content)
+				report = fmt.Sprintf("[subagent %d %s] %s\n\n%s", view.ID, verb, summaryLine, content)
 			}
-			state.PushSteering(steering)
+			// C2: push the report and release the concurrency slot BEFORE
+			// FinishSubagent closes the done channel. A WaitSubagent caller
+			// (agent.await) unblocks on that close, so it must observe the
+			// report already queued and the slot already released — otherwise
+			// there is no happens-before edge and the caller can race the
+			// report push / ExitSubagent.
+			state.PushSubagentReport(report)
+			state.ExitSubagent()
+			state.FinishSubagent(view.ID, summary, runErr)
 		}()
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("started as subagent %d — %s", view.ID, args.Description),

@@ -38,33 +38,61 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 		if !args.All && args.ID == 0 {
 			return registry.ToolResult{}, fmt.Errorf("%s requires \"id\" or \"all\": true", tool.Name)
 		}
-		var ids []int64
-		if args.All {
-			for _, v := range state.Subagents() {
-				if v.Status == session.SubagentRunning {
-					ids = append(ids, v.ID)
-				}
-			}
-			if len(ids) == 0 {
-				return registry.ToolResult{
-					Summary: "no running subagents",
-					Content: "No background subagents are currently running.",
-				}, nil
-			}
-		} else {
-			ids = []int64{args.ID}
-		}
-		// Sequential waits are correct for all: the total wait is bounded by
-		// the last finisher regardless of order.
-		var lines, bodies []string
-		for _, id := range ids {
-			v, err := state.WaitSubagent(ctx, id)
+		if !args.All {
+			// Single-ID wait.
+			v, err := state.WaitSubagent(ctx, args.ID)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
 			line, content := subagentResultText(v.ID, v.Label, v.Summary, v.SalvagedReason, v.Error)
-			lines = append(lines, line)
-			bodies = append(bodies, content)
+			return registry.ToolResult{
+				Summary: line,
+				Content: content,
+			}, nil
+		}
+		// "all": wait for every outstanding background child. Loop so children
+		// registered after the initial snapshot are included, and only real
+		// background children (Child != nil) are waited on — pipeline/SDD
+		// cards share the parent's state and are not agent.run children.
+		// waited tracks IDs already collected so a child that finishes
+		// between scans is still picked up (it is no longer Running, but it
+		// is still a background child we have not yet reported).
+		var lines, bodies []string
+		waited := make(map[int64]bool)
+		for {
+			var pending []int64
+			for _, v := range state.Subagents() {
+				if v.Child != nil && !waited[v.ID] {
+					pending = append(pending, v.ID)
+				}
+			}
+			if len(pending) == 0 {
+				break
+			}
+			for _, id := range pending {
+				v, err := state.WaitSubagent(ctx, id)
+				if err != nil {
+					// Preserve partial results: a cancelled batch must not
+					// discard the siblings that already finished.
+					if len(lines) > 0 {
+						return registry.ToolResult{
+							Summary: strings.Join(lines, "\n"),
+							Content: strings.Join(bodies, "\n\n"),
+						}, err
+					}
+					return registry.ToolResult{}, err
+				}
+				waited[id] = true
+				line, content := subagentResultText(v.ID, v.Label, v.Summary, v.SalvagedReason, v.Error)
+				lines = append(lines, line)
+				bodies = append(bodies, content)
+			}
+		}
+		if len(lines) == 0 {
+			return registry.ToolResult{
+				Summary: "no running subagents",
+				Content: "No background subagents are currently running.",
+			}, nil
 		}
 		return registry.ToolResult{
 			Summary: strings.Join(lines, "\n"),
@@ -138,31 +166,11 @@ func NewSubagentOutputTool(state *session.State) registry.Tool {
 	return tool
 }
 
-// subagentActivityTail mirrors the TUI card's tail source
-// (internal/app/tui/transcript.go subagentTailLines): prefer the trailing
-// end of streamed reasoning, then recent audit-log result summaries. The
-// agent package cannot import the TUI, so the logic is duplicated here.
+// subagentActivityTail delegates to the shared session implementation so
+// agent.output and the TUI card read the same tail source and cannot drift.
 func subagentActivityTail(child *session.State, n int) []string {
-	if child == nil || n <= 0 {
+	if child == nil {
 		return nil
 	}
-	ip := child.InProgress()
-	if ip.Reasoning != "" {
-		lines := strings.Split(strings.TrimSpace(ip.Reasoning), "\n")
-		if len(lines) > n {
-			lines = lines[len(lines)-n:]
-		}
-		return lines
-	}
-	log := child.AuditLog()
-	if len(log) == 0 {
-		return nil
-	}
-	var out []string
-	for i := len(log) - 1; i >= 0 && len(out) < n; i-- {
-		if log[i].ResultSummary != "" {
-			out = append([]string{log[i].ResultSummary}, out...)
-		}
-	}
-	return out
+	return child.SubagentActivityTail(n)
 }

@@ -120,6 +120,14 @@ type Runtime struct {
 	// ConfigReloader hot-swaps the agent runtime from a new config. Set by
 	// Run() after the TUI is live; nil when the runtime is headless.
 	ConfigReloader func(config.Config) error
+	// WriteLock is the single swarm.WriteLock shared by the parent runner
+	// and every agent.run child. It is created once at startRuntime and
+	// reused across config reloads so in-flight background children (which
+	// hold the lock from the pre-reload generation) keep serializing with
+	// the post-reload parent on the same gate. A reload that minted a fresh
+	// lock would let a pre-reload child and the post-reload parent write
+	// concurrently.
+	WriteLock      *swarm.WriteLock
 	additionalDirs []string
 
 	workCtx    context.Context
@@ -563,7 +571,11 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	state.SetWorkspaceBroker(workspaceBroker)
 	state.SetSubagentBroker(subagentBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
+	// One stable write lock for the whole runtime: the parent runner and
+	// every agent.run child serialize writes on it, and config reloads reuse
+	// it so in-flight background children keep sharing the same gate.
+	writeLock := &swarm.WriteLock{}
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir, writeLock)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -618,6 +630,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		JobManager:         jobMgr,
 		DesktopCloser:      desktopCloser,
 		CustomAgentFactory: subagentFactory,
+		WriteLock:          writeLock,
 		Logger:             logger,
 		WorkingDir:         workingDir,
 		HomeDir:            homeDir,
@@ -754,8 +767,14 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	seedRepoContext(newState, db, rt.ProjectID)
 	seedSessionSummaries(newState, db, rt.ProjectID)
 
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunner(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir,
+	// Reuse the runtime's stable WriteLock so a /session new keeps the same
+	// gate across the swap (in-flight children from the old session hold it).
+	lock := rt.WriteLock
+	if lock == nil {
+		lock = &swarm.WriteLock{}
+	}
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunnerWithLock(
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.

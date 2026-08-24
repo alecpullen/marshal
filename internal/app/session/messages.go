@@ -38,6 +38,19 @@ const (
 	// is what keeps it out of history replay (internal/agent/history.go)
 	// while still rendering and persisting with the session.
 	ContentTypeNarration ContentType = "narration"
+	// ContentTypeCompaction marks the point where the transcript was
+	// compacted. It renders as a compact one-line marker (like
+	// ContentTypeSkill) so a long session shows where context was
+	// handed off rather than appearing to silently forget.
+	//
+	// Stored under RoleSystem, which is what keeps it out of the model's
+	// context: buildHistoryMessages (internal/agent/history.go:59) switches
+	// only on RoleUser and RoleAssistant, so system-role messages never
+	// replay. The marker is for the user, not the model — the model already
+	// gets the digest, which history.go injects separately as
+	// "Previous generation summary: ...". This is the same separation
+	// ContentTypeNarration achieves by storing non-final.
+	ContentTypeCompaction ContentType = "compaction"
 )
 
 // Message is a single turn in the session transcript. Messages form an

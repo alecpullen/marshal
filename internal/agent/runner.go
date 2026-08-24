@@ -908,7 +908,18 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 			// T13: unified intra-turn compaction — rollover when enabled,
 			// fall back to summarizeAndContinue when disabled.
+			beforeMsgs, beforeTokens := len(messages), r.calibratedEstimate(messages)
 			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
+				// Recorded after the call: rolloverAndContinue is what
+				// advances the generation, so Generation().Seq is only
+				// correct once it has returned.
+				r.State.RecordCompaction(session.CompactionInfo{
+					MessagesBefore: beforeMsgs,
+					MessagesAfter:  len(fresh),
+					TokensBefore:   beforeTokens,
+					TokensAfter:    r.calibratedEstimate(fresh),
+					Generation:     r.State.Generation().Seq,
+				})
 				messages = fresh
 				r.resetTokenRatio()
 				if r.CompactionObserver != nil {

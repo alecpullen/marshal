@@ -54,7 +54,7 @@ func (m Model) renderAgentLane() string {
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 
 	var b strings.Builder
-	b.WriteString(spinnerLabel(spinner, fmt.Sprintf("agents %d", len(running))))
+	b.WriteString(dimStyle().Render(spinnerLabel(spinner, fmt.Sprintf("agents %d", len(running)))))
 	b.WriteString("\n")
 
 	rows := agentLaneMaxRows - 1
@@ -65,14 +65,14 @@ func (m Model) renderAgentLane() string {
 		overflow = len(running) - len(shown)
 	}
 	for _, v := range shown {
-		b.WriteString(fmt.Sprintf("%d  %s  %s",
+		b.WriteString(dimStyle().Render(fmt.Sprintf("%d  %s  %s",
 			v.ID,
 			strutil.Truncate(v.Label, max(width/2, 12), true),
-			formatElapsed(max(time.Since(v.StartedAt), 0))))
+			formatElapsed(max(time.Since(v.StartedAt), 0)))))
 		b.WriteString("\n")
 	}
 	if overflow > 0 {
-		b.WriteString(fmt.Sprintf("… %d more", overflow))
+		b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
 		b.WriteString("\n")
 	}
 

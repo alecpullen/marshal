@@ -38,7 +38,7 @@ func (m Model) renderJobLane() string {
 	width := max(m.leftWidth, 1)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("jobs %d", len(running)))
+	b.WriteString(dimStyle().Render(fmt.Sprintf("jobs %d", len(running))))
 	b.WriteString("\n")
 
 	rows := jobLaneMaxRows - 1
@@ -53,11 +53,11 @@ func (m Model) renderJobLane() string {
 			j.ID,
 			strutil.Truncate(j.Command, max(width/2, 12), true),
 			formatElapsed(max(time.Since(j.StartedAt), 0)))
-		b.WriteString(glyph.Job + " " + line)
+		b.WriteString(dimStyle().Render(glyph.Job + " " + line))
 		b.WriteString("\n")
 	}
 	if overflow > 0 {
-		b.WriteString(fmt.Sprintf("… %d more", overflow))
+		b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
 		b.WriteString("\n")
 	}
 

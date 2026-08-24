@@ -98,9 +98,11 @@ func TestJobLaneHasSeparatorAndRail(t *testing.T) {
 	if !strings.Contains(ansi.Strip(rows[0]), "─") {
 		t.Fatalf("lane must open with a separator rule, got %q", ansi.Strip(rows[0]))
 	}
-	for i, r := range rows[1:] {
+	// The header row carries the rail but no job marker; the marker lives in
+	// the body rows, so check those (rows[2:] after the separator and header).
+	for i, r := range rows[2:] {
 		if !strings.Contains(ansi.Strip(r), glyph.Job) {
-			t.Errorf("lane row %d has no job marker: %q", i+1, ansi.Strip(r))
+			t.Errorf("lane row %d has no job marker: %q", i+2, ansi.Strip(r))
 		}
 	}
 }
@@ -127,6 +129,20 @@ func TestJobLaneEmptyHasNoSeparator(t *testing.T) {
 	}
 	if got := m.jobLaneRows(); got != 0 {
 		t.Fatalf("jobLaneRows()=%d with no jobs, want 0", got)
+	}
+}
+
+// The separator must start with the rail so the vertical line is continuous.
+func TestJobLaneSeparatorBridgesTheRail(t *testing.T) {
+	m := newTestModel(t)
+	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
+	rows := strings.Split(strings.TrimRight(m.renderJobLane(), "\n"), "\n")
+	sep := ansi.Strip(rows[0])
+	if !strings.HasPrefix(sep, glyph.Rail) {
+		t.Fatalf("separator must start with the rail, got %q", sep)
+	}
+	if !strings.Contains(sep, "─") {
+		t.Fatalf("separator must still carry the rule, got %q", sep)
 	}
 }
 

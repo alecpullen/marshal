@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/tools/native"
 )
 
 // registerRunningSubagent registers a running background child on the test
@@ -132,5 +133,53 @@ func TestAgentLaneEmptyHasNoSeparator(t *testing.T) {
 	}
 	if got := m.agentLaneRows(); got != 0 {
 		t.Fatalf("agentLaneRows()=%d with no agents, want 0", got)
+	}
+}
+
+// The lane and the todo panel sit directly on top of each other; their
+// rails must land in the same column or the stack looks broken.
+func TestAgentLaneRailAlignsWithTodoPanel(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "reviewer")
+	todos := []native.TodoItem{{Content: "a task", Status: native.TodoInProgress}}
+	if err := m.state.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+
+	laneRows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
+	todoRows := strings.Split(strings.TrimRight(m.renderTodoPanel(), "\n"), "\n")
+	if len(laneRows) == 0 || len(todoRows) == 0 {
+		t.Fatal("expected both panels to render")
+	}
+	railCol := func(s string) int { return strings.Index(ansi.Strip(s), glyph.Rail) }
+	// Compare the last lane row against the last todo row: both are body
+	// rows, so any difference is real misalignment rather than a header.
+	want := railCol(todoRows[len(todoRows)-1])
+	got := railCol(laneRows[len(laneRows)-1])
+	if want < 0 || got != want {
+		t.Fatalf("lane rail at column %d, todo panel rail at column %d", got, want)
+	}
+}
+
+// The divider must not break the vertical rail.
+func TestLaneSeparatorBridgesTheRail(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "reviewer")
+	rows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
+	sep := ansi.Strip(rows[0])
+	if !strings.HasPrefix(sep, glyph.Rail) {
+		t.Fatalf("separator must start with the rail so the vertical line is continuous, got %q", sep)
+	}
+	if !strings.Contains(sep, "─") {
+		t.Fatalf("separator must still carry the rule, got %q", sep)
+	}
+}
+
+func TestAgentLaneShowsSpinnerWhileRunning(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "reviewer")
+	m.spinnerFrame = "⠋"
+	if !strings.Contains(ansi.Strip(m.renderAgentLane()), "⠋") {
+		t.Fatalf("a running lane must show the spinner:\n%s", ansi.Strip(m.renderAgentLane()))
 	}
 }

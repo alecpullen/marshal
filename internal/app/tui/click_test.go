@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/tools/native"
@@ -264,5 +265,64 @@ func TestMouseClickTodoPanelNeverHides(t *testing.T) {
 	m3 := asModel(t, u3)
 	if m3.todoPanelMode != todoPanelCollapsed {
 		t.Fatalf("third click mode = %v, want collapsed", m3.todoPanelMode)
+	}
+}
+
+func TestAgentLaneClickDrillsIn(t *testing.T) {
+	m := newTestModel(t)
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	m.state.RegisterSubagent("reviewer", child)
+	m.refreshViewport()
+
+	top, _, ok := m.agentLaneBand()
+	if !ok {
+		t.Fatal("expected an agent lane band")
+	}
+	// Row 0 is the separator, row 1 the header, row 2 the first agent.
+	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 2}); !handled {
+		t.Fatal("a click on an agent row must be handled")
+	}
+	if len(m.viewStack) != 1 {
+		t.Fatalf("expected to drill into the subagent, viewStack=%d", len(m.viewStack))
+	}
+}
+
+// The separator and header are not agents; clicking them must not drill.
+func TestAgentLaneClickOnChromeDoesNothing(t *testing.T) {
+	m := newTestModel(t)
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	m.state.RegisterSubagent("reviewer", child)
+	m.refreshViewport()
+	top, _, _ := m.agentLaneBand()
+	for _, dy := range []int{0, 1} {
+		m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + dy})
+	}
+	if len(m.viewStack) != 0 {
+		t.Fatal("clicking the separator or header must not drill in")
+	}
+}
+
+// The band must sit below the job lane, not above it.
+func TestAgentLaneBandSitsBelowTheJobLane(t *testing.T) {
+	m := newTestModel(t)
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	m.state.RegisterSubagent("reviewer", child)
+	m.jobs = []native.JobInfo{runningJob(1, "go test ./...", time.Second)}
+	m.refreshViewport()
+	top, _, ok := m.agentLaneBand()
+	if !ok {
+		t.Fatal("expected a band")
+	}
+	want := m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
+		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows() + m.jobLaneRows()
+	if top != want {
+		t.Fatalf("band top = %d, want %d (job lane must be counted)", top, want)
+	}
+}
+
+func TestNoAgentLaneNoBand(t *testing.T) {
+	m := newTestModel(t)
+	if _, _, ok := m.agentLaneBand(); ok {
+		t.Fatal("no running agents means no band")
 	}
 }

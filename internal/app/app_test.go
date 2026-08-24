@@ -3998,3 +3998,69 @@ func TestBuildSubagentFactoryNoSnapshotterWhenParentHasNone(t *testing.T) {
 		t.Fatal("child.SnapshotRecorder should be nil when parent has no snapshotter")
 	}
 }
+
+// A child's shell output must reach the child's own active tool call, never
+// the parent's — which during a wait is agent.await, where it appeared as
+// stray go-test output under the spinner.
+func TestSubagentShellOutputDoesNotReachParent(t *testing.T) {
+	cfg := config.Default()
+	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	childReg := registry.New()
+	// Build a minimal native toolset for the child.
+	childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	nativeOpts := native.Options{
+		WorkspaceRoot:  t.TempDir(),
+		SessionState:   childState,
+		WorkspaceState: parentState,
+		Config:         cfg,
+	}
+	if err := native.RegisterAll(childReg, nativeOpts); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Set an active tool call on the parent (simulating agent.await in flight).
+	parentState.SetActiveToolCall(session.ActiveToolCall{Name: "agent.await"})
+	// Run shell.run "echo marshal-scope-probe" through the child's registry.
+	tool, ok := childReg.Lookup("shell.run")
+	if !ok {
+		t.Fatal("shell.run not found in child registry")
+	}
+	// Execute the tool — we just need the output to land on the child.
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo marshal-scope-probe"}`)})
+	if err != nil {
+		t.Fatalf("shell.run: %v", err)
+	}
+	parentOut, _ := parentState.ActiveToolCall()
+	if strings.Contains(parentOut.Output, "marshal-scope-probe") {
+		t.Fatalf("parent got child's output: %q", parentOut.Output)
+	}
+}
+
+// The scope split must not move backups off the parent.
+func TestSubagentEditsStillBackUpToParent(t *testing.T) {
+	cfg := config.Default()
+	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	childReg := registry.New()
+	childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	dir := t.TempDir()
+	nativeOpts := native.Options{
+		WorkspaceRoot:  dir,
+		SessionState:   childState,
+		WorkspaceState: parentState,
+		Config:         cfg,
+	}
+	if err := native.RegisterAll(childReg, nativeOpts); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Write a file through the child's file.write tool.
+	tool, ok := childReg.Lookup("file.write")
+	if !ok {
+		t.Fatal("file.write not found in child registry")
+	}
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Name: "file.write", Args: []byte(`{"path":"probe.txt","content":"hello"}`)})
+	if err != nil {
+		t.Fatalf("file.write: %v", err)
+	}
+	if !parentState.HasBackup() {
+		t.Fatal("parent should have a backup for /undo, got 0")
+	}
+}

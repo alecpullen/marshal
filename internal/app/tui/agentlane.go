@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
@@ -22,8 +21,9 @@ import (
 // sanctioned in a codebase that otherwise forbids box-drawing chrome — so
 // the two horizontal rules on screen match.
 func laneSeparator(width int) string {
-	w := max(width-gutterWidth, 1)
-	return continuation() +
+	bar := lipgloss.NewStyle().Foreground(dimColor).Render(glyph.Rail)
+	w := max(width-1, 1)
+	return bar +
 		lipgloss.NewStyle().Foreground(theme.Current().BorderMuted).Render(strings.Repeat("─", w)) +
 		"\n"
 }
@@ -41,46 +41,57 @@ const agentLaneMaxRows = 4
 // pipeline/SDD cards share the parent's state (Child == nil) and are
 // already pinned by the run panel.
 func (m Model) renderAgentLane() string {
+	entries := m.agentLaneEntries()
+	if len(entries) == 0 {
+		return ""
+	}
+	// Count all running for the header (includes overflow)
+	var allRunning int
+	for _, v := range m.state.Subagents() {
+		if v.Status == session.SubagentRunning && v.Child != nil {
+			allRunning++
+		}
+	}
+	width := max(m.leftWidth, 1)
+	spinner := m.activeSpinnerFrame(session.ActivityTool)
+
+	var b strings.Builder
+	b.WriteString(dimStyle().Render(spinnerLabel(spinner, fmt.Sprintf("agents %d", allRunning))))
+	b.WriteString("\n")
+
+	overflow := 0
+	if allRunning > len(entries) {
+		overflow = allRunning - len(entries)
+	}
+	for _, v := range entries {
+		b.WriteString(dimStyle().Render(fmt.Sprintf("%d  %s  %s",
+			v.ID,
+			strutil.Truncate(v.Label, max(width/2, 12), true),
+			formatElapsed(max(time.Since(v.StartedAt), 0)))))
+		b.WriteString("\n")
+	}
+	if overflow > 0 {
+		b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
+		b.WriteString("\n")
+	}
+
+	return laneSeparator(width) + chromeRailWidth(b.String(), dimColor, max(width-1, 1))
+}
+
+// agentLaneEntries returns the running subagents in the order the lane
+// renders them, capped the same way. The click handler and the renderer
+// must agree on this ordering or a click drills into the wrong child.
+func (m Model) agentLaneEntries() []session.SubagentView {
 	var running []session.SubagentView
 	for _, v := range m.state.Subagents() {
 		if v.Status == session.SubagentRunning && v.Child != nil {
 			running = append(running, v)
 		}
 	}
-	if len(running) == 0 {
-		return ""
+	if rows := agentLaneMaxRows - 1; len(running) > rows {
+		running = running[:rows-1]
 	}
-	width := max(m.leftWidth, 1)
-	gutter := gutterPrefix(glyph.Rail, dimColor)
-
-	var b strings.Builder
-	b.WriteString(laneSeparator(width))
-	b.WriteString(gutter)
-	b.WriteString(dimStyle().Render(fmt.Sprintf("agents %d", len(running))))
-	b.WriteString("\n")
-
-	rows := agentLaneMaxRows - 1
-	shown := running
-	overflow := 0
-	if len(shown) > rows {
-		shown = shown[:rows-1]
-		overflow = len(running) - len(shown)
-	}
-	for _, v := range shown {
-		line := fmt.Sprintf("%d  %s  %s",
-			v.ID,
-			strutil.Truncate(v.Label, max(width/2, 12), true),
-			formatElapsed(max(time.Since(v.StartedAt), 0)))
-		b.WriteString(gutter)
-		b.WriteString(dimStyle().Render(ansi.Truncate(line, max(width-gutterWidth, 1), "…")))
-		b.WriteString("\n")
-	}
-	if overflow > 0 {
-		b.WriteString(gutter)
-		b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
-		b.WriteString("\n")
-	}
-	return b.String()
+	return running
 }
 
 // agentLaneRows reports the lane's rendered height for the frame's height

@@ -410,8 +410,8 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			}
 		}
 
-		if t.sessionState != nil {
-			t.sessionState.StoreBackup(backups)
+		if ws := t.wsState(); ws != nil {
+			ws.StoreBackup(backups)
 		}
 
 		var paths []string
@@ -572,8 +572,8 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			_ = t.fileTracker.RecordRead(path, time.Now())
 		}
 
-		if t.sessionState != nil {
-			t.sessionState.StoreBackup([]session.BackupFile{{
+		if ws := t.wsState(); ws != nil {
+			ws.StoreBackup([]session.BackupFile{{
 				Path:    args.Path,
 				Content: original,
 				Mode:    mode,

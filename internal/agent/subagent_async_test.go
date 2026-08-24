@@ -328,6 +328,7 @@ func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 func TestAgentAwaitReturnsImmediatelyForApprovalPendingChild(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	release := make(chan struct{})
+	approvalSet := make(chan struct{})
 	run, await, _ := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
 		// Simulate the child waiting for user approval.
 		childState := state.Subagents()[0].Child
@@ -335,11 +336,16 @@ func TestAgentAwaitReturnsImmediatelyForApprovalPendingChild(t *testing.T) {
 			ID:   "test-approval",
 			Name: "shell.run",
 		})
+		close(approvalSet)
 		<-release
 		return "done after approval", "", nil
 	})
 	run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)})
 	viewID := state.Subagents()[0].ID
+
+	// Wait until the child has set its pending approval before calling
+	// await, so the await handler sees the approval.
+	<-approvalSet
 
 	// await should return immediately (not block) with the approval notice.
 	done := make(chan registry.ToolResult, 1)

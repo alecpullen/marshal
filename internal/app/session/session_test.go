@@ -2402,3 +2402,30 @@ func TestSubagentActivityTailCapsReasoningBuffer(t *testing.T) {
 		}
 	}
 }
+
+// TestShutdownCancelsRunningSubagentsAndClearsReports guards M-5: on
+// Shutdown, running subagents are cancelled and the report queue is
+// cleared so late reports don't end up in a garbage transcript.
+func TestShutdownCancelsRunningSubagentsAndClearsReports(t *testing.T) {
+	state := newTestState()
+	cancelled := make(chan struct{})
+	childState := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+	view := state.RegisterSubagent("running child", childState)
+	state.SetSubagentCancel(view.ID, func() {
+		close(cancelled)
+	})
+	state.PushSubagentReport("[subagent 1 finished] stale report")
+
+	state.Shutdown()
+
+	// The report queue should be cleared.
+	if got := state.SubagentReports(); len(got) != 0 {
+		t.Fatalf("report queue after shutdown = %v, want empty", got)
+	}
+	// The cancel function should have been called.
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("running subagent was not cancelled on shutdown")
+	}
+}

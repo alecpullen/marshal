@@ -928,6 +928,19 @@ func (s *State) SetSubagentConcurrency(n int) {
 }
 
 func (s *State) Shutdown() {
+	// M-5: cancel all running subagents before cancelling the session
+	// context so their completion goroutines exit promptly and don't
+	// push reports into the old session's garbage queue. Also clear the
+	// report queue so any late reports are discarded rather than ending
+	// up in a transcript nobody drains.
+	s.mu.Lock()
+	for _, v := range s.subagents {
+		if v.Status == SubagentRunning && v.Cancel != nil {
+			v.Cancel()
+		}
+	}
+	s.subagentReports = nil
+	s.mu.Unlock()
 	s.cancel()
 }
 

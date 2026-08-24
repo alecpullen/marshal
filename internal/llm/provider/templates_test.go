@@ -184,3 +184,19 @@ func TestUniqueNameWithCollision(t *testing.T) {
 		t.Fatalf("UniqueName with two collisions = %q, want %q", got, "ollama-3")
 	}
 }
+
+func TestOpencodeGoTemplate(t *testing.T) {
+	tmpl, ok := Lookup("opencode-go")
+	if !ok {
+		t.Fatal("opencode-go template missing")
+	}
+	if tmpl.Type != "openai_compatible" {
+		t.Fatalf("type = %q, want openai_compatible", tmpl.Type)
+	}
+	if tmpl.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("base URL = %q", tmpl.BaseURL)
+	}
+	if tmpl.KeyEnv != "OPENCODE_API_KEY" {
+		t.Fatalf("key env = %q", tmpl.KeyEnv)
+	}
+}

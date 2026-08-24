@@ -466,6 +466,12 @@ type ProviderConfig struct {
 	// ThinkingBudget is honored only by the native Anthropic backend: token
 	// budget for extended thinking. 0 (the default) disables thinking.
 	ThinkingBudget int `toml:"thinking_budget"`
+	// ReasoningSummary asks the backend for reasoning summaries where the
+	// wire protocol supports it (OpenAI-style reasoning.summary). Off by
+	// default; honored only by the openai_compatible backend today. Unknown
+	// request fields are ignored by compatible servers, so enabling this
+	// against a backend that does not support it fails open.
+	ReasoningSummary bool `toml:"reasoning_summary"`
 }
 
 type LoadOptions struct {

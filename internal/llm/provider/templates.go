@@ -72,6 +72,16 @@ var templates = map[string]ProviderTemplate{
 		KeyHint:     "Get a key at https://platform.openai.com/api-keys",
 		Models:      []string{"gpt-4o", "gpt-4o-mini", "o3-mini"},
 	},
+	"opencode-go": {
+		ID:          "opencode-go",
+		Label:       "OpenCode Zen (Go)",
+		Type:        "openai_compatible",
+		BaseURL:     "https://opencode.ai/zen/go/v1",
+		ToolCalling: true,
+		KeyEnv:      "OPENCODE_API_KEY",
+		KeyHint:     "Get a key from OpenCode Zen (https://opencode.ai/zen)",
+		Models:      []string{"gpt-5.6-luna", "deepseek-v4-pro", "deepseek-v4-flash"},
+	},
 	"openai_compatible": {
 		ID:      "openai_compatible",
 		Label:   "Custom (OpenAI-compatible)",

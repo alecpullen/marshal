@@ -45,11 +45,12 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
 
 		return NewOpenAICompatible(Options{
-			Name:         name,
-			BaseURL:      pc.BaseURL,
-			APIKey:       apiKey,
-			Capabilities: &caps,
-			LimitsTable:  table,
+			Name:             name,
+			BaseURL:          pc.BaseURL,
+			APIKey:           apiKey,
+			Capabilities:     &caps,
+			LimitsTable:      table,
+			ReasoningSummary: pc.ReasoningSummary,
 		})
 	case "ollama":
 		apiKey, err := ResolveAPIKey(pc)

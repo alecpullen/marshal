@@ -38,15 +38,19 @@ type Options struct {
 	// maxTokens <= budget. 0 = auto (max(2048, maxTokens/4)). Any negative
 	// value (including -1) means disabled. Positive values are used directly.
 	ThinkingBudgetMargin int
+	// ReasoningSummary requests reasoning summaries on the wire
+	// (reasoning.summary). Off by default.
+	ReasoningSummary bool
 }
 
 type OpenAICompatible struct {
-	name         string
-	baseURL      string
-	apiKey       string
-	httpClient   *http.Client
-	capabilities schema.ProviderCapabilities
-	limitsTable  *limits.Table
+	name             string
+	baseURL          string
+	apiKey           string
+	httpClient       *http.Client
+	capabilities     schema.ProviderCapabilities
+	limitsTable      *limits.Table
+	reasoningSummary bool
 }
 
 func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
@@ -65,12 +69,13 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 		caps = *opts.Capabilities
 	}
 	return &OpenAICompatible{
-		name:         opts.Name,
-		baseURL:      strings.TrimRight(opts.BaseURL, "/"),
-		apiKey:       opts.APIKey,
-		httpClient:   client,
-		capabilities: caps,
-		limitsTable:  opts.LimitsTable,
+		name:             opts.Name,
+		baseURL:          strings.TrimRight(opts.BaseURL, "/"),
+		apiKey:           opts.APIKey,
+		httpClient:       client,
+		capabilities:     caps,
+		limitsTable:      opts.LimitsTable,
+		reasoningSummary: opts.ReasoningSummary,
 	}, nil
 }
 
@@ -146,7 +151,7 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 // delivered as a single ChatEventError event, after which the channel is
 // closed.
 func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
-	body, err := buildChatRequestBody(req)
+	body, err := buildChatRequestBody(req, p.reasoningSummary)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}
@@ -177,7 +182,7 @@ func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	return events, nil
 }
 
-func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
+func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
@@ -211,6 +216,15 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 	case "low", "medium", "high":
 		reasoningEffort = req.Thinking
 	}
+	// reasoning.summary: opt-in per provider config. The OpenAI Responses
+	// API documents summary:"auto"; chat-completions-compatible gateways
+	// that do not know the field ignore it, and the wire capture
+	// (MARSHAL_WIRE_CAPTURE) is how we confirm what a given endpoint
+	// actually accepts.
+	var reasoning *reasoningBody
+	if reasoningSummary {
+		reasoning = &reasoningBody{Summary: "auto"}
+	}
 	return json.Marshal(chatCompletionRequestBody{
 		Model:           req.Model,
 		Messages:        messages,
@@ -224,6 +238,7 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 		ToolChoice:      req.ToolChoice,
 		StreamOptions:   streamOpts,
 		ReasoningEffort: reasoningEffort,
+		Reasoning:       reasoning,
 	})
 }
 

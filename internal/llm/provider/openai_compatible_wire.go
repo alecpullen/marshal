@@ -52,6 +52,12 @@ type tokenDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"` // reasoning model output
 }
 
+// reasoningBody carries the reasoning control object. Only Summary is
+// populated today, when the provider's reasoning_summary config flag is on.
+type reasoningBody struct {
+	Summary string `json:"summary,omitempty"`
+}
+
 type chatCompletionRequestBody struct {
 	Model           string                 `json:"model"`
 	Messages        []chatMessageBody      `json:"messages"`
@@ -65,6 +71,7 @@ type chatCompletionRequestBody struct {
 	ToolChoice      string                 `json:"tool_choice,omitempty"`
 	StreamOptions   *streamOptions         `json:"stream_options,omitempty"`
 	ReasoningEffort string                 `json:"reasoning_effort,omitempty"`
+	Reasoning       *reasoningBody         `json:"reasoning,omitempty"`
 }
 
 type toolDefinitionBody struct {

@@ -633,7 +633,7 @@ func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
 		Model:          "test-model",
 		Messages:       []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 		ResponseFormat: &schema.ResponseFormat{Type: "json_object"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildChatRequestBody returned error: %v", err)
 	}
@@ -659,12 +659,12 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	}
 
 	// "high" passes through verbatim.
-	body, err := buildChatRequestBody(base)
+	body, err := buildChatRequestBody(base, false)
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
 	base.Thinking = "high"
-	body, err = buildChatRequestBody(base)
+	body, err = buildChatRequestBody(base, false)
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	// "off" and "" omit the key.
 	for _, thinking := range []string{"off", ""} {
 		base.Thinking = thinking
-		body, err = buildChatRequestBody(base)
+		body, err = buildChatRequestBody(base, false)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", thinking, err)
 		}
@@ -697,7 +697,7 @@ func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
 	body, err := buildChatRequestBody(schema.ChatRequest{
 		Model:    "test-model",
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildChatRequestBody returned error: %v", err)
 	}
@@ -717,7 +717,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 		body, err := buildChatRequestBody(schema.ChatRequest{
 			Model:    "test-model",
 			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
-		})
+		}, false)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -734,7 +734,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 			Model:     "test-model",
 			Messages:  []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 			MaxTokens: &maxTok,
-		})
+		}, false)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -760,7 +760,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 				Description: "Read a file",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
 			}},
-		})
+		}, false)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -791,7 +791,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 				},
 				{Role: schema.RoleTool, ToolCallID: "call_1", Content: "contents"},
 			},
-		})
+		}, false)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -1244,5 +1244,28 @@ func TestModelsPropagatesToolCallingFromLimitsTable(t *testing.T) {
 	}
 	if got.ToolCalling == nil || !*got.ToolCalling {
 		t.Errorf("Models()[0].ToolCalling = %v, want true", got.ToolCalling)
+	}
+}
+
+func TestBuildChatRequestBodyReasoningSummary(t *testing.T) {
+	req := schema.ChatRequest{
+		Model:    "m",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	}
+
+	body, err := buildChatRequestBody(req, true)
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	if !strings.Contains(string(body), `"reasoning":{"summary":"auto"}`) {
+		t.Fatalf("reasoning summary not requested: %s", body)
+	}
+
+	body, err = buildChatRequestBody(req, false)
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	if strings.Contains(string(body), `"reasoning":{`) {
+		t.Fatalf("reasoning field must be omitted when the flag is off: %s", body)
 	}
 }

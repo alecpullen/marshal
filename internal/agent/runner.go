@@ -1043,6 +1043,22 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			budget.tools++
 			consecutiveEmpty = 0
 			countIterations()
+
+			// The model's own narration of what it is about to do. It
+			// already arrives here alongside the tool calls and, until now,
+			// went only into the model's message history — so the user saw
+			// the agent's final answer and never a word of what it did on
+			// the way there.
+			//
+			// Stored NON-final deliberately: buildHistoryMessages replays
+			// assistant messages only when Final && !Salvaged, so this
+			// renders and persists without re-entering the model's context,
+			// where the identical text is already present on the very next
+			// line.
+			if narration := strings.TrimSpace(res.Text); narration != "" {
+				r.State.AddMessage(session.RoleAssistant, narration, session.ContentTypeNarration)
+			}
+
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
 			toolCallCountThisTurn += len(res.ToolCalls)

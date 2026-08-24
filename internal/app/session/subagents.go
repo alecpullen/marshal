@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +68,11 @@ type SubagentView struct {
 	// SalvagedReason is non-empty when the subagent hit a budget ceiling
 	// and its summary is partial. The TUI card renders this as a marker.
 	SalvagedReason string
+
+	// Error carries the failure text when Status == SubagentFailed so
+	// agent.await / agent.output can report why the child failed. Empty
+	// for running or successful subagents.
+	Error string
 }
 
 // SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
@@ -103,6 +109,7 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 	}
 	s.mu.Lock()
 	s.subagents = append(s.subagents, v)
+	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
 	if broker != nil {
@@ -130,6 +137,7 @@ func (s *State) RegisterSubagentWithMeta(label string, child *State, meta Subage
 	}
 	s.mu.Lock()
 	s.subagents = append(s.subagents, v)
+	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
 	if broker != nil {
@@ -217,8 +225,10 @@ func (s *State) AddSubagentTokens(id int64, n int) {
 	}
 }
 
-// err != nil), records its end time and final summary, and republishes so
-// the card flips from the running spinner to its terminal state.
+// FinishSubagent marks a subagent view finished (or failed, when
+// err != nil), records its end time and final summary, closes its done
+// channel so WaitSubagent callers unblock, and republishes so the card
+// flips from the running spinner to its terminal state.
 func (s *State) FinishSubagent(id int64, summary string, err error) {
 	s.mu.Lock()
 	var updated SubagentView
@@ -229,6 +239,7 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 			s.subagents[i].Summary = summary
 			if err != nil {
 				s.subagents[i].Status = SubagentFailed
+				s.subagents[i].Error = err.Error()
 			} else {
 				s.subagents[i].Status = SubagentDone
 			}
@@ -237,8 +248,16 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 			break
 		}
 	}
+	var done chan struct{}
+	if found {
+		done = s.subagentDone[id]
+		delete(s.subagentDone, id)
+	}
 	broker := s.subagentBroker
 	s.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
 	if found && broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: updated})
 	}
@@ -315,4 +334,32 @@ func (s *State) SetSubagentBroker(b *pubsub.Broker[SubagentEvent]) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.subagentBroker = b
+}
+
+// WaitSubagent blocks until the subagent with the given ID finishes (or the
+// caller's context ends) and returns its final view. A subagent that has
+// already finished returns immediately, so callers can fetch results from
+// earlier turns. Unknown IDs return an error.
+func (s *State) WaitSubagent(ctx context.Context, id int64) (SubagentView, error) {
+	s.mu.Lock()
+	for i := range s.subagents {
+		if s.subagents[i].ID != id {
+			continue
+		}
+		v := s.subagents[i]
+		done := s.subagentDone[id]
+		s.mu.Unlock()
+		if v.Status != SubagentRunning || done == nil {
+			return v, nil
+		}
+		select {
+		case <-done:
+			v, _ = s.Subagent(id)
+			return v, nil
+		case <-ctx.Done():
+			return SubagentView{}, ctx.Err()
+		}
+	}
+	s.mu.Unlock()
+	return SubagentView{}, fmt.Errorf("session: unknown subagent id %d", id)
 }

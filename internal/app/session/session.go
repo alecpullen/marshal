@@ -251,6 +251,11 @@ type State struct {
 	// lifecycle events so the TUI re-renders without polling.
 	subagents      []SubagentView
 	subagentBroker *pubsub.Broker[SubagentEvent]
+	// subagentDone holds a per-subagent channel that FinishSubagent closes;
+	// WaitSubagent blocks on it. Entries are deleted on finish so a
+	// finished subagent's Wait returns the stored view instead of
+	// selecting on a closed channel.
+	subagentDone map[int64]chan struct{}
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent
@@ -563,6 +568,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		ctx:                    ctx,
 		cancel:                 cancel,
 		turnToolCache:          make(map[string]registry.ToolResult),
+		subagentDone:           make(map[int64]chan struct{}),
 		activity:               Activity{Kind: ActivityIdle},
 		activeSkills:           make(map[string]bool),
 		loadedTools:            make(map[string]bool),
@@ -920,6 +926,13 @@ func (s *State) Shutdown() {
 
 func (s *State) Done() <-chan struct{} {
 	return s.ctx.Done()
+}
+
+// Context returns the session-lifetime context. It is cancelled only by
+// Shutdown, so work that must outlive a single turn or tool call —
+// background subagents — derives from it rather than from a turn context.
+func (s *State) Context() context.Context {
+	return s.ctx
 }
 
 // LoadError returns any error that occurred during the cold-load of

@@ -336,11 +336,19 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	}
 
 	r.State.BeginStreaming()
-	r.State.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: r.Now()})
+	started := r.Now()
+	// Seed the status label with what the agent last said it was doing;
+	// live thinking lines replace it as they complete below.
+	label := r.State.LatestNarrationLine()
+	if label == "" {
+		label = "thinking..."
+	}
+	r.State.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: label, StartedAt: started})
 	defer r.State.EndStreaming()
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
 	var sb strings.Builder
+	var thinkingBuf strings.Builder
 	var usage *schema.TokenUsage
 	var toolCalls []schema.ToolCall
 	var finishReason string
@@ -349,6 +357,16 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		case schema.ChatEventDelta:
 			if event.Kind == schema.DeltaThinking {
 				r.State.AppendThinking(event.Delta)
+				thinkingBuf.WriteString(event.Delta)
+				// Update the status label only at newline boundaries: a
+				// completed line is stable, while the in-progress line would
+				// flicker and flood the event broker with a publish per
+				// token.
+				if strings.ContainsRune(event.Delta, '\n') {
+					if line := lastCompleteLine(thinkingBuf.String()); line != "" {
+						r.State.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: line, StartedAt: started})
+					}
+				}
 			} else {
 				sb.WriteString(event.Delta)
 			}
@@ -451,4 +469,22 @@ func truncateForLog(s string) string {
 		return s
 	}
 	return s[:cap] + "…"
+}
+
+// lastCompleteLine returns the most recent newline-terminated non-empty
+// line in s, or "" when no complete line exists. The partial line after the
+// final newline is deliberately ignored: it is still being written and
+// would flicker in the pinned status row.
+func lastCompleteLine(s string) string {
+	end := strings.LastIndexByte(s, '\n')
+	if end <= 0 {
+		return ""
+	}
+	lines := strings.Split(s[:end], "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }

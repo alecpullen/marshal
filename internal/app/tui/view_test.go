@@ -768,8 +768,9 @@ func TestTurnSpinnerShowsElapsedDirectlyAboveInput(t *testing.T) {
 	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
 		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
 	}
-	if strings.Contains(row, "thinking") {
-		t.Fatalf("turn spinner must not show phase label: %q", row)
+	// No activity set: spinner and elapsed only, no label separator.
+	if strings.Contains(row, "·") {
+		t.Fatalf("turn spinner without activity must not show a label: %q", row)
 	}
 
 	lines := strings.Split(strings.TrimRight(stripANSI(m.View().Content), "\n"), "\n")
@@ -779,6 +780,26 @@ func TestTurnSpinnerShowsElapsedDirectlyAboveInput(t *testing.T) {
 	}
 	if !strings.Contains(lines[inputTop-1], "⠋") {
 		t.Fatalf("turn spinner must sit directly above the input; line %d = %q", inputTop-1, lines[inputTop-1])
+	}
+}
+
+func TestTurnSpinnerShowsActivityLabel(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-12 * time.Second)
+	m.spinnerFrame = "⠋"
+	m.state.SetActivity(session.Activity{
+		Kind:      session.ActivityThinking,
+		Label:     "checking the auth module",
+		StartedAt: m.now(),
+	})
+
+	row := stripANSI(m.renderTurnSpinner())
+	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
+		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
+	}
+	if !strings.Contains(row, "checking the auth module") {
+		t.Fatalf("turn spinner missing activity label: %q", row)
 	}
 }
 

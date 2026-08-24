@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
@@ -188,10 +189,11 @@ func (m Model) renderTranscriptFrame() string {
 }
 
 // renderTurnSpinner renders the pinned spinner row directly above the todo
-// panel. It answers one question — is the agent still running? — and so is
-// driven by the turn-level busy flag rather than session.Activity, which
-// resets to ActivityIdle between phases. Elapsed time only: the phase detail
-// belongs to the transcript's live blocks.
+// panel. Visibility answers one question — is the agent still running? — and
+// so is driven by the turn-level busy flag rather than session.Activity's
+// Kind, which resets to ActivityIdle between phases. The row shows elapsed
+// time plus the current activity label (live thinking line, narration, or
+// phase label) when one is set.
 //
 // The row is always reserved (see turnSpinnerRows); it renders blank while
 // idle so the transcript frame does not shift when a turn starts.
@@ -204,6 +206,9 @@ func (m Model) renderTurnSpinner() string {
 		elapsed = 0
 	}
 	text := spinnerLabel(m.turnSpinnerFrame(), formatElapsed(elapsed))
+	if act := m.state.Activity(); act.Kind != session.ActivityIdle && act.Label != "" {
+		text += " · " + act.Label
+	}
 	return statusBusyStyle().Render(" " + strutil.Truncate(text, max(m.leftWidth-1, 1), false))
 }
 

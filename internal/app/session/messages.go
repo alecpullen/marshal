@@ -2,6 +2,7 @@ package session
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"marshal/internal/db"
@@ -347,6 +348,26 @@ func (s *State) Messages() []Message {
 	messages := make([]Message, len(s.messages))
 	copy(messages, s.messages)
 	return messages
+}
+
+// LatestNarrationLine returns the first line of the most recent narration
+// message, or "" when the session has none. Used to seed the activity label
+// for a new model call with what the agent last said it was doing, before
+// any thinking text has streamed.
+func (s *State) LatestNarrationLine() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		m := s.messages[i]
+		if m.ContentType != ContentTypeNarration {
+			continue
+		}
+		line, _, _ := strings.Cut(m.Content, "\n")
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // rebuildActiveBranch reassembles s.messages as the path root -> leafID

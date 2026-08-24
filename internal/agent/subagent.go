@@ -181,17 +181,20 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 	}
 	// State the configured cap, not a hardcoded number: the session enforces
 	// exactly this, and a stale description teaches the model to batch the
-	// wrong number of parallel calls.
+	// wrong number of parallel calls. The description must also teach the
+	// async contract — a model that assumes a synchronous result will
+	// hallucinate completions.
 	concurrency := state.SubagentMaxConcurrency()
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: %d. Multiple agent.run calls in a single response run in parallel (max %d in flight); sibling writes are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.", concurrency, concurrency),
+		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent context. The child runs in the BACKGROUND: this tool returns immediately with a handle (subagent N) and the child's report is delivered to you as a [subagent N finished] message when it completes — do NOT assume the task is done when this tool returns. Call agent.await with the subagent id when you need the result before continuing, or agent.output to peek at progress. Maximum depth: 1. Maximum concurrency: %d. Multiple agent.run calls in a single response all start immediately (max %d in flight); writes across agents are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.", concurrency, concurrency),
 		Schema: json.RawMessage(
 			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
-		// The tool itself delegates to a child runner that may execute write
-		// tools and shell commands. Treating it as read-only bypassed the
-		// pre-write snapshot, WriteGate, and parallel-batch guards.
+		// The dispatch itself stays RiskWorkspaceWrite even though the handler
+		// now returns immediately: the dispatch-time pre-write snapshot
+		// (execute.go) is the only snapshot covering the child's forthcoming
+		// writes — child runners have no Snapshotter.
 		Risk: registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -199,10 +202,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		// Admission stays synchronous so cap/depth violations fail the tool
+		// call directly. The pairing ExitSubagent moves to the completion
+		// goroutine below: the slot must stay held for the child's whole
+		// background life, not just the dispatch.
 		if err := state.EnterSubagent(); err != nil {
 			return registry.ToolResult{}, err
 		}
-		defer state.ExitSubagent()
 
 		// Model-cost consent: if a resolver is configured, preview the
 		// child's model before building the runner. When the child's model
@@ -210,10 +216,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		// or >2x rate change), ask the user for approval via the session's
 		// pending-approval mechanism. This bypasses copilot mode's
 		// auto-approve because it is a cost-consent issue, not a
-		// workspace-write issue.
+		// workspace-write issue. The gate stays synchronous: it fires before
+		// spawn, which is already non-blocking from the parent's
+		// perspective.
 		if cfg.resolver != nil {
 			preview, err := cfg.resolver(SubagentRequest{Agent: args.Agent, Model: args.Model})
 			if err != nil {
+				state.ExitSubagent()
 				return registry.ToolResult{}, fmt.Errorf("agent.run: resolve model: %w", err)
 			}
 			if modelChangeNeedsConsent(cfg.parentModel, cfg.parentProvider, preview.Model, preview.Provider, cfg.parentPricing, preview.Pricing) {
@@ -225,6 +234,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 				approved, denied := requestSubagentConsent(ctx, state, fmt.Sprintf("Subagent will use %s @ %s (different model/provider/cost than parent %s @ %s). Approve?", preview.Model, preview.Provider, cfg.parentModel, cfg.parentProvider))
 				cfg.consentMu.Unlock()
 				if !approved {
+					state.ExitSubagent()
 					if denied {
 						return registry.ToolResult{}, fmt.Errorf("agent.run: user denied subagent model change to %s @ %s", preview.Model, preview.Provider)
 					}
@@ -235,11 +245,14 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 
 		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model})
 		if err != nil {
+			state.ExitSubagent()
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)
 		}
 		// Register a summary card in the parent transcript in place of the
 		// child's full tool log; the drill-down view reaches the live child
-		// transcript through the registered Child state.
+		// transcript through the registered Child state. Registration is
+		// synchronous so the immediate result carries the ID and the card
+		// anchors at the dispatch position.
 		meta := session.SubagentMeta{
 			Role: RoleSubtask,
 		}
@@ -250,8 +263,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			meta.Provider = child.Provider.Name()
 		}
 		view := state.RegisterSubagentWithMeta(args.Description, childState, meta)
-		childCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
+		// The child's context derives from the SESSION, not this tool call:
+		// a background child must survive the parent turn ending normally,
+		// and turn-cancel (Esc) must not kill it. Session Shutdown still
+		// cancels it (State.Context is cancelled by Shutdown).
+		childCtx, cancel := context.WithCancel(state.Context())
 		state.SetSubagentCancel(view.ID, cancel)
 		prev := child.UsageObserver
 		child.UsageObserver = func(u schema.TokenUsage) {
@@ -260,28 +276,68 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			}
 			state.AddSubagentTokens(view.ID, u.PromptTokens+u.CompletionTokens)
 		}
-		summary, salvagedReason, err := cfg.exec(childCtx, child, args.Prompt)
-		if salvagedReason != "" {
-			state.SetSubagentSalvaged(view.ID, salvagedReason)
-		}
-		state.FinishSubagent(view.ID, summary, err)
-		if err != nil {
-			return registry.ToolResult{}, err
-		}
-		if salvagedReason != "" {
-			result := registry.ToolResult{
-				Summary: fmt.Sprintf("subagent completed (salvaged: %s): %s", salvagedReason, args.Description),
-				Content: summary,
+		go func() {
+			defer state.ExitSubagent()
+			defer cancel()
+			summary, salvagedReason, runErr := cfg.exec(childCtx, child, args.Prompt)
+			if salvagedReason != "" {
+				state.SetSubagentSalvaged(view.ID, salvagedReason)
 			}
-			result.Content = fmt.Sprintf("[note: this subagent hit its iteration budget (%s) and the report below is partial. Raise [agent] subtask_iterations or the custom agent's max_iterations for a longer budget.]\n\n%s", salvagedReason, summary)
-			return result, nil
-		}
+			state.FinishSubagent(view.ID, summary, runErr)
+			errText := ""
+			if runErr != nil {
+				errText = runErr.Error()
+			}
+			summaryLine, content := subagentResultText(view.ID, args.Description, summary, salvagedReason, errText)
+			// Completion delivery is two-channel and unconditional.
+			// The transcript notice is for the user and appears immediately
+			// (the repaint rides the FinishSubagent broker event). The
+			// steering push is for the model: RoleSystem transcript messages
+			// never replay into the wire (buildHistoryMessages only replays
+			// user turns and final answers) and session mail is
+			// transcript-only, so the steering queue is the one channel that
+			// reaches the model from a busy turn (drained as a user message
+			// at the next loop-top) and from an idle session (drained at the
+			// next turn's start, or submitted as the follow-up turn on a
+			// blank Enter).
+			mark, verb := "✓", "finished"
+			if runErr != nil {
+				mark, verb = "✗", "failed"
+			}
+			state.AddMessage(session.RoleSystem, mark+" "+summaryLine, session.ContentTypePlain)
+			steering := fmt.Sprintf("[subagent %d %s] %s", view.ID, verb, content)
+			if salvagedReason != "" {
+				// The salvage marker lives on the summary line; fold it into
+				// the steering message so the model sees the partial-report
+				// caveat alongside the report body.
+				steering = fmt.Sprintf("[subagent %d %s] %s\n\n%s", view.ID, verb, summaryLine, content)
+			}
+			state.PushSteering(steering)
+		}()
 		return registry.ToolResult{
-			Summary: fmt.Sprintf("subagent completed: %s", args.Description),
-			Content: summary,
+			Summary: fmt.Sprintf("started as subagent %d — %s", view.ID, args.Description),
+			Content: fmt.Sprintf("Subagent %d (%s) is running in the background (%d in flight, max %d). Its report will be delivered to you as a [subagent %d finished] message when it completes. To wait for it, call agent.await with \"id\": %d; to peek at progress, call agent.output with \"id\": %d. Do not treat the task as complete until its result arrives.",
+				view.ID, args.Description, state.SubagentConcurrency(), state.SubagentMaxConcurrency(), view.ID, view.ID, view.ID),
 		}, nil
 	}
 	return tool
+}
+
+// subagentResultText renders a finished subagent's outcome in the two
+// shapes the async flow needs: a one-line summary (tool-result summaries,
+// transcript notices) and a content body carrying the full report (await
+// results, steering injections). The salvage remedy hint lives here so the
+// await result and the completion message read identically.
+func subagentResultText(id int64, label, summary, salvagedReason, errText string) (summaryLine, content string) {
+	if errText != "" {
+		return fmt.Sprintf("subagent %d failed: %s", id, label),
+			fmt.Sprintf("subagent %d (%s) failed: %s", id, label, errText)
+	}
+	if salvagedReason != "" {
+		return fmt.Sprintf("subagent %d completed (salvaged: %s): %s", id, salvagedReason, label),
+			fmt.Sprintf("[note: this subagent hit its iteration budget (%s) and the report below is partial. Raise [agent] subtask_iterations or the custom agent's max_iterations for a longer budget.]\n\n%s", salvagedReason, summary)
+	}
+	return fmt.Sprintf("subagent %d completed: %s", id, label), summary
 }
 
 func decodeAgentRunArgs(tool registry.Tool, raw json.RawMessage) (agentRunArgs, error) {

@@ -19,14 +19,18 @@ func (f reasoningFakeProvider) Models(context.Context) ([]schema.ModelInfo, erro
 func (f reasoningFakeProvider) Chat(context.Context, schema.ChatRequest) (<-chan schema.ChatEvent, error) {
 	return nil, nil
 }
-func (f reasoningFakeProvider) Capabilities(context.Context) schema.ProviderCapabilities { return f.caps }
+func (f reasoningFakeProvider) Capabilities(context.Context) schema.ProviderCapabilities {
+	return f.caps
+}
 
 type reasoningFakeProber struct {
 	reasoningFakeProvider
 	mc ModelCapabilities
 }
 
-func (f reasoningFakeProber) ProbeCapabilities(context.Context, string) ModelCapabilities { return f.mc }
+func (f reasoningFakeProber) ProbeCapabilities(context.Context, string) ModelCapabilities {
+	return f.mc
+}
 
 func boolPtr(b bool) *bool { return &b }
 

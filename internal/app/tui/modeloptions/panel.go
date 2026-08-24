@@ -54,9 +54,9 @@ type descriptor struct {
 // window and max output tokens. It owns a private copy of the config and
 // emits ChangedMsg with a fresh candidate copy whenever a value commits.
 type Panel struct {
-	cfg                config.Config
-	presetName         string
-	fields             *listpanel.FieldList
+	cfg        config.Config
+	presetName string
+	fields     *listpanel.FieldList
 
 	reasoningSupported bool
 	changed            bool

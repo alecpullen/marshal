@@ -551,6 +551,14 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			Name:        "timeline",
+			Description: "Navigate the session's turns, branches and restore points",
+			Group:       groupChat,
+			Handler: func(state *session.State, args []string) Result {
+				return timelineDoc(state)
+			},
+		},
+		{
 			Name:        "branches",
 			Description: "List branches and switch to one (e.g. /branches 2)",
 			Args:        "[branch-number]",

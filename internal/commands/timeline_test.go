@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/tools/registry"
 )
 
 func tAt(min int) time.Time {
@@ -102,5 +104,118 @@ func TestBuildTimelineIgnoresSubagentReports(t *testing.T) {
 	got := BuildTimeline(msgs, nil, 2)
 	if len(got) != 1 {
 		t.Fatalf("a subagent report is not a user turn, got %+v", got)
+	}
+}
+
+func TestTimelineDocHasARowPerTurn(t *testing.T) {
+	state := newTestState()
+	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "reply", session.ContentTypeMarkdown)
+	state.AddMessage(session.RoleUser, "second turn", session.ContentTypePlain)
+
+	reg := New()
+	toolReg := registry.New()
+	RegisterAll(reg, toolReg)
+	cmd, _ := reg.Lookup("timeline")
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil {
+		t.Fatalf("expected a Doc, got text: %q", res.Text)
+	}
+	// Two user turns = two station rows (no branches to add fork rows).
+	if len(res.Doc.Rows) != 2 {
+		t.Fatalf("want 2 rows (one per turn), got %d: %+v", len(res.Doc.Rows), res.Doc.Rows)
+	}
+	if !strings.Contains(res.Doc.Rows[0].Text, "first turn") {
+		t.Fatalf("first row should contain the first turn's prompt, got %q", res.Doc.Rows[0].Text)
+	}
+	if !strings.Contains(res.Doc.Rows[1].Text, "second turn") {
+		t.Fatalf("second row should contain the second turn's prompt, got %q", res.Doc.Rows[1].Text)
+	}
+}
+
+func TestTimelineRowMarksCurrentPosition(t *testing.T) {
+	state := newTestState()
+	state.AddMessage(session.RoleUser, "turn a", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "reply", session.ContentTypeMarkdown)
+	state.AddMessage(session.RoleUser, "turn b", session.ContentTypePlain)
+
+	reg := New()
+	toolReg := registry.New()
+	RegisterAll(reg, toolReg)
+	cmd, _ := reg.Lookup("timeline")
+	res := cmd.Handler(state, nil)
+	// The last user turn is the current leaf — its row should be marked.
+	lastRow := res.Doc.Rows[len(res.Doc.Rows)-1]
+	if !strings.Contains(lastRow.Text, "← here") {
+		t.Fatalf("current leaf row should be marked, got %q", lastRow.Text)
+	}
+	// Earlier rows should not be marked.
+	for _, r := range res.Doc.Rows[:len(res.Doc.Rows)-1] {
+		if strings.Contains(r.Text, "← here") {
+			t.Fatalf("non-leaf row should not be marked, got %q", r.Text)
+		}
+	}
+}
+
+// Each turn's Enter opens its actions rather than firing one directly:
+// restoring the working tree is destructive and must not be one keypress
+// away from a cursor move.
+func TestTimelineRowDrillsIntoActions(t *testing.T) {
+	state := newTestState()
+	state.AddMessage(session.RoleUser, "a turn", session.ContentTypePlain)
+
+	reg := New()
+	toolReg := registry.New()
+	RegisterAll(reg, toolReg)
+	cmd, _ := reg.Lookup("timeline")
+	res := cmd.Handler(state, nil)
+	if len(res.Doc.Rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(res.Doc.Rows))
+	}
+	row := res.Doc.Rows[0]
+	if len(row.Children) == 0 {
+		t.Fatal("row should drill into children (actions), not fire directly")
+	}
+	// The first child should be the rewind action.
+	if !strings.Contains(row.Children[0].Text, "rewind") {
+		t.Fatalf("first child should be rewind, got %q", row.Children[0].Text)
+	}
+	// The row itself should NOT have an Action (it has Children instead).
+	if row.Action != nil {
+		t.Fatal("a row with Children must not also have an Action")
+	}
+}
+
+// The restore action must be absent, not broken, when a turn predates any
+// snapshot.
+func TestTimelineNoRestoreActionWithoutSnapshot(t *testing.T) {
+	state := newTestState()
+	state.AddMessage(session.RoleUser, "a turn", session.ContentTypePlain)
+
+	reg := New()
+	toolReg := registry.New()
+	RegisterAll(reg, toolReg)
+	cmd, _ := reg.Lookup("timeline")
+	res := cmd.Handler(state, nil)
+	row := res.Doc.Rows[0]
+	for _, child := range row.Children {
+		if strings.Contains(child.Text, "restore") {
+			t.Fatalf("restore action should be absent when there is no snapshot, got %q", child.Text)
+		}
+	}
+}
+
+func TestTimelineEmptySessionExplains(t *testing.T) {
+	state := newTestState()
+	reg := New()
+	toolReg := registry.New()
+	RegisterAll(reg, toolReg)
+	cmd, _ := reg.Lookup("timeline")
+	res := cmd.Handler(state, nil)
+	if res.Doc != nil {
+		t.Fatalf("empty session should return Text, not a Doc, got %+v", res)
+	}
+	if !strings.Contains(res.Text, "No turns") {
+		t.Fatalf("empty session should explain, got %q", res.Text)
 	}
 }

@@ -476,9 +476,12 @@ func TestRunAppliesRouteContextBudgetToMemoryOnlyPack(t *testing.T) {
 	state := newTestState(t)
 	resolver := &scriptedRouteResolver{
 		routes: []routing.Route{{
-			Role:          routing.RoleImplementer,
-			Preset:        routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "coder-model", LocalOnly: true},
-			ContextBudget: routing.ContextBudget{MaxRepoContextTokens: 8},
+			Role:   routing.RoleImplementer,
+			Preset: routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "coder-model", LocalOnly: true},
+			// Budget must be large enough that the fairness cap
+			// (maxTokens/2) leaves room for the truncation marker: the
+			// marker alone costs ~4 tokens, so the share must exceed that.
+			ContextBudget: routing.ContextBudget{MaxRepoContextTokens: 20},
 		}},
 		providers: []provider.Provider{p},
 	}
@@ -494,8 +497,8 @@ func TestRunAppliesRouteContextBudgetToMemoryOnlyPack(t *testing.T) {
 	}
 
 	pack := state.ContextPack()
-	if pack.TokenUsage.MaxTokens != 8 {
-		t.Fatalf("pack max tokens = %d, want 8", pack.TokenUsage.MaxTokens)
+	if pack.TokenUsage.MaxTokens != 20 {
+		t.Fatalf("pack max tokens = %d, want 20", pack.TokenUsage.MaxTokens)
 	}
 	if !pack.TokenUsage.Truncated {
 		t.Fatalf("expected memory-only pack to be truncated by route budget: %#v", pack.TokenUsage)

@@ -448,6 +448,30 @@ func TestRenderCompletedToolCallShowsHookBlockedIndicator(t *testing.T) {
 	}
 }
 
+// A hooked edit that renders subject-first (it carries symbol attribution)
+// must still surface its hook decision. The else-if that appends the hook
+// hint on the tool-name-first path would otherwise drop it on exactly the
+// rows that carry attribution.
+func TestRenderCompletedToolCallSubjectFirstKeepsHookIndicator(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName: "file.write_patch",
+		Symbols: []registry.SymbolRef{
+			{File: "transcript.go", Name: "renderSubagentCard", Kind: "function"},
+		},
+		Hooks: []registry.HookMetadata{{
+			Event:    "pre_tool_use",
+			Decision: "block",
+			Reason:   "lint gate",
+		}},
+	}, false, nil, 80))
+	if !strings.Contains(out, "transcript.go › renderSubagentCard()") {
+		t.Fatalf("expected subject-first row:\n%s", out)
+	}
+	if !strings.Contains(out, "hook blocked") {
+		t.Fatalf("subject-first row must keep the hook indicator:\n%s", out)
+	}
+}
+
 func TestRenderCompletedToolCallShowsHookRewroteIndicator(t *testing.T) {
 	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
 		ToolName:      "shell.run",

@@ -72,6 +72,18 @@ func TestGroupTranscript(t *testing.T) {
 			wantGroups: []int{0, 0},
 		},
 		{
+			name: "symbol-carrying edit never merges",
+			items: []session.TranscriptItem{
+				auditItem("file.write", func(e *registry.AuditEvent) {
+					e.Symbols = []registry.SymbolRef{{File: "a.go", Name: "Alpha", Kind: "function"}}
+				}),
+				auditItem("file.write", func(e *registry.AuditEvent) {
+					e.Symbols = []registry.SymbolRef{{File: "b.go", Name: "Beta", Kind: "function"}}
+				}),
+			},
+			wantGroups: []int{0, 0},
+		},
+		{
 			name:       "message between same-tool events breaks the run",
 			items:      []session.TranscriptItem{read(), messageItem(), read()},
 			wantGroups: []int{0, 0, 0},

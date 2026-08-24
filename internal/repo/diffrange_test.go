@@ -15,7 +15,9 @@ func TestDiffRangesSingleHunk(t *testing.T) {
  	d
 `
 	got := DiffRanges(diff)
-	want := map[string][]LineRange{"foo.go": {{Start: 10, End: 15}}}
+	// Post-image: context "a" is line 10, added "b" is 11, added "c" is 12,
+	// context "d" is 13. Only the added lines are attributed.
+	want := map[string][]LineRange{"foo.go": {{Start: 11, End: 13}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -26,17 +28,19 @@ func TestDiffRangesMultipleHunksAndFiles(t *testing.T) {
 +++ b/foo.go
 @@ -1,2 +1,3 @@
  x
++new
 @@ -20,1 +21,1 @@
  y
 --- a/bar.go
 +++ b/bar.go
 @@ -5,0 +6,2 @@
  z
++added
 `
 	got := DiffRanges(diff)
 	want := map[string][]LineRange{
-		"foo.go": {{Start: 1, End: 4}, {Start: 21, End: 22}},
-		"bar.go": {{Start: 6, End: 8}},
+		"foo.go": {{Start: 2, End: 3}},
+		"bar.go": {{Start: 7, End: 8}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -45,7 +49,7 @@ func TestDiffRangesMultipleHunksAndFiles(t *testing.T) {
 
 // "@@ -1,2 +3 @@" omits the post-image count, which means exactly one line.
 func TestDiffRangesOmittedCountMeansOne(t *testing.T) {
-	got := DiffRanges("+++ b/foo.go\n@@ -1,2 +3 @@\n")
+	got := DiffRanges("+++ b/foo.go\n@@ -1,2 +3 @@\n+new\n")
 	want := map[string][]LineRange{"foo.go": {{Start: 3, End: 4}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -53,10 +57,40 @@ func TestDiffRangesOmittedCountMeansOne(t *testing.T) {
 }
 
 func TestDiffRangesNewFile(t *testing.T) {
-	got := DiffRanges("--- /dev/null\n+++ b/new.go\n@@ -0,0 +1,4 @@\n")
+	got := DiffRanges("--- /dev/null\n+++ b/new.go\n@@ -0,0 +1,4 @@\n+a\n+b\n+c\n+d\n")
 	want := map[string][]LineRange{"new.go": {{Start: 1, End: 5}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// Context lines are never attributed, so a hunk that sits near a function
+// boundary does not over-attribute to an adjacent symbol.
+func TestDiffRangesContextLinesExcluded(t *testing.T) {
+	diff := `--- a/foo.go
++++ b/foo.go
+@@ -1,5 +1,5 @@
+ func Alpha() {
+ 	keep
++	changed
+ 	keep
+ }
+`
+	got := DiffRanges(diff)
+	// Post-image: "func Alpha() {" is line 1, "keep" is 2, added "changed"
+	// is 3, "keep" is 4, "}" is 5. Only line 3 is attributed.
+	want := map[string][]LineRange{"foo.go": {{Start: 3, End: 4}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// A hunk with only context lines (a pure move or a no-op) attributes
+// nothing rather than swallowing the whole hunk.
+func TestDiffRangesContextOnlyHunkAttributesNothing(t *testing.T) {
+	got := DiffRanges("+++ b/foo.go\n@@ -1,3 +1,3 @@\n a\n b\n c\n")
+	if len(got) != 0 {
+		t.Fatalf("context-only hunk must attribute nothing, got %v", got)
 	}
 }
 

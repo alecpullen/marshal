@@ -58,14 +58,17 @@ func groupTranscript(items []session.TranscriptItem) []transcriptEntry {
 
 // mergeableAuditEvent returns the audit event for an item that may join a
 // collapsed run, or nil when the item must render on its own: non-audit
-// items, diff tools (edits always render their own diff), failures, and
-// calls with hook metadata.
+// items, diff tools (edits always render their own diff), failures, calls
+// with hook metadata, and symbol-carrying edits. A symbol-carrying event
+// must keep its own row: the blast-radius line is rendered per-row, and a
+// collapsed group has no Item to hang callers on, so merging would silently
+// drop the feature for exactly the multi-edit turns where it matters most.
 func mergeableAuditEvent(item *session.TranscriptItem) *registry.AuditEvent {
 	if item.Kind != session.KindAudit || item.Audit == nil {
 		return nil
 	}
 	ev := item.Audit
-	if isDiffTool(ev.ToolName) || ev.Error != "" || len(ev.Hooks) > 0 {
+	if isDiffTool(ev.ToolName) || ev.Error != "" || len(ev.Hooks) > 0 || len(ev.Symbols) > 0 {
 		return nil
 	}
 	return ev

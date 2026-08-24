@@ -968,6 +968,12 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 		if stat := diffStat(event.ResultContent); stat != "" {
 			head += dimSeparator + stat
 		}
+		// A hooked edit must still surface its hook decision even when the
+		// row leads with the symbol subject; the else-if below would
+		// otherwise drop it on exactly the rows that carry attribution.
+		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
+			head += dimSeparator + hookHint
+		}
 	} else if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 		head += dimSeparator + hookHint
 	}

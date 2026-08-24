@@ -41,6 +41,7 @@ func (m Model) renderJobLane() string {
 	gutter := gutterPrefix(glyph.Job, dimColor)
 
 	var b strings.Builder
+	b.WriteString(laneSeparator(width))
 	b.WriteString(gutter)
 	b.WriteString(dimStyle().Render(fmt.Sprintf("jobs %d", len(running))))
 	b.WriteString("\n")

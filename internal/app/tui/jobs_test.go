@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/native"
 )
 
@@ -79,11 +80,53 @@ func TestJobLaneCapsWithOverflowRow(t *testing.T) {
 		m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
 	}
 	out := m.renderJobLane()
-	if got := strings.Count(out, "\n"); got > jobLaneMaxRows {
-		t.Fatalf("lane rendered %d rows, cap is %d", got, jobLaneMaxRows)
+	// The separator carries an opening rule, so a full lane is the row
+	// budget plus one.
+	if got := strings.Count(out, "\n"); got > jobLaneMaxRows+1 {
+		t.Fatalf("lane rendered %d rows, cap is %d", got, jobLaneMaxRows+1)
 	}
 	if !strings.Contains(ansi.Strip(out), "more") {
 		t.Fatalf("expected an overflow row:\n%s", ansi.Strip(out))
+	}
+}
+
+func TestJobLaneHasSeparatorAndRail(t *testing.T) {
+	m := newTestModel(t)
+	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
+	out := m.renderJobLane()
+	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if !strings.Contains(ansi.Strip(rows[0]), "─") {
+		t.Fatalf("lane must open with a separator rule, got %q", ansi.Strip(rows[0]))
+	}
+	for i, r := range rows[1:] {
+		if !strings.Contains(ansi.Strip(r), glyph.Job) {
+			t.Errorf("lane row %d has no job marker: %q", i+1, ansi.Strip(r))
+		}
+	}
+}
+
+func TestJobLaneRowsMatchesRenderAfterChrome(t *testing.T) {
+	m := newTestModel(t)
+	for i := 0; i < 5; i++ {
+		m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
+	}
+	out := m.renderJobLane()
+	want := 0
+	if out != "" {
+		want = strings.Count(out, "\n")
+	}
+	if got := m.jobLaneRows(); got != want {
+		t.Fatalf("jobLaneRows()=%d but lane rendered %d rows:\n%s", got, want, ansi.Strip(out))
+	}
+}
+
+func TestJobLaneEmptyHasNoSeparator(t *testing.T) {
+	m := newTestModel(t)
+	if out := m.renderJobLane(); out != "" {
+		t.Fatalf("no running jobs must render nothing, got %q", out)
+	}
+	if got := m.jobLaneRows(); got != 0 {
+		t.Fatalf("jobLaneRows()=%d with no jobs, want 0", got)
 	}
 }
 

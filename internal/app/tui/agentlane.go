@@ -5,12 +5,28 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
+
+// laneSeparator is the rule that opens a lane, marking where the
+// transcript ends. Without it the lanes blend into the todo panel and the
+// input area directly beneath them.
+//
+// It reuses renderTurnSeparator's construction — the one `─` rule already
+// sanctioned in a codebase that otherwise forbids box-drawing chrome — so
+// the two horizontal rules on screen match.
+func laneSeparator(width int) string {
+	w := max(width-gutterWidth, 1)
+	return continuation() +
+		lipgloss.NewStyle().Foreground(theme.Current().BorderMuted).Render(strings.Repeat("─", w)) +
+		"\n"
+}
 
 // agentLaneMaxRows caps the lane: a header row plus up to three subagent
 // rows, the last of which becomes an overflow row when more are running.
@@ -35,9 +51,10 @@ func (m Model) renderAgentLane() string {
 		return ""
 	}
 	width := max(m.leftWidth, 1)
-	gutter := gutterPrefix(glyph.Running, dimColor)
+	gutter := gutterPrefix(glyph.Rail, dimColor)
 
 	var b strings.Builder
+	b.WriteString(laneSeparator(width))
 	b.WriteString(gutter)
 	b.WriteString(dimStyle().Render(fmt.Sprintf("agents %d", len(running))))
 	b.WriteString("\n")
@@ -88,9 +105,9 @@ func (m Model) agentLaneRows() int {
 	}
 	rows := agentLaneMaxRows - 1
 	if running > rows {
-		// header + (rows-1) shown + overflow row
-		return 1 + (rows - 1) + 1
+		// separator + header + (rows-1) shown + overflow
+		return 1 + 1 + (rows - 1) + 1
 	}
-	// header + running rows
-	return 1 + running
+	// separator + header + running rows
+	return 1 + 1 + running
 }

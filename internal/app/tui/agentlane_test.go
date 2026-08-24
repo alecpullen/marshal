@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 )
 
 // registerRunningSubagent registers a running background child on the test
@@ -81,10 +83,54 @@ func TestAgentLaneCapsWithOverflowRow(t *testing.T) {
 		registerRunningSubagent(t, &m, "task")
 	}
 	out := m.renderAgentLane()
-	if got := strings.Count(out, "\n"); got > agentLaneMaxRows {
-		t.Fatalf("lane rendered %d rows, cap is %d", got, agentLaneMaxRows)
+	// The lane carries an opening separator, so a full lane is the capped
+	// row budget plus one.
+	if got := strings.Count(out, "\n"); got > agentLaneMaxRows+1 {
+		t.Fatalf("lane rendered %d rows, cap is %d", got, agentLaneMaxRows+1)
 	}
 	if !strings.Contains(ansi.Strip(out), "more") {
 		t.Fatalf("expected an overflow row:\n%s", ansi.Strip(out))
+	}
+}
+
+func TestAgentLaneHasSeparatorAndRail(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "reviewer")
+	out := m.renderAgentLane()
+	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if !strings.Contains(ansi.Strip(rows[0]), "─") {
+		t.Fatalf("lane must open with a separator rule, got %q", ansi.Strip(rows[0]))
+	}
+	for i, r := range rows[1:] {
+		if !strings.Contains(ansi.Strip(r), glyph.Rail) {
+			t.Errorf("lane row %d has no rail: %q", i+1, ansi.Strip(r))
+		}
+	}
+}
+
+// The height budget must still match exactly, or the input area is pushed
+// off the bottom of the frame.
+func TestAgentLaneRowsMatchesRenderAfterChrome(t *testing.T) {
+	m := newTestModel(t)
+	for i := 0; i < 5; i++ {
+		registerRunningSubagent(t, &m, fmt.Sprintf("agent-%d", i))
+	}
+	out := m.renderAgentLane()
+	want := 0
+	if out != "" {
+		want = strings.Count(out, "\n")
+	}
+	if got := m.agentLaneRows(); got != want {
+		t.Fatalf("agentLaneRows()=%d but lane rendered %d rows:\n%s", got, want, ansi.Strip(out))
+	}
+}
+
+func TestAgentLaneEmptyHasNoSeparator(t *testing.T) {
+	m := newTestModel(t)
+	if out := m.renderAgentLane(); out != "" {
+		t.Fatalf("no running agents must render nothing, got %q", out)
+	}
+	if got := m.agentLaneRows(); got != 0 {
+		t.Fatalf("agentLaneRows()=%d with no agents, want 0", got)
 	}
 }

@@ -2022,6 +2022,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
 			return m, cmd
 		}
+		if cmd, handled := m.handleAgentLaneClick(msg); handled {
+			return m, cmd
+		}
 		if cmd, handled := m.handleTodoPanelClick(msg); handled {
 			return m, cmd
 		}
@@ -2390,6 +2393,9 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return *m, vpCmd, true
 	case tea.MouseClickMsg:
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
+			return *m, cmd, true
+		}
+		if cmd, handled := m.handleAgentLaneClick(msg); handled {
 			return *m, cmd, true
 		}
 		if cmd, handled := m.handleTodoPanelClick(msg); handled {

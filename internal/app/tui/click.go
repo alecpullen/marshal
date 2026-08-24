@@ -101,6 +101,49 @@ func (m *Model) handleTodoPanelClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	return nil, true
 }
 
+// agentLaneBand returns the half-open screen-row range the agents lane
+// occupies. The frame order (view.go) is: transcript frame, turn spinner,
+// todo panel, live strip, job lane, agent lane — so the job lane counts
+// toward the offset.
+func (m *Model) agentLaneBand() (top, bottom int, ok bool) {
+	rows := m.agentLaneRows()
+	if rows == 0 {
+		return 0, 0, false
+	}
+	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
+		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows() + m.jobLaneRows()
+	return top, top + rows, true
+}
+
+// handleAgentLaneClick drills into the subagent whose row was clicked.
+// The lane is often the only handle on a running child: its transcript card
+// can scroll far out of view while the parent keeps working.
+func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
+	if msg.Button != tea.MouseLeft {
+		return nil, false
+	}
+	if msg.X < 0 || msg.X >= m.leftWidth {
+		return nil, false
+	}
+	top, bottom, ok := m.agentLaneBand()
+	if !ok || msg.Y < top || msg.Y >= bottom {
+		return nil, false
+	}
+	// Row 0 is the separator and row 1 the header; agents start at row 2.
+	const chromeRows = 2
+	idx := msg.Y - top - chromeRows
+	entries := m.agentLaneEntries()
+	if idx < 0 || idx >= len(entries) {
+		// The separator, the header, or the overflow row. Consume the click
+		// so it does not fall through to the transcript underneath.
+		return nil, true
+	}
+	m.drillIntoSubagent(entries[idx])
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+	return nil, true
+}
+
 // scrollLiveRegionAt routes a wheel event to a bounded live region when the
 // cursor is over one, and reports whether it consumed the event.
 //

@@ -41,30 +41,29 @@ const agentLaneMaxRows = 4
 // pipeline/SDD cards share the parent's state (Child == nil) and are
 // already pinned by the run panel.
 func (m Model) renderAgentLane() string {
-	var running []session.SubagentView
+	entries := m.agentLaneEntries()
+	if len(entries) == 0 {
+		return ""
+	}
+	// Count all running for the header (includes overflow)
+	var allRunning int
 	for _, v := range m.state.Subagents() {
 		if v.Status == session.SubagentRunning && v.Child != nil {
-			running = append(running, v)
+			allRunning++
 		}
-	}
-	if len(running) == 0 {
-		return ""
 	}
 	width := max(m.leftWidth, 1)
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 
 	var b strings.Builder
-	b.WriteString(dimStyle().Render(spinnerLabel(spinner, fmt.Sprintf("agents %d", len(running)))))
+	b.WriteString(dimStyle().Render(spinnerLabel(spinner, fmt.Sprintf("agents %d", allRunning))))
 	b.WriteString("\n")
 
-	rows := agentLaneMaxRows - 1
-	shown := running
 	overflow := 0
-	if len(shown) > rows {
-		shown = shown[:rows-1]
-		overflow = len(running) - len(shown)
+	if allRunning > len(entries) {
+		overflow = allRunning - len(entries)
 	}
-	for _, v := range shown {
+	for _, v := range entries {
 		b.WriteString(dimStyle().Render(fmt.Sprintf("%d  %s  %s",
 			v.ID,
 			strutil.Truncate(v.Label, max(width/2, 12), true),
@@ -77,6 +76,22 @@ func (m Model) renderAgentLane() string {
 	}
 
 	return laneSeparator(width) + chromeRailWidth(b.String(), dimColor, max(width-1, 1))
+}
+
+// agentLaneEntries returns the running subagents in the order the lane
+// renders them, capped the same way. The click handler and the renderer
+// must agree on this ordering or a click drills into the wrong child.
+func (m Model) agentLaneEntries() []session.SubagentView {
+	var running []session.SubagentView
+	for _, v := range m.state.Subagents() {
+		if v.Status == session.SubagentRunning && v.Child != nil {
+			running = append(running, v)
+		}
+	}
+	if rows := agentLaneMaxRows - 1; len(running) > rows {
+		running = running[:rows-1]
+	}
+	return running
 }
 
 // agentLaneRows reports the lane's rendered height for the frame's height

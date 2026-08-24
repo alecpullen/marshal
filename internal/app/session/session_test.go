@@ -2341,3 +2341,37 @@ func TestUpdateContextPackConcurrentWritersLoseNothing(t *testing.T) {
 		t.Fatalf("sections = %d, want 200 (lost update under concurrency)", got)
 	}
 }
+
+// TestFinishSubagentReleasesOldChildStates guards M-3: completed subagent
+// Child State pointers beyond maxRetainedChildStates are nilled so their
+// full State objects can be garbage collected.
+func TestFinishSubagentReleasesOldChildStates(t *testing.T) {
+	state := newTestState()
+	// Register and finish maxRetainedChildStates+5 subagents.
+	total := maxRetainedChildStates + 5
+	for i := 0; i < total; i++ {
+		child := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+		view := state.RegisterSubagent(fmt.Sprintf("child-%d", i), child)
+		state.FinishSubagent(view.ID, fmt.Sprintf("done-%d", i), nil)
+	}
+	views := state.Subagents()
+	if len(views) != total {
+		t.Fatalf("subagents = %d, want %d", len(views), total)
+	}
+	// The most recent maxRetainedChildStates completed children should
+	// still have their Child pointer; older ones should be nil.
+	var withChild, withoutChild int
+	for _, v := range views {
+		if v.Child != nil {
+			withChild++
+		} else {
+			withoutChild++
+		}
+	}
+	if withChild > maxRetainedChildStates {
+		t.Fatalf("retained Child pointers = %d, want at most %d", withChild, maxRetainedChildStates)
+	}
+	if withoutChild != 5 {
+		t.Fatalf("released Child pointers = %d, want 5", withoutChild)
+	}
+}

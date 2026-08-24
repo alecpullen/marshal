@@ -226,10 +226,21 @@ func (s *State) AddSubagentTokens(id int64, n int) {
 	}
 }
 
+// maxRetainedChildStates caps how many completed subagent Child State
+// pointers are retained for drill-down. Older completed children have
+// their Child pointer nilled so the full transcript/audit-log is GC'd.
+// The summary, status, and metadata (small strings) are always retained.
+const maxRetainedChildStates = 10
+
 // FinishSubagent marks a subagent view finished (or failed, when
 // err != nil), records its end time and final summary, closes its done
 // channel so WaitSubagent callers unblock, and republishes so the card
 // flips from the running spinner to its terminal state.
+//
+// M-3: after marking the subagent finished, nil out the Child pointer on
+// older completed subagents beyond maxRetainedChildStates so their full
+// State objects (transcript, audit log, thinking log) can be garbage
+// collected. The summary and status are retained for the card display.
 func (s *State) FinishSubagent(id int64, summary string, err error) {
 	s.mu.Lock()
 	var updated SubagentView
@@ -247,6 +258,16 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 			updated = s.subagents[i]
 			found = true
 			break
+		}
+	}
+	// M-3: release Child State pointers on older completed subagents.
+	var completed int
+	for i := len(s.subagents) - 1; i >= 0; i-- {
+		if s.subagents[i].Status != SubagentRunning && s.subagents[i].Child != nil {
+			completed++
+			if completed > maxRetainedChildStates {
+				s.subagents[i].Child = nil
+			}
 		}
 	}
 	var done chan struct{}

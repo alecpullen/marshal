@@ -960,6 +960,11 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	gutter := gutterPrefix(g, gutterColor)
 	head := DisplayToolName(event.ToolName)
 	shellRow := isShellFamily(event.ToolName)
+	// summaryDupesCommand tracks whether the head already carries the
+	// command text. Only then should we suppress the ResultSummary —
+	// background jobs ("started background job <id>") and killed commands
+	// ("command "x" killed: timeout") carry information the head lacks.
+	summaryDupesCommand := false
 	// Subject-first for file and symbol tools that carry attribution: the
 	// tool name is the least interesting thing on such a row. Falls back to
 	// the tool-name-first shape whenever there are no symbols, which is
@@ -967,6 +972,13 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	// rewrite — so the fallback is the common path, not a degraded one.
 	if s := shellSubject(event); shellRow && s != "" {
 		head = s
+		// The summary duplicates the head only for normal foreground
+		// runs (command + exit code). Background jobs ("started
+		// background job <id>") and killed commands ("killed: timeout")
+		// carry information the head lacks, so keep them.
+		if event.CommandExitCode != nil && event.Sandbox.KilledReason == "" {
+			summaryDupesCommand = true
+		}
 		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 			head += dimSeparator + hookHint
 		}
@@ -991,7 +1003,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	}
 	if event.Error != "" {
 		head += dimSeparator + event.Error
-	} else if event.ResultSummary != "" && !shellRow {
+	} else if event.ResultSummary != "" && !summaryDupesCommand {
 		head += dimSeparator + event.ResultSummary
 	}
 	if event.ResultContent != "" || event.Error != "" {

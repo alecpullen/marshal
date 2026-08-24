@@ -218,6 +218,73 @@ func TestSearchRowWithNoQueryFallsBack(t *testing.T) {
 	}
 }
 
+func TestJsonQuerySubjectPrefersQueryOverPath(t *testing.T) {
+	e := registry.AuditEvent{
+		ToolName:      "json.query",
+		Args:          json.RawMessage(`{"path":"config.toml","query":".dependencies | keys"}`),
+		ResultSummary: "3 results",
+	}
+	got := searchSubject(e)
+	if !strings.Contains(got, ".dependencies | keys") {
+		t.Fatalf("json.query row must show the jq expression, got %q", got)
+	}
+	if strings.Contains(got, "config.toml") {
+		t.Fatalf("json.query row must not lead with the path, got %q", got)
+	}
+}
+
+func TestJsonQueryRowRendersQueryAndSummary(t *testing.T) {
+	e := registry.AuditEvent{
+		ToolName:      "json.query",
+		Args:          json.RawMessage(`{"path":"config.toml","query":".deps | keys"}`),
+		ResultSummary: "3 results",
+	}
+	out := stripANSI(renderCompletedToolCall(e, false, nil, 100))
+	if !strings.Contains(out, "json") {
+		t.Fatalf("json.query row must carry the qualifier:\n%s", out)
+	}
+	if !strings.Contains(out, ".deps | keys") {
+		t.Fatalf("json.query row must carry the jq expression:\n%s", out)
+	}
+	if !strings.Contains(out, "3 results") {
+		t.Fatalf("json.query row must keep its summary:\n%s", out)
+	}
+}
+
+func TestBackgroundShellRowKeepsSummary(t *testing.T) {
+	e := registry.AuditEvent{
+		ToolName:      "shell.run",
+		Args:          json.RawMessage(`{"command":"go build ./...","background":true}`),
+		ResultSummary: "started background job job_1",
+	}
+	out := stripANSI(renderCompletedToolCall(e, false, nil, 100))
+	if !strings.Contains(out, "go build ./...") {
+		t.Fatalf("background shell row must carry the command:\n%s", out)
+	}
+	if !strings.Contains(out, "started background job") {
+		t.Fatalf("background shell row must keep its summary:\n%s", out)
+	}
+}
+
+func TestKilledShellRowKeepsKillReason(t *testing.T) {
+	exit := -1
+	e := registry.AuditEvent{
+		ToolName:        "shell.run",
+		Args:            json.RawMessage(`{"command":"sleep 100"}`),
+		ResultSummary:   `command "sleep 100" killed: timeout`,
+		CommandExitCode: &exit,
+		Duration:        30 * time.Second,
+		Sandbox:         registry.SandboxMeta{Enabled: true, KilledReason: "timeout"},
+	}
+	out := stripANSI(renderCompletedToolCall(e, false, nil, 100))
+	if !strings.Contains(out, "sleep 100") {
+		t.Fatalf("killed shell row must carry the command:\n%s", out)
+	}
+	if !strings.Contains(out, "killed: timeout") {
+		t.Fatalf("killed shell row must keep the kill reason:\n%s", out)
+	}
+}
+
 func TestNonMigratedToolsUnchanged(t *testing.T) {
 	for _, tool := range []string{"git.status", "agent.run", "web.fetch", "todos"} {
 		e := registry.AuditEvent{ToolName: tool, ResultSummary: "did a thing"}

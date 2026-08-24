@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -74,16 +75,50 @@ func searchQualifier(name string) (string, bool) {
 // query. The outcome stays in ResultSummary, which these tools already
 // phrase well ("4 matches", "no matches", "3 found"), and the caller
 // appends it.
+//
+// json.query is special: its primary subject is the jq expression, not the
+// file path (the tool's own description leads with the expression). For
+// every other search-family tool toolTarget's path-first ordering is
+// correct, so we only override the lookup order for json.query.
 func searchSubject(event registry.AuditEvent) string {
 	q, ok := searchQualifier(event.ToolName)
 	if !ok {
 		return ""
 	}
-	target := toolTarget(event)
+	target := searchTarget(event)
 	if target == "" {
 		return ""
 	}
 	return q + " " + strconv.Quote(target)
+}
+
+// searchTarget returns the subject string for a search-family row. It
+// prefers the jq expression for json.query (where the expression is the
+// point and the path is context) and falls back to toolTarget's
+// path-first ordering for every other search tool.
+func searchTarget(event registry.AuditEvent) string {
+	if event.ToolName == "json.query" {
+		if s := argString(event.Args, "query"); s != "" {
+			return s
+		}
+	}
+	return toolTarget(event)
+}
+
+// argString extracts a string field from a tool-call's JSON args. Returns
+// "" when the args are missing, malformed, or the field is absent/empty.
+func argString(args json.RawMessage, key string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(args, &m); err != nil {
+		return ""
+	}
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
 }
 
 // symbolSubject renders "path › A(), B() +2" for an event carrying symbol

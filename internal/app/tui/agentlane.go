@@ -69,10 +69,28 @@ func (m Model) renderAgentLane() string {
 // agentLaneRows reports the lane's rendered height for the frame's height
 // budget. It must agree with renderAgentLane exactly; a mismatch pushes the
 // input area or the status footer off the bottom of the screen.
+//
+// M-2: this previously called renderAgentLane (computing the full render
+// twice per frame — once here for the height budget, once in View for the
+// actual output). Now it computes the row count directly from the running
+// count, matching renderAgentLane's layout: 1 header row + min(running,
+// agentLaneMaxRows-1) rows, with an overflow row when running exceeds the
+// cap.
 func (m Model) agentLaneRows() int {
-	out := m.renderAgentLane()
-	if out == "" {
+	var running int
+	for _, v := range m.state.Subagents() {
+		if v.Status == session.SubagentRunning && v.Child != nil {
+			running++
+		}
+	}
+	if running == 0 {
 		return 0
 	}
-	return strings.Count(out, "\n")
+	rows := agentLaneMaxRows - 1
+	if running > rows {
+		// header + (rows-1) shown + overflow row
+		return 1 + (rows - 1) + 1
+	}
+	// header + running rows
+	return 1 + running
 }

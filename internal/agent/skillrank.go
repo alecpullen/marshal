@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/app/session"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/skills"
 )
@@ -139,9 +140,18 @@ func (r *Runner) maybeAutoLoadSkills(ctx context.Context, goal string) {
 	if r.skillRanker == nil {
 		r.skillRanker = newSkillRanker()
 	}
+	var loaded []string
 	for _, name := range r.skillRanker.rank(ctx, e, candidates, goal) {
-		// Quiet: no transcript tag, exempt from max_active. Per-skill errors
-		// (budget, missing) are ignored — auto-load is best-effort.
-		_ = skills.LoadSkillIntoSessionQuiet(r.SkillIndex, r.State, name)
+		// Quiet: no per-skill transcript tag, exempt from max_active.
+		// Per-skill errors (budget, missing) are ignored — auto-load is
+		// best-effort.
+		if err := skills.LoadSkillIntoSessionQuiet(r.SkillIndex, r.State, name); err == nil {
+			loaded = append(loaded, name)
+		}
+	}
+	// One aggregate record per turn, replacing the per-skill tags the quiet
+	// path deliberately suppresses. A turn that loads nothing writes nothing.
+	if len(loaded) > 0 {
+		r.State.AddMessage(session.RoleSystem, strings.Join(loaded, "\n"), session.ContentTypeSkillAuto)
 	}
 }

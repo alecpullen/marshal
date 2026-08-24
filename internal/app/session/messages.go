@@ -51,6 +51,16 @@ const (
 	// "Previous generation summary: ...". This is the same separation
 	// ContentTypeNarration achieves by storing non-final.
 	ContentTypeCompaction ContentType = "compaction"
+	// ContentTypeSubagentReport marks a background subagent's completion
+	// report, persisted under RoleUser so buildHistoryMessages replays it
+	// and it survives restart. It renders nothing: the user already gets a
+	// RoleSystem notice from the same completion path, and rendering the
+	// RoleUser copy put a turn separator and a ❯ prompt in the transcript
+	// for something the user never typed.
+	//
+	// Same split as ContentTypeSkillBody: reaches the model, invisible to
+	// the reader.
+	ContentTypeSubagentReport ContentType = "subagent_report"
 )
 
 // Message is a single turn in the session transcript. Messages form an

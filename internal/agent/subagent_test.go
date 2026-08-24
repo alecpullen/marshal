@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
@@ -976,5 +977,24 @@ func TestSubagentReportQueueClearedAtTurnEnd(t *testing.T) {
 	state.ClearSubagentReports()
 	if got := state.SubagentReports(); len(got) != 0 {
 		t.Fatalf("queue after clear = %v, want empty", got)
+	}
+}
+
+// The report must still replay into model context — the whole reason the
+// RoleUser copy exists. Changing only its content type must not break that.
+func TestSubagentReportStillReplaysIntoHistory(t *testing.T) {
+	s := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	s.AddMessage(session.RoleUser, "do the thing", session.ContentTypePlain)
+	s.AddMessage(session.RoleUser, "[subagent 1 finished] found two issues", session.ContentTypeSubagentReport)
+
+	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{})
+	var found bool
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "[subagent 1 finished]") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the durable subagent report must still replay into model context")
 	}
 }

@@ -2944,7 +2944,11 @@ func (m *Model) popOldestSteering() (string, bool) {
 func isUserTurn(item session.TranscriptItem) bool {
 	return item.Kind == session.KindMessage &&
 		item.Message != nil &&
-		item.Message.Role == session.RoleUser
+		item.Message.Role == session.RoleUser &&
+		// A subagent report is stored under RoleUser for history replay but
+		// is not a turn the user took; treating it as one emits a turn
+		// separator above a block that renders nothing.
+		item.Message.ContentType != session.ContentTypeSubagentReport
 }
 
 // drilledInto returns the subagent whose transcript is currently drilled

@@ -1604,3 +1604,45 @@ func TestCompactionMarkerRendersAsOneLine(t *testing.T) {
 		t.Errorf("marker spans %d extra lines, want a single line: %q", n+1, out)
 	}
 }
+
+// The durable subagent report is model context, not transcript content.
+// Rendering it put a turn separator and a ❯ prompt in the transcript for
+// something the user never typed.
+func TestSubagentReportRendersNothing(t *testing.T) {
+	msg := session.Message{
+		Role:        session.RoleUser,
+		Content:     "[subagent 1 finished] found two issues",
+		ContentType: session.ContentTypeSubagentReport,
+	}
+	if out := renderMessage(msg, 80); out != "" {
+		t.Fatalf("subagent report must render nothing, got %q", out)
+	}
+}
+
+func TestSubagentReportIsNotAUserTurn(t *testing.T) {
+	item := session.TranscriptItem{
+		Kind: session.KindMessage,
+		Message: &session.Message{
+			Role:        session.RoleUser,
+			Content:     "[subagent 1 finished] found two issues",
+			ContentType: session.ContentTypeSubagentReport,
+		},
+	}
+	if isUserTurn(item) {
+		t.Fatal("a subagent report must not count as a user turn, or it emits a turn separator")
+	}
+}
+
+func TestRealUserMessageStillIsAUserTurn(t *testing.T) {
+	item := session.TranscriptItem{
+		Kind: session.KindMessage,
+		Message: &session.Message{
+			Role:        session.RoleUser,
+			Content:     "fix the wheel handler",
+			ContentType: session.ContentTypePlain,
+		},
+	}
+	if !isUserTurn(item) {
+		t.Fatal("an ordinary user message must still be a user turn")
+	}
+}

@@ -297,7 +297,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					// queue (live delivery). Without the RoleUser persist, a
 					// panicked child's failure is lost across restart.
 					state.AddMessage(session.RoleSystem, "✗ "+panicSummary, session.ContentTypePlain)
-					state.AddMessage(session.RoleUser, panicReport, session.ContentTypePlain)
+					state.AddMessage(session.RoleUser, panicReport, session.ContentTypeSubagentReport)
 					state.PushSubagentReport(panicReport)
 					state.ExitSubagent()
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
@@ -345,7 +345,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			// drained. The queue drain and the persisted message do not
 			// double-deliver: the queue is cleared on drain, and
 			// buildHistoryMessages only replays prior-turn messages.
-			state.AddMessage(session.RoleUser, report, session.ContentTypePlain)
+			state.AddMessage(session.RoleUser, report, session.ContentTypeSubagentReport)
 			// C2: push the report and release the concurrency slot BEFORE
 			// FinishSubagent closes the done channel. A WaitSubagent caller
 			// (agent.await) unblocks on that close, so it must observe the

@@ -476,6 +476,8 @@ func renderMessage(msg session.Message, width int) string {
 		return renderSkillTag(msg.Content, width)
 	case session.ContentTypeCompaction:
 		return renderCompactionMarker(msg.Content, width)
+	case session.ContentTypeSubagentReport:
+		return ""
 	}
 	if msg.Final {
 		return renderFinalAnswer(msg, width)

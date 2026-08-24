@@ -908,7 +908,7 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	m = updated.(Model)
 	narrowView := stripANSI(m.View().Content)
 	ip := state.InProgress()
-	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width()) + "\n" + renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), 0, m.viewport.Width())
+	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width()) + "\n" + renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), regionView{}, m.viewport.Width())
 
 	// viewport.View() pads every line to the viewport's fixed width/height
 	// with trailing spaces and blank lines; strip that padding before

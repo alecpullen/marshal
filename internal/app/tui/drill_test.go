@@ -297,7 +297,7 @@ func TestRenderSubagentCardContent(t *testing.T) {
 		ToolCalls: 7,
 		Child:     child,
 	}
-	out := stripANSI(renderSubagentCard(running, false, "⠋", 0, 80))
+	out := stripANSI(renderSubagentCard(running, false, "⠋", regionView{}, 80))
 	for _, want := range []string{"explore repo", "7 tool calls", "ctrl+f to drill in"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("running card missing %q, got:\n%s", want, out)
@@ -313,14 +313,14 @@ func TestRenderSubagentCardContent(t *testing.T) {
 		ToolCalls: 3,
 		Summary:   "found three entry points",
 	}
-	collapsed := stripANSI(renderSubagentCard(done, false, "⠋", 0, 80))
+	collapsed := stripANSI(renderSubagentCard(done, false, "⠋", regionView{}, 80))
 	if strings.Contains(collapsed, "found three entry points") {
 		t.Fatalf("collapsed card must hide the summary, got:\n%s", collapsed)
 	}
 	if strings.Contains(collapsed, "ctrl+f to drill in") {
 		t.Fatalf("childless card must not offer drill-down, got:\n%s", collapsed)
 	}
-	expanded := stripANSI(renderSubagentCard(done, true, "⠋", 0, 80))
+	expanded := stripANSI(renderSubagentCard(done, true, "⠋", regionView{}, 80))
 	if !strings.Contains(expanded, "found three entry points") {
 		t.Fatalf("expanded card should show the summary, got:\n%s", expanded)
 	}

@@ -22,6 +22,15 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// regionView is the Model-owned view state for one bounded live region.
+// offset is how far its body is scrolled back; minRows is its high-water
+// mark. They travel together because they are the same concern, and
+// because renderTranscriptItem's parameter list is already long.
+type regionView struct {
+	offset  int
+	minRows int
+}
+
 // marshalStyleConfig adapts glamour's dark style to the Warm Sunset
 // palette: coral H1 instead of the banner-style default, violet section
 // headings.
@@ -369,7 +378,7 @@ func formatThinkDuration(d time.Duration) string {
 // renderThinkingBox renders live reasoning as a bounded region. It returns
 // nothing until reasoning text has arrived; providers that do not stream
 // reasoning should not get an empty thinking panel.
-func renderThinkingBox(reasoning, spinnerFrame string, elapsed time.Duration, offset, width int) string {
+func renderThinkingBox(reasoning, spinnerFrame string, elapsed time.Duration, rv regionView, width int) string {
 	reasoning = strings.TrimSpace(reasoning)
 	if reasoning == "" {
 		return ""
@@ -385,7 +394,8 @@ func renderThinkingBox(reasoning, spinnerFrame string, elapsed time.Duration, of
 		Right:      right,
 		Body:       strings.Split(reasoning, "\n"),
 		MaxRows:    liveregion.ThinkingRows,
-		Offset:     offset,
+		Offset:     rv.offset,
+		MinRows:    rv.minRows,
 		Live:       true,
 		Width:      width,
 	}, theme.Current())
@@ -541,7 +551,7 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, offset int, callers []string, width int) string {
+func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
@@ -573,7 +583,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 		if item.Subagent == nil {
 			return ""
 		}
-		return renderSubagentCard(*item.Subagent, detailExpanded, spinnerFrame, offset, width)
+		return renderSubagentCard(*item.Subagent, detailExpanded, spinnerFrame, rv, width)
 	case session.KindRunEvent:
 		if item.RunEvent == nil {
 			return ""
@@ -645,7 +655,7 @@ const subagentTailBudget = 40
 // history, it is a single row, and pushing it through a component named for
 // live content would mean adding a "make it look settled" flag to that
 // component's API.
-func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame string, offset, width int) string {
+func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame string, rv regionView, width int) string {
 	th := theme.Current()
 	live := v.Status == session.SubagentRunning
 
@@ -697,7 +707,8 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 			Meta:       strings.Join(meta, dimSeparator),
 			Body:       subagentTailLines(v.Child, subagentTailBudget),
 			MaxRows:    liveregion.SubagentRows,
-			Offset:     offset,
+			Offset:     rv.offset,
+			MinRows:    rv.minRows,
 			Live:       true,
 			Width:      width,
 		}

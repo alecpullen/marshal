@@ -101,7 +101,7 @@ func TestTranscriptItemRoutesNarration(t *testing.T) {
 			ContentType: session.ContentTypeNarration,
 		},
 	}
-	plain := ansi.Strip(renderTranscriptItem(item, false, "", 0, nil, 60))
+	plain := ansi.Strip(renderTranscriptItem(item, false, "", regionView{}, nil, 60))
 	if !strings.HasPrefix(plain, " "+glyph.Ambient+" ") {
 		t.Fatalf("narration item did not route to renderNarration: %q", plain)
 	}
@@ -116,7 +116,7 @@ func TestOrdinaryAssistantMessageUnaffected(t *testing.T) {
 			ContentType: session.ContentTypeMarkdown,
 		},
 	}
-	plain := ansi.Strip(renderTranscriptItem(item, false, "", 0, nil, 60))
+	plain := ansi.Strip(renderTranscriptItem(item, false, "", regionView{}, nil, 60))
 	if strings.HasPrefix(plain, " "+glyph.Ambient+" ") {
 		t.Fatalf("ordinary assistant prose must not render as narration: %q", plain)
 	}

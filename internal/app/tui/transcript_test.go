@@ -76,25 +76,25 @@ func TestTranscriptHashDistinguishesContent(t *testing.T) {
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "hello", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
 	b := transcriptHash([]session.TranscriptItem{
 		{
 			Kind:      session.KindMessage,
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "goodbye", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
 	if a == b {
 		t.Fatal("hash should differ for different content")
 	}
 }
 
 func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
-	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}, session.Notice{}, false, nil, nil); got == base {
+	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil); got == base {
 		t.Fatal("transcript hash must change with the spinner frame — otherwise the live tool row freezes")
 	}
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}, session.Notice{}, false, nil, nil); got == base {
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}, session.Notice{}, false, nil, nil, nil); got == base {
 		t.Fatal("hash must change with the active tool call")
 	}
 }
@@ -103,15 +103,15 @@ func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
 // identity must bust the viewport cache. Without this, esc-dismiss and the
 // TTL auto-dismiss repaint nothing and the banner stays on screen.
 func TestTranscriptHashCoversNotice(t *testing.T) {
-	base := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil)
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom"}, true, nil, nil); got == base {
+	base := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom"}, true, nil, nil, nil); got == base {
 		t.Fatal("hash must change when a notice appears")
 	}
-	up := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, true, nil, nil)
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(200, 0)}, true, nil, nil); got == up {
+	up := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, true, nil, nil, nil)
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(200, 0)}, true, nil, nil, nil); got == up {
 		t.Fatal("hash must change with the notice timestamp")
 	}
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, false, nil, nil); got == up {
+	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, false, nil, nil, nil); got == up {
 		t.Fatal("hash must change when a notice is dismissed")
 	}
 }
@@ -169,7 +169,7 @@ func TestRenderReconnectNoticeEmptyLabelReturnsNothing(t *testing.T) {
 }
 
 func TestRenderThinkingBoxUsesGutter(t *testing.T) {
-	out := renderThinkingBox("checking the auth flow", "⠋", 0, 0, 80)
+	out := renderThinkingBox("checking the auth flow", "⠋", 0, regionView{}, 80)
 	plain := stripANSI(out)
 	if strings.Contains(plain, "╭") {
 		t.Fatalf("live thinking should be inline, not boxed:\n%s", out)
@@ -346,7 +346,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 				StartedAt: time.Now(),
 			},
 		}
-		result := renderTranscriptItem(item, false, "⠋", 0, nil, width)
+		result := renderTranscriptItem(item, false, "⠋", regionView{}, nil, width)
 		if !strings.Contains(result, "thought for 2s") {
 			t.Errorf("expected thinking summary, got: %s", result)
 		}
@@ -360,7 +360,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 				ResultSummary: "file contents here",
 			},
 		}
-		result := renderTranscriptItem(item, false, "⠋", 0, nil, width)
+		result := renderTranscriptItem(item, false, "⠋", regionView{}, nil, width)
 		if !strings.Contains(result, "Read file") {
 			t.Errorf("expected completed tool call, got: %s", result)
 		}
@@ -385,7 +385,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 			Kind:    session.KindMessage,
 			Message: &msg,
 		}
-		result := renderTranscriptItem(item, false, "⠋", 0, nil, width)
+		result := renderTranscriptItem(item, false, "⠋", regionView{}, nil, width)
 		if !strings.Contains(result, "thought for 1s") {
 			t.Errorf("expected thinking summary before message, got: %s", result)
 		}
@@ -1286,13 +1286,13 @@ func TestSubagentCardRendersTokenCount(t *testing.T) {
 		ToolCalls:  3,
 		TokensUsed: 1234,
 	}
-	out := stripANSI(renderSubagentCard(done, false, "", 0, 100))
+	out := stripANSI(renderSubagentCard(done, false, "", regionView{}, 100))
 	if !strings.Contains(out, "1k tok") {
 		t.Fatalf("card should render compact token count, got:\n%s", out)
 	}
 
 	zero := session.SubagentView{Label: "explore repo", Status: session.SubagentDone}
-	outZero := stripANSI(renderSubagentCard(zero, false, "", 0, 100))
+	outZero := stripANSI(renderSubagentCard(zero, false, "", regionView{}, 100))
 	if strings.Contains(outZero, "tok") {
 		t.Fatalf("card with zero tokens should not mention tokens, got:\n%s", outZero)
 	}
@@ -1306,7 +1306,7 @@ func TestSubagentCardShowsProviderModel(t *testing.T) {
 		Provider:  "ollama",
 		StartedAt: time.Now().Add(-5 * time.Second),
 	}
-	got := stripANSI(renderSubagentCard(running, false, "⠋", 0, 100))
+	got := stripANSI(renderSubagentCard(running, false, "⠋", regionView{}, 100))
 	if !strings.Contains(got, "qwen2.5-coder:14b @ ollama") {
 		t.Errorf("running card missing model @ provider:\n%s", got)
 	}
@@ -1319,7 +1319,7 @@ func TestSubagentCardShowsProviderModel(t *testing.T) {
 		StartedAt: time.Now().Add(-2 * time.Minute),
 		EndedAt:   time.Now(),
 	}
-	gotDone := stripANSI(renderSubagentCard(done, false, "⠋", 0, 100))
+	gotDone := stripANSI(renderSubagentCard(done, false, "⠋", regionView{}, 100))
 	if !strings.Contains(gotDone, "qwen2.5-coder:14b @ ollama") {
 		t.Errorf("completed card missing model @ provider:\n%s", gotDone)
 	}
@@ -1327,7 +1327,7 @@ func TestSubagentCardShowsProviderModel(t *testing.T) {
 	// A childless, metadata-less card renders just its label and outcome —
 	// no dangling separator from absent metrics.
 	plain := session.SubagentView{Label: "no meta", Status: session.SubagentDone}
-	gotPlain := stripANSI(renderSubagentCard(plain, false, "⠋", 0, 100))
+	gotPlain := stripANSI(renderSubagentCard(plain, false, "⠋", regionView{}, 100))
 	if !strings.Contains(gotPlain, "no meta · done") {
 		t.Errorf("metadata-less card should render label and outcome:\n%q", gotPlain)
 	}
@@ -1346,7 +1346,7 @@ func TestRunningSubagentCardRendersReasoningTail(t *testing.T) {
 		StartedAt: time.Now(),
 		Child:     child,
 	}
-	got := stripANSI(renderSubagentCard(v, false, "⠋", 0, 100))
+	got := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 100))
 	for _, want := range []string{"line one", "line two", "line three"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("card missing tail line %q:\n%s", want, got)
@@ -1364,7 +1364,7 @@ func TestRunningSubagentCardRendersAuditTailWhenNoReasoning(t *testing.T) {
 		StartedAt: time.Now(),
 		Child:     child,
 	}
-	got := stripANSI(renderSubagentCard(v, false, "⠋", 0, 100))
+	got := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 100))
 	if !strings.Contains(got, "read a.go") || !strings.Contains(got, "read b.go") {
 		t.Fatalf("card should render recent audit summaries, got:\n%s", got)
 	}
@@ -1380,7 +1380,7 @@ func TestDoneSubagentCardOmitsTail(t *testing.T) {
 		StartedAt: time.Now(),
 		Child:     child,
 	}
-	got := stripANSI(renderSubagentCard(v, false, "", 0, 100))
+	got := stripANSI(renderSubagentCard(v, false, "", regionView{}, 100))
 	if strings.Contains(got, "still running") {
 		t.Fatalf("done card should not render live tail:\n%s", got)
 	}
@@ -1394,7 +1394,7 @@ func TestRunningSubagentCardShowsCurrentTool(t *testing.T) {
 		CurrentTool: "editing internal/retry/retry.go",
 		StartedAt:   time.Now().Add(-72 * time.Second),
 	}
-	got := stripANSI(renderSubagentCard(v, false, "⠋", 0, 100))
+	got := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 100))
 	if !strings.Contains(got, "editing internal/retry/retry.go") {
 		t.Errorf("a running card must say what the subagent is doing, not just count calls:\n%s", got)
 	}
@@ -1409,7 +1409,7 @@ func TestFinishedSubagentCardOmitsCurrentTool(t *testing.T) {
 		StartedAt:   time.Now().Add(-2 * time.Minute),
 		EndedAt:     time.Now(),
 	}
-	got := stripANSI(renderSubagentCard(v, false, "⠋", 0, 100))
+	got := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 100))
 	if strings.Contains(got, "editing") {
 		t.Errorf("a finished card must not claim in-flight work:\n%s", got)
 	}
@@ -1424,7 +1424,7 @@ func TestRenderSubagentCardRunningHasOneGlyph(t *testing.T) {
 		StartedAt: time.Now().Add(-5 * time.Second),
 		Child:     child,
 	}
-	out := stripANSI(renderSubagentCard(running, false, "⠋", 0, 80))
+	out := stripANSI(renderSubagentCard(running, false, "⠋", regionView{}, 80))
 	// The running card should have a spinner glyph in the gutter and NO
 	// leading agent glyph in the head line.
 	glyphCount := strings.Count(out, "⧉")
@@ -1444,7 +1444,7 @@ func TestRenderSubagentCardDoneHasOneGlyph(t *testing.T) {
 		Status: session.SubagentDone,
 		Child:  newChildState(t),
 	}
-	out := stripANSI(renderSubagentCard(done, false, "⠋", 0, 80))
+	out := stripANSI(renderSubagentCard(done, false, "⠋", regionView{}, 80))
 	glyphCount := strings.Count(out, "⧉")
 	if glyphCount != 0 {
 		t.Errorf("done card should not contain agent glyph ⧉, found %d:\n%s", glyphCount, out)
@@ -1469,7 +1469,7 @@ func TestSubagentCardHeightIsStableWhileRunning(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		child.AppendThinking(fmt.Sprintf("reasoning line %d that is quite long and will wrap at narrow widths\n", i))
 		v.CurrentTool = fmt.Sprintf("tool-%d", i)
-		seen[strings.Count(renderSubagentCard(v, false, "*", 0, 60), "\n")] = true
+		seen[strings.Count(renderSubagentCard(v, false, "*", regionView{}, 60), "\n")] = true
 	}
 	// It may grow through the first couple of renders, but it must settle
 	// and never exceed the cap.
@@ -1487,7 +1487,7 @@ func TestRunningSubagentCardIsTinted(t *testing.T) {
 		ID: 1, Label: "reviewer", Status: session.SubagentRunning,
 		Child: newChildState(t), StartedAt: time.Now(),
 	}
-	if !strings.Contains(renderSubagentCard(v, false, "*", 0, 60), "48;5;") {
+	if !strings.Contains(renderSubagentCard(v, false, "*", regionView{}, 60), "48;5;") {
 		t.Fatal("a running subagent must be tinted at Tier256")
 	}
 }
@@ -1501,7 +1501,7 @@ func TestFinishedSubagentCardIsOneFlatRow(t *testing.T) {
 		StartedAt: started, EndedAt: started.Add(62 * time.Second),
 		TokensUsed: 18200,
 	}
-	out := renderSubagentCard(v, false, "", 0, 80)
+	out := renderSubagentCard(v, false, "", regionView{}, 80)
 	if got := strings.Count(out, "\n"); got != 1 {
 		t.Fatalf("finished card = %d rows, want 1:\n%s", got, out)
 	}
@@ -1519,7 +1519,7 @@ func TestFinishedSubagentExpandedShowsSummary(t *testing.T) {
 		ID: 1, Label: "reviewer", Status: session.SubagentDone,
 		StartedAt: time.Now(), EndedAt: time.Now(), Summary: "found two issues",
 	}
-	if !strings.Contains(ansi.Strip(renderSubagentCard(v, true, "", 0, 80)), "found two issues") {
+	if !strings.Contains(ansi.Strip(renderSubagentCard(v, true, "", regionView{}, 80)), "found two issues") {
 		t.Fatal("expanded finished card must show the summary")
 	}
 }
@@ -1530,7 +1530,7 @@ func TestThinkingBoxHeightIsStable(t *testing.T) {
 	var sb strings.Builder
 	for i := 0; i < 40; i++ {
 		sb.WriteString(fmt.Sprintf("a fairly long line of reasoning number %d that wraps\n", i))
-		out := renderThinkingBox(sb.String(), "*", 12*time.Second, 0, 60)
+		out := renderThinkingBox(sb.String(), "*", 12*time.Second, regionView{}, 60)
 		if got := strings.Count(out, "\n"); got > liveregion.ThinkingRows {
 			t.Fatalf("thinking box = %d rows at step %d, cap is %d", got, i, liveregion.ThinkingRows)
 		}
@@ -1538,7 +1538,7 @@ func TestThinkingBoxHeightIsStable(t *testing.T) {
 }
 
 func TestThinkingBoxEmptyReasoningRendersNothing(t *testing.T) {
-	if out := renderThinkingBox("   \n  ", "*", time.Second, 0, 60); out != "" {
+	if out := renderThinkingBox("   \n  ", "*", time.Second, regionView{}, 60); out != "" {
 		t.Fatalf("empty reasoning must render nothing, got %q", out)
 	}
 }

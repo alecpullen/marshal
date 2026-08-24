@@ -340,6 +340,12 @@ type Model struct {
 	// itemExpanded is. Rebuilt-and-pruned on every refreshViewport, so a
 	// finished region's entry does not leak.
 	regionOffset map[itemKey]int
+	// regionRows is the high-water mark for each bounded live region: the
+	// tallest it has rendered so far. liveregion.Render is pure and cannot
+	// remember, and the body genuinely shrinks (SubagentActivityTail
+	// switches between streamed reasoning and audit summaries), so without
+	// this the card oscillates. Pruned with regionOffset.
+	regionRows map[itemKey]int
 	// refFinder resolves blast radius; nil when LSP is unavailable.
 	refFinder ReferenceFinder
 	// callers caches reference lookups per audit item. A present-but-empty
@@ -3058,7 +3064,7 @@ func (m *Model) refreshViewport() {
 	}
 	queued := m.state.SteeringQueue()
 	notice, noticeUp := m.state.Notice()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers)
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows)
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -3106,7 +3112,16 @@ func (m *Model) refreshViewport() {
 		} else {
 			key := itemKeyFor(entry.Item)
 			expanded := m.isExpanded(key)
-			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, m.regionOffset[key], m.callers[key], m.viewport.Width())
+			rv := regionView{offset: m.regionOffset[key], minRows: m.regionRows[key]}
+			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
+			// Record the tallest this region has been, so a later shrink in
+			// the child's activity tail cannot shrink the card.
+			if n := strings.Count(s, "\n"); n > m.regionRows[key] {
+				if m.regionRows == nil {
+					m.regionRows = map[itemKey]int{}
+				}
+				m.regionRows[key] = n
+			}
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
@@ -3129,13 +3144,22 @@ func (m *Model) refreshViewport() {
 		}
 	}
 	if inProgress.Active && inProgress.Reasoning != "" {
-		addBlock(renderThinkingBox(
+		rv := regionView{offset: m.regionOffset[liveThinkingKey], minRows: m.regionRows[liveThinkingKey]}
+		thinkingBlock := renderThinkingBox(
 			inProgress.Reasoning,
 			m.activeSpinnerFrame(session.ActivityThinking),
 			m.now().Sub(inProgress.StartedAt),
-			m.regionOffset[liveThinkingKey],
+			rv,
 			m.viewport.Width(),
-		), &clickTarget{key: liveThinkingKey, isLiveRegion: true})
+		)
+		addBlock(thinkingBlock, &clickTarget{key: liveThinkingKey, isLiveRegion: true})
+		// Record the high-water mark for the thinking region too.
+		if n := strings.Count(thinkingBlock, "\n"); n > m.regionRows[liveThinkingKey] {
+			if m.regionRows == nil {
+				m.regionRows = map[itemKey]int{}
+			}
+			m.regionRows[liveThinkingKey] = n
+		}
 		seenRegions[liveThinkingKey] = true
 	}
 	if act := transcriptState.Activity(); act.Kind == session.ActivityReconnecting && act.Label != "" {
@@ -3167,6 +3191,13 @@ func (m *Model) refreshViewport() {
 	for k := range m.regionOffset {
 		if !seenRegions[k] {
 			delete(m.regionOffset, k)
+		}
+	}
+	// High-water marks follow the same rule: a region that stopped being
+	// rendered no longer needs one.
+	for k := range m.regionRows {
+		if !seenRegions[k] {
+			delete(m.regionRows, k)
 		}
 	}
 	// Prune cached callers (and the asked marker) for items no longer in
@@ -4769,7 +4800,7 @@ func browserGlyphStyle() lipgloss.Style {
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string, regionRows map[itemKey]int) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
 	// The notice banner is rendered into the transcript, so its presence
@@ -4799,6 +4830,23 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	})
 	for _, k := range roKeys {
 		fmt.Fprintf(h, "roff=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionOffsets[k])
+	}
+	// High-water marks render into the transcript (via MinRows) but live on
+	// the Model rather than in items, so without this a change to the mark
+	// changes no hashed input, refreshViewport early-returns, and the region
+	// keeps its stale height. Sorted for the same reason as the offsets.
+	rrKeys := make([]itemKey, 0, len(regionRows))
+	for k := range regionRows {
+		rrKeys = append(rrKeys, k)
+	}
+	sort.Slice(rrKeys, func(i, j int) bool {
+		if !rrKeys[i].ts.Equal(rrKeys[j].ts) {
+			return rrKeys[i].ts.Before(rrKeys[j].ts)
+		}
+		return rrKeys[i].kind < rrKeys[j].kind
+	})
+	for _, k := range rrKeys {
+		fmt.Fprintf(h, "rrows=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionRows[k])
 	}
 	// Cached blast-radius results render into the transcript but live on the
 	// Model rather than in items, so without this an arriving result changes

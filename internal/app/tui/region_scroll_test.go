@@ -12,9 +12,40 @@ import (
 	"marshal/internal/app/session"
 )
 
-// THE test for this task. Change only the offset and assert the rendered
-// viewport content differs. Without the hash change this fails: the
-// early-return swallows the repaint and scrolling does nothing on screen.
+// THE regression test for the reported bug: a running card must not shrink
+// when the child's activity tail flips from streamed reasoning to audit
+// summaries.
+func TestSubagentCardDoesNotShrinkWhenTailSourceFlips(t *testing.T) {
+	m := newTestModel(t)
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	// Phase 1: the child streams several lines of reasoning.
+	for i := 0; i < 10; i++ {
+		child.AppendThinking(fmt.Sprintf("reasoning line %d\n", i))
+	}
+	m.state.RegisterSubagent("reviewer", child)
+	m.refreshViewport()
+	tall := strings.Count(m.viewport.GetContent(), "\n")
+
+	// Phase 2: a tool starts, reasoning is cleared, and the tail falls back
+	// to a much shorter audit-summary list.
+	child.BeginStreaming()
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+	if got := strings.Count(m.viewport.GetContent(), "\n"); got < tall {
+		t.Fatalf("transcript shrank from %d to %d rows when the tail source flipped", tall, got)
+	}
+}
+
+func TestRegionRowsArePruned(t *testing.T) {
+	m := newTestModel(t)
+	gone := itemKey{ts: time.Now().Add(-time.Hour), kind: session.KindSubagent}
+	m.regionRows = map[itemKey]int{gone: 6}
+	m.refreshViewport()
+	if _, still := m.regionRows[gone]; still {
+		t.Fatal("high-water marks for regions no longer rendered must be pruned")
+	}
+}
+
 func TestRegionScrollRepaintsViewport(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -46,9 +77,9 @@ func TestTranscriptHashStableAcrossIdenticalOffsets(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		offsets[itemKey{ts: base.Add(time.Duration(i) * time.Second), kind: session.KindSubagent}] = i
 	}
-	first := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil)
+	first := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil)
 	for i := 0; i < 200; i++ {
-		if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil); got != first {
+		if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil); got != first {
 			t.Fatalf("hash unstable across identical offsets (iteration %d) — sort the keys before hashing", i)
 		}
 	}
@@ -56,8 +87,8 @@ func TestTranscriptHashStableAcrossIdenticalOffsets(t *testing.T) {
 
 func TestTranscriptHashChangesWithOffset(t *testing.T) {
 	k := itemKey{ts: time.Now(), kind: session.KindSubagent}
-	a := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 0}, nil)
-	b := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 1}, nil)
+	a := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 0}, nil, nil)
+	b := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 1}, nil, nil)
 	if a == b {
 		t.Fatal("hash must change when a region offset changes")
 	}

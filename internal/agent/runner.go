@@ -558,6 +558,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	// I-2: clear the subagent report queue at turn end. A child that
+	// finishes after the final loop-top drain pushes its report to the
+	// queue AND persists it as a RoleUser message. Without this clear,
+	// the next turn would double-deliver: once from the queue drain and
+	// once from buildHistoryMessages replaying the persisted message.
+	// Discarding the queue here is safe because the persisted message is
+	// the durable copy.
+	defer r.State.ClearSubagentReports()
 
 	priorTranscript := r.State.Messages()
 	firstTurn := len(priorTranscript) <= 1

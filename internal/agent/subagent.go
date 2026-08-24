@@ -324,6 +324,16 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 				// caveat alongside the report body.
 				report = fmt.Sprintf("[subagent %d %s] %s\n\n%s", view.ID, verb, summaryLine, content)
 			}
+			// I-1: persist the report as a RoleUser message so it survives
+			// rollover/restart and is replayed by buildHistoryMessages
+			// (which only replays RoleUser and final RoleAssistant, never
+			// RoleSystem). The in-memory report queue handles live delivery
+			// (drained at loop-top); this persisted copy is the durability
+			// backstop for when the session restarts before the queue is
+			// drained. The queue drain and the persisted message do not
+			// double-deliver: the queue is cleared on drain, and
+			// buildHistoryMessages only replays prior-turn messages.
+			state.AddMessage(session.RoleUser, report, session.ContentTypePlain)
 			// C2: push the report and release the concurrency slot BEFORE
 			// FinishSubagent closes the done channel. A WaitSubagent caller
 			// (agent.await) unblocks on that close, so it must observe the

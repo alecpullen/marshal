@@ -906,11 +906,75 @@ func TestSubagentCompletionDeliversNoticeAndSteering(t *testing.T) {
 	}
 
 	msgs := state.Messages()
+	// The completion goroutine adds a RoleSystem notice (for the TUI)
+	// and a RoleUser message (the durable report for the model wire).
+	// The RoleUser message is last because it is added after the
+	// RoleSystem notice.
 	last := msgs[len(msgs)-1]
-	if last.Role != session.RoleSystem {
-		t.Fatalf("last transcript message role = %q, want system notice", last.Role)
+	if last.Role != session.RoleUser {
+		t.Fatalf("last transcript message role = %q, want RoleUser (durable report)", last.Role)
 	}
-	if !strings.Contains(last.Content, "✓") || !strings.Contains(last.Content, "subagent") {
-		t.Fatalf("notice = %q, want a ✓ completion notice", last.Content)
+	if !strings.Contains(last.Content, "[subagent") || !strings.Contains(last.Content, "finished") {
+		t.Fatalf("durable report = %q, want a [subagent N finished] message", last.Content)
+	}
+	// The RoleSystem notice is the second-to-last message.
+	notice := msgs[len(msgs)-2]
+	if notice.Role != session.RoleSystem {
+		t.Fatalf("second-to-last message role = %q, want system notice", notice.Role)
+	}
+	if !strings.Contains(notice.Content, "✓") || !strings.Contains(notice.Content, "subagent") {
+		t.Fatalf("notice = %q, want a ✓ completion notice", notice.Content)
+	}
+}
+
+// TestSubagentCompletionPersistsRoleUser guards I-1: the completion report
+// is persisted as a RoleUser message so it survives rollover/restart and
+// is replayed by buildHistoryMessages (which only replays RoleUser and
+// final RoleAssistant, never RoleSystem).
+func TestSubagentCompletionPersistsRoleUser(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	tool := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, state, nil },
+		nil,
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			return "durable result", "", nil
+		}),
+	)
+	_, view := runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"y"}`)
+
+	msgs := state.Messages()
+	var userReport *session.Message
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == session.RoleUser && strings.Contains(msgs[i].Content, "[subagent") {
+			userReport = &msgs[i]
+			break
+		}
+	}
+	if userReport == nil {
+		t.Fatal("no RoleUser message with the report found in transcript")
+	}
+	want := fmt.Sprintf("[subagent %d finished] durable result", view.ID)
+	if !strings.Contains(userReport.Content, want) {
+		t.Fatalf("persisted report = %q, want to contain %q", userReport.Content, want)
+	}
+}
+
+// TestSubagentReportQueueClearedAtTurnEnd guards I-2: the report queue
+// is cleared at turn end so a late-finishing child's report is not
+// double-delivered in the next turn (the persisted RoleUser message is
+// the durable copy that buildHistoryMessages replays).
+func TestSubagentReportQueueClearedAtTurnEnd(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	// Simulate a report pushed after the turn's final loop-top drain.
+	state.PushSubagentReport("[subagent 1 finished] late report")
+	if got := state.SubagentReports(); len(got) != 1 {
+		t.Fatalf("queue before clear = %v, want 1", got)
+	}
+	// ClearSubagentReports is called by the runner's defer at turn end.
+	state.ClearSubagentReports()
+	if got := state.SubagentReports(); len(got) != 0 {
+		t.Fatalf("queue after clear = %v, want empty", got)
 	}
 }

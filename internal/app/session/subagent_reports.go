@@ -36,3 +36,16 @@ func (s *State) SubagentReports() []string {
 	defer s.mu.Unlock()
 	return append([]string(nil), s.subagentReports...)
 }
+
+// ClearSubagentReports discards the subagent report queue without
+// delivering it. The runner calls this at turn end so that a report
+// pushed after the final loop-top drain (a child that finished late) is
+// not double-delivered in the next turn: the persisted RoleUser message
+// (added by the completion goroutine alongside the queue push) is the
+// durable copy that buildHistoryMessages replays, so discarding the
+// queue here is safe.
+func (s *State) ClearSubagentReports() {
+	s.mu.Lock()
+	s.subagentReports = nil
+	s.mu.Unlock()
+}

@@ -20,6 +20,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/routing"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
@@ -1984,7 +1985,7 @@ func TestCapToolText(t *testing.T) {
 func TestSDDStartRunsToEndTurn(t *testing.T) {
 	state := &session.State{}
 	var gotPath string
-	factory := func(planPath string) AgentRunner {
+	factory := func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
 		return &fakeAgentRunner{run: func(ctx context.Context, goal string) error {
 			gotPath = goal
 			return nil
@@ -2024,7 +2025,7 @@ func TestSDDStartRunsToEndTurn(t *testing.T) {
 func TestSDDStartReturnsGateOnHumanGateRequired(t *testing.T) {
 	state := &session.State{}
 	state.SetSDDGate(session.SDDGate{TaskN: 2, Question: "which approach?"})
-	factory := func(planPath string) AgentRunner {
+	factory := func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
 		return &fakeAgentRunner{run: func(ctx context.Context, goal string) error {
 			return pipeline.ErrHumanGateRequired
 		}}
@@ -2100,7 +2101,7 @@ func TestSDDAnswerResumesGatedRunAndReachesEndTurn(t *testing.T) {
 		},
 		answerGate: func(answer string) { gotAnswer = answer },
 	}
-	factory := func(planPath string) AgentRunner { return runner }
+	factory := func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return runner }
 
 	manager := NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
@@ -2265,7 +2266,7 @@ func TestSDDStartRejectsWhenFactoryReturnsNil(t *testing.T) {
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID:       sessionID,
-				PipelineFactory: func(planPath string) AgentRunner { return nil },
+				PipelineFactory: func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return nil },
 			}, true
 		},
 		Notify: func(method string, params any) error { return nil },
@@ -2524,7 +2525,7 @@ func TestSDDStartEmitsSessionTelemetryEvenOnGate(t *testing.T) {
 	state := &session.State{}
 	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "pick one"})
 	notifier := &capturingNotifier{}
-	factory := func(planPath string) AgentRunner {
+	factory := func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
 		return &fakeAgentRunner{run: func(ctx context.Context, goal string) error {
 			return pipeline.ErrHumanGateRequired
 		}}

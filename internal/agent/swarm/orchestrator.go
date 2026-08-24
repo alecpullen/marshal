@@ -50,6 +50,12 @@ type Orchestrator struct {
 
 	MaxFixRounds   int
 	MaxTotalTokens int
+
+	// savedRunner holds the original NewRunner factory when the
+	// orchestrator is wrapped for a per-run override. The TUI calls
+	// RestoreRunner when the run ends so a leaked override does not
+	// silently apply to every later run.
+	savedRunner *originalRunner
 }
 
 func New(state *session.State, factory RunnerFactory) *Orchestrator {
@@ -62,6 +68,33 @@ func (o *Orchestrator) SetForceClass(string)                   {}
 func (o *Orchestrator) SetPolicyRules([]config.PermissionRule) {}
 func (o *Orchestrator) SetApprovalMode(policy.ApprovalMode)    {}
 func (o *Orchestrator) AnswerGate(string)                      {}
+
+// savedRunner stores the original NewRunner factory when the orchestrator
+// is wrapped for a per-run override. The TUI calls RestoreRunner when the
+// run ends so a leaked override does not silently apply to every later run.
+type originalRunner struct {
+	factory RunnerFactory
+}
+
+// SetRunnerFactory replaces o.NewRunner with factory and saves the
+// original for RestoreRunner. This is the low-level seam used by app.go
+// to wrap the factory with a per-run resolver; the TUI calls
+// RestoreRunner via the RoleOverrideRunner interface.
+func (o *Orchestrator) SetRunnerFactory(factory RunnerFactory) {
+	if o.savedRunner == nil {
+		o.savedRunner = &originalRunner{factory: o.NewRunner}
+	}
+	o.NewRunner = factory
+}
+
+// RestoreRunner restores the original NewRunner factory saved by
+// SetRunnerFactory. It is safe to call when no override is active.
+func (o *Orchestrator) RestoreRunner() {
+	if o.savedRunner != nil {
+		o.NewRunner = o.savedRunner.factory
+		o.savedRunner = nil
+	}
+}
 
 func (o *Orchestrator) maxRounds() int {
 	if o.MaxFixRounds < 1 {

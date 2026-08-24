@@ -1354,7 +1354,7 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 
@@ -1434,7 +1434,7 @@ func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 
@@ -1470,7 +1470,7 @@ func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return &fakeSDDRunner{} }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return &fakeSDDRunner{} }),
 	)
 
 	updated, _ := model.dispatchCommand("/sdd")
@@ -1563,7 +1563,7 @@ func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
 	fake := &fakeSDDRunner{}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 

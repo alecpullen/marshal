@@ -92,6 +92,9 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	if snap.PipelineFactory != nil {
 		m.pipelineFactory = snap.PipelineFactory
 	}
+	if snap.SwarmOverrideFactory != nil {
+		m.swarmOverrideFactory = snap.SwarmOverrideFactory
+	}
 	if snap.PlanAuthorFactory != nil {
 		m.planAuthorFactory = snap.PlanAuthorFactory
 	}
@@ -265,7 +268,7 @@ func init() {
 			if m.busy {
 				return m, nil
 			}
-			runner := m.pipelineFactory(planPath)
+			runner := m.pipelineFactory(planPath, nil)
 			if runner == nil {
 				m.refreshViewport()
 				return m, nil

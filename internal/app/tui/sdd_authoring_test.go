@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/commands"
+	"marshal/internal/llm/routing"
 	"marshal/internal/pipeline"
 	"marshal/internal/sddauthor"
 	"marshal/internal/tools/registry"
@@ -53,7 +54,7 @@ func newAuthoringModel(t *testing.T) Model {
 	m := New(state,
 		WithCommandRegistry(cmdReg),
 		WithPlanAuthorFactory(context.Background(), fakePlanAuthorFactory()),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner {
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
 			c, err := pipeline.NewController(pipeline.ControllerOpts{
 				PlanPath: planPath,
 				RepoRoot: state.WorkingDir,

@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/llm/routing"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/strutil"
@@ -90,8 +91,10 @@ type TurnRuntime struct {
 	State *session.State
 	// SwarmRunner runs a swarm turn for a goal. Nil when swarm is unavailable.
 	SwarmRunner AgentRunner
-	// PipelineFactory builds a plan-execution runner for one plan path. Nil when plan execution is unavailable.
-	PipelineFactory func(planPath string) AgentRunner
+	// PipelineFactory builds a plan-execution runner for one plan path. The
+	// overrides map carries per-run role→preset overrides from the castlist;
+	// nil when no overrides are set. Nil when plan execution is unavailable.
+	PipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -912,7 +915,7 @@ func (m *TurnManager) SDDStart(ctx context.Context, params json.RawMessage) (any
 	if rt.PipelineFactory == nil {
 		return nil, serverErrorf("session %s does not support plan execution", p.SessionID)
 	}
-	runner := rt.PipelineFactory(p.PlanPath)
+	runner := rt.PipelineFactory(p.PlanPath, nil)
 	if runner == nil {
 		return nil, serverErrorf("could not build a runner for plan %q", p.PlanPath)
 	}

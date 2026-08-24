@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/shlex"
 
+	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
@@ -80,17 +81,37 @@ type AgentRunner interface {
 	AnswerGate(answer string)
 }
 
+// SwarmOverrideFactory builds a per-run swarm.RunnerFactory with the given
+// role→preset overrides applied. It is provided by app.go (which has
+// access to the routedProviderResolver) and wired via
+// WithSwarmOverrideFactory. The TUI calls it when the castlist confirms
+// with overrides, and the result is installed on the shared orchestrator
+// via SetRunnerFactory. RestoreRunner undoes the wrap when the run ends.
+type SwarmOverrideFactory func(overrides map[routing.AgentRole]string) swarm.RunnerFactory
+
+// RoleOverrideRunner is an optional interface for runners that accept
+// per-run role→preset overrides from the castlist. The overrides apply to
+// a copy of the routing config for this run only and are never persisted.
+// RestoreRunner undoes the override after the run ends (success, failure,
+// or cancel) so a leaked override does not silently apply to every later
+// run in the session.
+type RoleOverrideRunner interface {
+	SetRunnerFactory(factory swarm.RunnerFactory)
+	RestoreRunner()
+}
+
 // SessionSwapResult carries the rebuilt runtime pieces for a /new or /clear
 // swap so the TUI can re-point every model field that depends on the current
 // session.
 type SessionSwapResult struct {
-	State             *session.State
-	Runner            AgentRunner
-	SwarmRunner       AgentRunner
-	PipelineFactory   func(planPath string) AgentRunner
-	PlanAuthorFactory PlanAuthorFactory
-	ToolRegistry      *registry.Registry
-	ReviewDispatcher  func(ctx context.Context, focus, model, reviewRange string) error
+	State                *session.State
+	Runner               AgentRunner
+	SwarmRunner          AgentRunner
+	PipelineFactory      func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
+	SwarmOverrideFactory SwarmOverrideFactory
+	PlanAuthorFactory    PlanAuthorFactory
+	ToolRegistry         *registry.Registry
+	ReviewDispatcher     func(ctx context.Context, focus, model, reviewRange string) error
 }
 
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
@@ -159,7 +180,11 @@ type Model struct {
 	editingCommand  bool
 	runner          AgentRunner
 	swarmRunner     AgentRunner
-	pipelineFactory func(planPath string) AgentRunner
+	pipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
+	// swarmOverrideFactory builds a per-run swarm.RunnerFactory with
+	// role→preset overrides applied. Nil when the runtime has no provider
+	// or when the swarm runner does not support overrides.
+	swarmOverrideFactory SwarmOverrideFactory
 	// planAuthorFactory builds a scoped SDD plan-authoring runner for one
 	// request. Nil when the runtime has no provider.
 	planAuthorFactory PlanAuthorFactory
@@ -460,6 +485,11 @@ type Model struct {
 	// /sdd command dispatch and the preflight confirmation (or the human gate
 	// answer). Set by the sdd command handler; consumed by the Enter key handler.
 	pipelineRunner AgentRunner
+	// restoreRunner is the cleanup function for a per-run role override
+	// applied to a shared runner (swarm). It is called when the run ends
+	// (success, failure, or cancel) so a leaked override does not silently
+	// apply to every later run in the session. nil when no override is active.
+	restoreRunner func()
 
 	// configLayers is a pointer to the runtime's Layers snapshot, shared so
 	// the model can read provenance after each successful persist.
@@ -480,6 +510,10 @@ type pendingAgentRun struct {
 	// used for this run.
 	verifyBuild string
 	verifyTest  string
+	// modelOverrides is the castlist's per-run role→preset map. It is
+	// applied to a copy of the routing config for this run only and is
+	// never written to disk.
+	modelOverrides map[routing.AgentRole]string
 }
 
 type Option func(*Model)
@@ -630,11 +664,19 @@ func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 // WithPipelineFactory configures the TUI to build a plan-execution runner
 // on demand when /sdd <plan-file> is submitted. The factory is called per
 // run, not at startup.
-func WithPipelineFactory(ctx context.Context, factory func(planPath string) AgentRunner) Option {
+func WithPipelineFactory(ctx context.Context, factory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
 		m.pipelineFactory = factory
 	}
+}
+
+// WithSwarmOverrideFactory wires the function that builds a per-run
+// swarm.RunnerFactory with role→preset overrides applied. It is provided
+// by app.go (which has access to the routedProviderResolver) and called
+// when the castlist confirms with overrides.
+func WithSwarmOverrideFactory(factory SwarmOverrideFactory) Option {
+	return func(m *Model) { m.swarmOverrideFactory = factory }
 }
 
 // PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
@@ -1860,11 +1902,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
 				adapter.Controller().Strategy = pipeline.Strategy(start.Strategy)
 			}
+			run.modelOverrides = start.Overrides
+		}
+		// Apply per-run role overrides to the runner. For swarm, the
+		// shared orchestrator's NewRunner is wrapped and restored when
+		// the run ends. For SDD, the pipeline controller was already
+		// rebuilt with overrides via the factory.
+		if ror, ok := run.runner.(RoleOverrideRunner); ok && len(run.modelOverrides) > 0 && m.swarmOverrideFactory != nil {
+			factory := m.swarmOverrideFactory(run.modelOverrides)
+			ror.SetRunnerFactory(factory)
+			m.restoreRunner = ror.RestoreRunner
 		}
 		return m.startAgentRun(run.runner, run.goal)
 	case castlist.CancelMsg:
 		m.dock.CloseNow()
 		m.pendingRun = nil
+		// Cancelling preflight must not leave an override installed on
+		// the shared orchestrator — it would silently apply to every
+		// later run in the session.
+		if m.restoreRunner != nil {
+			m.restoreRunner()
+			m.restoreRunner = nil
+		}
 		m.refreshViewport()
 		return m, nil
 	case verifyProposeMsg:
@@ -3722,6 +3781,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
+	// Restore the shared runner's original NewRunner so a per-run override
+	// does not leak into the next run. This runs on success, failure, and
+	// cancel — the defer-style guarantee the plan requires.
+	if m.restoreRunner != nil {
+		m.restoreRunner()
+		m.restoreRunner = nil
+	}
 	m.refreshRailTurns()
 	m.refreshRailChanged()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {

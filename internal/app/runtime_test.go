@@ -546,7 +546,7 @@ func TestRuntimeNewSessionWithName(t *testing.T) {
 	}
 	defer rt.Close(ctx)
 
-	state, _, _, _, _, _, err := rt.NewSession("fix-auth")
+	state, _, _, _, _, _, _, err := rt.NewSession("fix-auth")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestRuntimeNewSessionWithName(t *testing.T) {
 	}
 
 	// Empty name preserves auto-title behavior.
-	state2, _, _, _, _, _, err := rt.NewSession("")
+	state2, _, _, _, _, _, _, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession empty: %v", err)
 	}

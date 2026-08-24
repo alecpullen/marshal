@@ -11,7 +11,9 @@ import (
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/llm/routing"
 )
 
 // Row is one cast member to display.
@@ -23,11 +25,15 @@ type Row struct {
 	// Warn is a non-blocking caution rendered under the row: something the
 	// user should see before starting, but not a reason to refuse.
 	Warn string
+	// Role identifies which cast role this row is, when it is one. Empty
+	// for the strategy and verify-gate rows.
+	Role routing.AgentRole
 }
 
 // StartMsg is emitted when the user presses Enter and no row has an error.
 type StartMsg struct {
-	Strategy string
+	Strategy  string
+	Overrides map[routing.AgentRole]string
 }
 
 // CancelMsg is emitted when the user presses Esc.
@@ -43,6 +49,10 @@ type Panel struct {
 	// cycle. Options with a non-empty DisabledReason are skipped when cycling
 	// and block the run if selected.
 	strategyOptions []StrategyOption
+	cursor          int // index into rows, over role rows only
+	overrides       map[routing.AgentRole]string
+	pick            *picker.Model // non-nil when the in-panel picker is open
+	pickerItems     []picker.Item // model presets offered by the in-panel picker
 }
 
 // StrategyOption is one selectable execution strategy with an optional
@@ -55,9 +65,17 @@ type StrategyOption struct {
 var _ dock.Panel = (*Panel)(nil)
 
 // New creates a cast list panel with the given title, cast rows, optional
-// metadata lines, and initial execution strategy.
+// metadata lines, and initial execution strategy. The cursor starts on the
+// first role row, if any.
 func New(title string, rows []Row, meta []string, strategy string) *Panel {
-	return &Panel{title: title, rows: rows, meta: meta, strategy: strategy}
+	p := &Panel{title: title, rows: rows, meta: meta, strategy: strategy}
+	for i, r := range rows {
+		if r.Role != "" {
+			p.cursor = i
+			break
+		}
+	}
+	return p
 }
 
 // SetVerifyRow updates the verify-gate row's detail after a proposal fills
@@ -137,8 +155,30 @@ func (p *Panel) blocked() bool {
 }
 
 // Update handles key events. Enter emits StartMsg when unblocked; Esc emits
-// CancelMsg. Left/Right cycles the execution strategy.
+// CancelMsg. Left/Right cycles the execution strategy. Up/Down moves the
+// cursor over role rows; Enter on a role row opens the in-panel override
+// picker.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
+	// When the in-panel picker is open, forward all messages to it.
+	if p.pick != nil {
+		switch msg := msg.(type) {
+		case picker.PickedMsg:
+			role := p.rows[p.cursor].Role
+			if msg.Value == "" || msg.Value == "(unset — use routed model)" {
+				p.setOverride(role, "")
+			} else {
+				p.setOverride(role, msg.Value)
+			}
+			p.pick = nil
+			return nil
+		case picker.CancelledMsg:
+			p.pick = nil
+			return nil
+		default:
+			return p.pick.Update(msg)
+		}
+	}
+
 	switch k := msg.(type) {
 	case tea.KeyPressMsg:
 		switch k.String() {
@@ -146,7 +186,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			if p.blocked() {
 				return nil
 			}
-			return func() tea.Msg { return StartMsg{Strategy: p.strategy} }
+			// If the cursor is on a role row, open the picker.
+			if p.cursor < len(p.rows) && p.rows[p.cursor].Role != "" {
+				p.openPicker(p.rows[p.cursor].Role)
+				return nil
+			}
+			return func() tea.Msg { return StartMsg{Strategy: p.strategy, Overrides: p.Overrides()} }
 		case "esc":
 			return func() tea.Msg { return CancelMsg{} }
 		case "right":
@@ -154,6 +199,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		case "left":
 			p.cycleStrategy(-1)
+			return nil
+		case "up":
+			p.moveCursor(-1)
+			return nil
+		case "down":
+			p.moveCursor(1)
 			return nil
 		}
 	}
@@ -195,11 +246,113 @@ func (p *Panel) optionDisabled(value string) bool {
 	return false
 }
 
+// Overrides returns the per-run role→preset override map. Nil when no
+// overrides have been set.
+func (p *Panel) Overrides() map[routing.AgentRole]string {
+	if len(p.overrides) == 0 {
+		return nil
+	}
+	out := make(map[routing.AgentRole]string, len(p.overrides))
+	for k, v := range p.overrides {
+		out[k] = v
+	}
+	return out
+}
+
+// setOverride sets or clears an override for a role. An empty preset clears
+// the entry rather than storing an empty string.
+func (p *Panel) setOverride(role routing.AgentRole, preset string) {
+	if p.overrides == nil {
+		p.overrides = make(map[routing.AgentRole]string)
+	}
+	if preset == "" {
+		delete(p.overrides, role)
+	} else {
+		p.overrides[role] = preset
+	}
+	p.applyOverrideToRow(role)
+}
+
+// applyOverrideToRow updates a row's Detail and Badge to reflect the
+// override. Called after setOverride and after row updates.
+func (p *Panel) applyOverrideToRow(role routing.AgentRole) {
+	for i, r := range p.rows {
+		if r.Role == role {
+			if override, ok := p.overrides[role]; ok {
+				p.rows[i].Detail = override
+				p.rows[i].Badge = "override"
+			}
+			return
+		}
+	}
+}
+
+// moveCursor moves the cursor by dir (+1 or -1), skipping rows with empty Role.
+func (p *Panel) moveCursor(dir int) {
+	if len(p.rows) == 0 {
+		return
+	}
+	// Ensure cursor starts on a role row.
+	if p.rows[p.cursor].Role == "" {
+		p.cursor = p.nextRoleRow(p.cursor, dir)
+		return
+	}
+	p.cursor = p.nextRoleRow(p.cursor, dir)
+}
+
+// nextRoleRow returns the index of the next role row in direction dir,
+// wrapping. If no role rows exist, returns the current index.
+func (p *Panel) nextRoleRow(from, dir int) int {
+	n := len(p.rows)
+	for i := 0; i < n; i++ {
+		from = (from + dir + n) % n
+		if p.rows[from].Role != "" {
+			return from
+		}
+	}
+	return p.cursor
+}
+
+// setRowErr sets an error message on the row matching the given role.
+func (p *Panel) setRowErr(role routing.AgentRole, err string) {
+	for i, r := range p.rows {
+		if r.Role == role {
+			p.rows[i].Err = err
+			return
+		}
+	}
+}
+
+// SetPickerItems sets the model presets available for override selection.
+// Must be called before the panel is shown so the in-panel picker can
+// offer them.
+func (p *Panel) SetPickerItems(items []picker.Item) {
+	p.pickerItems = items
+}
+
+// openPicker opens the in-panel model picker for the given role.
+func (p *Panel) openPicker(role routing.AgentRole) {
+	items := make([]picker.Item, 0, len(p.pickerItems)+1)
+	items = append(items, picker.Item{Label: "(unset — use routed model)", Value: ""})
+	items = append(items, p.pickerItems...)
+	p.pick = picker.New(
+		"Override model for "+string(role),
+		"↵ select · esc cancel · type provider/model for custom",
+		items,
+	)
+	p.pick.SetAllowCustom(true)
+}
+
 // Sizing keeps the cast list docked under the default height cap.
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
 
 // View renders the cast list inside the dock height budget.
 func (p *Panel) View(width, maxHeight int) string {
+	// When the in-panel picker is open, render it instead of the cast list.
+	if p.pick != nil {
+		return p.pick.View(width, maxHeight)
+	}
+
 	th := theme.Current()
 
 	pw := layout.PanelWidth(width)
@@ -237,7 +390,10 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 
 	// Cast rows.
-	for _, r := range p.rows {
+	for i, r := range p.rows {
+		if i == p.cursor && r.Role != "" && p.pick == nil {
+			r.Title = "▸ " + r.Title
+		}
 		rows = append(rows, renderRow(r, inner))
 	}
 

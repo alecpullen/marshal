@@ -1722,7 +1722,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// messages; we must not close the dock or treat this as a top-level
 		// picker pick here.
 		switch m.dock.Panel().(type) {
-		case *agents.Panel, connect.Panel:
+		case *agents.Panel, connect.Panel, *castlist.Panel:
 			return m, m.dock.Update(pm)
 		}
 		cmdName := m.pickerCommand
@@ -1800,7 +1800,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case picker.CancelledMsg:
 		// Forward to panel overlays that host their own picker.
 		switch m.dock.Panel().(type) {
-		case *agents.Panel, connect.Panel:
+		case *agents.Panel, connect.Panel, *castlist.Panel:
 			return m, m.dock.Update(pm)
 		}
 		cmdName := m.pickerCommand
@@ -3300,7 +3300,10 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	}
 	rows := make([]castlist.Row, 0, len(roles))
 	for _, entry := range router.Cast(roles) {
-		row := castlist.Row{Title: strings.ReplaceAll(string(entry.Role), "_", " ")}
+		row := castlist.Row{
+			Title: strings.ReplaceAll(string(entry.Role), "_", " "),
+			Role:  entry.Role,
+		}
 		if entry.Err != nil {
 			row.Err = strutil.Truncate(entry.Err.Error(), 44, true)
 		} else {
@@ -3314,6 +3317,19 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	}
 	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
 	panel := castlist.New(title, rows, meta, "agent")
+	// Provide the config's model presets so the castlist's in-panel
+	// override picker can offer them.
+	presetNames := make([]string, 0, len(m.state.Config.Models.Presets))
+	for n := range m.state.Config.Models.Presets {
+		presetNames = append(presetNames, n)
+	}
+	sort.Strings(presetNames)
+	pickerItems := make([]picker.Item, 0, len(presetNames))
+	for _, name := range presetNames {
+		preset := m.state.Config.Models.Presets[name]
+		pickerItems = append(pickerItems, picker.Item{Label: name, Detail: preset.Provider + "/" + preset.Model, Value: name})
+	}
+	panel.SetPickerItems(pickerItems)
 	if kind == "sdd" {
 		// Strategy-aware preflight: select adaptive by default when the plan
 		// has executable blocks, and disable adaptive/strict when there are

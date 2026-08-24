@@ -38,6 +38,16 @@ type Options struct {
 	TestCommand    string
 	MaxOutputBytes int
 	SessionState   *session.State
+	// WorkspaceState is the state that owns the workspace, as opposed to
+	// SessionState which is the agent doing the work. They differ only for
+	// agent.run children: a child gets its own SessionState so its active
+	// tool call, streamed output, approvals and questions are its own, but
+	// shares the parent's WorkspaceState so /undo and /rollback still see
+	// its edits — there is one working tree, not one per agent.
+	//
+	// Unset means "same as SessionState", which is every caller but the
+	// subagent factory.
+	WorkspaceState *session.State
 	DB             *db.DB
 	ProjectID      int64
 	FileTracker    FileTracker
@@ -123,6 +133,7 @@ type toolSet struct {
 	testCommand     string
 	maxOutputBytes  int
 	sessionState    *session.State
+	workspaceState  *session.State
 	db              *db.DB
 	projectID       int64
 	fileTracker     FileTracker
@@ -270,12 +281,22 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 // setter. Falling back to the construction root is the safe choice in
 // that case.
 func (t *toolSet) activeRoot() string {
-	if t.sessionState != nil {
-		if ws := t.sessionState.Workspace(); ws.ActiveRoot != "" {
-			return ws.ActiveRoot
+	if ws := t.wsState(); ws != nil {
+		if w := ws.Workspace(); w.ActiveRoot != "" {
+			return w.ActiveRoot
 		}
 	}
 	return t.root
+}
+
+// wsState returns the workspace-scoped state: WorkspaceState when set,
+// otherwise the per-agent SessionState. Every workspace-scoped call site
+// must go through this rather than reading sessionState directly.
+func (t *toolSet) wsState() *session.State {
+	if t.workspaceState != nil {
+		return t.workspaceState
+	}
+	return t.sessionState
 }
 
 func newToolSet(opts Options) (*toolSet, error) {
@@ -339,6 +360,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		testCommand:     testCommand,
 		maxOutputBytes:  maxOutputBytes,
 		sessionState:    opts.SessionState,
+		workspaceState:  opts.WorkspaceState,
 		db:              opts.DB,
 		projectID:       opts.ProjectID,
 		fileTracker:     opts.FileTracker,

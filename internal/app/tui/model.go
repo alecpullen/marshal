@@ -3107,6 +3107,10 @@ func (m *Model) refreshViewport() {
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
 				target = &clickTarget{key: key}
+			case session.KindMessage:
+				if entry.Item.Message != nil && entry.Item.Message.ContentType == session.ContentTypeNarration {
+					target = &clickTarget{key: key}
+				}
 			case session.KindSubagent:
 				if entry.Item.Subagent != nil && entry.Item.Subagent.Child != nil {
 					target = &clickTarget{

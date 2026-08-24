@@ -32,6 +32,12 @@ const (
 	// with the session, but it is not rendered in the transcript — the
 	// compact ContentTypeSkill tag is the user-facing trace of the load.
 	ContentTypeSkillBody ContentType = "skill_body"
+	// ContentTypeNarration marks the prose a model emitted alongside its
+	// tool calls — what it says it is about to do, as distinct from the
+	// final answer and from its private reasoning. Stored non-final, which
+	// is what keeps it out of history replay (internal/agent/history.go)
+	// while still rendering and persisting with the session.
+	ContentTypeNarration ContentType = "narration"
 )
 
 // Message is a single turn in the session transcript. Messages form an

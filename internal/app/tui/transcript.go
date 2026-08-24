@@ -553,6 +553,12 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 		if item.Message == nil {
 			return ""
 		}
+		// Narration is a distinct block type, not prose: it renders through
+		// its own collapsible renderer rather than falling through to
+		// renderMessage, which has no notion of expansion.
+		if item.Message.ContentType == session.ContentTypeNarration {
+			return renderNarration(item.Message.Content, detailExpanded, width)
+		}
 		var b strings.Builder
 		if item.Message.Reasoning != "" {
 			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width))

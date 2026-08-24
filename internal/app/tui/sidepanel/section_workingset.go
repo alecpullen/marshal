@@ -22,7 +22,7 @@ func (WorkingSetSection) Title() string   { return "FILES" }
 func (WorkingSetSection) Priority() int   { return 3 }
 func (WorkingSetSection) Clippable() bool { return true }
 
-func (WorkingSetSection) Relevant(d Data) bool { return len(FileStats(d.Audit)) > 0 }
+func (WorkingSetSection) Relevant(d Data) bool { return hasFileActivity(d.Audit) }
 
 func (WorkingSetSection) Render(d Data, width, maxRows int) []string {
 	stats := FileStats(d.Audit)
@@ -42,11 +42,15 @@ func (WorkingSetSection) Render(d Data, width, maxRows int) []string {
 		// Trim the path from the left when it is long: the file name and
 		// its nearest directories identify it, the repo root does not.
 		name := s.Path
+		rname := []rune(name)
 		budget := max(width-len(detail)-4, 8)
-		if len(name) > budget {
-			name = "…" + name[len(name)-budget+1:]
+		if len(rname) > budget {
+			rname = append([]rune("…"), rname[len(rname)-budget+1:]...)
 		}
-		pad := max(width-2-len([]rune(name))-len(detail), 1)
+		name = string(rname)
+		// Row layout: " ⏵ name ···· detail" — 3 visible cells prefix
+		// (space, glyph, space) plus name plus padding plus detail.
+		pad := max(width-3-len(rname)-len(detail), 1)
 		rows = append(rows, ansi.Truncate(
 			" "+g+" "+name+strings.Repeat(" ", pad)+detail, width, "…"))
 	}

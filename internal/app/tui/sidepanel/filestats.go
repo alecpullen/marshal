@@ -17,9 +17,30 @@ type FileStat struct {
 }
 
 // readTools are the tools whose Args carry the path of a file they read.
-// Writes are identified by FilesChanged instead, which the write tools
-// populate directly.
+// Only file.read is tracked here: other tools that happen to take a path
+// argument (file.page, git.diff, …) are not part of the working set — the
+// plan scopes reads to file.read specifically. Writes are identified by
+// FilesChanged instead, which the write tools populate directly.
 var readTools = map[string]bool{"file.read": true}
+
+// hasFileActivity is a cheap early-exit scan that reports whether FileStats
+// would produce any entry, without building or sorting the result. It is
+// used by WorkingSetSection.Relevant so the per-frame relevance check on the
+// render path does not unmarshal JSON or allocate a map.
+func hasFileActivity(events []registry.AuditEvent) bool {
+	for _, e := range events {
+		if e.Error != "" {
+			continue
+		}
+		if len(e.FilesChanged) > 0 {
+			return true
+		}
+		if readTools[e.ToolName] && len(e.Args) > 0 {
+			return true
+		}
+	}
+	return false
+}
 
 // FileStats aggregates an audit log by file path, most recently touched
 // first, with alphabetical tie-breaking so the ordering is stable across

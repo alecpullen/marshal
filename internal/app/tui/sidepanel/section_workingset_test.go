@@ -52,7 +52,7 @@ func TestWorkingSetShowsEditCount(t *testing.T) {
 	rows := WorkingSetSection{}.Render(wsData(
 		writeEvent("a.go", 1), writeEvent("a.go", 2), writeEvent("a.go", 3),
 	), 60, 0)
-	if !strings.Contains(rows[0], "3") {
+	if !strings.Contains(rows[0], "3 edits") {
 		t.Fatalf("row should carry the edit count, got %q", rows[0])
 	}
 }

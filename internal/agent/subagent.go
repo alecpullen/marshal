@@ -192,10 +192,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		Schema: json.RawMessage(
 			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
-		// The dispatch itself stays RiskWorkspaceWrite even though the handler
-		// now returns immediately: the dispatch-time pre-write snapshot
-		// (execute.go) is the only snapshot covering the child's forthcoming
-		// writes — child runners have no Snapshotter.
+		// The dispatch stays RiskWorkspaceWrite: the child's tool set
+		// includes write tools (file.write, file.write_patch, shell.run,
+		// etc.), so dispatching a subagent is a workspace-write action that
+		// must pass the same approval gate as any other write, even though
+		// the handler returns immediately. (C-1 also wires a Snapshotter
+		// onto child runners so each child write is individually covered by
+		// a pre-write snapshot recorded against the child's session ID.)
 		Risk: registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -286,7 +289,16 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			defer func() {
 				if r := recover(); r != nil {
 					state.Logger().Error("subagent panicked", "id", view.ID, "panic", r)
-					state.PushSubagentReport(fmt.Sprintf("[subagent %d failed] subagent %d (%s) panicked: %v", view.ID, view.ID, args.Description, r))
+					panicSummary := fmt.Sprintf("subagent %d (%s) panicked: %v", view.ID, args.Description, r)
+					panicReport := fmt.Sprintf("[subagent %d failed] %s", view.ID, panicSummary)
+					// Mirror the normal completion path: transcript notice
+					// (RoleSystem, for the user) + durable report (RoleUser,
+					// survives restart via buildHistoryMessages) + in-memory
+					// queue (live delivery). Without the RoleUser persist, a
+					// panicked child's failure is lost across restart.
+					state.AddMessage(session.RoleSystem, "✗ "+panicSummary, session.ContentTypePlain)
+					state.AddMessage(session.RoleUser, panicReport, session.ContentTypePlain)
+					state.PushSubagentReport(panicReport)
 					state.ExitSubagent()
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
 				}

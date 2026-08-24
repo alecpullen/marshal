@@ -139,6 +139,19 @@ func TestSubagentPanicRecovered(t *testing.T) {
 	if len(reports) != 1 || !strings.Contains(reports[0], "panicked") {
 		t.Fatalf("report queue = %v, want one panicked report", reports)
 	}
+	// The panic report must also be persisted as a RoleUser message so it
+	// survives restart (buildHistoryMessages replays RoleUser). A panic that
+	// only reaches the in-memory queue is lost across rollover/restart.
+	var foundDurable bool
+	for _, msg := range state.Messages() {
+		if msg.Role == session.RoleUser && strings.Contains(msg.Content, "panicked") {
+			foundDurable = true
+			break
+		}
+	}
+	if !foundDurable {
+		t.Fatalf("no RoleUser message containing panic report found in transcript")
+	}
 	// The concurrency slot must be released even after a panic.
 	if got := state.SubagentConcurrency(); got != 0 {
 		t.Fatalf("concurrency after panic = %d, want 0", got)

@@ -365,3 +365,24 @@ func TestAgentAwaitReturnsImmediatelyForApprovalPendingChild(t *testing.T) {
 	// Let the child finish to avoid a goroutine leak.
 	state.WaitSubagent(context.Background(), viewID)
 }
+
+// TestAgentAwaitAllSkipsAlreadyFinished guards M-1: await all must not
+// re-collect children that already finished in a prior turn. Their reports
+// were already delivered via the queue drain / persisted message, so
+// collecting them again would double-deliver.
+func TestAgentAwaitAllSkipsAlreadyFinished(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	// Register a child that is already finished.
+	childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view := state.RegisterSubagentWithMeta("done child", childState, session.SubagentMeta{})
+	state.FinishSubagent(view.ID, "already done", nil)
+
+	_, await, _ := newAsyncRunToolPair(state, nil)
+	res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"all": true}`)})
+	if err != nil {
+		t.Fatalf("await all: %v", err)
+	}
+	if !strings.Contains(res.Summary, "no running subagents") {
+		t.Fatalf("await all summary = %q, want no-running (finished child skipped)", res.Summary)
+	}
+}

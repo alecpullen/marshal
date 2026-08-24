@@ -73,12 +73,18 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 		// waited tracks IDs already collected so a child that finishes
 		// between scans is still picked up (it is no longer Running, but it
 		// is still a background child we have not yet reported).
+		//
+		// M-1: only wait for children that are still Running. A child that
+		// already finished (from a prior turn or earlier in this turn) has
+		// already had its report delivered via the queue drain or the
+		// persisted RoleUser message; collecting it again here would
+		// double-deliver the report.
 		var lines, bodies []string
 		waited := make(map[int64]bool)
 		for {
 			var pending []int64
 			for _, v := range state.Subagents() {
-				if v.Child != nil && !waited[v.ID] {
+				if v.Child != nil && !waited[v.ID] && v.Status == session.SubagentRunning {
 					pending = append(pending, v.ID)
 				}
 			}

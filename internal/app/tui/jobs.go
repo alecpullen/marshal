@@ -5,8 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
-
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
@@ -38,12 +36,9 @@ func (m Model) renderJobLane() string {
 		return ""
 	}
 	width := max(m.leftWidth, 1)
-	gutter := gutterPrefix(glyph.Job, dimColor)
 
 	var b strings.Builder
-	b.WriteString(laneSeparator(width))
-	b.WriteString(gutter)
-	b.WriteString(dimStyle().Render(fmt.Sprintf("jobs %d", len(running))))
+	b.WriteString(fmt.Sprintf("jobs %d", len(running)))
 	b.WriteString("\n")
 
 	rows := jobLaneMaxRows - 1
@@ -58,16 +53,15 @@ func (m Model) renderJobLane() string {
 			j.ID,
 			strutil.Truncate(j.Command, max(width/2, 12), true),
 			formatElapsed(max(time.Since(j.StartedAt), 0)))
-		b.WriteString(gutter)
-		b.WriteString(dimStyle().Render(ansi.Truncate(line, max(width-gutterWidth, 1), "…")))
+		b.WriteString(glyph.Job + " " + line)
 		b.WriteString("\n")
 	}
 	if overflow > 0 {
-		b.WriteString(gutter)
-		b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
+		b.WriteString(fmt.Sprintf("… %d more", overflow))
 		b.WriteString("\n")
 	}
-	return b.String()
+
+	return laneSeparator(width) + chromeRailWidth(b.String(), dimColor, max(width-1, 1))
 }
 
 // jobLaneRows reports the lane's rendered height for the frame's height

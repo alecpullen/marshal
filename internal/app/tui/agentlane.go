@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
@@ -22,8 +21,9 @@ import (
 // sanctioned in a codebase that otherwise forbids box-drawing chrome — so
 // the two horizontal rules on screen match.
 func laneSeparator(width int) string {
-	w := max(width-gutterWidth, 1)
-	return continuation() +
+	bar := lipgloss.NewStyle().Foreground(dimColor).Render(glyph.Rail)
+	w := max(width-1, 1)
+	return bar +
 		lipgloss.NewStyle().Foreground(theme.Current().BorderMuted).Render(strings.Repeat("─", w)) +
 		"\n"
 }
@@ -51,12 +51,10 @@ func (m Model) renderAgentLane() string {
 		return ""
 	}
 	width := max(m.leftWidth, 1)
-	gutter := gutterPrefix(glyph.Rail, dimColor)
+	spinner := m.activeSpinnerFrame(session.ActivityTool)
 
 	var b strings.Builder
-	b.WriteString(laneSeparator(width))
-	b.WriteString(gutter)
-	b.WriteString(dimStyle().Render(fmt.Sprintf("agents %d", len(running))))
+	b.WriteString(spinnerLabel(spinner, fmt.Sprintf("agents %d", len(running))))
 	b.WriteString("\n")
 
 	rows := agentLaneMaxRows - 1
@@ -67,20 +65,18 @@ func (m Model) renderAgentLane() string {
 		overflow = len(running) - len(shown)
 	}
 	for _, v := range shown {
-		line := fmt.Sprintf("%d  %s  %s",
+		b.WriteString(fmt.Sprintf("%d  %s  %s",
 			v.ID,
 			strutil.Truncate(v.Label, max(width/2, 12), true),
-			formatElapsed(max(time.Since(v.StartedAt), 0)))
-		b.WriteString(gutter)
-		b.WriteString(dimStyle().Render(ansi.Truncate(line, max(width-gutterWidth, 1), "…")))
+			formatElapsed(max(time.Since(v.StartedAt), 0))))
 		b.WriteString("\n")
 	}
 	if overflow > 0 {
-		b.WriteString(gutter)
-		b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
+		b.WriteString(fmt.Sprintf("… %d more", overflow))
 		b.WriteString("\n")
 	}
-	return b.String()
+
+	return laneSeparator(width) + chromeRailWidth(b.String(), dimColor, max(width-1, 1))
 }
 
 // agentLaneRows reports the lane's rendered height for the frame's height

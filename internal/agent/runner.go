@@ -899,6 +899,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(prunedMsgs) <= turnThreshold {
 				messages = prunedMsgs
 				r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
+				// Pruning drops stale tool output to stay under the
+				// budget. Say so: dropped context that leaves no trace
+				// reads to the user as the model losing track.
+				r.State.AddMessage(session.RoleSystem,
+					fmt.Sprintf("pruned %d stale tool result(s) to stay within the context budget", n),
+					session.ContentTypeCompaction)
 				continue
 			} else if n > 0 {
 				// Pruning helped but not enough — keep the pruned wire

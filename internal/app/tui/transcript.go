@@ -537,7 +537,7 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, offset, width int) string {
+func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, offset int, callers []string, width int) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
@@ -548,7 +548,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 		if item.Audit == nil {
 			return ""
 		}
-		return renderCompletedToolCall(*item.Audit, detailExpanded, width)
+		return renderCompletedToolCall(*item.Audit, detailExpanded, callers, width)
 	case session.KindMessage:
 		if item.Message == nil {
 			return ""
@@ -943,7 +943,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	return b.String()
 }
 
-func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int) string {
+func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers []string, width int) string {
 	g := toolCategoryGlyph(event.ToolName)
 	style := statusOkStyle()
 	if event.Error != "" {
@@ -996,6 +996,28 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 		}
 		b.WriteString(style.Render(hl))
 		b.WriteString("\n")
+	}
+	// Blast radius: a continuation line naming what references the symbol
+	// this row changed. It is a settled one-time addition to a settled row,
+	// so the height change it causes is acceptable and it is not part of any
+	// live-region body. Nothing renders when there is no cached result — a
+	// no-server negative, an empty reference set, or a language without LSP
+	// all leave the row exactly as it would be without this feature.
+	if len(callers) > 0 {
+		shown, extra := callers, 0
+		if len(shown) > maxCallersShown {
+			extra = len(shown) - maxCallersShown
+			shown = shown[:maxCallersShown]
+		}
+		line := fmt.Sprintf("↳ %d callers: %s", len(callers), strings.Join(shown, ", "))
+		if extra > 0 {
+			line += fmt.Sprintf(" +%d", extra)
+		}
+		for _, wl := range strings.Split(ansi.Wrap(line, contentWidth(width), WrapBreakpoints), "\n") {
+			b.WriteString(continuation())
+			b.WriteString(mutedStyle().Render(wl))
+			b.WriteString("\n")
+		}
 	}
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
 		files := splitDiffFiles(event.ResultContent)

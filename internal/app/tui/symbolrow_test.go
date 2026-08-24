@@ -86,7 +86,7 @@ func TestRowWithoutSymbolsIsUnchanged(t *testing.T) {
 		ResultSummary: "Applied patches to: a.rb",
 		FilesChanged:  []string{"a.rb"},
 	}
-	got := stripANSI(renderCompletedToolCall(event, false, 80))
+	got := stripANSI(renderCompletedToolCall(event, false, nil, 80))
 	if !strings.Contains(got, "Edit file") {
 		t.Fatalf("no-symbol row must keep the tool-name-first shape:\n%s", got)
 	}
@@ -104,7 +104,7 @@ func TestRowWithSymbolsIsSubjectFirst(t *testing.T) {
 			{File: "transcript.go", Name: "renderSubagentCard", Kind: "function"},
 		},
 	}
-	plain := stripANSI(renderCompletedToolCall(event, false, 80))
+	plain := stripANSI(renderCompletedToolCall(event, false, nil, 80))
 	if !strings.Contains(plain, "transcript.go › renderSubagentCard()") {
 		t.Fatalf("expected subject-first row:\n%s", plain)
 	}

@@ -519,7 +519,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				msgs := state.Messages()
 				var turns []session.Message
 				for _, m := range msgs {
-					if m.Role == session.RoleUser {
+					if m.Role == session.RoleUser && m.ContentType != session.ContentTypeSubagentReport {
 						turns = append(turns, m)
 					}
 				}
@@ -540,14 +540,39 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				newLeaf := state.Rewind(target.ID)
 
 				restoreWarning := ""
-				if sp, database, _ := snapshotContext(state); sp != nil {
-					if hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex()); err == nil && hash != "" {
+				if sp, database, _ := snapshotContext(state); sp != nil && database != nil {
+					// The snapshot to restore is the one that preceded the
+					// TARGET turn. state.TurnIndex() is the current turn and
+					// Rewind does not move it, so keying on it restored the
+					// files to the present and quietly did nothing.
+					var hash string
+					if snaps, err := database.ListSnapshots(state.SessionID()); err != nil {
+						state.Logger().Warn("rewind: list snapshots failed", "error", err)
+					} else {
+						for _, e := range BuildTimeline(msgs, snaps, state.LeafID()) {
+							if e.MsgID == target.ID {
+								hash = e.SnapshotHash
+								break
+							}
+						}
+					}
+					if hash == "" {
+						restoreWarning = " Note: no snapshot to restore files to for this turn — files were left as-is."
+					} else {
 						if rerr := sp.Restore(context.Background(), hash); rerr != nil {
 							restoreWarning = fmt.Sprintf(" Warning: file restore failed — %s. Your files were not rewound, but the conversation branch was.", rerr)
 						}
 					}
 				}
 				return Text(fmt.Sprintf("Rewound to before: %q. Your next message starts a new branch (leaf %d).%s", strutil.Truncate(target.Content, 60, true), newLeaf, restoreWarning))
+			},
+		},
+		{
+			Name:        "timeline",
+			Description: "Navigate the session's turns, branches and restore points",
+			Group:       groupChat,
+			Handler: func(state *session.State, args []string) Result {
+				return timelineDoc(state)
 			},
 		},
 		{

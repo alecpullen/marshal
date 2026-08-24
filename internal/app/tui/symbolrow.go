@@ -57,11 +57,11 @@ func shellSubject(event registry.AuditEvent) string {
 // semantic search answer different questions and cost very different
 // amounts, and a reader must be able to tell them apart at a glance.
 var searchQualifiers = map[string]string{
-	"repo.search":    "search",
+	"repo.search":     "search",
 	"codebase.search": "semantic",
-	"symbols.find":   "symbols",
-	"json.query":     "json",
-	"csv.inspect":    "csv",
+	"symbols.find":    "symbols",
+	"json.query":      "json",
+	"csv.inspect":     "csv",
 }
 
 // searchQualifier returns the short label for a search-family tool.

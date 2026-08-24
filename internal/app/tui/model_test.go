@@ -3077,10 +3077,10 @@ func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
 	})
 	exitCode := 0
 	state.LogToolCall(registry.AuditEvent{
-		Timestamp:     time.Unix(101, 0),
-		ToolName:      "shell.run",
-		Args:          json.RawMessage(`{"command":"go test ./..."}`),
-		ResultSummary: `command "go test ./..." exited with code 0`,
+		Timestamp:       time.Unix(101, 0),
+		ToolName:        "shell.run",
+		Args:            json.RawMessage(`{"command":"go test ./..."}`),
+		ResultSummary:   `command "go test ./..." exited with code 0`,
 		CommandExitCode: &exitCode,
 	})
 

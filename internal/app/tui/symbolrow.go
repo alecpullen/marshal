@@ -24,7 +24,29 @@ func subjectFirstTool(name string) bool {
 	case "file.write_patch", "file.write", "file.read", "symbols.find":
 		return true
 	}
-	return false
+	return isShellFamily(name)
+}
+
+// isShellFamily reports whether a tool's subject is a command line.
+func isShellFamily(name string) bool {
+	return name == "shell.run" || name == "test.run"
+}
+
+// shellSubject renders a command row: the command itself, then its exit
+// code and how long it took.
+func shellSubject(event registry.AuditEvent) string {
+	cmd := toolTarget(event)
+	if cmd == "" {
+		return ""
+	}
+	parts := []string{cmd}
+	if event.CommandExitCode != nil {
+		parts = append(parts, fmt.Sprintf("exit %d", *event.CommandExitCode))
+	}
+	if event.Duration > 0 {
+		parts = append(parts, formatElapsed(event.Duration))
+	}
+	return strings.Join(parts, dimSeparator)
 }
 
 // symbolSubject renders "path › A(), B() +2" for an event carrying symbol

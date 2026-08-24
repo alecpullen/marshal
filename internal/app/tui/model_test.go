@@ -3075,16 +3075,19 @@ func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
 		ToolName:      "file.read",
 		ResultSummary: "/repo/main.go",
 	})
+	exitCode := 0
 	state.LogToolCall(registry.AuditEvent{
 		Timestamp:     time.Unix(101, 0),
 		ToolName:      "shell.run",
-		ResultSummary: "go test ./...",
+		Args:          json.RawMessage(`{"command":"go test ./..."}`),
+		ResultSummary: `command "go test ./..." exited with code 0`,
+		CommandExitCode: &exitCode,
 	})
 
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 
-	for _, want := range []string{"Read file", "/repo/main.go", "Run command", "go test ./..."} {
+	for _, want := range []string{"Read file", "/repo/main.go", "go test ./...", "exit 0"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing persistent tool log item %q:\n%s", want, view)
 		}

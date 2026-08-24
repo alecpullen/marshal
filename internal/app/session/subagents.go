@@ -386,18 +386,38 @@ func (s *State) WaitSubagent(ctx context.Context, id int64) (SubagentView, error
 	return SubagentView{}, fmt.Errorf("session: unknown subagent id %d", id)
 }
 
+// maxReasoningTailBytes caps how much of the in-progress reasoning buffer
+// SubagentActivityTail scans. The reasoning buffer can grow unboundedly
+// within one model call; without this cap, splitting it into lines would
+// copy the entire buffer on every agent.output call or TUI frame.
+const maxReasoningTailBytes = 8192
+
 // SubagentActivityTail returns up to n lines summarising what a running
 // subagent is currently doing. It prefers the trailing end of streamed
 // reasoning, then recent audit-log result summaries. It lives here (rather
 // than duplicated in the agent and TUI packages) so the two consumers —
 // agent.output and the TUI card — cannot drift apart.
+//
+// M-4: only the trailing maxReasoningTailBytes of the reasoning buffer are
+// scanned, so a very long reasoning stream does not cause the tail to
+// copy the entire buffer on every call.
 func (s *State) SubagentActivityTail(n int) []string {
 	if n <= 0 {
 		return nil
 	}
 	ip := s.InProgress()
 	if ip.Reasoning != "" {
-		lines := strings.Split(strings.TrimSpace(ip.Reasoning), "\n")
+		// M-4: only scan the trailing portion to avoid splitting a
+		// potentially huge buffer on every call.
+		tail := ip.Reasoning
+		if len(tail) > maxReasoningTailBytes {
+			tail = tail[len(tail)-maxReasoningTailBytes:]
+			// Drop the partial first line so we start at a line boundary.
+			if idx := strings.IndexByte(tail, '\n'); idx >= 0 {
+				tail = tail[idx+1:]
+			}
+		}
+		lines := strings.Split(strings.TrimSpace(tail), "\n")
 		if len(lines) > n {
 			lines = lines[len(lines)-n:]
 		}

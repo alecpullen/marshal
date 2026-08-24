@@ -2375,3 +2375,30 @@ func TestFinishSubagentReleasesOldChildStates(t *testing.T) {
 		t.Fatalf("released Child pointers = %d, want 5", withoutChild)
 	}
 }
+
+// TestSubagentActivityTailCapsReasoningBuffer guards M-4: the reasoning
+// tail is capped to maxReasoningTailBytes so a very long reasoning buffer
+// does not get fully copied on every call.
+func TestSubagentActivityTailCapsReasoningBuffer(t *testing.T) {
+	state := newTestState()
+	// Build a reasoning buffer well over the cap.
+	line := strings.Repeat("a", 100)
+	var huge strings.Builder
+	for i := 0; i < 200; i++ { // 200 lines * 100 bytes = 20KB > 8KB cap
+		huge.WriteString(line)
+		huge.WriteString("\n")
+	}
+	state.BeginStreaming()
+	state.AppendThinking(huge.String())
+
+	// Request 5 tail lines — should return 5, not scan the whole buffer.
+	tail := state.SubagentActivityTail(5)
+	if len(tail) != 5 {
+		t.Fatalf("tail = %d lines, want 5", len(tail))
+	}
+	for _, l := range tail {
+		if len(l) != 100 {
+			t.Fatalf("tail line length = %d, want 100 (full line from trailing portion)", len(l))
+		}
+	}
+}

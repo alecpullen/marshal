@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
@@ -71,13 +72,51 @@ type approvalModel struct {
 	allowNetwork  bool
 }
 
+// forcedPromptClass reports whether a prompt is one the user must answer
+// each time. Always-allow would persist a bypass for a class deliberately
+// made non-bypassable, and session-allow would be a silent no-op — session
+// rules are only consulted for shell.run/test.run
+// (internal/tools/policy/policy.go).
+func forcedPromptClass(tc *session.PendingToolCall) bool {
+	if tc == nil {
+		return false
+	}
+	return tc.Name == "config.write" ||
+		tc.Risk == "model-cost-consent" ||
+		isModeElevationApproval(tc)
+}
+
+// mnemonicChoice maps the mnemonic keys advertised in approvalActionRow
+// (transcript.go) to their approval choices. Returns ok=false when the
+// key is not a mnemonic.
+func mnemonicChoice(key string) (approvalChoice, bool) {
+	switch key {
+	case "a":
+		return choiceApprove, true
+	case "A":
+		return choiceAlways, true
+	case "s":
+		return choiceSessionAllow, true
+	case "e":
+		return choiceEdit, true
+	case "d":
+		return choiceDeny, true
+	default:
+		return "", false
+	}
+}
+
 func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int) *approvalModel {
 	opts := []huh.Option[approvalChoice]{
 		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
 		huh.NewOption("Edit command/args", choiceEdit),
-		huh.NewOption("Always allow (save to config)", choiceAlways),
-		huh.NewOption("Allow this session", choiceSessionAllow),
+	}
+	if !forcedPromptClass(tc) {
+		opts = append(opts,
+			huh.NewOption("Always allow (save to config)", choiceAlways),
+			huh.NewOption("Allow this session", choiceSessionAllow),
+		)
 	}
 	if hasBackup {
 		opts = append(opts, huh.NewOption("Rollback last change", choiceRollback))
@@ -186,6 +225,20 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 				am.submitPending = false
 			}
 			return am, nil
+		default:
+			// The mnemonic row (approvalActionRow, transcript.go) has always
+			// advertised a/A/s/e/d; until now only esc/enter/arrows were
+			// bound, so every label in that row was decorative.
+			if c, ok := mnemonicChoice(k.String()); ok {
+				for i, cand := range am.candidates {
+					if cand == c {
+						am.selected, am.choice = i, c
+						am.submitPending = false
+						break
+					}
+				}
+				return am, nil
+			}
 		}
 	}
 	updated, cmd := am.form.Update(msg)
@@ -310,6 +363,18 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
 		b.WriteString("\n")
 		b.WriteString(muted.Render(iso))
+	}
+	// Reason says which mechanism fired — policy rule, guardrail, copilot's
+	// environment confirm, or the default-secure fallback. Without it the
+	// prompt states what is being asked but never why, and the cost-consent
+	// prompt's actual sentence is hidden behind its Risk label.
+	//
+	// Rendered verbatim: these strings are matched elsewhere by prefix and
+	// substring (isEnvironmentConfirm, isGuardrailDeny,
+	// isModeElevationApproval), so rewording them breaks control flow.
+	if tc.Reason != "" {
+		b.WriteString("\n")
+		b.WriteString(mutedStyle().Render(ansi.Wrap(tc.Reason, 80, WrapBreakpoints)))
 	}
 	return b.String()
 }

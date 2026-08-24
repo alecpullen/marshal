@@ -1299,7 +1299,6 @@ func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
 
 func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
 	var b strings.Builder
-	b.WriteString(gutterPrefix(glyph.Warning, warningColor))
 	headParts := []string{}
 	if tc.Name == "shell.run" {
 		headParts = append(headParts, tc.Command)
@@ -1310,8 +1309,34 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
 		headParts = append(headParts, iso)
 	}
-	b.WriteString(warningStyle().Render(strings.Join(headParts, dimSeparator)))
-	b.WriteString("\n")
+	// The head line carries the command/name, risk, and sandbox isolation.
+	// It is wrapped to the content width so a long risk or reason (riskText
+	// falls back to Reason) cannot overflow the panel.
+	cw := max(width-gutterWidth, 1)
+	for i, hl := range strings.Split(ansi.Wrap(strings.Join(headParts, dimSeparator), cw, WrapBreakpoints), "\n") {
+		if i == 0 {
+			b.WriteString(gutterPrefix(glyph.Warning, warningColor))
+		} else {
+			b.WriteString(continuation())
+		}
+		b.WriteString(warningStyle().Render(hl))
+		b.WriteString("\n")
+	}
+
+	// Reason is a separate fact from Risk: riskText above shows whichever
+	// is set (preferring Risk), but both can be present and both matter —
+	// the cost-consent prompt's sentence is the reason, not the risk label.
+	if tc.Reason != "" {
+		for i, wl := range strings.Split(ansi.Wrap(tc.Reason, cw, WrapBreakpoints), "\n") {
+			if i == 0 {
+				b.WriteString(gutterPrefix(" ", warningColor))
+			} else {
+				b.WriteString(continuation())
+			}
+			b.WriteString(mutedStyle().Render(wl))
+			b.WriteString("\n")
+		}
+	}
 
 	b.WriteString(gutterPrefix(" ", warningColor))
 	b.WriteString(approvalActionRow(0))

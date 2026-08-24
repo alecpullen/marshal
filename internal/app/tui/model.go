@@ -1358,6 +1358,7 @@ func (m *Model) rebuildRail() {
 		sidepanel.ToolsSection{},
 		sidepanel.RulesSection{},
 		sidepanel.RepoSection{},
+		sidepanel.SkillsSection{},
 		sidepanel.SessionSection{},
 	}
 	hidden := map[string]bool{}
@@ -1386,6 +1387,7 @@ func (m Model) railData() sidepanel.Data {
 		Pack:    m.state.ContextPack(),
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
+		Skills:  m.state.ActiveSkills(),
 		Swarm:   m.state.SwarmProgress(),
 		SDD:     m.state.SDDProgress(),
 		Spinner: m.turnSpinnerFrame(),
@@ -3141,7 +3143,9 @@ func (m *Model) refreshViewport() {
 			case session.KindThinking, session.KindAudit:
 				target = &clickTarget{key: key}
 			case session.KindMessage:
-				if entry.Item.Message != nil && entry.Item.Message.ContentType == session.ContentTypeNarration {
+				if entry.Item.Message != nil &&
+					(entry.Item.Message.ContentType == session.ContentTypeNarration ||
+						entry.Item.Message.ContentType == session.ContentTypeSkillAuto) {
 					target = &clickTarget{key: key}
 				}
 			case session.KindSubagent:

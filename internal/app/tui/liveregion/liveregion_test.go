@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -180,5 +181,94 @@ func TestZeroWidthDoesNotPanic(t *testing.T) {
 		_ = Render(s, th256)
 		_ = Rows(s)
 		_ = MaxOffset(s)
+	}
+}
+
+// The rail must run the region's full height so the block reads as one
+// unit. Only the header is exempt — its gutter carries the status glyph,
+// which is the top of the rail.
+func TestRailRunsFullHeight(t *testing.T) {
+	s := spec([]string{"body one", "body two"})
+	rows := strings.Split(strings.TrimRight(Render(s, th256), "\n"), "\n")
+	if len(rows) < 4 {
+		t.Fatalf("want header+meta+body+footer, got %d rows", len(rows))
+	}
+	for i, row := range rows[1:] {
+		if !strings.Contains(ansi.Strip(row), glyph.Rail) {
+			t.Errorf("row %d has no rail: %q", i+1, ansi.Strip(row))
+		}
+	}
+}
+
+// THE regression test for the height bug. A body that shrinks must not
+// shrink the region once MinRows records how tall it has been.
+func TestMinRowsHoldsHeightWhenBodyShrinks(t *testing.T) {
+	grown := spec([]string{"a", "b", "c", "d", "e", "f"})
+	tall := Rows(grown)
+	if tall != SubagentRows {
+		t.Fatalf("precondition: want the region at its cap (%d), got %d", SubagentRows, tall)
+	}
+	// The body collapses to one line — what happens when SubagentActivityTail
+	// flips from streamed reasoning to audit summaries.
+	shrunk := spec([]string{"a"})
+	if got := Rows(shrunk); got >= tall {
+		t.Fatalf("precondition: a shrunk body should be shorter without MinRows, got %d", got)
+	}
+	shrunk.MinRows = tall
+	if got := Rows(shrunk); got != tall {
+		t.Fatalf("Rows with MinRows=%d = %d, want %d", tall, got, tall)
+	}
+	if got := strings.Count(Render(shrunk, th256), "\n"); got != tall {
+		t.Fatalf("Render emitted %d rows, want %d", got, tall)
+	}
+}
+
+func TestMinRowsNeverExceedsMaxRows(t *testing.T) {
+	s := spec([]string{"a"})
+	s.MinRows = 99
+	if got := Rows(s); got > s.MaxRows {
+		t.Fatalf("MinRows must not push past MaxRows: got %d, cap %d", got, s.MaxRows)
+	}
+}
+
+func TestMinRowsBelowNaturalIsIgnored(t *testing.T) {
+	s := spec([]string{"a", "b", "c", "d", "e", "f"})
+	natural := Rows(s)
+	s.MinRows = 1
+	if got := Rows(s); got != natural {
+		t.Fatalf("a MinRows below the natural height must be ignored: %d != %d", got, natural)
+	}
+}
+
+// Padding rows still carry the rail, or the block develops a gap.
+func TestPaddingRowsCarryTheRail(t *testing.T) {
+	s := spec([]string{"only one line"})
+	s.MinRows = SubagentRows
+	rows := strings.Split(strings.TrimRight(Render(s, th256), "\n"), "\n")
+	for i, row := range rows[1:] {
+		if !strings.Contains(ansi.Strip(row), glyph.Rail) {
+			t.Errorf("padded row %d has no rail: %q", i+1, ansi.Strip(row))
+		}
+	}
+}
+
+// Padding must not disturb the full-width invariant the tint depends on.
+func TestPaddedRowsAreStillFullWidth(t *testing.T) {
+	s := spec([]string{"one"})
+	s.MinRows = SubagentRows
+	for i, line := range strings.Split(strings.TrimRight(Render(s, th256), "\n"), "\n") {
+		if got := ansi.StringWidth(line); got != s.Width {
+			t.Errorf("row %d width = %d, want %d", i, got, s.Width)
+		}
+	}
+}
+
+func TestFooterStaysLastWhenPadded(t *testing.T) {
+	s := spec([]string{"one"})
+	s.MinRows = SubagentRows
+	rows := strings.Split(strings.TrimRight(Render(s, th256), "\n"), "\n")
+	last := ansi.Strip(rows[len(rows)-1])
+	if !strings.Contains(last, "ctrl+f") {
+		t.Fatalf("footer must remain the last row, got %q", last)
 	}
 }

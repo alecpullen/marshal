@@ -53,9 +53,18 @@ type Spec struct {
 	Body       []string    // logical lines; wrapped internally
 	Footer     string      // e.g. "ctrl+f to drill in"; "" omits the row
 	MaxRows    int         // total cap, header/meta/footer included
-	Offset     int         // display rows scrolled back from the tail
-	Live       bool        // drives the tint
-	Width      int         // full frame width
+	// MinRows is the region's high-water mark: the tallest it has already
+	// rendered. Render pads to it so a body that shrinks does not shrink
+	// the region.
+	//
+	// It exists because Render is pure and cannot remember how tall it has
+	// been, while the body genuinely shrinks — SubagentActivityTail
+	// switches between streamed reasoning and audit summaries, which have
+	// different line counts. The Model owns the mark and passes it back.
+	MinRows int
+	Offset  int  // display rows scrolled back from the tail
+	Live    bool // drives the tint
+	Width   int  // full frame width
 }
 
 func contentWidth(w int) int { return max(w-GutterWidth, 1) }
@@ -109,7 +118,14 @@ func MaxOffset(s Spec) int {
 // Rows reports how many rows Render will emit for s. Callers budget height
 // with this rather than counting newlines.
 func Rows(s Spec) int {
-	return chromeRows(s) + min(len(bodyRows(s)), bodyBudget(s))
+	n := chromeRows(s) + min(len(bodyRows(s)), bodyBudget(s))
+	if s.MinRows > n {
+		n = s.MinRows
+	}
+	// The cap still wins. chromeRows is the floor: a MaxRows smaller than
+	// the chrome still renders the chrome, since dropping the header would
+	// lose the region's identity entirely.
+	return min(n, max(s.MaxRows, chromeRows(s)))
 }
 
 // window returns the visible slice of rows: tail-anchored, offset rows back
@@ -158,19 +174,25 @@ func Render(s Spec, th theme.Theme) string {
 	// Header: gutter glyph, title left, Right pinned to the right edge.
 	writeRow(glyphStyle.Render(" "+g+" ") + headerBody(s, cw, titleStyle, mutedStyle, base))
 
+	rail := mutedStyle.Render(" " + glyph.Rail + " ")
+
 	if s.Meta != "" {
-		writeRow(strings.Repeat(" ", GutterWidth) +
-			mutedStyle.Render(ansi.Truncate(s.Meta, cw, "…")))
+		writeRow(rail + mutedStyle.Render(ansi.Truncate(s.Meta, cw, "…")))
 	}
 
-	rail := mutedStyle.Render(" " + glyph.Rail + " ")
-	for _, line := range window(bodyRows(s), bodyBudget(s), s.Offset) {
+	visible := window(bodyRows(s), bodyBudget(s), s.Offset)
+	// Pad to the high-water mark. Padding goes below the content so the
+	// body stays top-aligned in its area and the region reads as one with
+	// room left, rather than as content pinned oddly to the footer.
+	for pad := Rows(s) - chromeRows(s) - len(visible); pad > 0; pad-- {
+		visible = append(visible, "")
+	}
+	for _, line := range visible {
 		writeRow(rail + mutedStyle.Render(line))
 	}
 
 	if s.Footer != "" {
-		writeRow(strings.Repeat(" ", GutterWidth) +
-			mutedStyle.Render(ansi.Truncate(s.Footer, cw, "…")))
+		writeRow(rail + mutedStyle.Render(ansi.Truncate(s.Footer, cw, "…")))
 	}
 	return b.String()
 }

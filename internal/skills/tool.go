@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"marshal/internal/app/session"
-	"marshal/internal/contextpack"
 	"marshal/internal/tools/registry"
 )
 
@@ -24,9 +23,9 @@ func RegisterTool(reg *registry.Registry, idx *Index, state *session.State) {
 }
 
 // LoadSkillIntoSession loads a skill by name into the session state,
-// posting a compact transcript tag. It checks that the skill exists, is not
-// already active, fits within the context budget, and enforces
-// skills.max_active against explicitly loaded skills.
+// posting a compact transcript tag. It checks that the skill exists, is
+// not already active, and enforces skills.max_active against explicitly
+// loaded skills.
 //
 // Two messages are added: the wrapped body (ContentTypeSkillBody), which
 // feeds the model and persists but is hidden from the transcript, and a
@@ -57,10 +56,12 @@ func WrapBody(skill Skill) string {
 		skill.Body + "\n```\n"
 }
 
-// SkillLoader centralizes skill-loading logic. It rebuilds the context
-// budget estimate on each Load call so that multiple rapid loads within
-// the same turn cannot exceed the budget by each checking against a stale
-// context-pack snapshot.
+// SkillLoader centralizes skill-loading logic.
+//
+// Skill bodies are emitted as their own system messages on the wire (see
+// agent.Runner.appendSkillBodies) and never occupy context-pack budget,
+// so the loader deliberately does not budget-check them against the
+// pack. skills.max_active bounds how many load.
 //
 // This is the single entry point for skill loading: the tool handler,
 // LoadSkillIntoSession, LoadSkillIntoSessionQuiet, and the ACP handler
@@ -100,52 +101,11 @@ func (sl *SkillLoader) Load(name string, quiet bool) error {
 		}
 	}
 
-	if err := sl.checkContextBudget(skill); err != nil {
-		return err
-	}
-
 	sl.state.AddMessage(session.RoleSystem, WrapBody(skill), session.ContentTypeSkillBody)
 	if !quiet {
 		sl.state.AddMessage(session.RoleSystem, skill.Name, session.ContentTypeSkill)
 	}
 	sl.state.ActivateSkill(skill.Name)
-	return nil
-}
-
-// FreshRemainingTokens estimates the remaining context budget by summing
-// the context pack's estimated tokens plus the token cost of all currently
-// active skill bodies, then subtracting from MaxTokens. This ensures
-// consecutive Load calls see an accurate picture that accounts for skills
-// already injected this turn.
-func (sl *SkillLoader) FreshRemainingTokens() int {
-	pack := sl.state.ContextPack()
-	if pack.IsEmpty() {
-		// No context pack set — skip budget check (matches prior behavior).
-		return -1
-	}
-	used := pack.TokenUsage.EstimatedTokens
-	for _, name := range sl.state.ActiveSkills() {
-		if skill, ok := sl.idx.Load(name); ok {
-			used += contextpack.EstimateTokens(skill.Body)
-		}
-	}
-	return pack.TokenUsage.MaxTokens - used
-}
-
-// checkContextBudget verifies the skill body fits within the remaining
-// context budget, accounting for all already-active skill bodies.
-func (sl *SkillLoader) checkContextBudget(skill Skill) error {
-	remaining := sl.FreshRemainingTokens()
-	if remaining < 0 {
-		return nil // no context pack set, skip check
-	}
-	estimatedBody := contextpack.EstimateTokens(skill.Body)
-	if estimatedBody > remaining {
-		return fmt.Errorf(
-			"cannot load skill: body is ~%d tokens but only %d tokens remain in context budget",
-			estimatedBody, remaining,
-		)
-	}
 	return nil
 }
 

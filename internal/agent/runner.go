@@ -899,6 +899,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(prunedMsgs) <= turnThreshold {
 				messages = prunedMsgs
 				r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
+				// Pruning drops stale tool output to stay under the
+				// budget. Say so: dropped context that leaves no trace
+				// reads to the user as the model losing track.
+				r.State.AddMessage(session.RoleSystem,
+					fmt.Sprintf("pruned %d stale tool result(s) to stay within the context budget", n),
+					session.ContentTypeCompaction)
 				continue
 			} else if n > 0 {
 				// Pruning helped but not enough — keep the pruned wire
@@ -908,7 +914,18 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 			// T13: unified intra-turn compaction — rollover when enabled,
 			// fall back to summarizeAndContinue when disabled.
+			beforeMsgs, beforeTokens := len(messages), r.calibratedEstimate(messages)
 			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
+				// Recorded after the call: rolloverAndContinue is what
+				// advances the generation, so Generation().Seq is only
+				// correct once it has returned.
+				r.State.RecordCompaction(session.CompactionInfo{
+					MessagesBefore: beforeMsgs,
+					MessagesAfter:  len(fresh),
+					TokensBefore:   beforeTokens,
+					TokensAfter:    r.calibratedEstimate(fresh),
+					Generation:     r.State.Generation().Seq,
+				})
 				messages = fresh
 				r.resetTokenRatio()
 				if r.CompactionObserver != nil {

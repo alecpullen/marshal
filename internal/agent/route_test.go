@@ -2,10 +2,60 @@ package agent
 
 import (
 	"testing"
+	"time"
 
+	"marshal/internal/contextpack"
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 )
+
+// TestResolveRouteRebuildsPackBudgetToWindow verifies that resolveRoute
+// rebudgets the context pack from the resolved model window even when the
+// route's explicit per-role context budget (MaxRepoContextTokens) is 0 —
+// the default for every role. Previously the rebudget ran before the window
+// was resolved and was skipped entirely at budget 0, so a pack seeded at
+// the flat default stayed there forever.
+func TestResolveRouteRebuildsPackBudgetToWindow(t *testing.T) {
+	state := newTestState(t)
+	// Seed a non-empty pack at the flat default budget, the state a fresh
+	// repo scan leaves behind before any route has resolved a window.
+	state.UpdateContextPack(func(p contextpack.Pack) contextpack.Pack {
+		p.Sections = append(p.Sections, contextpack.Section{
+			Kind:    contextpack.SectionRepoCard,
+			Title:   "card",
+			Content: "a repo card",
+		})
+		p.TokenUsage.MaxTokens = contextpack.DefaultMaxTokens
+		return p
+	})
+
+	// The route resolves to a model with a known 200k context window. The
+	// explicit per-role ContextBudget is left zero (its default), so only
+	// the window-derived budget can apply.
+	r := &Runner{
+		State: state,
+		Now:   func() time.Time { return time.Unix(100, 0) },
+		RouteResolver: &staticResolver{
+			route: routing.Route{
+				Preset: routing.ModelPreset{
+					Provider:        "test-provider",
+					Model:           "big-model",
+					ContextWindow:   200000,
+					MaxOutputTokens: 8192,
+				},
+			},
+		},
+	}
+
+	task := NewTask("understand this repo", time.Now())
+	r.resolveRoute(task)
+
+	got := state.ContextPack().TokenUsage.MaxTokens
+	if want := contextpack.BudgetForWindow(200000); got != want {
+		t.Fatalf("pack budget after resolveRoute = %d, want %d (BudgetForWindow(200000)); still at DefaultMaxTokens=%d",
+			got, want, contextpack.DefaultMaxTokens)
+	}
+}
 
 func TestResolveModelLimitsPrefersPreset(t *testing.T) {
 	r := &Runner{}

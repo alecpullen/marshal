@@ -123,18 +123,9 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 		LocalOnly: route.Preset.LocalOnly,
 		Active:    true,
 	})
-	if route.ContextBudget.MaxRepoContextTokens > 0 {
-		r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
-			if pack.IsEmpty() {
-				return pack
-			}
-			return contextpack.Rebudget(pack, route.ContextBudget.MaxRepoContextTokens, r.Now)
-		})
-	}
-
 	// F12: resolve the model's context window, preferring explicit config on
 	// the preset, then the fetched limits table, then the curated local
-	// catalog. The window is recorded on state and consumed by the per-turn
+	// catalog. The window is recorded on the state and consumed by the per-turn
 	// effectiveTurnThreshold call below — resolveRoute no longer mutates
 	// r.MaxTurnContextTokens, so one small-model turn cannot poison later
 	// big-model turns.
@@ -144,6 +135,27 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 	route.Window = window
 	route.MaxOutput = maxOut
 	r.State.SetTurnContextWindow(window)
+
+	// Rebudget the pack now that the window is known. Explicit per-role
+	// config still wins; otherwise the budget scales with the model
+	// rather than sitting at the flat default. This runs after the
+	// window resolves — the previous placement, above resolveModelLimits,
+	// could never have used it.
+	//
+	// Sections keep their untruncated text (Section.Full), so a pack
+	// seeded at the default budget before any route existed recovers its
+	// full content here when the model turns out to have a large window.
+	packBudget := route.ContextBudget.MaxRepoContextTokens
+	if packBudget <= 0 {
+		packBudget = contextpack.BudgetForWindow(window)
+	}
+	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+		if pack.IsEmpty() {
+			return pack
+		}
+		return contextpack.Rebudget(pack, packBudget, r.Now)
+	})
+
 	return turnProvider, turnModel, route
 }
 

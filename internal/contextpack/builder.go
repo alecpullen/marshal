@@ -130,36 +130,85 @@ func buildPackFromSections(sections []Section, maxTokens int, generatedAt time.T
 	// meaning more foundational content gets budget priority).
 	var pinned, regular []Section
 	for _, s := range sections {
+		// Restore the untruncated text before measuring: a section that
+		// was truncated under an earlier, smaller budget must be able to
+		// come back in full when the budget grows.
+		if s.Full == "" {
+			s.Full = s.Content
+		}
+		s.Content = s.Full
 		s.EstimatedTokens = EstimateTokens(s.Content)
 		if s.EstimatedTokens == 0 {
 			continue
 		}
-		if s.Priority >= 100 {
+		if s.Priority >= pinnedPriority {
 			pinned = append(pinned, s)
 		} else {
 			regular = append(regular, s)
 		}
 	}
 
+	// Allocate lowest-Priority-first (RepoCard=10 ... Scratchpad=50 —
+	// lower means more foundational) rather than in insertion order, so
+	// which sections survive budget pressure is decided by importance.
+	// allocOrder holds indices into regular; the render order below is
+	// still insertion order, so only survival is priority-driven.
+	allocOrder := make([]int, len(regular))
+	for i := range allocOrder {
+		allocOrder[i] = i
+	}
+	sort.SliceStable(allocOrder, func(a, b int) bool {
+		return regular[allocOrder[a]].Priority < regular[allocOrder[b]].Priority
+	})
+
 	remaining := maxTokens
-	for _, s := range slices.Concat(pinned, regular) {
-		if s.EstimatedTokens <= remaining {
-			pack.Sections = append(pack.Sections, s)
+	keep := make([]bool, len(regular))
+
+	// admit decides whether a section fits, truncating it to its
+	// allowance when it does not. It mutates s in place and reports
+	// whether the section survives.
+	admit := func(s *Section, isPinned bool) bool {
+		allowance := remaining
+		if !isPinned {
+			if share := maxTokens / sectionShareDenominator; share > 0 && allowance > share {
+				allowance = share
+			}
+		}
+		if s.EstimatedTokens <= allowance {
 			pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
 			remaining -= s.EstimatedTokens
-			continue
+			return true
 		}
-		truncated, ok := truncateToTokens(s.Content, remaining)
+		truncated, ok := truncateToTokens(s.Content, allowance)
 		if !ok {
 			pack.TokenUsage.Truncated = true
-			continue
+			return false
 		}
 		s.Content = truncated
 		s.EstimatedTokens = EstimateTokens(s.Content)
-		pack.Sections = append(pack.Sections, s)
 		pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
 		pack.TokenUsage.Truncated = true
 		remaining -= s.EstimatedTokens
+		return true
+	}
+
+	// Pinned sections first: they bypass the fairness cap and cannot be
+	// starved by the greedy pass.
+	for i := range pinned {
+		if admit(&pinned[i], true) {
+			pack.Sections = append(pack.Sections, pinned[i])
+		}
+	}
+	// Then the rest, allocated by priority...
+	for _, i := range allocOrder {
+		keep[i] = admit(&regular[i], false)
+	}
+	// ...but emitted in insertion order, so the rendered layout is
+	// unchanged and pinned sections still lead.
+	for i := range regular {
+		if keep[i] {
+			pack.Sections = append(pack.Sections, regular[i])
+		}
 	}
 
 	return pack

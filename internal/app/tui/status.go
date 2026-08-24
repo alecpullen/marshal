@@ -188,6 +188,16 @@ func (m Model) statusLeftSegments() []statusSeg {
 			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
 	}
 
+	// Generation > 0 means the session has compacted at least once. Show
+	// it so a user who notices the agent "forgetting" can see that a
+	// handoff happened rather than guessing.
+	if gen := m.state.Generation(); gen.Seq > 0 {
+		segs = append(segs, statusSeg{
+			text:     dimStyle().Render(fmt.Sprintf("gen %d", gen.Seq)),
+			priority: 4,
+		})
+	}
+
 	if leaves := m.state.Branches(); len(leaves) > 1 {
 		cur := m.state.LeafID()
 		idx := 1

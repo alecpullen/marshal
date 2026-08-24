@@ -1585,3 +1585,22 @@ func TestJobExitRowIsNotTinted(t *testing.T) {
 		t.Fatal("flat = history: a job exit row must not be tinted")
 	}
 }
+
+func TestCompactionMarkerRendersAsOneLine(t *testing.T) {
+	out := renderMessage(session.Message{
+		Role:        session.RoleSystem,
+		ContentType: session.ContentTypeCompaction,
+		Content:     "compacted 62 messages to 5 · 118k → 9k · generation 3",
+	}, 80)
+
+	if out == "" {
+		t.Fatal("compaction marker rendered empty")
+	}
+	if !strings.Contains(out, "compacted") {
+		t.Errorf("marker text missing from %q", out)
+	}
+	// One line of content: it is a boundary marker, not prose.
+	if n := strings.Count(strings.TrimRight(out, "\n"), "\n"); n != 0 {
+		t.Errorf("marker spans %d extra lines, want a single line: %q", n+1, out)
+	}
+}

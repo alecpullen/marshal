@@ -4,6 +4,27 @@ import "time"
 
 const DefaultMaxTokens = 12000
 
+// sectionShareDenominator bounds how much of the pack budget any single
+// non-pinned section may claim: at most maxTokens/sectionShareDenominator.
+//
+// Without it the first large section wins everything. A repo directory
+// map grows with the repo and is unbounded in practice — on a mid-size
+// Go repo it alone exceeds the whole default budget — so it would
+// otherwise evict the memory, session-summary, plan, and todo sections
+// that carry everything the agent is supposed to remember. Those
+// sections are small; reserving half the budget is enough to fit all of
+// them with room to spare, and the map degrades gracefully because it is
+// orientation material that truncates without losing its shape.
+//
+// Pinned sections (Priority >= pinnedPriority) are exempt: the user asked
+// for those by name.
+const sectionShareDenominator = 2
+
+// pinnedPriority is the Priority at or above which a section is pinned:
+// exempt from the fairness cap, allocated before everything else, and
+// rendered first. PinFiles assigns it.
+const pinnedPriority = 100
+
 type SectionKind string
 
 const (
@@ -26,9 +47,16 @@ type Pack struct {
 }
 
 type Section struct {
-	Kind            SectionKind
-	Title           string
-	Content         string
+	Kind    SectionKind
+	Title   string
+	Content string
+	// Full is the section's untruncated text. buildPackFromSections
+	// restores Content from it before every budget pass, so a pack
+	// truncated under a small budget can be rebudgeted upward without
+	// having permanently lost the dropped text. Empty on a section that
+	// has never been through a budget pass, in which case Content is
+	// already the full text.
+	Full            string
 	Source          string
 	Priority        int
 	EstimatedTokens int

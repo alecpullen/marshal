@@ -474,6 +474,8 @@ func renderMessage(msg session.Message, width int) string {
 		return ""
 	case session.ContentTypeSkill:
 		return renderSkillTag(msg.Content, width)
+	case session.ContentTypeCompaction:
+		return renderCompactionMarker(msg.Content, width)
 	}
 	if msg.Final {
 		return renderFinalAnswer(msg, width)
@@ -780,6 +782,16 @@ func renderSkillTag(name string, width int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// renderCompactionMarker renders a context compaction as a single dim
+// rule-like line. Compaction silently discards most of the transcript, so
+// the marker exists to make the seam visible: without it a long session
+// looks like the model spontaneously forgot its earlier work.
+func renderCompactionMarker(text string, width int) string {
+	label := " " + text + " "
+	rule := strings.Repeat("─", max(width-lipgloss.Width(label)-3, 0))
+	return dimStyle().Render("─"+label+rule) + "\n"
 }
 
 func renderSystemNotice(content string, width int) string {

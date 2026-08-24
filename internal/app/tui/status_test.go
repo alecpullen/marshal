@@ -708,3 +708,22 @@ func TestStatusLineHasNoPackSegment(t *testing.T) {
 		t.Fatalf("pack estimate must not appear in the status line:\n%s", line)
 	}
 }
+
+func TestStatusShowsGenerationAfterCompaction(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.BeginGeneration("gen-3", 3, "digest")
+
+	out := m.renderStatusLine(100)
+
+	if !strings.Contains(out, "gen 3") {
+		t.Errorf("status line does not show the generation: %q", out)
+	}
+}
+
+func TestStatusHidesGenerationBeforeAnyCompaction(t *testing.T) {
+	m := newStatusTestModel(t)
+	// Generation 0 is the session's first window — not a compaction.
+	if out := m.renderStatusLine(100); strings.Contains(out, "gen ") {
+		t.Errorf("generation 0 should not be shown: %q", out)
+	}
+}

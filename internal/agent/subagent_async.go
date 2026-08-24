@@ -20,9 +20,9 @@ type agentAwaitArgs struct {
 // genuinely needs a background child's result before continuing.
 func NewSubagentAwaitTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
-		Name: "agent.await",
+		Name:        "agent.await",
 		Description: `Wait for a background subagent started by agent.run to finish and return its report. Pass "id" (from the agent.run start message) to wait for one subagent, or "all": true to wait for every outstanding subagent. Blocks until the target(s) finish or the turn is cancelled — there is no timeout. Prefer continuing other work when the result is not needed yet; each subagent's report is also delivered to you automatically when it finishes.`,
-		Schema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"all":{"type":"boolean","description":"Wait for all outstanding subagents."}},"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"all":{"type":"boolean","description":"Wait for all outstanding subagents."}},"additionalProperties":false}`),
 		// MUST stay read-only: a blocking handler that held the write gate
 		// would deadlock the very child it is waiting for, once the parent
 		// runner carries a WriteGate.
@@ -84,10 +84,10 @@ type agentOutputArgs struct {
 // (internal/tools/native/jobs.go).
 func NewSubagentOutputTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
-		Name: "agent.output",
+		Name:        "agent.output",
 		Description: `Peek at a background subagent started by agent.run without waiting for it: returns its status (running/finished/failed), its final report once finished (or the failure text), and a short tail of its recent activity while running. Use agent.await to block until a subagent finishes.`,
-		Schema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"tail_lines":{"type":"integer","description":"Number of recent activity lines to include while running (default 5)."}},"required":["id"],"additionalProperties":false}`),
-		Risk: registry.RiskReadOnly,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"tail_lines":{"type":"integer","description":"Number of recent activity lines to include while running (default 5)."}},"required":["id"],"additionalProperties":false}`),
+		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		var args agentOutputArgs

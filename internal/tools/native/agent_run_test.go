@@ -56,24 +56,42 @@ func TestAgentRunToolRegistersAndDispatchesToChild(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("factory calls = %d, want 1", calls)
 	}
+	// The handler returns immediately with a handle; the child runs in the
+	// background. Wait for it to finish before asserting on exec.
+	if !strings.HasPrefix(res.Summary, "started as subagent") {
+		t.Fatalf("summary = %q, want a started handle", res.Summary)
+	}
+	views := state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("registered subagents = %d, want 1", len(views))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, views[0].ID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
 	if gotChild == nil {
 		t.Fatal("exec did not receive child runner")
 	}
 	if gotPrompt != "find the parse function" {
 		t.Fatalf("prompt = %q, want %q", gotPrompt, "find the parse function")
 	}
-	if !strings.HasPrefix(res.Summary, "subagent completed: parse lookup") {
-		t.Fatalf("summary = %q, want subagent-completed prefix", res.Summary)
+	if view.Summary != "child summary text" {
+		t.Fatalf("view.Summary = %q, want %q", view.Summary, "child summary text")
 	}
-	if res.Content != "child summary text" {
-		t.Fatalf("content = %q, want %q", res.Content, "child summary text")
-	}
-	// Counters must be back to zero after a successful invocation.
+	// Counters must be back to zero after the child completes. The
+	// concurrency slot is released by a deferred ExitSubagent that runs
+	// just after FinishSubagent closes the done channel, so poll for it.
 	if got := state.SubagentDepth(); got != 0 {
 		t.Fatalf("depth after = %d, want 0", got)
 	}
-	if got := state.SubagentConcurrency(); got != 0 {
-		t.Fatalf("concurrency after = %d, want 0", got)
+	deadline := time.Now().Add(5 * time.Second)
+	for state.SubagentConcurrency() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("concurrency after = %d, want 0", state.SubagentConcurrency())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

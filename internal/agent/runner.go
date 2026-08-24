@@ -1513,5 +1513,3 @@ func (r *Runner) unverifiedMutation() (callEntry, bool) {
 	defer r.trackerMu.Unlock()
 	return r.tracker.unverifiedMutation()
 }
-
-

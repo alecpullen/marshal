@@ -386,6 +386,85 @@ func (s *State) WaitSubagent(ctx context.Context, id int64) (SubagentView, error
 	return SubagentView{}, fmt.Errorf("session: unknown subagent id %d", id)
 }
 
+// WaitAnySubagent blocks until the first of ids finishes and returns its view.
+//
+// It exists because the concurrency cap (EnterSubagent) is a hard error: a
+// parent at the cap that could only wait for one specific child or for *all*
+// of them had no way to reclaim the single slot that frees first, so it
+// waited for the whole batch. This is the first-to-finish primitive that lets
+// it proceed as soon as any slot opens.
+//
+// A child that has already finished wins immediately — FinishSubagent deletes
+// its done channel, so there is nothing left to select on and blocking would
+// hang forever.
+//
+// The fan-in spawns one goroutine per still-running child. N is bounded by
+// the session's cap (default 3, ceiling 8), so this is cheaper and far more
+// readable than reflect.Select. The result channel is buffered to len so no
+// loser can block on send, and stop is closed on return so every loser is
+// released rather than parked until its child eventually finishes.
+func (s *State) WaitAnySubagent(ctx context.Context, ids []int64) (SubagentView, error) {
+	if len(ids) == 0 {
+		return SubagentView{}, fmt.Errorf("session: WaitAnySubagent requires at least one id")
+	}
+
+	type waiter struct {
+		id   int64
+		done chan struct{}
+	}
+
+	s.mu.Lock()
+	var waiters []waiter
+	for _, id := range ids {
+		var found *SubagentView
+		for i := range s.subagents {
+			if s.subagents[i].ID == id {
+				v := s.subagents[i]
+				found = &v
+				break
+			}
+		}
+		if found == nil {
+			continue
+		}
+		done := s.subagentDone[id]
+		if found.Status != SubagentRunning || done == nil {
+			s.mu.Unlock()
+			return *found, nil
+		}
+		waiters = append(waiters, waiter{id: id, done: done})
+	}
+	s.mu.Unlock()
+
+	if len(waiters) == 0 {
+		return SubagentView{}, fmt.Errorf("session: no known subagents among %v", ids)
+	}
+
+	winner := make(chan int64, len(waiters))
+	stop := make(chan struct{})
+	defer close(stop)
+
+	for _, w := range waiters {
+		w := w
+		go func() {
+			select {
+			case <-w.done:
+				winner <- w.id
+			case <-ctx.Done():
+			case <-stop:
+			}
+		}()
+	}
+
+	select {
+	case id := <-winner:
+		v, _ := s.Subagent(id)
+		return v, nil
+	case <-ctx.Done():
+		return SubagentView{}, ctx.Err()
+	}
+}
+
 // maxReasoningTailBytes caps how much of the in-progress reasoning buffer
 // SubagentActivityTail scans. The reasoning buffer can grow unboundedly
 // within one model call; without this cap, splitting it into lines would

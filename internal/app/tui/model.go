@@ -4602,14 +4602,18 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		newCfg.Providers = map[string]config.ProviderConfig{}
 	}
 	if msg.ProviderCfg.Type != "" {
+		// pc is an explicit copy: ProviderConfig is a value struct, and both
+		// this map entry and the SaveUserConfigProviderAPIKey call below
+		// must observe the same cleared APIKeyEnv.
+		pc := msg.ProviderCfg
 		// A literal key was just persisted to the user config. Ensure the
 		// project snapshot (and therefore the project file) does not retain a
 		// stale api_key_env reference from the provider template, which would
 		// shadow the saved literal key during layered config merge.
-		if msg.ProviderCfg.APIKey != "" {
-			msg.ProviderCfg.APIKeyEnv = ""
+		if pc.APIKey != "" {
+			pc.APIKeyEnv = ""
 		}
-		newCfg.Providers[msg.Provider] = msg.ProviderCfg
+		newCfg.Providers[msg.Provider] = pc
 	}
 	if msg.EnabledRemote {
 		newCfg.Privacy.RemoteProvidersAllowed = true
@@ -4655,7 +4659,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 			return
 		}
 		if err := config.SaveUserConfigProviderAPIKey(
-			config.UserConfigPath(home), msg.Provider, msg.ProviderCfg.APIKey); err != nil {
+			config.UserConfigPath(home), msg.Provider, msg.ProviderCfg); err != nil {
 			m.state.AddMessage(session.RoleSystem,
 				fmt.Sprintf("✗ Failed to save API key: %v", err), session.ContentTypePlain)
 			return

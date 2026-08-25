@@ -463,7 +463,27 @@ func writeUserConfigFile(path string, data []byte) error {
 	return os.WriteFile(path, data, userConfigFileMode)
 }
 
-func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
+// SaveUserConfigProviderAPIKey persists the given ProviderConfig for
+// providerName in the user-global config. Callers pass either a full config
+// carrying the provider's metadata (type, base_url, template, capabilities)
+// or a credential-only value when they know an entry already exists.
+//
+// Issue #9: persisting only the key for a brand-new provider used to create
+// a zero-value skeleton ([providers.x] with type = "" and base_url = "")
+// that only worked in the project whose .marshal/config.toml supplied the
+// real metadata. A global credential must stay usable from any repository,
+// so callers that know the full provider config pass it here; the save then
+// behaves as a credential overlay:
+//
+//   - when the incoming value is "full" (Type set), every field is taken
+//     exactly as provided — including turning capabilities such as
+//     tool_calling off. This matches re-connect through the connect flow,
+//     which owns the authoritative provider definition;
+//   - otherwise (credential-only update) non-credential fields are
+//     preserved from the existing entry and only credentials are written;
+//   - credentials always come from the incoming value (api_key is stored,
+//     api_key_env cleared so a stale env reference cannot shadow the key).
+func SaveUserConfigProviderAPIKey(path, providerName string, pc ProviderConfig) error {
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load user config: %w", err)
@@ -471,10 +491,40 @@ func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 	if file.Providers == nil {
 		file.Providers = make(map[string]ProviderConfig, 1)
 	}
+
+	in := pc
 	existing := file.Providers[providerName]
-	existing.APIKey = apiKey
-	existing.APIKeyEnv = "" // clear stale env-var reference when switching to inline
-	file.Providers[providerName] = existing
+	merged := existing
+	if in.Type != "" {
+		// Full provider definition: take every field exactly as provided so
+		// the caller can also downgrade capabilities (e.g. a probe on
+		// re-connect found no tool support).
+		merged.Type = in.Type
+		merged.BaseURL = in.BaseURL
+		merged.Template = in.Template
+		merged.ToolCalling = in.ToolCalling
+		merged.KeepAlive = in.KeepAlive
+		merged.ThinkingBudget = in.ThinkingBudget
+		merged.ReasoningSummary = in.ReasoningSummary
+	} else {
+		// Credential-only update of an existing entry: preserve its
+		// non-credential metadata.
+		if in.BaseURL != "" {
+			merged.BaseURL = in.BaseURL
+		}
+		if in.ToolCalling {
+			merged.ToolCalling = true
+		}
+		if in.ThinkingBudget != 0 {
+			merged.ThinkingBudget = in.ThinkingBudget
+		}
+		if in.ReasoningSummary {
+			merged.ReasoningSummary = true
+		}
+	}
+	merged.APIKey = in.APIKey
+	merged.APIKeyEnv = "" // clear stale env-var reference when switching to inline
+	file.Providers[providerName] = merged
 
 	data, err := toml.Marshal(&file)
 	if err != nil {

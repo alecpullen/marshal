@@ -1102,7 +1102,7 @@ func TestSaveUserConfigSectionPreservesUnrelated(t *testing.T) {
 }
 func TestSaveUserConfigProviderAPIKeyWritesKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-test-123"); err != nil {
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ProviderConfig{APIKey: "sk-test-123"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -1116,11 +1116,11 @@ func TestSaveUserConfigProviderAPIKeyWritesKey(t *testing.T) {
 
 func TestSaveUserConfigProviderAPIKeyClearsStaleEnvRef(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := SaveUserConfigProviderAPIKey(path, "openai", ""); err != nil {
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ProviderConfig{APIKey: ""}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Seed an env reference, then switch to an inline key.
-	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-inline"); err != nil {
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ProviderConfig{APIKey: "sk-inline"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	data, _ := os.ReadFile(path)
@@ -1131,12 +1131,198 @@ func TestSaveUserConfigProviderAPIKeyClearsStaleEnvRef(t *testing.T) {
 	}
 }
 
+// Regression test for issue #9: saving a credential for a provider that is
+// not yet in the user config must persist the provider's real metadata
+// (type, base_url, template, capabilities), not a zero-value skeleton. The
+// saved entry has to yield a usable merged config when loaded with no
+// project layer at all — i.e. from any other repository.
+func TestSaveUserConfigProviderAPIKeyNewEntryPersistsFullProvider(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	work := filepath.Join(dir, "other-repo")
+	for _, d := range []string{home, work} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	userPath := UserConfigPath(home)
+
+	if err := SaveUserConfigProviderAPIKey(userPath, "ollama-cloud", ProviderConfig{
+		Type:        "ollama",
+		BaseURL:     "https://ollama.com",
+		APIKey:      "sk-live-123",
+		ToolCalling: true,
+		Template:    "ollama-cloud",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Load exactly as Marshal would from an unrelated repository: no project
+	// config exists under work.
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	pc, ok := cfg.Providers["ollama-cloud"]
+	if !ok {
+		t.Fatalf("provider missing after load; providers=%v", cfg.Providers)
+	}
+	if pc.Type != "ollama" {
+		t.Errorf("type = %q, want %q", pc.Type, "ollama")
+	}
+	if pc.BaseURL != "https://ollama.com" {
+		t.Errorf("base_url = %q, want https://ollama.com", pc.BaseURL)
+	}
+	if pc.APIKey != "sk-live-123" {
+		t.Errorf("api_key lost: %q", pc.APIKey)
+	}
+	if pc.APIKeyEnv != "" {
+		t.Errorf("api_key_env = %q, want cleared", pc.APIKeyEnv)
+	}
+	if pc.ToolCalling != true {
+		t.Errorf("tool_calling = false, want true")
+	}
+	if pc.Template != "ollama-cloud" {
+		t.Errorf("template = %q, want ollama-cloud", pc.Template)
+	}
+}
+
+// An existing global entry must keep its non-credential metadata when only
+// the key rotates — callers may pass a credential-only value here.
+func TestSaveUserConfigProviderAPIKeyExistingEntryKeepsMetadata(t *testing.T) {
+	home := t.TempDir()
+	path := UserConfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := "# Marshal global configuration\n\n[providers.openai]\ntype = \"openai_compatible\"\nbase_url = \"https://api.openai.com/v1\"\napi_key_env = \"OPENAI_API_KEY\"\ntool_calling = true\n"
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ProviderConfig{APIKey: "sk-new"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	pc, ok := cfg.Providers["openai"]
+	if !ok {
+		t.Fatalf("provider missing after load")
+	}
+	if pc.Type != "openai_compatible" || pc.BaseURL != "https://api.openai.com/v1" || !pc.ToolCalling {
+		t.Fatalf("metadata clobbered: %+v", pc)
+	}
+	if pc.APIKey != "sk-new" {
+		t.Errorf("api_key = %q, want sk-new", pc.APIKey)
+	}
+	if pc.APIKeyEnv != "" {
+		t.Errorf("api_key_env = %q, want cleared", pc.APIKeyEnv)
+	}
+}
+
+// A full provider definition (Type set) must write capabilities exactly as
+// provided — including turning them off. Before this was explicit, an
+// existing tool_calling = true survived a re-connect whose probe concluded
+// the provider has no native tool support.
+func TestSaveUserConfigProviderAPIKeyFullConfigCanDowngradeCapability(t *testing.T) {
+	home := t.TempDir()
+	path := UserConfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := "# Marshal global configuration\n\n[providers.openai]\ntype = \"openai_compatible\"\nbase_url = \"https://api.openai.com/v1\"\napi_key_env = \"OPENAI_API_KEY\"\ntool_calling = true\nreasoning_summary = true\n"
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ProviderConfig{
+		Type:    "openai",
+		BaseURL: "https://api.openai.com/v2",
+		APIKey:  "sk-new",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	pc, ok := cfg.Providers["openai"]
+	if !ok {
+		t.Fatalf("provider missing after load")
+	}
+	if pc.Type != "openai" {
+		t.Errorf("type = %q, want openai", pc.Type)
+	}
+	if pc.BaseURL != "https://api.openai.com/v2" {
+		t.Errorf("base_url = %q, want https://api.openai.com/v2", pc.BaseURL)
+	}
+	if pc.ToolCalling {
+		t.Errorf("tool_calling = true, want false (downgraded by full config)")
+	}
+	if pc.ReasoningSummary {
+		t.Errorf("reasoning_summary = true, want false (downgraded by full config)")
+	}
+	if pc.APIKey != "sk-new" {
+		t.Errorf("api_key = %q, want sk-new", pc.APIKey)
+	}
+	if pc.APIKeyEnv != "" {
+		t.Errorf("api_key_env = %q, want cleared", pc.APIKeyEnv)
+	}
+}
+
+// Re-connecting through the connect flow changes base_url (self-hosted
+// endpoints move). The credential-only path must update it when supplied
+// while preserving the rest of the entry's metadata.
+func TestSaveUserConfigProviderAPIKeyBaseURLOnReconnect(t *testing.T) {
+	home := t.TempDir()
+	path := UserConfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := "# Marshal global configuration\n\n[providers.ollama]\ntype = \"ollama\"\nbase_url = \"http://localhost:11434\"\ntemplate = \"ollama\"\ntool_calling = true\n"
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Credential-only rotation must not disturb base_url...
+	if err := SaveUserConfigProviderAPIKey(path, "ollama", ProviderConfig{APIKey: "sk-1"}); err != nil {
+		t.Fatalf("save credential-only: %v", err)
+	}
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load after credential-only: %v", err)
+	}
+	if pc := cfg.Providers["ollama"]; pc.BaseURL != "http://localhost:11434" {
+		t.Fatalf("credential-only save clobbered base_url: %q", pc.BaseURL)
+	}
+	// ...but an explicit re-connect with a new endpoint must move it.
+	if err := SaveUserConfigProviderAPIKey(path, "ollama", ProviderConfig{
+		BaseURL: "http://192.168.1.10:11434",
+		APIKey:  "sk-2",
+	}); err != nil {
+		t.Fatalf("save reconnect: %v", err)
+	}
+	cfg, err = Load(LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load after reconnect: %v", err)
+	}
+	pc, ok := cfg.Providers["ollama"]
+	if !ok {
+		t.Fatalf("provider missing after load")
+	}
+	if pc.BaseURL != "http://192.168.1.10:11434" {
+		t.Errorf("base_url = %q, want http://192.168.1.10:11434", pc.BaseURL)
+	}
+	if pc.Type != "ollama" || pc.Template != "ollama" || !pc.ToolCalling {
+		t.Errorf("metadata not preserved across base_url update: %+v", pc)
+	}
+}
+
 func TestSaveUserConfigProviderAPIKeyPreservesOtherProviders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-a"); err != nil {
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ProviderConfig{APIKey: "sk-a"}); err != nil {
 		t.Fatalf("save a: %v", err)
 	}
-	if err := SaveUserConfigProviderAPIKey(path, "groq", "sk-b"); err != nil {
+	if err := SaveUserConfigProviderAPIKey(path, "groq", ProviderConfig{APIKey: "sk-b"}); err != nil {
 		t.Fatalf("save b: %v", err)
 	}
 	data, _ := os.ReadFile(path)

@@ -98,6 +98,8 @@ var backgroundPairs = [][2]func(*Theme) *color.Color{
 		func(t *Theme) *color.Color { return &t.BGBase }},
 	{func(t *Theme) *color.Color { return &t.BorderMuted },
 		func(t *Theme) *color.Color { return &t.BGSurface }},
+	{func(t *Theme) *color.Color { return &t.FGDefault },
+		func(t *Theme) *color.Color { return &t.BGOverlay }},
 }
 
 // downsampleTo16 maps a 256-color theme onto the 16-ANSI set by nearest
@@ -165,7 +167,7 @@ func separatePairs(t *Theme) {
 func allSlots(t *Theme) []*color.Color {
 	return []*color.Color{
 		&t.FGDefault, &t.FGMuted, &t.BorderMuted, &t.FGEmphasis,
-		&t.BGBase, &t.BGSurface, &t.BGSelection,
+		&t.BGBase, &t.BGSurface, &t.BGOverlay, &t.BGSelection,
 		&t.AccentPrimary, &t.AccentSecondary, &t.AccentTertiary,
 		&t.UserPrompt,
 		&t.StatusError, &t.StatusWarning, &t.StatusSuccess, &t.StatusInfo,

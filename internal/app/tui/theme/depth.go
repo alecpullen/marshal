@@ -101,3 +101,15 @@ func (t Theme) TranscriptBG() color.Color {
 	}
 	return t.BGBase
 }
+
+// OverlayBG is the background for pickers and modals — the plane above
+// ChromeBG. It is NoColor below DepthRaised.
+//
+// Because it is the lightest plane, any text rendered on it governs the
+// contrast floor for the whole neutral ramp (see contrast_test.go).
+func (t Theme) OverlayBG() color.Color {
+	if t.Depth < DepthRaised {
+		return lipgloss.NoColor{}
+	}
+	return t.BGOverlay
+}

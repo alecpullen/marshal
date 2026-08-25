@@ -182,3 +182,44 @@ func TestPlanesAreDistinguishable(t *testing.T) {
 		t.Errorf("plane separation %.2f:1 is below the 1.5:1 legibility floor", got)
 	}
 }
+
+func TestOverlayBGFollowsDepth(t *testing.T) {
+	th := warmSunset256
+	th.Depth = DepthFlat
+	if !isNoColor(th.OverlayBG()) {
+		t.Error("flat must not paint an overlay")
+	}
+	th.Depth = DepthRaised
+	if isNoColor(th.OverlayBG()) {
+		t.Error("raised must paint the overlay plane")
+	}
+	if th.OverlayBG() != th.BGOverlay {
+		t.Error("OverlayBG must return the BGOverlay slot verbatim")
+	}
+}
+
+// The ladder must be strictly ordered by lightness: base < surface < overlay.
+// A flat or inverted step means the planes cannot be told apart.
+func TestOverlayIsLightestPlane(t *testing.T) {
+	base, _ := index256(warmSunset256.BGBase)
+	surface, _ := index256(warmSunset256.BGSurface)
+	overlay, _ := index256(warmSunset256.BGOverlay)
+	if !(base < surface && surface < overlay) {
+		t.Fatalf("plane ladder not ordered: base %d, surface %d, overlay %d", base, surface, overlay)
+	}
+}
+
+// Every preset must define the slot — a nil slot panics when painted.
+func TestAllPresetsDefineOverlay(t *testing.T) {
+	for name, th := range presets {
+		if th.BGOverlay == nil {
+			t.Errorf("preset %q has a nil BGOverlay", name)
+		}
+	}
+	if warmSunset16.BGOverlay == nil {
+		t.Error("warmSunset16 has a nil BGOverlay")
+	}
+	if !isNoColor(monochromeTheme().BGOverlay) {
+		t.Error("monochrome BGOverlay must be NoColor")
+	}
+}

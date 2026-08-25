@@ -74,6 +74,7 @@ type Theme struct {
 	// correct, not dead code.
 	BGBase          color.Color
 	BGSurface       color.Color
+	BGOverlay       color.Color // pickers and modals — the lightest plane
 	BGSelection     color.Color
 	AccentPrimary   color.Color
 	AccentSecondary color.Color
@@ -102,7 +103,8 @@ var warmSunset256 = Theme{
 	FGEmphasis:      lipgloss.Color("255"),
 	BGBase:          lipgloss.Color("232"),
 	BGSurface:       lipgloss.Color("236"),
-	BGSelection:     lipgloss.Color("238"),
+	BGOverlay:       lipgloss.Color("237"),
+	BGSelection:     lipgloss.Color("239"),
 	AccentPrimary:   lipgloss.Color("209"),
 	AccentSecondary: lipgloss.Color("177"),
 	AccentTertiary:  lipgloss.Color("183"),
@@ -127,6 +129,7 @@ var warmSunset16 = Theme{
 	FGEmphasis:      lipgloss.Color("15"),
 	BGBase:          lipgloss.Color("0"),
 	BGSurface:       lipgloss.Color("8"),
+	BGOverlay:       lipgloss.Color("8"),
 	BGSelection:     lipgloss.Color("4"),
 	AccentPrimary:   lipgloss.Color("5"),
 	AccentSecondary: lipgloss.Color("6"),
@@ -151,6 +154,7 @@ func monochromeTheme() Theme {
 		FGEmphasis:      lipgloss.NoColor{},
 		BGBase:          lipgloss.NoColor{},
 		BGSurface:       lipgloss.NoColor{},
+		BGOverlay:       lipgloss.NoColor{},
 		BGSelection:     lipgloss.NoColor{},
 		AccentPrimary:   lipgloss.NoColor{},
 		AccentSecondary: lipgloss.NoColor{},

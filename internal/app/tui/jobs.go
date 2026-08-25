@@ -5,7 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 )
@@ -61,7 +63,8 @@ func (m Model) renderJobLane() string {
 		b.WriteString("\n")
 	}
 
-	return laneSeparator(width) + chromeRailWidth(b.String(), dimColor, max(width-1, 1))
+	out := laneSeparator(width) + chromeRailWidth(b.String(), dimColor, max(width-1, 1))
+	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
 }
 
 // jobLaneRows reports the lane's rendered height for the frame's height

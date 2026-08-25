@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
@@ -114,7 +115,8 @@ func (m Model) renderStatusLine(width int) string {
 		gap = statusMinGap
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
-	return statusBarStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
+	out := statusBarStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
+	return chrome.PaintBand(out, width, theme.Current().ChromeBG())
 }
 
 // joinSegs joins status segments with the dim separator.

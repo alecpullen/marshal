@@ -7,7 +7,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
 
@@ -22,10 +24,12 @@ import (
 func (m Model) renderLiveStrip() string {
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 	if p := m.state.SwarmProgress(); p.Active {
-		return liveStripLine(spinner, spinnerLabel(spinner, swarmStripText(p)), m.leftWidth)
+		out := liveStripLine(spinner, spinnerLabel(spinner, swarmStripText(p)), m.leftWidth)
+		return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
 	}
 	if bi := m.state.BrowserInfo(); bi.SessionOpen {
-		return liveStripLine(glyph.Ambient, browserStripText(bi, spinner), m.leftWidth)
+		out := liveStripLine(glyph.Ambient, browserStripText(bi, spinner), m.leftWidth)
+		return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
 	}
 	return ""
 }

@@ -30,6 +30,7 @@ import (
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/changedfiles"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
@@ -2640,7 +2641,8 @@ func (m Model) renderTodoPanel() string {
 	if m.todosDismissed && todosAllDone(todos) {
 		return ""
 	}
-	return renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.leftWidth)
+	out := renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.leftWidth)
+	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
 }
 
 // todoPanelRows reports the rows the pinned todo panel occupies.
@@ -2656,7 +2658,8 @@ func (m Model) todoPanelRows() int {
 // frame. The panel owns the only spinner on screen during a run; the
 // glyph comes from turnSpinnerFrame so it shares the 200ms flash gate.
 func (m Model) renderRunPanel() string {
-	return renderRunPanel(m.state.SDDProgress(), m.turnSpinnerFrame(), m.now(), m.width)
+	out := renderRunPanel(m.state.SDDProgress(), m.turnSpinnerFrame(), m.now(), m.width)
+	return chrome.PaintBand(out, m.width, theme.Current().ChromeBG())
 }
 
 // runPanelRows reports the rows the run panel occupies. The panel is

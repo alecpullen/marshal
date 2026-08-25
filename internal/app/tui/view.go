@@ -252,7 +252,8 @@ func (m Model) renderInputArea() string {
 		}
 		rows = append(rows, m.gutteredInput())
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
 }
 
 // inputBarColor picks the ▍ state-bar color. This is the input box's old

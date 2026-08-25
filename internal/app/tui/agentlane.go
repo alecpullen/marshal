@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
@@ -83,7 +84,8 @@ func (m Model) renderAgentLane() string {
 		b.WriteString("\n")
 	}
 
-	return chromeRailWidth(b.String(), dimColor, max(width-1, 1))
+	out := chromeRailWidth(b.String(), dimColor, max(width-1, 1))
+	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
 }
 
 // agentLaneEntries returns the running subagents in the order the lane

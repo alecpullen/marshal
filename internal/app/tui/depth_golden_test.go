@@ -59,15 +59,14 @@ func TestDepthFlatIsByteIdenticalToUnpainted(t *testing.T) {
 	}
 }
 
-// Until Task 6 paints anything, raised and full are also identical to flat.
-// After Task 6 this test is inverted (see Task 6, Step 1) — it exists now so
-// the flip is deliberate and visible in the diff rather than silent.
-func TestRaisedNotYetPainting(t *testing.T) {
+// raised must actually change the frame — this is the flip of
+// TestRaisedNotYetPainting from Task 5.
+func TestRaisedPaintsChrome(t *testing.T) {
 	df := newDepthFrame(t)
 	flat := df.renderAt(theme.DepthFlat)
 	raised := df.renderAt(theme.DepthRaised)
-	if flat != raised {
-		t.Error("raised already differs from flat before any renderer paints")
+	if flat == raised {
+		t.Fatal("depth=raised rendered identically to flat; no region is painting")
 	}
 }
 

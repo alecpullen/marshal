@@ -34,7 +34,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 					m.state.AddMessage(session.RoleSystem,
 						fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
 				} else if err := config.SaveUserConfigProviderAPIKey(
-					config.UserConfigPath(home), m.doctorFixProvider, value); err != nil {
+					config.UserConfigPath(home), m.doctorFixProvider,
+					config.ProviderConfig{APIKey: value}); err != nil {
 					m.state.AddMessage(session.RoleSystem,
 						fmt.Sprintf("✗ Failed to save API key: %v", err), session.ContentTypePlain)
 				} else {

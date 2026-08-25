@@ -16,7 +16,7 @@ func TestUserConfigWritesAreOwnerOnly(t *testing.T) {
 		write func(path string) error
 	}{
 		{"api key", func(p string) error {
-			return SaveUserConfigProviderAPIKey(p, "openai", "sk-secret-value")
+			return SaveUserConfigProviderAPIKey(p, "openai", ProviderConfig{APIKey: "sk-secret-value"})
 		}},
 		{"rule", func(p string) error {
 			return SaveUserConfigRule(p, PermissionRule{Permission: "shell.run", Pattern: "go test", Action: "allow"})
@@ -64,7 +64,7 @@ func TestUserConfigTightensExistingPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-secret-value"); err != nil {
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ProviderConfig{APIKey: "sk-secret-value"}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 

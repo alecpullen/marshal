@@ -553,6 +553,46 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	return err
 }
 
+// recordInterruptMarker documents where an interrupted (Esc-cancelled) turn
+// stopped. It drains any remaining queued steering (undelivered user
+// feedback), builds ONE RoleUser message containing the goal, last status,
+// tools completed this turn, and each undelivered steering message, persists
+// it via the same RoleUser persistence path subagent reports use (so it
+// replays across restarts via buildHistoryMessages), and sets a one-line
+// human summary for the user's transcript. Cancellation never salvages
+// partial model text — that stays discarded by the caller.
+func (r *Runner) recordInterruptMarker(task *Task, goal string, cause error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[turn interrupted] Goal: %s\n", goal)
+	status := "unknown"
+	if act := r.State.Activity(); act.Label != "" {
+		status = act.Label
+	}
+	fmt.Fprintf(&b, "Status when interrupted: %s\n", status)
+	if tools := r.State.TakeToolAuditForInterrupt(); tools != "" {
+		fmt.Fprintf(&b, "Tools completed this turn: %s\n", tools)
+	} else {
+		fmt.Fprintf(&b, "Tools completed this turn: none recorded\n")
+	}
+	for _, msg := range r.State.DrainSteering() {
+		fmt.Fprintf(&b, "Undelivered user feedback: %s\n", msg)
+	}
+	b.WriteString("The current request continues from this state.")
+	r.State.AddMessage(session.RoleUser, b.String(), session.ContentTypeSubagentReport)
+	r.State.SetInterruptedTurnNote(fmt.Sprintf("Turn interrupted (%v). The next turn continues from this state.", cause))
+}
+
+// failTurn fails the task, first recording an interrupt marker when the turn
+// is being cancelled (Esc). Cancellation never salvages partial model text —
+// res.Text stays discarded — but the marker documents where the turn stopped
+// so the next turn's model and the user know exactly what happened.
+func (r *Runner) failTurn(task *Task, err error) error {
+	if errors.Is(err, context.Canceled) {
+		r.recordInterruptMarker(task, task.Goal, err)
+	}
+	return r.fail(task, err)
+}
+
 // RunTask is Run plus access to the finished Task, so orchestrators (the
 // swarm) can read a role's final summary and status without re-parsing
 // the session transcript.
@@ -584,6 +624,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}(goal)
 	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
+	// If the previous turn was interrupted (Esc), surface a one-line note in
+	// the user's transcript so they know where things stopped. The model
+	// gets its full orientation from the persisted RoleUser interrupt marker
+	// (replayed by buildHistoryMessages), not from this system note.
+	if note := r.State.TakeInterruptedTurnNote(); note != "" {
+		r.State.AddMessage(session.RoleSystem, note, session.ContentTypePlain)
+	}
 	r.State.IncrementTurnIndex()
 	if r.Snapshotter != nil {
 		if _, err := r.Snapshotter.Track(ctx); err != nil {
@@ -753,7 +800,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
 		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages, effectiveRF)
 		if err != nil {
-			return task, r.fail(task, err)
+			return task, r.failTurn(task, err)
 		}
 		planText := planRes.Text
 		task.Plan = splitPlanLines(planText)
@@ -861,7 +908,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		var steeringPins []contextpack.FileSnippet
 		for _, msg := range r.State.DrainSteering() {
 			steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+			// Envelope the wire content so the model can tell a mid-turn
+			// steering message apart from a fresh user goal. extractPinnedFiles
+			// still runs on the RAW msg above so @file pins keep working.
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "[user steering, mid-turn]: " + msg})
 			steeringArrived = true
 		}
 		// Drain background subagent completion reports alongside steering.
@@ -947,7 +997,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
 				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)
-				return task, r.fail(task, fmt.Errorf("context overflow and compaction failed: %w", cerr))
+				return task, r.failTurn(task, fmt.Errorf("context overflow and compaction failed: %w", cerr))
 			}
 		}
 
@@ -967,7 +1017,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// the user paid for, so only user-initiated cancellation
 			// discards it.
 			if strings.TrimSpace(res.Text) == "" || errors.Is(err, context.Canceled) {
-				return task, r.fail(task, err)
+				return task, r.failTurn(task, err)
 			}
 			r.withStats(func(s *turnStats) { s.m.StreamRecoveries++ })
 			r.State.Logger().Warn("recovered from mid-stream provider error",
@@ -1029,7 +1079,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				task.Summary = res.Text
 				task.Status = TaskStatusCompleted
 				if next, continued, err := runTurnEnd(messages, task); err != nil {
-					return task, r.fail(task, err)
+					return task, r.failTurn(task, err)
 				} else if continued {
 					messages = next
 					continue
@@ -1104,7 +1154,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls)
 			if execErr != nil {
-				return task, r.fail(task, execErr)
+				return task, r.failTurn(task, execErr)
 			}
 			// Every call this turn was rejected before running: nothing was
 			// accomplished, so the turn is overhead, not work.
@@ -1232,7 +1282,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
 			if execErr != nil {
-				return task, r.fail(task, execErr)
+				return task, r.failTurn(task, execErr)
 			}
 			toolCallCountThisTurn += len(action.Actions)
 			messages = append(messages, resultMsgs...)
@@ -1270,7 +1320,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			task.Summary = action.Content
 			task.Status = TaskStatusCompleted
 			if next, continued, err := runTurnEnd(messages, task); err != nil {
-				return task, r.fail(task, err)
+				return task, r.failTurn(task, err)
 			} else if continued {
 				messages = next
 				continue
@@ -1288,7 +1338,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			toolCallCountThisTurn++
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
-				return task, r.fail(task, err)
+				return task, r.failTurn(task, err)
 			}
 			messages = append(messages, resultMsgs...)
 			var finalized *Task
@@ -1307,7 +1357,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			answer, waitErr := r.requestAnswer(ctx, action.Content)
 			if waitErr != nil {
-				return task, r.fail(task, waitErr)
+				return task, r.failTurn(task, waitErr)
 			}
 			// An ask_user round-trip consumes an overhead turn: a model that
 			// re-asks the same (or a declined) question would otherwise loop
@@ -1348,7 +1398,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			answers, waitErr := r.requestQuestions(ctx, action.Questions)
 			if waitErr != nil {
-				return task, r.fail(task, waitErr)
+				return task, r.failTurn(task, waitErr)
 			}
 			budget.overhead++
 			countIterations()
@@ -1435,7 +1485,7 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 		)
 		answer, waitErr := r.requestAnswer(ctx, question)
 		if waitErr != nil {
-			return true, task, r.fail(task, waitErr), ""
+			return true, task, r.failTurn(task, waitErr), ""
 		}
 		if strings.TrimSpace(answer) != "" {
 			r.trackerMu.Lock()

@@ -223,8 +223,12 @@ type State struct {
 	// when an assistant final message persists. Best-effort: failures are
 	// logged and do not abort the turn.
 	toolAuditThisTurn []db.ToolAuditEntry
-	swarmProgress     SwarmProgress
-	sddProgress       SDDProgress
+	// interruptedTurnNote is a one-shot pending note describing where an
+	// interrupted (Esc-cancelled) turn stopped. Set at cancel time,
+	// consumed and cleared at the next turn's start (see interrupted.go).
+	interruptedTurnNote string
+	swarmProgress       SwarmProgress
+	sddProgress         SDDProgress
 	// sddFallbackAllowed is the controller's pending marshal.agent
 	// fallback allowlist, stashed so the pipeline registry factory can
 	// narrow the next ScopeFallback dispatch to the declared paths.

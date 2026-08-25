@@ -61,3 +61,44 @@ func TestActiveSkillsStaysSortedNotActivationOrdered(t *testing.T) {
 		t.Fatalf("ActiveSkills = %v, want %v (sort is load-bearing for prefix caching)", got, want)
 	}
 }
+
+func TestSkillBodyAgeTicksAndResets(t *testing.T) {
+	s := &State{
+		activeSkills: map[string]bool{},
+		skillOrder:   map[string]int64{},
+		skillBodyAge: map[string]int{},
+	}
+	s.ActivateSkill("alpha")
+	if got := s.SkillBodyAge("alpha"); got != 0 {
+		t.Fatalf("fresh skill age = %d, want 0", got)
+	}
+
+	s.TickSkillBodyAges()
+	s.TickSkillBodyAges()
+	if got := s.SkillBodyAge("alpha"); got != 2 {
+		t.Fatalf("age after two ticks = %d, want 2", got)
+	}
+
+	s.ResetSkillBodyAge("alpha")
+	if got := s.SkillBodyAge("alpha"); got != 0 {
+		t.Fatalf("age after reset = %d, want 0", got)
+	}
+}
+
+func TestResetAllSkillBodyAges(t *testing.T) {
+	s := &State{
+		activeSkills: map[string]bool{},
+		skillOrder:   map[string]int64{},
+		skillBodyAge: map[string]int{},
+	}
+	s.ActivateSkill("alpha")
+	s.ActivateSkill("beta")
+	s.TickSkillBodyAges()
+	s.ResetAllSkillBodyAges()
+
+	for _, n := range []string{"alpha", "beta"} {
+		if got := s.SkillBodyAge(n); got != 0 {
+			t.Errorf("age of %s after ResetAll = %d, want 0", n, got)
+		}
+	}
+}

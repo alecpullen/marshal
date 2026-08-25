@@ -1541,6 +1541,46 @@ func (s *State) ActiveSkills() []string {
 	return names
 }
 
+// TickSkillBodyAges advances every active skill's body age by one turn.
+// Called once per turn by the agent runner.
+func (s *State) TickSkillBodyAges() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name := range s.activeSkills {
+		s.skillBodyAge[name]++
+	}
+}
+
+// SkillBodyAge reports how many turns have elapsed since a skill's body was
+// last sent in full.
+func (s *State) SkillBodyAge(name string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.skillBodyAge[name]
+}
+
+// ResetSkillBodyAge marks a skill's body as freshly needed, so the next
+// prompt build sends its full text again. A repeat skill.load calls this.
+func (s *State) ResetSkillBodyAge(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.skillBodyAge == nil {
+		s.skillBodyAge = make(map[string]int)
+	}
+	s.skillBodyAge[name] = 0
+}
+
+// ResetAllSkillBodyAges re-sends every active skill's full body on the next
+// build. Rollover calls this: compaction discards the prior wire, so every
+// active skill has to be re-established from scratch.
+func (s *State) ResetAllSkillBodyAges() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name := range s.activeSkills {
+		s.skillBodyAge[name] = 0
+	}
+}
+
 func (s *State) HasActiveSkill(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

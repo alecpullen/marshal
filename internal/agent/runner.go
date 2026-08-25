@@ -675,6 +675,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// skill body has been written to this turn's wire.
 	r.contextPackMsgIndex = -1
 	r.emittedSkills = nil
+	r.State.TickSkillBodyAges()
 	r.turnToolResultChars = 0
 
 	task := NewTask(goal, r.Now())

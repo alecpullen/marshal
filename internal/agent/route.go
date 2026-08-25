@@ -440,6 +440,10 @@ func (r *Runner) appendSkillBodies(messages []schema.ChatMessage) []schema.ChatM
 	if r.emittedSkills == nil {
 		r.emittedSkills = make(map[string]bool)
 	}
+	full := 0
+	if r.State.Config.Skills.BodyFullTurns > 0 {
+		full = r.State.Config.Skills.BodyFullTurns
+	}
 	for _, name := range r.State.ActiveSkills() {
 		if r.emittedSkills[name] {
 			continue
@@ -448,9 +452,20 @@ func (r *Runner) appendSkillBodies(messages []schema.ChatMessage) []schema.ChatM
 		if !ok {
 			continue
 		}
+		content := skills.WrapBody(skill)
+		// Past its full-body window, a skill degrades to a stub. Bodies do
+		// not replay from history (buildHistoryMessages handles only user
+		// and assistant roles), so this is the only copy on the wire —
+		// the stub has to tell the model how to get the text back.
+		if full > 0 && r.State.SkillBodyAge(name) >= full {
+			content = fmt.Sprintf(
+				"Skill `%s` is active but its full text is no longer in context. "+
+					"Call skill.load with name=%q to re-read it, or skill.unload to drop it.\n",
+				name, name)
+		}
 		messages = append(messages, schema.ChatMessage{
 			Role:    schema.RoleSystem,
-			Content: skills.WrapBody(skill),
+			Content: content,
 		})
 		r.emittedSkills[name] = true
 	}

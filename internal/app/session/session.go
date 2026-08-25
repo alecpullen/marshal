@@ -215,8 +215,17 @@ type State struct {
 	todos           []db.TodoItem
 	scratchpad      map[string]db.ScratchpadEntry
 	activeSkills    map[string]bool
-	loadedTools     map[string]bool
-	toolBudget      ToolBudget
+	// skillOrder records activation sequence per skill so eviction can pick
+	// the least-recently-activated. Kept separate from activeSkills because
+	// ActiveSkills() must stay alphabetically sorted for prefix caching —
+	// see the comment on ActiveSkills.
+	skillOrder map[string]int64
+	skillSeq   int64
+	// skillBodyAge tracks how many turns have elapsed since a skill's body
+	// was last sent in full. Used by appendSkillBodies to degrade to a stub.
+	skillBodyAge map[string]int
+	loadedTools  map[string]bool
+	toolBudget   ToolBudget
 	// toolAuditThisTurn is the per-turn accumulator for the cross-turn
 	// ledger (Task 3/A1). LogToolCall appends here as well as to
 	// auditLog, and appendMessage flushes it to the turn_tool_audit table
@@ -582,6 +591,8 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		subagentDone:           make(map[int64]chan struct{}),
 		activity:               Activity{Kind: ActivityIdle},
 		activeSkills:           make(map[string]bool),
+		skillOrder:             make(map[string]int64),
+		skillBodyAge:           make(map[string]int),
 		loadedTools:            make(map[string]bool),
 		parentOf:               make(map[int64]int64),
 		childrenOf:             make(map[int64][]int64),
@@ -1464,7 +1475,51 @@ func (s *State) evictToolCacheLocked() {
 func (s *State) ActivateSkill(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.skillOrder == nil {
+		s.skillOrder = make(map[string]int64)
+	}
+	if s.skillBodyAge == nil {
+		s.skillBodyAge = make(map[string]int)
+	}
+	// Re-activating an already-active skill must not refresh its age: age
+	// drives eviction, and a repeat skill.load is a body re-fetch,
+	// not a claim that the skill became more relevant.
+	if _, seen := s.skillOrder[name]; !seen {
+		s.skillSeq++
+		s.skillOrder[name] = s.skillSeq
+		s.skillBodyAge[name] = 0
+	}
 	s.activeSkills[name] = true
+}
+
+// DeactivateSkill removes a skill from the active set. It reports whether
+// the skill was active. The skill's body stops being written to the wire on
+// the next prompt build.
+func (s *State) DeactivateSkill(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.activeSkills[name] {
+		return false
+	}
+	delete(s.activeSkills, name)
+	delete(s.skillOrder, name)
+	delete(s.skillBodyAge, name)
+	return true
+}
+
+// ActiveSkillsByAge returns active skill names oldest activation first.
+// Eviction consumes this; the prompt does not. ActiveSkills stays sorted.
+func (s *State) ActiveSkillsByAge() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.activeSkills))
+	for name := range s.activeSkills {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return s.skillOrder[names[i]] < s.skillOrder[names[j]]
+	})
+	return names
 }
 
 // ActiveSkills returns the active skill names in sorted order.

@@ -66,6 +66,29 @@ func TestWithSubagentMaxConcurrencyClamps(t *testing.T) {
 	}
 }
 
+func TestConcurrencyLimitErrorNamesTheRemedy(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{}, WithSubagentMaxConcurrency(2))
+	if err := s.EnterSubagent(); err != nil {
+		t.Fatalf("first EnterSubagent: %v", err)
+	}
+	if err := s.EnterSubagent(); err != nil {
+		t.Fatalf("second EnterSubagent: %v", err)
+	}
+	err := s.EnterSubagent()
+	if err == nil {
+		t.Fatal("want an error at the cap")
+	}
+	if !errors.Is(err, ErrSubagentConcurrencyLimit) {
+		t.Fatalf("error no longer wraps the sentinel: %v", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{"2", "agent.await", "any"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("cap error %q does not mention %q", msg, want)
+		}
+	}
+}
+
 func TestLoggerReturnsCachedDiscard(t *testing.T) {
 	s := New(config.Default(), t.TempDir(), time.Unix(0, 0), Persistence{})
 	l1 := s.Logger()

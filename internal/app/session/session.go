@@ -803,7 +803,10 @@ func (s *State) EnterSubagent() error {
 		return ErrSubagentDepthLimit
 	}
 	if s.subagentConcurr >= s.subagentMaxConcurrency {
-		return fmt.Errorf("%w (max %d)", ErrSubagentConcurrencyLimit, s.subagentMaxConcurrency)
+		// The "(max N)" substring is asserted by
+		// TestEnterSubagentDefaultCapIsThree — keep it.
+		return fmt.Errorf("%w (max %d): %d already running. Call agent.await with \"any\": true to wait for the first to finish, then retry",
+			ErrSubagentConcurrencyLimit, s.subagentMaxConcurrency, s.subagentConcurr)
 	}
 	s.subagentConcurr++
 	return nil

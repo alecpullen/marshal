@@ -6246,7 +6246,7 @@ func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	reloaded := m.state.Config
 	reloaded.TUI.Theme = "warm-sunset"
 	reloaded.TUI.Mode = theme.ModeLight
-	expectedTheme := theme.LoadWithConfig(reloaded.TUI.Theme, reloaded.TUI.Mode, nil)
+	expectedTheme := theme.LoadWithConfig(reloaded.TUI.Theme, reloaded.TUI.Mode, theme.DepthFlat, nil)
 	m.configReloader = func(cfg config.Config) error {
 		// reloadAgentRuntime swaps the config before old-resource cleanup.
 		m.state.Config = cfg

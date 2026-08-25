@@ -132,7 +132,7 @@ func Test16ColorPaletteHasNewThemeSlots(t *testing.T) {
 func TestLoadWithConfigUnknownFallsBackToDefault(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
-	th := LoadWithConfig("nonexistent", ModeDark, nil)
+	th := LoadWithConfig("nonexistent", ModeDark, DepthFlat, nil)
 	if th.AccentPrimary != lipgloss.Color("209") {
 		t.Fatalf("AccentPrimary = %#v, want 209 (warm-sunset default)", th.AccentPrimary)
 	}
@@ -141,7 +141,7 @@ func TestLoadWithConfigUnknownFallsBackToDefault(t *testing.T) {
 func TestLoadWithConfigNoColorWins(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("TERM", "xterm-256color")
-	th := LoadWithConfig("dracula", ModeDark, nil)
+	th := LoadWithConfig("dracula", ModeDark, DepthFlat, nil)
 	if _, ok := th.AccentPrimary.(lipgloss.NoColor); !ok {
 		t.Fatalf("AccentPrimary = %#v, want NoColor{} even with dracula theme", th.AccentPrimary)
 	}
@@ -173,7 +173,7 @@ func TestNamesContainsExpected(t *testing.T) {
 func TestLoadWithConfigModeLight(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
-	th := LoadWithConfig("warm-sunset", ModeLight, nil)
+	th := LoadWithConfig("warm-sunset", ModeLight, DepthFlat, nil)
 	if th.BGBase != lipgloss.Color("255") {
 		t.Fatalf("BGBase = %#v, want 255 (light bg) for light mode", th.BGBase)
 	}
@@ -185,7 +185,7 @@ func TestLoadWithConfigModeLight(t *testing.T) {
 func TestLoadWithConfigModeDefaultsToDark(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
-	th := LoadWithConfig("warm-sunset", "", nil)
+	th := LoadWithConfig("warm-sunset", "", DepthFlat, nil)
 	if th.BGBase != lipgloss.Color("235") {
 		t.Fatalf("BGBase = %#v, want 235 (dark bg) for default empty mode", th.BGBase)
 	}
@@ -194,11 +194,11 @@ func TestLoadWithConfigModeDefaultsToDark(t *testing.T) {
 func TestLoadWithConfigModeCaseInsensitive(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
-	th := LoadWithConfig("warm-sunset", "LIGHT", nil)
+	th := LoadWithConfig("warm-sunset", "LIGHT", DepthFlat, nil)
 	if th.BGBase != lipgloss.Color("255") {
 		t.Fatalf("BGBase = %#v, want 255 (light bg) for 'LIGHT' mode", th.BGBase)
 	}
-	th2 := LoadWithConfig("warm-sunset", "Light", nil)
+	th2 := LoadWithConfig("warm-sunset", "Light", DepthFlat, nil)
 	if th2.BGBase != lipgloss.Color("255") {
 		t.Fatalf("BGBase = %#v, want 255 (light bg) for 'Light' mode", th2.BGBase)
 	}

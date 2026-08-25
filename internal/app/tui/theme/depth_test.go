@@ -120,3 +120,47 @@ func TestRawSlotsSurviveEveryDepth(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadWithConfigStampsDepth(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+	th := LoadWithConfig("warm-sunset", ModeDark, DepthRaised, nil)
+	if th.Depth != DepthRaised {
+		t.Fatalf("Depth = %s, want raised", th.Depth)
+	}
+	if isNoColor(th.ChromeBG()) {
+		t.Error("raised at Tier256 must paint chrome")
+	}
+}
+
+func TestLoadWithConfigClampsBelow256(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm") // 16-colour
+	th := LoadWithConfig("warm-sunset", ModeDark, DepthFull, nil)
+	if th.Depth != DepthFlat {
+		t.Fatalf("Depth = %s at Tier16, want flat (clamped)", th.Depth)
+	}
+	if !isNoColor(th.ChromeBG()) {
+		t.Error("clamped theme must not paint chrome")
+	}
+}
+
+func TestNoColorClampsDepth(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	th := LoadWithConfig("warm-sunset", ModeDark, DepthFull, nil)
+	if th.Depth != DepthFlat {
+		t.Fatalf("Depth = %s under NO_COLOR, want flat", th.Depth)
+	}
+}
+
+// A palette override must not reset the depth, for the same reason it must
+// not reset the tier (see TestOverridesPreserveTier).
+func TestOverridesPreserveDepth(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+	th := LoadWithConfig("warm-sunset", ModeDark, DepthRaised,
+		PaletteOverrides{"fg_default": "#ffffff"})
+	if th.Depth != DepthRaised {
+		t.Fatalf("Apply dropped Depth: got %s, want raised", th.Depth)
+	}
+}

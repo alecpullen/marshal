@@ -9,7 +9,7 @@ func TestThemeReloadPropagates(t *testing.T) {
 	var got Theme
 	Subscribe(func(th Theme) { got = th })
 
-	light := LoadWithConfig("warm-sunset", ModeLight, nil)
+	light := LoadWithConfig("warm-sunset", ModeLight, DepthFlat, nil)
 	Reload(light)
 
 	if got.BGBase != light.BGBase {
@@ -24,7 +24,7 @@ func TestCurrentReturnsLatest(t *testing.T) {
 		t.Fatal("Current() does not return the reloaded theme")
 	}
 
-	light := LoadWithConfig("warm-sunset", ModeLight, nil)
+	light := LoadWithConfig("warm-sunset", ModeLight, DepthFlat, nil)
 	Reload(light)
 	if Current().BGBase != light.BGBase {
 		t.Fatal("Current() does not return the latest reloaded theme")

@@ -247,7 +247,7 @@ func TestMemoryPanelNoColorOmitsANSIEscapes(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("TERM", "xterm-256color")
 	// Reload the package-wide theme so theme.Current() reports monochrome.
-	th := theme.LoadWithConfig("warm-sunset", theme.ModeDark, nil)
+	th := theme.LoadWithConfig("warm-sunset", theme.ModeDark, theme.DepthFlat, nil)
 	if _, ok := th.FGDefault.(lipgloss.NoColor); !ok {
 		t.Fatal("expected monochrome theme with NO_COLOR=1")
 	}

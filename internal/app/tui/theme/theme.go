@@ -190,17 +190,22 @@ const (
 	ModeLight = "light"
 )
 
-// Load reads the environment and returns the active Theme.
+// Load reads the environment and returns the active Theme at DepthFlat.
 func Load() Theme {
-	return LoadWithConfig("warm-sunset", ModeDark, nil)
+	return LoadWithConfig("warm-sunset", ModeDark, DepthFlat, nil)
 }
 
-// LoadWithConfig returns a Theme selected by name and mode (light/dark) with
-// optional overrides. If NO_COLOR is set the monochrome theme is returned
-// unconditionally. An unknown name falls back to warm-sunset. When the
-// terminal does not indicate 256-color support the 16-color variant is used.
-// Mode comparison is case-insensitive; empty mode defaults to ModeDark.
-func LoadWithConfig(name string, mode string, overrides PaletteOverrides) Theme {
+// LoadWithConfig returns a Theme selected by name and mode (light/dark) at the
+// given depth, with optional overrides. If NO_COLOR is set the monochrome theme
+// is returned unconditionally. An unknown name falls back to warm-sunset. When
+// the terminal does not indicate 256-color support the 16-color variant is used
+// and depth is clamped to flat.
+//
+// Depth is stamped after overrides are applied: overrides choose slot values,
+// depth decides which planes are painted with them. A user who overrides
+// bg_surface at depth=flat is choosing the colour that code blocks and the live
+// region already use — it does not turn chrome painting on.
+func LoadWithConfig(name string, mode string, depth Depth, overrides PaletteOverrides) Theme {
 	if os.Getenv("NO_COLOR") != "" {
 		return monochromeTheme()
 	}
@@ -228,6 +233,7 @@ func LoadWithConfig(name string, mode string, overrides PaletteOverrides) Theme 
 		base = overrides.Apply(base)
 	}
 
+	base.Depth = clampDepth(depth, base.Tier)
 	return base
 }
 

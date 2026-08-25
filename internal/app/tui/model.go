@@ -4917,7 +4917,7 @@ var (
 )
 
 func loadTheme(tui config.TUIConfig) {
-	activeTheme = theme.LoadWithConfig(tui.Theme, tui.Mode, theme.PaletteOverrides(tui.Palette))
+	activeTheme = theme.LoadWithConfig(tui.Theme, tui.Mode, theme.DepthFlat, theme.PaletteOverrides(tui.Palette))
 
 	accentColor = activeTheme.AccentPrimary
 	violetColor = activeTheme.AccentSecondary

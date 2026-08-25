@@ -30,6 +30,13 @@ func newAsyncRunToolPair(state *session.State, exec func(ctx context.Context, ch
 	return run, await, output
 }
 
+// newChildState builds a real child session state so a subagent registered
+// with it has Child != nil and is treated as a genuine background child.
+func newChildState(t *testing.T) *session.State {
+	t.Helper()
+	return session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+}
+
 func TestAgentAwaitReturnsFinishedResult(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	run, await, _ := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
@@ -389,6 +396,58 @@ func TestAgentAwaitReturnsImmediatelyForApprovalPendingChild(t *testing.T) {
 // re-collect children that already finished in a prior turn. Their reports
 // were already delivered via the queue drain / persisted message, so
 // collecting them again would double-deliver.
+func TestAwaitAnyReturnsFirstFinisher(t *testing.T) {
+	st := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	a := st.RegisterSubagentWithMeta("a", newChildState(t), session.SubagentMeta{})
+	b := st.RegisterSubagentWithMeta("b", newChildState(t), session.SubagentMeta{})
+
+	_, tool, _ := newAsyncRunToolPair(st, nil)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		st.FinishSubagent(b.ID, "b done", nil)
+	}()
+
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"any":true}`),
+	})
+	if err != nil {
+		t.Fatalf("agent.await any: %v", err)
+	}
+	if !strings.Contains(res.Summary, "b done") && !strings.Contains(res.Content, "b done") {
+		t.Errorf("result did not report the finisher: %+v", res)
+	}
+	if st.Subagents()[0].ID != a.ID {
+		t.Fatalf("precondition: expected a to remain registered")
+	}
+}
+
+func TestAwaitRejectsMultipleModes(t *testing.T) {
+	st := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	_, tool, _ := newAsyncRunToolPair(st, nil)
+	for _, args := range []string{
+		`{"all":true,"any":true}`,
+		`{"id":1,"any":true}`,
+		`{"id":1,"all":true}`,
+	} {
+		if _, err := tool.Handler(context.Background(), registry.ToolCall{
+			Args: json.RawMessage(args),
+		}); err == nil {
+			t.Errorf("args %s: want an error for multiple modes, got nil", args)
+		}
+	}
+}
+
+func TestAwaitSchemaAdvertisesAny(t *testing.T) {
+	st := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	_, tool, _ := newAsyncRunToolPair(st, nil)
+	if !strings.Contains(string(tool.Schema), `"any"`) {
+		t.Error("schema does not advertise the any property; the model cannot use it")
+	}
+	if !strings.Contains(tool.Description, "any") {
+		t.Error("description does not mention any; it is the model's only documentation")
+	}
+}
+
 func TestAgentAwaitAllSkipsAlreadyFinished(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	// Register a child that is already finished.

@@ -13,6 +13,7 @@ import (
 type agentAwaitArgs struct {
 	ID  int64 `json:"id"`
 	All bool  `json:"all"`
+	Any bool  `json:"any"`
 }
 
 // NewSubagentAwaitTool returns the registry.Tool entry for agent.await, the
@@ -21,8 +22,8 @@ type agentAwaitArgs struct {
 func NewSubagentAwaitTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
 		Name:        "agent.await",
-		Description: `Wait for a background subagent started by agent.run to finish and return its report. Pass "id" (from the agent.run start message) to wait for one subagent, or "all": true to wait for every outstanding subagent. Blocks until the target(s) finish or the turn is cancelled — there is no timeout. Prefer continuing other work when the result is not needed yet; each subagent's report is also delivered to you automatically when it finishes.`,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"all":{"type":"boolean","description":"Wait for all outstanding subagents."}},"additionalProperties":false}`),
+		Description: `Wait for background subagents started by agent.run. Pass "id" to wait for one specific subagent, "any": true to return as soon as the first outstanding subagent finishes, or "all": true to wait for every outstanding subagent. Exactly one of the three. Prefer "any" when you are at the concurrency cap and want to start more work as soon as a slot frees — "all" blocks until the slowest child finishes. Blocks until the target(s) finish or the turn is cancelled — there is no timeout. Each subagent's report is also delivered to you automatically when it finishes.`,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"any":{"type":"boolean","description":"Return as soon as the first outstanding subagent finishes."},"all":{"type":"boolean","description":"Wait for all outstanding subagents."}},"additionalProperties":false}`),
 		// MUST stay read-only: a blocking handler that held the write gate
 		// would deadlock the very child it is waiting for, once the parent
 		// runner carries a WriteGate.
@@ -35,8 +36,44 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 				return registry.ToolResult{}, fmt.Errorf("decode %s arguments: %w", tool.Name, err)
 			}
 		}
-		if !args.All && args.ID == 0 {
-			return registry.ToolResult{}, fmt.Errorf("%s requires \"id\" or \"all\": true", tool.Name)
+		modes := 0
+		if args.ID != 0 {
+			modes++
+		}
+		if args.All {
+			modes++
+		}
+		if args.Any {
+			modes++
+		}
+		if modes != 1 {
+			return registry.ToolResult{}, fmt.Errorf("%s requires exactly one of \"id\", \"any\": true, or \"all\": true", tool.Name)
+		}
+		if args.Any {
+			alreadyFinished := make(map[int64]bool)
+			for _, v := range state.Subagents() {
+				if v.Child != nil && v.Status != session.SubagentRunning {
+					alreadyFinished[v.ID] = true
+				}
+			}
+			var pending []int64
+			for _, v := range state.Subagents() {
+				if v.Child != nil && !alreadyFinished[v.ID] {
+					pending = append(pending, v.ID)
+				}
+			}
+			if len(pending) == 0 {
+				return registry.ToolResult{
+					Summary: "no running subagents",
+					Content: "No background subagents are currently running.",
+				}, nil
+			}
+			v, err := state.WaitAnySubagent(ctx, pending)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			line, content := subagentResultText(v.ID, v.Label, v.Summary, v.SalvagedReason, v.Error)
+			return registry.ToolResult{Summary: line, Content: content}, nil
 		}
 		if !args.All {
 			// I-3: before blocking, check if the child is pending user

@@ -20,9 +20,18 @@ type depthFrame struct {
 
 func newDepthFrame(t *testing.T) *depthFrame {
 	t.Helper()
+	// Pin the environment to 256-color mode so the theme has real background
+	// values to paint. Without this, NO_COLOR=1 or an unsupported TERM makes
+	// loadTheme return the monochrome theme, and every depth looks identical.
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+
 	prev := theme.Current()
 	df := &depthFrame{t: t, th: prev}
 	t.Cleanup(func() { theme.Reload(prev) })
+
+	// Reload the theme so it picks up the pinned environment.
+	theme.Reload(theme.LoadWithConfig("", "", theme.DepthFlat, nil))
 
 	m := newTestModel(t)
 	m.resize(100, 30)
@@ -41,9 +50,9 @@ func (df *depthFrame) renderAt(d theme.Depth) string {
 }
 
 // The central safety property of the depth feature: at DepthFlat the frame is
-// byte-identical to a frame rendered by a theme that has no concept of depth
-// at all. If this ever fails, a renderer is painting when it must not — fix
-// the renderer, never this test.
+// byte-identical to a frame rendered at DepthFlat a second time — i.e. flat
+// rendering is stable and paints no background. If this ever fails, a
+// renderer is painting when it must not — fix the renderer, never this test.
 func TestDepthFlatIsByteIdenticalToUnpainted(t *testing.T) {
 	var zero theme.Theme // zero Depth is DepthFlat by construction
 	if zero.Depth != theme.DepthFlat {
@@ -82,12 +91,23 @@ func TestRaisedPreservesFrameGeometry(t *testing.T) {
 }
 
 // Every painted row must be exactly the frame width. A short row is the
-// ragged-stripe artifact.
+// ragged-stripe artifact; an over-wide row means PaintBand failed to
+// truncate.
 func TestRaisedBandsAreFullWidth(t *testing.T) {
 	df := newDepthFrame(t)
-	for i, line := range strings.Split(df.renderAt(theme.DepthRaised), "\n") {
-		if w := ansi.StringWidth(line); w != 0 && w > 100 {
+	lines := strings.Split(df.renderAt(theme.DepthRaised), "\n")
+	for i, line := range lines {
+		w := ansi.StringWidth(line)
+		if w == 0 {
+			continue // blank line (e.g. trailing)
+		}
+		if w > 100 {
 			t.Errorf("row %d overflows the 100-cell frame: width %d", i, w)
+		}
+		// The frame is 100 cells wide; every painted row should fill it.
+		// Under-width rows are the ragged-stripe artifact.
+		if w < 100 {
+			t.Errorf("row %d is under-width: %d cells (expected 100)", i, w)
 		}
 	}
 }

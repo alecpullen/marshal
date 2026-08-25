@@ -759,6 +759,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), r.State.LoadedToolNames()...),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
+	messages = r.appendSkillHint(messages)
 	messages = r.appendSkillBodies(messages)
 	if r.role() == RoleGeneral {
 		// Task 4/A2: load the cross-turn ledger. Best-effort — a DB
@@ -823,6 +824,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			r.emittedSkills = nil
 			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), r.State.LoadedToolNames()...)}
 			messages = r.setContextPackMessage(messages, updatedPack)
+			messages = r.appendSkillHint(messages)
 			messages = r.appendSkillBodies(messages)
 			if r.role() == RoleGeneral {
 				var ledger map[int64][]db.ToolAuditEntry

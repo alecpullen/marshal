@@ -149,6 +149,7 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), r.State.LoadedToolNames()...),
 	}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
+	fresh = r.appendSkillHint(fresh)
 	fresh = r.appendSkillBodies(fresh)
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},

@@ -189,7 +189,9 @@ const baseRules = `Rules:
 // context window.
 const skillDirective = `Skills are instruction sets you load on demand with the skill.load tool. Deciding to load one is YOUR job — the user will not ask you to.
 
-Before you start any task, scan this list and load only the skills whose description directly matches what you are about to do. Load them BEFORE acting, not after. If a loaded skill tells you to use another skill, weigh that claim against the task yourself before loading it. Do not load skills about writing plans or brainstorming approaches when the task already hands you a plan to execute. Active skills are limited, so spend them on the ones that apply.
+Before you start any task, scan this list and load only the skills whose description directly matches what you are about to do. Load them BEFORE acting, not after. Some turns carry a separate "Skill suggestions" message ranking the roster against your request; treat it as a shortlist to check, not an instruction to load. If a loaded skill tells you to use another skill, weigh that claim against the task yourself before loading it. Do not load skills about writing plans or brainstorming approaches when the task already hands you a plan to execute. Active skills are limited, so spend them on the ones that apply.
+
+Call skill.load on a skill that is already active to re-read its full text if it has scrolled out of context. Call skill.unload when you are done with a skill so its body stops costing context.
 
 When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
 
@@ -198,6 +200,31 @@ When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run
 // work in it yet, which is precisely when a design or process skill should
 // fire and when the model is least inclined to call a tool.
 const skillReminder = `Reminder: check the Skills list before your first action on a request, including requests that are only a discussion — designing a feature, planning an approach, or deciding how to build something all have skills that must be loaded BEFORE you reply. Loading a skill is itself a valid first action; do not answer first and load later.`
+
+// BuildSkillHintMessage renders this turn's ranked skill suggestions as its
+// own system message.
+//
+// It is deliberately NOT part of the system prompt: hints are recomputed
+// every turn from the goal, and messages[0] is the provider's cache prefix.
+// Folding per-turn content into it would miss the cache on every request,
+// on a tool that measures exactly that (db.turn_metrics.cache_read_tokens).
+//
+// The wording keeps the decision with the model. Similarity ranking cannot
+// tell "a skill applies" from "no skill applies" — measured separation is
+// negative — so this is a shortlist, never an instruction.
+func BuildSkillHintMessage(hints []skills.Skill) (schema.ChatMessage, bool) {
+	if len(hints) == 0 {
+		return schema.ChatMessage{}, false
+	}
+	var b strings.Builder
+	b.WriteString("Skill suggestions for this request, ranked by description similarity.\n")
+	b.WriteString("This ranking is a shortlist, not a judgement: it cannot tell whether any skill actually applies.\n")
+	b.WriteString("Load one with skill.load ONLY if its description matches what you are about to do. Ignoring all of them is a normal outcome.\n\n")
+	for _, sk := range hints {
+		b.WriteString(fmt.Sprintf("- `%s` — %s\n", sk.Name, sk.Description))
+	}
+	return schema.ChatMessage{Role: schema.RoleSystem, Content: b.String()}, true
+}
 
 const todoAddendum = `
 Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end.

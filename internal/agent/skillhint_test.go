@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
 )
 
@@ -100,5 +102,67 @@ func TestComputeSkillHintsSkipsActiveSkills(t *testing.T) {
 		if h == "tdd" {
 			t.Fatal("hinted an already-active skill")
 		}
+	}
+}
+
+func TestBuildSkillHintMessageListsNamesAndDescriptions(t *testing.T) {
+	msg, ok := BuildSkillHintMessage([]skills.Skill{
+		{Name: "tdd", Description: "tests before implementation"},
+		{Name: "debug", Description: "root-cause before fixes"},
+	})
+	if !ok {
+		t.Fatal("BuildSkillHintMessage returned ok=false for two hints")
+	}
+	for _, want := range []string{"tdd", "tests before implementation", "debug", "root-cause before fixes"} {
+		if !strings.Contains(msg.Content, want) {
+			t.Errorf("hint message missing %q\ngot: %s", want, msg.Content)
+		}
+	}
+	if msg.Role != schema.RoleSystem {
+		t.Errorf("hint role = %v, want system", msg.Role)
+	}
+}
+
+func TestBuildSkillHintMessageEmptyIsNotOK(t *testing.T) {
+	if _, ok := BuildSkillHintMessage(nil); ok {
+		t.Fatal("empty hints must return ok=false so no message is inserted")
+	}
+}
+
+// The hint varies per turn. It must never land in messages[0], which is the
+// provider's cache prefix — see the ActiveSkills ordering comment in
+// internal/app/session/session.go.
+func TestAppendSkillHintNeverTouchesSystemPrompt(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("tdd", skills.Skill{Name: "tdd", Description: "tests first"})
+	r := &Runner{SkillIndex: idx, State: session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})}
+	r.skillHints = []string{"tdd"}
+
+	system := schema.ChatMessage{Role: schema.RoleSystem, Content: "SYSTEM PROMPT"}
+	got := r.appendSkillHint([]schema.ChatMessage{system})
+
+	if got[0].Content != "SYSTEM PROMPT" {
+		t.Fatalf("messages[0] was modified: %q", got[0].Content)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(messages) = %d, want 2", len(got))
+	}
+	if !strings.Contains(got[1].Content, "tdd") {
+		t.Errorf("hint message missing the hinted skill: %q", got[1].Content)
+	}
+}
+
+// A hint naming a skill that vanished from the index must not panic or
+// produce an empty bullet.
+func TestAppendSkillHintSkipsUnknownSkills(t *testing.T) {
+	idx := skills.NewIndex()
+	r := &Runner{SkillIndex: idx, State: session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})}
+	r.skillHints = []string{"ghost"}
+
+	system := schema.ChatMessage{Role: schema.RoleSystem, Content: "SYSTEM PROMPT"}
+	got := r.appendSkillHint([]schema.ChatMessage{system})
+
+	if len(got) != 1 {
+		t.Fatalf("len(messages) = %d, want 1 (no hint message for unknown skills)", len(got))
 	}
 }

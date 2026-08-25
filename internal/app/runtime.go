@@ -523,6 +523,10 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		logFile = nil
 	}
 	logger := logging.New(logWriter, slog.LevelInfo, false)
+	// Install as the process-wide default so stray package-level slog calls
+	// (lsp, db, sandbox, tools, …) land in the log file instead of on stderr,
+	// where they would garble the TUI frame (no alt-screen mode is used).
+	slog.SetDefault(logger)
 
 	globalSkillsDir := filepath.Join(config.UserDir(homeDir), "skills")
 	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")

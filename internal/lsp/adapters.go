@@ -32,7 +32,9 @@ func readDiagnosticsFile(path string) ([]byte, bool) {
 		return nil, false
 	}
 	if info.Size() > diagnosticsFileCap {
-		slog.Warn("diagnostics: file exceeds size cap, skipping", "path", path, "size", info.Size(), "cap", diagnosticsFileCap)
+		// Debug, not Warn: this fires once per checked file and would spam
+		// the log on every diagnostics run over a large tree.
+		slog.Debug("diagnostics: file exceeds size cap, skipping", "path", path, "size", info.Size(), "cap", diagnosticsFileCap)
 		return nil, false
 	}
 	content, err := os.ReadFile(path)

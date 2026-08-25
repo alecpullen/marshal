@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/llm/routing"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 )
@@ -807,7 +808,7 @@ func TestACPWireSDDStartGateAndAnswer(t *testing.T) {
 	state.SetSDDGate(session.SDDGate{}) // ensure a clean start; SDDStart populates it via the fake runner below
 
 	callCount := 0
-	factory := func(planPath string) AgentRunner {
+	factory := func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
 		return &fakeAgentRunner{
 			run: func(ctx context.Context, goal string) error {
 				callCount++

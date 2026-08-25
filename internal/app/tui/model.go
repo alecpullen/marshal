@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/shlex"
 
+	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
@@ -80,17 +81,37 @@ type AgentRunner interface {
 	AnswerGate(answer string)
 }
 
+// SwarmOverrideFactory builds a per-run swarm.RunnerFactory with the given
+// role→preset overrides applied. It is provided by app.go (which has
+// access to the routedProviderResolver) and wired via
+// WithSwarmOverrideFactory. The TUI calls it when the castlist confirms
+// with overrides, and the result is installed on the shared orchestrator
+// via SetRunnerFactory. RestoreRunner undoes the wrap when the run ends.
+type SwarmOverrideFactory func(overrides map[routing.AgentRole]string) swarm.RunnerFactory
+
+// RoleOverrideRunner is an optional interface for runners that accept
+// per-run role→preset overrides from the castlist. The overrides apply to
+// a copy of the routing config for this run only and are never persisted.
+// RestoreRunner undoes the override after the run ends (success, failure,
+// or cancel) so a leaked override does not silently apply to every later
+// run in the session.
+type RoleOverrideRunner interface {
+	SetRunnerFactory(factory swarm.RunnerFactory)
+	RestoreRunner()
+}
+
 // SessionSwapResult carries the rebuilt runtime pieces for a /new or /clear
 // swap so the TUI can re-point every model field that depends on the current
 // session.
 type SessionSwapResult struct {
-	State             *session.State
-	Runner            AgentRunner
-	SwarmRunner       AgentRunner
-	PipelineFactory   func(planPath string) AgentRunner
-	PlanAuthorFactory PlanAuthorFactory
-	ToolRegistry      *registry.Registry
-	ReviewDispatcher  func(ctx context.Context, focus, model, reviewRange string) error
+	State                *session.State
+	Runner               AgentRunner
+	SwarmRunner          AgentRunner
+	PipelineFactory      func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
+	SwarmOverrideFactory SwarmOverrideFactory
+	PlanAuthorFactory    PlanAuthorFactory
+	ToolRegistry         *registry.Registry
+	ReviewDispatcher     func(ctx context.Context, focus, model, reviewRange string) error
 }
 
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
@@ -159,7 +180,11 @@ type Model struct {
 	editingCommand  bool
 	runner          AgentRunner
 	swarmRunner     AgentRunner
-	pipelineFactory func(planPath string) AgentRunner
+	pipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
+	// swarmOverrideFactory builds a per-run swarm.RunnerFactory with
+	// role→preset overrides applied. Nil when the runtime has no provider
+	// or when the swarm runner does not support overrides.
+	swarmOverrideFactory SwarmOverrideFactory
 	// planAuthorFactory builds a scoped SDD plan-authoring runner for one
 	// request. Nil when the runtime has no provider.
 	planAuthorFactory PlanAuthorFactory
@@ -460,6 +485,11 @@ type Model struct {
 	// /sdd command dispatch and the preflight confirmation (or the human gate
 	// answer). Set by the sdd command handler; consumed by the Enter key handler.
 	pipelineRunner AgentRunner
+	// restoreRunner is the cleanup function for a per-run role override
+	// applied to a shared runner (swarm). It is called when the run ends
+	// (success, failure, or cancel) so a leaked override does not silently
+	// apply to every later run in the session. nil when no override is active.
+	restoreRunner func()
 
 	// configLayers is a pointer to the runtime's Layers snapshot, shared so
 	// the model can read provenance after each successful persist.
@@ -475,11 +505,18 @@ type Model struct {
 type pendingAgentRun struct {
 	runner AgentRunner
 	goal   string
+	// kind is "sdd" or "swarm", set by openRunPreflight so the StartMsg
+	// handler knows which override path to take.
+	kind string
 	// verifyBuild/verifyTest hold commands proposed by the offer-to-fill
 	// flow. When set, they are persisted to project config on confirm and
 	// used for this run.
 	verifyBuild string
 	verifyTest  string
+	// modelOverrides is the castlist's per-run role→preset map. It is
+	// applied to a copy of the routing config for this run only and is
+	// never written to disk.
+	modelOverrides map[routing.AgentRole]string
 }
 
 type Option func(*Model)
@@ -630,11 +667,19 @@ func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 // WithPipelineFactory configures the TUI to build a plan-execution runner
 // on demand when /sdd <plan-file> is submitted. The factory is called per
 // run, not at startup.
-func WithPipelineFactory(ctx context.Context, factory func(planPath string) AgentRunner) Option {
+func WithPipelineFactory(ctx context.Context, factory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
 		m.pipelineFactory = factory
 	}
+}
+
+// WithSwarmOverrideFactory wires the function that builds a per-run
+// swarm.RunnerFactory with role→preset overrides applied. It is provided
+// by app.go (which has access to the routedProviderResolver) and called
+// when the castlist confirms with overrides.
+func WithSwarmOverrideFactory(factory SwarmOverrideFactory) Option {
+	return func(m *Model) { m.swarmOverrideFactory = factory }
 }
 
 // PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
@@ -1722,7 +1767,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// messages; we must not close the dock or treat this as a top-level
 		// picker pick here.
 		switch m.dock.Panel().(type) {
-		case *agents.Panel, connect.Panel:
+		case *agents.Panel, connect.Panel, *castlist.Panel:
 			return m, m.dock.Update(pm)
 		}
 		cmdName := m.pickerCommand
@@ -1800,7 +1845,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case picker.CancelledMsg:
 		// Forward to panel overlays that host their own picker.
 		switch m.dock.Panel().(type) {
-		case *agents.Panel, connect.Panel:
+		case *agents.Panel, connect.Panel, *castlist.Panel:
 			return m, m.dock.Update(pm)
 		}
 		cmdName := m.pickerCommand
@@ -1855,16 +1900,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					session.ContentTypePlain)
 			}
 		}
-		// Pass the selected strategy to the runner.
+		// Pass the selected strategy to the runner and capture overrides.
+		var selectedStrategy string
 		if start, ok := msg.(castlist.StartMsg); ok {
-			if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
-				adapter.Controller().Strategy = pipeline.Strategy(start.Strategy)
+			selectedStrategy = start.Strategy
+			run.modelOverrides = start.Overrides
+		}
+		// Apply per-run role overrides to the runner.
+		//
+		// Swarm: the shared orchestrator's NewRunner is wrapped via
+		// SetRunnerFactory and restored when the run ends.
+		//
+		// SDD: the controller was built with nil overrides at dispatch
+		// time (before the user picked any). Rebuild it here with the
+		// real overrides so the per-run resolver sees them. The strategy
+		// selected in the preflight panel is carried across.
+		if run.kind == "sdd" && len(run.modelOverrides) > 0 && m.pipelineFactory != nil {
+			newRunner := m.pipelineFactory(run.goal, run.modelOverrides)
+			if newRunner != nil {
+				if na, ok := newRunner.(*pipeline.ControllerAdapter); ok {
+					na.Controller().Strategy = pipeline.Strategy(selectedStrategy)
+				}
+				run.runner = newRunner
+				m.pipelineRunner = newRunner
 			}
+		} else if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
+			// No overrides: just apply the strategy to the existing controller.
+			adapter.Controller().Strategy = pipeline.Strategy(selectedStrategy)
+		}
+		if ror, ok := run.runner.(RoleOverrideRunner); ok && len(run.modelOverrides) > 0 && m.swarmOverrideFactory != nil {
+			factory := m.swarmOverrideFactory(run.modelOverrides)
+			ror.SetRunnerFactory(factory)
+			m.restoreRunner = ror.RestoreRunner
 		}
 		return m.startAgentRun(run.runner, run.goal)
 	case castlist.CancelMsg:
 		m.dock.CloseNow()
 		m.pendingRun = nil
+		// Cancelling preflight must not leave an override installed on
+		// the shared orchestrator — it would silently apply to every
+		// later run in the session.
+		if m.restoreRunner != nil {
+			m.restoreRunner()
+			m.restoreRunner = nil
+		}
 		m.refreshViewport()
 		return m, nil
 	case verifyProposeMsg:
@@ -3300,7 +3379,10 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	}
 	rows := make([]castlist.Row, 0, len(roles))
 	for _, entry := range router.Cast(roles) {
-		row := castlist.Row{Title: strings.ReplaceAll(string(entry.Role), "_", " ")}
+		row := castlist.Row{
+			Title: strings.ReplaceAll(string(entry.Role), "_", " "),
+			Role:  entry.Role,
+		}
 		if entry.Err != nil {
 			row.Err = strutil.Truncate(entry.Err.Error(), 44, true)
 		} else {
@@ -3312,8 +3394,21 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	if kind == "sdd" {
 		rows = append(rows, verifyGateRow(m.state.Config, m.state.WorkingDir))
 	}
-	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
+	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal, kind: kind}
 	panel := castlist.New(title, rows, meta, "agent")
+	// Provide the config's model presets so the castlist's in-panel
+	// override picker can offer them.
+	presetNames := make([]string, 0, len(m.state.Config.Models.Presets))
+	for n := range m.state.Config.Models.Presets {
+		presetNames = append(presetNames, n)
+	}
+	sort.Strings(presetNames)
+	pickerItems := make([]picker.Item, 0, len(presetNames))
+	for _, name := range presetNames {
+		preset := m.state.Config.Models.Presets[name]
+		pickerItems = append(pickerItems, picker.Item{Label: name, Detail: preset.Provider + "/" + preset.Model, Value: name})
+	}
+	panel.SetPickerItems(pickerItems)
 	if kind == "sdd" {
 		// Strategy-aware preflight: select adaptive by default when the plan
 		// has executable blocks, and disable adaptive/strict when there are
@@ -3552,8 +3647,17 @@ func (m *Model) proposalFromSession() (build, test string, err error) {
 // via EndWork when the command executes. Callers must handle
 // ErrSessionQuiescing from BeginWork before creating the command.
 func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, goal string) tea.Cmd {
-	return func() tea.Msg {
+	return func() (msg tea.Msg) {
 		defer state.EndWork()
+		// Recover from a panic in runner.Run so the goroutine does not
+		// crash the TUI before handleAgentFinished can restore the
+		// shared runner's original factory. The panic is surfaced as a
+		// turn error; the restore runs on the normal finish path.
+		defer func() {
+			if r := recover(); r != nil {
+				msg = agentFinishedMsg{err: fmt.Errorf("panic in agent run: %v", r)}
+			}
+		}()
 		err := runner.Run(ctx, goal)
 		return agentFinishedMsg{err: err}
 	}
@@ -3706,6 +3810,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
+	// Restore the shared runner's original NewRunner so a per-run override
+	// does not leak into the next run. This runs on success, failure, and
+	// cancel — the defer-style guarantee the plan requires.
+	if m.restoreRunner != nil {
+		m.restoreRunner()
+		m.restoreRunner = nil
+	}
 	m.refreshRailTurns()
 	m.refreshRailChanged()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {

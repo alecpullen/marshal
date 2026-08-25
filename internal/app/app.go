@@ -240,7 +240,7 @@ type routedProviderResolver struct {
 	router    *routing.StaticRouter
 	cfg       config.Config
 	dataDir   string
-	mu        sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
+	mu        *sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
 	providers map[string]provider.Provider
 }
 
@@ -255,7 +255,29 @@ func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProvide
 		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
 		cfg:       cfg,
 		dataDir:   dataDir,
+		mu:        &sync.Mutex{},
 		providers: make(map[string]provider.Provider),
+	}
+}
+
+// withRoleOverrides returns a new resolver that resolves roles through a
+// routing config with the given per-run overrides applied. The provider
+// cache is shared with the original resolver so providers are not rebuilt
+// per run. The original resolver is not mutated.
+func (r *routedProviderResolver) withRoleOverrides(overrides map[routing.AgentRole]string) *routedProviderResolver {
+	if len(overrides) == 0 {
+		return r
+	}
+	rc := r.cfg.RoutingConfig()
+	for role, preset := range overrides {
+		rc = rc.WithRoleOverride(role, preset)
+	}
+	return &routedProviderResolver{
+		router:    routing.NewStaticRouter(rc),
+		cfg:       r.cfg,
+		dataDir:   r.dataDir,
+		providers: r.providers, // shared cache
+		mu:        r.mu,        // shared mutex (pointer)
 	}
 }
 
@@ -437,7 +459,7 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 // lock. Production uses buildAgentRunnerWithLock so the parent runner and
 // every agent.run child share the runtime's stable WriteLock across config
 // reloads. (Keeping this wrapper avoids churning the ~25 test call sites.)
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, sddauthor.Factory, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	return buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, configReloader, homeDir, &swarm.WriteLock{})
 }
 
@@ -447,11 +469,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // (which rebuilds the runner and the subagent factory) reuses the same lock
 // that in-flight background children from the pre-reload generation already
 // hold.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, sddauthor.Factory, error) {
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -466,7 +488,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -557,7 +579,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -567,12 +589,12 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -592,15 +614,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		agent.WithSubagentParentProvider(resolvedProvider.Name()),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	if err := reg.Register(agent.NewSubagentAwaitTool(state)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
 	}
 	if err := reg.Register(agent.NewSubagentOutputTool(state)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
@@ -743,7 +765,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -752,7 +774,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -803,6 +825,32 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		}
 	}
 	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex, limitsTable)
+	// swarmOverrideFactory builds a per-run RunnerFactory with role→preset
+	// overrides applied to a copy of the routing config. The provider cache
+	// is shared with the startup resolver so providers are not rebuilt per
+	// run. The TUI calls this when the castlist confirms with overrides,
+	// and RestoreRunner undoes the wrap when the run ends.
+	swarmOverrideFactory := func(overrides map[routing.AgentRole]string) swarm.RunnerFactory {
+		perRunResolver := resolver.withRoleOverrides(overrides)
+		spec := roleRunnerSpec{
+			cfg:              cfg,
+			state:            state,
+			pol:              pol,
+			resolver:         perRunResolver,
+			reg:              reg,
+			readOnlyReg:      registry.ReadOnlyView(reg),
+			testerReg:        registry.TesterView(reg),
+			skillIndex:       skillIndex,
+			memory:           &dbMemoryProvider{db: database},
+			projectID:        projectID,
+			limitsTable:      limitsTable,
+			database:         database,
+			writeGate:        &swarm.WriteLock{},
+			metricsObserver:  metricsRecorder(database, projectID, state.SessionID(), state.Logger()),
+			applyAgentLimits: true,
+		}
+		return spec.newRunner
+	}
 
 	var desktopCloser func()
 	if cfg.Desktop.Enabled {
@@ -816,17 +864,17 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
 
 	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts)
-	pipelineFactory := func(planPath string) tui.AgentRunner {
-		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable)
+	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
+		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable, overrides)
 	}
 	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
 // loadLimitsTable loads the merged model-limits table so presets without an
@@ -1035,12 +1083,16 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 // buildPipelineController wires a plan-execution controller for one plan.
 // It is built per run, not at startup: the controller is bound to a single
 // plan file.
-func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, lt *limits.Table) *pipeline.ControllerAdapter {
+func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, lt *limits.Table, overrides map[routing.AgentRole]string) *pipeline.ControllerAdapter {
+	// Apply per-run role overrides to a copy of the routing config. The
+	// provider cache is shared with the startup resolver so providers are
+	// not rebuilt per run. Overrides are never written to disk.
+	perRunResolver := resolver.withRoleOverrides(overrides)
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
 		pol:         pol,
-		resolver:    resolver,
+		resolver:    perRunResolver,
 		reg:         reg,
 		readOnlyReg: registry.ReadOnlyView(reg),
 		skillIndex:  skillIndex,
@@ -1757,6 +1809,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))
+			if rt.SwarmOverrideFactory != nil {
+				tuiOpts = append(tuiOpts, tui.WithSwarmOverrideFactory(rt.SwarmOverrideFactory))
+			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
@@ -1817,17 +1872,18 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// is wired outside the ProviderError block so the commands stay
 		// available even when the initial provider build failed.
 		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			state, runner, swarmRunner, pipelineFactory, planAuthorFactory, toolReg, err := rt.NewSession(name)
+			state, runner, swarmRunner, pipelineFactory, planAuthorFactory, swarmOverrideFactory, toolReg, err := rt.NewSession(name)
 			if err != nil {
 				return tui.SessionSwapResult{}, err
 			}
 			return tui.SessionSwapResult{
-				State:             state,
-				Runner:            runner,
-				SwarmRunner:       swarmRunner,
-				PipelineFactory:   pipelineFactory,
-				PlanAuthorFactory: planAuthorFactory,
-				ToolRegistry:      toolReg,
+				State:                state,
+				Runner:               runner,
+				SwarmRunner:          swarmRunner,
+				PipelineFactory:      pipelineFactory,
+				SwarmOverrideFactory: swarmOverrideFactory,
+				PlanAuthorFactory:    planAuthorFactory,
+				ToolRegistry:         toolReg,
 				ReviewDispatcher: func(ctx context.Context, focus, model, reviewRange string) error {
 					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus, model, reviewRange)
 				},
@@ -1966,7 +2022,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -2005,6 +2061,9 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	if newPipelineFactory != nil {
 		rt.PipelineFactory = newPipelineFactory
+	}
+	if newSwarmOverrideFactory != nil {
+		rt.SwarmOverrideFactory = newSwarmOverrideFactory
 	}
 	if newPlanAuthorFactory != nil {
 		rt.PlanAuthorFactory = newPlanAuthorFactory

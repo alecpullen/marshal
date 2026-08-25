@@ -22,6 +22,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/index"
+	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
@@ -69,7 +70,12 @@ type Runtime struct {
 	ToolRegistry *registry.Registry
 	SwarmRunner  *swarm.Orchestrator
 	// PipelineFactory builds a plan-execution runner for one plan file.
-	PipelineFactory func(planPath string) tui.AgentRunner
+	// The overrides map carries per-run role→preset overrides from the
+	// castlist; nil when no overrides are set.
+	PipelineFactory func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner
+	// SwarmOverrideFactory builds a per-run swarm.RunnerFactory with
+	// role→preset overrides applied. Nil when the runtime has no provider.
+	SwarmOverrideFactory tui.SwarmOverrideFactory
 	// PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
 	// request. Set by startRuntime and replaced on config reload.
 	PlanAuthorFactory sddauthor.Factory
@@ -575,7 +581,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// every agent.run child serialize writes on it, and config reloads reuse
 	// it so in-flight background children keep sharing the same gate.
 	writeLock := &swarm.WriteLock{}
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir, writeLock)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir, writeLock)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -610,40 +616,41 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 
 	rt := &Runtime{
-		Config:             cfg,
-		Layers:             layers,
-		State:              state,
-		Runner:             runner,
-		ToolRegistry:       toolReg,
-		SwarmRunner:        swarmRunner,
-		PipelineFactory:    pipelineFactory,
-		PlanAuthorFactory:  planAuthorFactory,
-		DB:                 database,
-		ProjectID:          projectID,
-		SessionID:          sessionID,
-		JobBroker:          jobBroker,
-		SteeringBroker:     steeringBroker,
-		EventBroker:        eventBroker,
-		WorkspaceBroker:    workspaceBroker,
-		SubagentBroker:     subagentBroker,
-		IndexBroker:        indexBroker,
-		JobManager:         jobMgr,
-		DesktopCloser:      desktopCloser,
-		CustomAgentFactory: subagentFactory,
-		WriteLock:          writeLock,
-		Logger:             logger,
-		WorkingDir:         workingDir,
-		HomeDir:            homeDir,
-		DataDir:            dataDir,
-		SkillIndex:         skillIndex,
-		PluginCommands:     pluginCommands,
-		CommandRegistry:    cmdReg,
-		TrustPromptPending: trustPromptPending,
-		LSPManager:         lspHandle,
-		ConfigReloader:     runOpts.configReloader,
-		additionalDirs:     runOpts.additionalDirs,
-		workCtx:            workCtx,
-		workCancel:         workCancel,
+		Config:               cfg,
+		Layers:               layers,
+		State:                state,
+		Runner:               runner,
+		ToolRegistry:         toolReg,
+		SwarmRunner:          swarmRunner,
+		PipelineFactory:      pipelineFactory,
+		SwarmOverrideFactory: swarmOverrideFactory,
+		PlanAuthorFactory:    planAuthorFactory,
+		DB:                   database,
+		ProjectID:            projectID,
+		SessionID:            sessionID,
+		JobBroker:            jobBroker,
+		SteeringBroker:       steeringBroker,
+		EventBroker:          eventBroker,
+		WorkspaceBroker:      workspaceBroker,
+		SubagentBroker:       subagentBroker,
+		IndexBroker:          indexBroker,
+		JobManager:           jobMgr,
+		DesktopCloser:        desktopCloser,
+		CustomAgentFactory:   subagentFactory,
+		WriteLock:            writeLock,
+		Logger:               logger,
+		WorkingDir:           workingDir,
+		HomeDir:              homeDir,
+		DataDir:              dataDir,
+		SkillIndex:           skillIndex,
+		PluginCommands:       pluginCommands,
+		CommandRegistry:      cmdReg,
+		TrustPromptPending:   trustPromptPending,
+		LSPManager:           lspHandle,
+		ConfigReloader:       runOpts.configReloader,
+		additionalDirs:       runOpts.additionalDirs,
+		workCtx:              workCtx,
+		workCancel:           workCancel,
 	}
 	// AI-01: re-seed the pack's repo sections when an index pass completes.
 	rt.subscribeIndexReseed(indexBroker, database, projectID)
@@ -735,14 +742,14 @@ func (rt *Runtime) subscribeIndexReseed(indexBroker *pubsub.Broker[index.Report]
 // State) and rebuilds the agent runtime against it. On success it swaps the
 // new state/runner into rt and returns the new pieces; on failure it leaves
 // the current session untouched and returns the error.
-func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string) tui.AgentRunner, sddauthor.Factory, *registry.Registry, error) {
+func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, *registry.Registry, error) {
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 
 	now := time.Now()
 	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
 	if err := db.CreateSession(sessionID, rt.ProjectID, name, now); err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("create session: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("create session: %w", err)
 	}
 
 	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, session.WithSubagentMaxConcurrency(rt.Config.Agent.MaxConcurrentSubagents))
@@ -773,7 +780,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, err := buildAgentRunnerWithLock(
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
 		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock,
 	)
 	if err != nil {
@@ -787,7 +794,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 			Hint:     "The previous session is still active. Fix the provider configuration and try /session new again.",
 			Source:   "session-new",
 		})
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Success — swap under the runtime lock and clean up old resources outside it.
@@ -848,7 +855,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	}
 	oldState.Shutdown()
 
-	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newReg, nil
+	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, newReg, nil
 }
 
 func resolveWorkingDir(override string) (string, error) {

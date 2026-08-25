@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
 	"marshal/internal/trust"
@@ -156,10 +157,10 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 			if rt.SwarmRunner != nil {
 				swarmRunner = rt.SwarmRunner
 			}
-			var pipelineFactory func(planPath string) AgentRunner
+			var pipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
 			if rt.PipelineFactory != nil {
-				pipelineFactory = func(planPath string) AgentRunner {
-					return rt.PipelineFactory(planPath)
+				pipelineFactory = func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
+					return rt.PipelineFactory(planPath, overrides)
 				}
 			}
 

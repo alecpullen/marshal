@@ -367,7 +367,7 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	cfg := nativeToolAgentConfig("native-provider")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestBuildAgentRunnerWiresKnowledgeSchedulerObservers(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("test-provider")
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestBuildAgentRunnerPassesMaxToolIterationsThrough(t *testing.T) {
 	// 0 (default) -> runner gets 0 (unlimited).
 	cfg := nativeToolAgentConfig("test-provider")
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestBuildAgentRunnerPassesMaxToolIterationsThrough(t *testing.T) {
 	// Explicit cap -> runner gets it.
 	cfg.Agent.MaxToolIterations = 50
 	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err = buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err = buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestBuildAgentRunnerWiresRouterClassifierWhenDistinct(t *testing.T) {
 	cfg.AgentProfiles[cfg.Profile.Default].Roles[routing.RoleRouter] = routing.RoleBinding{Preset: "router-model"}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestBuildAgentRunnerSkipsRouterClassifierOnSameModel(t *testing.T) {
 	// two calls, so the classifier must stay nil (AI-07).
 	cfg := nativeToolAgentConfig("test-provider")
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestBuildAgentRunnerExposesPlanAuthorFactory(t *testing.T) {
 	cfg := nativeToolAgentConfig("test-provider")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, _, _, _, _, _, _, _, _, _, planAuthorFactory, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	_, _, _, _, _, _, _, _, _, _, planAuthorFactory, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestBuildAgentRunnerBackgroundShellUsesConfiguredSandbox(t *testing.T) {
 	t.Setenv("MARSHAL_TEST_SECRET", "super-secret-value-avoid-leak")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, jobMgr, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, _, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
 	cfg.Tools.Shell.MaxOutputBytes = 8
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, jobMgr, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, _, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
 	reloadedCfg := nativeToolAgentConfig("test-provider")
 
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -762,7 +762,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -832,7 +832,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -871,7 +871,7 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 	ctx := context.Background()
 	initialCfg := reloadableAgentConfig("test-provider")
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -950,7 +950,7 @@ func TestReloadAgentRuntimeSwapsPipelineFactory(t *testing.T) {
 	reloaded := reloadableAgentConfig("new-provider")
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, pipelineFactory, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, pipelineFactory, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -1001,7 +1001,7 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
 	resolver := newRoutedProviderResolver(cfg, t.TempDir())
-	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil)
+	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil, nil)
 	if adapter == nil {
 		t.Fatal("buildPipelineController returned nil")
 	}
@@ -2432,7 +2432,7 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, toolReg, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	_, toolReg, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err == nil {
 		t.Fatalf("buildAgentRunner should fail when api_key_env points at an unset var")
 	}
@@ -3576,7 +3576,7 @@ func TestBuildAgentRunnerRegistersConfigToolsWhenReloaderProvided(t *testing.T) 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 
 	// With configReloader: config.read should be registered.
-	_, regWith, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, func(config.Config) error { return nil }, "")
+	_, regWith, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, func(config.Config) error { return nil }, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner (with reloader): %v", err)
 	}
@@ -3585,7 +3585,7 @@ func TestBuildAgentRunnerRegistersConfigToolsWhenReloaderProvided(t *testing.T) 
 	}
 
 	// Without configReloader: config.read should NOT be registered.
-	_, regWithout, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	_, regWithout, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner (without reloader): %v", err)
 	}
@@ -3605,7 +3605,7 @@ func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
 	cfg.Desktop.Headless = true
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, reg, _, _, _, _, closer, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	_, reg, _, _, _, _, closer, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -3740,7 +3740,7 @@ func TestRuntimeNewSessionResetsState(t *testing.T) {
 	rt.State.SetTurnUsage(123)
 	rt.State.SetTurnContextWindow(1000)
 
-	newState, _, _, _, _, _, err := rt.NewSession("")
+	newState, _, _, _, _, _, _, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

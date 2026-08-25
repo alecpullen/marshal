@@ -1354,7 +1354,7 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 
@@ -1434,7 +1434,7 @@ func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 
@@ -1470,7 +1470,7 @@ func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return &fakeSDDRunner{} }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return &fakeSDDRunner{} }),
 	)
 
 	updated, _ := model.dispatchCommand("/sdd")
@@ -1563,7 +1563,7 @@ func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
 	fake := &fakeSDDRunner{}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 
@@ -7902,6 +7902,105 @@ func TestSDDNewFromLastPlanToPreflight(t *testing.T) {
 		t.Fatalf("expected *sddreview.Panel, got %T", m.dock.Panel())
 	}
 }
+
+// TestSDDControllerRebuiltWithOverrides verifies that when the user confirms
+// a /sdd run with per-run model overrides, the pipelineFactory is called
+// again with the overrides (not nil) so the controller's resolver sees them.
+// The original controller was built with nil overrides at dispatch time.
+func TestSDDControllerRebuiltWithOverrides(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	var factoryCalls []struct {
+		planPath  string
+		overrides map[routing.AgentRole]string
+	}
+	var mu sync.Mutex
+
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
+			mu.Lock()
+			defer mu.Unlock()
+			factoryCalls = append(factoryCalls, struct {
+				planPath  string
+				overrides map[routing.AgentRole]string
+			}{planPath, overrides})
+			return &fakeSDDRunner{}
+		}),
+	)
+	model.resize(100, 40)
+
+	// /sdd opens the preflight panel (first factory call with nil overrides).
+	updated, _ := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
+	m := asModel(t, updated)
+	if m.pendingRun == nil {
+		t.Fatal("expected pendingRun to be set")
+	}
+
+	// Confirm with overrides — the factory should be called again with the
+	// real overrides, not nil.
+	overrides := map[routing.AgentRole]string{
+		routing.RoleSDDImplementer: "kimi/k3",
+	}
+	updated, cmd := m.Update(castlist.StartMsg{Overrides: overrides})
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("StartMsg should return a non-nil cmd")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(factoryCalls) != 2 {
+		t.Fatalf("expected 2 factory calls (nil + overrides), got %d", len(factoryCalls))
+	}
+	if factoryCalls[0].overrides != nil {
+		t.Fatalf("first call should have nil overrides, got %v", factoryCalls[0].overrides)
+	}
+	if factoryCalls[1].overrides == nil {
+		t.Fatal("second call should have non-nil overrides")
+	}
+	if factoryCalls[1].overrides[routing.RoleSDDImplementer] != "kimi/k3" {
+		t.Fatalf("second call overrides = %v, want kimi/k3 for implementer", factoryCalls[1].overrides)
+	}
+}
+
+// TestRunAgentCmdPanicRecovery verifies that a panic in runner.Run is caught
+// and surfaced as an error (not a crash), so handleAgentFinished can still
+// restore the shared runner's original factory.
+func TestRunAgentCmdPanicRecovery(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	if err := state.BeginWork(); err != nil {
+		t.Fatal(err)
+	}
+
+	panicRunner := &panicRunner{}
+	cmd := runAgentCmd(context.Background(), state, panicRunner, "test")
+	msg := cmd()
+	finished, ok := msg.(agentFinishedMsg)
+	if !ok {
+		t.Fatalf("expected agentFinishedMsg, got %T", msg)
+	}
+	if finished.err == nil {
+		t.Fatal("expected error from panic recovery, got nil")
+	}
+	if !strings.Contains(finished.err.Error(), "panic") {
+		t.Fatalf("error should mention panic, got: %v", finished.err)
+	}
+}
+
+type panicRunner struct{}
+
+func (p *panicRunner) Run(ctx context.Context, goal string) error {
+	panic("boom")
+}
+func (p *panicRunner) SetForceClass(string)                   {}
+func (p *panicRunner) SetPolicyRules([]config.PermissionRule) {}
+func (p *panicRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (p *panicRunner) AnswerGate(string)                      {}
 
 // The transcript is vertical-only: horizontal wheel pans (trackpad
 // sideways gestures, diagonal scrolls) must not shift the view.

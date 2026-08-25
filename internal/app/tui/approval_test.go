@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 )
@@ -207,6 +208,83 @@ func TestApprovalViewHasChromeRail(t *testing.T) {
 	for i, line := range lines {
 		if !strings.HasPrefix(line, "▍") {
 			t.Errorf("line %d missing the ▍ chrome rail: %q\nfull view:\n%s", i, line, stripANSI(am.View()))
+		}
+	}
+}
+
+// The mnemonic row advertises these keys; they must actually work.
+func TestApprovalMnemonicKeysSelectChoices(t *testing.T) {
+	for _, tc := range []struct {
+		key  string
+		want approvalChoice
+	}{
+		{"a", choiceApprove},
+		{"d", choiceDeny},
+		{"e", choiceEdit},
+		{"A", choiceAlways},
+		{"s", choiceSessionAllow},
+	} {
+		am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, session.SandboxInfo{}, false, false, 80)
+		am, _ = am.Update(keyPress(tc.key))
+		if am.choice != tc.want {
+			t.Errorf("key %q selected %v, want %v", tc.key, am.choice, tc.want)
+		}
+	}
+}
+
+// config.write is deliberately non-bypassable: persisting an always-allow
+// rule for it would be a safety hole, and a session rule would be a silent
+// no-op since session rules only match shell.run/test.run.
+func TestForcedPromptsHideAlwaysAndSession(t *testing.T) {
+	for _, tc := range []*session.PendingToolCall{
+		{Name: "config.write"},
+		{Name: "agent.run", Risk: "model-cost-consent"},
+		{Name: "file.write", Reason: "mode-elevation: edit requires write access"},
+	} {
+		am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 80)
+		for _, c := range am.candidates {
+			if c == choiceAlways || c == choiceSessionAllow {
+				t.Errorf("%s must not offer %v", tc.Name, c)
+			}
+		}
+	}
+}
+
+// Approve, deny and edit are always available.
+func TestForcedPromptsKeepCoreChoices(t *testing.T) {
+	am := newApprovalModel(&session.PendingToolCall{Name: "config.write"}, session.SandboxInfo{}, false, false, 80)
+	have := map[approvalChoice]bool{}
+	for _, c := range am.candidates {
+		have[c] = true
+	}
+	for _, want := range []approvalChoice{choiceApprove, choiceDeny, choiceEdit} {
+		if !have[want] {
+			t.Errorf("forced prompt lost core choice %v", want)
+		}
+	}
+}
+
+// A mnemonic for a filtered-out choice must do nothing, not select an
+// absent option.
+func TestFilteredMnemonicIsInert(t *testing.T) {
+	am := newApprovalModel(&session.PendingToolCall{Name: "config.write"}, session.SandboxInfo{}, false, false, 80)
+	before := am.choice
+	am, _ = am.Update(keyPress("A"))
+	if am.choice != before {
+		t.Fatalf("A selected a filtered-out choice: %v", am.choice)
+	}
+}
+
+// TestApprovalViewShowsMnemonicHints verifies that the interactive approval
+// panel (approvalModel.View) renders the mnemonic key alongside each choice
+// label, so the user knows the single-key shortcuts work.
+func TestApprovalViewShowsMnemonicHints(t *testing.T) {
+	am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, session.SandboxInfo{}, false, false, 80)
+	view := ansi.Strip(am.View())
+	// The mnemonic keys for allow/deny/edit must appear in the view.
+	for _, key := range []string{"a", "d", "e"} {
+		if !strings.Contains(view, key+" ") {
+			t.Errorf("mnemonic key %q not shown in approval view:\n%s", key, view)
 		}
 	}
 }

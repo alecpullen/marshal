@@ -145,7 +145,7 @@ func TestMainRunnerLoadsRepoInstructionsFromWorkingDir(t *testing.T) {
 	}
 	cfg := nativeToolAgentConfig("test-provider")
 	state := session.New(cfg, dir, time.Now(), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(context.Background(), cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(context.Background(), cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}

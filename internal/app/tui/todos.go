@@ -10,7 +10,6 @@ import (
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/native"
 )
@@ -78,7 +77,7 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 			focus = max(focus-lead+1, 0)
 		}
 	}
-	header := sidepanel.Header(fmt.Sprintf("tasks %d/%d", done, len(todos)), "", width)
+	header := chrome.Header(fmt.Sprintf("tasks %d/%d", done, len(todos)), "", width)
 	body := chrome.ClipLines(lines, focus, max(budget-1, 1), theme.Current())
 	return chromeRailWidth(header+"\n"+body, dimColor, width)
 }

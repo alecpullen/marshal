@@ -10,7 +10,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
@@ -60,12 +59,12 @@ func (m Model) renderAgentLane() string {
 	var b strings.Builder
 	// Header: count-first, pluralized ("2 agents" / "1 agent"), with the
 	// divider rule on the same line — matching the sidebar and todo panel
-	// via sidepanel.Header.
+	// via chrome.Header.
 	plural := "agents"
 	if allRunning == 1 {
 		plural = "agent"
 	}
-	b.WriteString(sidepanel.Header(fmt.Sprintf("%d %s", allRunning, plural), "", width))
+	b.WriteString(chrome.Header(fmt.Sprintf("%d %s", allRunning, plural), "", width))
 	b.WriteString("\n")
 
 	overflow := 0

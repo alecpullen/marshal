@@ -6,6 +6,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -31,57 +32,6 @@ type Rail struct{ sections []Section }
 // New builds a rail from sections in render order (top to bottom). Collapse
 // order is independent and comes from each section's Priority.
 func New(sections ...Section) *Rail { return &Rail{sections: sections} }
-
-// ruleGlyph is the hairline rule that follows a section title.
-const ruleGlyph = "─"
-
-// Header renders a section title followed by a rule running to the rail
-// edge. When right is non-empty the rule stops short and right is flushed
-// to the edge. When there is no room for both, right is dropped and the
-// title is truncated.
-func Header(title, right string, width int) string {
-	th := theme.Current()
-	titleStyle := lipgloss.NewStyle().Foreground(th.FGEmphasis)
-	if _, isNoColor := th.FGEmphasis.(lipgloss.NoColor); !isNoColor {
-		titleStyle = titleStyle.Bold(true)
-	}
-	ruleStyle := lipgloss.NewStyle().Foreground(th.BorderMuted)
-	dim := lipgloss.NewStyle().Foreground(th.FGMuted)
-
-	if width < 1 {
-		return ""
-	}
-	// Empty title: render a full-width rule with no leading space.
-	if title == "" {
-		return ruleStyle.Render(strings.Repeat(ruleGlyph, width))
-	}
-	label := ansi.Truncate(title, width, "…")
-	labelW := ansi.StringWidth(label)
-
-	// Reserve a space after the title, then whatever right needs.
-	rightW := 0
-	if right != "" {
-		rightW = ansi.StringWidth(right) + 1 // leading space
-	}
-	ruleW := width - labelW - 1 - rightW
-
-	// Not enough room for a rule alongside right: drop right and retry.
-	if ruleW < 1 && right != "" {
-		return Header(title, "", width)
-	}
-	if ruleW < 1 {
-		// No room for a rule at all; pad with spaces so width holds.
-		return titleStyle.Render(label) +
-			strings.Repeat(" ", max(width-labelW, 0))
-	}
-
-	out := titleStyle.Render(label) + " " +
-		ruleStyle.Render(strings.Repeat(ruleGlyph, ruleW))
-	if right != "" {
-		out += " " + dim.Render(right)
-	}
-	return out
-}
 
 // footerID marks the section the rail pins to its bottom edge.
 const footerID = "session"
@@ -151,7 +101,7 @@ func (r *Rail) View(d Data, width, height int) string {
 		// stacking a bare rule on top of that drew two adjacent rules.
 		intro := []string{""}
 		if states[footerIdx] == StateOneLine {
-			intro = append(intro, Header("", "", inner))
+			intro = append(intro, chrome.Header("", "", inner))
 		}
 		footerRows = append(intro, footerRows...)
 	}
@@ -188,10 +138,10 @@ func sectionRows(s Section, d Data, state RenderState, cost SectionCost, body []
 	case StateOneLine:
 		return []string{ansi.Truncate(s.OneLine(d, inner), inner, "…")}
 	case StateClipped:
-		return append([]string{Header(s.Title(), "", inner)},
+		return append([]string{chrome.Header(s.Title(), "", inner)},
 			s.Render(d, inner, cost.Clipped-1)...)
 	default:
-		return append([]string{Header(s.Title(), "", inner)}, body...)
+		return append([]string{chrome.Header(s.Title(), "", inner)}, body...)
 	}
 }
 

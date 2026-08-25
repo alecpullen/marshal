@@ -101,7 +101,7 @@ func TestAgentLaneHasSeparatorAndRail(t *testing.T) {
 	out := m.renderAgentLane()
 	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	// Header line carries the count text AND the divider rule on the same
-	// line (merged via sidepanel.Header, matching the sidebar/todo panel).
+	// line (merged via chrome.Header, matching the sidebar/todo panel).
 	header := ansi.Strip(rows[0])
 	if !strings.Contains(header, "1 agent") {
 		t.Fatalf("lane must open with the header, got %q", header)

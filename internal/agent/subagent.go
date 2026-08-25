@@ -386,9 +386,13 @@ func subagentResultText(id int64, label, summary, salvagedReason, errText string
 			fmt.Sprintf("subagent %d (%s) failed: %s", id, label, errText)
 	}
 	if salvagedReason != "" {
+		hint := salvageReasonHint(salvagedReason)
+		if hint != "" {
+			hint += " "
+		}
 		return fmt.Sprintf("subagent %d completed (salvaged: %s): %s", id, salvagedReason, label),
-			fmt.Sprintf("[note: this subagent ended early (%s). %s The report below is partial.]\n\n%s",
-				salvagedReason, salvageReasonHint(salvagedReason), summary)
+			fmt.Sprintf("[note: this subagent ended early (%s). %sThe report below is partial.]\n\n%s",
+				salvagedReason, hint, summary)
 	}
 	return fmt.Sprintf("subagent %d completed: %s", id, label), summary
 }

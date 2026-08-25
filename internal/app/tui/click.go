@@ -129,7 +129,8 @@ func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok || msg.Y < top || msg.Y >= bottom {
 		return nil, false
 	}
-	// Row 0 is the separator and row 1 the header; agents start at row 2.
+	// Row 0 is the header and row 1 the divider rule; agents start at
+	// row 2.
 	const chromeRows = 2
 	idx := msg.Y - top - chromeRows
 	entries := m.agentLaneEntries()

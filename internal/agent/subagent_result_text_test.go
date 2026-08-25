@@ -59,7 +59,7 @@ func TestSubagentResultText(t *testing.T) {
 			summary:        "partial report",
 			salvagedReason: "weird",
 			wantSummary:    "subagent 7 completed (salvaged: weird): build",
-			wantContent:    "[note: this subagent ended early (weird).  The report below is partial.]\n\npartial report",
+			wantContent:    "[note: this subagent ended early (weird). The report below is partial.]\n\npartial report",
 		},
 		{
 			name:        "plain completed",

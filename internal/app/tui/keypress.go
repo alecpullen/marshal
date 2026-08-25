@@ -127,6 +127,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 	}
 
+	// Leaving the empty input disarms lane-cursor mode so a later blank
+	// Enter cannot drill from a stale cursor position.
+	if m.laneCursorActive && msg.String() != "up" && msg.String() != "down" && msg.String() != "enter" {
+		m.laneCursorActive = false
+	}
+
 	switch msg.String() {
 	case "?":
 		// ? on an empty textarea prints the help cheatsheet to the

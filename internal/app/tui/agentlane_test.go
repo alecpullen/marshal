@@ -309,3 +309,28 @@ func TestLaneCursorBlankEnterPreservesSteeringDrain(t *testing.T) {
 		t.Fatalf("follow-up not submitted; messages = %v", messages)
 	}
 }
+
+// Review M2: typing any non-navigation key disarms the lane cursor, so a
+// later blank Enter cannot drill from a stale cursor position.
+func TestLaneCursorDisarmsOnTyping(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "tests")
+	registerRunningSubagent(t, &m, "review")
+
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if !m.laneCursorActive {
+		t.Fatal("precondition: Down must arm the lane cursor")
+	}
+
+	// A printable key falls through to the textarea; it must disarm the
+	// cursor on its way past.
+	m = sendKey(m, tea.KeyPressMsg{Code: 'x'})
+	if m.laneCursorActive {
+		t.Fatal("typing must disarm laneCursorActive")
+	}
+	// And a subsequent blank Enter must not drill.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.viewStack) != 0 {
+		t.Fatalf("stale cursor must not drill, viewStack=%d", len(m.viewStack))
+	}
+}

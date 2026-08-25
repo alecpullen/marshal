@@ -1380,6 +1380,62 @@ func TestChatOnceSendsPresetTemperature(t *testing.T) {
 	}
 }
 
+func TestChatOnceSendsRunnerSamplingOverrides(t *testing.T) {
+	presetTemp := 0.2
+	overrideTemp := 0.9
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+		ProviderCaps: schema.ProviderCapabilities{
+			Reasoning: true,
+		},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	runner := NewRunner(p, reg, pol, newTestState(t), "test-model")
+	runner.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "m", Temperature: &presetTemp, Thinking: "high"},
+	}}
+	runner.TemperatureOverride = &overrideTemp
+	runner.ThinkingOverride = "low"
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.Requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if p.Requests[0].Temperature == nil || *p.Requests[0].Temperature != 0.9 {
+		t.Fatalf("request Temperature = %v, want override 0.9", p.Requests[0].Temperature)
+	}
+	if p.Requests[0].Thinking != "low" {
+		t.Fatalf("request Thinking = %q, want override low", p.Requests[0].Thinking)
+	}
+
+	// nil/"" overrides leave the route preset's values in place.
+	p2 := &agenttest.ScriptedProvider{
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+		ProviderCaps: schema.ProviderCapabilities{
+			Reasoning: true,
+		},
+	}
+	runner2 := NewRunner(p2, reg, pol, newTestState(t), "test-model")
+	runner2.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "m", Temperature: &presetTemp, Thinking: "high"},
+	}}
+	if err := runner2.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p2.Requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if p2.Requests[0].Temperature == nil || *p2.Requests[0].Temperature != 0.2 {
+		t.Fatalf("request Temperature = %v, want preset 0.2", p2.Requests[0].Temperature)
+	}
+	if p2.Requests[0].Thinking != "high" {
+		t.Fatalf("request Thinking = %q, want preset high", p2.Requests[0].Thinking)
+	}
+}
+
 func TestLengthTruncatedJSONActionIsRefusedNotExecuted(t *testing.T) {
 	executed := false
 	p := &agenttest.ScriptedProvider{

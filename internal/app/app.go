@@ -1425,6 +1425,16 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		var addendum string
 		var pricingRates pricing.ModelPricing
 		iters := subtaskIters
+		// Ad-hoc sampling overrides from the agent.run call win over the
+		// named agent's own config (explicit override > preset > role default).
+		var tempOverride *float64
+		var thinkOverride string
+		if req.Temperature != nil {
+			tempOverride = req.Temperature
+		}
+		if req.Thinking != "" {
+			thinkOverride = req.Thinking
+		}
 		// An explicit provider/model pair resolves first so invalid pairs
 		// fail clearly before any execution, and so a named agent can replace
 		// only its preset provider/model while keeping its other overrides.
@@ -1472,6 +1482,12 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 				} else if ca.MaxIterations > 0 {
 					iters = ca.MaxIterations
 				}
+				if tempOverride == nil {
+					tempOverride = ca.Temperature
+				}
+				if thinkOverride == "" {
+					thinkOverride = ca.Thinking
+				}
 			}
 		}
 		if targetRoute.Preset.Provider != "" && (parentProvider == nil || targetRoute.Preset.Provider != parentProvider.Name()) {
@@ -1509,6 +1525,8 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
 		child.Role = role
 		child.MaxToolIterations = iters
+		child.TemperatureOverride = tempOverride
+		child.ThinkingOverride = thinkOverride
 		child.NativeTools = decoding.Native
 		child.ResponseFormat = decoding.ResponseFormat
 		// Set a route resolver so the child's RunTask can derive the

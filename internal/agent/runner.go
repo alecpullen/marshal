@@ -200,6 +200,13 @@ type Runner struct {
 	MaxToolIterations    int
 	MaxRetries           int
 	MaxTurnContextTokens int
+	// TemperatureOverride, when non-nil, wins over the resolved route's
+	// preset temperature for every turn of this runner (set for named
+	// custom agents and ad-hoc agent.run children).
+	TemperatureOverride *float64
+	// ThinkingOverride, when non-empty, wins over the resolved route's
+	// preset thinking/reasoning-effort setting.
+	ThinkingOverride string
 	// ChatTimeout bounds chatOnce's per-request context deadline for the
 	// model call itself. It is deliberately separate from approvals and
 	// questions, which carry no wall-clock timeout: a short chat ceiling
@@ -649,7 +656,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		r.turnRequestOptions.contextWindow = nil
 	}
 	r.turnRequestOptions.thinking = route.Preset.Thinking
+	if r.ThinkingOverride != "" {
+		r.turnRequestOptions.thinking = r.ThinkingOverride
+	}
 	r.turnRequestOptions.temperature = route.Preset.Temperature
+	if r.TemperatureOverride != nil {
+		r.turnRequestOptions.temperature = r.TemperatureOverride
+	}
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
 		r.semTracker = nil

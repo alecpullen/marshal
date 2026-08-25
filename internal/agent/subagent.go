@@ -24,10 +24,18 @@ import (
 // role. It applies only when Model and Agent are both empty, and only
 // when the role is explicitly bound in the active profile
 // (router.ResolveRoleIfBound); otherwise the default model is used.
+// Temperature and Thinking are ad-hoc sampling overrides for the child;
+// nil/"" inherit route resolution.
 type SubagentRequest struct {
 	Agent string
 	Model string
 	Role  routing.AgentRole
+	// Temperature optionally overrides the child's sampling temperature
+	// (ad-hoc agent.run parameter). Nil inherits route resolution.
+	Temperature *float64
+	// Thinking optionally overrides the child's reasoning effort
+	// (ad-hoc agent.run parameter). "" inherits route resolution.
+	Thinking string
 }
 
 // SubagentModelPreview describes what model a subagent will use before it
@@ -166,10 +174,12 @@ func WithSubagentParentProvider(provider string) SubagentOption {
 // that overrides the default model selection (or the named agent's own
 // preset).
 type agentRunArgs struct {
-	Prompt      string `json:"prompt"`
-	Description string `json:"description"`
-	Agent       string `json:"agent,omitempty"`
-	Model       string `json:"model,omitempty"`
+	Prompt      string   `json:"prompt"`
+	Description string   `json:"description"`
+	Agent       string   `json:"agent,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	Thinking    string   `json:"thinking,omitempty"`
 }
 
 // NewSubagentTool returns the registry.Tool entry for agent.run. The
@@ -247,7 +257,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			}
 		}
 
-		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model})
+		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model, Temperature: args.Temperature, Thinking: args.Thinking})
 		if err != nil {
 			state.ExitSubagent()
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)

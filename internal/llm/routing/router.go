@@ -257,6 +257,12 @@ func (r *StaticRouter) ResolveCustomAgent(name string, asRole AgentRole) (Route,
 		if agent.Context.MaxRepoContextTokens > 0 {
 			route.ContextBudget = agent.Context
 		}
+		if agent.Temperature != nil {
+			route.Preset.Temperature = agent.Temperature
+		}
+		if agent.Thinking != "" {
+			route.Preset.Thinking = agent.Thinking
+		}
 		return route, nil
 	}
 	// No preset: fall back through the role's resolution, but attach the agent.
@@ -265,6 +271,12 @@ func (r *StaticRouter) ResolveCustomAgent(name string, asRole AgentRole) (Route,
 		return Route{}, err
 	}
 	route.CustomAgent = &agent
+	if agent.Temperature != nil {
+		route.Preset.Temperature = agent.Temperature
+	}
+	if agent.Thinking != "" {
+		route.Preset.Thinking = agent.Thinking
+	}
 	return route, nil
 }
 
@@ -285,6 +297,12 @@ func (r *StaticRouter) resolveAgentBinding(name string, role AgentRole, profileN
 		if agent.Context.MaxRepoContextTokens > 0 {
 			route.ContextBudget = agent.Context
 		}
+		if agent.Temperature != nil {
+			route.Preset.Temperature = agent.Temperature
+		}
+		if agent.Thinking != "" {
+			route.Preset.Thinking = agent.Thinking
+		}
 		return route, nil
 	}
 	preset, ok := r.config.Presets[agent.Preset]
@@ -303,6 +321,12 @@ func (r *StaticRouter) resolveAgentBinding(name string, role AgentRole, profileN
 	}
 	if agent.Context.MaxRepoContextTokens > 0 {
 		route.ContextBudget = agent.Context
+	}
+	if agent.Temperature != nil {
+		route.Preset.Temperature = agent.Temperature
+	}
+	if agent.Thinking != "" {
+		route.Preset.Thinking = agent.Thinking
 	}
 	return route, nil
 }

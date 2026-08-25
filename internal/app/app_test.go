@@ -2690,6 +2690,69 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	}
 }
 
+func TestBuildSubagentFactoryCustomAgentSamplingOverrides(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	presetTemp := 0.2
+	agentTemp := 0.7
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m", Temperature: &presetTemp, Thinking: "high"},
+	}
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"reviewer": {Preset: "m", Temperature: &agentTemp, Thinking: "low"},
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	pol := policy.NewEngine(&cfg, nil)
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+
+	factory, _ := buildSubagentFactory(cfg, state, nil, reg, pol, "m", router, nil, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{Agent: "reviewer"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.TemperatureOverride == nil || *child.TemperatureOverride != 0.7 {
+		t.Fatalf("TemperatureOverride = %v, want 0.7", child.TemperatureOverride)
+	}
+	if child.ThinkingOverride != "low" {
+		t.Fatalf("ThinkingOverride = %q, want low", child.ThinkingOverride)
+	}
+
+	// Ad-hoc agent.run parameters win over the named agent's config.
+	adhocTemp := 0.9
+	child, _, err = factory(agent.SubagentRequest{Agent: "reviewer", Temperature: &adhocTemp, Thinking: "medium"})
+	if err != nil {
+		t.Fatalf("factory (ad-hoc): %v", err)
+	}
+	if child.TemperatureOverride == nil || *child.TemperatureOverride != 0.9 {
+		t.Fatalf("TemperatureOverride (ad-hoc) = %v, want 0.9", child.TemperatureOverride)
+	}
+	if child.ThinkingOverride != "medium" {
+		t.Fatalf("ThinkingOverride (ad-hoc) = %q, want medium", child.ThinkingOverride)
+	}
+
+	// No overrides anywhere → nil/"" on the child.
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"plain": {Preset: "m"},
+	}
+	router = routing.NewStaticRouter(cfg.RoutingConfig())
+	state = session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	factory, _ = buildSubagentFactory(cfg, state, nil, reg, pol, "m", router, nil, nil, 0, pricing.ModelPricing{})
+	child, _, err = factory(agent.SubagentRequest{Agent: "plain"})
+	if err != nil {
+		t.Fatalf("factory (plain): %v", err)
+	}
+	if child.TemperatureOverride != nil {
+		t.Fatalf("TemperatureOverride (plain) = %v, want nil", child.TemperatureOverride)
+	}
+	if child.ThinkingOverride != "" {
+		t.Fatalf("ThinkingOverride (plain) = %q, want empty", child.ThinkingOverride)
+	}
+}
+
 func TestBuildSubagentFactoryReviewerInheritedKeepsDefault(t *testing.T) {
 	parent := &namedScriptedProvider{ScriptedProvider: &agenttest.ScriptedProvider{}, providerName: "parent"}
 

@@ -186,6 +186,13 @@ type CustomAgent struct {
 	MaxIterations          int           `toml:"max_iterations,omitempty"`
 	MaxIterationsUnlimited bool          `toml:"max_iterations_unlimited,omitempty"`
 	Context                ContextBudget `toml:"context,omitempty"`
+	// Temperature optionally overrides the resolved preset's sampling
+	// temperature for every run of this agent. Nil keeps the preset's
+	// value (or the role default when the preset sets none).
+	Temperature *float64 `toml:"temperature,omitempty"`
+	// Thinking optionally overrides the resolved preset's reasoning-effort
+	// setting ("" keeps the preset's value; see ModelPreset.Thinking).
+	Thinking string `toml:"thinking,omitempty"`
 }
 
 type ContextBudget struct {

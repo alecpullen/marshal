@@ -112,13 +112,19 @@ func TestSkillLoadToolAlreadyActive(t *testing.T) {
 	RegisterTool(reg, idx, state)
 
 	tool, _ := reg.Lookup("skill.load")
-	_, err := tool.Handler(context.Background(), registry.ToolCall{
+	result, err := tool.Handler(context.Background(), registry.ToolCall{
 		ID:   "call_2",
 		Name: "skill.load",
 		Args: []byte(`{"name": "debug"}`),
 	})
-	if err == nil {
-		t.Fatal("expected error for already-active skill")
+	if err != nil {
+		t.Fatalf("repeat load should succeed as a re-fetch, got: %v", err)
+	}
+	if result.Summary == "" {
+		t.Fatal("expected summary in result")
+	}
+	if got := state.SkillBodyAge("debug"); got != 0 {
+		t.Errorf("repeat load must reset body age, got %d", got)
 	}
 }
 
@@ -202,7 +208,7 @@ func TestSkillLoadToolMissingNameArg(t *testing.T) {
 	}
 }
 
-func TestSkillLoadBudgetEnforced(t *testing.T) {
+func TestSkillLoadBudgetEvictsOldest(t *testing.T) {
 	idx := NewIndex()
 	for _, name := range []string{"one", "two", "three"} {
 		idx.skills[name] = Skill{Name: name, Description: "d", Body: "body " + name}
@@ -216,12 +222,14 @@ func TestSkillLoadBudgetEnforced(t *testing.T) {
 	if err := LoadSkillIntoSession(idx, state, "two"); err != nil {
 		t.Fatalf("second load: %v", err)
 	}
-	err := LoadSkillIntoSession(idx, state, "three")
-	if err == nil || !strings.Contains(err.Error(), "skill budget reached") {
-		t.Fatalf("third load should hit the budget, got %v", err)
+	if err := LoadSkillIntoSession(idx, state, "three"); err != nil {
+		t.Fatalf("third load should evict oldest, not error: %v", err)
 	}
-	if state.HasActiveSkill("three") {
-		t.Fatal("refused skill must not become active")
+	if state.HasActiveSkill("one") {
+		t.Fatal("oldest skill should have been evicted")
+	}
+	if !state.HasActiveSkill("two") || !state.HasActiveSkill("three") {
+		t.Fatal("two and three should still be active")
 	}
 }
 
@@ -254,5 +262,120 @@ func TestSkillLoadBudgetZeroUnlimited(t *testing.T) {
 		if err := LoadSkillIntoSession(idx, state, name); err != nil {
 			t.Fatalf("unlimited load %s: %v", name, err)
 		}
+	}
+}
+
+// A repeat skill.load is the re-fetch path: the body ages out of the wire
+// (internal/agent/route.go appendSkillBodies), so asking again must resend
+// it rather than error.
+func TestRepeatLoadResetsBodyAgeInsteadOfErroring(t *testing.T) {
+	state := newTestState()
+	idx := NewIndex()
+	idx.Set("alpha", Skill{Name: "alpha", Description: "d", Body: "body"})
+
+	sl := NewSkillLoader(idx, state)
+	if err := sl.Load("alpha", false); err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	state.TickSkillBodyAges()
+	state.TickSkillBodyAges()
+
+	if err := sl.Load("alpha", false); err != nil {
+		t.Fatalf("repeat load must succeed as a re-fetch, got: %v", err)
+	}
+	if got := state.SkillBodyAge("alpha"); got != 0 {
+		t.Errorf("repeat load must reset body age, got %d", got)
+	}
+}
+
+func TestUnloadDeactivatesSkill(t *testing.T) {
+	state := newTestState()
+	idx := NewIndex()
+	idx.Set("alpha", Skill{Name: "alpha", Description: "d", Body: "body"})
+	sl := NewSkillLoader(idx, state)
+	if err := sl.Load("alpha", false); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if err := sl.Unload("alpha"); err != nil {
+		t.Fatalf("unload: %v", err)
+	}
+	if state.HasActiveSkill("alpha") {
+		t.Error("alpha still active after unload")
+	}
+	if err := sl.Unload("alpha"); err == nil {
+		t.Error("unloading an inactive skill should error")
+	}
+}
+
+// Hitting max_active must evict the oldest skill, not refuse the new one.
+// The old behaviour returned an error, which stranded the model with a set
+// of skills it could not change.
+func TestMaxActiveEvictsOldestInsteadOfErroring(t *testing.T) {
+	state := newTestState()
+	state.Config.Skills.MaxActive = 2
+	idx := NewIndex()
+	for _, n := range []string{"first", "second", "third"} {
+		idx.Set(n, Skill{Name: n, Description: "d", Body: "body"})
+	}
+	sl := NewSkillLoader(idx, state)
+
+	for _, n := range []string{"first", "second", "third"} {
+		if err := sl.Load(n, false); err != nil {
+			t.Fatalf("load %s: %v", n, err)
+		}
+	}
+
+	if state.HasActiveSkill("first") {
+		t.Error("oldest skill should have been evicted")
+	}
+	for _, n := range []string{"second", "third"} {
+		if !state.HasActiveSkill(n) {
+			t.Errorf("%s should still be active", n)
+		}
+	}
+}
+
+// Auto/quiet loads previously bypassed the cap entirely, so the ranker could
+// activate without limit.
+func TestQuietLoadsCountAgainstMaxActive(t *testing.T) {
+	state := newTestState()
+	state.Config.Skills.MaxActive = 1
+	idx := NewIndex()
+	idx.Set("a", Skill{Name: "a", Description: "d", Body: "body"})
+	idx.Set("b", Skill{Name: "b", Description: "d", Body: "body"})
+	sl := NewSkillLoader(idx, state)
+
+	if err := sl.Load("a", true); err != nil {
+		t.Fatalf("quiet load a: %v", err)
+	}
+	if err := sl.Load("b", true); err != nil {
+		t.Fatalf("quiet load b: %v", err)
+	}
+
+	if len(state.ActiveSkills()) != 1 {
+		t.Fatalf("active = %v, want exactly 1 under max_active=1", state.ActiveSkills())
+	}
+}
+
+// Autoloaded skills are user-configured always-on and must survive eviction.
+func TestAutoloadedSkillsAreNotEvicted(t *testing.T) {
+	state := newTestState()
+	state.Config.Skills.MaxActive = 1
+	state.Config.Skills.Autoload = []string{"pinned"}
+	idx := NewIndex()
+	idx.Set("pinned", Skill{Name: "pinned", Description: "d", Body: "body"})
+	idx.Set("other", Skill{Name: "other", Description: "d", Body: "body"})
+	sl := NewSkillLoader(idx, state)
+
+	if err := sl.Load("pinned", true); err != nil {
+		t.Fatalf("load pinned: %v", err)
+	}
+	if err := sl.Load("other", false); err != nil {
+		t.Fatalf("load other: %v", err)
+	}
+
+	if !state.HasActiveSkill("pinned") {
+		t.Error("autoloaded skill must never be evicted")
 	}
 }

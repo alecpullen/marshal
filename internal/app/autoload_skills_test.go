@@ -73,8 +73,8 @@ func TestAutoloadSkillsQuietButExplicitSkillLoadPostsTag(t *testing.T) {
 	state := autoloadTestState(t, cfg)
 
 	autoloadSkills(cfg, idx, state, discardLogger())
-	if err := skills.LoadSkillIntoSession(idx, state, "using-superpowers"); err == nil {
-		t.Fatal("explicit skill.load after autoload should fail because already active")
+	if err := skills.LoadSkillIntoSession(idx, state, "using-superpowers"); err != nil {
+		t.Fatalf("explicit skill.load after autoload should succeed as a re-fetch: %v", err)
 	}
 
 	// Reset and load explicitly to verify the tag path.

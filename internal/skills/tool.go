@@ -12,12 +12,36 @@ import (
 func RegisterTool(reg *registry.Registry, idx *Index, state *session.State) {
 	reg.Register(registry.Tool{
 		Name:        "skill.load",
-		Description: "Load a skill into the agent's context by name. The system prompt lists available skills. Call this when a skill's expertise is relevant to the task.",
+		Description: "Load a skill into the agent's context by name. The system prompt lists available skills. Call this when a skill's expertise is relevant to the task. Calling it for a skill that is already active re-sends its full text, which is how you recover a skill whose body has aged out of context.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1,"description":"Name of the skill to load"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 		Cacheable:   false,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			return handleSkillLoad(call, idx, state)
+		},
+	})
+	reg.Register(registry.Tool{
+		Name:        "skill.unload",
+		Description: "Drop a loaded skill from the agent's context by name, so its body stops consuming context on every turn. Call this when you are done with a skill's procedure.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1,"description":"Name of the skill to unload"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskReadOnly,
+		Cacheable:   false,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+			}
+			if args.Name == "" {
+				return registry.ToolResult{}, fmt.Errorf("missing required argument: name")
+			}
+			if err := NewSkillLoader(idx, state).Unload(args.Name); err != nil {
+				return registry.ToolResult{}, err
+			}
+			return registry.ToolResult{
+				Summary: fmt.Sprintf("Skill %q unloaded.", args.Name),
+			}, nil
 		},
 	})
 }
@@ -77,9 +101,12 @@ func NewSkillLoader(idx *Index, state *session.State) *SkillLoader {
 	return &SkillLoader{idx: idx, state: state}
 }
 
-// Load resolves, deduplicates, budget-checks, and injects a skill into the
-// session. When quiet is true, no ContentTypeSkill transcript tag is posted
-// and the max_active budget is not enforced (for autoloaded skills).
+// Load resolves and injects a skill into the session. When quiet is true, no
+// ContentTypeSkill transcript tag is posted (used for autoloaded skills).
+//
+// Loading an already-active skill is a re-fetch, not an error: bodies age
+// out of the wire (internal/agent/route.go appendSkillBodies), so asking
+// again is how the model gets the full text back.
 func (sl *SkillLoader) Load(name string, quiet bool) error {
 	skill, ok := sl.idx.Load(name)
 	if !ok {
@@ -92,14 +119,11 @@ func (sl *SkillLoader) Load(name string, quiet bool) error {
 	}
 
 	if sl.state.HasActiveSkill(name) {
-		return fmt.Errorf("skill %q is already active", name)
+		sl.state.ResetSkillBodyAge(name)
+		return nil
 	}
 
-	if !quiet {
-		if err := sl.checkMaxActive(); err != nil {
-			return err
-		}
-	}
+	sl.evictForBudget()
 
 	sl.state.AddMessage(session.RoleSystem, WrapBody(skill), session.ContentTypeSkillBody)
 	if !quiet {
@@ -109,28 +133,43 @@ func (sl *SkillLoader) Load(name string, quiet bool) error {
 	return nil
 }
 
-// checkMaxActive enforces skills.max_active against explicitly loaded
-// skills. Autoloaded skills are always-on and do not consume the budget.
-// 0 means unlimited.
-func (sl *SkillLoader) checkMaxActive() error {
+// Unload deactivates a skill so its body stops being written to the wire.
+func (sl *SkillLoader) Unload(name string) error {
+	if !sl.state.DeactivateSkill(name) {
+		return fmt.Errorf("skill %q is not active", name)
+	}
+	sl.state.AddMessage(session.RoleSystem, name, session.ContentTypeSkill)
+	return nil
+}
+
+// evictForBudget drops least-recently-activated skills until there is room
+// for one more under skills.max_active. Autoloaded skills are user-configured
+// always-on and are never evicted (nor counted). 0 means unlimited.
+//
+// This replaces the old behaviour of refusing the new skill: refusing left
+// the model stuck with whatever it happened to load first, with no way to
+// change the set.
+func (sl *SkillLoader) evictForBudget() {
 	max := sl.state.Config.Skills.MaxActive
 	if max <= 0 {
-		return nil
+		return
 	}
-	autoloaded := make(map[string]bool, len(sl.state.Config.Skills.Autoload))
+	pinned := make(map[string]bool, len(sl.state.Config.Skills.Autoload))
 	for _, n := range sl.state.Config.Skills.Autoload {
-		autoloaded[n] = true
+		pinned[n] = true
 	}
-	active := 0
-	for _, n := range sl.state.ActiveSkills() {
-		if !autoloaded[n] {
-			active++
+	for {
+		evictable := make([]string, 0, max)
+		for _, n := range sl.state.ActiveSkillsByAge() {
+			if !pinned[n] {
+				evictable = append(evictable, n)
+			}
 		}
+		if len(evictable) < max {
+			return
+		}
+		sl.state.DeactivateSkill(evictable[0])
 	}
-	if active >= max {
-		return fmt.Errorf("skill budget reached (%d active, max %d) — continue with the skills already loaded, or raise skills.max_active", active, max)
-	}
-	return nil
 }
 
 func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (registry.ToolResult, error) {

@@ -236,7 +236,7 @@ func TestSubagentSalvageSurfacesInResultAndCard(t *testing.T) {
 	if !strings.Contains(q[0], "partial report") {
 		t.Fatalf("report message missing report: %q", q[0])
 	}
-	if !strings.Contains(q[0], " Raise [agent] subtask_iterations") {
+	if !strings.Contains(q[0], "raise [agent] subtask_iterations") {
 		t.Fatalf("report message missing remedy hint: %q", q[0])
 	}
 }

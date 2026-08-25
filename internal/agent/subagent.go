@@ -377,9 +377,34 @@ func subagentResultText(id int64, label, summary, salvagedReason, errText string
 	}
 	if salvagedReason != "" {
 		return fmt.Sprintf("subagent %d completed (salvaged: %s): %s", id, salvagedReason, label),
-			fmt.Sprintf("[note: this subagent hit its iteration budget (%s) and the report below is partial. Raise [agent] subtask_iterations or the custom agent's max_iterations for a longer budget.]\n\n%s", salvagedReason, summary)
+			fmt.Sprintf("[note: this subagent ended early (%s). %s The report below is partial.]\n\n%s",
+				salvagedReason, salvageReasonHint(salvagedReason), summary)
 	}
 	return fmt.Sprintf("subagent %d completed: %s", id, label), summary
+}
+
+// salvageReasonHint returns the human explanation for a salvage reason.
+// Only "exhausted" involves the tool-iteration budget; the other reasons
+// are behavior detectors that fire regardless of any configured budget,
+// so they must not send users hunting for budget settings that do not
+// apply.
+func salvageReasonHint(reason string) string {
+	switch reason {
+	case "exhausted":
+		return "It used its full tool-iteration budget — raise [agent] subtask_iterations or the custom agent's max_iterations for a longer run."
+	case "overhead_exhausted":
+		return "It spent too many turns on bookkeeping (planning/steering) relative to real work."
+	case "stalled":
+		return "It kept repeating similar actions without making progress."
+	case "malformed":
+		return "Its output could not be parsed into valid tool calls."
+	case "empty":
+		return "It returned an empty final answer."
+	case "unverified":
+		return "It finished without completing its verification step."
+	default:
+		return ""
+	}
 }
 
 func decodeAgentRunArgs(tool registry.Tool, raw json.RawMessage) (agentRunArgs, error) {

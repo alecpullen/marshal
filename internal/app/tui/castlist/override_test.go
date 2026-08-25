@@ -3,6 +3,8 @@ package castlist
 import (
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/llm/routing"
 )
 
@@ -86,5 +88,58 @@ func TestResolutionErrorBlocksStart(t *testing.T) {
 	p.setRowErr(routing.AgentRole("scout"), "unknown preset \"nope\"")
 	if !p.blocked() {
 		t.Fatal("a row error must block Enter")
+	}
+}
+
+// Production-shape castlist: all rows are role rows (the strategy row is
+// rendered separately in View, not in p.rows). Enter must emit StartMsg
+// even when the cursor is on a role row — "o" opens the picker, not Enter.
+func TestProductionShapeCastlistCanStart(t *testing.T) {
+	p := panelWithRows(t,
+		Row{Title: "scout", Role: routing.AgentRole("scout"), Detail: "ollama/qwen3"},
+		Row{Title: "implementer", Role: routing.AgentRole("implementer"), Detail: "ollama/qwen3"},
+		Row{Title: "reviewer", Role: routing.AgentRole("reviewer"), Detail: "ollama/qwen3"},
+	)
+	// Cursor starts on a role row (scout).
+	if p.rows[p.cursor].Role == "" {
+		t.Fatal("cursor must start on a role row in production shape")
+	}
+	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter must emit StartMsg even when cursor is on a role row")
+	}
+	msg := cmd()
+	start, ok := msg.(StartMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want StartMsg", msg)
+	}
+	if start.Strategy != "agent" {
+		t.Errorf("Strategy = %q, want agent", start.Strategy)
+	}
+}
+
+// Clearing an override must restore the row's original Detail and Badge,
+// not leave the stale override values.
+func TestClearOverrideRestoresOriginalDetail(t *testing.T) {
+	p := panelWithRows(t, Row{
+		Title:  "scout",
+		Role:   routing.AgentRole("scout"),
+		Detail: "ollama/qwen3",
+		Badge:  "routed",
+	})
+	p.setOverride(routing.AgentRole("scout"), "opus-5")
+	if p.rows[0].Detail != "opus-5" {
+		t.Fatalf("after override, Detail = %q, want opus-5", p.rows[0].Detail)
+	}
+	if p.rows[0].Badge != "override" {
+		t.Fatalf("after override, Badge = %q, want override", p.rows[0].Badge)
+	}
+	// Clear the override.
+	p.setOverride(routing.AgentRole("scout"), "")
+	if p.rows[0].Detail != "ollama/qwen3" {
+		t.Fatalf("after clear, Detail = %q, want ollama/qwen3", p.rows[0].Detail)
+	}
+	if p.rows[0].Badge != "routed" {
+		t.Fatalf("after clear, Badge = %q, want routed", p.rows[0].Badge)
 	}
 }

@@ -51,8 +51,18 @@ type Panel struct {
 	strategyOptions []StrategyOption
 	cursor          int // index into rows, over role rows only
 	overrides       map[routing.AgentRole]string
-	pick            *picker.Model // non-nil when the in-panel picker is open
-	pickerItems     []picker.Item // model presets offered by the in-panel picker
+	// originals stores the pre-override Detail/Badge for each role so
+	// clearing an override restores the row to its original state.
+	originals   map[routing.AgentRole]rowOriginal
+	pick        *picker.Model // non-nil when the in-panel picker is open
+	pickerItems []picker.Item // model presets offered by the in-panel picker
+}
+
+// rowOriginal captures a row's Detail and Badge before an override was
+// applied, so clearing the override restores them.
+type rowOriginal struct {
+	detail string
+	badge  string
 }
 
 // StrategyOption is one selectable execution strategy with an optional
@@ -156,8 +166,8 @@ func (p *Panel) blocked() bool {
 
 // Update handles key events. Enter emits StartMsg when unblocked; Esc emits
 // CancelMsg. Left/Right cycles the execution strategy. Up/Down moves the
-// cursor over role rows; Enter on a role row opens the in-panel override
-// picker.
+// cursor over role rows; "o" opens the in-panel override picker for the
+// role under the cursor.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	// When the in-panel picker is open, forward all messages to it.
 	if p.pick != nil {
@@ -186,12 +196,13 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			if p.blocked() {
 				return nil
 			}
-			// If the cursor is on a role row, open the picker.
+			return func() tea.Msg { return StartMsg{Strategy: p.strategy, Overrides: p.Overrides()} }
+		case "o":
+			// Open the override picker for the role under the cursor.
 			if p.cursor < len(p.rows) && p.rows[p.cursor].Role != "" {
 				p.openPicker(p.rows[p.cursor].Role)
-				return nil
 			}
-			return func() tea.Msg { return StartMsg{Strategy: p.strategy, Overrides: p.Overrides()} }
+			return nil
 		case "esc":
 			return func() tea.Msg { return CancelMsg{} }
 		case "right":
@@ -260,27 +271,45 @@ func (p *Panel) Overrides() map[routing.AgentRole]string {
 }
 
 // setOverride sets or clears an override for a role. An empty preset clears
-// the entry rather than storing an empty string.
+// the entry and restores the row's original Detail/Badge.
 func (p *Panel) setOverride(role routing.AgentRole, preset string) {
 	if p.overrides == nil {
 		p.overrides = make(map[routing.AgentRole]string)
 	}
+	if p.originals == nil {
+		p.originals = make(map[routing.AgentRole]rowOriginal)
+	}
 	if preset == "" {
 		delete(p.overrides, role)
 	} else {
+		// Save originals on first set, before overwriting.
+		if _, saved := p.originals[role]; !saved {
+			for _, r := range p.rows {
+				if r.Role == role {
+					p.originals[role] = rowOriginal{detail: r.Detail, badge: r.Badge}
+					break
+				}
+			}
+		}
 		p.overrides[role] = preset
 	}
 	p.applyOverrideToRow(role)
 }
 
 // applyOverrideToRow updates a row's Detail and Badge to reflect the
-// override. Called after setOverride and after row updates.
+// override, or restores the original values when the override has been
+// cleared.
 func (p *Panel) applyOverrideToRow(role routing.AgentRole) {
 	for i, r := range p.rows {
 		if r.Role == role {
 			if override, ok := p.overrides[role]; ok {
 				p.rows[i].Detail = override
 				p.rows[i].Badge = "override"
+			} else if orig, had := p.originals[role]; had {
+				// Restore the original Detail/Badge.
+				p.rows[i].Detail = orig.detail
+				p.rows[i].Badge = orig.badge
+				delete(p.originals, role)
 			}
 			return
 		}
@@ -409,7 +438,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	body := chrome.ClipLines(rows, 0, listH, th)
 
-	hints := "↵ start"
+	hints := "↵ start · o override"
 	if p.blocked() {
 		hints = "↵ blocked"
 	}

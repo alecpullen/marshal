@@ -26,6 +26,15 @@ func interfaceFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
+				f := enumField("tui.depth", "Depth", theme.DepthNames(),
+					func() string { return s.cfg.TUI.Depth },
+					func(v string) { s.cfg.TUI.Depth = v })
+				f.TomlPath = "tui.depth"
+				f.Desc = "background planes the TUI paints (flat · raised · full)"
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
+			func() *field {
 				f := &field{ID: "tui.mouse_capture", Title: "Mouse capture", Kind: kindToggle,
 					TomlPath: "tui.mouse_capture",
 					Desc:     "wheel scrolls the transcript; hold Option/Alt to select text",

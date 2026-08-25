@@ -169,6 +169,7 @@ type fileHistory struct {
 
 type fileTUI struct {
 	Theme        *string           `toml:"theme"`
+	Depth        *string           `toml:"depth"`
 	Palette      map[string]string `toml:"palette"`
 	Mode         *string           `toml:"mode"`
 	MouseCapture *bool             `toml:"mouse_capture"`

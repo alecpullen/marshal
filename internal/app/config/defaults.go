@@ -166,6 +166,7 @@ func Default() Config {
 			Enabled: true,
 		},
 		TUI: TUIConfig{
+			Depth:        "flat",
 			MouseCapture: true,
 			SidePanel: SidePanelConfig{
 				Enabled:  true,

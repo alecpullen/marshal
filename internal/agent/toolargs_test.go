@@ -51,3 +51,32 @@ func TestSummarizeToolArgsPatch(t *testing.T) {
 		t.Fatalf("SummarizeToolArgs(file.write_patch) = %q, want the concise label %q", got, "patch")
 	}
 }
+
+// agent.await's arguments are numeric and boolean, so the default branch's
+// "first string value" rule found nothing and the tool line rendered bare —
+// a blocking call with no indication of what it was blocked on.
+func TestSummarizeToolArgsAgentAwait(t *testing.T) {
+	for _, tc := range []struct {
+		args string
+		want string
+	}{
+		{`{"id":3}`, "#3"},
+		{`{"all":true}`, "all"},
+		{`{"any":true}`, "any"},
+	} {
+		got := SummarizeToolArgs("agent.await", json.RawMessage(tc.args))
+		if got != tc.want {
+			t.Errorf("SummarizeToolArgs(agent.await, %s) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// Regression guard for the original defect: no valid argument shape may
+// summarise to the empty string.
+func TestSummarizeToolArgsAgentAwaitNeverEmpty(t *testing.T) {
+	for _, args := range []string{`{"id":1}`, `{"all":true}`, `{"any":true}`} {
+		if SummarizeToolArgs("agent.await", json.RawMessage(args)) == "" {
+			t.Errorf("args %s summarised to empty", args)
+		}
+	}
+}

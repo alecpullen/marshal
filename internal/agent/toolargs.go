@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -33,6 +34,21 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 		// The patch body is large and would flood the live tool-call line;
 		// the file path is surfaced separately via ActiveToolCall.Path.
 		return "patch"
+	case "agent.await":
+		// Numeric and boolean arguments only, so the default branch's
+		// "first string value" rule finds nothing and returns "". A
+		// blocking await that names no target is the least legible line
+		// on screen, so it gets an explicit case.
+		if id, ok := m["id"].(float64); ok && id != 0 {
+			return "#" + strconv.FormatInt(int64(id), 10)
+		}
+		if any, ok := m["any"].(bool); ok && any {
+			return "any"
+		}
+		if all, ok := m["all"].(bool); ok && all {
+			return "all"
+		}
+		return ""
 	default:
 		for _, v := range m {
 			if s, ok := v.(string); ok && s != "" {

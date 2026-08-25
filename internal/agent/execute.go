@@ -325,6 +325,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	label := toolName
 	if command, ok := argsMap["command"].(string); ok && command != "" {
 		label = fmt.Sprintf("%s: %s", toolName, command)
+	} else if summary := SummarizeToolArgs(toolName, args); toolName == "agent.await" && summary != "" {
+		label = fmt.Sprintf("%s: %s", toolName, summary)
 	}
 	r.State.SetActivity(session.Activity{Kind: session.ActivityTool, Label: label, StartedAt: r.Now()})
 	r.State.SetActiveToolCall(session.ActiveToolCall{

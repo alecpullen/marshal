@@ -107,6 +107,31 @@ var gamutExempt = map[string]bool{
 	"catppuccin-latte/AccentTertiary":  true,
 }
 
+// gateBackgrounds returns the backgrounds text can land on at the given depth.
+// At flat and raised the transcript is unpainted, so text still lands on an
+// unknown terminal background and the bracket governs. Only at full does
+// marshal own every plane.
+//
+// BGOverlay is deliberately excluded: it is the modal/picker plane, and the
+// general contrast gate tests foregrounds against the planes they render on
+// in the transcript and chrome. Modal content uses FGEmphasis (tested
+// separately via TestSelectionLegibility), not the full foreground set.
+func gateBackgrounds(th Theme, depth Depth, light bool) [][3]int {
+	if depth < DepthFull {
+		if light {
+			return lightTerminalBackgrounds
+		}
+		return darkTerminalBackgrounds
+	}
+	out := make([][3]int, 0, 2)
+	for _, c := range []color.Color{th.BGBase, th.BGSurface} {
+		if rgb, ok := slotRGB(c); ok {
+			out = append(out, rgb)
+		}
+	}
+	return out
+}
+
 // TestPresetContrast pins F1, F2 and F3: every foreground slot must clear
 // its threshold against every background it can be rendered on.
 func TestPresetContrast(t *testing.T) {
@@ -115,29 +140,25 @@ func TestPresetContrast(t *testing.T) {
 		if !ok {
 			t.Fatalf("preset %q missing", name)
 		}
-		backgrounds := darkTerminalBackgrounds
-		if lightPresets[name] {
-			backgrounds = lightTerminalBackgrounds
-		}
-		surface, ok := slotRGB(th.BGSurface)
-		if !ok {
-			t.Fatalf("preset %q: BGSurface is not a 256-colour index", name)
-		}
-		backgrounds = append(append([][3]int{}, backgrounds...), surface)
+		light := lightPresets[name]
 
-		for _, slot := range contrastSlots {
-			fg, ok := slotRGB(slot.get(th))
-			if !ok {
-				continue
-			}
-			need := slot.need
-			if gamutExempt[name+"/"+slot.name] {
-				need = chromeContrast
-			}
-			for _, bg := range backgrounds {
-				if got := contrastRatio(fg, bg); got < need {
-					t.Errorf("%s: %s %s on %s = %.2f:1, need %.2f:1",
-						name, slot.name, hexOf(fg), hexOf(bg), got, need)
+		for _, depth := range []Depth{DepthFlat, DepthRaised, DepthFull} {
+			backgrounds := gateBackgrounds(th, depth, light)
+
+			for _, slot := range contrastSlots {
+				fg, ok := slotRGB(slot.get(th))
+				if !ok {
+					continue
+				}
+				need := slot.need
+				if gamutExempt[name+"/"+slot.name] {
+					need = chromeContrast
+				}
+				for _, bg := range backgrounds {
+					if got := contrastRatio(fg, bg); got < need {
+						t.Errorf("%s@%s: %s %s on %s = %.2f:1, need %.2f:1",
+							name, depth, slot.name, hexOf(fg), hexOf(bg), got, need)
+					}
 				}
 			}
 		}
@@ -411,5 +432,30 @@ func TestSeparatePairsIsFixedPoint(t *testing.T) {
 	separatePairs(&th)
 	if th != before {
 		t.Errorf("separatePairs did not reach a fixed point: second pass mutated the theme")
+	}
+}
+
+// The neutral tiers must be far enough apart to read as a hierarchy. Adjacent
+// steps below 1.4:1 are why the interface looked flat: emphasis, body and
+// muted all landed as "grey text".
+func TestNeutralRampIsSeparated(t *testing.T) {
+	const minStep = 1.4
+	th := warmSunset256
+	tiers := []struct {
+		name string
+		c    color.Color
+	}{
+		{"FGEmphasis", th.FGEmphasis},
+		{"FGDefault", th.FGDefault},
+		{"FGMuted", th.FGMuted},
+		{"BorderMuted", th.BorderMuted},
+	}
+	for i := 0; i+1 < len(tiers); i++ {
+		a, _ := slotRGB(tiers[i].c)
+		b, _ := slotRGB(tiers[i+1].c)
+		if got := contrastRatio(a, b); got < minStep {
+			t.Errorf("%s vs %s = %.2f:1, want >= %.2f:1",
+				tiers[i].name, tiers[i+1].name, got, minStep)
+		}
 	}
 }

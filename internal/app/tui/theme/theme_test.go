@@ -111,8 +111,8 @@ func Test256ColorPaletteHasNewThemeSlots(t *testing.T) {
 	if th.UserPrompt != lipgloss.Color("250") {
 		t.Fatalf("UserPrompt = %#v, want 250", th.UserPrompt)
 	}
-	if th.BorderMuted != lipgloss.Color("246") {
-		t.Fatalf("BorderMuted = %#v, want 246", th.BorderMuted)
+	if th.BorderMuted != lipgloss.Color("244") {
+		t.Fatalf("BorderMuted = %#v, want 244", th.BorderMuted)
 	}
 }
 

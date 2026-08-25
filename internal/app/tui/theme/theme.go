@@ -97,10 +97,10 @@ type Theme struct {
 // warmSunset256 is the default dark-theme palette (Warm Sunset) resolved
 // to 256-color ANSI codes.
 var warmSunset256 = Theme{
-	FGDefault:       lipgloss.Color("252"),
-	FGMuted:         lipgloss.Color("248"),
-	BorderMuted:     lipgloss.Color("246"),
 	FGEmphasis:      lipgloss.Color("255"),
+	FGDefault:       lipgloss.Color("250"),
+	FGMuted:         lipgloss.Color("247"),
+	BorderMuted:     lipgloss.Color("244"),
 	BGBase:          lipgloss.Color("232"),
 	BGSurface:       lipgloss.Color("236"),
 	BGOverlay:       lipgloss.Color("237"),

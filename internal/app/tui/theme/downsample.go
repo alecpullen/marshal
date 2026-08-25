@@ -98,6 +98,8 @@ var backgroundPairs = [][2]func(*Theme) *color.Color{
 		func(t *Theme) *color.Color { return &t.BGBase }},
 	{func(t *Theme) *color.Color { return &t.BorderMuted },
 		func(t *Theme) *color.Color { return &t.BGSurface }},
+	{func(t *Theme) *color.Color { return &t.BorderMuted },
+		func(t *Theme) *color.Color { return &t.BGSelection }},
 	{func(t *Theme) *color.Color { return &t.FGDefault },
 		func(t *Theme) *color.Color { return &t.BGOverlay }},
 }

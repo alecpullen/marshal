@@ -9,10 +9,10 @@ import (
 )
 
 var dracula256 = Theme{
-	FGDefault:       lipgloss.Color("252"),
-	FGMuted:         lipgloss.Color("248"),
-	BorderMuted:     lipgloss.Color("246"),
 	FGEmphasis:      lipgloss.Color("255"),
+	FGDefault:       lipgloss.Color("250"),
+	FGMuted:         lipgloss.Color("247"),
+	BorderMuted:     lipgloss.Color("244"),
 	BGBase:          lipgloss.Color("232"),
 	BGSurface:       lipgloss.Color("236"),
 	BGOverlay:       lipgloss.Color("237"),
@@ -28,10 +28,10 @@ var dracula256 = Theme{
 }
 
 var nord256 = Theme{
-	FGDefault:       lipgloss.Color("253"),
-	FGMuted:         lipgloss.Color("248"),
-	BorderMuted:     lipgloss.Color("246"),
 	FGEmphasis:      lipgloss.Color("255"),
+	FGDefault:       lipgloss.Color("250"),
+	FGMuted:         lipgloss.Color("247"),
+	BorderMuted:     lipgloss.Color("244"),
 	BGBase:          lipgloss.Color("232"),
 	BGSurface:       lipgloss.Color("236"),
 	BGOverlay:       lipgloss.Color("237"),
@@ -39,7 +39,7 @@ var nord256 = Theme{
 	AccentPrimary:   lipgloss.Color("110"),
 	AccentSecondary: lipgloss.Color("68"),
 	AccentTertiary:  lipgloss.Color("222"),
-	UserPrompt:      lipgloss.Color("152"),
+	UserPrompt:      lipgloss.Color("250"),
 	StatusError:     lipgloss.Color("210"),
 	StatusWarning:   lipgloss.Color("215"),
 	StatusSuccess:   lipgloss.Color("150"),
@@ -47,10 +47,10 @@ var nord256 = Theme{
 }
 
 var catppuccinMocha256 = Theme{
-	FGDefault:       lipgloss.Color("252"),
-	FGMuted:         lipgloss.Color("248"),
-	BorderMuted:     lipgloss.Color("246"),
 	FGEmphasis:      lipgloss.Color("255"),
+	FGDefault:       lipgloss.Color("250"),
+	FGMuted:         lipgloss.Color("247"),
+	BorderMuted:     lipgloss.Color("244"),
 	BGBase:          lipgloss.Color("232"),
 	BGSurface:       lipgloss.Color("236"),
 	BGOverlay:       lipgloss.Color("237"),

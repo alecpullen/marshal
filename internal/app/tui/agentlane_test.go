@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
@@ -41,7 +42,7 @@ func TestAgentLaneShowsRunningSubagents(t *testing.T) {
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
 	plain := ansi.Strip(m.renderAgentLane())
-	for _, want := range []string{"agents 2", "tests", "review"} {
+	for _, want := range []string{"2 agents", "tests", "review"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("lane missing %q:\n%s", want, plain)
 		}
@@ -84,8 +85,8 @@ func TestAgentLaneCapsWithOverflowRow(t *testing.T) {
 		registerRunningSubagent(t, &m, "task")
 	}
 	out := m.renderAgentLane()
-	// The lane carries an opening separator, so a full lane is the capped
-	// row budget plus one.
+	// The lane carries a header and a divider rule, so a full lane is the
+	// capped row budget plus one.
 	if got := strings.Count(out, "\n"); got > agentLaneMaxRows+1 {
 		t.Fatalf("lane rendered %d rows, cap is %d", got, agentLaneMaxRows+1)
 	}
@@ -99,12 +100,16 @@ func TestAgentLaneHasSeparatorAndRail(t *testing.T) {
 	registerRunningSubagent(t, &m, "reviewer")
 	out := m.renderAgentLane()
 	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if !strings.Contains(ansi.Strip(rows[0]), "─") {
-		t.Fatalf("lane must open with a separator rule, got %q", ansi.Strip(rows[0]))
+	// Header first, then the divider rule, then the agent rows.
+	if !strings.Contains(ansi.Strip(rows[0]), "1 agent") {
+		t.Fatalf("lane must open with the header, got %q", ansi.Strip(rows[0]))
 	}
-	for i, r := range rows[1:] {
+	if !strings.Contains(ansi.Strip(rows[1]), "─") {
+		t.Fatalf("lane must carry a separator rule after the header, got %q", ansi.Strip(rows[1]))
+	}
+	for i, r := range rows[2:] {
 		if !strings.Contains(ansi.Strip(r), glyph.Rail) {
-			t.Errorf("lane row %d has no rail: %q", i+1, ansi.Strip(r))
+			t.Errorf("lane row %d has no rail: %q", i+2, ansi.Strip(r))
 		}
 	}
 }
@@ -166,7 +171,7 @@ func TestLaneSeparatorBridgesTheRail(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "reviewer")
 	rows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
-	sep := ansi.Strip(rows[0])
+	sep := ansi.Strip(rows[1])
 	if !strings.HasPrefix(sep, glyph.Rail) {
 		t.Fatalf("separator must start with the rail so the vertical line is continuous, got %q", sep)
 	}
@@ -181,5 +186,126 @@ func TestAgentLaneShowsSpinnerWhileRunning(t *testing.T) {
 	m.spinnerFrame = "⠋"
 	if !strings.Contains(ansi.Strip(m.renderAgentLane()), "⠋") {
 		t.Fatalf("a running lane must show the spinner:\n%s", ansi.Strip(m.renderAgentLane()))
+	}
+}
+
+// The lane renders header first, then the divider rule, then the agent
+// rows. The rule must sit between the header and the first "#"-prefixed row.
+func TestAgentLaneStructureHeaderThenRuleThenRows(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "tests")
+	registerRunningSubagent(t, &m, "review")
+	plain := ansi.Strip(m.renderAgentLane())
+	if !strings.Contains(plain, "2 agents") {
+		t.Fatalf("header must be count-first and pluralized, got:\n%s", plain)
+	}
+	// Rows carry #-prefixed ids (the ids are global sequence numbers, so
+	// only the "#" prefix is stable across runs).
+	if !strings.Contains(plain, "#") {
+		t.Fatalf("rows must carry #-prefixed ids, got:\n%s", plain)
+	}
+	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+	headerIdx, ruleIdx, firstRowIdx := -1, -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.Contains(l, "2 agents"):
+			headerIdx = i
+		case strings.Contains(l, "─"):
+			ruleIdx = i
+		case strings.Contains(l, "#"):
+			if firstRowIdx < 0 {
+				firstRowIdx = i
+			}
+		}
+	}
+	if headerIdx < 0 || ruleIdx < 0 || firstRowIdx < 0 {
+		t.Fatalf("lane missing header/rule/row:\n%s", plain)
+	}
+	if !(headerIdx < ruleIdx && ruleIdx < firstRowIdx) {
+		t.Fatalf("expected header < rule < first row, got header=%d rule=%d row=%d:\n%s",
+			headerIdx, ruleIdx, firstRowIdx, plain)
+	}
+}
+
+// The lane's rendered line count must always equal agentLaneRows(), which
+// the frame height budget relies on.
+func TestAgentLaneRowsEqualsRenderedLineCount(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "tests")
+	registerRunningSubagent(t, &m, "review")
+	out := m.renderAgentLane()
+	// Count every newline including the trailing one, matching the existing
+	// TestAgentLaneRowsMatchesRender convention.
+	lines := strings.Count(out, "\n")
+	if got := m.agentLaneRows(); got != lines {
+		t.Fatalf("agentLaneRows()=%d but lane rendered %d lines:\n%s", got, lines, ansi.Strip(out))
+	}
+}
+
+// F6: with an empty input and running children, Down moves the lane cursor
+// and arms it; Enter then drills into the selected subagent.
+func TestLaneCursorDownThenEnterDrills(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "tests")
+	registerRunningSubagent(t, &m, "review")
+
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.laneCursor != 1 {
+		t.Fatalf("laneCursor = %d, want 1 after two Downs", m.laneCursor)
+	}
+	if !m.laneCursorActive {
+		t.Fatal("laneCursorActive must be set after navigating the lane")
+	}
+
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.viewStack) != 1 {
+		t.Fatalf("Enter must drill into the selected subagent, viewStack=%d", len(m.viewStack))
+	}
+	if m.laneCursor != 0 || m.laneCursorActive {
+		t.Fatalf("after drill laneCursor=%d active=%v, want 0/false", m.laneCursor, m.laneCursorActive)
+	}
+}
+
+// F6: Down clamps at the last lane row rather than wrapping.
+func TestLaneCursorClampsAtLastRow(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "tests")
+	registerRunningSubagent(t, &m, "review")
+
+	for i := 0; i < 5; i++ {
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if m.laneCursor != 1 {
+		t.Fatalf("laneCursor = %d, want 1 (clamped at last row)", m.laneCursor)
+	}
+}
+
+// F6: a blank Enter with no lane navigation must keep the existing
+// steering-drain behavior and must not drill.
+func TestLaneCursorBlankEnterPreservesSteeringDrain(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "tests")
+	registerRunningSubagent(t, &m, "review")
+	m.state.PushSteering("first follow-up")
+	m.state.PushSteering("second follow-up")
+	m.queuedCount = 2
+
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.viewStack) != 0 {
+		t.Fatalf("blank Enter must not drill, viewStack=%d", len(m.viewStack))
+	}
+	if m.laneCursorActive {
+		t.Fatal("laneCursorActive must stay false without lane navigation")
+	}
+	if len(m.state.SteeringQueue()) != 1 {
+		t.Fatalf("steering queue = %v, want 1 remaining (drain preserved)", m.state.SteeringQueue())
+	}
+	if m.state.SteeringQueue()[0] != "second follow-up" {
+		t.Fatalf("remaining = %q, want %q", m.state.SteeringQueue()[0], "second follow-up")
+	}
+	messages := m.state.Messages()
+	if len(messages) != 1 || messages[0].Content != "first follow-up" {
+		t.Fatalf("follow-up not submitted; messages = %v", messages)
 	}
 }

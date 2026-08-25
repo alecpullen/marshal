@@ -56,18 +56,25 @@ func (m Model) renderAgentLane() string {
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 
 	var b strings.Builder
-	b.WriteString(dimStyle().Render(spinnerLabel(spinner, fmt.Sprintf("agents %d", allRunning))))
+	// Header first: count-first, pluralized ("2 agents" / "1 agent").
+	plural := "agents"
+	if allRunning == 1 {
+		plural = "agent"
+	}
+	b.WriteString(dimStyle().Render(fmt.Sprintf("%d %s", allRunning, plural)))
 	b.WriteString("\n")
+	// Divider rule between the header and the rows.
+	b.WriteString(laneSeparator(width))
 
 	overflow := 0
 	if allRunning > len(entries) {
 		overflow = allRunning - len(entries)
 	}
 	for _, v := range entries {
-		b.WriteString(dimStyle().Render(fmt.Sprintf("%d  %s  %s",
+		b.WriteString(dimStyle().Render(spinnerLabel(spinner, fmt.Sprintf("#%d  %s  %s",
 			v.ID,
 			strutil.Truncate(v.Label, max(width/2, 12), true),
-			formatElapsed(max(time.Since(v.StartedAt), 0)))))
+			formatElapsed(max(time.Since(v.StartedAt), 0))))))
 		b.WriteString("\n")
 	}
 	if overflow > 0 {
@@ -75,7 +82,7 @@ func (m Model) renderAgentLane() string {
 		b.WriteString("\n")
 	}
 
-	return laneSeparator(width) + chromeRailWidth(b.String(), dimColor, max(width-1, 1))
+	return chromeRailWidth(b.String(), dimColor, max(width-1, 1))
 }
 
 // agentLaneEntries returns the running subagents in the order the lane
@@ -101,9 +108,9 @@ func (m Model) agentLaneEntries() []session.SubagentView {
 // M-2: this previously called renderAgentLane (computing the full render
 // twice per frame — once here for the height budget, once in View for the
 // actual output). Now it computes the row count directly from the running
-// count, matching renderAgentLane's layout: 1 header row + min(running,
-// agentLaneMaxRows-1) rows, with an overflow row when running exceeds the
-// cap.
+// count, matching renderAgentLane's layout: 1 header row + 1 divider rule
+// row + min(running, agentLaneMaxRows-1) rows, with an overflow row when
+// running exceeds the cap. The header renders first, then the divider.
 func (m Model) agentLaneRows() int {
 	var running int
 	for _, v := range m.state.Subagents() {
@@ -116,9 +123,9 @@ func (m Model) agentLaneRows() int {
 	}
 	rows := agentLaneMaxRows - 1
 	if running > rows {
-		// separator + header + (rows-1) shown + overflow
+		// header + separator + (rows-1) shown + overflow
 		return 1 + 1 + (rows - 1) + 1
 	}
-	// separator + header + running rows
+	// header + separator + running rows
 	return 1 + 1 + running
 }

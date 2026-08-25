@@ -242,6 +242,13 @@ type Model struct {
 	fileIndexLoaded      bool
 	lastInputForPopups   string
 	completionSuppressed bool
+	// laneCursor is the keyboard-selected row in the agents lane (F6).
+	// Up/Down move it while the input is empty and the lane is non-empty;
+	// Enter drills into the selected subagent. laneCursorActive is set
+	// only once the user explicitly navigates the lane, so a blank Enter
+	// keeps its existing steering-drain behavior until then.
+	laneCursor       int
+	laneCursorActive bool
 	// cmdArgMode arms argument completion right after a command is
 	// accepted from the popup. While armed and the input still carries
 	// the accepted "/<cmd> " prefix, commandTrigger keeps firing so

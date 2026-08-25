@@ -306,6 +306,22 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.viewportFollow = true
 		return *m, nil, true
 	case "up":
+		// F6: keyboard drill-in. When the input is empty, the agents lane
+		// is showing, and the user is not already drilled into a subagent,
+		// up/down move the lane cursor instead of recalling prompt history
+		// or popping the drill. This runs before the completion popup
+		// precedence checks so a visible popup still wins.
+		if m.input.Value() == "" && len(m.viewStack) == 0 {
+			entries := m.agentLaneEntries()
+			if len(entries) == 0 {
+				m.laneCursor = 0
+				m.laneCursorActive = false
+			} else {
+				m.laneCursor = max(m.laneCursor-1, 0)
+				m.laneCursorActive = true
+				return *m, nil, true
+			}
+		}
 		// Completion popups keep precedence over drill exit and prompt
 		// history.
 		if p := m.activeCompletionPopup(); p != nil {
@@ -323,6 +339,18 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "down":
+		// F6: keyboard drill-in (see the "up" case above).
+		if m.input.Value() == "" && len(m.viewStack) == 0 {
+			entries := m.agentLaneEntries()
+			if len(entries) == 0 {
+				m.laneCursor = 0
+				m.laneCursorActive = false
+			} else {
+				m.laneCursor = min(m.laneCursor+1, len(entries)-1)
+				m.laneCursorActive = true
+				return *m, nil, true
+			}
+		}
 		if p := m.activeCompletionPopup(); p != nil {
 			p.moveDown()
 			return *m, nil, true
@@ -377,6 +405,25 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "enter":
+		// F6: keyboard drill-in. Only when the user explicitly navigated
+		// the agents lane (laneCursorActive) with an empty input does
+		// Enter drill into the selected subagent. Otherwise a blank Enter
+		// keeps its existing steering-drain behavior below.
+		if m.laneCursorActive && m.input.Value() == "" {
+			entries := m.agentLaneEntries()
+			if m.laneCursor >= 0 && m.laneCursor < len(entries) {
+				m.drillIntoSubagent(entries[m.laneCursor])
+				m.lastTranscriptHash = 0
+				m.refreshViewport()
+				m.laneCursor = 0
+				m.laneCursorActive = false
+				return *m, nil, true
+			}
+			// The lane emptied under the cursor; fall through to the
+			// normal Enter handling.
+			m.laneCursor = 0
+			m.laneCursorActive = false
+		}
 		// F18: if a popup is visible, accept it (replaces the trigger
 		// token) and keep editing — Enter on a popup is a selection,
 		// not a submit. Esc is the way to dismiss without accepting.

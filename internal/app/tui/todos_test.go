@@ -111,6 +111,21 @@ func TestTodoPanelHeaderTracksCounts(t *testing.T) {
 	}
 }
 
+// The header carries the count text and the divider rule on the SAME line
+// (no separate rule row), matching the sidepanel Header helper.
+func TestTodoPanelHeaderHasRuleOnSameLine(t *testing.T) {
+	todos := sampleTodos(5, 2, 2)
+	out := stripANSI(renderTodoPanelBody(todos, todoPanelExpanded, 40, 80))
+	lines := strings.Split(out, "\n")
+	header := lines[0]
+	if !strings.Contains(header, "tasks 2/5") {
+		t.Fatalf("header must carry the count text, got %q", header)
+	}
+	if !strings.Contains(header, "──") {
+		t.Fatalf("header must carry the divider rule on the same line, got %q", header)
+	}
+}
+
 // Completed todos are muted, not struck through: SGR 9 support is patchy and
 // muted-plus-strikethrough was the least legible pairing in the UI. The ✓
 // glyph carries the "done" meaning on its own.

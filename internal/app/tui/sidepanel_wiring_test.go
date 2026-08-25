@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 )
 
 // newTestModelForRail builds a Model at the given size with the rail
@@ -119,6 +120,20 @@ func TestCtrlBTogglesRail(t *testing.T) {
 // not rendered while the user is drilled into a subagent (viewStack
 // non-empty). The rail shows parent-session telemetry that is irrelevant
 // (and squashing) while viewing a child transcript.
+// railData must hand the session-scoped totals to the rail; without this the
+// footer renders zeroes regardless of what the query returned.
+func TestRailDataCarriesTotals(t *testing.T) {
+	m := newTestModel(t)
+	m.railTotals = db.UsageTotals{Turns: 5, PromptTokens: 1000, CompletionTokens: 200}
+	got := m.railData()
+	if got.Totals.Turns != 5 {
+		t.Errorf("Totals.Turns = %d, want 5", got.Totals.Turns)
+	}
+	if got.Totals.PromptTokens != 1000 {
+		t.Errorf("Totals.PromptTokens = %d, want 1000", got.Totals.PromptTokens)
+	}
+}
+
 func TestRailSuppressedDuringSubagentDrillIn(t *testing.T) {
 	m := newTestModelForRail(t, 160, 40, true)
 	if !m.railEnabled() {

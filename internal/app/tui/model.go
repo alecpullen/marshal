@@ -357,6 +357,9 @@ type Model struct {
 	// railTurns is the recent turn-metrics cache, refreshed when a turn
 	// completes. Never queried during render.
 	railTurns []db.TurnMetricsRow
+	// railTotals is the session-scoped usage aggregate the rail footer
+	// reports. Refreshed alongside railTurns.
+	railTotals db.UsageTotals
 	// railBaseRef is the commit the changed-files section diffs against,
 	// rebased when the workspace changes and after each completed turn
 	// (see handleWorkspaceMsg/handleAgentFinished).
@@ -1391,11 +1394,12 @@ func (m *Model) refreshRailTurns() {
 	if database == nil || !m.railEnabled() {
 		return
 	}
-	rows, err := database.RecentTurnMetrics(m.memoryProject, 24)
-	if err != nil {
-		return
+	if rows, err := database.RecentTurnMetrics(m.memoryProject, 24); err == nil {
+		m.railTurns = rows
 	}
-	m.railTurns = rows
+	if totals, err := database.SessionUsage(m.memoryProject, m.state.SessionID()); err == nil {
+		m.railTotals = totals
+	}
 }
 
 // refreshRailChanged reloads the changed-files cache. Shells out to git,
@@ -1445,6 +1449,7 @@ func (m Model) railData() sidepanel.Data {
 		Git:     m.gitInfo,
 		Repo:    m.railRepoStats,
 		Turns:   m.railTurns,
+		Totals:  m.railTotals,
 		Changed: m.railChanged,
 		Pack:    m.state.ContextPack(),
 		Audit:   m.state.AuditLog(),

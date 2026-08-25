@@ -107,10 +107,10 @@ var warmSunset256 = Theme{
 	BGSelection:     lipgloss.Color("239"),
 	AccentPrimary:   lipgloss.Color("209"),
 	AccentSecondary: lipgloss.Color("177"),
-	AccentTertiary:  lipgloss.Color("183"),
+	AccentTertiary:  lipgloss.Color("214"),
 	UserPrompt:      lipgloss.Color("250"),
 	StatusError:     lipgloss.Color("211"),
-	StatusWarning:   lipgloss.Color("214"),
+	StatusWarning:   lipgloss.Color("215"),
 	StatusSuccess:   lipgloss.Color("43"),
 	StatusInfo:      lipgloss.Color("81"),
 }

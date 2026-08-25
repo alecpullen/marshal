@@ -207,6 +207,26 @@ func TestModeIsPartOfPresetName(t *testing.T) {
 	}
 }
 
+// AccentSecondary and AccentTertiary must be distinguishable — they mark
+// different things (panel focus vs tool-call names) and sat one green-channel
+// step apart in warm-sunset, both pale violets.
+func TestAccentsAreDistinct(t *testing.T) {
+	for name, th := range presets {
+		s, ok1 := index256(th.AccentSecondary)
+		v, ok2 := index256(th.AccentTertiary)
+		if !ok1 || !ok2 {
+			continue
+		}
+		if s == v {
+			t.Errorf("preset %q: AccentSecondary and AccentTertiary are the same index %d", name, s)
+		}
+		sr, vr := rgbFor256(s), rgbFor256(v)
+		if sr[0] == vr[0] && sr[2] == vr[2] {
+			t.Errorf("preset %q: accents differ only in the green channel (%v vs %v)", name, sr, vr)
+		}
+	}
+}
+
 func parseHexMust(s string) color.Color {
 	c, err := parseHex(s)
 	if err != nil {

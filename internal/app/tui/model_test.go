@@ -4111,8 +4111,8 @@ func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	if th.AccentPrimary != lipgloss.Color("209") {
 		t.Fatalf("AccentPrimary = %#v, want 209", th.AccentPrimary)
 	}
-	if th.AccentTertiary != lipgloss.Color("183") {
-		t.Fatalf("AccentTertiary = %#v, want 183", th.AccentTertiary)
+	if th.AccentTertiary != lipgloss.Color("214") {
+		t.Fatalf("AccentTertiary = %#v, want 214", th.AccentTertiary)
 	}
 	if th.UserPrompt != lipgloss.Color("250") {
 		t.Fatalf("UserPrompt = %#v, want 250", th.UserPrompt)

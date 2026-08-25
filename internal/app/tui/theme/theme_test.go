@@ -105,8 +105,8 @@ func Test16ColorFallback(t *testing.T) {
 
 func Test256ColorPaletteHasNewThemeSlots(t *testing.T) {
 	th := LoadFor(false, "xterm-256color")
-	if th.AccentTertiary != lipgloss.Color("183") {
-		t.Fatalf("AccentTertiary = %#v, want 183", th.AccentTertiary)
+	if th.AccentTertiary != lipgloss.Color("214") {
+		t.Fatalf("AccentTertiary = %#v, want 214", th.AccentTertiary)
 	}
 	if th.UserPrompt != lipgloss.Color("250") {
 		t.Fatalf("UserPrompt = %#v, want 250", th.UserPrompt)

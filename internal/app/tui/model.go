@@ -505,6 +505,9 @@ type Model struct {
 type pendingAgentRun struct {
 	runner AgentRunner
 	goal   string
+	// kind is "sdd" or "swarm", set by openRunPreflight so the StartMsg
+	// handler knows which override path to take.
+	kind string
 	// verifyBuild/verifyTest hold commands proposed by the offer-to-fill
 	// flow. When set, they are persisted to project config on confirm and
 	// used for this run.
@@ -1897,17 +1900,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					session.ContentTypePlain)
 			}
 		}
-		// Pass the selected strategy to the runner.
+		// Pass the selected strategy to the runner and capture overrides.
+		var selectedStrategy string
 		if start, ok := msg.(castlist.StartMsg); ok {
-			if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
-				adapter.Controller().Strategy = pipeline.Strategy(start.Strategy)
-			}
+			selectedStrategy = start.Strategy
 			run.modelOverrides = start.Overrides
 		}
-		// Apply per-run role overrides to the runner. For swarm, the
-		// shared orchestrator's NewRunner is wrapped and restored when
-		// the run ends. For SDD, the pipeline controller was already
-		// rebuilt with overrides via the factory.
+		// Apply per-run role overrides to the runner.
+		//
+		// Swarm: the shared orchestrator's NewRunner is wrapped via
+		// SetRunnerFactory and restored when the run ends.
+		//
+		// SDD: the controller was built with nil overrides at dispatch
+		// time (before the user picked any). Rebuild it here with the
+		// real overrides so the per-run resolver sees them. The strategy
+		// selected in the preflight panel is carried across.
+		if run.kind == "sdd" && len(run.modelOverrides) > 0 && m.pipelineFactory != nil {
+			newRunner := m.pipelineFactory(run.goal, run.modelOverrides)
+			if newRunner != nil {
+				if na, ok := newRunner.(*pipeline.ControllerAdapter); ok {
+					na.Controller().Strategy = pipeline.Strategy(selectedStrategy)
+				}
+				run.runner = newRunner
+				m.pipelineRunner = newRunner
+			}
+		} else if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
+			// No overrides: just apply the strategy to the existing controller.
+			adapter.Controller().Strategy = pipeline.Strategy(selectedStrategy)
+		}
 		if ror, ok := run.runner.(RoleOverrideRunner); ok && len(run.modelOverrides) > 0 && m.swarmOverrideFactory != nil {
 			factory := m.swarmOverrideFactory(run.modelOverrides)
 			ror.SetRunnerFactory(factory)
@@ -3374,7 +3394,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	if kind == "sdd" {
 		rows = append(rows, verifyGateRow(m.state.Config, m.state.WorkingDir))
 	}
-	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
+	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal, kind: kind}
 	panel := castlist.New(title, rows, meta, "agent")
 	// Provide the config's model presets so the castlist's in-panel
 	// override picker can offer them.
@@ -3627,8 +3647,17 @@ func (m *Model) proposalFromSession() (build, test string, err error) {
 // via EndWork when the command executes. Callers must handle
 // ErrSessionQuiescing from BeginWork before creating the command.
 func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, goal string) tea.Cmd {
-	return func() tea.Msg {
+	return func() (msg tea.Msg) {
 		defer state.EndWork()
+		// Recover from a panic in runner.Run so the goroutine does not
+		// crash the TUI before handleAgentFinished can restore the
+		// shared runner's original factory. The panic is surfaced as a
+		// turn error; the restore runs on the normal finish path.
+		defer func() {
+			if r := recover(); r != nil {
+				msg = agentFinishedMsg{err: fmt.Errorf("panic in agent run: %v", r)}
+			}
+		}()
 		err := runner.Run(ctx, goal)
 		return agentFinishedMsg{err: err}
 	}

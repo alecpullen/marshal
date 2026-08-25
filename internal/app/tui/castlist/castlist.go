@@ -321,11 +321,6 @@ func (p *Panel) moveCursor(dir int) {
 	if len(p.rows) == 0 {
 		return
 	}
-	// Ensure cursor starts on a role row.
-	if p.rows[p.cursor].Role == "" {
-		p.cursor = p.nextRoleRow(p.cursor, dir)
-		return
-	}
 	p.cursor = p.nextRoleRow(p.cursor, dir)
 }
 

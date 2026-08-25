@@ -14,7 +14,7 @@ func TestApprovalSummaryShowsReason(t *testing.T) {
 		Name:   "shell.run",
 		Reason: "environment mutation: npm install",
 	}
-	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false))
+	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false, 80))
 	if !strings.Contains(out, "environment mutation: npm install") {
 		t.Fatalf("reason must be rendered:\n%s", out)
 	}
@@ -27,7 +27,7 @@ func TestApprovalSummaryShowsReason(t *testing.T) {
 func TestApprovalReasonIsVerbatim(t *testing.T) {
 	reason := "mode-elevation: edit requires write access"
 	tc := &session.PendingToolCall{Name: "file.write", Reason: reason}
-	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false))
+	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false, 80))
 	if !strings.Contains(out, reason) {
 		t.Fatalf("reason must appear verbatim, got:\n%s", out)
 	}
@@ -52,7 +52,7 @@ func TestApprovalPanelShowsBothRiskAndReason(t *testing.T) {
 
 func TestApprovalNoReasonRendersUnchanged(t *testing.T) {
 	tc := &session.PendingToolCall{Name: "file.read"}
-	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false))
+	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false, 80))
 	if strings.Contains(strings.ToLower(out), "reason") {
 		t.Fatalf("an empty reason must add no line:\n%s", out)
 	}

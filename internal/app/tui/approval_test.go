@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 )
@@ -271,5 +272,19 @@ func TestFilteredMnemonicIsInert(t *testing.T) {
 	am, _ = am.Update(keyPress("A"))
 	if am.choice != before {
 		t.Fatalf("A selected a filtered-out choice: %v", am.choice)
+	}
+}
+
+// TestApprovalViewShowsMnemonicHints verifies that the interactive approval
+// panel (approvalModel.View) renders the mnemonic key alongside each choice
+// label, so the user knows the single-key shortcuts work.
+func TestApprovalViewShowsMnemonicHints(t *testing.T) {
+	am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, session.SandboxInfo{}, false, false, 80)
+	view := ansi.Strip(am.View())
+	// The mnemonic keys for allow/deny/edit must appear in the view.
+	for _, key := range []string{"a", "d", "e"} {
+		if !strings.Contains(view, key+" ") {
+			t.Errorf("mnemonic key %q not shown in approval view:\n%s", key, view)
+		}
 	}
 }

@@ -37,6 +37,16 @@ var choiceLabels = map[approvalChoice]string{
 	choiceRollback:     "rollback",
 }
 
+// choiceMnemonic maps each choice to its single-key shortcut (shown in the
+// interactive panel so the user knows the keys work). Matches mnemonicChoice.
+var choiceMnemonic = map[approvalChoice]string{
+	choiceApprove:      "a",
+	choiceAlways:       "A",
+	choiceSessionAllow: "s",
+	choiceEdit:         "e",
+	choiceDeny:         "d",
+}
+
 func indexOf(s []approvalChoice, v approvalChoice) int {
 	for i, x := range s {
 		if x == v {
@@ -135,7 +145,7 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		allowNetwork: allowNetwork,
 	}
 
-	summary := approvalSummary(tc, sb, allowNetwork)
+	summary := approvalSummary(tc, sb, allowNetwork, width)
 
 	sel := huh.NewSelect[approvalChoice]().
 		Title(summary).
@@ -297,6 +307,11 @@ func (am *approvalModel) View() string {
 	var choices []string
 	for _, ch := range am.candidates {
 		label := choiceLabels[ch]
+		// Show the mnemonic key alongside the label so the user knows
+		// the single-key shortcuts work in the interactive prompt.
+		if mk, ok := choiceMnemonic[ch]; ok {
+			label = mk + " " + label
+		}
 		selected := am.selected == indexOf(am.candidates, ch)
 		style := mutedStyle()
 		prefix := "  "
@@ -335,7 +350,7 @@ func (am *approvalModel) IsDone() bool           { return am.done }
 // approvalSummary builds the multi-line title shown above the select. It
 // mirrors the body of renderApprovalPanel (command/description/arguments,
 // risk, sandbox isolation) but as plain titled text the select can render.
-func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool) string {
+func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
 	titleStyle := lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 	muted := mutedStyle()
 	text := lipgloss.NewStyle()
@@ -374,7 +389,11 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	// isModeElevationApproval), so rewording them breaks control flow.
 	if tc.Reason != "" {
 		b.WriteString("\n")
-		b.WriteString(mutedStyle().Render(ansi.Wrap(tc.Reason, 80, WrapBreakpoints)))
+		wrapWidth := width
+		if wrapWidth < 30 {
+			wrapWidth = 80
+		}
+		b.WriteString(mutedStyle().Render(ansi.Wrap(tc.Reason, wrapWidth, WrapBreakpoints)))
 	}
 	return b.String()
 }

@@ -278,8 +278,8 @@ func TestAgentLaneClickDrillsIn(t *testing.T) {
 	if !ok {
 		t.Fatal("expected an agent lane band")
 	}
-	// Row 0 is the separator, row 1 the header, row 2 the first agent.
-	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 2}); !handled {
+	// Row 0 is the merged header+rule line, row 1 the first agent.
+	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 1}); !handled {
 		t.Fatal("a click on an agent row must be handled")
 	}
 	if len(m.viewStack) != 1 {
@@ -287,18 +287,17 @@ func TestAgentLaneClickDrillsIn(t *testing.T) {
 	}
 }
 
-// The separator and header are not agents; clicking them must not drill.
+// The merged header+rule line is not an agent; clicking it must not drill.
 func TestAgentLaneClickOnChromeDoesNothing(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 	top, _, _ := m.agentLaneBand()
-	for _, dy := range []int{0, 1} {
-		m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + dy})
-	}
+	// Only row 0 (the merged header+rule) is chrome now.
+	m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top})
 	if len(m.viewStack) != 0 {
-		t.Fatal("clicking the separator or header must not drill in")
+		t.Fatal("clicking the header must not drill in")
 	}
 }
 

@@ -339,6 +339,15 @@ type State struct {
 	// sddGate is the current SDD human-gate state surfaced to the TUI.
 	// The controller sets it; the TUI reads and clears it.
 	sddGate SDDGate
+
+	// spinnerLabelDwell holds the pinned activity label for the turn
+	// spinner row, with a minimum dwell time so fast-cycling tool labels
+	// don't flicker too fast to read. Lives on State (not the TUI Model)
+	// because View() is a value receiver — Model-level state is discarded
+	// every frame.
+	spinnerLabelPinned     string
+	spinnerLabelPinnedAt   time.Time
+	spinnerLabelPinnedKind ActivityKind
 }
 
 // SDDGate is the open question a pipeline subagent raised. The controller
@@ -1046,6 +1055,42 @@ func (s *State) Activity() Activity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activity
+}
+
+// SpinnerLabelDwell is the minimum time a pinned activity label stays
+// in the turn spinner row before a new label can replace it.
+const SpinnerLabelDwell = 500 * time.Millisecond
+
+// PinnedSpinnerLabel returns the activity label to display in the turn
+// spinner row, applying a minimum dwell time so fast-cycling tool labels
+// don't flicker. When a new label arrives while the current one has not
+// yet dwelled for SpinnerLabelDwell, the old label is kept. Once the dwell
+// expires, the new label is adopted. A kind change (e.g. tool → approval)
+// adopts immediately, bypassing the dwell.
+func (s *State) PinnedSpinnerLabel(act Activity) string {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// First label or kind change: adopt immediately.
+	if s.spinnerLabelPinned == "" || act.Kind != s.spinnerLabelPinnedKind {
+		s.spinnerLabelPinned = act.Label
+		s.spinnerLabelPinnedAt = now
+		s.spinnerLabelPinnedKind = act.Kind
+		return s.spinnerLabelPinned
+	}
+	// Same kind, same label: keep it.
+	if act.Label == s.spinnerLabelPinned {
+		return s.spinnerLabelPinned
+	}
+	// Same kind, different label: only adopt if the current one has
+	// dwelled long enough.
+	if now.Sub(s.spinnerLabelPinnedAt) >= SpinnerLabelDwell {
+		s.spinnerLabelPinned = act.Label
+		s.spinnerLabelPinnedAt = now
+		return s.spinnerLabelPinned
+	}
+	// Keep the old label; the new one will show after the dwell.
+	return s.spinnerLabelPinned
 }
 
 func (s *State) SetToolBudget(b ToolBudget) {

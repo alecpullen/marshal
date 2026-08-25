@@ -224,7 +224,7 @@ func TestCompletionPopupShowsSlashPrefix(t *testing.T) {
 	if !strings.Contains(out, "▍") {
 		t.Fatalf("expected ▍ gutter in popup, got %q", out)
 	}
-	if !strings.Contains(out, "↑↓ select · ↵ accept · esc dismiss") {
+	if !strings.Contains(out, "↑↓ select · ↵ run · esc dismiss") {
 		t.Fatalf("expected key hints in popup, got %q", out)
 	}
 }
@@ -233,15 +233,23 @@ func TestCompletionPopupTitleFollowsPopupKind(t *testing.T) {
 	filePop := newCompletionPopup([]completionItem{{Text: "main.go", Kind: completionFile}})
 	filePop.update("ma")
 	m := Model{filePopup: filePop, width: 80, leftWidth: 80}
-	if out := stripANSI(m.renderCompletionPopup()); !strings.Contains(out, "Files") {
+	out := stripANSI(m.renderCompletionPopup())
+	if !strings.Contains(out, "Files") {
 		t.Fatalf("expected Files title for @ popup, got %q", out)
+	}
+	if !strings.Contains(out, "↵ accept") {
+		t.Fatalf("expected accept hint for file popup, got %q", out)
 	}
 
 	setPop := newCompletionPopup([]completionItem{{Text: "theme", Kind: completionSetting}})
 	setPop.update("th")
 	m = Model{setPopup: setPop, width: 80, leftWidth: 80}
-	if out := stripANSI(m.renderCompletionPopup()); !strings.Contains(out, "Settings") {
+	out = stripANSI(m.renderCompletionPopup())
+	if !strings.Contains(out, "Settings") {
 		t.Fatalf("expected Settings title for /set popup, got %q", out)
+	}
+	if !strings.Contains(out, "↵ accept") {
+		t.Fatalf("expected accept hint for settings popup, got %q", out)
 	}
 }
 

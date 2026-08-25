@@ -430,11 +430,21 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.laneCursor = 0
 			m.laneCursorActive = false
 		}
-		// F18: if a popup is visible, accept it (replaces the trigger
-		// token) and keep editing — Enter on a popup is a selection,
-		// not a submit. Esc is the way to dismiss without accepting.
-		if m.acceptCompletion() {
-			return *m, nil, true
+		// F18: if a popup is visible, accept the selection. Commands
+		// and setting values submit immediately (single Enter = accept
+		// + run); file paths and setting keys accept only so the user
+		// can keep composing (Enter = accept, then type more). Esc
+		// dismisses without accepting.
+		if p := m.activeCompletionPopup(); p != nil {
+			shouldSubmit := m.completionShouldSubmit(p)
+			if m.acceptCompletion() {
+				if !shouldSubmit {
+					return *m, nil, true
+				}
+				// Fall through: the popup accepted a command or
+				// setting value, and the input now holds a
+				// submittable command.
+			}
 		}
 		value := strings.TrimSpace(m.input.Value())
 		if len(m.pastes) > 0 {

@@ -34,6 +34,22 @@ func TestSubagentDepthLimit(t *testing.T) {
 	if tool.Name != "agent.run" {
 		t.Fatalf("Name = %q, want %q", tool.Name, "agent.run")
 	}
+	// The schema must expose temperature and thinking so the model can
+	// use per-subagent overrides. Without them in the schema (and with
+	// additionalProperties:false), the model cannot send these fields.
+	var parsed map[string]any
+	if err := json.Unmarshal(tool.Schema, &parsed); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+	props, ok := parsed["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("schema missing properties object")
+	}
+	for _, field := range []string{"temperature", "thinking"} {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("schema must expose %q property, got properties: %v", field, props)
+		}
+	}
 
 	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
 	if err == nil {

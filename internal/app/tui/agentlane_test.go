@@ -85,10 +85,10 @@ func TestAgentLaneCapsWithOverflowRow(t *testing.T) {
 		registerRunningSubagent(t, &m, "task")
 	}
 	out := m.renderAgentLane()
-	// The lane carries a header and a divider rule, so a full lane is the
-	// capped row budget plus one.
-	if got := strings.Count(out, "\n"); got > agentLaneMaxRows+1 {
-		t.Fatalf("lane rendered %d rows, cap is %d", got, agentLaneMaxRows+1)
+	// The lane carries a merged header+rule line, so a full lane is the
+	// capped row budget (no extra separator row).
+	if got := strings.Count(out, "\n"); got > agentLaneMaxRows {
+		t.Fatalf("lane rendered %d rows, cap is %d", got, agentLaneMaxRows)
 	}
 	if !strings.Contains(ansi.Strip(out), "more") {
 		t.Fatalf("expected an overflow row:\n%s", ansi.Strip(out))
@@ -100,16 +100,19 @@ func TestAgentLaneHasSeparatorAndRail(t *testing.T) {
 	registerRunningSubagent(t, &m, "reviewer")
 	out := m.renderAgentLane()
 	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	// Header first, then the divider rule, then the agent rows.
-	if !strings.Contains(ansi.Strip(rows[0]), "1 agent") {
-		t.Fatalf("lane must open with the header, got %q", ansi.Strip(rows[0]))
+	// Header line carries the count text AND the divider rule on the same
+	// line (merged via sidepanel.Header, matching the sidebar/todo panel).
+	header := ansi.Strip(rows[0])
+	if !strings.Contains(header, "1 agent") {
+		t.Fatalf("lane must open with the header, got %q", header)
 	}
-	if !strings.Contains(ansi.Strip(rows[1]), "─") {
-		t.Fatalf("lane must carry a separator rule after the header, got %q", ansi.Strip(rows[1]))
+	if !strings.Contains(header, "─") {
+		t.Fatalf("header must carry the divider rule on the same line, got %q", header)
 	}
-	for i, r := range rows[2:] {
+	// Every row (including the header) carries the vertical rail.
+	for i, r := range rows {
 		if !strings.Contains(ansi.Strip(r), glyph.Rail) {
-			t.Errorf("lane row %d has no rail: %q", i+2, ansi.Strip(r))
+			t.Errorf("lane row %d has no rail: %q", i, ansi.Strip(r))
 		}
 	}
 }
@@ -166,17 +169,17 @@ func TestAgentLaneRailAlignsWithTodoPanel(t *testing.T) {
 	}
 }
 
-// The divider must not break the vertical rail.
+// The header line's divider rule must not break the vertical rail.
 func TestLaneSeparatorBridgesTheRail(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "reviewer")
 	rows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
-	sep := ansi.Strip(rows[1])
-	if !strings.HasPrefix(sep, glyph.Rail) {
-		t.Fatalf("separator must start with the rail so the vertical line is continuous, got %q", sep)
+	header := ansi.Strip(rows[0])
+	if !strings.HasPrefix(header, glyph.Rail) {
+		t.Fatalf("header must start with the rail so the vertical line is continuous, got %q", header)
 	}
-	if !strings.Contains(sep, "─") {
-		t.Fatalf("separator must still carry the rule, got %q", sep)
+	if !strings.Contains(header, "─") {
+		t.Fatalf("header must still carry the rule, got %q", header)
 	}
 }
 
@@ -189,8 +192,9 @@ func TestAgentLaneShowsSpinnerWhileRunning(t *testing.T) {
 	}
 }
 
-// The lane renders header first, then the divider rule, then the agent
-// rows. The rule must sit between the header and the first "#"-prefixed row.
+// The lane renders a header line (count + divider rule on the same line),
+// then the agent rows. The header must carry both the count text and the
+// rule; the first agent row follows on the next line.
 func TestAgentLaneStructureHeaderThenRuleThenRows(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
@@ -205,25 +209,28 @@ func TestAgentLaneStructureHeaderThenRuleThenRows(t *testing.T) {
 		t.Fatalf("rows must carry #-prefixed ids, got:\n%s", plain)
 	}
 	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
-	headerIdx, ruleIdx, firstRowIdx := -1, -1, -1
+	headerIdx, firstRowIdx := -1, -1
 	for i, l := range lines {
 		switch {
 		case strings.Contains(l, "2 agents"):
 			headerIdx = i
-		case strings.Contains(l, "─"):
-			ruleIdx = i
 		case strings.Contains(l, "#"):
 			if firstRowIdx < 0 {
 				firstRowIdx = i
 			}
 		}
 	}
-	if headerIdx < 0 || ruleIdx < 0 || firstRowIdx < 0 {
-		t.Fatalf("lane missing header/rule/row:\n%s", plain)
+	if headerIdx < 0 || firstRowIdx < 0 {
+		t.Fatalf("lane missing header/row:\n%s", plain)
 	}
-	if !(headerIdx < ruleIdx && ruleIdx < firstRowIdx) {
-		t.Fatalf("expected header < rule < first row, got header=%d rule=%d row=%d:\n%s",
-			headerIdx, ruleIdx, firstRowIdx, plain)
+	// The header line must carry the divider rule on the same line.
+	if !strings.Contains(lines[headerIdx], "─") {
+		t.Fatalf("header line must carry the rule on the same line, got %q:\n%s", lines[headerIdx], plain)
+	}
+	// The first agent row must follow the header.
+	if firstRowIdx <= headerIdx {
+		t.Fatalf("expected header < first row, got header=%d row=%d:\n%s",
+			headerIdx, firstRowIdx, plain)
 	}
 }
 

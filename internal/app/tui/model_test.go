@@ -2902,10 +2902,8 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	model = updated.(Model)
 	model.busy = true
 
-	// F18: with the completion popup, typing "/help" and pressing Enter
-	// once accepts the popup (replaces "/help" with "/help " and keeps
-	// editing). A second Enter dispatches the now-complete command.
-	// Verify the command still fires after the popup is accepted.
+	// Single Enter on a command popup accepts the completion AND
+	// dispatches the command immediately — no second Enter needed.
 	//
 	// In production the popup is updated automatically on every
 	// keystroke. SetValue() bypasses Update, so we manually run the
@@ -2928,14 +2926,115 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := asModel(updated)
-	if val := m.input.Value(); val != "/help " {
-		t.Fatalf("first Enter should accept the popup: input = %q, want %q", val, "/help ")
-	}
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = asModel(updated)
 
 	if !m.dock.IsOpen() {
 		t.Fatal("commands should work even when busy — expected dock panel from /help")
+	}
+}
+
+// asModelForCompletion normalises the *Model-vs-Model return from Update
+// so completion tests work regardless of which boxing path the keystroke
+// took.
+func asModelForCompletion(v tea.Model) *Model {
+	if p, ok := v.(*Model); ok {
+		return p
+	}
+	mv := v.(Model)
+	return &mv
+}
+
+// Enter on a file completion popup accepts the @path token but does NOT
+// submit — the user is typically composing a larger message and needs to
+// keep typing after the file reference.
+func TestEnterOnFilePopupAcceptsOnly(t *testing.T) {
+	m := newViewTestModelWithFileIndex(t, 80, 24, []string{
+		"internal/agent/runner.go",
+	})
+	m.input.SetValue("@run")
+	m.updateCompletionPopups()
+	if m.filePopup == nil || !m.filePopup.isVisible() {
+		t.Fatal("file popup not visible after @run")
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = *asModelForCompletion(updated)
+	// Popup should be dismissed.
+	if m.filePopup != nil && m.filePopup.isVisible() {
+		t.Fatal("file popup should be dismissed after Enter")
+	}
+	// Input should hold the accepted @path, not be submitted.
+	if val := m.input.Value(); val != "@internal/agent/runner.go " {
+		t.Fatalf("input = %q, want %q (accept-only, no submit)", val, "@internal/agent/runner.go ")
+	}
+}
+
+// Enter on a setting-key completion popup accepts the key but does NOT
+// submit — the user needs to type a value next ("/set <key> <value>").
+func TestEnterOnSettingKeyPopupAcceptsOnly(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("/set shell")
+	m.updateCompletionPopups()
+	p := m.activeCompletionPopup()
+	if p == nil || !p.isVisible() {
+		t.Fatal("expected setting key completion popup")
+	}
+	// Select shell.allow_network if present.
+	for i, item := range p.matches() {
+		if item.Text == "shell.allow_network" {
+			p.index = i
+			break
+		}
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = *asModelForCompletion(updated)
+	// Popup should be dismissed.
+	if m.setPopup != nil && m.setPopup.isVisible() {
+		t.Fatal("setting popup should be dismissed after Enter")
+	}
+	// Input should hold the accepted key with trailing space, not submitted.
+	if val := m.input.Value(); val != "/set shell.allow_network " {
+		t.Fatalf("input = %q, want %q (accept-only, no submit)", val, "/set shell.allow_network ")
+	}
+}
+
+// Enter on a setting-value completion popup accepts the value AND submits
+// the complete "/set <key> <value>" command in a single keystroke.
+func TestEnterOnSettingValuePopupSubmits(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("/set shell.allow_network ")
+	m.updateCompletionPopups()
+	p := m.activeCompletionPopup()
+	if p == nil || !p.isVisible() {
+		t.Fatal("expected setting value completion popup")
+	}
+	// Select "on" if present.
+	found := false
+	for i, item := range p.matches() {
+		if item.Text == "on" {
+			p.index = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'on' in value matches, got %v", p.matches())
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = *asModelForCompletion(updated)
+	// Input should be cleared (command was dispatched).
+	if val := m.input.Value(); val != "" {
+		t.Fatalf("input = %q, want empty (command should have been submitted)", val)
+	}
+	// A system message confirming the setting change should be present.
+	msgs := m.state.Messages()
+	var sawSettingMsg bool
+	for _, msg := range msgs {
+		if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "shell.allow_network") {
+			sawSettingMsg = true
+			break
+		}
+	}
+	if !sawSettingMsg {
+		t.Fatal("expected a system message about the setting change after submit")
 	}
 }
 
@@ -8085,5 +8184,88 @@ func TestTurnSpinnerKeepsStableActivityLabels(t *testing.T) {
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
 	if out := m.renderTurnSpinner(); !strings.Contains(out, "shell: go test") {
 		t.Fatalf("tool labels should render in the spinner row, got %q", out)
+	}
+}
+
+// The spinner label dwell time prevents fast-cycling tool labels from
+// flickering. A new label arriving within the dwell window keeps the old
+// label; once the dwell expires, the new label is adopted.
+func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
+	// The dwell state lives on session.State (not Model) so it survives
+	// View() being a value receiver. The test controls time via the
+	// State's clock (WithClock), not m.now.
+	start := time.Unix(100, 0)
+	clock := start
+	state := session.New(config.Default(), t.TempDir(), start, session.Persistence{},
+		session.WithClock(func() time.Time { return clock }))
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name: "plan", Description: "Plan a task", Args: "<goal>",
+		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
+	})
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+	m.busy = true
+	m.now = func() time.Time { return clock }
+	m.turnStartedAt = start
+
+	// First tool label is adopted immediately.
+	clock = start
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: config.go"})
+	out := m.renderTurnSpinner()
+	if !strings.Contains(out, "file.read: config.go") {
+		t.Fatalf("first label should be adopted immediately, got %q", out)
+	}
+
+	// 200ms later, a new label arrives — within the 500ms dwell, old stays.
+	clock = start.Add(200 * time.Millisecond)
+	m.now = func() time.Time { return clock }
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test"})
+	out = m.renderTurnSpinner()
+	if !strings.Contains(out, "file.read: config.go") {
+		t.Fatalf("old label should persist within dwell window, got %q", out)
+	}
+	if strings.Contains(out, "shell.run: go test") {
+		t.Fatalf("new label must not appear within dwell window, got %q", out)
+	}
+
+	// 600ms after the first label was pinned, the dwell has elapsed.
+	clock = start.Add(600 * time.Millisecond)
+	m.now = func() time.Time { return clock }
+	out = m.renderTurnSpinner()
+	if !strings.Contains(out, "shell.run: go test") {
+		t.Fatalf("new label should appear after dwell expires, got %q", out)
+	}
+}
+
+// A kind change adopts the new label immediately, bypassing the dwell.
+func TestTurnSpinnerLabelDwellResetsOnKindChange(t *testing.T) {
+	start := time.Unix(200, 0)
+	clock := start
+	state := session.New(config.Default(), t.TempDir(), start, session.Persistence{},
+		session.WithClock(func() time.Time { return clock }))
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name: "plan", Description: "Plan a task", Args: "<goal>",
+		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
+	})
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+	m.busy = true
+	m.now = func() time.Time { return clock }
+	m.turnStartedAt = start
+
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: a.go"})
+	m.renderTurnSpinner()
+
+	// 100ms later, kind changes to Approval — should adopt immediately.
+	clock = start.Add(100 * time.Millisecond)
+	m.now = func() time.Time { return clock }
+	m.state.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: "approve: shell.run"})
+	out := m.renderTurnSpinner()
+	if !strings.Contains(out, "approve: shell.run") {
+		t.Fatalf("kind change should adopt new label immediately, got %q", out)
 	}
 }

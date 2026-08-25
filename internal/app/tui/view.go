@@ -198,7 +198,7 @@ func (m Model) renderTranscriptFrame() string {
 //
 // The row is always reserved (see turnSpinnerRows); it renders blank while
 // idle so the transcript frame does not shift when a turn starts.
-func (m Model) renderTurnSpinner() string {
+func (m *Model) renderTurnSpinner() string {
 	if !m.busy || m.turnStartedAt.IsZero() {
 		return ""
 	}
@@ -209,8 +209,10 @@ func (m Model) renderTurnSpinner() string {
 	text := spinnerLabel(m.turnSpinnerFrame(), formatElapsed(elapsed))
 	// F5: only slow/stable kinds pin a label here; streaming thinking
 	// labels flicker faster than they can be read.
-	if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
-		text += " · " + act.Label
+	act := m.state.Activity()
+	if spinnerShowsLabel(act.Kind) && act.Label != "" {
+		label := m.state.PinnedSpinnerLabel(act)
+		text += " · " + label
 	}
 	return statusBusyStyle().Render(" " + strutil.Truncate(text, max(m.leftWidth-1, 1), true))
 }
@@ -458,12 +460,15 @@ func (m Model) renderCompletionPopup() string {
 		rows = append(rows, style.Render(row))
 	}
 	title := "Commands"
+	hint := "↑↓ select · ↵ run · esc dismiss"
 	if p == m.filePopup {
 		title = "Files"
+		hint = "↑↓ select · ↵ accept · esc dismiss"
 	} else if p == m.setPopup {
 		title = "Settings"
+		hint = "↑↓ select · ↵ accept · esc dismiss"
 	}
-	return chrome.PanelWithHints(title, "↑↓ select · ↵ accept · esc dismiss",
+	return chrome.PanelWithHints(title, hint,
 		strings.Join(rows, "\n"), width, limit+1, true, theme.Current())
 }
 

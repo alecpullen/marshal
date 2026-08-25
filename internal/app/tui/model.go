@@ -2960,6 +2960,45 @@ func (m *Model) dismissCompletionPopups() {
 	}
 }
 
+// completionShouldSubmit reports whether Enter on the active popup should
+// accept the selection and immediately submit the resulting input (true
+// for command popups and setting-value popups), or accept only and keep
+// editing (false for file-path popups and setting-key popups).
+//
+// Setting keys need a value after them ("/set shell.allow_network <value>"),
+// so selecting a key with Enter keeps editing. Setting values are complete
+// commands ready to submit. File paths are typically part of a larger
+// message, so Enter on a file popup keeps editing too.
+//
+// Must be called before acceptCompletion (which dismisses the popup).
+func (m *Model) completionShouldSubmit(p *completionPopup) bool {
+	if p == nil || len(p.filtered) == 0 || p.index < 0 || p.index >= len(p.filtered) {
+		return false
+	}
+	chosen := p.filtered[p.index]
+	if chosen.Disabled {
+		return false
+	}
+	if chosen.Kind == completionCommand {
+		return true
+	}
+	if chosen.Kind == completionSetting {
+		// Distinguish setting-key from setting-value completion by
+		// checking whether the part after "/set " already contains
+		// a space. "/set shell" → key (no space after the key, accept
+		// only). "/set shell.allow_network " → value (space after
+		// the key, submit the complete command).
+		v := m.input.Value()
+		if strings.HasPrefix(v, "/set ") {
+			rest := v[len("/set "):]
+			return strings.ContainsAny(rest, " \t\n")
+		}
+		return false
+	}
+	// File paths keep editing.
+	return false
+}
+
 // acceptCompletion accepts the active popup's current selection, replacing
 // the trigger token in the input with the popup's acceptedText. Returns
 // true when a popup was visible (and is now dismissed).

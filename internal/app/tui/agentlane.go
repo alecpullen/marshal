@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
@@ -56,15 +57,15 @@ func (m Model) renderAgentLane() string {
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 
 	var b strings.Builder
-	// Header first: count-first, pluralized ("2 agents" / "1 agent").
+	// Header: count-first, pluralized ("2 agents" / "1 agent"), with the
+	// divider rule on the same line — matching the sidebar and todo panel
+	// via sidepanel.Header.
 	plural := "agents"
 	if allRunning == 1 {
 		plural = "agent"
 	}
-	b.WriteString(dimStyle().Render(fmt.Sprintf("%d %s", allRunning, plural)))
+	b.WriteString(sidepanel.Header(fmt.Sprintf("%d %s", allRunning, plural), "", width))
 	b.WriteString("\n")
-	// Divider rule between the header and the rows.
-	b.WriteString(laneSeparator(width))
 
 	overflow := 0
 	if allRunning > len(entries) {
@@ -108,9 +109,9 @@ func (m Model) agentLaneEntries() []session.SubagentView {
 // M-2: this previously called renderAgentLane (computing the full render
 // twice per frame — once here for the height budget, once in View for the
 // actual output). Now it computes the row count directly from the running
-// count, matching renderAgentLane's layout: 1 header row + 1 divider rule
-// row + min(running, agentLaneMaxRows-1) rows, with an overflow row when
-// running exceeds the cap. The header renders first, then the divider.
+// count, matching renderAgentLane's layout: 1 merged header+rule row +
+// up to (agentLaneMaxRows-2) agent rows, with an overflow row when
+// running exceeds the cap.
 func (m Model) agentLaneRows() int {
 	var running int
 	for _, v := range m.state.Subagents() {
@@ -123,9 +124,9 @@ func (m Model) agentLaneRows() int {
 	}
 	rows := agentLaneMaxRows - 1
 	if running > rows {
-		// header + separator + (rows-1) shown + overflow
-		return 1 + 1 + (rows - 1) + 1
+		// merged header+rule + (rows-1) shown + overflow
+		return 1 + (rows - 1) + 1
 	}
-	// header + separator + running rows
-	return 1 + 1 + running
+	// merged header+rule + running rows
+	return 1 + running
 }

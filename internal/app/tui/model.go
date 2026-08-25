@@ -242,6 +242,14 @@ type Model struct {
 	fileIndexLoaded      bool
 	lastInputForPopups   string
 	completionSuppressed bool
+	// cmdArgMode arms argument completion right after a command is
+	// accepted from the popup. While armed and the input still carries
+	// the accepted "/<cmd> " prefix, commandTrigger keeps firing so
+	// argument completions stay available. Anything that drops the
+	// prefix — or submit, history recall, an empty input — disarms it.
+	// Ordinary words like "run tests" never trigger anything.
+	cmdArgMode   bool
+	cmdArgPrefix string
 	// Prompt history (project-scoped), newest first. histIdx == -1 means
 	// "not browsing history, editing own draft"; draft stashes in-progress
 	// text while browsing.
@@ -2830,30 +2838,22 @@ func (m *Model) updateSetCompletionPopup(rest string) {
 // commandTrigger returns (true, query) when value is a slash command in
 // progress: starts with "/", has no whitespace (so we're still typing
 // the command name, not its arguments), and is non-empty after the "/".
+//
+// Argument completion is stateful: only inputs carrying the exact prefix
+// of a just-accepted command (e.g. "/plan ") re-trigger the popup. There
+// is no per-command argument metadata, so the armed popup shows the
+// command list itself. Inputs that merely begin with an English word that
+// happens to be a command name ("run the tests") never trigger — the old
+// registry-prefix loop did exactly that and was removed.
 func (m *Model) commandTrigger(value string) (bool, string) {
-	if !strings.HasPrefix(value, "/") {
-		// After a command has been accepted (e.g. "plan "), re-trigger
-		// the popup when the user types a space after the command name
-		// so argument completions can be shown.
-		//
-		// NOTE: The re-trigger returns (true, "") which shows ALL items
-		// unfiltered. The brief originally specified filtering to only
-		// sub-arguments for the accepted command, but the codebase has
-		// no concept of per-command sub-arguments — there is no Help
-		// field on Command and no metadata for filtering. Implementing
-		// sub-argument filtering would require adding a new metadata
-		// field to the Command type and populating it for each command.
-		// This is a documented plan deviation: the current behaviour
-		// (re-show full command list on space) is the correct user-facing
-		// behaviour given the data model.
-		if m.cmdRegistry != nil {
-			for _, c := range m.cmdRegistry.ListAll() {
-				prefix := c.Name + " "
-				if strings.HasPrefix(value, prefix) {
-					return true, ""
-				}
-			}
+	if m.cmdArgMode {
+		if strings.HasPrefix(value, m.cmdArgPrefix) {
+			return true, ""
 		}
+		m.cmdArgMode = false
+		m.cmdArgPrefix = ""
+	}
+	if !strings.HasPrefix(value, "/") {
 		return false, ""
 	}
 	// "/plan " is committed — no longer a trigger.
@@ -2975,6 +2975,13 @@ func (m *Model) acceptCompletion() bool {
 	newValue := replaceTriggerToken(value, accepted)
 	if p == m.setPopup {
 		newValue = replaceSetCompletionToken(value, accepted)
+	}
+	// Arm argument completion for the accepted command: while the input
+	// keeps this exact prefix, commandTrigger stays hot (see
+	// commandTrigger). File and setting accepts never arm it.
+	if p == m.cmdPopup && strings.HasPrefix(newValue, "/") {
+		m.cmdArgMode = true
+		m.cmdArgPrefix = newValue
 	}
 	m.input.SetValue(newValue)
 	// Move the cursor to the end of the inserted text so the user can

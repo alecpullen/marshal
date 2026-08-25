@@ -192,8 +192,9 @@ func (m Model) renderTranscriptFrame() string {
 // panel. Visibility answers one question — is the agent still running? — and
 // so is driven by the turn-level busy flag rather than session.Activity's
 // Kind, which resets to ActivityIdle between phases. The row shows elapsed
-// time plus the current activity label (live thinking line, narration, or
-// phase label) when one is set.
+// time plus the current activity label when the activity is a slow, stable
+// kind (tool call, approval, question, reconnect). Fast-churning thinking
+// labels stay out of the row — the transcript's live blocks show them.
 //
 // The row is always reserved (see turnSpinnerRows); it renders blank while
 // idle so the transcript frame does not shift when a turn starts.
@@ -206,10 +207,12 @@ func (m Model) renderTurnSpinner() string {
 		elapsed = 0
 	}
 	text := spinnerLabel(m.turnSpinnerFrame(), formatElapsed(elapsed))
-	if act := m.state.Activity(); act.Kind != session.ActivityIdle && act.Label != "" {
+	// F5: only slow/stable kinds pin a label here; streaming thinking
+	// labels flicker faster than they can be read.
+	if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
 		text += " · " + act.Label
 	}
-	return statusBusyStyle().Render(" " + strutil.Truncate(text, max(m.leftWidth-1, 1), false))
+	return statusBusyStyle().Render(" " + strutil.Truncate(text, max(m.leftWidth-1, 1), true))
 }
 
 func (m Model) renderInputArea() string {
@@ -485,4 +488,17 @@ func (m Model) fallbackView() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		mutedStyle().Render("Marshal — waiting for terminal resize..."),
 	)
+}
+
+// spinnerShowsLabel reports whether an activity kind is slow and stable
+// enough to pin into the turn-spinner row. Streaming labels (thinking,
+// narration) churn per reasoning line and are excluded; the transcript's
+// live blocks already render them inline.
+func spinnerShowsLabel(kind session.ActivityKind) bool {
+	switch kind {
+	case session.ActivityTool, session.ActivityApproval, session.ActivityQuestion, session.ActivityReconnecting:
+		return true
+	default:
+		return false
+	}
 }

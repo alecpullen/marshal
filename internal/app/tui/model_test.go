@@ -8017,3 +8017,73 @@ func TestHorizontalWheelIsIgnored(t *testing.T) {
 		}
 	}
 }
+
+// F4: ordinary words that collide with command names must not open the
+// completions panel.
+func TestNonSlashWordsDoNotTriggerCompletions(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	for _, value := range []string{"run the tests", "help me write a parser", "log out", "save this"} {
+		m.input.SetValue(value)
+		m.updateCompletionPopups()
+		if m.cmdPopup.isVisible() {
+			t.Fatalf("input %q should not open the command popup", value)
+		}
+	}
+}
+
+// F4 (stateful arg-mode): accepting a command arms argument completion;
+// edits keeping the accepted prefix stay hot, losing it disarms.
+func TestCommandAcceptArmsArgumentCompletion(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.input.SetValue("/pl")
+	m.updateCompletionPopups()
+	if !m.acceptCompletion() {
+		t.Fatal("expected an active popup to accept")
+	}
+	if got := m.input.Value(); got != "/plan " {
+		t.Fatalf("accepted value = %q, want %q", got, "/plan ")
+	}
+	// Typing arguments under the accepted prefix re-shows the popup.
+	m.input.SetValue("/plan f")
+	m.updateCompletionPopups()
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("armed prefix should keep argument completion available")
+	}
+	// Losing the prefix disarms.
+	m.input.SetValue("plan f")
+	m.updateCompletionPopups()
+	if m.cmdPopup.isVisible() {
+		t.Fatal("losing the accepted prefix should disarm argument completion")
+	}
+	if m.cmdArgMode {
+		t.Fatal("cmdArgMode should be false after the prefix was lost")
+	}
+	// A fresh sentence that merely begins with a command word never arms.
+	m.input.SetValue("run the tests")
+	m.updateCompletionPopups()
+	if m.cmdPopup.isVisible() {
+		t.Fatal("non-slash words must not trigger completions")
+	}
+}
+
+// F5: streaming thinking labels never render in the pinned spinner row.
+func TestTurnSpinnerDropsStreamingThinkingLabels(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.busy = true
+	m.turnStartedAt = time.Now()
+	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "very long streaming thought line"})
+	if out := m.renderTurnSpinner(); strings.Contains(out, "very long streaming") {
+		t.Fatal("thinking labels must not appear in the pinned spinner row")
+	}
+}
+
+// F5: slow, stable activity kinds still pin their label into the row.
+func TestTurnSpinnerKeepsStableActivityLabels(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.busy = true
+	m.turnStartedAt = time.Now()
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
+	if out := m.renderTurnSpinner(); !strings.Contains(out, "shell: go test") {
+		t.Fatalf("tool labels should render in the spinner row, got %q", out)
+	}
+}

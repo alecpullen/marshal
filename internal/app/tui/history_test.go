@@ -135,6 +135,57 @@ func TestHistoryDisabledToggle(t *testing.T) {
 	}
 }
 
+// F3: history recall leaves completion state clean — no popup, no Esc
+// suppression, no stale idempotency cache — and the next edit evaluates
+// triggers normally.
+func TestRecallDismissesPopupsAndResetsCache(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.history = []string{"/plan fix auth"}
+	m.histIdx = -1
+	// Dirty popup state: bare "/" opened the popup, then Esc dismissed it
+	// (leaving suppression and a stale idempotency cache behind).
+	m.input.SetValue("/")
+	m.updateCompletionPopups()
+	if m.activeCompletionPopup() == nil {
+		t.Fatal("precondition: popup visible for /")
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
+	// Recall the slash-command entry.
+	recalled, handled := pressKey(m, tea.KeyUp)
+	if !handled || recalled.input.Value() != "/plan fix auth" {
+		t.Fatalf("recall failed: handled=%v value=%q", handled, recalled.input.Value())
+	}
+	if recalled.activeCompletionPopup() != nil {
+		t.Fatal("recalled input must not show a completion popup")
+	}
+	if recalled.completionSuppressed {
+		t.Fatal("recall should clear Esc suppression so the next edit re-evaluates")
+	}
+	if recalled.lastInputForPopups != "" {
+		t.Fatal("recall must reset the popup idempotency cache")
+	}
+	// The very next edit evaluates normally (cache reset did its job).
+	recalled.input.SetValue("/pl")
+	recalled.updateCompletionPopups()
+	if recalled.activeCompletionPopup() == nil {
+		t.Fatal("first edit after recall should evaluate triggers normally")
+	}
+}
+
+// F3 regression guard: a recalled slash entry never opens the popup on its
+// own (recall paths return before trigger evaluation by design).
+func TestRecalledSlashEntryShowsNoPopup(t *testing.T) {
+	m := newHistoryTestModel(t, "/help")
+	recalled, handled := pressKey(m, tea.KeyUp)
+	if !handled || recalled.input.Value() != "/help" {
+		t.Fatalf("recall failed: handled=%v value=%q", handled, recalled.input.Value())
+	}
+	if recalled.activeCompletionPopup() != nil {
+		t.Fatal("recall alone must not open the completions panel")
+	}
+}
+
 func TestPromptRecordedToDBAndLoadedOnStartup(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {

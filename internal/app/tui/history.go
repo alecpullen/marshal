@@ -48,7 +48,22 @@ func (m *Model) recallOlder() bool {
 	// Edits to a recalled entry are transient: navigating re-reads the slice.
 	m.input.SetValue(m.history[m.histIdx])
 	m.input.CursorEnd()
+	m.resetCompletionStateAfterRecall()
 	return true
+}
+
+// resetCompletionStateAfterRecall clears popup state after a history
+// recall: any visible popup is dismissed (without leaving Esc-suppression
+// behind, so the next real edit re-evaluates triggers normally), the
+// idempotency cache is dropped — a stale cache would otherwise swallow the
+// first keystroke after recall — and any armed argument-completion prefix
+// is disarmed.
+func (m *Model) resetCompletionStateAfterRecall() {
+	m.dismissCompletionPopups()
+	m.completionSuppressed = false
+	m.lastInputForPopups = ""
+	m.cmdArgMode = false
+	m.cmdArgPrefix = ""
 }
 
 // recallNewer handles down-arrow history navigation while browsing. Stepping
@@ -67,5 +82,6 @@ func (m *Model) recallNewer() bool {
 		m.draft = ""
 	}
 	m.input.CursorEnd()
+	m.resetCompletionStateAfterRecall()
 	return true
 }

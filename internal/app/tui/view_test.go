@@ -789,7 +789,7 @@ func TestTurnSpinnerShowsActivityLabel(t *testing.T) {
 	m.turnStartedAt = m.now().Add(-12 * time.Second)
 	m.spinnerFrame = "⠋"
 	m.state.SetActivity(session.Activity{
-		Kind:      session.ActivityThinking,
+		Kind:      session.ActivityTool,
 		Label:     "checking the auth module",
 		StartedAt: m.now(),
 	})

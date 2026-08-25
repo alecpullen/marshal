@@ -409,6 +409,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.resetInput()
 		m.completionSuppressed = false
 		m.lastInputForPopups = ""
+		m.cmdArgMode = false
+		m.cmdArgPrefix = ""
 		// The all-done todo summary belongs to the finished turn; the next
 		// user turn clears it (a fresh list from the agent brings it back —
 		// see refreshViewport).

@@ -224,8 +224,8 @@ type Runner struct {
 	ForceClass         string // if set, overrides Classify() in Run()
 	SkillIndex         *skills.Index
 
-	// SkillEmbedder overrides embedder resolution for maybeAutoLoadSkills.
-	// Nil means resolve from config (unconfigured = auto-load silently off).
+	// SkillEmbedder overrides embedder resolution for computeSkillHints.
+	// Nil means resolve from config (unconfigured = hints silently off).
 	// Tests inject a fake; production leaves this nil.
 	SkillEmbedder embedding.Embedder
 
@@ -331,6 +331,10 @@ type Runner struct {
 
 	// skillRanker caches skill-description vectors for the session.
 	skillRanker *skillRanker
+	// skillHints holds this turn's ranked skill suggestions. Rebuilt each
+	// turn by computeSkillHints; surfaced to the model as its own message
+	// (never in messages[0], which is the provider's cache prefix).
+	skillHints []string
 
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
@@ -732,9 +736,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.semTracker = newSemanticRequeryTracker()
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
-	// Auto-load matching skills before the first prompt build so their
-	// bodies ride the existing appendSkillBodies path.
-	r.maybeAutoLoadSkills(ctx, goal)
+	// Rank skills against the goal so the prompt can suggest them. This
+	// only suggests — see computeSkillHints for why gating on similarity
+	// does not work.
+	r.computeSkillHints(ctx, goal)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 

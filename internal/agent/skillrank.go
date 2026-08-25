@@ -7,20 +7,24 @@ import (
 	"strings"
 	"time"
 
-	"marshal/internal/app/session"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/skills"
 )
 
 const (
-	// skillAutoLoadMaxK bounds how many skills a turn may auto-load.
-	skillAutoLoadMaxK = 2
-	// skillAutoLoadMinScore is the cosine floor for auto-loading a skill.
-	// Descriptions are short, so only a clearly-on-topic match clears it.
-	skillAutoLoadMinScore = 0.55
-	// skillAutoLoadTimeout caps the embed round-trip so a slow embedding
+	// skillHintMaxK bounds how many skills a turn may hint at. Three fits
+	// the measured signal: top-1 accuracy is 6/7 when a skill genuinely
+	// applies, and the runner-up is usually the second-best real answer.
+	skillHintMaxK = 3
+	// skillHintMinScore is a noise floor, not a decision boundary. Measured
+	// separation between "a skill applies" and "no skill applies" is
+	// NEGATIVE (worst true positive 0.486 < best true negative 0.586), so
+	// no threshold can gate loading. This floor only drops obvious garbage
+	// from a suggestion list the model is free to ignore.
+	skillHintMinScore = 0.40
+	// skillHintTimeout caps the embed round-trip so a slow embedding
 	// endpoint cannot stall the turn.
-	skillAutoLoadTimeout = 10 * time.Second
+	skillHintTimeout = 10 * time.Second
 )
 
 // skillRanker ranks skill descriptions against a turn goal using the
@@ -35,15 +39,15 @@ func newSkillRanker() *skillRanker {
 	return &skillRanker{cache: make(map[string][]float32)}
 }
 
-// rank returns the names of up to skillAutoLoadMaxK skills whose description
-// similarity to goal is at least skillAutoLoadMinScore, best first. Any
+// rank returns the names of up to skillHintMaxK skills whose description
+// similarity to goal is at least skillHintMinScore, best first. Any
 // embed failure returns nil — ranking is best-effort and must never break a
 // turn.
 func (s *skillRanker) rank(ctx context.Context, e embedding.Embedder, candidates []skills.Skill, goal string) []string {
 	if e == nil || len(candidates) == 0 || strings.TrimSpace(goal) == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, skillAutoLoadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, skillHintTimeout)
 	defer cancel()
 
 	texts := make([]string, 0, len(candidates)+1)
@@ -74,7 +78,7 @@ func (s *skillRanker) rank(ctx context.Context, e embedding.Embedder, candidates
 	}
 	var hits []scored
 	for i, sk := range candidates {
-		if score := cosineSim(goalVec, vecs[i]); score >= skillAutoLoadMinScore {
+		if score := cosineSim(goalVec, vecs[i]); score >= skillHintMinScore {
 			hits = append(hits, scored{sk.Name, score})
 		}
 	}
@@ -82,8 +86,8 @@ func (s *skillRanker) rank(ctx context.Context, e embedding.Embedder, candidates
 		return nil
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
-	if len(hits) > skillAutoLoadMaxK {
-		hits = hits[:skillAutoLoadMaxK]
+	if len(hits) > skillHintMaxK {
+		hits = hits[:skillHintMaxK]
 	}
 	names := make([]string, len(hits))
 	for i, h := range hits {
@@ -110,18 +114,29 @@ func cosineSim(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
-// maybeAutoLoadSkills embeds the turn goal and quietly loads the
-// top-matching skills so their bodies are present in the first prompt
-// (appendSkillBodies picks up anything activated before the prompt build).
-// General role only. Embeddings unconfigured, embed errors, and timeouts
-// are all silent no-ops.
-func (r *Runner) maybeAutoLoadSkills(ctx context.Context, goal string) {
+// computeSkillHints ranks skills against the turn goal and records the top
+// matches on the runner for the prompt builder to surface. It deliberately
+// does NOT load anything.
+//
+// Measured on this project's configured embedder over its installed skills,
+// cosine similarity ranks well but gates terribly: the worst true positive
+// (0.486) scores below the best true negative (0.586), so any auto-load
+// threshold either fires on unrelated work or never fires at all. Prefixing
+// (nomic search_query/search_document) and mean-centering were both tested
+// and made it worse. The model has the whole conversation and can judge
+// applicability; the ranker only narrows the roster.
+//
+// General role only. Unconfigured embeddings, embed errors, and timeouts are
+// all silent no-ops.
+func (r *Runner) computeSkillHints(ctx context.Context, goal string) {
+	r.skillHints = nil
 	if r.role() != RoleGeneral || r.SkillIndex == nil || r.State == nil {
 		return
 	}
 	all := r.SkillIndex.List()
 	candidates := make([]skills.Skill, 0, len(all))
 	for _, sk := range all {
+		// An active skill's body is already on the wire; hinting it is noise.
 		if r.State.HasActiveSkill(sk.Name) {
 			continue
 		}
@@ -140,18 +155,5 @@ func (r *Runner) maybeAutoLoadSkills(ctx context.Context, goal string) {
 	if r.skillRanker == nil {
 		r.skillRanker = newSkillRanker()
 	}
-	var loaded []string
-	for _, name := range r.skillRanker.rank(ctx, e, candidates, goal) {
-		// Quiet: no per-skill transcript tag, exempt from max_active.
-		// Per-skill errors (budget, missing) are ignored — auto-load is
-		// best-effort.
-		if err := skills.LoadSkillIntoSessionQuiet(r.SkillIndex, r.State, name); err == nil {
-			loaded = append(loaded, name)
-		}
-	}
-	// One aggregate record per turn, replacing the per-skill tags the quiet
-	// path deliberately suppresses. A turn that loads nothing writes nothing.
-	if len(loaded) > 0 {
-		r.State.AddMessage(session.RoleSystem, strings.Join(loaded, "\n"), session.ContentTypeSkillAuto)
-	}
+	r.skillHints = r.skillRanker.rank(ctx, e, candidates, goal)
 }

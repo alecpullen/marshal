@@ -1644,3 +1644,28 @@ repo_scout = "coder"
 		t.Fatalf("Resolve(edit) after migration: %v", err)
 	}
 }
+
+func TestSkillsBodyFullTurnsDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Skills.BodyFullTurns != 3 {
+		t.Fatalf("default BodyFullTurns = %d, want 3", cfg.Skills.BodyFullTurns)
+	}
+}
+
+func TestSkillsBodyFullTurnsMergesFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[skills]\nbody_full_turns = 7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&cfg, file); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Skills.BodyFullTurns != 7 {
+		t.Fatalf("merged BodyFullTurns = %d, want 7", cfg.Skills.BodyFullTurns)
+	}
+}

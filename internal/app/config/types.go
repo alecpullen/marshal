@@ -428,6 +428,14 @@ type SkillsConfig struct {
 	// otherwise load every tangentially-related skill and burn the context
 	// budget on method text that does not apply to the task. 0 = unlimited.
 	MaxActive int `toml:"max_active"`
+	// BodyFullTurns is how many turns a freshly-loaded skill's full body is
+	// written to the wire before it degrades to a one-line stub. Bodies do
+	// not replay from history (buildHistoryMessages handles only user and
+	// assistant roles), so re-emission is what keeps a skill in context —
+	// this bounds the cost of that without dropping the skill silently.
+	// A repeat skill.load resets the counter and re-sends the full text.
+	// 0 = always send the full body.
+	BodyFullTurns int `toml:"body_full_turns"`
 }
 
 type IndexingConfig struct {

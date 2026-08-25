@@ -61,6 +61,7 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Skills.Autoload = file.Skills.Autoload
 		}
 		set(&cfg.Skills.MaxActive, file.Skills.MaxActive)
+		set(&cfg.Skills.BodyFullTurns, file.Skills.BodyFullTurns)
 	}
 	if file.Indexing != nil {
 		set(&cfg.Indexing.UseTreesitter, file.Indexing.UseTreesitter)

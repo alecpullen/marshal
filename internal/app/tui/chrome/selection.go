@@ -31,5 +31,12 @@ func SelectionStyle() lipgloss.Style {
 		// No colour to pair; the marker and the bold weight carry it.
 		return base
 	}
+	if th.Tier != theme.Tier256 {
+		// The 16-ANSI palette's four neutrals are fully spent (see the
+		// comment above warmSunset16), so a BGSelection fill would collapse
+		// onto a foreground and delete the row rather than highlight it.
+		// Reverse video needs no palette budget at all.
+		return base.Reverse(true)
+	}
 	return base.Foreground(th.FGEmphasis).Background(th.BGSelection)
 }

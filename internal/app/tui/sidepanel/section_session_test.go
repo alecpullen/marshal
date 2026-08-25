@@ -11,11 +11,14 @@ import (
 )
 
 func sessionData(now time.Time) Data {
+	st := session.New(config.Config{}, "/tmp", now.Add(-90*time.Second), session.Persistence{})
 	return Data{
-		Now: now,
-		Turns: []db.TurnMetricsRow{
-			{StartedAt: now.Add(-30 * time.Second), PromptTokens: 20_000, CompletionTokens: 5_000},
-			{StartedAt: now.Add(-72 * time.Second), PromptTokens: 22_100, CompletionTokens: 3_300},
+		Now:   now,
+		State: st,
+		Totals: db.UsageTotals{
+			Turns:            7,
+			PromptTokens:     42_100,
+			CompletionTokens: 8_300,
 		},
 	}
 }
@@ -37,11 +40,41 @@ func TestSessionSectionRelevance(t *testing.T) {
 	s := SessionSection{}
 	var empty Data
 	if s.Relevant(empty) {
-		t.Error("want irrelevant with no turns")
+		t.Error("want irrelevant with no session")
 	}
-	d := sessionData(time.Now())
-	if !s.Relevant(d) {
-		t.Error("want relevant with turns")
+	if !s.Relevant(sessionData(time.Now())) {
+		t.Error("want relevant as soon as a session exists, even at turn 0")
+	}
+}
+
+// The counters must come from the session-scoped totals, not from the recent
+// turn rows, and the turn count must not be capped by any row-window limit.
+func TestSessionSectionUsesTotals(t *testing.T) {
+	now := time.Now()
+	rows := SessionSection{}.Render(sessionData(now), 60, 4)
+	if len(rows) < 2 {
+		t.Fatalf("want at least 2 rows, got %d: %v", len(rows), rows)
+	}
+	if !strings.Contains(rows[0], "turn 7") {
+		t.Errorf("row 0 = %q, want it to report turn 7 from Totals", rows[0])
+	}
+	if !strings.Contains(rows[1], "42k in") || !strings.Contains(rows[1], "8k out") {
+		t.Errorf("row 1 = %q, want totals-derived token counts", rows[1])
+	}
+}
+
+// Elapsed is session wall-clock from State.StartedAt, not the age of the
+// oldest turn row — so it is correct even with zero completed turns.
+func TestSessionSectionElapsedFromSessionStart(t *testing.T) {
+	now := time.Now()
+	d := sessionData(now)
+	d.Totals = db.UsageTotals{} // no turns at all
+	rows := SessionSection{}.Render(d, 60, 4)
+	if !strings.Contains(rows[0], "turn 0") {
+		t.Errorf("row 0 = %q, want turn 0", rows[0])
+	}
+	if !strings.Contains(rows[0], "1m30s") {
+		t.Errorf("row 0 = %q, want elapsed 1m30s measured from StartedAt", rows[0])
 	}
 }
 
@@ -54,11 +87,11 @@ func TestSessionSectionRendersTurnsElapsedAndTokens(t *testing.T) {
 	}
 	joined := StripANSI(strings.Join(rows, "\n"))
 
-	if !strings.Contains(joined, "turn 2") {
+	if !strings.Contains(joined, "turn 7") {
 		t.Errorf("want turn count, got %q", joined)
 	}
-	if !strings.Contains(joined, "1m12s") {
-		t.Errorf("want elapsed since oldest turn, got %q", joined)
+	if !strings.Contains(joined, "1m30s") {
+		t.Errorf("want elapsed since session start, got %q", joined)
 	}
 	// strutil.CompactTokens truncates with integer division: 42100 → "42k",
 	// 8300 → "8k". Not "42.1k" — the spec's mockup was illustrative.
@@ -83,7 +116,7 @@ func TestSessionSectionRespectsWidth(t *testing.T) {
 func TestSessionSectionOneLine(t *testing.T) {
 	s := SessionSection{}
 	got := StripANSI(s.OneLine(sessionData(time.Now()), 24))
-	if !strings.Contains(got, "turn 2") {
+	if !strings.Contains(got, "turn 7") {
 		t.Errorf("want turn count in the one-line summary, got %q", got)
 	}
 	if len([]rune(got)) > 24 {

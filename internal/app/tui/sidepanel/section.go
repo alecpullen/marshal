@@ -37,10 +37,16 @@ type ChangedFile struct {
 // queries, git subprocesses) is cached in on turn boundaries — never
 // computed during render.
 type Data struct {
-	State   *session.State
-	Git     gitinfo.Info
-	Repo    RepoStats
-	Turns   []db.TurnMetricsRow // most recent first
+	State *session.State
+	Git   gitinfo.Info
+	Repo  RepoStats
+	Turns []db.TurnMetricsRow // most recent first
+	// Totals is the session-scoped usage aggregate backing the footer's
+	// turn/token counters. Distinct from Turns, which is the recent-rows
+	// window other sections read: Turns is capped by its query limit and
+	// (before this change) was project-scoped, so it could not be used to
+	// count a session's turns.
+	Totals  db.UsageTotals
 	Changed []ChangedFile
 	Now     time.Time // injected so elapsed-time rendering is deterministic
 

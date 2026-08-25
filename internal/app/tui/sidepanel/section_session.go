@@ -19,20 +19,22 @@ func (SessionSection) Title() string   { return "" }
 func (SessionSection) Priority() int   { return 9 }
 func (SessionSection) Clippable() bool { return false }
 
-func (SessionSection) Relevant(d Data) bool { return len(d.Turns) > 0 }
+// Relevant reports whether the footer should render. It needs only a session
+// — not a completed turn — so the footer is present from the first frame
+// rather than popping in after turn 1.
+func (SessionSection) Relevant(d Data) bool { return d.State != nil }
 
-// sessionTotals sums token usage and measures elapsed time since the
-// oldest recorded turn. d.Turns is most-recent-first.
-func sessionTotals(d Data) (turns, in, out int, elapsed time.Duration) {
-	turns = len(d.Turns)
-	for _, t := range d.Turns {
-		in += t.PromptTokens
-		out += t.CompletionTokens
+// sessionElapsed is session wall-clock: now minus the session's start.
+// Deliberately not the age of the oldest turn row (which was wrong whenever
+// rows aged out of the window, and undefined at turn 0) and not the sum of
+// turn durations (which is active-work time, a different and also useful
+// number). Named sessionElapsed to avoid colliding with the swarm section's
+// elapsed(start, now) helper.
+func sessionElapsed(d Data) time.Duration {
+	if d.State == nil {
+		return 0
 	}
-	if turns > 0 {
-		elapsed = d.Now.Sub(d.Turns[turns-1].StartedAt)
-	}
-	return turns, in, out, elapsed
+	return d.Now.Sub(d.State.StartedAt)
 }
 
 // shortDuration renders a duration compactly: "42s", "1m12s", "2h04m".
@@ -67,11 +69,11 @@ func budgetLabel(d Data) string {
 }
 
 func (SessionSection) Render(d Data, width, maxRows int) []string {
-	turns, in, out, elapsed := sessionTotals(d)
 	rows := []string{
-		ansi.Truncate(fmt.Sprintf(" turn %d · %s", turns, shortDuration(elapsed)), width, "…"),
+		ansi.Truncate(fmt.Sprintf(" turn %d · %s", d.Totals.Turns, shortDuration(sessionElapsed(d))), width, "…"),
 		ansi.Truncate(fmt.Sprintf(" %s in · %s out",
-			strutil.CompactTokens(in), strutil.CompactTokens(out)), width, "…"),
+			strutil.CompactTokens(int(d.Totals.PromptTokens)),
+			strutil.CompactTokens(int(d.Totals.CompletionTokens))), width, "…"),
 	}
 	if label := budgetLabel(d); label != "" {
 		rows = append(rows, ansi.Truncate(label, width, "…"))
@@ -83,10 +85,10 @@ func (SessionSection) Render(d Data, width, maxRows int) []string {
 }
 
 func (SessionSection) OneLine(d Data, width int) string {
-	turns, in, out, elapsed := sessionTotals(d)
 	line := fmt.Sprintf("turn %d · %s · %s/%s",
-		turns, shortDuration(elapsed),
-		strutil.CompactTokens(in), strutil.CompactTokens(out))
+		d.Totals.Turns, shortDuration(sessionElapsed(d)),
+		strutil.CompactTokens(int(d.Totals.PromptTokens)),
+		strutil.CompactTokens(int(d.Totals.CompletionTokens)))
 	if label := budgetLabel(d); label != "" {
 		line += " ·" + label
 	}

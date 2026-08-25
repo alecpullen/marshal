@@ -346,3 +346,57 @@ func TestAggregateTurnMetrics(t *testing.T) {
 		t.Errorf("b1.Turns = %d, want 1", b1.Turns)
 	}
 }
+
+func TestSessionUsageScopesToSession(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	// turn_metrics.session_id is a FK to agent_sessions(id), so the sessions
+	// must exist before their rows can be inserted.
+	if err := database.CreateSession("session-a", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession(session-a): %v", err)
+	}
+	if err := database.CreateSession("session-b", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession(session-b): %v", err)
+	}
+
+	a := sampleRow(projectID, "session-a")
+	a.PromptTokens, a.CompletionTokens = 100, 10
+	if _, err := database.InsertTurnMetrics(a); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+	if _, err := database.InsertTurnMetrics(a); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	b := sampleRow(projectID, "session-b")
+	b.PromptTokens, b.CompletionTokens = 999, 999
+	if _, err := database.InsertTurnMetrics(b); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	got, err := database.SessionUsage(projectID, "session-a")
+	if err != nil {
+		t.Fatalf("SessionUsage: %v", err)
+	}
+	if got.Turns != 2 {
+		t.Errorf("Turns = %d, want 2 (session-b's row must not count)", got.Turns)
+	}
+	if got.PromptTokens != 200 {
+		t.Errorf("PromptTokens = %d, want 200", got.PromptTokens)
+	}
+	if got.CompletionTokens != 20 {
+		t.Errorf("CompletionTokens = %d, want 20", got.CompletionTokens)
+	}
+}
+
+// A session with no rows must yield zeroes, not a NULL-scan error. This is
+// the state the rail is in for every brand-new session.
+func TestSessionUsageEmptySessionIsZero(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	got, err := database.SessionUsage(projectID, "never-used")
+	if err != nil {
+		t.Fatalf("SessionUsage on an empty session: %v", err)
+	}
+	if got.Turns != 0 || got.PromptTokens != 0 || got.CompletionTokens != 0 {
+		t.Errorf("got %+v, want zero totals", got)
+	}
+}

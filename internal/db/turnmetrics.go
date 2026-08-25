@@ -234,3 +234,38 @@ func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdo
 	}
 	return totals, breakdown, nil
 }
+
+// SessionUsage returns the cumulative token usage and turn count for a single
+// session within a project.
+//
+// AggregateTurnMetrics is deliberately project-scoped — it backs /profile and
+// the usage views, which report on the project. This one is the session-scoped
+// counterpart the side rail's footer needs: without the session_id predicate
+// the rail reported every session that had ever run in the project.
+//
+// Every SUM is COALESCEd because SUM over zero rows is NULL in SQLite, which
+// would fail the scan into int64 for a session that has not completed a turn
+// yet — the state every new session starts in.
+func (db *DB) SessionUsage(projectID int64, sessionID string) (UsageTotals, error) {
+	var t UsageTotals
+	err := db.sqlDB.QueryRow(
+		`SELECT COUNT(*),
+			COALESCE(SUM(prompt_tokens), 0),
+			COALESCE(SUM(completion_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_write_tokens), 0),
+			COALESCE(SUM(estimated_cost_cents), 0)
+		 FROM turn_metrics
+		 WHERE project_id = ? AND session_id = ?`,
+		projectID, sessionID,
+	).Scan(
+		&t.Turns, &t.PromptTokens, &t.CompletionTokens,
+		&t.ReasoningTokens, &t.CacheReadTokens, &t.CacheWriteTokens,
+		&t.EstimatedCostCents,
+	)
+	if err != nil {
+		return UsageTotals{}, fmt.Errorf("session usage: %w", err)
+	}
+	return t, nil
+}

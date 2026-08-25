@@ -2452,3 +2452,42 @@ func TestShutdownCancelsRunningSubagentsAndClearsReports(t *testing.T) {
 		t.Fatal("running subagent was not cancelled on shutdown")
 	}
 }
+
+// StartedAt drives the elapsed-time display, so an args update must leave it
+// — and every other field — alone. Replacing the struct would silently
+// restart the timer each time the count ticks down.
+func TestSetActiveToolCallArgsPreservesOtherFields(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	started := time.Now().Add(-3 * time.Minute)
+	s.SetActiveToolCall(ActiveToolCall{
+		Name:      "agent.await",
+		Args:      "all",
+		Path:      "somewhere",
+		Output:    "partial",
+		StartedAt: started,
+	})
+
+	s.SetActiveToolCallArgs("all (2 running)")
+
+	got, ok := s.ActiveToolCall()
+	if !ok {
+		t.Fatal("no active tool call")
+	}
+	if got.Args != "all (2 running)" {
+		t.Errorf("Args = %q, want the updated value", got.Args)
+	}
+	if !got.StartedAt.Equal(started) {
+		t.Errorf("StartedAt = %v, want %v — the elapsed timer was reset", got.StartedAt, started)
+	}
+	if got.Name != "agent.await" || got.Path != "somewhere" || got.Output != "partial" {
+		t.Errorf("other fields were disturbed: %+v", got)
+	}
+}
+
+func TestSetActiveToolCallArgsNoActiveCallIsNoop(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	s.SetActiveToolCallArgs("anything") // must not panic
+	if _, ok := s.ActiveToolCall(); ok {
+		t.Error("an args update must not create an active call")
+	}
+}

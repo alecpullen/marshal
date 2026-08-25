@@ -464,3 +464,58 @@ func TestAgentAwaitAllSkipsAlreadyFinished(t *testing.T) {
 		t.Fatalf("await all summary = %q, want no-running (finished child skipped)", res.Summary)
 	}
 }
+
+// An "all" wait must count down as children finish, so a user watching a
+// long batch can see progress rather than a static line.
+func TestAwaitAllUpdatesActiveToolCallArgs(t *testing.T) {
+	st := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	a := st.RegisterSubagentWithMeta("a", newChildState(t), session.SubagentMeta{})
+	b := st.RegisterSubagentWithMeta("b", newChildState(t), session.SubagentMeta{})
+	st.SetActiveToolCall(session.ActiveToolCall{Name: "agent.await", Args: "all", StartedAt: time.Now()})
+
+	var seen []string
+	var mu sync.Mutex
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if atc, ok := st.ActiveToolCall(); ok {
+				mu.Lock()
+				if len(seen) == 0 || seen[len(seen)-1] != atc.Args {
+					seen = append(seen, atc.Args)
+				}
+				mu.Unlock()
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		st.FinishSubagent(a.ID, "a done", nil)
+		time.Sleep(30 * time.Millisecond)
+		st.FinishSubagent(b.ID, "b done", nil)
+	}()
+
+	_, tool, _ := newAsyncRunToolPair(st, nil)
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"all":true}`),
+	}); err != nil {
+		t.Fatalf("agent.await all: %v", err)
+	}
+	close(stop)
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(seen, " | ")
+	if !strings.Contains(joined, "2 running") {
+		t.Errorf("never showed 2 running; saw: %s", joined)
+	}
+	if !strings.Contains(joined, "1 running") {
+		t.Errorf("never counted down to 1 running; saw: %s", joined)
+	}
+}

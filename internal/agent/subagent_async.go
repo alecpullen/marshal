@@ -68,6 +68,7 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 					Content: "No background subagents are currently running.",
 				}, nil
 			}
+			state.SetActiveToolCallArgs(fmt.Sprintf("any (%d running)", len(pending)))
 			v, err := state.WaitAnySubagent(ctx, pending)
 			if err != nil {
 				return registry.ToolResult{}, err
@@ -135,7 +136,8 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 			if len(pending) == 0 {
 				break
 			}
-			for _, id := range pending {
+			for i, id := range pending {
+				state.SetActiveToolCallArgs(fmt.Sprintf("all (%d running)", len(pending)-i))
 				v, err := state.WaitSubagent(ctx, id)
 				if err != nil {
 					// Preserve partial results: a cancelled batch must not

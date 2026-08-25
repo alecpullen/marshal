@@ -200,3 +200,26 @@ func (s *State) AppendActiveToolCallOutput(delta string) {
 	s.activeToolCall.Output += delta
 	s.mu.Unlock()
 }
+
+// SetActiveToolCallArgs updates only the Args field of the in-flight tool
+// call, leaving Name, Path, Output and StartedAt intact. StartedAt in
+// particular drives the elapsed-time display, so replacing the whole struct
+// would restart the timer on every update.
+//
+// It exists so a long blocking call can keep the user informed about what it
+// is still waiting on — agent.await counts its outstanding children down as
+// they finish. Mirrors AppendActiveToolCallOutput's in-place mutation, but
+// publishes EventActiveToolChanged: that one stays silent because streaming
+// output would flood the broker, whereas an args update fires at most once
+// per child completion and should reach ACP clients as well as the TUI.
+func (s *State) SetActiveToolCallArgs(args string) {
+	s.mu.Lock()
+	if s.activeToolCall == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.activeToolCall.Args = args
+	copy := *s.activeToolCall
+	s.mu.Unlock()
+	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: &copy})
+}

@@ -139,6 +139,7 @@ func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 		// so it does not fall through to the transcript underneath.
 		return nil, true
 	}
+	m.laneCursorActive = false
 	m.drillIntoSubagent(entries[idx])
 	m.lastTranscriptHash = 0
 	m.refreshViewport()

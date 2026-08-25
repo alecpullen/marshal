@@ -379,3 +379,96 @@ func TestAutoloadedSkillsAreNotEvicted(t *testing.T) {
 		t.Error("autoloaded skill must never be evicted")
 	}
 }
+
+// --- skill.unload tool handler tests ---
+
+func TestSkillUnloadToolSuccess(t *testing.T) {
+	idx := NewIndex()
+	idx.Set("debug", Skill{Name: "debug", Description: "d", Body: "body"})
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state)
+
+	// Load first so the skill is active.
+	loadTool, _ := reg.Lookup("skill.load")
+	if _, err := loadTool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.load",
+		Args: []byte(`{"name": "debug"}`),
+	}); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// Now unload via the registered tool.
+	unloadTool, ok := reg.Lookup("skill.unload")
+	if !ok {
+		t.Fatal("skill.unload tool not registered")
+	}
+	if unloadTool.Risk != registry.RiskReadOnly {
+		t.Fatalf("Risk = %s, want read_only", unloadTool.Risk)
+	}
+	if unloadTool.Cacheable {
+		t.Fatal("skill.unload should not be cacheable")
+	}
+
+	result, err := unloadTool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.unload",
+		Args: []byte(`{"name": "debug"}`),
+	})
+	if err != nil {
+		t.Fatalf("unload handler: %v", err)
+	}
+	if result.Summary == "" {
+		t.Fatal("expected summary in result")
+	}
+	if state.HasActiveSkill("debug") {
+		t.Fatal("debug should not be active after unload")
+	}
+}
+
+func TestSkillUnloadToolInvalidArgs(t *testing.T) {
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state)
+
+	tool, _ := reg.Lookup("skill.unload")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.unload",
+		Args: []byte(`not json`),
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON args")
+	}
+}
+
+func TestSkillUnloadToolMissingNameArg(t *testing.T) {
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state)
+
+	tool, _ := reg.Lookup("skill.unload")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.unload",
+		Args: []byte(`{}`),
+	})
+	if err == nil {
+		t.Fatal("expected error for missing name arg")
+	}
+}
+
+func TestSkillUnloadToolInactiveSkill(t *testing.T) {
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state)
+
+	tool, _ := reg.Lookup("skill.unload")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.unload",
+		Args: []byte(`{"name": "never-loaded"}`),
+	})
+	if err == nil {
+		t.Fatal("expected error for unloading an inactive skill")
+	}
+}

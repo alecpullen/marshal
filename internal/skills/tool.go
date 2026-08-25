@@ -47,9 +47,10 @@ func RegisterTool(reg *registry.Registry, idx *Index, state *session.State) {
 }
 
 // LoadSkillIntoSession loads a skill by name into the session state,
-// posting a compact transcript tag. It checks that the skill exists, is
-// not already active, and enforces skills.max_active against explicitly
-// loaded skills.
+// posting a compact transcript tag. A repeat load of an already-active
+// skill is a re-fetch: it resets the skill's body age and returns nil
+// instead of erroring. evictForBudget runs for all loads, evicting the
+// least-recently-activated non-pinned skill when the cap is full.
 //
 // Two messages are added: the wrapped body (ContentTypeSkillBody), which
 // feeds the model and persists but is hidden from the transcript, and a
@@ -63,8 +64,9 @@ func LoadSkillIntoSession(idx *Index, state *session.State, name string) error {
 // without posting the ContentTypeSkill transcript tag. It is used for
 // autoloaded skills so the transcript is not cluttered with automatic
 // skill tags, while explicit skill.load tool calls still post the tag.
-// Autoloaded skills are user-configured always-on and are exempt from the
-// max_active budget.
+// Autoloaded skills are pinned against eviction in evictForBudget (they
+// are never evicted), but they are not exempt from the max_active cap
+// mechanism — quiet loads count against the budget like any other.
 func LoadSkillIntoSessionQuiet(idx *Index, state *session.State, name string) error {
 	return NewSkillLoader(idx, state).Load(name, true)
 }

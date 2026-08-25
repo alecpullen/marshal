@@ -675,6 +675,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// skill body has been written to this turn's wire.
 	r.contextPackMsgIndex = -1
 	r.emittedSkills = nil
+	// Tick ages at turn start, before the first prompt build. A skill loaded
+	// mid-turn via skill.load is activated after the tick, so it emits at
+	// age 0 on this turn and gets BodyFullTurns full turns. An autoloaded
+	// skill is already active before the tick, so it ticks to age 1 before
+	// its first emit — effectively getting BodyFullTurns−1 full turns. This
+	// off-by-one is intentional: the tick models "one turn has elapsed since
+	// the body was last sent," and autoloaded skills were sent in a prior
+	// turn's wire.
 	r.State.TickSkillBodyAges()
 	r.turnToolResultChars = 0
 

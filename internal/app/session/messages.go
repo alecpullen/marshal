@@ -65,9 +65,11 @@ const (
 	// ContentTypeSkillAuto records the skills the ranker auto-loaded at the
 	// start of one turn. Content is the newline-separated skill names.
 	//
-	// Auto-loaded skills are loaded quietly (internal/skills/tool.go) so the
-	// transcript is not cluttered with one tag per skill. This is the
-	// aggregate replacement: one line per turn, naming that turn's additions.
+	// Legacy: the ranker no longer auto-loads skills (it emits hints
+	// instead — see internal/agent/skillrank.go). This content type is
+	// retained so old session transcripts still render correctly. No new
+	// messages with this type are produced.
+	//
 	// Distinct from ContentTypeSkill, which is the tag an explicit
 	// skill.load tool call still posts.
 	ContentTypeSkillAuto ContentType = "skill_auto"

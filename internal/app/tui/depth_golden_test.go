@@ -91,3 +91,12 @@ func TestRaisedBandsAreFullWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestFullPaintsTranscript(t *testing.T) {
+	df := newDepthFrame(t)
+	raised := df.renderAt(theme.DepthRaised)
+	full := df.renderAt(theme.DepthFull)
+	if raised == full {
+		t.Fatal("depth=full rendered identically to raised; the transcript is not painting")
+	}
+}

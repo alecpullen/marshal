@@ -186,8 +186,8 @@ func TestLoadWithConfigModeDefaultsToDark(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
 	th := LoadWithConfig("warm-sunset", "", DepthFlat, nil)
-	if th.BGBase != lipgloss.Color("235") {
-		t.Fatalf("BGBase = %#v, want 235 (dark bg) for default empty mode", th.BGBase)
+	if th.BGBase != lipgloss.Color("232") {
+		t.Fatalf("BGBase = %#v, want 232 (dark bg) for default empty mode", th.BGBase)
 	}
 }
 

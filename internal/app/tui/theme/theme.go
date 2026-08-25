@@ -100,7 +100,7 @@ var warmSunset256 = Theme{
 	FGMuted:         lipgloss.Color("248"),
 	BorderMuted:     lipgloss.Color("246"),
 	FGEmphasis:      lipgloss.Color("255"),
-	BGBase:          lipgloss.Color("235"),
+	BGBase:          lipgloss.Color("232"),
 	BGSurface:       lipgloss.Color("236"),
 	BGSelection:     lipgloss.Color("238"),
 	AccentPrimary:   lipgloss.Color("209"),

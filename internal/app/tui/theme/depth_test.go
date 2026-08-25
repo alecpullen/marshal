@@ -164,3 +164,21 @@ func TestOverridesPreserveDepth(t *testing.T) {
 		t.Fatalf("Apply dropped Depth: got %s, want raised", th.Depth)
 	}
 }
+
+// The chrome plane must be lighter than the content plane, or the layering
+// reads as an arbitrary stripe rather than as depth. The eye needs a real
+// step: base and surface one index apart (1.15:1) is not one.
+func TestPlanesAreDistinguishable(t *testing.T) {
+	base, ok1 := index256(warmSunset256.BGBase)
+	surface, ok2 := index256(warmSunset256.BGSurface)
+	if !ok1 || !ok2 {
+		t.Fatal("expected plain 256-colour indices for both planes")
+	}
+	if surface <= base {
+		t.Fatalf("BGSurface (%d) must be lighter than BGBase (%d)", surface, base)
+	}
+	got := contrastRatio(rgbFor256(surface), rgbFor256(base))
+	if got < 1.5 {
+		t.Errorf("plane separation %.2f:1 is below the 1.5:1 legibility floor", got)
+	}
+}

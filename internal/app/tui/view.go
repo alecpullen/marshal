@@ -135,6 +135,7 @@ func (m *Model) viewString() string {
 	if m.railEnabled() && len(m.viewStack) == 0 {
 		railHeight := m.height - statusLineRows
 		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {
+			rv = chrome.PaintBand(rv, m.railWidth, theme.Current().ChromeBG())
 			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
 		}
 	}
@@ -185,7 +186,7 @@ func (m Model) renderTranscriptFrame() string {
 			mutedStyle().Render("  (↑/Esc to go back)")
 		content = lipgloss.JoinVertical(lipgloss.Left, crumb, content)
 	}
-	return content
+	return chrome.PaintBand(content, m.leftWidth, theme.Current().TranscriptBG())
 }
 
 // renderTurnSpinner renders the pinned spinner row directly above the todo

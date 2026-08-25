@@ -1,0 +1,122 @@
+package theme
+
+import "testing"
+
+// The zero value must be DepthFlat, for the same reason Tier256 is the zero
+// ColorTier (see tier.go): Theme literals are hand-constructed throughout the
+// TUI tests and Current() returns a zero Theme before the first Reload. If the
+// zero value painted, every one of those would silently start painting.
+func TestZeroDepthIsFlat(t *testing.T) {
+	var th Theme
+	if th.Depth != DepthFlat {
+		t.Fatalf("zero Theme.Depth = %d, want DepthFlat (%d)", th.Depth, DepthFlat)
+	}
+}
+
+func TestParseDepth(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want Depth
+	}{
+		{"flat", DepthFlat},
+		{"raised", DepthRaised},
+		{"full", DepthFull},
+		{"FULL", DepthFull},
+		{"  raised  ", DepthRaised},
+		{"", DepthFlat},
+		{"nonsense", DepthFlat},
+	} {
+		if got := ParseDepth(tc.in); got != tc.want {
+			t.Errorf("ParseDepth(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestDepthStringRoundTrips(t *testing.T) {
+	for _, d := range []Depth{DepthFlat, DepthRaised, DepthFull} {
+		if got := ParseDepth(d.String()); got != d {
+			t.Errorf("ParseDepth(%q) = %d, want %d", d.String(), got, d)
+		}
+	}
+}
+
+func TestDepthNamesMatchParse(t *testing.T) {
+	names := DepthNames()
+	if len(names) != 3 {
+		t.Fatalf("DepthNames() = %v, want 3 entries", names)
+	}
+	for _, n := range names {
+		if ParseDepth(n).String() != n {
+			t.Errorf("DepthNames entry %q does not round-trip", n)
+		}
+	}
+}
+
+// The chrome plane paints from DepthRaised up; the transcript plane only at
+// DepthFull. Below those, each accessor must yield NoColor so the caller
+// emits no SGR at all.
+func TestBackgroundAccessorsByDepth(t *testing.T) {
+	for _, tc := range []struct {
+		depth        Depth
+		chromePaints bool
+		transcriptOn bool
+	}{
+		{DepthFlat, false, false},
+		{DepthRaised, true, false},
+		{DepthFull, true, true},
+	} {
+		th := warmSunset256
+		th.Depth = tc.depth
+		if got := !isNoColor(th.ChromeBG()); got != tc.chromePaints {
+			t.Errorf("depth %s: ChromeBG paints = %v, want %v", tc.depth, got, tc.chromePaints)
+		}
+		if got := !isNoColor(th.TranscriptBG()); got != tc.transcriptOn {
+			t.Errorf("depth %s: TranscriptBG paints = %v, want %v", tc.depth, got, tc.transcriptOn)
+		}
+	}
+}
+
+// When a plane does paint, it must hand back the real slot value — the
+// accessor decides whether, never what.
+func TestAccessorsReturnTheRealSlots(t *testing.T) {
+	th := warmSunset256
+	th.Depth = DepthFull
+	if th.ChromeBG() != warmSunset256.BGSurface {
+		t.Errorf("ChromeBG() = %#v, want BGSurface %#v", th.ChromeBG(), warmSunset256.BGSurface)
+	}
+	if th.TranscriptBG() != warmSunset256.BGBase {
+		t.Errorf("TranscriptBG() = %#v, want BGBase %#v", th.TranscriptBG(), warmSunset256.BGBase)
+	}
+}
+
+// Tier16 spends its four neutrals so that 0 and 8 are backgrounds and 7 and
+// 15 are foregrounds (see the comment above warmSunset16). Painting BGSurface
+// ("8") behind FGMuted ("7") does not dim that text, it deletes it — so depth
+// clamps to flat below Tier256, exactly as ColorTier.PaintsSurface required.
+func TestDepthClampsBelowTier256(t *testing.T) {
+	for _, tier := range []ColorTier{Tier16, TierMono} {
+		for _, d := range []Depth{DepthRaised, DepthFull} {
+			if got := clampDepth(d, tier); got != DepthFlat {
+				t.Errorf("clampDepth(%s, tier %d) = %s, want flat", d, tier, got)
+			}
+		}
+	}
+	if got := clampDepth(DepthFull, Tier256); got != DepthFull {
+		t.Errorf("clampDepth(full, Tier256) = %s, want full", got)
+	}
+}
+
+// The raw slots must be untouched by depth — existing call sites read
+// BGSurface directly and must keep working at every depth.
+func TestRawSlotsSurviveEveryDepth(t *testing.T) {
+	for _, d := range []Depth{DepthFlat, DepthRaised, DepthFull} {
+		th := warmSunset256
+		th.Depth = d
+		if th.BGSurface != warmSunset256.BGSurface {
+			t.Errorf("depth %s mutated BGSurface", d)
+		}
+		if th.BGBase != warmSunset256.BGBase {
+			t.Errorf("depth %s mutated BGBase", d)
+		}
+	}
+}

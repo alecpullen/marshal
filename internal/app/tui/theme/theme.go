@@ -87,6 +87,10 @@ type Theme struct {
 	// Tier records the colour tier this Theme was resolved for. See
 	// tier.go; the zero value is Tier256.
 	Tier ColorTier
+
+	// Depth records how many background planes this Theme paints. See
+	// depth.go; the zero value is DepthFlat, which paints none.
+	Depth Depth
 }
 
 // warmSunset256 is the default dark-theme palette (Warm Sunset) resolved

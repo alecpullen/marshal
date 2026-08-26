@@ -540,7 +540,16 @@ func TestStartRuntimePopulatesCommandRegistry(t *testing.T) {
 
 func TestRuntimeNewSessionWithName(t *testing.T) {
 	ctx := context.Background()
-	rt, err := StartRuntime(ctx, WithWorkingDir(t.TempDir()))
+	// NewSession needs a configured model. Without an injected config this
+	// falls back to the real user config, so the test passes only on a
+	// machine that already has marshal set up. Pin HOME and supply a config.
+	t.Setenv("HOME", t.TempDir())
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(t.TempDir()),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return knowledgeEnabledConfig("http://127.0.0.1:1", "test-provider"), nil
+		}),
+	)
 	if err != nil {
 		t.Fatalf("StartRuntime: %v", err)
 	}

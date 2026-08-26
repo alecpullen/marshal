@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"marshal/internal/sandbox/envutil"
 )
@@ -155,7 +156,16 @@ func (c *Client) Close() error {
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
-	c.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(mcpShutdownTimeout):
+		c.log().Warn("mcp readLoop did not drain, abandoning")
+	}
 	c.log().Info("mcp client closed")
 	return nil
 }

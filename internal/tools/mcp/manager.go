@@ -56,6 +56,14 @@ func validateServerCommand(srv config.MCPServerConfig) error {
 // It is a var (not const) so tests can override it.
 var mcpServerTimeout = 10 * time.Second
 
+// mcpShutdownTimeout bounds how long Client.Close waits for the
+// readLoop goroutine to drain. Normally the scanner hits EOF
+// immediately after the process is killed and pipes are closed,
+// but if an MCP server ignores SIGKILL or the stdout pipe is
+// stuck, this prevents Close from blocking indefinitely.
+// Package-level so tests can override it.
+var mcpShutdownTimeout = 3 * time.Second
+
 // ManagerOption configures a Manager.
 type ManagerOption func(*Manager)
 

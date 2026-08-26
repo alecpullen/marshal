@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -361,6 +362,42 @@ func (e *errorReader) Read(p []byte) (int, error) {
 }
 
 func (e *errorReader) Close() error { return nil }
+
+func TestClientCloseBoundedWhenReadLoopStuck(t *testing.T) {
+	prevTimeout := mcpShutdownTimeout
+	mcpShutdownTimeout = 50 * time.Millisecond
+	defer func() { mcpShutdownTimeout = prevTimeout }()
+
+	// Create a client with a readLoop that never terminates.
+	// stdout is a pipe whose write end stays open, so the scanner
+	// never hits EOF. The process is nil so Kill is a no-op.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	c := NewClient("stuck", "true", nil, nil)
+	c.stdout = r
+	c.stdin = &nopWriteCloser{}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		// Simulate a readLoop that blocks forever on Scan.
+		scanner := bufio.NewScanner(r)
+		scanner.Scan()
+	}()
+
+	start := time.Now()
+	err = c.Close()
+	if err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Close took %s, want bounded to ~50ms", elapsed)
+	}
+}
 
 func mockServerMain() {
 	dec := json.NewDecoder(os.Stdin)

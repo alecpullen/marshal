@@ -454,3 +454,47 @@ func TestChildStderrCapture(t *testing.T) {
 		t.Fatalf("StderrLog() missing startup line; got:\n%s", c.StderrLog())
 	}
 }
+
+// TestChildStopDuringRestartReturns covers the race where Stop runs while
+// supervise is respawning. Stop used to capture one generation's cmd and
+// stdin, so it signalled a process that had already exited while the
+// replacement kept running; supervise stayed blocked in Wait on the new
+// generation and Stop's wait on done never returned.
+func TestChildStopDuringRestartReturns(t *testing.T) {
+	// Widen the respawn window so the timing below is deterministic.
+	prev := restartBackoff
+	restartBackoff = 2 * time.Second
+	defer func() { restartBackoff = prev }()
+
+	c := newTestChild(t, "die")
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The reply proves generation 1 was up. The "die" helper exits right
+	// after it, so a respawn is in flight by the time Stop runs — and the
+	// replacement only ever blocks reading stdin, so nothing else stops it.
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := c.Request(ctx, "session/new", nil); err != nil {
+		t.Fatalf("first Request: %v", err)
+	}
+
+	// Land Stop inside the respawn window. Calling it immediately would
+	// usually beat supervise to its stopping check, which exits cleanly and
+	// never exercises the race; the bug needs Stop to arrive after that
+	// check but before the replacement is signalled.
+	time.Sleep(restartBackoff / 2)
+
+	stopped := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Stop did not return: it is waiting on a generation it never signalled")
+	}
+}

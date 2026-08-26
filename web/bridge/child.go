@@ -27,8 +27,10 @@ const maxFrameBytes = 1 << 20
 const stopGrace = 2 * time.Second
 
 // restartBackoff is the delay before respawning an unexpectedly exited
-// child, so a crash-looping binary does not spin the CPU.
-const restartBackoff = 100 * time.Millisecond
+// child, so a crash-looping binary does not spin the CPU. It is a var so
+// tests can widen the respawn window and land Stop inside it
+// deterministically.
+var restartBackoff = 100 * time.Millisecond
 
 // stderrCap bounds the retained tail of the child's stderr stream.
 const stderrCap = 64 << 10
@@ -79,11 +81,14 @@ type Child struct {
 	// error is written back to the child as the JSON-RPC response.
 	OnRequest func(id int, method string, params json.RawMessage) (result any, err error)
 
-	mu         sync.Mutex // guards cmd, stdin, stdout, stderrPipe, stopping, started
+	mu         sync.Mutex // guards cmd, stdin, stdout, stderrPipe, readDone, stopping, started
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
 	stdout     io.ReadCloser
 	stderrPipe io.ReadCloser
+	// readDone is closed by this generation's readLoop when the child's
+	// stdout reaches EOF. supervise waits on it before reaping.
+	readDone chan struct{}
 
 	stopping bool
 	started  bool
@@ -136,21 +141,15 @@ func (c *Child) Stop() {
 		return
 	}
 	c.stopping = true
-	cmd, stdin := c.cmd, c.stdin
+	stdin := c.stdin
 	c.mu.Unlock()
 
 	if stdin != nil {
 		_ = stdin.Close()
 	}
-	if cmd != nil && cmd.Process != nil {
-		// Race between an exited process and SIGTERM is benign: Signal
-		// returns an error we ignore.
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		time.AfterFunc(stopGrace, func() {
-			// Kill is a no-op if Wait already reaped the process.
-			_ = cmd.Process.Kill()
-		})
-	}
+	c.signalCurrent(syscall.SIGTERM)
+	kill := time.AfterFunc(stopGrace, c.killCurrent)
+	defer kill.Stop()
 	<-c.done
 }
 
@@ -244,16 +243,48 @@ func (c *Child) spawn() error {
 		return err
 	}
 
+	readDone := make(chan struct{})
+
 	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
 	c.stdout = stdout
 	c.stderrPipe = stderr
+	c.readDone = readDone
 	c.mu.Unlock()
 
-	go c.readLoop(stdout)
+	go func() {
+		defer close(readDone)
+		c.readLoop(stdout)
+	}()
 	go c.drainStderr(stderr)
 	return nil
+}
+
+// signalCurrent sends sig to the generation that is live right now.
+// Stop races with supervise respawning, so the process is re-read under
+// the mutex instead of captured once: signalling a stale generation
+// leaves the replacement running and nothing ever ends supervision.
+func (c *Child) signalCurrent(sig os.Signal) {
+	c.mu.Lock()
+	cmd := c.cmd
+	c.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		// Racing with an already-exited process is benign: Signal
+		// returns an error we ignore.
+		_ = cmd.Process.Signal(sig)
+	}
+}
+
+// killCurrent SIGKILLs the generation that is live right now. Kill is a
+// no-op once Wait has reaped the process.
+func (c *Child) killCurrent() {
+	c.mu.Lock()
+	cmd := c.cmd
+	c.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }
 
 // supervise waits for each child generation to exit and respawns it,
@@ -264,7 +295,17 @@ func (c *Child) supervise() {
 	for {
 		c.mu.Lock()
 		cmd := c.cmd
+		readDone := c.readDone
 		c.mu.Unlock()
+
+		// Drain stdout before reaping. exec's Wait closes the pipes as
+		// soon as the process exits, and os/exec documents that calling
+		// it before all reads have completed is incorrect — doing so
+		// discards a reply the child wrote just before exiting, which
+		// surfaces to the caller as a spurious "child exited" error.
+		if readDone != nil {
+			<-readDone
+		}
 		_ = cmd.Wait()
 
 		c.mu.Lock()
@@ -283,6 +324,17 @@ func (c *Child) supervise() {
 			// attempted.
 			c.failPending(fmt.Errorf("bridge: respawn: %w", err))
 			return
+		}
+		// Stop may have begun while this generation was respawning, in
+		// which case it signalled the previous one. Terminate the
+		// replacement here; the next iteration reaps it and the stopping
+		// check above ends supervision, releasing Stop's wait on done.
+		c.mu.Lock()
+		stopping = c.stopping
+		c.mu.Unlock()
+		if stopping {
+			c.killCurrent()
+			continue
 		}
 		if c.OnRestart != nil {
 			c.OnRestart()

@@ -3,6 +3,8 @@ kimi-api
 /marshal
 /webbridge
 /bin/
+# GoReleaser build output
+/dist/
 /node_modules/
 
 # Go test/build artifacts

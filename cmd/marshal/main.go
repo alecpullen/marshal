@@ -32,10 +32,16 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	fs := flag.NewFlagSet("marshal", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	trustFlag := fs.Bool("trust", false, "trust the current project permanently")
+	versionFlag := fs.Bool("version", false, "print version information and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	args = fs.Args()
+
+	if *versionFlag {
+		fmt.Fprintln(stdout, versionString())
+		return nil
+	}
 
 	if *trustFlag {
 		if err := recordPermanentTrust(); err != nil {

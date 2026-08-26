@@ -10,6 +10,11 @@ builds:
   - id: marshal
     main: ./cmd/marshal
     binary: marshal
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .Date }}
     env:
       - CGO_ENABLED=1
     goos:
@@ -58,6 +63,25 @@ checksum:
 release:
   draft: true
   prerelease: auto
+  header: |
+    ## marshal {{ .Tag }}
 
+    Alpha software. Interfaces, config keys, and on-disk formats may change
+    without a migration path before 0.1.0.
+  footer: |
+    Full release notes are in
+    [CHANGELOG.md](https://github.com/alecpullen/marshal/blob/main/CHANGELOG.md).
+
+    ### Install
+
+    Download the archive for your platform below, then:
+
+    ```bash
+    tar -xzf marshal_*_<os>_<arch>.tar.gz
+    ./marshal --version
+    ```
+
+# Release notes are curated by hand in CHANGELOG.md rather than generated from
+# the commit log, which is too granular to be useful to readers.
 changelog:
-  use: git
+  disable: true

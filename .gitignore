@@ -32,7 +32,12 @@ api.fish
 # Documentation archive and workflow artifacts
 .docs-archive/
 docs/superpowers/
+docs/specs/
 skills-lock.json
+
+# Saved diffs / patch scratch from agent workflows
+*.diff
+*.patch
 
 # Generated session exports
 /marshal-session-*.html

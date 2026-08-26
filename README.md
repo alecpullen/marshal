@@ -2,15 +2,35 @@
 
 A terminal coding agent with local-friendly defaults and provider choice.
 
+> **Status: alpha (v0.0.1-alpha).** Usable day to day, but interfaces, config
+> keys, and on-disk formats may change without a migration path before 0.1.0.
+
 Marshal is a terminal-native coding agent that understands your repository,
 edits files, runs shell commands and tests, and keeps project context across
 sessions — with local models as first-class citizens and the freedom to use
 any OpenAI-compatible endpoint.
 
-## Quick start
+## Install
+
+### Prebuilt binary (Linux, macOS)
+
+Grab the archive for your platform from the
+[latest release](https://github.com/alecpullen/marshal/releases):
 
 ```bash
-go build ./cmd/marshal         # requires CGO_ENABLED=1 (tree-sitter)
+tar -xzf marshal_*_<os>_<arch>.tar.gz
+sudo mv marshal /usr/local/bin/
+marshal --version
+```
+
+### From source
+
+Requires Go 1.26+ and a C toolchain (tree-sitter needs cgo):
+
+```bash
+git clone https://github.com/alecpullen/marshal.git
+cd marshal
+CGO_ENABLED=1 go build ./cmd/marshal
 ./marshal
 ```
 
@@ -120,10 +140,13 @@ go test ./test/usability/... -run TestScripted -v
 
 ## Project status
 
-Marshal is a functional, local-first terminal coding agent. Core functionality
-— agent loop, repository intelligence, tool safety, multi-agent swarm,
-MCP/plugin ecosystem, sandboxed execution, and ACP headless mode — is
-implemented and usable.
+Marshal is in **alpha**. Core functionality — agent loop, repository
+intelligence, tool safety, multi-agent swarm, MCP/plugin ecosystem, sandboxed
+execution, and ACP headless mode — is implemented and usable day to day.
+
+Alpha means: expect rough edges, and expect breaking changes to config keys and
+on-disk formats before 0.1.0. Prebuilt binaries cover Linux and macOS only;
+Windows is not yet supported. See [CHANGELOG.md](CHANGELOG.md) for what landed.
 
 ## Releasing
 
@@ -132,14 +155,21 @@ Marshal uses [GoReleaser](https://goreleaser.com/) with the
 
 To cut a release:
 
+1. Move the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) under the new
+   version heading and commit it.
+2. Tag and push:
+
 ```bash
-git tag -a v0.3.1 -m "Release v0.3.1"
-git push origin v0.3.1
+git tag -a v0.0.2-alpha -m "Release v0.0.2-alpha"
+git push origin v0.0.2-alpha
 ```
 
 The `release` GitHub Actions workflow will run tests, build the binaries,
 create a draft release, and attach the archives and checksums file. Review
 the draft in the GitHub web UI, then publish it.
+
+Release notes are curated in `CHANGELOG.md`; GoReleaser's generated changelog
+is disabled deliberately, since the commit log is too granular to be useful.
 
 ## License
 

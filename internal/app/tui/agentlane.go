@@ -64,7 +64,10 @@ func (m Model) renderAgentLane() string {
 	if allRunning == 1 {
 		plural = "agent"
 	}
-	b.WriteString(chrome.Header(fmt.Sprintf("%d %s", allRunning, plural), "", width))
+	// Built at width-1: chromeRailWidth below truncates every line to
+	// width-1 and then prefixes the one-cell rail, so a header built at
+	// the full width loses its last cell to an ellipsis.
+	b.WriteString(chrome.Header(fmt.Sprintf("%d %s", allRunning, plural), "", max(width-1, 1)))
 	b.WriteString("\n")
 
 	overflow := 0

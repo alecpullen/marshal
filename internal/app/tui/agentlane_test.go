@@ -341,3 +341,27 @@ func TestLaneCursorDisarmsOnTyping(t *testing.T) {
 		t.Fatalf("stale cursor must not drill, viewStack=%d", len(m.viewStack))
 	}
 }
+
+// The lane's header is built at full width and then re-truncated by
+// chromeRailWidth to width-1, which ate the last cell of the rule and
+// replaced it with an ellipsis. Assert the width arithmetic, not just the
+// absence of "…", so this stays a guard against the off-by-one itself.
+func TestAgentLaneHeaderFillsExactlyOneRow(t *testing.T) {
+	for _, w := range []int{40, 60, 80, 100} {
+		m := newTestModel(t)
+		m.resize(w, 30)
+		registerRunningSubagent(t, &m, "reviewer")
+
+		out := m.renderAgentLane()
+		if out == "" {
+			t.Fatalf("w=%d: lane rendered nothing", w)
+		}
+		first := strings.Split(out, "\n")[0]
+		if strings.Contains(first, "…") {
+			t.Errorf("w=%d: divider truncated: %q", w, first)
+		}
+		if got := ansi.StringWidth(first); got != m.leftWidth {
+			t.Errorf("w=%d: header width = %d, want leftWidth %d", w, got, m.leftWidth)
+		}
+	}
+}

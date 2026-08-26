@@ -372,3 +372,16 @@ func TestReadTouchedFilesReadsSmallFile(t *testing.T) {
 		t.Fatalf("expected full content, got %q", got[smallPath])
 	}
 }
+
+func TestHasUserMessage(t *testing.T) {
+	msgs := []session.Message{
+		{Role: session.RoleSystem, Content: "system note"},
+	}
+	if HasUserMessage(msgs) {
+		t.Fatal("HasUserMessage = true for system-only messages")
+	}
+	msgs = append(msgs, session.Message{Role: session.RoleUser, Content: "hello"})
+	if !HasUserMessage(msgs) {
+		t.Fatal("HasUserMessage = false when a user message is present")
+	}
+}

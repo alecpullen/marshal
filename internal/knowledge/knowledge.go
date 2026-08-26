@@ -62,7 +62,7 @@ type ExtractInput struct {
 // returned Extraction carries the session summary for the caller that
 // persists it (EndSession); periodic callers ignore it.
 func Extract(ctx context.Context, in ExtractInput) *Extraction {
-	if !hasUserMessage(in.Messages) {
+	if !HasUserMessage(in.Messages) {
 		return nil
 	}
 	now := in.Now
@@ -117,7 +117,7 @@ func Extract(ctx context.Context, in ExtractInput) *Extraction {
 // messages.
 func EndSession(ctx context.Context, in EndSessionInput) {
 	messages := in.State.Messages()
-	if !hasUserMessage(messages) {
+	if !HasUserMessage(messages) {
 		return
 	}
 	now := in.Now
@@ -144,7 +144,7 @@ func EndSession(ctx context.Context, in EndSessionInput) {
 	}
 }
 
-func hasUserMessage(messages []session.Message) bool {
+func HasUserMessage(messages []session.Message) bool {
 	for _, m := range messages {
 		if m.Role == session.RoleUser {
 			return true

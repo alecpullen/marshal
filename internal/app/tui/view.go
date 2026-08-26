@@ -286,9 +286,13 @@ func (m *Model) gutteredInput() string {
 		defer func() { m.input.Placeholder = placeholder }()
 	}
 	view := m.input.View()
-	ghost := m.suggestionGhost()
-	if ghost != "" {
-		view = insertGhostAfterCursor(view, ghost)
+	if ghost := m.suggestionGhost(); ghost != "" {
+		// No fallback position: when the cursor's row and column cannot be
+		// derived from model state, the ghost is not drawn at all. A ghost
+		// in the wrong place is worse than no ghost.
+		if row, col, ok := m.ghostPosition(); ok {
+			view = overlayGhost(view, row, col, renderGhost(ghost))
+		}
 	}
 	lines := strings.Split(view, "\n")
 	for i := range lines {
@@ -297,12 +301,13 @@ func (m *Model) gutteredInput() string {
 	return strings.Join(lines, "\n")
 }
 
-// suggestionGhost returns the styled ghost text to overlay on the input, or
-// "" when no suggestion should be shown. The ghost is fish-style: when the
-// typed value prefixes the suggestion, only the untyped suffix is shown;
-// otherwise the full suggestion appears only when the input is empty. It is
-// rendered in the theme's muted style and truncated to the remaining width
-// of the cursor row so it never wraps onto the next line.
+// suggestionGhost returns the unstyled ghost text to overlay on the input,
+// or "" when no suggestion should be shown. The ghost is fish-style: when
+// the typed value prefixes the suggestion, only the untyped suffix is
+// shown; otherwise the full suggestion appears only when the input is
+// empty. It is truncated to the remaining width of the cursor's display
+// row so it never wraps onto the next row. Styling is applied by
+// renderGhost, which needs the first rune on its own.
 func (m Model) suggestionGhost() string {
 	if m.suggestion == "" || m.suggestionDismissed || m.busy {
 		return ""
@@ -310,6 +315,13 @@ func (m Model) suggestionGhost() string {
 	// The completion popup, approval, and question panels all hide the
 	// textarea; a ghost would be a visual conflict, so suppress it.
 	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil {
+		return ""
+	}
+	// The ghost is spliced into a single rendered row. A newline would add
+	// a row and break the input box's rectangle, so refuse rather than
+	// corrupt the frame. (The LLM fallback only trims its result; it does
+	// not guarantee a single line.)
+	if strings.ContainsRune(m.suggestion, '\n') {
 		return ""
 	}
 	value := m.input.Value()
@@ -321,42 +333,84 @@ func (m Model) suggestionGhost() string {
 	} else {
 		return ""
 	}
-	// Truncate to the remaining width of the cursor row (fish-shell style;
-	// no wrapping onto the next row). The ▍ rail and ❯ prompt reserve
-	// cells, so budget against the input width.
-	remaining := max(m.input.Width()-len([]rune(value)), 1)
-	ghost = ansi.Truncate(ghost, remaining, "…")
-	return mutedStyle().Render(ghost)
+	// Budget against the cells left on the cursor's display row.
+	// input.Width() is the text width, with the prompt's reserved cells
+	// already subtracted, and CharOffset is the cursor's cell offset
+	// within its row — so the two are in the same coordinate space.
+	remaining := max(m.input.Width()-m.input.LineInfo().CharOffset, 1)
+	return ansi.Truncate(ghost, remaining, "…")
 }
 
-// insertGhostAfterCursor inserts ghost (already styled) into the textarea
-// view immediately after the cursor's reverse-video marker on the cursor
-// line. The cursor is rendered by bubbles as "\x1b[7;<color>m<char>\x1b[m";
-// we locate that sequence and splice the ghost in after it. If the cursor
-// marker cannot be found (e.g. placeholder view), the ghost is appended to
-// the first line instead.
-func insertGhostAfterCursor(view, ghost string) string {
+// ghostPosition returns the display row and column, within the textarea's
+// rendered view, at which the suggestion ghost should be drawn.
+//
+// The position comes from textarea model state, never from the rendered
+// bytes. bubbles renders the virtual cursor as a reverse-video cell only
+// on blink-on frames, so the previous approach — searching the frame for
+// "\x1b[7;" — found the cursor on some frames and not others, and the
+// ghost alternated between the cursor column and the far right edge at
+// the blink rate.
+//
+// ok is false when the position cannot be determined, and the caller then
+// draws nothing.
+func (m Model) ghostPosition() (row, col int, ok bool) {
+	// A ghost is only ever drawn when the typed value is empty or prefixes
+	// a single-line suggestion, so the cursor is always on the first
+	// logical line. Anything else is outside the contract: textarea
+	// exposes no way to count the display rows of preceding logical lines,
+	// and guessing is what produced the jump.
+	if m.input.Line() != 0 {
+		return 0, 0, false
+	}
+	info := m.input.LineInfo()
+	// CharOffset, despite the name, is the cursor's display-cell offset
+	// within its wrapped row; ColumnOffset is a rune count. textarea's own
+	// Cursor() computes its x offset from CharOffset plus the prompt width
+	// the same way.
+	return info.RowOffset, inputPromptWidth + info.CharOffset, true
+}
+
+// renderGhost styles plain ghost text for overlay. Its first cell wears
+// the textarea's cursor block — reverse video in the accent colour,
+// matching what bubbles' virtual cursor renders on a blink-on frame — so
+// the cursor sits *on* the ghost's first character, which is the fish
+// appearance. The rest is muted. Because this block is static, the cursor
+// stops blinking while a ghost is shown; that is the point, since the
+// blink is what the ghost used to chase.
+func renderGhost(text string) string {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return ""
+	}
+	cursor := lipgloss.NewStyle().Foreground(accentColor).Reverse(true).Render(string(runes[0]))
+	if len(runes) == 1 {
+		return cursor
+	}
+	return cursor + mutedStyle().Render(string(runes[1:]))
+}
+
+// overlayGhost draws ghost onto the given display row of view starting at
+// display column col, overwriting the cells it covers — including the
+// cursor cell, which is why renderGhost styles the ghost's first rune as
+// the cursor block. Overwriting (rather than inserting) keeps the row's
+// total display width unchanged, so the input box keeps its rectangle.
+//
+// Cuts are ANSI-aware: ansi.Truncate and ansi.TruncateLeft cut on cell
+// boundaries and re-emit the styling in force, so no byte index ever
+// lands inside an escape sequence. An out-of-range row or column returns
+// view unchanged.
+func overlayGhost(view string, row, col int, ghost string) string {
 	lines := strings.Split(view, "\n")
-	for i, line := range lines {
-		// The cursor's reverse-video sequence always starts with "\x1b[7;".
-		idx := strings.Index(line, "\x1b[7;")
-		if idx < 0 {
-			continue
-		}
-		// Find the end of the cursor's SGR reset ("\x1b[m") after the char.
-		rest := line[idx:]
-		end := strings.Index(rest, "\x1b[m")
-		if end < 0 {
-			continue
-		}
-		insertAt := idx + end + len("\x1b[m")
-		lines[i] = line[:insertAt] + ghost + line[insertAt:]
-		return strings.Join(lines, "\n")
+	if row < 0 || row >= len(lines) {
+		return view
 	}
-	// Fallback: no cursor marker found — append to the first line.
-	if len(lines) > 0 {
-		lines[0] += ghost
+	line := lines[row]
+	if col < 0 || col > ansi.StringWidth(line) {
+		return view
 	}
+	head := ansi.Truncate(line, col, "")
+	tail := ansi.TruncateLeft(line, col+ansi.StringWidth(ghost), "")
+	lines[row] = head + ghost + tail
 	return strings.Join(lines, "\n")
 }
 

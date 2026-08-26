@@ -1142,6 +1142,13 @@ func (m *Model) refreshOpenSettingsBrowser() {
 	}
 }
 
+// inputPromptWidth is the number of cells the input textarea's prompt
+// function reserves on every display row: "❯ " on row 0 and two spaces on
+// wrapped rows, both visible width 2. The suggestion ghost adds it to the
+// cursor's column offset within a row to get the column in the rendered
+// frame (see ghostPosition in view.go).
+const inputPromptWidth = 2
+
 func New(state *session.State, opts ...Option) Model {
 	loadTheme(state.Config.TUI)
 
@@ -1160,7 +1167,7 @@ func New(state *session.State, opts ...Option) Model {
 	// shows "❯ " (width 2) and continuation/wrapped lines show "  " (two
 	// spaces, width 2), so wrapped text aligns under the first line's text
 	// column. "❯" is rune-width 1, so "❯ " and "  " are both visible width 2.
-	input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+	input.SetPromptFunc(inputPromptWidth, func(info textarea.PromptInfo) string {
 		if info.LineNumber == 0 {
 			return "❯ "
 		}

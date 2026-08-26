@@ -95,6 +95,26 @@ func TestGhostPreservesRowWidth(t *testing.T) {
 	}
 }
 
+// TestGhostHiddenWhenCursorNotAtEnd guards the fish-style rule that the
+// ghost only appears when the cursor is at the end of the input. The ghost
+// suffix is computed from the full typed value while ghostPosition returns
+// the cursor's column; the two agree only at end-of-input, so drawing
+// anywhere else would overwrite typed characters.
+func TestGhostHiddenWhenCursorNotAtEnd(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.suggestion = "yes, go ahead"
+	m.suggestionDismissed = false
+	m.input.SetValue("yes")
+	m.input.CursorStart() // cursor at the beginning, not at end-of-input
+
+	if got := m.suggestionGhost(); got != "" {
+		t.Fatalf("suggestionGhost = %q, want empty when cursor is not at end of input", got)
+	}
+	if got := stripANSI(m.gutteredInput()); strings.Contains(got, "go ahead") {
+		t.Fatalf("expected no ghost when cursor is not at end of input, got %q", got)
+	}
+}
+
 func TestGhostPosition(t *testing.T) {
 	t.Run("empty_input_is_row_zero_at_prompt_width", func(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)
@@ -145,6 +165,19 @@ func TestOverlayGhostOutOfRangeRowIsNoop(t *testing.T) {
 	for _, row := range []int{-1, 2, 99} {
 		if got := overlayGhost(view, row, 2, "GHOST"); got != view {
 			t.Fatalf("overlayGhost(row=%d) = %q, want the view unchanged", row, got)
+		}
+	}
+}
+
+// TestOverlayGhostOutOfRangeColumnIsNoop pins the column guard: a ghost
+// drawn at or past the end of the line has nothing to overwrite, so the
+// view must be returned unchanged rather than widened.
+func TestOverlayGhostOutOfRangeColumnIsNoop(t *testing.T) {
+	view := "❯ yes\n  more"
+	width := ansi.StringWidth("❯ yes") // 6
+	for _, col := range []int{-1, width, 999} {
+		if got := overlayGhost(view, 0, col, "GHOST"); got != view {
+			t.Fatalf("overlayGhost(col=%d) = %q, want the view unchanged", col, got)
 		}
 	}
 }

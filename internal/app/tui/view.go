@@ -324,6 +324,13 @@ func (m Model) suggestionGhost() string {
 	if strings.ContainsRune(m.suggestion, '\n') {
 		return ""
 	}
+	// Fish-style: the ghost only appears when the cursor is at the end of
+	// the input. The ghost suffix is computed from the full typed value,
+	// while ghostPosition returns the cursor's column; the two agree only
+	// at end-of-input, so drawing anywhere else would overwrite typed text.
+	if !m.cursorAtEndOfInput() {
+		return ""
+	}
 	value := m.input.Value()
 	var ghost string
 	if value == "" {
@@ -405,7 +412,7 @@ func overlayGhost(view string, row, col int, ghost string) string {
 		return view
 	}
 	line := lines[row]
-	if col < 0 || col > ansi.StringWidth(line) {
+	if col < 0 || col >= ansi.StringWidth(line) {
 		return view
 	}
 	head := ansi.Truncate(line, col, "")

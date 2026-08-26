@@ -4183,3 +4183,50 @@ func TestSubagentEditsStillBackUpToParent(t *testing.T) {
 		t.Fatal("parent should have a backup for /undo, got 0")
 	}
 }
+
+func TestRunShutdownQuiesceBoundedToOneSecond(t *testing.T) {
+	// Slow server that never responds — simulates a mid-turn quit
+	// where the agent loop is blocked on an in-flight HTTP call.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+	// Override the knowledge timeout to near-zero so it doesn't
+	// contribute to the elapsed time — we're measuring Quiesce only.
+	prevKnowledgeTimeout := shutdownKnowledgeTimeout
+	shutdownKnowledgeTimeout = 1 * time.Millisecond
+	defer func() { shutdownKnowledgeTimeout = prevKnowledgeTimeout }()
+
+	start := time.Now()
+	err = Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			state := modelState(t, model)
+			state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	// Quiesce should be bounded to ~1 s. Allow 2.5 s headroom for
+	// process startup, DB migration, and the knowledge pass.
+	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
+		t.Fatalf("Run took %s, want quiesce bounded to ~1s", elapsed)
+	}
+}

@@ -1972,7 +1972,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if !reloadForTrust {
 			// Phase 1: quiesce — cancel and join active work/jobs without
 			// closing persistence so knowledge finalization can use the DB.
-			quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), jobShutdownTimeout)
+			quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), 1*time.Second)
 			quiesceErr := rt.Quiesce(quiesceCtx)
 			cancelQuiesce()
 

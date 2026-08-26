@@ -3960,9 +3960,16 @@ func (m *Model) clearSuggestionIfPrefixBroken() {
 // computeSuggestion derives the next-prompt suggestion from the final
 // assistant message of the just-completed turn and stores it on the model.
 // It resets the dismissed flag so a fresh turn can surface a new ghost.
-// When the deterministic rules produce no suggestion and [tui] suggestions
-// is "llm" with a provider wired, it returns a background tea.Cmd for the
-// LLM fallback; otherwise it returns nil.
+//
+// The Phase 2 LLM fallback is gated on the deterministic rules'
+// *confidence*, not on their silence. Gating on silence meant a single
+// false positive from the action-proposal rule permanently suppressed the
+// model. Now: ConfidenceHigh is a plain yes/no question a model cannot
+// improve on, so no call is made; ConfidenceLow shows its text
+// immediately and still asks for a better one; ConfidenceNone shows
+// nothing while the model is asked. The fallback only runs when
+// [tui] suggestions is "llm" and a provider is wired — "rules" renders Low
+// and High and never calls out, which is the shipped default.
 func (m *Model) computeSuggestion() tea.Cmd {
 	m.suggestion = ""
 	m.suggestionDismissed = false
@@ -3980,18 +3987,23 @@ func (m *Model) computeSuggestion() tea.Cmd {
 	if last.Role != session.RoleAssistant {
 		return nil
 	}
-	if s, conf := extractSuggestion(last.Content); conf != ConfidenceNone {
-		m.suggestion = s
+
+	// Show whatever the rules produced right away. ConfidenceNone yields
+	// "", so nothing is shown until the fallback returns.
+	s, conf := extractSuggestion(last.Content)
+	m.suggestion = s
+	if conf == ConfidenceHigh {
 		return nil
 	}
-	// Phase 2 LLM fallback: only when the mode is "llm" and a provider is
-	// wired. The generation counter is bumped so a stale result from an
-	// earlier turn is discarded.
-	if m.state.Config.TUI.Suggestions == "llm" && m.suggestionProvider != nil {
-		m.suggestionGen++
-		return runSuggestionFallbackCmd(m.suggestionProvider, last.Content, m.suggestionGen)
+	if m.state.Config.TUI.Suggestions != "llm" || m.suggestionProvider == nil {
+		return nil
 	}
-	return nil
+	// The generation counter is bumped so a stale result from an earlier
+	// turn is discarded. It covers the ConfidenceLow case unchanged: a
+	// replacement arriving after the user has started typing is exactly
+	// what it was built for.
+	m.suggestionGen++
+	return runSuggestionFallbackCmd(m.suggestionProvider, last.Content, m.suggestionGen)
 }
 
 // handlePlanAuthorFinished handles the completion of an authoring turn. On

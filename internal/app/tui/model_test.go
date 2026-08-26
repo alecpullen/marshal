@@ -8269,3 +8269,128 @@ func TestTurnSpinnerLabelDwellResetsOnKindChange(t *testing.T) {
 		t.Fatalf("kind change should adopt new label immediately, got %q", out)
 	}
 }
+
+// TestSuggestionLowConfidenceShowsTextAndCallsLLM pins the core of the
+// fallback change: a low-confidence rule hit no longer suppresses the
+// model. Its text is shown right away so the ghost is never empty, and
+// the LLM is still asked for something better.
+func TestSuggestionLowConfidenceShowsTextAndCallsLLM(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "llm"
+	fp := &fakeSuggestionProvider{response: "yes, add the test"}
+	m.suggestionProvider = fp.Provide
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
+
+	cmd := m.computeSuggestion()
+	if m.suggestion != "yes, go ahead" {
+		t.Fatalf("suggestion = %q, want the deterministic text shown immediately", m.suggestion)
+	}
+	if cmd == nil {
+		t.Fatal("expected an LLM fallback cmd for a low-confidence suggestion")
+	}
+
+	raw := cmd()
+	msg, ok := raw.(suggestionMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want suggestionMsg", raw)
+	}
+	if !fp.called {
+		t.Fatal("suggestion provider should have been called")
+	}
+	mm, _ := m.Update(msg)
+	m = asModel(t, mm)
+	if m.suggestion != "yes, add the test" {
+		t.Fatalf("suggestion = %q, want the LLM result to replace the deterministic text", m.suggestion)
+	}
+}
+
+// TestSuggestionHighConfidenceSkipsLLM: a plain yes/no question has "yes"
+// as its answer and there is nothing for a model to improve.
+func TestSuggestionHighConfidenceSkipsLLM(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "llm"
+	fp := &fakeSuggestionProvider{response: "should not be used"}
+	m.suggestionProvider = fp.Provide
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
+
+	cmd := m.computeSuggestion()
+	if m.suggestion != "yes" {
+		t.Fatalf("suggestion = %q, want %q", m.suggestion, "yes")
+	}
+	if cmd != nil {
+		t.Fatal("high-confidence suggestions should not trigger the LLM fallback")
+	}
+	if fp.called {
+		t.Fatal("suggestion provider should not be called for a high-confidence suggestion")
+	}
+}
+
+// TestSuggestionRulesModeNeverCallsLLM: users who have not opted into
+// "llm" see exactly today's behaviour at every confidence level.
+func TestSuggestionRulesModeNeverCallsLLM(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{"high", "Should I proceed?", "yes"},
+		{"low", "Want me to add a test for that?", "yes, go ahead"},
+		{"none", "I've finished the refactor and all tests pass.", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.state.Config.TUI.Suggestions = "rules"
+			fp := &fakeSuggestionProvider{response: "should not be used"}
+			m.suggestionProvider = fp.Provide
+			m.state.AddMessageFinalWithUsage(session.RoleAssistant, tc.msg, session.ContentTypeMarkdown, 0, "")
+
+			cmd := m.computeSuggestion()
+			if m.suggestion != tc.want {
+				t.Fatalf("suggestion = %q, want %q", m.suggestion, tc.want)
+			}
+			if cmd != nil {
+				t.Fatal(`"rules" mode should never return an LLM fallback cmd`)
+			}
+			if fp.called {
+				t.Fatal(`"rules" mode should never call the suggestion provider`)
+			}
+		})
+	}
+}
+
+// TestSuggestionNoProviderNoCall: "llm" mode with nothing wired must not
+// return a cmd. Marshal ships with no providers configured.
+func TestSuggestionNoProviderNoCall(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.Suggestions = "llm"
+	m.suggestionProvider = nil
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
+
+	if cmd := m.computeSuggestion(); cmd != nil {
+		t.Fatal("expected no fallback cmd when no suggestion provider is wired")
+	}
+	if m.suggestion != "yes, go ahead" {
+		t.Fatalf("suggestion = %q, want the deterministic text to still show", m.suggestion)
+	}
+}
+
+// TestSuggestionOffAtEveryConfidence: "off" renders nothing at all and
+// makes no call, whatever the rules say.
+func TestSuggestionOffAtEveryConfidence(t *testing.T) {
+	for _, msg := range []string{
+		"Should I proceed?",
+		"Want me to add a test for that?",
+		"I've finished the refactor and all tests pass.",
+	} {
+		m := newTestModel(t)
+		m.state.Config.TUI.Suggestions = "off"
+		fp := &fakeSuggestionProvider{response: "should not be used"}
+		m.suggestionProvider = fp.Provide
+		m.state.AddMessageFinalWithUsage(session.RoleAssistant, msg, session.ContentTypeMarkdown, 0, "")
+
+		cmd := m.computeSuggestion()
+		if m.suggestion != "" || cmd != nil || fp.called {
+			t.Fatalf("suggestions off: got suggestion %q, cmd != nil = %v, called = %v; want empty, false, false", m.suggestion, cmd != nil, fp.called)
+		}
+	}
+}

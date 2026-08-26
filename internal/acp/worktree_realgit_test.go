@@ -32,6 +32,14 @@ func initTestRepo(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	git(t, dir, "init", "-b", "main")
+	// Give the repo its own identity. The production merge path shells out to
+	// `git merge --no-ff`, which forces a merge commit, and it inherits the
+	// ambient environment rather than the identity `git` sets for test-only
+	// calls. On a machine with no usable global identity — CI runners, whose
+	// hostname has no domain — that commit fails, and Merge reports the
+	// failure as ReasonConflicts with an empty conflict list.
+	git(t, dir, "config", "user.email", "t@e")
+	git(t, dir, "config", "user.name", "t")
 	writeFile(t, dir, "a.txt", "base\n")
 	gitCommitAll(t, dir, "base")
 	return dir

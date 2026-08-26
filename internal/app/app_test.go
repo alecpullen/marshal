@@ -1330,6 +1330,22 @@ func TestRunTriggersKnowledgeEndSessionButSkipsWithNoMessages(t *testing.T) {
 
 func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	dir := t.TempDir()
+	// Keep the developer's real config and trust store out of the test.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// First-run detection stats the filesystem directly rather than going
+	// through the injected config loader, so an empty HOME reads as a first
+	// run and opens the connect panel over the TUI, which swallows Ctrl+K.
+	// Write a *user* config to clear it: a project-local config would instead
+	// make the untrusted temp dir raise the trust prompt, which swallows the
+	// key just the same. Without this the test silently depends on the
+	// machine running it already having marshal configured.
+	if err := os.MkdirAll(config.UserDir(home), 0o755); err != nil {
+		t.Fatalf("mkdir user config: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(home), []byte("\n"), 0o644); err != nil {
+		t.Fatalf("write user config: %v", err)
+	}
 	origWd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -4187,10 +4203,23 @@ func TestSubagentEditsStillBackUpToParent(t *testing.T) {
 func TestRunShutdownQuiesceBoundedToOneSecond(t *testing.T) {
 	// Slow server that never responds — simulates a mid-turn quit
 	// where the agent loop is blocked on an in-flight HTTP call.
+	//
+	// handlerDone releases the parked handler at cleanup. httptest's Close
+	// waits for outstanding requests to finish, and Run deliberately returns
+	// without joining workers — in the real binary they are reclaimed by
+	// process exit. Inside a test the process keeps running, so the in-flight
+	// request can outlive Run; without this escape hatch Close deadlocks
+	// against the handler until the package test timeout fires.
+	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-handlerDone:
+		}
 	}))
+	// LIFO: close(handlerDone) runs first, then server.Close() can complete.
 	defer server.Close()
+	defer close(handlerDone)
 
 	dir := t.TempDir()
 	origWd, err := os.Getwd()

@@ -39,11 +39,25 @@ func TestStandaloneLaunchArgs(t *testing.T) {
 	}
 }
 
+// skipWithoutDriver converts a missing-Playwright-driver error into a skip.
+// The standalone backend tests are integration tests: they need the Playwright
+// driver and a browser binary on disk (`playwright install`), which stock CI
+// images do not carry. Only the "driver is absent" case is skipped — a driver
+// that is present but broken still fails, so this cannot mask a real
+// regression.
+func skipWithoutDriver(t *testing.T, err error) {
+	t.Helper()
+	if err != nil && strings.Contains(err.Error(), "please install the driver") {
+		t.Skipf("playwright driver not installed: %v", err)
+	}
+}
+
 func TestStandaloneBackendNavigateAndRead(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping browser integration test in short mode")
 	}
 	backend, err := NewStandaloneBackend(true, 30*time.Second)
+	skipWithoutDriver(t, err)
 	if err != nil {
 		t.Fatalf("NewStandaloneBackend: %v", err)
 	}
@@ -54,6 +68,7 @@ func TestStandaloneBackendNavigateAndRead(t *testing.T) {
 	}
 
 	page, err := backend.NewPage(context.Background())
+	skipWithoutDriver(t, err)
 	if err != nil {
 		t.Fatalf("NewPage: %v", err)
 	}
@@ -86,12 +101,14 @@ func TestStandaloneBackendScreenshot(t *testing.T) {
 		t.Skip("skipping browser integration test in short mode")
 	}
 	backend, err := NewStandaloneBackend(true, 30*time.Second)
+	skipWithoutDriver(t, err)
 	if err != nil {
 		t.Fatalf("NewStandaloneBackend: %v", err)
 	}
 	defer backend.Close()
 
 	page, err := backend.NewPage(context.Background())
+	skipWithoutDriver(t, err)
 	if err != nil {
 		t.Fatalf("NewPage: %v", err)
 	}

@@ -2,58 +2,79 @@ package tui
 
 import "strings"
 
-// suggestionCap is the maximum rune length of a generated suggestion.
-// Longer either/or options are skipped rather than truncated mid-word.
-const suggestionCap = 60
+// Confidence grades a deterministic suggestion. It exists so the Phase 2
+// LLM fallback can be gated on the rules' *quality* rather than on their
+// silence: a low-confidence heuristic hit still gets a second opinion.
+type Confidence int
+
+const (
+	// ConfidenceNone means no rule matched; there is no suggestion.
+	ConfidenceNone Confidence = iota
+	// ConfidenceLow means a heuristic over free text matched. Its text is
+	// shown immediately, and in "llm" mode the model is asked to replace it.
+	ConfidenceLow
+	// ConfidenceHigh means the message is unambiguously a yes/no question.
+	// There is nothing a model would improve, so no fallback runs.
+	ConfidenceHigh
+)
 
 // extractSuggestion derives a suggested next prompt from the final
-// assistant message of a turn. Returns ok=false when no heuristic matches.
+// assistant message of a turn, along with how much to trust it.
 //
-// Rule order (phase 1, deterministic):
-//  1. Message ends with "?" → the model asked a question:
-//     - contains "y/n", "yes/no", "should I", "shall I" → "yes"
-//     - offers an either/or ("X or Y?") → the first option, verbatim
-//  2. Message proposes an action ("I can...", "Want me to...", "Shall I...")
-//     → "yes, go ahead"
-//  3. No match → ok=false (phase 2 LLM fallback).
-func extractSuggestion(lastAssistantMsg string) (suggestion string, ok bool) {
+// Rule order (phase 1, deterministic). Both rules require the last line to
+// be a question:
+//  1. Contains "y/n", "yes/no", "should I" or "shall I"
+//     → "yes", ConfidenceHigh.
+//  2. Proposes an action ("Want me to ...")
+//     → "yes, go ahead", ConfidenceLow.
+//  3. Otherwise → "", ConfidenceNone, and the LLM fallback takes over.
+//
+// There is deliberately no either/or rule. Taking "the word before the
+// last ' or '" produced ungrammatical single words — "...use the accessor
+// approach or blank the slots?" yielded "approach" — and clause-boundary
+// detection by string matching is not reliable enough to replace it.
+// Either/or questions fall through to the LLM, which reads the whole
+// question.
+func extractSuggestion(lastAssistantMsg string) (string, Confidence) {
 	msg := strings.TrimSpace(lastAssistantMsg)
 	if msg == "" {
-		return "", false
+		return "", ConfidenceNone
 	}
 
 	// The final sentence is the last non-empty line. Questions and
 	// proposals that warrant a suggestion typically end the message.
 	last := lastNonEmptyLine(msg)
 	if last == "" {
-		return "", false
+		return "", ConfidenceNone
 	}
 	// Never suggest from text inside a code block (e.g. a line ending in
 	// "?" within a ``` fence).
 	if inCodeBlock(msg, last) {
-		return "", false
+		return "", ConfidenceNone
+	}
+	// Both rules require a question mark. Without it, rule 2's matchers
+	// fired on plain declarative prose ("I can see why that test failed.")
+	// — and, worse, suppressed the LLM fallback by reporting success.
+	if !strings.HasSuffix(last, "?") {
+		return "", ConfidenceNone
 	}
 
 	lower := strings.ToLower(last)
-	endsWithQuestion := strings.HasSuffix(last, "?")
 
 	// Rule 1: yes/no question.
-	if endsWithQuestion {
-		if containsAny(lower, "y/n", "yes/no", "should i", "shall i") {
-			return "yes", true
-		}
-		// Rule 1b: either/or question → first option.
-		if opt, ok := eitherOrOption(last); ok {
-			return opt, true
-		}
+	if containsAny(lower, "y/n", "yes/no", "should i", "shall i") {
+		return "yes", ConfidenceHigh
 	}
 
-	// Rule 2: action proposal.
-	if containsAny(lower, "want me to", "shall i", "i can ") {
-		return "yes, go ahead", true
+	// Rule 2: action proposal. "shall i" is not repeated here — rule 1
+	// already claims every question containing it. "i can " is dropped
+	// outright: it is the only matcher that hits non-proposals even with a
+	// "?" present ("Do you know if I can retry?").
+	if containsAny(lower, "want me to") {
+		return "yes, go ahead", ConfidenceLow
 	}
 
-	return "", false
+	return "", ConfidenceNone
 }
 
 // lastNonEmptyLine returns the last non-empty line of s, trimmed.
@@ -81,26 +102,6 @@ func inCodeBlock(msg, line string) bool {
 		}
 	}
 	return false
-}
-
-// eitherOrOption extracts the first option of an "X or Y?" question — the
-// word immediately before the last " or ". Returns ok=false when there is no
-// " or " or the option exceeds suggestionCap runes.
-func eitherOrOption(s string) (string, bool) {
-	idx := strings.LastIndex(strings.ToLower(s), " or ")
-	if idx < 0 {
-		return "", false
-	}
-	before := strings.TrimRight(s[:idx], " ")
-	start := strings.LastIndexAny(before, " \t\n")
-	opt := strings.TrimSpace(before[start+1:])
-	if opt == "" {
-		return "", false
-	}
-	if len([]rune(opt)) > suggestionCap {
-		return "", false
-	}
-	return opt, true
 }
 
 // containsAny reports whether s contains any of the given substrings.

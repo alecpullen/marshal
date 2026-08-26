@@ -3980,7 +3980,7 @@ func (m *Model) computeSuggestion() tea.Cmd {
 	if last.Role != session.RoleAssistant {
 		return nil
 	}
-	if s, ok := extractSuggestion(last.Content); ok {
+	if s, conf := extractSuggestion(last.Content); conf != ConfidenceNone {
 		m.suggestion = s
 		return nil
 	}

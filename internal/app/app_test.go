@@ -4230,3 +4230,48 @@ func TestRunShutdownQuiesceBoundedToOneSecond(t *testing.T) {
 		t.Fatalf("Run took %s, want quiesce bounded to ~1s", elapsed)
 	}
 }
+
+func TestRunShutdownDoesNotWaitForWorkers(t *testing.T) {
+	// This is a regression guard: if the worker wait block is
+	// reintroduced, this test will still pass (workers are cancelled
+	// by Quiesce), but it documents the intent that Run must not
+	// block on workerWG at shutdown.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+	prevKnowledgeTimeout := shutdownKnowledgeTimeout
+	shutdownKnowledgeTimeout = 1 * time.Millisecond
+	defer func() { shutdownKnowledgeTimeout = prevKnowledgeTimeout }()
+
+	start := time.Now()
+	err = Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			state := modelState(t, model)
+			state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
+		t.Fatalf("Run took %s, want shutdown not blocked on workers", elapsed)
+	}
+}

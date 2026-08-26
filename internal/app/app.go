@@ -1976,17 +1976,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			quiesceErr := rt.Quiesce(quiesceCtx)
 			cancelQuiesce()
 
-			// Wait for workers to finish (bounded).
-			workerDone := make(chan struct{})
-			go func() {
-				workerWG.Wait()
-				close(workerDone)
-			}()
-			select {
-			case <-workerDone:
-			case <-time.After(5 * time.Second):
-				logger.Warn("worker shutdown timed out")
-			}
+			// Workers are cancelled via rt.workCtx (cancelled in Quiesce
+			// above) and reclaimed by process exit — no need to wait.
 
 			// Phase 2: knowledge — finalize the session while DB and logger
 			// are still open.

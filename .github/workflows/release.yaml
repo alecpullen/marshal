@@ -34,6 +34,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The job runs inside the goreleaser-cross container, where the checkout
+      # is owned by a different UID than the container user. Git's dubious
+      # ownership protection then refuses to read the repo, and GoReleaser
+      # fails with "current folder is not a git repository".
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Run GoReleaser
         run: goreleaser release --clean
         env:

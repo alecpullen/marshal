@@ -1601,6 +1601,62 @@ func TestRunBoundsShutdownKnowledgePass(t *testing.T) {
 	}
 }
 
+func TestShutdownKnowledgeFeedbackPrinted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+	previousTimeout := shutdownKnowledgeTimeout
+	shutdownKnowledgeTimeout = 25 * time.Millisecond
+	defer func() { shutdownKnowledgeTimeout = previousTimeout }()
+
+	// Capture stderr by replacing os.Stderr for the duration of Run.
+	origStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	err = Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			state := modelState(t, model)
+			state.AddMessage(session.RoleUser, "hello world", session.ContentTypePlain)
+			return ProgramResult{}
+		}),
+	)
+
+	w.Close()
+	os.Stderr = origStderr
+
+	var stderrBuf bytes.Buffer
+	io.Copy(&stderrBuf, r)
+
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(stderrBuf.String(), "saving session memories") {
+		t.Fatalf("stderr = %q, want it to contain the feedback line", stderrBuf.String())
+	}
+}
+
 func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {

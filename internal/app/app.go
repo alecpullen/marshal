@@ -104,7 +104,7 @@ type options struct {
 type Option func(*options)
 
 var (
-	shutdownKnowledgeTimeout = 5 * time.Second
+	shutdownKnowledgeTimeout = 2 * time.Second
 )
 
 func WithNow(now func() time.Time) Option {
@@ -1990,6 +1990,13 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 			// Phase 2: knowledge — finalize the session while DB and logger
 			// are still open.
+			// Print a visible status line so the user knows why the terminal
+			// is briefly occupied after the TUI exits. Only print when the
+			// knowledge pass will actually run: a provider is configured and
+			// the session has at least one user message.
+			if len(state.Config.Providers) > 0 && knowledge.HasUserMessage(state.Messages()) {
+				fmt.Fprintln(os.Stderr, "Marshal is saving session memories…")
+			}
 			knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
 			knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
 				DB:                  database,

@@ -263,9 +263,30 @@ func TestSandboxCancellationKillsProcessGroupAfterGrace(t *testing.T) {
 		if _, err := fmt.Sscanf(line, "%d", &pid); err != nil {
 			t.Fatalf("parse pid %q: %v", line, err)
 		}
-		if alive, detail := processAlive(pid); alive {
-			t.Fatalf("process %d still exists (%s)", pid, detail)
+		// SIGKILL delivery and teardown are asynchronous: terminateProcessTree
+		// signals the group and returns without waiting, and the grandchild is
+		// not our child so it can only be polled, never waited on. Give the
+		// kernel a bounded window to finish instead of asserting the instant
+		// Run returns, which races on a loaded machine.
+		if alive, detail := waitProcessGone(pid, 5*time.Second); alive {
+			t.Fatalf("process %d still exists after 5s (%s)", pid, detail)
 		}
+	}
+}
+
+// waitProcessGone polls until pid is gone or timeout elapses. It reports the
+// final liveness and the detail from the last probe.
+func waitProcessGone(pid int, timeout time.Duration) (bool, string) {
+	deadline := time.Now().Add(timeout)
+	for {
+		alive, detail := processAlive(pid)
+		if !alive {
+			return false, detail
+		}
+		if time.Now().After(deadline) {
+			return true, detail
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 

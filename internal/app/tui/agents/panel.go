@@ -664,6 +664,16 @@ func (p *Panel) View(width, maxHeight int) string {
 			legend := glyph.Brand + " preset bound  " + glyph.CustomAgent + " custom agent bound  ↩ impl fallback  legacy  ⚠ unresolved  ←/→ drill"
 			body += lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(legend) + "\n"
 		}
+	} else {
+		// Drilled-in frames carry no KindHeader rows of their own — their
+		// fields are pickers and scalars — so without this the rows sit
+		// directly under the breadcrumb with nothing between them. The
+		// panel title above is the full path ("Agents › my-agent"); this
+		// names just the active frame.
+		//
+		// listWidth, not innerWidth: the rule must stop where the list
+		// stops rather than running under the two-column detail pane.
+		body = chrome.Header(settings.FrameTitle(p.stack[len(p.stack)-1]), "", listWidth) + "\n"
 	}
 	listView := settings.FieldListView(l)
 	if twoCol {

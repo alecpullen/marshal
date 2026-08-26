@@ -558,3 +558,37 @@ func TestRosterCreateErrorKeepsPickerOpen(t *testing.T) {
 		t.Fatalf("expected 2 agents, got %d", got)
 	}
 }
+
+// A drilled-in frame had no header at all: customAgentFrame builds only
+// picker and scalar fields, so its rows sat directly under the breadcrumb.
+func TestDrilledFrameRendersHeader(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"reviewer-x": {Name: "reviewer-x", Preset: ""},
+	}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+
+	drillToRow(t, p, "reviewer-x")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	out := ansi.Strip(p.View(120, 30))
+	if !strings.Contains(out, "System prompt") {
+		t.Fatalf("precondition: drill did not open the edit frame:\n%s", out)
+	}
+	if !strings.Contains(out, "reviewer-x ─") {
+		t.Errorf("drilled frame has no rule-backed header naming it:\n%s", out)
+	}
+}
+
+// The root roster's five KindHeader rows are out of scope and must not gain
+// a rule: they keep flHeaderStyle, which /settings shares.
+func TestRootRosterHeadersUnchanged(t *testing.T) {
+	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	out := ansi.Strip(p.View(120, 30))
+	if !strings.Contains(out, "Swarm Roles") {
+		t.Fatalf("precondition: root roster missing its section headers:\n%s", out)
+	}
+	if strings.Contains(out, "Swarm Roles ─") {
+		t.Errorf("root section header gained a rule; it must keep flHeaderStyle:\n%s", out)
+	}
+}

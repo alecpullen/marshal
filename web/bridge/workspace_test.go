@@ -168,3 +168,65 @@ func TestLoadStillQuarantinesUnknownVersion(t *testing.T) {
 		t.Fatal("a future version must be quarantined, not migrated")
 	}
 }
+
+func TestLoadMigratesV2ProjectsToRepos(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fleet.json")
+	v2 := `{"version":2,"projects":["/srv/code/marshal"],"agents":[]}`
+	if err := os.WriteFile(path, []byte(v2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := NewWorkspace(path)
+	backup, err := ws.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if backup != "" {
+		t.Fatalf("v2 file was quarantined to %q; it must migrate", backup)
+	}
+
+	repos := ws.Repos()
+	if len(repos) != 1 {
+		t.Fatalf("got %d repos, want 1 promoted from projects", len(repos))
+	}
+	if repos[0].URL != "/srv/code/marshal" {
+		t.Errorf("URL = %q, want the original project path", repos[0].URL)
+	}
+	if repos[0].OwnerID != DefaultOwnerID {
+		t.Errorf("OwnerID = %q, want %q", repos[0].OwnerID, DefaultOwnerID)
+	}
+}
+
+func TestV1StillMigratesThroughToV3(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fleet.json")
+	v1 := `{"version":1,"projects":["/p"],"agents":[{"id":"a1","project":"/p"}]}`
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := NewWorkspace(path)
+	if _, err := ws.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	agents := ws.Agents()
+	if len(agents) != 1 || agents[0].OwnerID != DefaultOwnerID {
+		t.Fatalf("v1 agent did not migrate through v2: %+v", agents)
+	}
+	if len(ws.Repos()) != 1 {
+		t.Fatal("v1 projects did not reach the v3 registry")
+	}
+}
+
+func TestPutRepoRoundTrips(t *testing.T) {
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	r := Repo{ID: "marshal", URL: "git@github.com:you/marshal.git",
+		Branch: "main", CredRef: "gh", OwnerID: DefaultOwnerID}
+	if err := ws.PutRepo(r); err != nil {
+		t.Fatalf("PutRepo: %v", err)
+	}
+	got, ok := ws.Repo("marshal")
+	if !ok || got.CredRef != "gh" {
+		t.Fatalf("Repo(marshal) = (%+v, %v)", got, ok)
+	}
+}

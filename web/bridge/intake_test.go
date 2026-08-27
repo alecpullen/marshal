@@ -3,7 +3,11 @@ package bridge
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func testFleetWithClient(t *testing.T, c MCPClient) *Fleet {
@@ -117,5 +121,76 @@ func TestSubmitRequiresATitle(t *testing.T) {
 		Origin: OriginMCP, ClientID: "c1", RepoID: "r1", Prompt: "y",
 	}); err == nil {
 		t.Fatal("accepted a submission with no title; the operator would confirm a blank row")
+	}
+}
+
+func TestApproveWritesThePlanToABridgeChosenPath(t *testing.T) {
+	f := testFleetWithClient(t, MCPClient{ID: "c1", OwnerID: DefaultOwnerID})
+	registerGitRepo(t, f, "r1") // skips if no git
+	res, err := f.Submit(context.Background(), SpawnRequest{
+		Origin: OriginMCP, ClientID: "c1", RepoID: "r1", Title: "t",
+		Plan: "## Global Constraints\n\n- none\n\n### Task 1: Do it\n\n- [ ] step\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	agentID, err := f.Approve(context.Background(), res.PendingID)
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	a, _ := f.ws.Agent(agentID)
+	planPath := planPathFor(a.Project, res.PendingID)
+	body, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("plan was not written: %v", err)
+	}
+	if !strings.Contains(string(body), "### Task 1: Do it") {
+		t.Fatal("plan content was not preserved verbatim")
+	}
+}
+
+// TestPlanPathIsNeverClientControlled is the path-traversal regression.
+func TestPlanPathIsNeverClientControlled(t *testing.T) {
+	// The intake surface exposes no path field at all, so the only way a
+	// client could steer the write is through the pending id. Prove that
+	// a hostile id cannot escape the workspace.
+	for _, hostile := range []string{"../../etc/cron.d/x", "..", "/etc/passwd", "a/../../b"} {
+		got := planPathFor("/srv/work/agent1", hostile)
+		if !strings.HasPrefix(filepath.Clean(got), "/srv/work/agent1/") {
+			t.Fatalf("planPathFor(%q) escaped the workspace: %q", hostile, got)
+		}
+	}
+}
+
+func TestDenyDiscardsWithoutSpawning(t *testing.T) {
+	f := testFleetWithClient(t, MCPClient{ID: "c1", OwnerID: DefaultOwnerID})
+	registerRepo(t, f, "r1")
+	res, _ := f.Submit(context.Background(), SpawnRequest{
+		Origin: OriginMCP, ClientID: "c1", RepoID: "r1", Title: "t", Prompt: "p",
+	})
+
+	if err := f.Deny(res.PendingID); err != nil {
+		t.Fatalf("Deny: %v", err)
+	}
+	if len(f.ws.Pending()) != 0 {
+		t.Fatal("Deny left the submission queued")
+	}
+	if len(f.Snapshot()) != 0 {
+		t.Fatal("Deny started an agent")
+	}
+}
+
+func TestApproveRefusesAnExpiredSubmission(t *testing.T) {
+	f := testFleetWithClient(t, MCPClient{ID: "c1", OwnerID: DefaultOwnerID})
+	registerRepo(t, f, "r1")
+	if err := f.ws.PutPending(PendingSpawn{
+		ID: "old", Origin: OriginMCP, ClientID: "c1", RepoID: "r1", Title: "t",
+		Prompt: "p", ExpiresAt: time.Now().UTC().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Approve(context.Background(), "old"); err == nil {
+		t.Fatal("an expired submission was approved")
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -110,6 +112,90 @@ func repoAllowed(c MCPClient, repoID string) bool {
 		}
 	}
 	return false
+}
+
+// intakeDir is where an approved submission's plan is written, relative
+// to the agent's workspace.
+const intakeDir = ".marshal/intake"
+
+// planPathFor is the destination for a submitted plan.
+//
+// The path is derived entirely from the workspace and the pending id,
+// and the id is sanitised to a bare base name: a client-influenced path
+// component here would be an arbitrary write into the host filesystem.
+func planPathFor(workDir, pendingID string) string {
+	safe := filepath.Base(filepath.Clean("/" + pendingID))
+	if safe == "." || safe == string(filepath.Separator) || safe == ".." {
+		safe = "plan"
+	}
+	return filepath.Join(workDir, intakeDir, safe+".md")
+}
+
+// Approve turns a confirmed submission into a running agent.
+func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
+	p, ok := f.ws.PendingByID(pendingID)
+	if !ok {
+		return "", fmt.Errorf("bridge: unknown pending submission %s", pendingID)
+	}
+	if !p.ExpiresAt.IsZero() && time.Now().UTC().After(p.ExpiresAt) {
+		_ = f.ws.DeletePending(pendingID)
+		return "", fmt.Errorf("bridge: submission %s expired at %s", pendingID, p.ExpiresAt)
+	}
+
+	agentID, err := f.spawnFromRequest(ctx, SpawnRequest{
+		Origin: p.Origin, ClientID: p.ClientID, RepoID: p.RepoID, Ref: p.Ref,
+		Title: p.Title, Prompt: p.Prompt, Plan: p.Plan, Mode: p.Mode,
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := f.ws.DeletePending(pendingID); err != nil {
+		return "", fmt.Errorf("clear pending submission: %w", err)
+	}
+	if p.Plan != "" {
+		if err := f.startPlan(ctx, agentID, pendingID, p.Plan); err != nil {
+			return "", err
+		}
+	}
+	return agentID, nil
+}
+
+// Deny discards a submission without starting anything.
+func (f *Fleet) Deny(pendingID string) error {
+	return f.ws.DeletePending(pendingID)
+}
+
+// startPlan writes the submitted markdown into the agent's workspace and
+// asks the agent to execute it.
+//
+// The plan goes to a file rather than over the wire because the existing
+// execution path takes a planPath: session/sdd_start hands it to
+// pipeline.ParsePlan, which reads a markdown plan from disk. That also
+// keeps the bridge out of plan semantics entirely — it writes bytes.
+func (f *Fleet) startPlan(ctx context.Context, agentID, pendingID, plan string) error {
+	a, ok := f.ws.Agent(agentID)
+	if !ok {
+		return fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)
+	}
+	path := planPathFor(a.Project, pendingID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create intake dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(plan), 0o600); err != nil {
+		return fmt.Errorf("write plan: %w", err)
+	}
+
+	rt, err := f.runtimeForAgent(agentID)
+	if err != nil {
+		return err
+	}
+	// The agent sees its workspace at /work, not at the host path.
+	inAgent := filepath.Join(containerWorkDir, intakeDir, filepath.Base(path))
+	_, err = rt.child.Request(ctx, "session/sdd_start", map[string]any{
+		"sessionId": rt.sessionID,
+		"planPath":  inAgent,
+	})
+	return err
 }
 
 // checkCaps enforces the client's concurrency and daily budgets.

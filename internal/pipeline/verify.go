@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,14 +38,22 @@ func (CLICommandRunner) Run(ctx context.Context, dir string, argv []string) (str
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// Use a mutex-guarded buffer so the race detector doesn't flag
+	// out.String() against the concurrent stdout/stderr copy goroutines
+	// when the context is cancelled mid-run.
+	var mu sync.Mutex
 	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stdout = lockedWriter{mu: &mu, b: &out}
+	cmd.Stderr = lockedWriter{mu: &mu, b: &out}
 
 	// Start the command. If the context is cancelled, kill the entire
 	// process group so child processes don't survive as orphans.
 	if err := cmd.Start(); err != nil {
-		return out.String(), err
+		mu.Lock()
+		s := out.String()
+		mu.Unlock()
+		return s, err
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -52,13 +61,33 @@ func (CLICommandRunner) Run(ctx context.Context, dir string, argv []string) (str
 	}()
 	select {
 	case err := <-done:
-		return out.String(), err
+		mu.Lock()
+		s := out.String()
+		mu.Unlock()
+		return s, err
 	case <-ctx.Done():
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		return out.String(), ctx.Err()
+		<-done
+		mu.Lock()
+		s := out.String()
+		mu.Unlock()
+		return s, ctx.Err()
 	}
+}
+
+// lockedWriter wraps a bytes.Buffer with a mutex so concurrent writes
+// (stdout + stderr copy goroutines) and reads (out.String()) are safe.
+type lockedWriter struct {
+	mu *sync.Mutex
+	b  *bytes.Buffer
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
 }
 
 // VerifyResult is the outcome of one gate run. Skipped means no build or

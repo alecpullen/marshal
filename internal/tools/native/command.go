@@ -116,6 +116,15 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 		Stdout:         stdoutObs,
 		Stderr:         stderrObs,
 	})
+	// A non-zero exit code means the command ran and produced output — that
+	// output IS the result, not a tool error. The CommandExitCode field
+	// already communicates the failure to the agent. Only genuine tool
+	// failures (timeout, cancellation, startup failure) should surface as an
+	// error here; those are signalled by Meta.KilledReason being set or by a
+	// zero ExitCode (startup failure returns an empty result).
+	if err != nil && result.ExitCode != 0 && result.Meta.KilledReason == "" {
+		err = nil
+	}
 	exitCode := result.ExitCode
 	content := formatCommandOutput(result.Stdout, result.Stderr)
 	summary := fmt.Sprintf("command %q exited with code %d", command, result.ExitCode)

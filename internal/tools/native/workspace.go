@@ -29,10 +29,11 @@ func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		if t.sessionState == nil {
+		st := t.wsState()
+		if st == nil {
 			return registry.ToolResult{}, fmt.Errorf("workspace.worktree requires a session")
 		}
-		ws := t.sessionState.Workspace()
+		ws := st.Workspace()
 
 		// {} — return to the project root. Uncommitted worktree changes are
 		// left behind (the skill asks for a commit first; the tool does not
@@ -44,7 +45,7 @@ func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 					Content: fmt.Sprintf("The session is already operating at the project root %s.", ws.ProjectRoot),
 				}, nil
 			}
-			t.sessionState.SetWorkspace(session.Workspace{ProjectRoot: ws.ProjectRoot, ActiveRoot: ws.ProjectRoot})
+			st.SetWorkspace(session.Workspace{ProjectRoot: ws.ProjectRoot, ActiveRoot: ws.ProjectRoot})
 			return registry.ToolResult{
 				Summary: "returned to project root",
 				Content: fmt.Sprintf("Session root moved from %s back to the project root %s. The worktree and its branch %q still exist; merging and cleanup are manual.",
@@ -60,7 +61,7 @@ func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		t.sessionState.SetWorkspace(session.Workspace{ProjectRoot: ws.ProjectRoot, ActiveRoot: wt.Path, Branch: wt.Branch})
+		st.SetWorkspace(session.Workspace{ProjectRoot: ws.ProjectRoot, ActiveRoot: wt.Path, Branch: wt.Branch})
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("worktree %s", wt.Branch),
 			Content: fmt.Sprintf("Worktree for branch %q (base %s) at %s. The session root moved there: file and shell tools now operate inside the worktree. Commit before returning to the project root; returning does not carry changes.",

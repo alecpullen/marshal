@@ -85,7 +85,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 
 		start := t.activeRoot()
 		if args.Path != "" {
-			start, err = resolveNamedRoot(t.namedRoots, t.activeRoot(), t.additionalRoots, args.Path)
+			start, err = resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), args.Path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}

@@ -37,7 +37,7 @@ func (m *Model) contentLineForClick(x, y int) (int, bool) {
 	if x < 0 || x >= m.leftWidth {
 		return 0, false
 	}
-	top := m.scrollHintRows()
+	top := m.scrollHintRows() + m.breadcrumbRows()
 	height := m.viewport.Height()
 	if y < top || y >= top+height {
 		return 0, false

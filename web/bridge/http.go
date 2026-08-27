@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // maxBodyBytes bounds inbound request bodies. Prompt and steer text
@@ -110,6 +111,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sessions/{id}/mode", s.setMode)
 	s.mux.HandleFunc("POST /api/permissions/{toolCallId}", s.resolvePermission)
 	s.mux.HandleFunc("POST /api/questions/{questionId}", s.resolveQuestion)
+	s.mux.HandleFunc("GET /api/clients", s.listClients)
+	s.mux.HandleFunc("POST /api/clients", s.createClient)
+	s.mux.HandleFunc("DELETE /api/clients/{id}", s.deleteClient)
+	s.mux.HandleFunc("GET /api/pending", s.listPending)
+	s.mux.HandleFunc("POST /api/pending/{id}/approve", s.approvePending)
+	s.mux.HandleFunc("POST /api/pending/{id}/deny", s.denyPending)
 	// NOTE: with a token configured this stream requires an
 	// Authorization header, which the browser-native EventSource API
 	// cannot send. The SPA must consume SSE over fetch (Task 7 does);
@@ -677,4 +684,135 @@ func (s *Server) resolveQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+}
+
+// listClients returns all registered MCP clients, omitting token hashes.
+// The hash has no business reaching the UI — it widens the blast radius
+// of any XSS.
+func (s *Server) listClients(w http.ResponseWriter, r *http.Request) {
+	clients := s.fleet.Clients()
+	out := make([]map[string]any, 0, len(clients))
+	for _, c := range clients {
+		out = append(out, map[string]any{
+			"id":            c.ID,
+			"name":          c.Name,
+			"autonomous":    c.Autonomous,
+			"maxConcurrent": c.MaxConcurrent,
+			"maxPerDay":     c.MaxPerDay,
+			"allowedRepos":  c.AllowedRepos,
+			"ownerId":       c.OwnerID,
+			"createdAt":     c.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// createClient mints a new MCP client token, persists only the hash,
+// and returns the plaintext once.
+func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name          string   `json:"name"`
+		Autonomous    bool     `json:"autonomous"`
+		MaxConcurrent int      `json:"maxConcurrent"`
+		MaxPerDay     int      `json:"maxPerDay"`
+		AllowedRepos  []string `json:"allowedRepos"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
+		return
+	}
+	plain, hash, err := NewClientToken()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	c := MCPClient{
+		ID:            newAgentID(),
+		Name:          body.Name,
+		TokenHash:     hash,
+		Autonomous:    body.Autonomous,
+		MaxConcurrent: body.MaxConcurrent,
+		MaxPerDay:     body.MaxPerDay,
+		AllowedRepos:  body.AllowedRepos,
+		OwnerID:       DefaultOwnerID,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := s.fleet.ws.PutClient(c); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         c.ID,
+		"name":       c.Name,
+		"token":      plain,
+		"autonomous": c.Autonomous,
+	})
+}
+
+// deleteClient removes an MCP client.
+func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	if err := s.fleet.ws.DeleteClient(id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// listPending returns all pending submissions awaiting confirmation.
+func (s *Server) listPending(w http.ResponseWriter, r *http.Request) {
+	pending := s.fleet.ws.Pending()
+	out := make([]map[string]any, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, map[string]any{
+			"id":        p.ID,
+			"origin":    p.Origin,
+			"clientId":  p.ClientID,
+			"title":     p.Title,
+			"repoId":    p.RepoID,
+			"ref":       p.Ref,
+			"prompt":    p.Prompt,
+			"plan":      p.Plan,
+			"mode":      p.Mode,
+			"createdAt": p.CreatedAt,
+			"expiresAt": p.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// approvePending confirms a submission and starts its agent.
+func (s *Server) approvePending(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	agentID, err := s.fleet.Approve(r.Context(), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agentId": agentID, "status": "running"})
+}
+
+// denyPending discards a submission without spawning.
+func (s *Server) denyPending(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	if err := s.fleet.Deny(id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "denied"})
 }

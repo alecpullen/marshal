@@ -525,3 +525,56 @@ func TestHTTPResolveQuestion(t *testing.T) {
 		t.Fatalf("duplicate resolve: status = %d, want 410", rec.Code)
 	}
 }
+
+func TestCreateClientReturnsTheTokenExactlyOnce(t *testing.T) {
+	s := testServer(t)
+	created := postJSON(t, s, "/api/clients", `{"name":"claude-code"}`)
+	token, _ := created["token"].(string)
+	if token == "" {
+		t.Fatal("client creation did not return a token")
+	}
+
+	// Listing must never expose it again — that is the point of hashing.
+	list := getJSON(t, s, "/api/clients")
+	if strings.Contains(list, token) {
+		t.Fatal("the plaintext token is retrievable from the client list")
+	}
+	if strings.Contains(list, "tokenHash") {
+		t.Fatal("the token hash is exposed to the UI; it has no business there")
+	}
+}
+
+func TestPendingEndpointsAreUnderAPIAuth(t *testing.T) {
+	s := testServerWithToken(t, "shared")
+	for _, path := range []string{"/api/pending", "/api/clients"} {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s answered %d without a token, want 401", path, rec.Code)
+		}
+	}
+}
+
+func postJSON(t *testing.T, s *Server, path, body string) map[string]any {
+	t.Helper()
+	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("POST %s: status %d, body %s", path, rec.Code, rec.Body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	return out
+}
+
+func getJSON(t *testing.T, s *Server, path string) string {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	return rec.Body.String()
+}

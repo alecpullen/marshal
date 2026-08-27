@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +75,34 @@ func TestParseConfigRejectsArgs(t *testing.T) {
 	}
 	if _, err := parseConfig([]string{"--nope"}, io.Discard); err == nil {
 		t.Fatal("unknown flag: expected error, got nil")
+	}
+}
+
+func TestAskpassAnswersUsernameAndPassword(t *testing.T) {
+	t.Setenv("MARSHAL_ASKPASS_USER", "x-access-token")
+	t.Setenv("MARSHAL_ASKPASS_SECRET", "sk-secret")
+
+	if got := askpassResponse("Username for 'https://github.com': "); got != "x-access-token" {
+		t.Errorf("username prompt answered %q", got)
+	}
+	if got := askpassResponse("Password for 'https://github.com': "); got != "sk-secret" {
+		t.Errorf("password prompt answered %q", got)
+	}
+}
+
+func TestAskpassModeShortCircuitsRun(t *testing.T) {
+	t.Setenv("MARSHAL_ASKPASS", "1")
+	t.Setenv("MARSHAL_ASKPASS_SECRET", "sk-secret")
+
+	var out strings.Builder
+	err := run(context.Background(),
+		[]string{"Password for 'https://github.com': "},
+		&out, io.Discard)
+	if err != nil {
+		t.Fatalf("run in askpass mode: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != "sk-secret" {
+		t.Fatalf("askpass printed %q, want the secret", out.String())
 	}
 }
 

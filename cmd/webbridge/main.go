@@ -79,6 +79,19 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	return cfg, nil
 }
 
+// askpassResponse answers one git credential prompt. Git asks for a
+// username and a password separately, so the prompt text selects which
+// value to return.
+func askpassResponse(prompt string) string {
+	if strings.HasPrefix(strings.ToLower(prompt), "username") {
+		if u := os.Getenv("MARSHAL_ASKPASS_USER"); u != "" {
+			return u
+		}
+		return "x-access-token"
+	}
+	return os.Getenv("MARSHAL_ASKPASS_SECRET")
+}
+
 // envOr returns the environment variable's value when set and
 // non-empty, else def. An explicitly empty variable means "unset".
 //
@@ -105,13 +118,25 @@ func genToken() (string, error) {
 }
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stderr); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "webbridge: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, args []string, stderr io.Writer) error {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// GIT_ASKPASS mode: git re-execs this binary to ask for a credential.
+	// Answer from the environment and exit before doing anything else —
+	// this process must not start a server or touch the workspace.
+	if os.Getenv("MARSHAL_ASKPASS") == "1" {
+		prompt := ""
+		if len(args) > 0 {
+			prompt = args[0]
+		}
+		fmt.Fprintln(stdout, askpassResponse(prompt))
+		return nil
+	}
+
 	cfg, err := parseConfig(args, stderr)
 	if err != nil {
 		return err

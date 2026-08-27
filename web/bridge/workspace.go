@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const workspaceVersion = 3
+const workspaceVersion = 4
 
 // DefaultOwnerID is the single implicit owner in a single-operator
 // deployment. Every agent carries an owner from the first commit so that
@@ -62,6 +62,27 @@ type Agent struct {
 	// rather than a registered repo. S2b routes these to a patch export
 	// instead of a pull request.
 	ReadOnly bool `json:"readOnly,omitempty"`
+	// PushedAt is when this agent's branch last reached the remote.
+	PushedAt time.Time `json:"pushedAt,omitempty"`
+	// PRUrl is the pull-request URL extracted from push output, after
+	// scheme and host validation. Empty when the forge printed none.
+	PRUrl string `json:"prUrl,omitempty"`
+	// GateOverride is nil when the gate passed on its own merits.
+	GateOverride *GateOverride `json:"gateOverride,omitempty"`
+}
+
+// GateOverride records an operator's decision to push despite a failed
+// or skipped verify.
+//
+// It is persisted rather than transient because that is what makes the
+// exception honest: it surfaces on the exit panel and feeds S3's audit
+// log. A nil GateOverride means the gate passed on its own merits.
+type GateOverride struct {
+	Reason        string    `json:"reason"`
+	At            time.Time `json:"at"`
+	By            string    `json:"by"` // OwnerID
+	FailedCommand string    `json:"failedCommand,omitempty"`
+	Skipped       bool      `json:"skipped,omitempty"`
 }
 
 // Repo is a registered repository. Registration is what grants push

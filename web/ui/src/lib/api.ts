@@ -330,3 +330,25 @@ export async function approvePending(id: string): Promise<{ agentId: string; sta
 export async function denyPending(id: string): Promise<void> {
   await request('POST', `/api/pending/${encodeURIComponent(id)}/deny`)
 }
+
+export interface Issue {
+  number: number
+  title: string
+  body: string
+  url: string
+  labels: string[]
+}
+
+export interface SubmitResult {
+  agentId?: string
+  pendingId?: string
+  status: string
+}
+
+export async function listIssues(repoId: string): Promise<Issue[]> {
+  return request('GET', `/api/repos/${encodeURIComponent(repoId)}/issues`)
+}
+
+export async function spawnFromIssue(repoId: string, number: number): Promise<SubmitResult> {
+  return request('POST', `/api/repos/${encodeURIComponent(repoId)}/issues/${number}/spawn`)
+}

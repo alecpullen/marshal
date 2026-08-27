@@ -1,8 +1,12 @@
 package bridge
 
 import (
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
@@ -100,5 +104,100 @@ func TestAgentIDRoundTripsThroughContainerName(t *testing.T) {
 	}
 	if _, ok := agentIDFromContainer("some-other-container"); ok {
 		t.Error("agentIDFromContainer claimed a foreign container")
+	}
+}
+
+func TestContainerUsesInjectedRunner(t *testing.T) {
+	var calls [][]string
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-x",
+		WorkspaceDir: "/w", SocketDir: t.TempDir(),
+	})
+	tr.run = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	if err := tr.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls, want 1", len(calls))
+	}
+	got := strings.Join(calls[0], " ")
+	if !strings.Contains(got, "rm -f marshal-agent-x") {
+		t.Fatalf("Kill ran %q, want a force-remove of the container", got)
+	}
+}
+
+func TestContainerReattachPreferredOverStart(t *testing.T) {
+	// Use a short socket dir: unix socket paths are length-limited on
+	// macOS (~104 bytes), and t.TempDir() paths are too long.
+	dir, err := os.MkdirTemp("", "sock")
+	if err != nil {
+		t.Fatalf("mkdirtemp: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	// A listening socket stands in for a container that is already up.
+	ln, err := net.Listen("unix", filepath.Join(dir, containerSocketName))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-live",
+		WorkspaceDir: "/w", SocketDir: dir,
+	})
+	var ran [][]string
+	tr.run = func(name string, args ...string) ([]byte, error) {
+		ran = append(ran, args)
+		if len(args) > 0 && args[0] == "ps" {
+			return []byte("marshal-agent-live\n"), nil
+		}
+		return nil, nil
+	}
+
+	stdin, stdout, _, err := tr.Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = stdin.Close(); _ = stdout.Close() }()
+
+	for _, args := range ran {
+		if len(args) > 0 && args[0] == "run" {
+			t.Fatal("Open started a new container when a live one existed; it must reattach")
+		}
+	}
+}
+
+func TestContainerKillsPartialStartOnDialFailure(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-dead",
+		WorkspaceDir: "/w", SocketDir: t.TempDir(),
+	})
+	tr.dialTimeout = 50 * time.Millisecond // no socket will ever appear
+	var killed bool
+	tr.run = func(name string, args ...string) ([]byte, error) {
+		if len(args) > 1 && args[0] == "rm" {
+			killed = true
+		}
+		return nil, nil
+	}
+
+	if _, _, _, err := tr.Open(); err == nil {
+		t.Fatal("Open succeeded with no agent listening, want error")
+	}
+	if !killed {
+		t.Fatal("a container that never bound its socket was left running")
 	}
 }

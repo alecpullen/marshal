@@ -22,9 +22,9 @@ const (
 	containerWorkDir    = "/work"
 )
 
-// dialTimeout bounds how long we wait for a freshly started container to
-// bind its socket before giving up.
-const dialTimeout = 30 * time.Second
+// defaultDialTimeout bounds how long we wait for a freshly started
+// container to bind its socket before giving up.
+const defaultDialTimeout = 30 * time.Second
 
 // ContainerConfig describes one agent's container. Every field is
 // supplied explicitly — nothing is inherited from the host environment,
@@ -49,19 +49,52 @@ type ContainerConfig struct {
 	Env map[string]string
 }
 
+// commandRunner executes a container-runtime command and returns its
+// combined output.
+type commandRunner func(name string, args ...string) ([]byte, error)
+
 // containerTransport runs one agent inside a long-lived container and
 // speaks JSON-RPC to it over a unix socket on a shared volume.
 type containerTransport struct {
 	cfg ContainerConfig
 
 	mu   sync.Mutex
-	run  *exec.Cmd
 	conn net.Conn
+
+	// run executes one runtime command. Nil means the real runner.
+	// Tests inject a fake so the docker-shelling paths are exercisable
+	// without a daemon.
+	run commandRunner
+	// dialTimeout overrides how long Open waits for the agent to bind
+	// its socket. Zero means defaultDialTimeout.
+	dialTimeout time.Duration
 }
 
 func newContainerTransport(cfg ContainerConfig) *containerTransport {
 	return &containerTransport{cfg: cfg}
 }
+
+// exec runs one runtime command through the seam.
+func (c *containerTransport) exec(args ...string) ([]byte, error) {
+	if c.run != nil {
+		return c.run(c.cfg.Runtime, args...)
+	}
+	cmd := exec.Command(c.cfg.Runtime, args...)
+	cmd.Env = clientEnv()
+	return cmd.CombinedOutput()
+}
+
+// dialWait is how long Open waits for a freshly started container.
+func (c *containerTransport) dialWait() time.Duration {
+	if c.dialTimeout > 0 {
+		return c.dialTimeout
+	}
+	return defaultDialTimeout
+}
+
+// clientEnv is the environment for the container-runtime CLI itself.
+// Implemented in Task 2.
+func clientEnv() []string { return []string{} }
 
 // socketPath is the host-side path of the agent's control socket.
 func (c *containerTransport) socketPath() string {
@@ -108,7 +141,7 @@ func (c *containerTransport) buildRunArgs() []string {
 func (c *containerTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
 	// A container under this name means the agent outlived the control
 	// plane. Reconnect to it rather than starting a duplicate.
-	if running, err := listAgentContainers(c.cfg.Runtime); err == nil {
+	if running, err := c.listAgentContainers(); err == nil {
 		for _, name := range running {
 			if name == c.cfg.Name {
 				return c.Reattach()
@@ -129,9 +162,8 @@ func (c *containerTransport) start() (io.WriteCloser, io.ReadCloser, io.ReadClos
 	// the new container's.
 	_ = os.Remove(c.socketPath())
 
-	cmd := exec.Command(c.cfg.Runtime, c.buildRunArgs()...)
-	cmd.Env = []string{} // never inherit
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := c.exec(c.buildRunArgs()...)
+	if err != nil {
 		return nil, nil, nil, fmt.Errorf("bridge: start container: %w (%s)", err, out)
 	}
 
@@ -151,7 +183,7 @@ func (c *containerTransport) start() (io.WriteCloser, io.ReadCloser, io.ReadClos
 // dialSocket polls until the container binds its socket or the timeout
 // expires. A freshly started container has not yet listened.
 func (c *containerTransport) dialSocket() (net.Conn, error) {
-	deadline := time.Now().Add(dialTimeout)
+	deadline := time.Now().Add(c.dialWait())
 	for {
 		conn, err := net.Dial("unix", c.socketPath())
 		if err == nil {
@@ -166,9 +198,8 @@ func (c *containerTransport) dialSocket() (net.Conn, error) {
 
 // Wait blocks until the container exits.
 func (c *containerTransport) Wait() error {
-	cmd := exec.Command(c.cfg.Runtime, "wait", c.cfg.Name)
-	cmd.Env = []string{}
-	return cmd.Run()
+	_, err := c.exec("wait", c.cfg.Name)
+	return err
 }
 
 // Signal asks the container to stop. Docker has no general signal verb
@@ -183,16 +214,14 @@ func (c *containerTransport) Signal(sig os.Signal) error {
 		// the agent itself keeps running and can be reattached.
 		_ = conn.Close()
 	}
-	cmd := exec.Command(c.cfg.Runtime, "stop", c.cfg.Name)
-	cmd.Env = []string{}
-	return cmd.Run()
+	_, err := c.exec("stop", c.cfg.Name)
+	return err
 }
 
 // Kill force-removes the container.
 func (c *containerTransport) Kill() error {
-	cmd := exec.Command(c.cfg.Runtime, "rm", "-f", c.cfg.Name)
-	cmd.Env = []string{}
-	return cmd.Run()
+	_, err := c.exec("rm", "-f", c.cfg.Name)
+	return err
 }
 
 // writeHalf and readHalf expose one duplex conn as the two independent
@@ -265,12 +294,10 @@ func (c *containerTransport) Reattach() (io.WriteCloser, io.ReadCloser, io.ReadC
 
 // listAgentContainers returns the names of running containers this
 // bridge owns, newest first.
-func listAgentContainers(runtime string) ([]string, error) {
-	cmd := exec.Command(runtime, "ps",
+func (c *containerTransport) listAgentContainers() ([]string, error) {
+	out, err := c.exec("ps",
 		"--filter", "name="+containerNamePrefix,
 		"--format", "{{.Names}}")
-	cmd.Env = []string{}
-	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("bridge: list agent containers: %w", err)
 	}

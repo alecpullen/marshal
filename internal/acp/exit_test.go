@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -71,10 +72,13 @@ func TestCommitOnACleanTreeIsANoOp(t *testing.T) {
 }
 
 func TestCommitRejectsAnEmptyMessage(t *testing.T) {
-	m := testExitManager(t, &fakeExitGit{dirty: true})
+	m := NewExitManager(ExitManagerConfig{
+		Lookup: func(string) (*ExitRuntime, bool) { return &ExitRuntime{Dir: "/work"}, true },
+		Git:    &fakeExitGit{dirty: true},
+	})
 	if _, err := m.Commit(context.Background(),
 		json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
-		t.Fatal("Commit accepted an empty message")
+		t.Fatal("Commit with no message and no drafter should fail")
 	}
 }
 
@@ -139,5 +143,59 @@ func TestVerifyBoundsOutput(t *testing.T) {
 	res := raw.(VerifyReply)
 	if len(res.Output) >= len(huge) {
 		t.Fatalf("output was not bounded (%d bytes); a failing suite can emit megabytes", len(res.Output))
+	}
+}
+
+func TestCommitDraftsAMessageWhenNoneIsGiven(t *testing.T) {
+	git := &fakeExitGit{dirty: true, commitSHA: "abc123"}
+	m := NewExitManager(ExitManagerConfig{
+		Lookup: func(string) (*ExitRuntime, bool) { return &ExitRuntime{Dir: "/work"}, true },
+		Git:    git,
+		DraftMessage: func(context.Context, *ExitRuntime) (string, error) {
+			return "Add the --listen flag", nil
+		},
+	})
+
+	raw, err := m.Commit(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	if err != nil {
+		t.Fatalf("Commit with no message: %v", err)
+	}
+	res := raw.(CommitResult)
+	if git.committed != "Add the --listen flag" {
+		t.Fatalf("committed %q, want the drafted message", git.committed)
+	}
+	if res.Message != "Add the --listen flag" {
+		t.Fatal("the drafted message was not reported back; the operator would never see it")
+	}
+}
+
+func TestCommitStillPrefersAnExplicitMessage(t *testing.T) {
+	git := &fakeExitGit{dirty: true, commitSHA: "abc"}
+	m := NewExitManager(ExitManagerConfig{
+		Lookup: func(string) (*ExitRuntime, bool) { return &ExitRuntime{Dir: "/work"}, true },
+		Git:    git,
+		DraftMessage: func(context.Context, *ExitRuntime) (string, error) {
+			return "drafted", nil
+		},
+	})
+	if _, err := m.Commit(context.Background(),
+		json.RawMessage(`{"sessionId":"s1","message":"explicit"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if git.committed != "explicit" {
+		t.Fatalf("committed %q, want the operator's message", git.committed)
+	}
+}
+
+func TestCommitFailsClearlyWhenDraftingFails(t *testing.T) {
+	m := NewExitManager(ExitManagerConfig{
+		Lookup: func(string) (*ExitRuntime, bool) { return &ExitRuntime{Dir: "/work"}, true },
+		Git:    &fakeExitGit{dirty: true},
+		DraftMessage: func(context.Context, *ExitRuntime) (string, error) {
+			return "", errors.New("model unavailable")
+		},
+	})
+	if _, err := m.Commit(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
+		t.Fatal("a failed draft produced a commit with no message")
 	}
 }

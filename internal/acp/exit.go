@@ -34,14 +34,19 @@ type ExitManagerConfig struct {
 	Lookup func(sessionID string) (*ExitRuntime, bool)
 	Git    exitGitOps
 	Verify func(ctx context.Context, dir string) (pipeline.VerifyResult, error)
+	// DraftMessage drafts a commit message from the agent's own turn
+	// context when the operator supplies none. It is better placed to
+	// summarise the work than the operator.
+	DraftMessage func(context.Context, *ExitRuntime) (string, error)
 }
 
 // ExitManager serves the exit-path methods that apply to any session,
 // isolated or not.
 type ExitManager struct {
-	lookup func(string) (*ExitRuntime, bool)
-	git    exitGitOps
-	verify func(context.Context, string) (pipeline.VerifyResult, error)
+	lookup       func(string) (*ExitRuntime, bool)
+	git          exitGitOps
+	verify       func(context.Context, string) (pipeline.VerifyResult, error)
+	draftMessage func(context.Context, *ExitRuntime) (string, error)
 }
 
 func NewExitManager(cfg ExitManagerConfig) *ExitManager {
@@ -62,7 +67,13 @@ func NewExitManager(cfg ExitManagerConfig) *ExitManager {
 			return v.Run(ctx, dir)
 		}
 	}
-	return &ExitManager{lookup: cfg.Lookup, git: git, verify: verify}
+	draft := cfg.DraftMessage
+	if draft == nil {
+		draft = func(context.Context, *ExitRuntime) (string, error) {
+			return "", nil
+		}
+	}
+	return &ExitManager{lookup: cfg.Lookup, git: git, verify: verify, draftMessage: draft}
 }
 
 type commitParams struct {
@@ -74,8 +85,9 @@ type commitParams struct {
 // nothing to commit — the agent had already committed its own work,
 // which is the normal case rather than an error.
 type CommitResult struct {
-	Commit string `json:"commit,omitempty"`
-	Clean  bool   `json:"clean"`
+	Commit  string `json:"commit,omitempty"`
+	Clean   bool   `json:"clean"`
+	Message string `json:"message,omitempty"`
 }
 
 // Commit handles session/commit: it stages and commits everything in the
@@ -83,17 +95,29 @@ type CommitResult struct {
 //
 // session/merge cannot serve this purpose — it commits AND merges into a
 // base checkout, and a git-remote agent has nothing to merge into.
-func (m *ExitManager) Commit(_ context.Context, params json.RawMessage) (any, error) {
+func (m *ExitManager) Commit(ctx context.Context, params json.RawMessage) (any, error) {
 	var p commitParams
 	if err := decodeParams(params, &p, "session/commit"); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(p.Message) == "" {
-		return nil, invalidParamsError("message is required")
-	}
 	rt, ok := m.lookup(p.SessionID)
 	if !ok || rt == nil {
 		return nil, serverErrorf("unknown session %s", p.SessionID)
+	}
+	message := strings.TrimSpace(p.Message)
+	if message == "" {
+		// The agent drafts from its own turn context, which it is better
+		// placed to summarise than the operator. A failed draft is an
+		// error rather than a fallback: a commit labelled "wip" helps
+		// nobody reviewing the pull request later.
+		drafted, err := m.draftMessage(ctx, rt)
+		if err != nil {
+			return nil, serverErrorf("draft commit message: %v", err)
+		}
+		if strings.TrimSpace(drafted) == "" {
+			return nil, serverErrorf("drafted commit message was empty")
+		}
+		message = drafted
 	}
 
 	dirty, err := m.git.IsDirty(rt.Dir)
@@ -103,11 +127,11 @@ func (m *ExitManager) Commit(_ context.Context, params json.RawMessage) (any, er
 	if !dirty {
 		return CommitResult{Clean: true}, nil
 	}
-	sha, err := m.git.CommitAll(rt.Dir, p.Message)
+	sha, err := m.git.CommitAll(rt.Dir, message)
 	if err != nil {
 		return nil, serverErrorf("commit: %v", err)
 	}
-	return CommitResult{Commit: sha}, nil
+	return CommitResult{Commit: sha, Message: message}, nil
 }
 
 // maxVerifyOutput bounds the verify output returned over the wire. A

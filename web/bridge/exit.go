@@ -117,10 +117,13 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 
 // commitSession issues session/commit through the agent's child.
 func (f *Fleet) commitSession(ctx context.Context, rt *agentRuntime, message string) (json.RawMessage, error) {
-	return rt.child.Request(ctx, "session/commit", map[string]any{
+	params := map[string]any{
 		"sessionId": f.sessionIDFor(rt),
-		"message":   message,
-	})
+	}
+	if message != "" {
+		params["message"] = message
+	}
+	return rt.child.Request(ctx, "session/commit", params)
 }
 
 // verifySession issues session/verify through the agent's child and

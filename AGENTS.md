@@ -131,6 +131,13 @@ internal/sandbox/                     — restricted, container, and passthrough
 Utilities
 internal/strutil/                     — shared string helpers (truncation, token formatting)
 internal/jsonextract/                 — pulls the first JSON value out of model output
+
+External ACP client
+web/                                  — external ACP client (web/bridge Go server, web/ui Svelte SPA)
+- `web/` is an external ACP client: **standard library only**. It must not
+  import `marshal/internal/...` or any third-party module. `TestWebIsStdlibOnly`
+  in `web/bridge/boundary_test.go` enforces this. If you need agent-side data,
+  extend the JSON contract — do not share a Go type.
 ```
 
 ### Data flow

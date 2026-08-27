@@ -268,3 +268,65 @@ export interface Answers {
 export async function resolveQuestion(questionId: string, answers: Answers): Promise<void> {
   await request('POST', `/api/questions/${encodeURIComponent(questionId)}`, answers)
 }
+
+export interface MCPClient {
+  id: string
+  name: string
+  autonomous: boolean
+  maxConcurrent: number
+  maxPerDay: number
+  allowedRepos: string[]
+  ownerId: string
+  createdAt: string
+}
+
+export interface CreateClientResult {
+  id: string
+  name: string
+  token: string
+  autonomous: boolean
+}
+
+export interface PendingSubmission {
+  id: string
+  origin: string
+  clientId?: string
+  title: string
+  repoId: string
+  ref?: string
+  prompt?: string
+  plan?: string
+  mode?: string
+  createdAt: string
+  expiresAt: string
+}
+
+export async function listClients(): Promise<MCPClient[]> {
+  return request('GET', '/api/clients')
+}
+
+export async function createClient(opts: {
+  name: string
+  autonomous?: boolean
+  maxConcurrent?: number
+  maxPerDay?: number
+  allowedRepos?: string[]
+}): Promise<CreateClientResult> {
+  return request('POST', '/api/clients', opts)
+}
+
+export async function deleteClient(id: string): Promise<void> {
+  await request('DELETE', `/api/clients/${encodeURIComponent(id)}`)
+}
+
+export async function listPending(): Promise<PendingSubmission[]> {
+  return request('GET', '/api/pending')
+}
+
+export async function approvePending(id: string): Promise<{ agentId: string; status: string }> {
+  return request('POST', `/api/pending/${encodeURIComponent(id)}/approve`)
+}
+
+export async function denyPending(id: string): Promise<void> {
+  await request('POST', `/api/pending/${encodeURIComponent(id)}/deny`)
+}

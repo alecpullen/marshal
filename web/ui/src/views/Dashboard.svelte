@@ -5,14 +5,28 @@
   import AgentCard from '../lib/AgentCard.svelte'
   import AttentionList from '../lib/AttentionList.svelte'
   import Button from '../lib/ui/Button.svelte'
+  import PendingList from '../lib/PendingList.svelte'
+  import ClientsPanel from '../lib/ClientsPanel.svelte'
+  import { listPending, type PendingSubmission } from '../lib/api'
 
   let { onOpenAgent, onNewAgent }: { onOpenAgent: (id: string) => void; onNewAgent: () => void } = $props()
 
   const { state: fleet, actions } = createFleetStore()
 
+  let pending = $state<PendingSubmission[]>([])
+
+  async function refreshPending() {
+    try {
+      pending = await listPending()
+    } catch {
+      pending = []
+    }
+  }
+
   onMount(() => {
     const ctl = new AbortController()
     actions.refresh()
+    refreshPending()
     const disconnect = connectFleetSSE({
       onDelta: (d) => {
         actions.applyDelta(d)
@@ -110,6 +124,8 @@
 
   <AttentionList agents={$fleet.agents} onOpen={onOpenAgent} onResolved={() => actions.refresh()} />
 
+  <PendingList {pending} onResolved={refreshPending} />
+
   {#if $fleet.agents.length === 0 && !$fleet.loading}
     <p class="text-sm text-muted">No agents yet. Create one to get started.</p>
   {/if}
@@ -124,4 +140,6 @@
       </div>
     </section>
   {/each}
+
+  <ClientsPanel />
 </div>

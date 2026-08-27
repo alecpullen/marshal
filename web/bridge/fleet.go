@@ -103,6 +103,15 @@ type Fleet struct {
 	sessionAgent map[string]string        // ACP session id -> agent id
 	orphans      map[string][]string
 	reconciled   map[string]bool
+
+	// done is closed by Close to signal background goroutines (the
+	// poller) to stop.
+	done chan struct{}
+	// closeOnce guards Close against a double-close panic on done.
+	closeOnce sync.Once
+	// rateLimits tracks per-repo "not before" times for backoff.
+	rateMu     sync.Mutex
+	rateLimits map[string]time.Time
 }
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string) *Fleet {
@@ -115,8 +124,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
-		slots:    newSlots(4),
-		stateDir: stateDir,
+		slots:      newSlots(4),
+		stateDir:   stateDir,
+		done:       make(chan struct{}),
+		rateLimits: make(map[string]time.Time),
 	}
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
@@ -184,11 +195,13 @@ func (f *Fleet) spawnFromRequest(ctx context.Context, req SpawnRequest) (string,
 	if err != nil {
 		return "", err
 	}
-	// Record the submitting client on the agent so per-client scoping
-	// (list, status, result, send, cancel) is possible.
-	if req.ClientID != "" {
+	// Record the submitting client and issue origin on the agent so
+	// per-client scoping and PR-to-issue linking work.
+	if req.ClientID != "" || req.IssueNumber != 0 || req.IssueURL != "" {
 		if a, ok := f.ws.Agent(id); ok {
 			a.ClientID = req.ClientID
+			a.IssueNumber = req.IssueNumber
+			a.IssueURL = req.IssueURL
 			if err := f.ws.PutAgent(a); err != nil {
 				return id, fmt.Errorf("persist client id on agent: %w", err)
 			}
@@ -993,6 +1006,7 @@ func (f *Fleet) StopProject(root string) {
 }
 
 func (f *Fleet) Close() {
+	f.closeOnce.Do(func() { close(f.done) })
 	f.mu.Lock()
 	rts := make([]*agentRuntime, 0, len(f.runtimes))
 	for _, rt := range f.runtimes {

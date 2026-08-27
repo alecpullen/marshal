@@ -7,6 +7,7 @@
   import Button from '../lib/ui/Button.svelte'
   import PendingList from '../lib/PendingList.svelte'
   import ClientsPanel from '../lib/ClientsPanel.svelte'
+  import IssuePicker from '../lib/IssuePicker.svelte'
   import { listPending, type PendingSubmission } from '../lib/api'
 
   let { onOpenAgent, onNewAgent }: { onOpenAgent: (id: string) => void; onNewAgent: () => void } = $props()
@@ -125,6 +126,8 @@
   <AttentionList agents={$fleet.agents} onOpen={onOpenAgent} onResolved={() => actions.refresh()} />
 
   <PendingList {pending} onResolved={refreshPending} />
+
+  <IssuePicker />
 
   {#if $fleet.agents.length === 0 && !$fleet.loading}
     <p class="text-sm text-muted">No agents yet. Create one to get started.</p>

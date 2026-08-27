@@ -92,6 +92,18 @@ func (c *containerTransport) dialWait() time.Duration {
 	return defaultDialTimeout
 }
 
+// reattachWait is how long Reattach waits for an existing container's
+// socket. It is shorter than the fresh-start wait because a container we
+// are reattaching to has already bound its socket: a slow dial means the
+// container is gone, not still starting. An injected dialTimeout wins,
+// so tests need not burn real seconds.
+func (c *containerTransport) reattachWait() time.Duration {
+	if c.dialTimeout > 0 {
+		return c.dialTimeout
+	}
+	return reattachDialTimeout
+}
+
 // socketPath is the host-side path of the agent's control socket.
 func (c *containerTransport) socketPath() string {
 	return filepath.Join(c.cfg.SocketDir, containerSocketName)
@@ -272,7 +284,7 @@ const reattachDialTimeout = 3 * time.Second
 // notify sink, so the caller must re-sync session state with
 // session/resume after reattaching.
 func (c *containerTransport) Reattach() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
-	deadline := time.Now().Add(reattachDialTimeout)
+	deadline := time.Now().Add(c.reattachWait())
 	for {
 		conn, err := net.Dial("unix", c.socketPath())
 		if err == nil {

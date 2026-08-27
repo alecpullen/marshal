@@ -189,6 +189,19 @@ type AgentStatus struct {
 	Isolated     bool      `json:"isolated,omitempty"`
 	Branch       string    `json:"branch,omitempty"`
 	UpdatedAt    time.Time `json:"updatedAt"`
+	// SourceKind is "local" or "git"; the exit panel routes on it and
+	// ReadOnly to decide between merge, push, and patch.
+	SourceKind string `json:"sourceKind,omitempty"`
+	// ReadOnly marks an arbitrary-URL clone with no push path.
+	ReadOnly bool `json:"readOnly,omitempty"`
+	// TargetBranch is the repo's default branch at spawn time.
+	TargetBranch string `json:"targetBranch,omitempty"`
+	// PRUrl is the validated pull-request URL from the last push.
+	PRUrl string `json:"prUrl,omitempty"`
+	// PushedAt is when the agent's branch last reached the remote.
+	PushedAt *time.Time `json:"pushedAt,omitempty"`
+	// GateOverride, when non-nil, records a pushed-despite-failure decision.
+	GateOverride *GateOverride `json:"gateOverride,omitempty"`
 	// Pending is set only while the agent is genuinely parked on an
 	// approval or question, so the dashboard can resolve it in place.
 	Pending *PendingRequest `json:"pending,omitempty"`

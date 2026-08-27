@@ -215,6 +215,8 @@ func (h *agentHost) registerHandlers(srv *Server) {
 					// session/new isolation plus session/diff, /merge,
 					// /discard and /worktree_prune.
 					"worktreeIsolation": map[string]any{},
+					// session/commit for non-isolated sessions.
+					"exitPath": map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{
@@ -297,6 +299,18 @@ func (h *agentHost) registerHandlers(srv *Server) {
 	srv.Handle("session/merge", wtMgr.Merge)
 	srv.Handle("session/discard", wtMgr.Discard)
 	srv.Handle("session/worktree_prune", wtMgr.Prune)
+
+	exitMgr := NewExitManager(ExitManagerConfig{
+		Lookup: func(sessionID string) (*ExitRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil {
+				return nil, false
+			}
+			return &ExitRuntime{State: rt.State, Dir: rt.State.Workspace().ActiveRoot}, true
+		},
+	})
+	srv.Handle("session/commit", exitMgr.Commit)
+	srv.Handle("session/verify", exitMgr.Verify)
 
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {

@@ -109,6 +109,12 @@ export interface AgentStatus {
   interrupted?: boolean
   isolated?: boolean
   branch?: string
+  sourceKind?: string
+  readOnly?: boolean
+  targetBranch?: string
+  prUrl?: string
+  pushedAt?: string
+  gateOverride?: { reason: string; at: string; by: string; failedCommand?: string; skipped?: boolean }
   updatedAt: string
   pending?: PendingRequest
 }
@@ -160,6 +166,29 @@ export async function mergeAgent(id: string, commitMessage?: string): Promise<Me
 
 export async function discardAgent(id: string): Promise<void> {
   return request('POST', `/api/agents/${encodeURIComponent(id)}/discard`)
+}
+
+export interface GateResult {
+  ok: boolean
+  skipped: boolean
+  failedCommand?: string
+  output?: string
+}
+
+export interface ExitResult {
+  destination: string
+  branch?: string
+  prUrl?: string
+  verify?: GateResult
+  blocked?: boolean
+}
+
+export async function exitAgent(id: string, opts: { commitMessage: string; override?: { reason: string } }): Promise<ExitResult> {
+  return request('POST', `/api/agents/${encodeURIComponent(id)}/exit`, opts)
+}
+
+export function patchUrl(id: string): string {
+  return `/api/agents/${encodeURIComponent(id)}/patch`
 }
 
 export interface SessionSummary {

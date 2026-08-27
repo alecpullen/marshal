@@ -13,12 +13,70 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
+
+// TestRunAgentRosterIncludesDiscoveredModels verifies the runner enriches
+// the system prompt's agent roster with fresh probe data read from the
+// modelcache dir held on session.State: a model the provider was probed as
+// serving appears even when it is not a configured preset.
+func TestRunAgentRosterIncludesDiscoveredModels(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	if err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+		"openai": {
+			ConfigHash: modelcache.HashProvider(cfg.Providers["openai"]),
+			Models:     []schema.ModelInfo{{ID: "gpt-5.6-luna"}},
+			FetchedAt:  time.Now(),
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "agent.run", Description: "Dispatch a subagent.", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "dispatched"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	state.Config = cfg
+	state.SetModelCacheDir(dir)
+
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
+	}}
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.NativeTools = true
+	if err := runner.Run(context.Background(), "hello"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var sys string
+	for _, req := range p.Requests {
+		for _, msg := range req.Messages {
+			if msg.Role == schema.RoleSystem {
+				sys = msg.Content
+			}
+		}
+	}
+	if !strings.Contains(sys, "openai/gpt-5.6-luna") {
+		t.Fatalf("system prompt roster missing discovered model:\n%s", sys)
+	}
+}
 
 func TestRunnerDefaultsAreSensible(t *testing.T) {
 	// 0 = unlimited by default; agent.max_tool_iterations opts into a cap.

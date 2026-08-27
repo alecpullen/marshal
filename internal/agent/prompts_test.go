@@ -3,11 +3,14 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
@@ -941,11 +944,142 @@ func TestRenderAgentRosterListsPresetsAndCustomAgents(t *testing.T) {
 		"Read-only reviewer",
 		"Model presets (valid provider/model pairs):",
 		"openai/gpt-4o-mini",
-		"model must name one of these provider/model pairs",
+		"model must be a provider/model pair; the provider must be configured",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("roster missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// TestRenderAgentRosterWithDiscoveredLabelsProbedModels verifies that
+// discovered (probed) models are listed separately from configured presets
+// and do not leak into the "valid provider/model pairs" contract.
+func TestRenderAgentRosterWithDiscoveredLabelsProbedModels(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	discovered := map[string][]schema.ModelInfo{
+		"openai": {{ID: "gpt-5.6-luna"}, {ID: "gpt-4o-mini"}},
+	}
+	got := RenderAgentRosterWithDiscovered(cfg, discovered)
+	for _, want := range []string{
+		"Model presets (valid provider/model pairs):",
+		"openai/gpt-4o-mini",
+		"Also discovered from configured providers",
+		"openai/gpt-5.6-luna",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("roster missing %q:\n%s", want, got)
+		}
+	}
+	// The discovered model must NOT be presented as a preset line: the
+	// "Model presets" section must contain only the configured preset.
+	presetsIdx := strings.Index(got, "Model presets (valid provider/model pairs):")
+	discoveredIdx := strings.Index(got, "Also discovered from configured providers")
+	if presetsIdx < 0 || discoveredIdx < 0 {
+		t.Fatalf("roster missing expected sections:\n%s", got)
+	}
+	if strings.Contains(got[presetsIdx:discoveredIdx], "gpt-5.6-luna") {
+		t.Errorf("discovered model leaked into the presets section:\n%s", got)
+	}
+}
+
+// TestRenderAgentRosterWithDiscoveredDeduplicates verifies a discovered
+// model that is already a configured preset is not listed twice.
+func TestRenderAgentRosterWithDiscoveredDeduplicates(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	discovered := map[string][]schema.ModelInfo{
+		"openai": {{ID: "gpt-4o-mini"}, {ID: "gpt-5.6-luna"}},
+	}
+	got := RenderAgentRosterWithDiscovered(cfg, discovered)
+	if n := strings.Count(got, "gpt-4o-mini"); n != 1 {
+		t.Errorf("preset model listed %d times, want 1:\n%s", n, got)
+	}
+}
+
+// TestRenderAgentRosterWithDiscoveredEmpty verifies no discovery section is
+// emitted when nothing was probed — output identical to RenderAgentRoster.
+func TestRenderAgentRosterWithDiscoveredEmpty(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	if got := RenderAgentRosterWithDiscovered(cfg, nil); got != RenderAgentRoster(cfg) {
+		t.Errorf("nil discovered should match plain roster:\n%s", got)
+	}
+}
+
+// TestRenderAgentRosterFooterIsHonest verifies the footer no longer claims
+// the listed pairs are the only valid ones: any model on a configured
+// provider is accepted by the resolver.
+func TestRenderAgentRosterFooterIsHonest(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "must name one of these") {
+		t.Errorf("footer still overstates authority:\n%s", got)
+	}
+	for _, want := range []string{
+		"model must be a provider/model pair; the provider must be configured",
+		"listed presets are only what is configured locally — any model the provider serves is valid",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("footer missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestDiscoveredModelsFromCache verifies the bridge from the on-disk
+// modelcache to the roster's discovered map: only fresh, config-matching
+// entries are included, keyed per provider.
+func TestDiscoveredModelsFromCache(t *testing.T) {
+	dir := t.TempDir()
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
+	fresh := time.Now().Add(-time.Hour)
+	stale := time.Now().Add(-72 * time.Hour) // beyond DefaultTTL of 24h
+	if err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+		"openai": {ConfigHash: modelcache.HashProvider(pc), Models: []schema.ModelInfo{{ID: "gpt-5.6-luna"}}, FetchedAt: fresh},
+		"ollama": {ConfigHash: modelcache.HashProvider(config.ProviderConfig{Type: "ollama"}), Models: []schema.ModelInfo{{ID: "qwen3:8b"}}, FetchedAt: stale},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": pc,
+		// ollama is not in cfg.Providers at all — its entry must be ignored.
+	}
+	got := DiscoveredModelsFromCache(cfg, dir, time.Now())
+	if len(got["openai"]) != 1 || got["openai"][0].ID != "gpt-5.6-luna" {
+		t.Errorf("openai discovery = %+v, want [gpt-5.6-luna]", got["openai"])
+	}
+	if _, ok := got["ollama"]; ok {
+		t.Error("unconfigured provider must not be reported as discovered")
+	}
+}
+
+// TestDiscoveredModelsFromCacheMissingDir verifies a missing/empty cache
+// yields an empty map, never an error or nil-map panic.
+func TestDiscoveredModelsFromCacheMissingDir(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
+	}
+	got := DiscoveredModelsFromCache(cfg, filepath.Join(t.TempDir(), "nope"), time.Now())
+	if len(got) != 0 {
+		t.Errorf("missing cache should yield empty map, got %+v", got)
 	}
 }
 

@@ -496,6 +496,14 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		NetworkIsolation: caps.NetworkIsolation,
 	})
 
+	// Record the model discovery cache dir on the session state so the
+	// agent roster can enrich itself with fresh probe results (see
+	// agent.RenderAgentRosterWithDiscovered). The TUI writes this same
+	// cache via /models probing.
+	if dataDir != "" {
+		state.SetModelCacheDir(dataDir)
+	}
+
 	// Milestone Q: construct the JobManager from the sandboxed command
 	// runner so background jobs honour the configured sandbox backend,
 	// output limit, and concurrency limits.

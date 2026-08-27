@@ -348,6 +348,32 @@ type State struct {
 	spinnerLabelPinned     string
 	spinnerLabelPinnedAt   time.Time
 	spinnerLabelPinnedKind ActivityKind
+
+	// modelCacheDir is the shared data directory holding the on-disk model
+	// discovery cache (internal/llm/provider/modelcache). The agent runner
+	// reads it to enrich the system-prompt roster with fresh probe results
+	// so subagent model options reflect what providers actually serve, not
+	// only what is pinned in config presets. Empty means no cache dir is
+	// known (tests, or discovery never configured) and the roster omits
+	// discovered entries.
+	modelCacheDir string
+}
+
+// SetModelCacheDir records the data directory that holds the on-disk model
+// discovery cache. Called once by buildAgentRunnerWithLock at startup and
+// config reload.
+func (s *State) SetModelCacheDir(dir string) {
+	s.mu.Lock()
+	s.modelCacheDir = dir
+	s.mu.Unlock()
+}
+
+// ModelCacheDir returns the recorded model discovery cache directory
+// (empty when never set).
+func (s *State) ModelCacheDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelCacheDir
 }
 
 // SDDGate is the open question a pipeline subagent raised. The controller

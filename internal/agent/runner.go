@@ -765,7 +765,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	messages := []schema.ChatMessage{
-		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), r.State.LoadedToolNames()...),
+		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, r.agentRoster(), r.State.LoadedToolNames()...),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
 	messages = r.appendSkillHint(messages)
@@ -831,7 +831,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			updatedPack := r.State.ContextPack()
 			r.contextPackMsgIndex = -1
 			r.emittedSkills = nil
-			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), r.State.LoadedToolNames()...)}
+			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, r.agentRoster(), r.State.LoadedToolNames()...)}
 			messages = r.setContextPackMessage(messages, updatedPack)
 			messages = r.appendSkillHint(messages)
 			messages = r.appendSkillBodies(messages)
@@ -954,7 +954,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		currentSkills := r.State.ActiveSkills()
 		currentLoadedTools := r.State.LoadedToolNames()
 		if skillsChanged(lastRenderedSkills, currentSkills) || loadedToolsChanged(lastRenderedLoadedTools, currentLoadedTools) {
-			messages[0] = BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, RenderAgentRoster(r.State.Config), currentLoadedTools...)
+			messages[0] = BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, r.agentRoster(), currentLoadedTools...)
 			lastRenderedSkills = currentSkills
 			lastRenderedLoadedTools = currentLoadedTools
 		}

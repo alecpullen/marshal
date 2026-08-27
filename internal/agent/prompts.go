@@ -2,10 +2,13 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
@@ -125,13 +128,54 @@ func hasAgentRunTool(tools []registry.Tool) bool {
 	return false
 }
 
+// DiscoveredModelsFromCache reads the on-disk model discovery cache (the
+// same one the /models connect flow writes) and returns the fresh,
+// config-matching model list per provider, restricted to providers that
+// are configured on cfg. This lets the agent roster show what providers
+// actually serve today, not only what the user happened to materialize
+// into config presets. The cache is an optimization, not a source of
+// truth: a missing, corrupt, or stale file simply yields no discovered
+// entries.
+func DiscoveredModelsFromCache(cfg config.Config, dataDir string, now time.Time) map[string][]schema.ModelInfo {
+	out := map[string][]schema.ModelInfo{}
+	if dataDir == "" || len(cfg.Providers) == 0 {
+		return out
+	}
+	c := modelcache.Load(dataDir)
+	for name, pc := range cfg.Providers {
+		models, ok := c.Lookup(name, pc, modelcache.DefaultTTL, now)
+		if !ok || len(models) == 0 {
+			continue
+		}
+		out[name] = models
+	}
+	return out
+}
+
 // RenderAgentRoster returns a human-readable listing of the configured
 // custom agents and model presets for injection into the system prompt
 // when agent.run is available. The provider/model pairs are exactly what
 // the model may pass in the agent.run model argument. Returns an empty
 // string when there is nothing to list.
 func RenderAgentRoster(cfg config.Config) string {
-	if len(cfg.CustomAgents) == 0 && len(cfg.Models.Presets) == 0 {
+	return RenderAgentRosterWithDiscovered(cfg, nil)
+}
+
+// agentRoster renders the runner's system-prompt roster, enriched with
+// fresh discovered models read from the model discovery cache recorded on
+// the session state. Best-effort and cheap: a missing, unreadable, or
+// stale cache simply yields no discovered entries.
+func (r *Runner) agentRoster() string {
+	return RenderAgentRosterWithDiscovered(r.State.Config, DiscoveredModelsFromCache(r.State.Config, r.State.ModelCacheDir(), time.Now()))
+}
+
+// RenderAgentRosterWithDiscovered is RenderAgentRoster with a discovered-
+// models section appended: fresh probe results from the modelcache, keyed
+// by provider. Discovered entries are labelled as such and deduplicated
+// against configured presets — they advertise what providers currently
+// serve, they are not user-pinned presets.
+func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]schema.ModelInfo) string {
+	if len(cfg.CustomAgents) == 0 && len(cfg.Models.Presets) == 0 && len(discovered) == 0 {
 		return ""
 	}
 
@@ -160,7 +204,42 @@ func RenderAgentRoster(cfg config.Config) string {
 			b.WriteString(fmt.Sprintf("- %s/%s\n", p.Provider, p.Model))
 		}
 	}
-	b.WriteString("model must name one of these provider/model pairs; the provider must be configured.")
+	// Discovered section: what providers were actually probed as serving.
+	// Deduplicated against configured presets so a pinned model is not
+	// listed twice; sorted for deterministic prompts (prefix-cache friendly).
+	if len(discovered) > 0 {
+		names := make([]string, 0, len(discovered))
+		for name := range discovered {
+			if _, configured := cfg.Providers[name]; !configured {
+				continue
+			}
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		var lines []string
+		for _, name := range names {
+			seen := make(map[string]bool, len(cfg.Models.Presets))
+			for _, p := range cfg.Models.Presets {
+				if p.Provider == name {
+					seen[p.Model] = true
+				}
+			}
+			for _, mi := range discovered[name] {
+				if mi.ID == "" || seen[mi.ID] {
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("- %s/%s (discovered)\n", name, mi.ID))
+			}
+		}
+		if len(lines) > 0 {
+			sort.Strings(lines)
+			b.WriteString("Also discovered from configured providers (fresh probe, not locally pinned):\n")
+			for _, line := range lines {
+				b.WriteString(line)
+			}
+		}
+	}
+	b.WriteString("model must be a provider/model pair; the provider must be configured. The listed presets are only what is configured locally — any model the provider serves is valid, and discovered entries above reflect each provider's current model list.")
 	return b.String()
 }
 

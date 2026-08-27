@@ -3,6 +3,8 @@ package sidepanel
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 	"time"
 
 	"marshal/internal/contextpack"
@@ -145,6 +147,59 @@ func TestBar(t *testing.T) {
 	for _, tt := range tests {
 		if got := StripANSI(Bar(tt.frac, tt.width)); got != tt.want {
 			t.Errorf("Bar(%v, %d) = %q, want %q", tt.frac, tt.width, got, tt.want)
+		}
+	}
+}
+
+// pctGlyphCol reports the cell column of a row's trailing "%" glyph, which
+// is the mark the eye actually tracks down the column. Cells, not bytes:
+// the fill bar is built from multibyte block glyphs, so a byte offset says
+// nothing about where the percentage appears on screen.
+func pctGlyphCol(row string) int {
+	plain := StripANSI(row)
+	i := strings.LastIndex(plain, "%")
+	if i < 0 {
+		return -1
+	}
+	return ansi.StringWidth(plain[:i])
+}
+
+// The reported defect: the fill bar's percentage sat one cell left of the
+// composition percentages directly beneath it, because the two rows were
+// built from format strings that reserved different trailing widths. They
+// must share a column at every rail width.
+func TestContextPercentColumnAlignsWithFillBar(t *testing.T) {
+	for _, w := range []int{24, 28, 32, 36, 40, 56} {
+		rows := (ContextSection{}).Render(ctxData(), w, 0)
+		if len(rows) < 2 {
+			t.Fatalf("width %d: want a bar row and breakdown rows, got %v", w, rows)
+		}
+		barCol := pctGlyphCol(rows[0])
+		if barCol < 0 {
+			t.Fatalf("width %d: bar row has no percentage: %q", w, StripANSI(rows[0]))
+		}
+		for i, r := range rows[1:] {
+			got := pctGlyphCol(r)
+			if got < 0 {
+				continue // the telemetry rows carry no percentage
+			}
+			if got != barCol {
+				t.Errorf("width %d: breakdown row %d has its %% at cell %d, bar at %d\n bar = %q\n row = %q",
+					w, i, got, barCol, StripANSI(rows[0]), StripANSI(r))
+			}
+		}
+	}
+}
+
+// Every context row that carries a value column ends flush with the rail's
+// inner edge, so the block reads as one table rather than a ragged stack.
+func TestContextRowsAreFlushToWidth(t *testing.T) {
+	for _, w := range []int{24, 32, 40, 56} {
+		for i, r := range (ContextSection{}).Render(ctxData(), w, 0) {
+			if n := ansi.StringWidth(r); n != w {
+				t.Errorf("width %d: row %d is %d cells, want %d: %q",
+					w, i, n, w, StripANSI(r))
+			}
 		}
 	}
 }

@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-
-	"marshal/internal/strutil"
 )
 
 // ChangedSection lists the working tree's modified files with line
@@ -27,33 +25,28 @@ func (ChangedSection) Render(d Data, width, maxRows int) []string {
 		// their visible width, and styling must not affect that math.
 		plus, minus := "", ""
 		if f.Added > 0 {
-			plus = fmt.Sprintf(" +%d", f.Added)
+			plus = fmt.Sprintf("+%d", f.Added)
 		}
 		if f.Removed > 0 {
-			minus = fmt.Sprintf(" -%d", f.Removed)
+			minus = fmt.Sprintf("-%d", f.Removed)
 		}
-		counts := plus + minus
+		counts := strings.TrimSpace(plus + " " + minus)
 
-		// Reserve the status glyph, a space, and the counts; the path gets
-		// the rest and is middle-truncated so the basename survives.
-		pathWidth := max(width-3-ansi.StringWidth(counts), 6)
-		path := strutil.TruncateMiddle(f.Path, pathWidth)
+		marker := string(f.Status)
+		path := shortenPath(f.Path, railBudget(marker, counts, width))
 
-		// Truncate before styling so the ellipsis math sees plain text.
-		row := ansi.Truncate(fmt.Sprintf(" %c %s%s", f.Status, path, counts), width, "…")
-
-		// Re-apply color to whichever counts survived truncation.
-		if plus != "" && strings.HasSuffix(StripANSI(row), counts) {
-			row = strings.TrimSuffix(row, counts)
-			if minus != "" {
-				row += styleSuccess(plus) + styleError(minus)
-			} else {
-				row += styleSuccess(plus)
-			}
-		} else if minus != "" && strings.HasSuffix(StripANSI(row), counts) {
-			row = strings.TrimSuffix(row, counts) + styleError(minus)
+		// Style only after the layout is fixed, so the escape sequences
+		// never participate in the width math.
+		styled := ""
+		switch {
+		case plus != "" && minus != "":
+			styled = styleSuccess(plus) + " " + styleError(minus)
+		case plus != "":
+			styled = styleSuccess(plus)
+		case minus != "":
+			styled = styleError(minus)
 		}
-		rows = append(rows, row)
+		rows = append(rows, railRow(marker, path, styled, width))
 	}
 	if maxRows > 0 && len(rows) > maxRows {
 		rows = rows[:maxRows]

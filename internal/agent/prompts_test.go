@@ -86,10 +86,62 @@ func TestBuildSystemPromptContainsBaseSections(t *testing.T) {
 }
 
 func TestBaseRulesGuideQuestionToolUsage(t *testing.T) {
-	for _, want := range []string{"options", "mode.request"} {
+	if !strings.Contains(baseRules, "ask the user with question.ask") {
+		t.Errorf("baseRules should mention question.ask:\n%s", baseRules)
+	}
+}
+
+func TestBaseRulesOmitSkillLoadCarveOut(t *testing.T) {
+	if strings.Contains(baseRules, "skill.load") {
+		t.Errorf("baseRules should not mention skill.load (the skillDirective covers it):\n%s", baseRules)
+	}
+}
+
+func TestBaseRulesOmitDestructiveCommandRule(t *testing.T) {
+	if strings.Contains(baseRules, "Destructive or risky commands require explicit user approval") {
+		t.Errorf("baseRules should not include the destructive-command rule (policy enforces it):\n%s", baseRules)
+	}
+}
+
+func TestBaseRulesOmitSummariseRule(t *testing.T) {
+	if strings.Contains(baseRules, "Summarise results clearly") {
+		t.Errorf("baseRules should not include the generic 'Summarise results clearly' rule:\n%s", baseRules)
+	}
+}
+
+func TestBaseRulesKeepShellWriteRule(t *testing.T) {
+	for _, want := range []string{
+		"file.write or file.write_patch",
+		"never via shell redirection, heredocs, or tee",
+	} {
 		if !strings.Contains(baseRules, want) {
-			t.Errorf("baseRules question guidance missing %q", want)
+			t.Errorf("baseRules must keep the shell-write rule %q:\n%s", want, baseRules)
 		}
+	}
+}
+
+func TestBaseRulesCondensedAskUserRule(t *testing.T) {
+	// The ask_user rule should be condensed to ~100 chars, not the 300+ char version
+	if strings.Contains(baseRules, "Prefer question.ask when you have multiple related questions") {
+		t.Errorf("baseRules ask_user rule should be condensed (no longer includes the options/multi-select guidance):\n%s", baseRules)
+	}
+	if !strings.Contains(baseRules, "ask the user with question.ask") {
+		t.Errorf("baseRules must still mention question.ask:\n%s", baseRules)
+	}
+}
+
+func TestBaseRulesMergedReadBeforeEdit(t *testing.T) {
+	// "Never invent file contents" and "Do not read a guessed path" should
+	// be merged into one rule, not two separate bullets. The old version
+	// had them as two separate lines starting with "- Never invent" and
+	// "- Do not read a guessed path". The merged version has them on one
+	// line: "- Never invent file contents; read before editing. Do not
+	// read a guessed path..."
+	if strings.Contains(baseRules, "\n- Do not read a guessed path") {
+		t.Errorf("baseRules should merge the read-before-edit and guessed-path rules (guessed-path should not be a separate bullet):\n%s", baseRules)
+	}
+	if !strings.Contains(baseRules, "Never invent file contents; read before editing. Do not read a guessed path") {
+		t.Errorf("baseRules should contain the merged rule:\n%s", baseRules)
 	}
 }
 

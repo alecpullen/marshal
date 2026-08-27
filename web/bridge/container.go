@@ -291,6 +291,9 @@ func (c *containerTransport) Reattach() (io.WriteCloser, io.ReadCloser, io.ReadC
 // listAgentContainers returns the names of running containers this
 // bridge owns, newest first.
 func (c *containerTransport) listAgentContainers() ([]string, error) {
+	// c.exec uses CombinedOutput, so stderr is mixed in. The HasPrefix
+	// post-filter below keeps only valid container names, so diagnostic
+	// lines from the runtime CLI are harmlessly dropped.
 	out, err := c.exec("ps",
 		"--filter", "name="+containerNamePrefix,
 		"--format", "{{.Names}}")

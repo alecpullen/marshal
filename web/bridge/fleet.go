@@ -729,6 +729,7 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 			continue
 		}
 		if err := f.restoreSession(ctx, rt, a); err != nil {
+			f.stopAgent(a.ID)
 			errs = append(errs, err)
 		}
 	}

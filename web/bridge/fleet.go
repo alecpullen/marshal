@@ -68,6 +68,7 @@ type ProjectStatus struct {
 type Fleet struct {
 	ws         *Workspace
 	marshalBin string
+	agentEnv   map[string]string
 	fleetLog   *EventLog
 	live       *liveState
 
@@ -85,9 +86,9 @@ type Fleet struct {
 	reconciled   map[string]bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string) *Fleet {
 	f := &Fleet{
-		ws: ws, marshalBin: marshalBin,
+		ws: ws, marshalBin: marshalBin, agentEnv: agentEnv,
 		fleetLog: NewEventLog(), live: newLiveState(),
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
@@ -109,6 +110,7 @@ func NewFleet(ws *Workspace, marshalBin string) *Fleet {
 			SocketDir:    socketDirFor(a.ID),
 			CPUs:         a.Profile.CPUs,
 			MemoryMB:     a.Profile.MemoryMB,
+			Env:          f.agentEnv,
 		})}
 	}
 	return f

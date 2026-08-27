@@ -18,7 +18,7 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused")
+	f := NewFleet(ws, "unused", nil)
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	f.slots = newSlots(limit)
@@ -97,7 +97,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused")
+	f := NewFleet(ws, "unused", nil)
 	bin, args, env := helperCommand("registry-merged")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -148,7 +148,7 @@ func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
 	if err := ws.AddProject(plain); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused")
+	f := NewFleet(ws, "unused", nil)
 	t.Cleanup(f.Close)
 
 	for _, st := range f.ProjectStatus() {
@@ -192,7 +192,7 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "not-a-real-marshal-binary")
+	f := NewFleet(ws, "not-a-real-marshal-binary", nil)
 	defer f.Close()
 	if _, err := f.Spawn(context.Background(), "/home/u/a", SpawnOptions{Name: "one"}); err == nil {
 		t.Fatal("expected spawn failure")
@@ -200,6 +200,30 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	statuses := f.ProjectStatus()
 	if len(statuses) != 1 || statuses[0].Available || statuses[0].Error == "" {
 		t.Fatalf("statuses = %+v", statuses)
+	}
+}
+
+func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"})
+	t.Cleanup(f.Close)
+
+	// Invoke the production newRuntime closure directly so no real
+	// container or session/new round-trip is needed. The closure must
+	// copy f.agentEnv into the ContainerConfig.
+	child := f.newRuntime(Agent{ID: "abc", Project: "/p", Profile: RuntimeProfile{Image: "img"}})
+	tr, ok := child.Transport.(*containerTransport)
+	if !ok {
+		// No container runtime on this host: the production closure falls
+		// back to a host process, so the container env path is not
+		// exercised. Skip rather than fail.
+		t.Skip("no container runtime detected; container env path not exercised")
+	}
+	if tr.cfg.Env["ANTHROPIC_API_KEY"] != "sk-test" {
+		t.Fatalf("agent env = %v, want the provider key to reach the container", tr.cfg.Env)
 	}
 }
 

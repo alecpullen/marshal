@@ -92,10 +92,6 @@ func (c *containerTransport) dialWait() time.Duration {
 	return defaultDialTimeout
 }
 
-// clientEnv is the environment for the container-runtime CLI itself.
-// Implemented in Task 2.
-func clientEnv() []string { return []string{} }
-
 // socketPath is the host-side path of the agent's control socket.
 func (c *containerTransport) socketPath() string {
 	return filepath.Join(c.cfg.SocketDir, containerSocketName)

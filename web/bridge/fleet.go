@@ -429,13 +429,6 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	a.SourceKind = src.kind
 	a.SourceRef = src.ref
 	a.ReadOnly = src.readOnly
-	// TargetBranch is the ref the agent started from — the merge target
-	// for S2b. It cannot be derived later, so persist it now. For a
-	// registered repo this is the explicit ref or the repo's default
-	// branch; for a raw URL it is the caller-supplied ref.
-	if src.kind == "git" {
-		a.TargetBranch = src.gitRef
-	}
 
 	// The workspace directory is the local path for local spawns, or a
 	// freshly prepared git working tree for remote sources.
@@ -452,7 +445,18 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		if err != nil {
 			return "", err
 		}
-		workDir, err = f.git.PrepareTree(f.stateDir, a.ID, mirror, src.url, src.gitRef, cred)
+		// A raw-URL spawn may name no ref. Fall back to the mirror's HEAD
+		// so TargetBranch (the base for S2b's patch export) is never
+		// empty, and record the ref actually used.
+		if src.gitRef == "" {
+			head, err := f.git.mirrorHead(mirror)
+			if err != nil {
+				return "", err
+			}
+			src.gitRef = head
+		}
+		a.TargetBranch = src.gitRef
+		workDir, err = f.git.PrepareTree(f.stateDir, a.ID, mirror, src.url, src.gitRef)
 		if err != nil {
 			return "", err
 		}

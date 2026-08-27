@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // mirrorDir is the on-disk location of a repo's bare mirror.
@@ -50,4 +51,15 @@ func (g *gitRunner) EnsureMirror(stateDir, url string, cred Credential) (string,
 		return "", fmt.Errorf("create mirror: %w", err)
 	}
 	return dir, nil
+}
+
+// mirrorHead reports the branch a mirror's HEAD points at, used as the
+// default ref when a spawn names no explicit one.
+func (g *gitRunner) mirrorHead(mirror string) (string, error) {
+	out, err := g.run(mirror, Credential{Kind: "none"},
+		"symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve mirror HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

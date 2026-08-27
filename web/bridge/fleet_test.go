@@ -528,6 +528,25 @@ func TestSpawnAgainstRawURLIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestRawURLSpawnRecordsATargetBranch(t *testing.T) {
+	f := testFleet(t)
+	// No Ref supplied — the read-only path, whose only exit in S2b is a
+	// patch export that needs TargetBranch as its base.
+	id, err := f.Spawn(context.Background(), "", SpawnOptions{
+		URL: newBareRepoFixture(t), Prompt: "x",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok {
+		t.Fatalf("agent %s not persisted", id)
+	}
+	if a.TargetBranch == "" {
+		t.Fatal("raw-URL spawn left TargetBranch empty; patch export has no base")
+	}
+}
+
 func TestStopAgentRemovesGitSourcedTree(t *testing.T) {
 	f := testFleet(t)
 	if f.git == nil {

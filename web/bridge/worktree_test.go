@@ -19,7 +19,7 @@ func TestPrepareTreeChecksOutTheRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureMirror: %v", err)
 	}
-	dir, err := g.PrepareTree(state, "agent1", mirror, origin, "main", Credential{Kind: "none"})
+	dir, err := g.PrepareTree(state, "agent1", mirror, origin, "main")
 	if err != nil {
 		t.Fatalf("PrepareTree: %v", err)
 	}
@@ -35,13 +35,12 @@ func TestPrepareTreeLeaksNoCredential(t *testing.T) {
 	origin := newBareRepoFixture(t)
 	state := t.TempDir()
 	g := testGitRunner(t)
-	cred := Credential{Kind: "pat", EnvVar: "X", literal: "sk-super-secret"}
 
 	mirror, err := g.EnsureMirror(state, origin, Credential{Kind: "none"})
 	if err != nil {
 		t.Fatalf("EnsureMirror: %v", err)
 	}
-	dir, err := g.PrepareTree(state, "agent1", mirror, origin, "main", cred)
+	dir, err := g.PrepareTree(state, "agent1", mirror, origin, "main")
 	if err != nil {
 		t.Fatalf("PrepareTree: %v", err)
 	}
@@ -70,7 +69,7 @@ func TestPrepareTreePointsOriginAtTheRealURL(t *testing.T) {
 	g := testGitRunner(t)
 
 	mirror, _ := g.EnsureMirror(state, origin, Credential{Kind: "none"})
-	dir, err := g.PrepareTree(state, "agent1", mirror, "https://example.test/r.git", "main", Credential{Kind: "none"})
+	dir, err := g.PrepareTree(state, "agent1", mirror, "https://example.test/r.git", "main")
 	if err != nil {
 		t.Fatalf("PrepareTree: %v", err)
 	}
@@ -94,7 +93,7 @@ func TestBridgeGitDoesNotRunAgentHooks(t *testing.T) {
 	g := testGitRunner(t)
 
 	mirror, _ := g.EnsureMirror(state, origin, Credential{Kind: "none"})
-	dir, err := g.PrepareTree(state, "agent1", mirror, origin, "main", Credential{Kind: "none"})
+	dir, err := g.PrepareTree(state, "agent1", mirror, origin, "main")
 	if err != nil {
 		t.Fatalf("PrepareTree: %v", err)
 	}

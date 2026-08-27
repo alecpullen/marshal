@@ -22,7 +22,10 @@ func workspaceDirFor(stateDir, agentID string) string {
 //
 // The remote is repointed at the real URL afterwards so that S2b can push
 // without the agent tree depending on a server-internal path.
-func (g *gitRunner) PrepareTree(stateDir, agentID, mirror, url, ref string, cred Credential) (string, error) {
+//
+// PrepareTree takes no credential: its only remote is the local mirror,
+// which needs none. Authentication happens in EnsureMirror.
+func (g *gitRunner) PrepareTree(stateDir, agentID, mirror, url, ref string) (string, error) {
 	dir := workspaceDirFor(stateDir, agentID)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return "", fmt.Errorf("create workspace parent: %w", err)

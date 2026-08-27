@@ -1005,28 +1005,35 @@ func TestBuildSystemPromptDiscouragesGuessingFilePaths(t *testing.T) {
 	}
 }
 
-// The output-format block frames tools as being for repository facts and
-// edits, which points away from skill.load on conversational openers. The
-// reminder has to hold the final slot to counterweight it.
-func TestSkillReminderHoldsTheLastSlot(t *testing.T) {
-	idx := skills.NewIndex()
-	idx.Set("brainstorming", skills.Skill{Name: "brainstorming", Description: "design work"})
-
-	content := BuildSystemPrompt(RoleGeneral, nil, idx, nil, false).Content
-
-	if !strings.Contains(content, skillReminder) {
-		t.Fatal("system prompt should end with the skill reminder")
+func TestSkillDirectiveIsCondensed(t *testing.T) {
+	for _, want := range []string{
+		"skill.load",
+		"YOUR job",
+		"BEFORE acting",
+	} {
+		if !strings.Contains(skillDirective, want) {
+			t.Errorf("skillDirective missing %q:\n%s", want, skillDirective)
+		}
 	}
-	if idx := strings.Index(content, skillReminder); idx < strings.Index(content, baseOutputFormat) {
-		t.Fatal("skill reminder must come after the output format block")
+	if len(skillDirective) > 400 {
+		t.Errorf("skillDirective is %d chars, should be under 400 (was 1041)", len(skillDirective))
 	}
 }
 
-// With no skills installed the reminder is noise pointing at an empty list.
-func TestNoSkillReminderWhenNoSkills(t *testing.T) {
-	content := BuildSystemPrompt(RoleGeneral, nil, nil, nil, false).Content
-	if strings.Contains(content, skillReminder) {
-		t.Fatal("no reminder should appear when no skills are available")
+func TestSkillDirectiveStillMentionsAgentRun(t *testing.T) {
+	// The condensed directive should still mention agent.run for
+	// skill-driven subagents.
+	if !strings.Contains(skillDirective, "agent.run") {
+		t.Errorf("skillDirective should still mention agent.run:\n%s", skillDirective)
+	}
+}
+
+func TestSkillReminderDroppedFromPrompt(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{Name: "debug", Description: "Debugging"})
+	content := BuildSystemPrompt(RoleGeneral, nil, idx, nil, false).Content
+	if strings.Contains(content, "Reminder: check the Skills list") {
+		t.Errorf("skillReminder should not appear in the prompt:\n%s", content)
 	}
 }
 
@@ -1040,9 +1047,6 @@ func TestSkillDirectiveFavorsRelevance(t *testing.T) {
 	}
 	if !strings.Contains(skillDirective, "directly matches") {
 		t.Fatal("directive should require a direct task match")
-	}
-	if !strings.Contains(skillDirective, "already hands you a plan") {
-		t.Fatal("directive should call out the existing-plan case")
 	}
 }
 

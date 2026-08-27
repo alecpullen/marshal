@@ -263,19 +263,7 @@ const baseRules = `Rules:
 // also push back on over-loading: active skills are budgeted
 // (skills.max_active) and misfit loads waste both the budget and the
 // context window.
-const skillDirective = `Skills are instruction sets you load on demand with the skill.load tool. Deciding to load one is YOUR job — the user will not ask you to.
-
-Before you start any task, scan this list and load only the skills whose description directly matches what you are about to do. Load them BEFORE acting, not after. Some turns carry a separate "Skill suggestions" message ranking the roster against your request; treat it as a shortlist to check, not an instruction to load. If a loaded skill tells you to use another skill, weigh that claim against the task yourself before loading it. Do not load skills about writing plans or brainstorming approaches when the task already hands you a plan to execute. Active skills are limited, so spend them on the ones that apply.
-
-Call skill.load on a skill that is already active to re-read its full text if it has scrolled out of context. Call skill.unload when you are done with a skill so its body stops costing context.
-
-When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
-
-// skillReminder is the last line of the system prompt. It targets the case
-// the roster alone does not catch: a conversational opener with no repository
-// work in it yet, which is precisely when a design or process skill should
-// fire and when the model is least inclined to call a tool.
-const skillReminder = `Reminder: check the Skills list before your first action on a request, including requests that are only a discussion — designing a feature, planning an approach, or deciding how to build something all have skills that must be loaded BEFORE you reply. Loading a skill is itself a valid first action; do not answer first and load later.`
+const skillDirective = `Skills are instruction sets you load on demand with skill.load. Deciding to load one is YOUR job — load skills whose description directly matches what you are about to do, BEFORE acting. Active skills are budgeted; don't over-load. When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
 
 // BuildSkillHintMessage renders this turn's ranked skill suggestions as its
 // own system message.
@@ -613,15 +601,6 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	}
 	b.WriteString("\n\n")
 	b.WriteString(renderRoleAddendum(rp, nativeTools))
-	// The skill reminder is repeated last, after the output format, because
-	// the output-format block frames tools as being for repository facts and
-	// edits — which points away from skill.load on exactly the openers
-	// ("let's build X") where a skill matters most. The final instruction
-	// carries the most weight, so the roster gets the last word too.
-	if len(list) > 0 {
-		b.WriteString("\n\n")
-		b.WriteString(skillReminder)
-	}
 	if addendum != "" {
 		b.WriteString("\n\n## Agent Instructions\n\n")
 		b.WriteString(addendum)

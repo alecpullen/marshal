@@ -44,7 +44,7 @@ func (RepoSection) Render(d Data, width, maxRows int) []string {
 			}
 			parts = append(parts, fmt.Sprintf("%s %d%%", l.Name, l.Share))
 		}
-		rows = append(rows, " "+strings.Join(parts, "  "))
+		rows = append(rows, railRow("", strings.Join(parts, " · "), "", width))
 	}
 
 	if d.State != nil {

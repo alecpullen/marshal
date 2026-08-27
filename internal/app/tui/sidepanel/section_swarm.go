@@ -50,6 +50,10 @@ func elapsed(start, now time.Time) string {
 	return fmt.Sprintf("%d:%02d", int(d.Minutes()), int(d.Seconds())%60)
 }
 
+// elapsedCol is the width of the trailing "m:ss" column, sized so it lines
+// up with the token column beside it across every role row.
+const elapsedCol = 5
+
 func (SwarmSection) Render(d Data, width, maxRows int) []string {
 	rows := make([]string, 0, len(d.Swarm.Roles)*2)
 	for _, r := range d.Swarm.Roles {
@@ -57,8 +61,8 @@ func (SwarmSection) Render(d Data, width, maxRows int) []string {
 		if r.Tokens > 0 {
 			tok = strutil.CompactTokens(r.Tokens)
 		}
-		rows = append(rows, fmt.Sprintf(" %s %-12s %6s %5s",
-			roleGlyph(r.Status), r.Name, tok, elapsed(r.StartedAt, d.Now)))
+		right := fmt.Sprintf("%*s %*s", tokCol, tok, elapsedCol, elapsed(r.StartedAt, d.Now))
+		rows = append(rows, railRow(roleGlyph(r.Status), r.Name, right, width))
 		if r.Status == session.SwarmRoleActive && r.Detail != "" {
 			rows = append(rows, "   └ "+r.Detail)
 		}

@@ -85,15 +85,17 @@ func (ToolsSection) Render(d Data, width, maxRows int) []string {
 		if s.Slowest > slowest.Slowest {
 			slowest = s
 		}
-		line := fmt.Sprintf(" %-14s ×%d", shortToolName(s.Name), s.Calls)
+		// The error badge carries ANSI; railRow measures the right column
+		// with ansi.StringWidth so the escapes cost no cells.
+		right := fmt.Sprintf("×%d", s.Calls)
 		if s.Errors > 0 {
-			line += styleError(fmt.Sprintf(" (%d✘)", s.Errors))
+			right += styleError(fmt.Sprintf(" (%d✘)", s.Errors))
 		}
-		rows = append(rows, line)
+		rows = append(rows, railRow("", shortToolName(s.Name), right, width))
 	}
 	if slowest.Slowest > 0 {
-		rows = append(rows, fmt.Sprintf(" slowest  %s %.1fs",
-			shortToolName(slowest.Name), slowest.Slowest.Seconds()))
+		rows = append(rows, railRow("", "slowest "+shortToolName(slowest.Name),
+			fmt.Sprintf("%.1fs", slowest.Slowest.Seconds()), width))
 	}
 
 	if maxRows > 0 && len(rows) > maxRows {

@@ -40,6 +40,15 @@ func Bar(fraction float64, width int) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
+// pctCol is the width of the trailing percentage column, and tokCol the
+// token count beside it. Both the fill bar and every composition row end
+// flush with pctCol, so the aggregate percentage sits directly above the
+// per-kind percentages instead of one cell off.
+const (
+	pctCol = 4 // "100%"
+	tokCol = 5 // "128k"
+)
+
 func (ContextSection) Render(d Data, width, maxRows int) []string {
 	u := d.Pack.TokenUsage
 	rows := make([]string, 0, 8)
@@ -48,7 +57,10 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 	if u.MaxTokens > 0 {
 		frac = float64(u.EstimatedTokens) / float64(u.MaxTokens)
 	}
-	barRow := " " + Bar(frac, max(width-8, 4)) + fmt.Sprintf(" %3d%%", int(frac*100+0.5))
+	// The bar fills whatever the reserved percentage column leaves, so its
+	// trailing "%" lands in the same cell as the rows beneath it.
+	barRow := railRow("", Bar(frac, max(railBudget("", pct(frac), width), 4)),
+		pct(frac), width)
 	if u.MaxTokens > 0 && frac >= contextWarnThreshold {
 		barRow = styleWarning(barRow)
 	}
@@ -58,28 +70,28 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 		if s.EstimatedTokens == 0 {
 			continue
 		}
-		pct := 0
+		share := 0.0
 		if u.EstimatedTokens > 0 {
-			pct = int(float64(s.EstimatedTokens)/float64(u.EstimatedTokens)*100 + 0.5)
+			share = float64(s.EstimatedTokens) / float64(u.EstimatedTokens)
 		}
-		label := ansi.Truncate(s.Title, max(width-14, 4), "…")
-		rows = append(rows, fmt.Sprintf(" %-*s %6s %3d%%",
-			max(width-14, 4), label, strutil.CompactTokens(s.EstimatedTokens), pct))
+		right := fmt.Sprintf("%*s %*s", tokCol,
+			strutil.CompactTokens(s.EstimatedTokens), pctCol, pct(share))
+		rows = append(rows, railRow("", s.Title, right, width))
 	}
 
 	if stats := Telemetry(d.Turns, d.Now); len(stats.Series) > 0 {
-		rows = append(rows, fmt.Sprintf(" %s  avg %s/turn",
-			Sparkline(stats.Series, max(width-18, 4)),
-			strutil.CompactTokens(stats.AvgTokens)))
+		avg := fmt.Sprintf("avg %s/turn", strutil.CompactTokens(stats.AvgTokens))
+		rows = append(rows, railRow("",
+			Sparkline(stats.Series, max(railBudget("", avg, width), 4)), avg, width))
 
-		detail := fmt.Sprintf(" %s/min", strutil.CompactTokens(stats.BurnPerMin))
+		detail := fmt.Sprintf("%s/min", strutil.CompactTokens(stats.BurnPerMin))
 		if stats.AvgTokens > 0 && u.MaxTokens > u.EstimatedTokens {
 			detail += fmt.Sprintf(" · ~%d turns", (u.MaxTokens-u.EstimatedTokens)/stats.AvgTokens)
 		}
 		if stats.CacheHitPct > 0 {
 			detail += fmt.Sprintf(" · %d%% cache", stats.CacheHitPct)
 		}
-		rows = append(rows, detail)
+		rows = append(rows, railRow("", detail, "", width))
 	}
 
 	for i := range rows {
@@ -91,13 +103,18 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 	return rows
 }
 
+// pct renders a fraction as a right-aligned whole-percent cell.
+func pct(fraction float64) string {
+	return fmt.Sprintf("%d%%", int(fraction*100+0.5))
+}
+
 func (ContextSection) OneLine(d Data, width int) string {
 	u := d.Pack.TokenUsage
-	pct := 0
+	frac := 0.0
 	if u.MaxTokens > 0 {
-		pct = int(float64(u.EstimatedTokens)/float64(u.MaxTokens)*100 + 0.5)
+		frac = float64(u.EstimatedTokens) / float64(u.MaxTokens)
 	}
-	return ansi.Truncate(fmt.Sprintf("ctx %s/%s · %d%%",
+	return ansi.Truncate(fmt.Sprintf("ctx %s/%s · %s",
 		strutil.CompactTokens(u.EstimatedTokens),
-		strutil.CompactTokens(u.MaxTokens), pct), width, "…")
+		strutil.CompactTokens(u.MaxTokens), pct(frac)), width, "…")
 }

@@ -72,6 +72,9 @@ func FileStats(events []registry.AuditEvent) []FileStat {
 		}
 		if len(e.FilesChanged) > 0 {
 			for _, p := range e.FilesChanged {
+				if p == "" {
+					continue
+				}
 				touch(p, e.Timestamp).Edits++
 			}
 			continue

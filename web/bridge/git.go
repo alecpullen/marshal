@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // hardenedGitArgs prefixes a caller's git invocation with flags that
@@ -48,7 +49,15 @@ func gitEnv(askpassBin string, cred Credential) []string {
 	case "ssh":
 		// The SSH key is passed via GIT_SSH_COMMAND so git invokes ssh
 		// with the key pinned and never attempts interactive password
-		// prompts or the user's default identity agent.
+		// prompts or the user's default identity agent. The key path is
+		// validated to contain no spaces or shell metacharacters: a path
+		// like "/tmp/key -o ProxyCommand=evil" would inject ssh options.
+		if strings.ContainsAny(cred.KeyPath, " \t\n\"'\\;&|`$()") {
+			// Refuse to build the command rather than risk injection.
+			// The empty string here causes git to fail with a clear
+			// "no GIT_SSH_COMMAND" rather than executing a hostile one.
+			break
+		}
 		env = append(env,
 			"GIT_SSH_COMMAND=ssh -i "+cred.KeyPath+
 				" -o IdentitiesOnly=yes -o BatchMode=yes",
@@ -68,6 +77,11 @@ type gitRunner struct {
 	bin        string
 	askpassBin string
 	exec       gitExecFunc
+
+	// mirrorLocks serialises concurrent EnsureMirror calls for the same
+	// URL so two agents spawning against one repo do not race on the
+	// shared bare mirror.
+	mirrorLocks sync.Map // map[string]*sync.Mutex
 }
 
 // newGitRunner locates the git binary on PATH and the askpass shim
@@ -84,6 +98,13 @@ func newGitRunner() (*gitRunner, error) {
 	}
 	askpassBin := self + "-askpass"
 	return &gitRunner{bin: bin, askpassBin: askpassBin}, nil
+}
+
+// mirrorMutex returns the lock for a specific mirror directory,
+// creating it on first use.
+func (g *gitRunner) mirrorMutex(dir string) *sync.Mutex {
+	v, _ := g.mirrorLocks.LoadOrStore(dir, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // run executes git with dir as the working directory and cred supplying

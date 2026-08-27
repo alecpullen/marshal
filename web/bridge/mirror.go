@@ -25,6 +25,12 @@ func mirrorDir(stateDir, url string) string {
 func (g *gitRunner) EnsureMirror(stateDir, url string, cred Credential) (string, error) {
 	dir := mirrorDir(stateDir, url)
 
+	// Serialise concurrent calls for the same URL so two agents spawning
+	// against one repo do not race on the shared bare mirror.
+	mu := g.mirrorMutex(dir)
+	mu.Lock()
+	defer mu.Unlock()
+
 	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err == nil {
 		// --prune so deleted upstream branches do not linger forever.
 		if _, err := g.run(dir, cred, "fetch", "--prune"); err != nil {

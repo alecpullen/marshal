@@ -417,7 +417,6 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		return "", err
 	}
 
-	profile, _ := ResolveProfile(root, opts.Profile)
 	a := Agent{
 		ID:        newAgentID(),
 		Name:      opts.Name,
@@ -426,7 +425,6 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		CreatedAt: time.Now().UTC(),
 		OwnerID:   DefaultOwnerID,
 		Origin:    origin,
-		Profile:   profile,
 	}
 	a.SourceKind = src.kind
 	a.SourceRef = src.ref
@@ -465,13 +463,31 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	}
 	a.Project = workDir
 
+	// Resolve the runtime profile now that workDir is known, so a
+	// git-sourced repo with a .devcontainer/devcontainer.json is
+	// honoured. For local spawns workDir == root.
+	profile, _ := ResolveProfile(workDir, opts.Profile)
+	a.Profile = profile
+
 	if err := f.slots.acquire(ctx); err != nil {
+		if src.kind == "git" && f.git != nil {
+			_ = f.git.RemoveTree(f.stateDir, a.ID)
+		}
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
 	}
 
 	rt, err := f.startRuntime(a)
 	if err != nil {
-		f.slots.release()
+		// startRuntime stores the failed runtime in f.runtimes so
+		// ProjectStatus can report the error. For local spawns we
+		// preserve that behaviour (release the slot, leave the
+		// runtime). For git spawns the tree must be cleaned up, and
+		// the failed runtime is not worth keeping.
+		if src.kind == "git" {
+			f.stopAgent(a.ID)
+		} else {
+			f.slots.release()
+		}
 		return "", err
 	}
 
@@ -810,15 +826,15 @@ func (f *Fleet) stopAgent(id string) {
 	}
 	f.mu.Unlock()
 	if rt != nil {
-		// A git-sourced agent has a prepared working tree that must be
-		// removed when the agent stops; the shared mirror is left alone.
+		// Stop the child first so it is no longer writing to the
+		// bind-mounted workspace, then remove the git-sourced tree.
+		rt.child.Stop()
 		if rt.sourceKind == "git" && f.git != nil {
 			if err := f.git.RemoveTree(f.stateDir, id); err != nil {
 				slog.Default().Warn("webbridge: remove agent workspace failed",
 					"agent", id, "err", err)
 			}
 		}
-		rt.child.Stop()
 		f.slots.release()
 	}
 }

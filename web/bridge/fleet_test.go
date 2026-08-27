@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -521,6 +522,33 @@ func TestSpawnAgainstRawURLIsReadOnly(t *testing.T) {
 	a, _ := f.ws.Agent(id)
 	if !a.ReadOnly {
 		t.Fatal("an unregistered URL must produce a read-only agent")
+	}
+	if a.TargetBranch != "main" {
+		t.Errorf("TargetBranch = %q, want main", a.TargetBranch)
+	}
+}
+
+func TestStopAgentRemovesGitSourcedTree(t *testing.T) {
+	f := testFleet(t)
+	if f.git == nil {
+		t.Skip("git not installed")
+	}
+	if err := f.ws.PutRepo(Repo{ID: "r1", URL: newBareRepoFixture(t),
+		Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := f.Spawn(context.Background(), "", SpawnOptions{RepoID: "r1", Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, _ := f.ws.Agent(id)
+	treeDir := workspaceDirFor(f.stateDir, a.ID)
+	if _, err := os.Stat(treeDir); err != nil {
+		t.Fatalf("working tree was not created: %v", err)
+	}
+	f.Pause(id)
+	if _, err := os.Stat(treeDir); !os.IsNotExist(err) {
+		t.Fatalf("working tree was not removed after stop: %v", err)
 	}
 }
 

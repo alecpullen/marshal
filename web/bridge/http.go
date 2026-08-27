@@ -121,6 +121,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/pending", s.listPending)
 	s.mux.HandleFunc("POST /api/pending/{id}/approve", s.approvePending)
 	s.mux.HandleFunc("POST /api/pending/{id}/deny", s.denyPending)
+	s.mux.HandleFunc("GET /api/repos/{id}/issues", s.listRepoIssues)
+	s.mux.HandleFunc("POST /api/repos/{id}/issues/{number}/spawn", s.spawnFromIssue)
 	// NOTE: with a token configured this stream requires an
 	// Authorization header, which the browser-native EventSource API
 	// cannot send. The SPA must consume SSE over fetch (Task 7 does);
@@ -819,4 +821,34 @@ func (s *Server) denyPending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "denied"})
+}
+
+// listRepoIssues returns the open issues for a registered repo.
+func (s *Server) listRepoIssues(w http.ResponseWriter, r *http.Request) {
+	issues, err := s.fleet.ListRepoIssues(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, issues)
+}
+
+// spawnFromIssue turns one issue into a submission.
+func (s *Server) spawnFromIssue(w http.ResponseWriter, r *http.Request) {
+	number := r.PathValue("number")
+	if number == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "issue number is required"})
+		return
+	}
+	var n int
+	if _, err := fmt.Sscanf(number, "%d", &n); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "issue number must be an integer"})
+		return
+	}
+	res, err := s.fleet.SubmitIssue(r.Context(), r.PathValue("id"), n)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, res)
 }

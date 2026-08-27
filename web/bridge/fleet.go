@@ -184,11 +184,13 @@ func (f *Fleet) spawnFromRequest(ctx context.Context, req SpawnRequest) (string,
 	if err != nil {
 		return "", err
 	}
-	// Record the submitting client on the agent so per-client scoping
-	// (list, status, result, send, cancel) is possible.
-	if req.ClientID != "" {
+	// Record the submitting client and issue origin on the agent so
+	// per-client scoping and PR-to-issue linking work.
+	if req.ClientID != "" || req.IssueNumber != 0 || req.IssueURL != "" {
 		if a, ok := f.ws.Agent(id); ok {
 			a.ClientID = req.ClientID
+			a.IssueNumber = req.IssueNumber
+			a.IssueURL = req.IssueURL
 			if err := f.ws.PutAgent(a); err != nil {
 				return id, fmt.Errorf("persist client id on agent: %w", err)
 			}

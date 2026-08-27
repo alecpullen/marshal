@@ -32,6 +32,10 @@ type SpawnRequest struct {
 	// exclusive with Prompt.
 	Plan string
 	Mode string
+	// IssueNumber and IssueURL are set when the submission came from an
+	// issue, so the exit path can link the pull request back to it.
+	IssueNumber int
+	IssueURL    string
 }
 
 // SubmitResult reports what happened. Status is "pending" or "running".
@@ -86,6 +90,7 @@ func (f *Fleet) Submit(ctx context.Context, req SpawnRequest) (SubmitResult, err
 			Title: req.Title, RepoID: req.RepoID, Ref: req.Ref,
 			Prompt: req.Prompt, Plan: req.Plan, Mode: req.Mode,
 			CreatedAt: now, ExpiresAt: now.Add(pendingTTL),
+			IssueNumber: req.IssueNumber, IssueURL: req.IssueURL,
 		}
 		if err := f.ws.PutPending(p); err != nil {
 			return SubmitResult{}, fmt.Errorf("persist pending submission: %w", err)
@@ -145,6 +150,7 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 	agentID, err := f.spawnFromRequest(ctx, SpawnRequest{
 		Origin: p.Origin, ClientID: p.ClientID, RepoID: p.RepoID, Ref: p.Ref,
 		Title: p.Title, Prompt: p.Prompt, Plan: p.Plan, Mode: p.Mode,
+		IssueNumber: p.IssueNumber, IssueURL: p.IssueURL,
 	})
 	if err != nil {
 		return "", err

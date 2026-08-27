@@ -143,6 +143,10 @@ type PendingSpawn struct {
 	Mode      string    `json:"mode,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	// IssueNumber and IssueURL are set when the submission came from an
+	// issue, so the exit path can link the pull request back to it.
+	IssueNumber int    `json:"issueNumber,omitempty"`
+	IssueURL    string `json:"issueUrl,omitempty"`
 }
 
 type workspaceFile struct {

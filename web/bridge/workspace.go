@@ -51,6 +51,9 @@ type Agent struct {
 	OwnerID string `json:"ownerId"`
 	// Origin records how the agent was created (OriginUI, OriginCLI, …).
 	Origin string `json:"origin"`
+	// ClientID is the MCP client that submitted this agent, when
+	// Origin is "mcp". Empty for UI/CLI spawns.
+	ClientID string `json:"clientId,omitempty"`
 	// Profile is the resolved container shape this agent runs under.
 	Profile RuntimeProfile `json:"profile"`
 	// SourceKind is the workspace source ("local" in S1; "git" in S2).

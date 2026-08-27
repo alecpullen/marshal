@@ -159,6 +159,44 @@ func newAgentID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// clientByID returns a registered MCP client by id.
+func (f *Fleet) clientByID(id string) (MCPClient, bool) {
+	return f.ws.Client(id)
+}
+
+// Clients returns all registered MCP clients.
+func (f *Fleet) Clients() []MCPClient {
+	return f.ws.Clients()
+}
+
+// spawnFromRequest maps an intake SpawnRequest onto SpawnOptions and
+// calls the existing Fleet.Spawn.
+func (f *Fleet) spawnFromRequest(ctx context.Context, req SpawnRequest) (string, error) {
+	opts := SpawnOptions{
+		Name:   req.Title,
+		Mode:   req.Mode,
+		Prompt: req.Prompt,
+		Origin: req.Origin,
+		RepoID: req.RepoID,
+		Ref:    req.Ref,
+	}
+	id, err := f.Spawn(ctx, "", opts)
+	if err != nil {
+		return "", err
+	}
+	// Record the submitting client on the agent so per-client scoping
+	// (list, status, result, send, cancel) is possible.
+	if req.ClientID != "" {
+		if a, ok := f.ws.Agent(id); ok {
+			a.ClientID = req.ClientID
+			if err := f.ws.PutAgent(a); err != nil {
+				return id, fmt.Errorf("persist client id on agent: %w", err)
+			}
+		}
+	}
+	return id, nil
+}
+
 // runtimeProbe is the memoised result of looking for a container runtime.
 type runtimeProbe struct {
 	path string // absolute path, pinned at detect time

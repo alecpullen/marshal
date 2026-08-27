@@ -94,10 +94,14 @@ func newGitRunner() (*gitRunner, error) {
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("resolve executable dir: %w", err)
+		return nil, fmt.Errorf("resolve executable for GIT_ASKPASS: %w", err)
 	}
-	askpassBin := self + "-askpass"
-	return &gitRunner{bin: bin, askpassBin: askpassBin}, nil
+	// GIT_ASKPASS is this same binary re-executed in askpass mode
+	// (MARSHAL_ASKPASS=1), not a separate helper: there is no
+	// webbridge-askpass to ship, and a path that does not exist fails
+	// silently at clone time because GIT_TERMINAL_PROMPT=0 leaves no
+	// fallback prompt.
+	return &gitRunner{bin: bin, askpassBin: self}, nil
 }
 
 // mirrorMutex returns the lock for a specific mirror directory,

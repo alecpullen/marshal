@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"os"
+	"os/exec"
 	"reflect"
 	"testing"
 )
@@ -89,6 +90,46 @@ func TestGitRunnerHardensEveryCall(t *testing.T) {
 	}
 	if !reflect.DeepEqual(call, want) {
 		t.Fatalf("exec args = %v, want hardened %v", call, want)
+	}
+}
+
+func TestNewGitRunnerAskpassBinIsExecutable(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	g, err := newGitRunner()
+	if err != nil {
+		t.Fatalf("newGitRunner: %v", err)
+	}
+
+	// GIT_ASKPASS must name something git can actually exec. A path that
+	// does not exist fails silently at clone time, because
+	// GIT_TERMINAL_PROMPT=0 leaves no fallback prompt.
+	info, err := os.Stat(g.askpassBin)
+	if err != nil {
+		t.Fatalf("askpassBin %q does not exist: %v", g.askpassBin, err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatalf("askpassBin %q is not executable (mode %v)", g.askpassBin, info.Mode())
+	}
+}
+
+func TestNewGitRunnerAskpassIsThisBinary(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	g, err := newGitRunner()
+	if err != nil {
+		t.Fatalf("newGitRunner: %v", err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The askpass handler is a mode of this same binary
+	// (cmd/webbridge/main.go, MARSHAL_ASKPASS=1), not a separate tool.
+	if g.askpassBin != self {
+		t.Fatalf("askpassBin = %q, want this executable %q", g.askpassBin, self)
 	}
 }
 

@@ -3,7 +3,10 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -97,8 +100,23 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 
 	a.Branch = branch
 	a.PushedAt = time.Now().UTC()
-	if url := extractPRURL(out, f.remoteURLFor(a)); url != "" {
-		a.PRUrl = url
+
+	// Prefer an API-created pull request: it carries a title, a body,
+	// draft state and an issue link, none of which a pushed URL can.
+	//
+	// Every failure here falls through to extraction rather than
+	// returning. The push has already succeeded by this point, and
+	// failing the exit would strand work that is safely on the remote.
+	if pr, err := f.createPR(ctx, a, branch, verify); err == nil {
+		a.PRUrl = pr.URL
+	} else {
+		if !errors.Is(err, errNoForge) {
+			slog.Default().Warn("webbridge: create pull request failed; falling back to the pushed URL",
+				"agent", a.ID, "err", err)
+		}
+		if url := extractPRURL(out, f.remoteURLFor(a)); url != "" {
+			a.PRUrl = url
+		}
 	}
 	if !passed {
 		rec := *opts.Override
@@ -169,6 +187,76 @@ func (f *Fleet) credentialForAgent(a Agent) (Credential, error) {
 		return Credential{Kind: "none"}, nil
 	}
 	return f.creds.Resolve(a.OwnerID, r.CredRef)
+}
+
+// forgeFor resolves the forge and HTTP-capable credential for a repo.
+// It returns errNoForge when the repo has no forge declared or its
+// credential cannot make HTTP API calls — the documented degradation
+// path, not an error worth logging.
+func (f *Fleet) forgeFor(repo Repo) (Forge, Credential, error) {
+	if repo.Forge == "" {
+		return nil, Credential{}, errNoForge
+	}
+	cred, err := f.creds.Resolve(repo.OwnerID, repo.CredRef)
+	if err != nil {
+		return nil, Credential{}, err
+	}
+	if cred.Kind != "pat" {
+		return nil, Credential{}, errNoForge
+	}
+	forge, err := ForgeFor(repo, http.DefaultClient)
+	if err != nil {
+		return nil, Credential{}, err
+	}
+	return forge, cred, nil
+}
+
+// createPR creates a pull request through the forge API when possible.
+// Returns errNoForge when the repo has no forge or a non-pat credential.
+func (f *Fleet) createPR(ctx context.Context, a Agent, branch string, verify *gateResult) (PR, error) {
+	repo, ok := f.ws.Repo(a.SourceRef)
+	if !ok {
+		return PR{}, errNoForge
+	}
+	forge, cred, err := f.forgeFor(repo)
+	if err != nil {
+		return PR{}, err
+	}
+	return forge.CreatePR(ctx, repo, PRRequest{
+		Title: a.Name,
+		Body:  prBody(a, verify),
+		Head:  branch,
+		Base:  a.TargetBranch,
+	}, cred)
+}
+
+// prBody assembles the pull request body: what the agent did, the
+// verify outcome, "Closes #N" when the agent was spawned from an issue,
+// and the override reason when a gate override was applied.
+func prBody(a Agent, verify *gateResult) string {
+	var b strings.Builder
+	if a.Prompt != "" {
+		fmt.Fprintf(&b, "%s\n\n", a.Prompt)
+	}
+	if verify != nil {
+		if verify.OK {
+			b.WriteString("Verification: passed\n")
+		} else if verify.Skipped {
+			b.WriteString("Verification: skipped (no commands found)\n")
+		} else {
+			fmt.Fprintf(&b, "Verification: failed (%s)\n", verify.FailedCommand)
+		}
+	}
+	if a.IssueNumber != 0 {
+		fmt.Fprintf(&b, "\nCloses #%d\n", a.IssueNumber)
+	}
+	if a.GateOverride != nil {
+		fmt.Fprintf(&b, "\nGate override: %s\n", a.GateOverride.Reason)
+		if a.GateOverride.FailedCommand != "" {
+			fmt.Fprintf(&b, "Failed command: %s\n", a.GateOverride.FailedCommand)
+		}
+	}
+	return b.String()
 }
 
 // remoteURLFor returns the remote URL for PR extraction.

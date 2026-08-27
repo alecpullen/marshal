@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"marshal/internal/acp"
 	"marshal/internal/app"
@@ -15,6 +16,7 @@ import (
 
 var appRunner = app.Run
 var acpRunner = acp.Run
+var acpListener = acp.ListenAndServe
 var historyRunner = runHistory
 var calibrateRunner = runCalibrateTokens
 var pluginRunner = runPlugin
@@ -56,7 +58,18 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return calibrateRunner(args[1:], stdout)
 	}
 	if len(args) > 0 && args[0] == "acp" {
-		return acpRunner(ctx, stdin, stdout, stderr)
+		spec, err := acpListenSpec(args[1:])
+		if err != nil {
+			return err
+		}
+		if spec == "" {
+			return acpRunner(ctx, stdin, stdout, stderr)
+		}
+		network, addr, err := acp.ParseListenAddr(spec)
+		if err != nil {
+			return err
+		}
+		return acpListener(ctx, network, addr, stderr)
 	}
 	if len(args) > 0 && args[0] == "plugin" {
 		return pluginRunner(ctx, args[1:], stdin, stdout, stderr)
@@ -65,6 +78,23 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return fmt.Errorf("unknown argument %q", args[0])
 	}
 	return appRunner(ctx, stdout)
+}
+
+// acpListenSpec extracts the value of --listen (or --listen=VALUE) from
+// the acp subcommand's arguments. An empty return means stdio mode.
+func acpListenSpec(args []string) (string, error) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--listen":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("marshal acp: --listen requires an address")
+			}
+			return args[i+1], nil
+		case strings.HasPrefix(args[i], "--listen="):
+			return strings.TrimPrefix(args[i], "--listen="), nil
+		}
+	}
+	return "", nil
 }
 
 // recordPermanentTrust writes a permanent trust record for the current working

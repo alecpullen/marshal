@@ -365,3 +365,65 @@ func TestAgentLaneHeaderFillsExactlyOneRow(t *testing.T) {
 		}
 	}
 }
+
+// The agent lane body rows must start their label text at the same column
+// as the todo panel body rows, so the two panels look aligned when stacked.
+func TestAgentLaneBodyTextAlignsWithTodoPanelBody(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	// A running subagent shows the spinner in its gutter; without it the
+	// lane gutter collapses to 2 cells and cannot match the todo panel's
+	// 3-cell gutter. Mirror TestAgentLaneShowsSpinnerWhileRunning.
+	m.spinnerFrame = "⠋"
+	registerRunningSubagent(t, &m, "reviewer")
+	todos := []native.TodoItem{{Content: "a task", Status: native.TodoInProgress}}
+	if err := m.state.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+
+	laneRows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
+	todoRows := strings.Split(strings.TrimRight(m.renderTodoPanel(), "\n"), "\n")
+	if len(laneRows) < 2 || len(todoRows) < 2 {
+		t.Fatalf("need at least 2 rows in each panel; lane=%d todo=%d", len(laneRows), len(todoRows))
+	}
+
+	// Find the text-start column (first non-space, non-rail char) in a body row.
+	textStartCol := func(row string) int {
+		s := ansi.Strip(row)
+		// Skip the rail character (first non-space).
+		col := 0
+		// Skip leading spaces.
+		for col < len(s) && s[col] == ' ' {
+			col++
+		}
+		// Skip the rail character.
+		railStr := glyph.Rail
+		if strings.HasPrefix(s[col:], railStr) {
+			col += len(railStr)
+		}
+		// Skip the gutter (space + glyph + space = 3 cells, but the first
+		// space may already be consumed). Skip remaining spaces, one glyph,
+		// then spaces again.
+		for col < len(s) && s[col] == ' ' {
+			col++
+		}
+		// Skip the status glyph / spinner (one character).
+		if col < len(s) && s[col] != ' ' {
+			col++
+		}
+		// Skip trailing space(s) after the glyph.
+		for col < len(s) && s[col] == ' ' {
+			col++
+		}
+		return col
+	}
+
+	laneBody := laneRows[len(laneRows)-1] // last row is a body row
+	todoBody := todoRows[len(todoRows)-1] // last row is a body row
+	laneCol := textStartCol(laneBody)
+	todoCol := textStartCol(todoBody)
+	if laneCol != todoCol {
+		t.Fatalf("agent lane body text starts at col %d, todo panel body text starts at col %d\nlane: %q\ntodo: %q",
+			laneCol, todoCol, ansi.Strip(laneBody), ansi.Strip(todoBody))
+	}
+}

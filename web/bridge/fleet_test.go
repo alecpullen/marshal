@@ -14,7 +14,7 @@ func testFleet(t *testing.T) *Fleet {
 	}
 	f := NewFleet(ws, "unused")
 	bin, args, env := helperCommand("registry")
-	f.newChild = func(root string) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
 	return f
 }
@@ -26,19 +26,19 @@ func TestFleetSpawnsChildLazilyPerProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(f.runtimes) != 1 {
-		t.Fatalf("runtimes = %d", len(f.runtimes))
+		t.Fatalf("runtimes = %d, want 1", len(f.runtimes))
 	}
 	if _, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "two"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.runtimes) != 1 {
-		t.Fatalf("same project spawned another runtime")
+	if len(f.runtimes) != 2 {
+		t.Fatalf("same project spawned same runtime count, want 2")
 	}
 	if _, err := f.Spawn(ctx, "/home/u/b", SpawnOptions{Name: "three"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.runtimes) != 2 {
-		t.Fatalf("runtimes = %d, want 2", len(f.runtimes))
+	if len(f.runtimes) != 3 {
+		t.Fatalf("runtimes = %d, want 3", len(f.runtimes))
 	}
 }
 
@@ -92,7 +92,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	}
 	f := NewFleet(ws, "unused")
 	bin, args, env := helperCommand("registry-merged")
-	f.newChild = func(root string) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
 
 	ctx, cancel := testContext(t)
@@ -193,5 +193,66 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	statuses := f.ProjectStatus()
 	if len(statuses) != 1 || statuses[0].Available || statuses[0].Error == "" {
 		t.Fatalf("statuses = %+v", statuses)
+	}
+}
+
+func TestTwoAgentsOnOneProjectGetSeparateRuntimes(t *testing.T) {
+	f := testFleet(t)
+
+	first, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "one"})
+	if err != nil {
+		t.Fatalf("Spawn first: %v", err)
+	}
+	second, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "two"})
+	if err != nil {
+		t.Fatalf("Spawn second: %v", err)
+	}
+	if first == second {
+		t.Fatal("both spawns returned the same agent id")
+	}
+
+	rt1, err := f.runtimeForAgent(first)
+	if err != nil {
+		t.Fatalf("runtimeForAgent(first): %v", err)
+	}
+	rt2, err := f.runtimeForAgent(second)
+	if err != nil {
+		t.Fatalf("runtimeForAgent(second): %v", err)
+	}
+	if rt1 == rt2 {
+		t.Fatal("two agents on one project shared a runtime; each needs its own container")
+	}
+	if rt1.child == rt2.child {
+		t.Fatal("two agents shared a Child")
+	}
+}
+
+func TestAgentIDIsMintedBeforeTheSessionExists(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	rt, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatalf("runtimeForAgent: %v", err)
+	}
+	if rt.id != id {
+		t.Fatalf("runtime id = %q, want %q", rt.id, id)
+	}
+	// The ACP session id is assigned by the agent and is a separate value.
+	if rt.sessionID == id {
+		t.Fatal("agent id and ACP session id must be distinct values")
+	}
+}
+
+func TestNewAgentIDIsUnique(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 1000; i++ {
+		id := newAgentID()
+		if seen[id] {
+			t.Fatalf("newAgentID collided on %q", id)
+		}
+		seen[id] = true
 	}
 }

@@ -256,9 +256,9 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Prompt != "" {
-		if reg, e := s.fleet.RegistryForSession(id); e == nil {
+		if rt, e := s.fleet.RuntimeForSession(id); e == nil {
 			go func() {
-				if e := reg.Prompt(context.Background(), id, body.Prompt); e != nil {
+				if e := rt.reg.Prompt(context.Background(), rt.sessionID, body.Prompt); e != nil {
 					slog.Default().Warn("webbridge: first prompt failed", "agent", id, "err", e)
 				}
 			}()
@@ -336,22 +336,24 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 	log.ServeSSE(w, r)
 }
 
-// listSessions proxies ACP session/list: all sessions known to the
-// child for a cwd, tracked or not.
-func (s *Server) registryForSession(id string) (*Registry, *EventLog, error) {
+// registryForSession resolves an id (agent id or ACP session id) to the
+// owning Registry, its event log, and the ACP session id to address
+// registry calls with. In the non-fleet path the id is already the
+// session id.
+func (s *Server) registryForSession(id string) (*Registry, *EventLog, string, error) {
 	if s.fleet != nil {
 		rt, err := s.fleet.RuntimeForSession(id)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		return rt.reg, rt.log, nil
+		return rt.reg, rt.log, rt.sessionID, nil
 	}
-	return s.reg, s.log, nil
+	return s.reg, s.log, id, nil
 }
 
 func (s *Server) registryForRoot(root string) (*Registry, *EventLog, error) {
 	if s.fleet != nil {
-		rt, err := s.fleet.runtimeFor(root)
+		rt, err := s.fleet.runtimeForRoot(root)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -430,15 +432,16 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var reg *Registry
 	var log *EventLog
+	var sessionID string
 	var err error
 	cwd := body.Cwd
 	if s.fleet != nil {
-		reg, log, err = s.registryForSession(id)
+		reg, log, sessionID, err = s.registryForSession(id)
 	} else {
 		if cwd == "" {
 			cwd = s.reg.RootCwd
 		}
-		reg, log = s.reg, s.log
+		reg, log, sessionID = s.reg, s.log, id
 	}
 	if err != nil {
 		writeErr(w, err)
@@ -448,28 +451,28 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cwd is required (body or configured root)"})
 		return
 	}
-	if err := reg.Load(r.Context(), cwd, id); err != nil {
+	if err := reg.Load(r.Context(), cwd, sessionID); err != nil {
 		writeErr(w, err)
 		return
 	}
-	events := log.Tail(id)
+	events := log.Tail(sessionID)
 	if events == nil {
 		events = []Event{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sessionId": id,
+		"sessionId": sessionID,
 		"events":    events,
 	})
 }
 
 // deleteSession removes the session record.
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
-	reg, _, err := s.registryForSession(r.PathValue("id"))
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if err := reg.Delete(r.Context(), r.PathValue("id")); err != nil {
+	if err := reg.Delete(r.Context(), sessionID); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -482,12 +485,12 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 // the bridge-side turn_end event carries the terminal status.
 func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	reg, _, err := s.registryForSession(id)
+	reg, _, sessionID, err := s.registryForSession(id)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	info, ok := reg.lookup(id)
+	info, ok := reg.lookup(sessionID)
 	if !ok {
 		writeErr(w, ErrUnknownSession)
 		return
@@ -507,8 +510,8 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		if err := reg.Prompt(context.Background(), id, body.Text); err != nil {
-			slog.Default().Warn("webbridge: prompt turn failed", "session", id, "err", err)
+		if err := reg.Prompt(context.Background(), sessionID, body.Text); err != nil {
+			slog.Default().Warn("webbridge: prompt turn failed", "session", sessionID, "err", err)
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
@@ -516,12 +519,12 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 
 // cancel interrupts the in-flight turn.
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
-	reg, _, err := s.registryForSession(r.PathValue("id"))
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if err := reg.Cancel(r.Context(), r.PathValue("id")); err != nil {
+	if err := reg.Cancel(r.Context(), sessionID); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -540,12 +543,12 @@ func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
 		return
 	}
-	reg, _, err := s.registryForSession(r.PathValue("id"))
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if err := reg.Steer(r.Context(), r.PathValue("id"), body.Text); err != nil {
+	if err := reg.Steer(r.Context(), sessionID, body.Text); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -564,12 +567,12 @@ func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode is required"})
 		return
 	}
-	reg, _, err := s.registryForSession(r.PathValue("id"))
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if err := reg.SetMode(r.Context(), r.PathValue("id"), body.Mode); err != nil {
+	if err := reg.SetMode(r.Context(), sessionID, body.Mode); err != nil {
 		writeErr(w, err)
 		return
 	}

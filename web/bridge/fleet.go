@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,11 +17,26 @@ import (
 
 var ErrUnknownProject = errors.New("bridge: unknown project")
 
-type projectRuntime struct {
-	root     string
-	child    *Child
-	reg      *Registry
-	log      *EventLog
+// ErrUnknownAgent is returned by agent-scoped methods for ids the Fleet
+// does not track. The HTTP layer maps it to 404.
+var ErrUnknownAgent = errors.New("bridge: unknown agent")
+
+// agentRuntime is one agent: its own container, its own JSON-RPC child,
+// its own registry and event log. Two agents on the same project share
+// nothing.
+type agentRuntime struct {
+	id      string // bridge-minted, names the container
+	root    string // project root
+	profile RuntimeProfile
+
+	child *Child
+	reg   *Registry
+	log   *EventLog
+
+	// sessionID is the ACP session inside this agent, assigned by the
+	// agent itself once session/new returns. Empty until then.
+	sessionID string
+
 	spawnErr error
 }
 
@@ -38,68 +55,166 @@ type ProjectStatus struct {
 }
 
 type Fleet struct {
-	ws             *Workspace
-	marshalBin     string
-	fleetLog       *EventLog
-	live           *liveState
-	newChild       func(root string) *Child
-	mu             sync.Mutex
-	runtimes       map[string]*projectRuntime
-	sessionProject map[string]string
-	orphans        map[string][]string
-	reconciled     map[string]bool
+	ws         *Workspace
+	marshalBin string
+	fleetLog   *EventLog
+	live       *liveState
+
+	// newRuntime builds the Child for an agent. Tests inject a fake
+	// transport here; production returns a container-backed Child.
+	newRuntime func(a Agent) *Child
+
+	// slots bounds concurrent agent spawns.
+	slots *slots
+
+	mu           sync.Mutex
+	runtimes     map[string]*agentRuntime // keyed by agent id
+	sessionAgent map[string]string        // ACP session id -> agent id
+	orphans      map[string][]string
+	reconciled   map[string]bool
 }
 
 func NewFleet(ws *Workspace, marshalBin string) *Fleet {
-	f := &Fleet{ws: ws, marshalBin: marshalBin, fleetLog: NewEventLog(), live: newLiveState(), runtimes: make(map[string]*projectRuntime), sessionProject: make(map[string]string), orphans: make(map[string][]string), reconciled: make(map[string]bool)}
-	f.newChild = func(string) *Child { return &Child{MarshalBin: marshalBin} }
+	f := &Fleet{
+		ws: ws, marshalBin: marshalBin,
+		fleetLog: NewEventLog(), live: newLiveState(),
+		runtimes:     make(map[string]*agentRuntime),
+		sessionAgent: make(map[string]string),
+		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
+		slots: newSlots(4),
+	}
+	f.newRuntime = func(a Agent) *Child {
+		runtime, _, ok := detectedRuntime()
+		if !ok {
+			// No container runtime: fall back to a host process so a
+			// laptop without docker still works.
+			return &Child{MarshalBin: marshalBin}
+		}
+		return &Child{Transport: newContainerTransport(ContainerConfig{
+			Runtime:      runtime,
+			Image:        a.Profile.Image,
+			Name:         containerNameFor(a.ID),
+			WorkspaceDir: a.Project,
+			SocketDir:    socketDirFor(a.ID),
+			CPUs:         a.Profile.CPUs,
+			MemoryMB:     a.Profile.MemoryMB,
+		})}
+	}
 	return f
 }
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
 
-func (f *Fleet) runtimeFor(root string) (*projectRuntime, error) {
-	f.mu.Lock()
-	if rt, ok := f.runtimes[root]; ok {
-		f.mu.Unlock()
-		if rt.spawnErr != nil {
-			return nil, rt.spawnErr
-		}
-		return rt, nil
+// newAgentID mints the bridge-side identifier for an agent. It is
+// generated before the agent starts, because a container must be named
+// before it runs — so it cannot be the ACP session id, which only
+// exists once session/new has returned.
+func newAgentID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("bridge: generate agent id: " + err.Error())
 	}
-	f.mu.Unlock()
+	return hex.EncodeToString(b[:])
+}
 
-	child := f.newChild(root)
-	reg := NewRegistry(child)
-	reg.RootCwd = root
-	log := NewEventLog()
-	Attach(log, child, reg)
-	rt := &projectRuntime{root: root, child: child, reg: reg, log: log}
-	f.attachClassifier(rt)
-	if err := child.Start(); err != nil {
-		rt.spawnErr = fmt.Errorf("start marshal acp for %s: %w (stderr: %s)", root, err, child.StderrLog())
-		f.mu.Lock()
-		f.runtimes[root] = rt
-		f.mu.Unlock()
+// runtimeProbe is the memoised result of looking for a container runtime.
+type runtimeProbe struct {
+	path string // absolute path, pinned at detect time
+	name string // "docker" or "podman", for user-facing messages
+	ok   bool
+}
+
+// probeRuntime resolves the container runtime once per process.
+var probeRuntime = sync.OnceValue(func() runtimeProbe {
+	for _, candidate := range []string{"docker", "podman"} {
+		abs, err := exec.LookPath(candidate)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		err = exec.CommandContext(ctx, abs, "info").Run()
+		cancel()
+		if err == nil {
+			return runtimeProbe{path: abs, name: candidate, ok: true}
+		}
+	}
+	return runtimeProbe{}
+})
+
+// detectedRuntime reports the container runtime's absolute path, its
+// name, and whether one is usable at all.
+func detectedRuntime() (path, name string, ok bool) {
+	p := probeRuntime()
+	return p.path, p.name, p.ok
+}
+
+// socketDirFor is the host directory holding one agent's control socket.
+func socketDirFor(agentID string) string {
+	return filepath.Join(os.TempDir(), "marshal-agents", agentID)
+}
+
+// runtimeForAgent returns the live runtime for an agent id.
+func (f *Fleet) runtimeForAgent(id string) (*agentRuntime, error) {
+	f.mu.Lock()
+	rt, ok := f.runtimes[id]
+	f.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: agent %s", ErrUnknownAgent, id)
+	}
+	if rt.spawnErr != nil {
 		return nil, rt.spawnErr
 	}
-	f.mu.Lock()
-	if existing, ok := f.runtimes[root]; ok {
-		f.mu.Unlock()
-		child.Stop()
-		if existing.spawnErr != nil {
-			return nil, existing.spawnErr
-		}
-		return existing, nil
-	}
-	f.runtimes[root] = rt
-	f.mu.Unlock()
 	return rt, nil
 }
 
-func (f *Fleet) liveRuntimeForSession(id string) (*projectRuntime, error) {
+// runtimeForRoot returns any live runtime for a project root. With
+// per-agent runtimes there may be several; callers that need a specific
+// agent should use runtimeForAgent.
+func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 	f.mu.Lock()
-	root, ok := f.sessionProject[id]
-	rt := f.runtimes[root]
+	var rt *agentRuntime
+	for _, candidate := range f.runtimes {
+		if candidate.root == root {
+			rt = candidate
+			break
+		}
+	}
+	f.mu.Unlock()
+	if rt == nil {
+		return nil, fmt.Errorf("%w: project %s", ErrUnknownProject, root)
+	}
+	if rt.spawnErr != nil {
+		return nil, rt.spawnErr
+	}
+	return rt, nil
+}
+
+// startRuntime builds and starts one agent's runtime. The caller owns
+// persisting the Agent record.
+func (f *Fleet) startRuntime(a Agent) (*agentRuntime, error) {
+	child := f.newRuntime(a)
+	reg := NewRegistry(child)
+	reg.RootCwd = a.Project
+	log := NewEventLog()
+	Attach(log, child, reg)
+
+	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile, child: child, reg: reg, log: log}
+	f.attachClassifier(rt)
+
+	if err := child.Start(); err != nil {
+		rt.spawnErr = fmt.Errorf("start agent %s for %s: %w (stderr: %s)",
+			a.ID, a.Project, err, child.StderrLog())
+	}
+
+	f.mu.Lock()
+	f.runtimes[a.ID] = rt
+	f.mu.Unlock()
+	return rt, rt.spawnErr
+}
+
+func (f *Fleet) liveRuntimeForSession(sessionID string) (*agentRuntime, error) {
+	f.mu.Lock()
+	agentID, ok := f.sessionAgent[sessionID]
+	rt := f.runtimes[agentID]
 	f.mu.Unlock()
 	if !ok || rt == nil {
 		return nil, ErrUnknownSession
@@ -110,26 +225,41 @@ func (f *Fleet) liveRuntimeForSession(id string) (*projectRuntime, error) {
 	return rt, nil
 }
 
-func (f *Fleet) RuntimeForSession(id string) (*projectRuntime, error) {
+func (f *Fleet) RuntimeForSession(id string) (*agentRuntime, error) {
+	// Try as a session id first.
 	if rt, err := f.liveRuntimeForSession(id); err == nil {
 		return rt, nil
 	} else if !errors.Is(err, ErrUnknownSession) {
 		return nil, err
 	}
+	// Try as an agent id.
+	if rt, err := f.runtimeForAgent(id); err == nil {
+		return rt, nil
+	}
+	// Fall back to persisted agent.
 	a, ok := f.ws.Agent(id)
 	if !ok || a.Project == "" {
 		return nil, ErrUnknownSession
 	}
-	rt, err := f.runtimeFor(a.Project)
+	// The agent was persisted but has no live runtime — start one.
+	if err := f.slots.acquire(context.Background()); err != nil {
+		return nil, fmt.Errorf("wait for an agent slot: %w", err)
+	}
+	rt, err := f.startRuntime(a)
 	if err != nil {
+		f.slots.release()
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := rt.reg.Load(ctx, a.Project, id); err != nil {
+		f.stopAgent(a.ID)
 		return nil, fmt.Errorf("restore agent %s: %w", id, err)
 	}
-	f.track(id, a.Project)
+	f.mu.Lock()
+	rt.sessionID = id
+	f.sessionAgent[id] = a.ID
+	f.mu.Unlock()
 	return rt, nil
 }
 func (f *Fleet) LogForSession(id string) (*EventLog, error) {
@@ -141,7 +271,7 @@ func (f *Fleet) LogForSession(id string) (*EventLog, error) {
 }
 func (f *Fleet) ResolvePermission(id string, d Decision) error {
 	f.mu.Lock()
-	rts := make([]*projectRuntime, 0, len(f.runtimes))
+	rts := make([]*agentRuntime, 0, len(f.runtimes))
 	for _, rt := range f.runtimes {
 		rts = append(rts, rt)
 	}
@@ -156,7 +286,7 @@ func (f *Fleet) ResolvePermission(id string, d Decision) error {
 
 func (f *Fleet) ResolveQuestion(id string, a Answers) error {
 	f.mu.Lock()
-	rts := make([]*projectRuntime, 0, len(f.runtimes))
+	rts := make([]*agentRuntime, 0, len(f.runtimes))
 	for _, rt := range f.runtimes {
 		rts = append(rts, rt)
 	}
@@ -176,7 +306,6 @@ func (f *Fleet) RegistryForSession(id string) (*Registry, error) {
 	}
 	return rt.reg, nil
 }
-func (f *Fleet) track(id, root string) { f.mu.Lock(); f.sessionProject[id] = root; f.mu.Unlock() }
 
 // SpawnOptions describes a new agent. Isolated puts it in a git worktree;
 // Branch and BaseRef are forwarded to ACP's isolation object and may be
@@ -184,23 +313,48 @@ func (f *Fleet) track(id, root string) { f.mu.Lock(); f.sessionProject[id] = roo
 type SpawnOptions struct {
 	Name     string
 	Mode     string
+	Prompt   string
 	Isolated bool
 	Branch   string
 	BaseRef  string
+	Profile  RuntimeProfile
 }
 
 func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (string, error) {
 	if err := f.ws.AddProject(root); err != nil {
 		return "", err
 	}
-	rt, err := f.runtimeFor(root)
+
+	profile, _ := ResolveProfile(root, opts.Profile)
+	a := Agent{
+		ID:         newAgentID(),
+		Project:    root,
+		Name:       opts.Name,
+		Mode:       opts.Mode,
+		Prompt:     opts.Prompt,
+		CreatedAt:  time.Now().UTC(),
+		OwnerID:    DefaultOwnerID,
+		Origin:     OriginUI,
+		Profile:    profile,
+		SourceKind: "local",
+		SourceRef:  root,
+	}
+
+	if err := f.slots.acquire(ctx); err != nil {
+		return "", fmt.Errorf("wait for an agent slot: %w", err)
+	}
+
+	rt, err := f.startRuntime(a)
 	if err != nil {
+		f.slots.release()
 		return "", err
 	}
+
 	// A cold project (not running when the bridge started) is reconciled the
 	// first time it is used, so its orphan worktrees are reported even though
 	// startup reconciliation never saw it.
 	f.reconcileOnce(ctx, root)
+
 	params := map[string]any{"cwd": root, "mcpServers": []any{}, "name": opts.Name}
 	if opts.Isolated {
 		iso := map[string]any{}
@@ -214,6 +368,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	}
 	raw, err := rt.child.Request(ctx, "session/new", params)
 	if err != nil {
+		f.stopAgent(a.ID)
 		return "", err
 	}
 	var out struct {
@@ -224,11 +379,17 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		} `json:"workspace"`
 	}
 	if uerr := json.Unmarshal(raw, &out); uerr != nil || out.SessionID == "" {
+		f.stopAgent(a.ID)
 		return "", fmt.Errorf("bridge: decode session/new result: %v", uerr)
 	}
-	f.track(out.SessionID, root)
+
+	f.mu.Lock()
+	rt.sessionID = out.SessionID
+	f.sessionAgent[out.SessionID] = a.ID
+	f.mu.Unlock()
+
 	rt.reg.track(out.SessionID, root)
-	agent := Agent{ID: out.SessionID, Project: root, Name: opts.Name, Mode: opts.Mode, CreatedAt: time.Now().UTC()}
+	agent := a // copy the resolved agent
 	if out.Workspace != nil {
 		agent.Isolated = true
 		agent.Branch = out.Workspace.Branch
@@ -237,13 +398,13 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if opts.Mode != "" {
 		if err := rt.reg.SetMode(ctx, out.SessionID, opts.Mode); err != nil {
 			_ = f.ws.PutAgent(agent)
-			return out.SessionID, fmt.Errorf("agent created but setting mode %q failed: %w", opts.Mode, err)
+			return a.ID, fmt.Errorf("agent created but setting mode %q failed: %w", opts.Mode, err)
 		}
 	}
 	if err := f.ws.PutAgent(agent); err != nil {
-		return out.SessionID, fmt.Errorf("agent created but recording it failed: %w", err)
+		return a.ID, fmt.Errorf("agent created but recording it failed: %w", err)
 	}
-	return out.SessionID, nil
+	return a.ID, nil
 }
 
 // Diff, Merge and Discard are thin ACP pass-throughs. The bridge holds no
@@ -253,7 +414,7 @@ func (f *Fleet) Diff(ctx context.Context, id, path string) (json.RawMessage, err
 	if err != nil {
 		return nil, err
 	}
-	params := map[string]any{"sessionId": id}
+	params := map[string]any{"sessionId": rt.sessionID}
 	if path != "" {
 		params["path"] = path
 	}
@@ -269,7 +430,7 @@ func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMe
 	if !ok || a.TargetBranch == "" {
 		return nil, fmt.Errorf("bridge: agent %s has no recorded merge target", id)
 	}
-	params := map[string]any{"sessionId": id, "targetBranch": a.TargetBranch}
+	params := map[string]any{"sessionId": rt.sessionID, "targetBranch": a.TargetBranch}
 	if commitMessage != "" {
 		params["commitMessage"] = commitMessage
 	}
@@ -300,7 +461,7 @@ func (f *Fleet) Discard(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if _, rerr := rt.child.Request(ctx, "session/discard", map[string]any{"sessionId": id}); rerr != nil {
+	if _, rerr := rt.child.Request(ctx, "session/discard", map[string]any{"sessionId": rt.sessionID}); rerr != nil {
 		return rerr
 	}
 	a, ok := f.ws.Agent(id)
@@ -314,9 +475,11 @@ func (f *Fleet) Discard(ctx context.Context, id string) error {
 func (f *Fleet) ProjectStatus() []ProjectStatus {
 	roots := f.ws.Projects()
 	f.mu.Lock()
-	runtimeErrors := make(map[string]error, len(f.runtimes))
-	for root, rt := range f.runtimes {
-		runtimeErrors[root] = rt.spawnErr
+	runtimeErrors := make(map[string]error)
+	for _, rt := range f.runtimes {
+		if rt.spawnErr != nil {
+			runtimeErrors[rt.root] = rt.spawnErr
+		}
 	}
 	f.mu.Unlock()
 	seen := make(map[string]bool)
@@ -371,8 +534,17 @@ func (f *Fleet) reconcileOnce(ctx context.Context, root string) {
 	f.reconciled[root] = true
 	f.mu.Unlock()
 
-	rt, err := f.runtimeFor(root)
-	if err != nil {
+	// Find any live runtime for this project root.
+	f.mu.Lock()
+	var rt *agentRuntime
+	for _, candidate := range f.runtimes {
+		if candidate.root == root {
+			rt = candidate
+			break
+		}
+	}
+	f.mu.Unlock()
+	if rt == nil {
 		return
 	}
 	raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": root})
@@ -399,28 +571,32 @@ func (f *Fleet) reconcileOnce(ctx context.Context, root string) {
 // reconciled the first time they are used (see reconcileOnce).
 func (f *Fleet) ReconcileWorktrees(ctx context.Context) {
 	f.mu.Lock()
-	roots := make([]string, 0, len(f.runtimes))
-	for root, rt := range f.runtimes {
+	roots := make(map[string]bool)
+	for _, rt := range f.runtimes {
 		if rt.spawnErr == nil {
-			roots = append(roots, root)
+			roots[rt.root] = true
 		}
 	}
 	f.mu.Unlock()
 
-	for _, root := range roots {
+	for root := range roots {
 		f.reconcileOnce(ctx, root)
 	}
 }
 
 const fleetStreamKey = "fleet"
 
-func (f *Fleet) attachClassifier(rt *projectRuntime) {
+func (f *Fleet) attachClassifier(rt *agentRuntime) {
 	prev := rt.child.OnNotification
 	rt.child.OnNotification = func(method string, params json.RawMessage) {
 		if prev != nil {
 			prev(method, params)
 		}
 		if d, ok := classifyNotification(method, params); ok {
+			// The live state and fleet log are keyed by agent id, but
+			// notifications carry the ACP session id. Each runtime owns
+			// exactly one session, so the agent id is rt.id.
+			d.SessionID = rt.id
 			f.live.apply(d)
 			_, _ = f.fleetLog.Append(fleetStreamKey, d)
 		}
@@ -436,9 +612,9 @@ func (f *Fleet) attachClassifier(rt *projectRuntime) {
 			prevEvent(sessionID, payload)
 		}
 		if p, ok := classifyRegistryEvent(payload); ok {
-			f.live.observePending(sessionID, p)
+			f.live.observePending(rt.id, p)
 			_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{
-				Kind: "pending", SessionID: sessionID, PendingKind: p.kind,
+				Kind: "pending", SessionID: rt.id, PendingKind: p.kind,
 			})
 		}
 	}
@@ -455,12 +631,12 @@ func (f *Fleet) Snapshot() []AgentStatus {
 		if a.CreatedAt.After(st.UpdatedAt) {
 			st.UpdatedAt = a.CreatedAt
 		}
-		if rt, err := f.liveRuntimeForSession(a.ID); err == nil {
+		if rt, err := f.runtimeForAgent(a.ID); err == nil {
 			// Registry.Pending is the authority on whether anything is
 			// still outstanding; live.pending only supplies the payload.
 			// A resolved request therefore stops being advertised even
 			// though its payload is still cached.
-			pending := rt.reg.Pending(a.ID)
+			pending := rt.reg.Pending(rt.sessionID)
 			if pending != "" && live.pending != nil && live.pending.kind == pending {
 				st.Pending = &PendingRequest{
 					Kind: live.pending.kind, ID: live.pending.id, Params: live.pending.params,
@@ -472,11 +648,11 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			case "question":
 				st.Status = "awaiting-question"
 			default:
-				if info, ok := rt.reg.lookup(a.ID); ok && info.Busy {
+				if info, ok := rt.reg.lookup(rt.sessionID); ok && info.Busy {
 					st.Status = "running"
 				}
 			}
-		} else if !errors.Is(err, ErrUnknownSession) {
+		} else if !errors.Is(err, ErrUnknownAgent) {
 			st.Status = "error"
 		}
 		out = append(out, st)
@@ -484,36 +660,55 @@ func (f *Fleet) Snapshot() []AgentStatus {
 	return out
 }
 
+// stopAgent stops one agent's child and drops its runtime. The Agent
+// record is left in the workspace; removing it is the caller's choice.
+func (f *Fleet) stopAgent(id string) {
+	f.mu.Lock()
+	rt := f.runtimes[id]
+	delete(f.runtimes, id)
+	if rt != nil && rt.sessionID != "" {
+		delete(f.sessionAgent, rt.sessionID)
+	}
+	f.mu.Unlock()
+	if rt != nil {
+		rt.child.Stop()
+		f.slots.release()
+	}
+}
+
 func (f *Fleet) StopProject(root string) {
 	f.mu.Lock()
-	rt := f.runtimes[root]
-	delete(f.runtimes, root)
+	var toStop []string
 	var removed []string
-	for id, project := range f.sessionProject {
-		if project == root {
-			removed = append(removed, id)
-			delete(f.sessionProject, id)
+	for id, rt := range f.runtimes {
+		if rt.root == root {
+			toStop = append(toStop, id)
+			if rt.sessionID != "" {
+				removed = append(removed, rt.sessionID)
+			}
 		}
 	}
 	f.mu.Unlock()
-	f.live.removeProject(removed)
-	if rt != nil && rt.spawnErr == nil {
-		rt.child.Stop()
+	for _, id := range toStop {
+		f.stopAgent(id)
 	}
+	f.live.removeProject(removed)
 }
 
 func (f *Fleet) Close() {
 	f.mu.Lock()
-	rts := make([]*projectRuntime, 0, len(f.runtimes))
+	rts := make([]*agentRuntime, 0, len(f.runtimes))
 	for _, rt := range f.runtimes {
 		rts = append(rts, rt)
 	}
-	f.runtimes = make(map[string]*projectRuntime)
-	f.sessionProject = make(map[string]string)
+	f.runtimes = make(map[string]*agentRuntime)
+	f.sessionAgent = make(map[string]string)
 	f.mu.Unlock()
+
+	var wg sync.WaitGroup
 	for _, rt := range rts {
-		if rt.spawnErr == nil {
-			rt.child.Stop()
-		}
+		wg.Add(1)
+		go func(rt *agentRuntime) { defer wg.Done(); rt.child.Stop() }(rt)
 	}
+	wg.Wait()
 }

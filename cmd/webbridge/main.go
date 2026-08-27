@@ -39,6 +39,13 @@ type config struct {
 	workspace  string
 	stateDir   string
 	agentEnv   stringList
+	// tlsCert and tlsKey enable HTTPS when both are set. Certificate
+	// lifecycle — issuance, renewal — is deliberately out of scope:
+	// every deployment already solves it differently (a reverse proxy,
+	// a homelab CA, tailscale cert), and baking ACME in would add a
+	// dependency to replace something the environment provides.
+	tlsCert string
+	tlsKey  string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -54,6 +61,8 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
+	tlsCert := fs.String("tls-cert", envOr("WEBBRIDGE_TLS_CERT", ""), "PEM certificate file; enables HTTPS when set with --tls-key")
+	tlsKey := fs.String("tls-key", envOr("WEBBRIDGE_TLS_KEY", ""), "PEM private key file; enables HTTPS when set with --tls-cert")
 	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (defaults beside the workspace file)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
@@ -63,7 +72,12 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey}
+	// Half-configured TLS fails loudly. Serving plaintext because one
+	// flag name was mistyped is the failure nobody notices.
+	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
+		return config{}, fmt.Errorf("--tls-cert and --tls-key must be given together")
+	}
 	if cfg.workspace == "" {
 		p, err := bridge.DefaultWorkspacePath()
 		if err != nil {
@@ -201,6 +215,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		Handler:           bridge.NewServer(fleet, cfg.token),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	scheme := "http"
+	if cfg.tlsCert != "" {
+		scheme = "https"
+	}
 	ln, err := net.Listen("tcp", cfg.addr)
 	if err != nil {
 		// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
@@ -209,7 +227,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		fleet.Close()
 		return fmt.Errorf("listen %s: %w", cfg.addr, err)
 	}
-	fmt.Fprintf(stderr, "webbridge: listening on http://%s (%d project(s))\n", ln.Addr(), len(ws.Projects()))
+	fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, ln.Addr(), len(ws.Projects()))
 
 	// Reconcile orphaned worktrees after the server is listening, so a slow
 	// prune cannot delay accepting requests.
@@ -217,7 +235,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		err := srv.Serve(ln)
+		err := serveHTTP(srv, ln, cfg.tlsCert, cfg.tlsKey)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
@@ -249,4 +267,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	fleet.Close()
 	return nil
+}
+
+// serveHTTP serves srv on ln, using TLS when both a certificate and a
+// key are supplied.
+//
+// The pair is validated in parseConfig, so reaching here with exactly
+// one set is a programming error rather than a user one; this function
+// treats an empty cert as "plaintext" and nothing more.
+func serveHTTP(srv *http.Server, ln net.Listener, certFile, keyFile string) error {
+	if certFile == "" || keyFile == "" {
+		return srv.Serve(ln)
+	}
+	return srv.ServeTLS(ln, certFile, keyFile)
 }

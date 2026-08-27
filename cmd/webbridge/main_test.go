@@ -2,9 +2,22 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseConfigDefaults(t *testing.T) {
@@ -121,4 +134,147 @@ func TestGenToken(t *testing.T) {
 	if tok == tok2 {
 		t.Error("two generated tokens are identical")
 	}
+}
+
+// --- TLS ---
+
+func TestParseConfigTLSAcceptsBothOrNeither(t *testing.T) {
+	cfg, err := parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig(no tls): %v", err)
+	}
+	if cfg.tlsCert != "" || cfg.tlsKey != "" {
+		t.Fatalf("expected no TLS by default, got %q/%q", cfg.tlsCert, cfg.tlsKey)
+	}
+
+	cfg, err = parseConfig([]string{"--tls-cert", "/c.pem", "--tls-key", "/k.pem"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig(both): %v", err)
+	}
+	if cfg.tlsCert != "/c.pem" || cfg.tlsKey != "/k.pem" {
+		t.Fatalf("got %q/%q", cfg.tlsCert, cfg.tlsKey)
+	}
+}
+
+// TestParseConfigTLSRejectsOnlyOne guards the failure mode worth
+// designing out: a mistyped flag name silently serving plaintext.
+func TestParseConfigTLSRejectsOnlyOne(t *testing.T) {
+	for _, args := range [][]string{
+		{"--tls-cert", "/c.pem"},
+		{"--tls-key", "/k.pem"},
+	} {
+		if _, err := parseConfig(args, io.Discard); err == nil {
+			t.Errorf("parseConfig(%v) succeeded; half-configured TLS must fail loudly", args)
+		}
+	}
+}
+
+// selfSignedCert writes a throwaway cert/key for 127.0.0.1 and returns
+// their paths plus a pool that trusts them. Generated in-test so there
+// is no fixture on disk to expire.
+func selfSignedCert(t *testing.T) (certPath, keyPath string, pool *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "webbridge-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	pool = x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(certPEM) {
+		t.Fatal("could not trust the generated certificate")
+	}
+	return certPath, keyPath, pool
+}
+
+func TestServeHTTPUsesTLSWhenCertificatesAreSupplied(t *testing.T) {
+	certPath, keyPath, pool := selfSignedCert(t)
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = serveHTTP(srv, ln, certPath, keyPath) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool},
+	}}
+	resp, err := client.Get("https://" + ln.Addr().String() + "/")
+	if err != nil {
+		t.Fatalf("HTTPS request failed; ServeTLS was not wired: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+
+	// A plaintext request must not reach the handler. Go's TLS server
+	// answers it with a valid HTTP 400 ("Client sent an HTTP request to
+	// an HTTPS server"), so the transport error is nil — the assertion
+	// has to be that the request was rejected, not that it failed.
+	plain, err := http.Get("http://" + ln.Addr().String() + "/")
+	if err != nil {
+		return // connection refused is also an acceptable rejection
+	}
+	defer plain.Body.Close()
+	if plain.StatusCode == http.StatusOK {
+		t.Fatal("plain HTTP reached the handler on a TLS listener")
+	}
+	body, _ := io.ReadAll(plain.Body)
+	if string(body) == "ok" {
+		t.Fatal("the handler served a plaintext request on a TLS listener")
+	}
+}
+
+func TestServeHTTPStaysPlaintextWithoutCertificates(t *testing.T) {
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = serveHTTP(srv, ln, "", "") }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/")
+	if err != nil {
+		t.Fatalf("plain HTTP failed: %v", err)
+	}
+	defer resp.Body.Close()
 }

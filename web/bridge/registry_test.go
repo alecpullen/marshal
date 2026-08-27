@@ -8,8 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"marshal/internal/app/session"
 )
 
 // newTestRegistry starts a fake child in "registry" mode and returns
@@ -335,7 +333,7 @@ func TestRegistryQuestionRoundTrip(t *testing.T) {
 		_, ok := r.questions["q-1"]
 		return ok
 	})
-	ans := Answers{Answers: []session.Answer{{Question: "proceed?", Answer: "yes"}}}
+	ans := Answers{Answers: []Answer{{Question: "proceed?", Answer: "yes"}}}
 	if err := r.ResolveQuestion("q-1", ans); err != nil {
 		t.Fatalf("ResolveQuestion: %v", err)
 	}
@@ -384,7 +382,7 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	if !stillPending {
 		t.Fatal("pending question was dropped without an answer")
 	}
-	ans := Answers{Answers: []session.Answer{{Question: "proceed?", Answer: "yes"}}}
+	ans := Answers{Answers: []Answer{{Question: "proceed?", Answer: "yes"}}}
 	if err := r.ResolveQuestion("q-1", ans); err != nil {
 		t.Fatalf("ResolveQuestion: %v", err)
 	}
@@ -924,3 +922,39 @@ func TestRegistryRestartClearsPending(t *testing.T) {
 
 // c0Stderr reaches the child through the registry for stderr asserts.
 func c0Stderr(r *Registry) string { return r.child.StderrLog() }
+
+func TestAnswersWireFormatIsStable(t *testing.T) {
+	a := Answers{Answers: []Answer{
+		{Question: "Which branch?", Answer: "main"},
+	}}
+	got, err := json.Marshal(a)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"answers":[{"question":"Which branch?","answer":"main"}]}`
+	if string(got) != want {
+		t.Fatalf("wire format changed\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAnswersDeclinedOmitsAnswers(t *testing.T) {
+	got, err := json.Marshal(Answers{Declined: true})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"declined":true}`
+	if string(got) != want {
+		t.Fatalf("wire format changed\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAnswersRoundTrip(t *testing.T) {
+	in := `{"answers":[{"question":"q1","answer":"a1"},{"question":"q2","answer":"a2"}]}`
+	var a Answers
+	if err := json.Unmarshal([]byte(in), &a); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(a.Answers) != 2 || a.Answers[1].Answer != "a2" {
+		t.Fatalf("decoded %+v, want two answers ending a2", a.Answers)
+	}
+}

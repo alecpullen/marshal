@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"marshal/internal/app/session"
 )
 
 // newTestServer wires a registry-mode fake child through the whole
@@ -486,7 +484,7 @@ func TestHTTPResolveQuestion(t *testing.T) {
 		return ok
 	})
 
-	body := Answers{Answers: []session.Answer{{Question: "proceed?", Answer: "yes"}}}
+	body := Answers{Answers: []Answer{{Question: "proceed?", Answer: "yes"}}}
 	if rec := doReq(t, s, http.MethodPost, "/api/questions/q-1", body, nil); rec.Code != http.StatusOK {
 		t.Fatalf("resolve: status = %d, want 200", rec.Code)
 	}

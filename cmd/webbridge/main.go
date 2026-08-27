@@ -196,6 +196,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	// Watch labelled issues on registered repos. Off by default; only
+	// repos with Watch set are polled.
+	fleet.StartPoller(0)
+
 	srv := &http.Server{
 		Addr:              cfg.addr,
 		Handler:           bridge.NewServer(fleet, cfg.token),

@@ -466,6 +466,39 @@ func TestHTTPDiffRoutesThrough(t *testing.T) {
 	}
 }
 
+func TestHTTPExitRoutesThrough(t *testing.T) {
+	f := testFleetWithGate(t, gateResult{OK: false, FailedCommand: "go test ./..."})
+	id := spawnGitAgent(t, f)
+	srv := NewServer(f, "")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/exit",
+		strings.NewReader(`{"commitMessage":"work"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var out ExitResult
+	decodeBody(t, rec, &out)
+	if !out.Blocked {
+		t.Fatalf("a failing gate must block: %+v", out)
+	}
+}
+
+func TestHTTPPatchRoutesThrough(t *testing.T) {
+	f := testFleetWithGate(t, gateResult{OK: true})
+	id := spawnGitAgent(t, f)
+	srv := NewServer(f, "")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/api/agents/"+id+"/patch", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/x-patch" {
+		t.Errorf("Content-Type = %q, want text/x-patch", ct)
+	}
+}
+
 func TestHTTPResolveQuestion(t *testing.T) {
 	s, r, _, c := newTestServer(t, "")
 	ctx, cancel := testContext(t)

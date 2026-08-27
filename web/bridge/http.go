@@ -78,6 +78,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agents/{id}/diff", s.agentDiff)
 	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
 	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
+	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
+	s.mux.HandleFunc("GET /api/agents/{id}/patch", s.agentPatch)
 	s.mux.HandleFunc("GET /api/sessions", s.listSessions)
 	s.mux.HandleFunc("POST /api/sessions", s.newSession)
 	s.mux.HandleFunc("POST /api/sessions/{id}/load", s.loadSession)
@@ -316,6 +318,37 @@ func (s *Server) agentDiscard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
+}
+
+func (s *Server) agentExit(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CommitMessage string        `json:"commitMessage"`
+		Override      *GateOverride `json:"override,omitempty"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	res, err := s.fleet.Exit(r.Context(), r.PathValue("id"), ExitOptions{
+		CommitMessage: body.CommitMessage,
+		Override:      body.Override,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) agentPatch(w http.ResponseWriter, r *http.Request) {
+	patch, err := s.fleet.Patch(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/x-patch")
+	w.Header().Set("Content-Disposition", `attachment; filename="marshal-`+r.PathValue("id")+`.patch"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(patch)
 }
 
 func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {

@@ -17,6 +17,12 @@ import (
 
 var ErrUnknownProject = errors.New("bridge: unknown project")
 
+// ErrUnregisteredRepo is returned by a remote-source spawn whose git
+// source is not a registered repo — either an unknown repo id, or a raw
+// URL from an origin (MCP, issue) that policy requires to name a
+// registered repo.
+var ErrUnregisteredRepo = errors.New("bridge: repo is not registered")
+
 // ErrUnknownAgent is returned by agent-scoped methods for ids the Fleet
 // does not track. The HTTP layer maps it to 404.
 var ErrUnknownAgent = errors.New("bridge: unknown agent")
@@ -48,6 +54,10 @@ type agentRuntime struct {
 	// agent itself once session/new returns. Empty until then.
 	sessionID string
 
+	// sourceKind is "local" or "git"; stopAgent uses it to decide whether
+	// the agent's prepared working tree must be removed.
+	sourceKind string
+
 	spawnErr error
 }
 
@@ -72,6 +82,15 @@ type Fleet struct {
 	fleetLog   *EventLog
 	live       *liveState
 
+	// git runs hardened git subprocesses for remote sources (mirroring,
+	// worktree prep). Nil when git was not found at startup; local-path
+	// spawns still work, git-sourced spawns fail with a clear error.
+	git *gitRunner
+	// creds resolves credential references for registered repos.
+	creds *CredentialStore
+	// stateDir is where git mirrors and agent working trees live.
+	stateDir string
+
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
 	newRuntime func(a Agent) *Child
@@ -86,15 +105,26 @@ type Fleet struct {
 	reconciled   map[string]bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string) *Fleet {
+	if stateDir == "" {
+		stateDir = filepath.Dir(ws.path)
+	}
 	f := &Fleet{
 		ws: ws, marshalBin: marshalBin, agentEnv: agentEnv,
 		fleetLog: NewEventLog(), live: newLiveState(),
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
-		slots: newSlots(4),
+		slots:    newSlots(4),
+		stateDir: stateDir,
 	}
+	// Remote sources need git and (later) credentials. Absent git is not
+	// fatal at startup: local-path spawns still work, and a git-sourced
+	// spawn reports a clear error via Spawn.
+	if g, err := newGitRunner(); err == nil {
+		f.git = g
+	}
+	f.creds = NewCredentialStore(nil)
 	f.newRuntime = func(a Agent) *Child {
 		runtime, _, ok := detectedRuntime()
 		if !ok {
@@ -210,7 +240,7 @@ func (f *Fleet) startRuntime(a Agent) (*agentRuntime, error) {
 	log := NewEventLog()
 	Attach(log, child, reg)
 
-	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile, child: child, reg: reg, log: log}
+	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile, child: child, reg: reg, log: log, sourceKind: a.SourceKind}
 	f.attachClassifier(rt)
 
 	if err := child.Start(); err != nil {
@@ -319,6 +349,9 @@ func (f *Fleet) RegistryForSession(id string) (*Registry, error) {
 // SpawnOptions describes a new agent. Isolated puts it in a git worktree;
 // Branch and BaseRef are forwarded to ACP's isolation object and may be
 // empty, in which case marshal derives them.
+//
+// RepoID, URL and Ref select a remote source: a registered repo id, a
+// raw URL (UI-only, read-only), and an optional git ref to check out.
 type SpawnOptions struct {
 	Name     string
 	Mode     string
@@ -327,44 +360,147 @@ type SpawnOptions struct {
 	Branch   string
 	BaseRef  string
 	Profile  RuntimeProfile
+	RepoID   string
+	URL      string
+	Ref      string
+	Origin   string
+}
+
+// gitSource is the resolved remote source for a spawn, or a local path.
+type gitSource struct {
+	kind     string // "local" | "git"
+	ref      string // repo id, or the raw URL
+	url      string
+	gitRef   string
+	credRef  string
+	readOnly bool
+}
+
+// resolveSource decides what a spawn works on. A local path is the
+// default; a registered repo (RepoID) or raw URL (URL, UI-only) selects
+// a git remote. An unregistered or policy-rejected source returns
+// ErrUnregisteredRepo.
+func (f *Fleet) resolveSource(opts SpawnOptions, origin string) (gitSource, error) {
+	switch {
+	case opts.RepoID != "":
+		r, ok := f.ws.Repo(opts.RepoID)
+		if !ok {
+			return gitSource{}, fmt.Errorf("%w: %s", ErrUnregisteredRepo, opts.RepoID)
+		}
+		ref := opts.Ref
+		if ref == "" {
+			ref = r.Branch
+		}
+		return gitSource{kind: "git", ref: opts.RepoID, url: r.URL,
+			gitRef: ref, credRef: r.CredRef}, nil
+
+	case opts.URL != "":
+		if origin != OriginUI {
+			return gitSource{}, fmt.Errorf("%w: %s spawns must name a registered repo",
+				ErrUnregisteredRepo, origin)
+		}
+		return gitSource{kind: "git", ref: opts.URL, url: opts.URL,
+			gitRef: opts.Ref, readOnly: true}, nil
+
+	default:
+		return gitSource{kind: "local"}, nil
+	}
 }
 
 func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (string, error) {
-	if err := f.ws.AddProject(root); err != nil {
+	origin := opts.Origin
+	if origin == "" {
+		origin = OriginUI
+	}
+	src, err := f.resolveSource(opts, origin)
+	if err != nil {
 		return "", err
 	}
 
-	profile, _ := ResolveProfile(root, opts.Profile)
 	a := Agent{
-		ID:         newAgentID(),
-		Project:    root,
-		Name:       opts.Name,
-		Mode:       opts.Mode,
-		Prompt:     opts.Prompt,
-		CreatedAt:  time.Now().UTC(),
-		OwnerID:    DefaultOwnerID,
-		Origin:     OriginUI,
-		Profile:    profile,
-		SourceKind: "local",
-		SourceRef:  root,
+		ID:        newAgentID(),
+		Name:      opts.Name,
+		Mode:      opts.Mode,
+		Prompt:    opts.Prompt,
+		CreatedAt: time.Now().UTC(),
+		OwnerID:   DefaultOwnerID,
+		Origin:    origin,
 	}
+	a.SourceKind = src.kind
+	a.SourceRef = src.ref
+	a.ReadOnly = src.readOnly
+
+	// The workspace directory is the local path for local spawns, or a
+	// freshly prepared git working tree for remote sources.
+	workDir := root
+	if src.kind == "git" {
+		if f.git == nil {
+			return "", fmt.Errorf("bridge: git is required for remote sources but was not found at startup")
+		}
+		cred, err := f.creds.Resolve(DefaultOwnerID, src.credRef)
+		if err != nil {
+			return "", fmt.Errorf("resolve credential for %s: %w", src.ref, err)
+		}
+		mirror, err := f.git.EnsureMirror(f.stateDir, src.url, cred)
+		if err != nil {
+			return "", err
+		}
+		// A raw-URL spawn may name no ref. Fall back to the mirror's HEAD
+		// so TargetBranch (the base for S2b's patch export) is never
+		// empty, and record the ref actually used.
+		if src.gitRef == "" {
+			head, err := f.git.mirrorHead(mirror)
+			if err != nil {
+				return "", err
+			}
+			src.gitRef = head
+		}
+		a.TargetBranch = src.gitRef
+		workDir, err = f.git.PrepareTree(f.stateDir, a.ID, mirror, src.url, src.gitRef)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		if err := f.ws.AddProject(root); err != nil {
+			return "", err
+		}
+	}
+	a.Project = workDir
+
+	// Resolve the runtime profile now that workDir is known, so a
+	// git-sourced repo with a .devcontainer/devcontainer.json is
+	// honoured. For local spawns workDir == root.
+	profile, _ := ResolveProfile(workDir, opts.Profile)
+	a.Profile = profile
 
 	if err := f.slots.acquire(ctx); err != nil {
+		if src.kind == "git" && f.git != nil {
+			_ = f.git.RemoveTree(f.stateDir, a.ID)
+		}
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
 	}
 
 	rt, err := f.startRuntime(a)
 	if err != nil {
-		f.slots.release()
+		// startRuntime stores the failed runtime in f.runtimes so
+		// ProjectStatus can report the error. For local spawns we
+		// preserve that behaviour (release the slot, leave the
+		// runtime). For git spawns the tree must be cleaned up, and
+		// the failed runtime is not worth keeping.
+		if src.kind == "git" {
+			f.stopAgent(a.ID)
+		} else {
+			f.slots.release()
+		}
 		return "", err
 	}
 
 	// A cold project (not running when the bridge started) is reconciled the
 	// first time it is used, so its orphan worktrees are reported even though
 	// startup reconciliation never saw it.
-	f.reconcileOnce(ctx, root)
+	f.reconcileOnce(ctx, workDir)
 
-	params := map[string]any{"cwd": root, "mcpServers": []any{}, "name": opts.Name}
+	params := map[string]any{"cwd": workDir, "mcpServers": []any{}, "name": opts.Name}
 	if opts.Isolated {
 		iso := map[string]any{}
 		if opts.Branch != "" {
@@ -401,7 +537,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// can restore the mapping. Must be set before the copy below.
 	a.SessionID = out.SessionID
 
-	rt.reg.track(out.SessionID, root)
+	rt.reg.track(out.SessionID, workDir)
 	agent := a // copy the resolved agent
 	if out.Workspace != nil {
 		agent.Isolated = true
@@ -694,7 +830,15 @@ func (f *Fleet) stopAgent(id string) {
 	}
 	f.mu.Unlock()
 	if rt != nil {
+		// Stop the child first so it is no longer writing to the
+		// bind-mounted workspace, then remove the git-sourced tree.
 		rt.child.Stop()
+		if rt.sourceKind == "git" && f.git != nil {
+			if err := f.git.RemoveTree(f.stateDir, id); err != nil {
+				slog.Default().Warn("webbridge: remove agent workspace failed",
+					"agent", id, "err", err)
+			}
+		}
 		f.slots.release()
 	}
 }

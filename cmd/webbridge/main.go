@@ -37,6 +37,7 @@ type config struct {
 	cwdRoot    string
 	projects   []string
 	workspace  string
+	stateDir   string
 	agentEnv   stringList
 }
 
@@ -53,6 +54,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
+	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (defaults beside the workspace file)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -61,7 +63,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, agentEnv: agentEnv}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv}
 	if cfg.workspace == "" {
 		p, err := bridge.DefaultWorkspacePath()
 		if err != nil {
@@ -77,6 +79,19 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		cfg.cwdRoot = cwd
 	}
 	return cfg, nil
+}
+
+// askpassResponse answers one git credential prompt. Git asks for a
+// username and a password separately, so the prompt text selects which
+// value to return.
+func askpassResponse(prompt string) string {
+	if strings.HasPrefix(strings.ToLower(prompt), "username") {
+		if u := os.Getenv("MARSHAL_ASKPASS_USER"); u != "" {
+			return u
+		}
+		return "x-access-token"
+	}
+	return os.Getenv("MARSHAL_ASKPASS_SECRET")
 }
 
 // envOr returns the environment variable's value when set and
@@ -105,13 +120,25 @@ func genToken() (string, error) {
 }
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stderr); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "webbridge: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, args []string, stderr io.Writer) error {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// GIT_ASKPASS mode: git re-execs this binary to ask for a credential.
+	// Answer from the environment and exit before doing anything else —
+	// this process must not start a server or touch the workspace.
+	if os.Getenv("MARSHAL_ASKPASS") == "1" {
+		prompt := ""
+		if len(args) > 0 {
+			prompt = args[0]
+		}
+		fmt.Fprintln(stdout, askpassResponse(prompt))
+		return nil
+	}
+
 	cfg, err := parseConfig(args, stderr)
 	if err != nil {
 		return err
@@ -161,7 +188,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		agentEnv[k] = v
 	}
 
-	fleet := bridge.NewFleet(ws, cfg.marshalBin, agentEnv)
+	fleet := bridge.NewFleet(ws, cfg.marshalBin, agentEnv, cfg.stateDir)
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const workspaceVersion = 2
+const workspaceVersion = 3
 
 // DefaultOwnerID is the single implicit owner in a single-operator
 // deployment. Every agent carries an owner from the first commit so that
@@ -23,8 +23,10 @@ const DefaultOwnerID = "local"
 // the operator acting directly, while other origins are subject to
 // confirmation and scoping rules.
 const (
-	OriginUI  = "ui"
-	OriginCLI = "cli"
+	OriginUI    = "ui"
+	OriginCLI   = "cli"
+	OriginMCP   = "mcp"
+	OriginIssue = "issue"
 )
 
 type Agent struct {
@@ -56,11 +58,27 @@ type Agent struct {
 	// SourceRef is the source-specific locator: a path for "local", a
 	// repo URL for "git".
 	SourceRef string `json:"sourceRef,omitempty"`
+	// ReadOnly marks a spawn with no push path — an arbitrary-URL clone
+	// rather than a registered repo. S2b routes these to a patch export
+	// instead of a pull request.
+	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+// Repo is a registered repository. Registration is what grants push
+// capability: an agent spawned against a raw URL is read-only, and only
+// a registered repo carries a credential reference.
+type Repo struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Branch  string `json:"branch,omitempty"`
+	CredRef string `json:"credRef,omitempty"`
+	OwnerID string `json:"ownerId"`
 }
 
 type workspaceFile struct {
 	Version  int      `json:"version"`
 	Projects []string `json:"projects"`
+	Repos    []Repo   `json:"repos,omitempty"`
 	Agents   []Agent  `json:"agents"`
 }
 
@@ -68,11 +86,12 @@ type Workspace struct {
 	path     string
 	mu       sync.Mutex
 	projects []string
+	repos    map[string]Repo
 	agents   map[string]Agent
 }
 
 func NewWorkspace(path string) *Workspace {
-	return &Workspace{path: path, agents: make(map[string]Agent)}
+	return &Workspace{path: path, repos: make(map[string]Repo), agents: make(map[string]Agent)}
 }
 
 func DefaultWorkspacePath() (string, error) {
@@ -105,6 +124,10 @@ func (w *Workspace) Load() (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.projects = append([]string(nil), f.Projects...)
+	w.repos = make(map[string]Repo, len(f.Repos))
+	for _, r := range f.Repos {
+		w.repos[r.ID] = r
+	}
 	w.agents = make(map[string]Agent, len(f.Agents))
 	for _, a := range f.Agents {
 		w.agents[a.ID] = a
@@ -133,11 +156,23 @@ func migrateWorkspace(f *workspaceFile) {
 			a.SourceRef = a.Project
 		}
 	}
+	// v2 -> v3: promote each registered project to a repo entry. A v2
+	// record predates the registry, so every project is promoted as a
+	// plain local repo owned by the default operator.
+	if len(f.Repos) == 0 {
+		for _, p := range f.Projects {
+			f.Repos = append(f.Repos, Repo{ID: p, URL: p, OwnerID: DefaultOwnerID})
+		}
+	}
 	f.Version = workspaceVersion
 }
 
 func (w *Workspace) save() error {
-	f := workspaceFile{Version: workspaceVersion, Projects: w.projects, Agents: make([]Agent, 0, len(w.agents))}
+	f := workspaceFile{Version: workspaceVersion, Projects: w.projects, Repos: make([]Repo, 0, len(w.repos)), Agents: make([]Agent, 0, len(w.agents))}
+	for _, r := range w.repos {
+		f.Repos = append(f.Repos, r)
+	}
+	sort.Slice(f.Repos, func(i, j int) bool { return f.Repos[i].ID < f.Repos[j].ID })
 	for _, a := range w.agents {
 		f.Agents = append(f.Agents, a)
 	}
@@ -257,5 +292,30 @@ func (w *Workspace) MarkAllInterrupted() error {
 		a.Interrupted = true
 		w.agents[id] = a
 	}
+	return w.save()
+}
+func (w *Workspace) Repos() []Repo {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]Repo, 0, len(w.repos))
+	for _, r := range w.repos {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+func (w *Workspace) Repo(id string) (Repo, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	r, ok := w.repos[id]
+	return r, ok
+}
+func (w *Workspace) PutRepo(r Repo) error {
+	if r.ID == "" {
+		return errors.New("repo id is required")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.repos[r.ID] = r
 	return w.save()
 }

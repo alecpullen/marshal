@@ -89,9 +89,28 @@ func TestReattachFailsWhenSocketAbsent(t *testing.T) {
 		Name:      containerNameFor("missing"),
 		SocketDir: dir,
 	})
+	tr.dialTimeout = 50 * time.Millisecond
 	// No container is running, so no socket exists on the volume.
 	if _, _, _, err := tr.Reattach(); err == nil {
 		t.Fatal("Reattach to an absent socket succeeded, want error")
+	}
+}
+
+func TestReattachHonoursInjectedTimeout(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", Image: "img",
+		Name:      containerNameFor("missing"),
+		SocketDir: t.TempDir(),
+	})
+	tr.dialTimeout = 50 * time.Millisecond
+
+	start := time.Now()
+	if _, _, _, err := tr.Reattach(); err == nil {
+		t.Fatal("Reattach to an absent socket succeeded, want error")
+	}
+	// Without the seam this waits the full reattachDialTimeout (3s).
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Reattach took %v; it ignored the injected dialTimeout", elapsed)
 	}
 }
 

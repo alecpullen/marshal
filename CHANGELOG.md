@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2-alpha] - 2026-08-27
+
+### Fixed
+
+**Interface**
+- Side-rail sections now share a row layout and align to one right edge,
+  eliminating ragged column boundaries between sections.
+- Working-set stats skip empty file paths instead of rendering blank rows.
+
 ## [0.0.1-alpha] - 2026-08-26
 
 First public alpha. Marshal is a terminal-native coding agent with
@@ -85,5 +94,6 @@ without a migration path before 0.1.0.
 - Building from source requires `CGO_ENABLED=1` and a C toolchain, because of
   the tree-sitter dependency.
 
-[Unreleased]: https://github.com/alecpullen/marshal/compare/v0.0.1-alpha...HEAD
+[Unreleased]: https://github.com/alecpullen/marshal/compare/v0.0.2-alpha...HEAD
+[0.0.2-alpha]: https://github.com/alecpullen/marshal/compare/v0.0.1-alpha...v0.0.2-alpha
 [0.0.1-alpha]: https://github.com/alecpullen/marshal/releases/tag/v0.0.1-alpha

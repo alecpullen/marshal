@@ -230,3 +230,55 @@ func TestPutRepoRoundTrips(t *testing.T) {
 		t.Fatalf("Repo(marshal) = (%+v, %v)", got, ok)
 	}
 }
+
+func TestGateOverridePersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	ws := NewWorkspace(path)
+	a := Agent{ID: "a1", Project: "/p", OwnerID: DefaultOwnerID, Origin: OriginUI,
+		GateOverride: &GateOverride{
+			Reason: "known-flaky integration suite", At: time.Now().UTC(),
+			By: DefaultOwnerID, FailedCommand: "go test ./...",
+		}}
+	if err := ws.PutAgent(a); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.Agent("a1")
+	if !ok || got.GateOverride == nil {
+		t.Fatal("GateOverride did not survive a reload")
+	}
+	if got.GateOverride.Reason != "known-flaky integration suite" {
+		t.Fatalf("Reason = %q", got.GateOverride.Reason)
+	}
+	if got.GateOverride.FailedCommand != "go test ./..." {
+		t.Fatalf("FailedCommand = %q", got.GateOverride.FailedCommand)
+	}
+}
+
+func TestV3MigratesToV4(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	v3 := `{"version":3,"repos":[{"id":"r","url":"u","ownerId":"local"}],"agents":[{"id":"a1","project":"/p","ownerId":"local","origin":"ui"}]}`
+	if err := os.WriteFile(path, []byte(v3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := NewWorkspace(path)
+	backup, err := ws.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup != "" {
+		t.Fatalf("v3 was quarantined to %q; it must migrate", backup)
+	}
+	if len(ws.Agents()) != 1 || len(ws.Repos()) != 1 {
+		t.Fatal("v3 content did not survive migration")
+	}
+	// A v3 agent never had a gate decision; nil is correct and must not
+	// be confused with "override granted".
+	if ws.Agents()[0].GateOverride != nil {
+		t.Fatal("migration invented a GateOverride")
+	}
+}

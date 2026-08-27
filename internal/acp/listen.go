@@ -70,9 +70,12 @@ func ListenAndServe(ctx context.Context, network, addr string, stderr io.Writer)
 // the first hangs up. Sessions belong to the host, not the connection,
 // so a hangup is not a shutdown.
 func listenAndServeWithConfig(ctx context.Context, ln net.Listener, cfg runConfig) error {
+	// Ensure the listener and any unix socket file are cleaned up on
+	// every return path, including unexpected Accept errors.
+	defer ln.Close()
+
 	host, err := newAgentHost(cfg)
 	if err != nil {
-		_ = ln.Close()
 		return err
 	}
 
@@ -93,8 +96,10 @@ func listenAndServeWithConfig(ctx context.Context, ln net.Listener, cfg runConfi
 			break
 		}
 		// A connection error ends that connection, never the host.
+		// Use the host's resolved logger (nil-guarded by newAgentHost)
+		// rather than the raw cfg.logger, which may be nil.
 		if err := host.serveConn(ctx, conn, conn); err != nil && ctx.Err() == nil {
-			cfg.logger.Warn("acp connection ended with error", "err", err)
+			host.log.Warn("acp connection ended with error", "err", err)
 		}
 		_ = conn.Close()
 		if ctx.Err() != nil {

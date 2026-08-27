@@ -328,6 +328,54 @@ func TestPauseFreesASlot(t *testing.T) {
 	}
 }
 
+func TestPauseResumeRoundTrip(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	// Pause: stops the container, keeps the record, frees the slot.
+	if err := f.Pause(id); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if _, err := f.runtimeForAgent(id); err == nil {
+		t.Fatal("paused agent still has a live runtime")
+	}
+
+	// Resume: re-acquires a slot and starts a fresh runtime.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.Resume(ctx, id); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	rt, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatalf("runtimeForAgent after Resume: %v", err)
+	}
+	if rt.id != id {
+		t.Fatalf("runtime id = %q, want %q", rt.id, id)
+	}
+
+	// The persisted record must still be present.
+	if _, ok := f.ws.Agent(id); !ok {
+		t.Fatal("Resume lost the persisted agent record")
+	}
+}
+
+func TestResumeIsNoOpWhenAlreadyRunning(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	// Resume on a running agent must be a no-op, not an error.
+	if err := f.Resume(context.Background(), id); err != nil {
+		t.Fatalf("Resume on running agent: %v", err)
+	}
+}
+
 // dropRuntimesForTest discards every live runtime without touching the
 // persisted records, standing in for a control-plane restart.
 func (f *Fleet) dropRuntimesForTest() {

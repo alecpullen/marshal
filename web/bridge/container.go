@@ -276,7 +276,11 @@ func listAgentContainers(runtime string) ([]string, error) {
 	}
 	var names []string
 	for _, line := range strings.Split(string(out), "\n") {
-		if name := strings.TrimSpace(line); name != "" {
+		name := strings.TrimSpace(line)
+		// Docker's --filter name= does a substring match, not a prefix
+		// match, so a foreign container like "foo-marshal-agent-bar" would
+		// appear here. Post-filter with HasPrefix to keep only ours.
+		if name != "" && strings.HasPrefix(name, containerNamePrefix) {
 			names = append(names, name)
 		}
 	}

@@ -112,6 +112,14 @@ type Fleet struct {
 	// rateLimits tracks per-repo "not before" times for backoff.
 	rateMu     sync.Mutex
 	rateLimits map[string]time.Time
+
+	// diskCache memoises measureDisk(stateDir) so the fleet UI can show
+	// disk usage without walking multi-gigabyte mirrors on every poll.
+	// diskCacheOK reports whether the cache is populated; it is cleared
+	// by invalidateDisk after any prune or tree removal.
+	diskCache   diskUsage
+	diskCacheMu sync.Mutex
+	diskCacheOK bool
 }
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string) *Fleet {

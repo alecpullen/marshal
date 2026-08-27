@@ -61,7 +61,10 @@ func NewServer(target any, args ...any) *Server {
 // go through the mux (with optional bearer auth) so method mismatches
 // still produce 405.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasPrefix(r.URL.Path, "/api/") {
+	// /mcp joins /api/ on the mux side. It is not under /api/ because it
+	// authenticates per client rather than with the shared bearer token,
+	// but it must still reach the mux rather than the SPA fallback.
+	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
 		staticHandler().ServeHTTP(w, r)
 		return
 	}
@@ -100,6 +103,11 @@ func (s *Server) routes() {
 	} else {
 		s.mux.HandleFunc("GET /api/events", s.log.ServeSSE)
 	}
+
+	// Deliberately NOT under /api/: this endpoint authenticates per
+	// client rather than with the shared bearer token. See
+	// authenticateMCP — it must reject on its own.
+	s.mux.HandleFunc("POST /mcp", s.mcpHandler)
 }
 
 // writeJSON encodes v with a status code.

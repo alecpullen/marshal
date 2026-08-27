@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"sync"
 	"syscall"
 	"time"
@@ -67,6 +66,9 @@ type Child struct {
 	Args []string
 	// Env is the child environment. Nil inherits os.Environ().
 	Env []string
+	// Transport supplies each generation's streams and lifecycle. Nil
+	// means a local process built from MarshalBin, Args, and Env.
+	Transport agentTransport
 
 	// OnRestart is invoked after each unexpected exit, once the
 	// replacement process has spawned. Intended for session resume.
@@ -81,8 +83,8 @@ type Child struct {
 	// error is written back to the child as the JSON-RPC response.
 	OnRequest func(id int, method string, params json.RawMessage) (result any, err error)
 
-	mu         sync.Mutex // guards cmd, stdin, stdout, stderrPipe, readDone, stopping, started
-	cmd        *exec.Cmd
+	mu         sync.Mutex // guards transport, stdin, stdout, stderrPipe, readDone, stopping, started
+	transport  agentTransport
 	stdin      io.WriteCloser
 	stdout     io.ReadCloser
 	stderrPipe io.ReadCloser
@@ -215,38 +217,26 @@ func (c *Child) StderrLog() string {
 // spawn starts one generation of the child process and its read and
 // stderr-drain goroutines.
 func (c *Child) spawn() error {
-	bin := c.MarshalBin
-	if bin == "" {
-		bin = "marshal"
-	}
-	args := append([]string{"acp"}, c.Args...)
-	cmd := exec.Command(bin, args...)
-	if c.Env != nil {
-		cmd.Env = append([]string(nil), c.Env...)
-	} else {
-		cmd.Env = os.Environ()
+	c.mu.Lock()
+	tr := c.transport
+	c.mu.Unlock()
+	if tr == nil {
+		tr = c.Transport
+		if tr == nil {
+			args := append([]string{"acp"}, c.Args...)
+			tr = newProcessTransport(c.MarshalBin, args, c.Env)
+		}
 	}
 
-	stdin, err := cmd.StdinPipe()
+	stdin, stdout, stderr, err := tr.Open()
 	if err != nil {
-		return err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
 		return err
 	}
 
 	readDone := make(chan struct{})
 
 	c.mu.Lock()
-	c.cmd = cmd
+	c.transport = tr
 	c.stdin = stdin
 	c.stdout = stdout
 	c.stderrPipe = stderr
@@ -267,12 +257,11 @@ func (c *Child) spawn() error {
 // leaves the replacement running and nothing ever ends supervision.
 func (c *Child) signalCurrent(sig os.Signal) {
 	c.mu.Lock()
-	cmd := c.cmd
+	tr := c.transport
 	c.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		// Racing with an already-exited process is benign: Signal
-		// returns an error we ignore.
-		_ = cmd.Process.Signal(sig)
+	if tr != nil {
+		// Racing with an already-exited generation is benign.
+		_ = tr.Signal(sig)
 	}
 }
 
@@ -280,10 +269,10 @@ func (c *Child) signalCurrent(sig os.Signal) {
 // no-op once Wait has reaped the process.
 func (c *Child) killCurrent() {
 	c.mu.Lock()
-	cmd := c.cmd
+	tr := c.transport
 	c.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+	if tr != nil {
+		_ = tr.Kill()
 	}
 }
 
@@ -294,19 +283,17 @@ func (c *Child) supervise() {
 	defer close(c.done)
 	for {
 		c.mu.Lock()
-		cmd := c.cmd
+		tr := c.transport
 		readDone := c.readDone
 		c.mu.Unlock()
 
 		// Drain stdout before reaping. exec's Wait closes the pipes as
-		// soon as the process exits, and os/exec documents that calling
-		// it before all reads have completed is incorrect — doing so
-		// discards a reply the child wrote just before exiting, which
-		// surfaces to the caller as a spurious "child exited" error.
+		// soon as the process exits, and calling it before all reads
+		// have completed discards a reply written just before exit.
 		if readDone != nil {
 			<-readDone
 		}
-		_ = cmd.Wait()
+		_ = tr.Wait()
 
 		c.mu.Lock()
 		stopping := c.stopping

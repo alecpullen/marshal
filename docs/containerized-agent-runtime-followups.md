@@ -4,18 +4,19 @@ The following items were identified during branch review and
 deliberately deferred from the initial S1 implementation. Each is
 documented here so it can be tracked and addressed in subsequent work.
 
-## 1. Container environment is never populated
+Items marked **✅ Resolved** were addressed by the S1 completion plan
+and are kept here for historical context.
 
-`fleet.go` constructs `ContainerConfig` without an `Env` field, and
-`RuntimeProfile` has no `Env` field. Combined with the security-hardened
-`cmd.Env = []string{}` (which correctly prevents host env inheritance),
-a containerized agent is born with zero environment — no API keys, no
-`HOME`, no `PATH`, no credentials. The agent inside the container cannot
-authenticate to any provider.
+## 1. ~~Container environment is never populated~~ ✅ Resolved
 
-**Action:** Wire explicit env injection (API keys, `HOME`, `PATH`) into
-`ContainerConfig` and `RuntimeProfile` so the containerized agent is
-functional end-to-end.
+**Resolved by the S1 completion plan.** `ContainerConfig.Env` is now
+populated: `NewFleet` passes `f.agentEnv` (a merge of
+`InheritedAgentEnv()` and explicit `--agent-env KEY=VALUE` flags) into
+the `ContainerConfig`, and `buildRunArgs` injects it via `-e` flags.
+`RuntimeProfile` still has no per-project `Env` field — the container
+receives only explicitly-supplied provider keys, not `HOME`/`PATH`/
+general host env (those come from the image). An agent image that
+expects ambient env vars beyond provider credentials won't find them.
 
 ## 2. No idle/read timeout on hung connections
 
@@ -29,29 +30,20 @@ listener is cancelled.
 `conn.SetReadDeadline` refreshed per frame, or a per-connection context
 with timeout) so a stuck peer cannot hold the host hostage.
 
-## 3. Reattach-preference and cleanup tests need an injectable seam
+## 3. ~~Reattach-preference and cleanup tests need an injectable seam~~ ✅ Resolved
 
-`containerTransport.Open()` checks `listAgentContainers` first and
-reattaches if a matching container is running. The `Kill()`-on-dial-
-failure cleanup path is also untested. Both paths shell out to `docker`
-and cannot be exercised deterministically without faking the command
-runner.
+**Resolved by the S1 completion plan.** `containerTransport` now has an
+injectable `commandRunner` seam (`c.run`), and the reattach-preference
+path (`Open` → `listAgentContainers` → `Reattach`) and the dial-failure
+cleanup path (`start` → `Kill` on dial error) are both covered by unit
+tests using a fake runner.
 
-**Action:** Introduce an injectable command-runner seam in
-`containerTransport` and add unit tests for the reattach-preference
-path and the dial-failure cleanup path.
+## 4. ~~`Resume` does not restore the ACP session~~ ✅ Resolved
 
-## 4. `Resume` does not restore the ACP session
-
-`Resume` calls `startRuntime` (which starts a fresh container) but
-never calls `reg.Load` to reattach to the prior session. The `Agent`
-struct has no persisted `SessionID` field, so after a Pause the ACP
-session id is lost from bridge memory. A resumed agent starts with an
-empty container: workspace files survive (bind mount) but conversation
-state does not.
-
-**Action:** Persist the ACP session id on the `Agent` record and have
-`Resume` reattach to it via `reg.Load`.
+**Resolved by the S1 completion plan.** `Agent.SessionID` is now
+persisted (`workspace.go`), and `Resume` calls `restoreSession` which
+calls `reg.Load` with the persisted session id. `ReattachAll` and
+`RuntimeForSession` also use `restoreSession`.
 
 ## 5. `SetTurnCanceller` overwritten per connection
 

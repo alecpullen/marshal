@@ -260,7 +260,7 @@ func (f *Fleet) RuntimeForSession(id string) (*agentRuntime, error) {
 	}
 	rt, err := f.startRuntime(a)
 	if err != nil {
-		f.slots.release()
+		f.stopAgent(a.ID) // removes the failed runtime and releases the slot
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -422,12 +422,21 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 
 // Diff, Merge and Discard are thin ACP pass-throughs. The bridge holds no
 // git knowledge; every operation happens inside marshal.
+// sessionIDFor returns the ACP session id for a live runtime, reading
+// under f.mu so it is safe to call concurrently with Spawn or
+// restoreSession mutating the field.
+func (f *Fleet) sessionIDFor(rt *agentRuntime) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return rt.sessionID
+}
+
 func (f *Fleet) Diff(ctx context.Context, id, path string) (json.RawMessage, error) {
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
 		return nil, err
 	}
-	params := map[string]any{"sessionId": rt.sessionID}
+	params := map[string]any{"sessionId": f.sessionIDFor(rt)}
 	if path != "" {
 		params["path"] = path
 	}
@@ -443,7 +452,7 @@ func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMe
 	if !ok || a.TargetBranch == "" {
 		return nil, fmt.Errorf("bridge: agent %s has no recorded merge target", id)
 	}
-	params := map[string]any{"sessionId": rt.sessionID, "targetBranch": a.TargetBranch}
+	params := map[string]any{"sessionId": f.sessionIDFor(rt), "targetBranch": a.TargetBranch}
 	if commitMessage != "" {
 		params["commitMessage"] = commitMessage
 	}
@@ -474,7 +483,7 @@ func (f *Fleet) Discard(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if _, rerr := rt.child.Request(ctx, "session/discard", map[string]any{"sessionId": rt.sessionID}); rerr != nil {
+	if _, rerr := rt.child.Request(ctx, "session/discard", map[string]any{"sessionId": f.sessionIDFor(rt)}); rerr != nil {
 		return rerr
 	}
 	a, ok := f.ws.Agent(id)
@@ -645,11 +654,12 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			st.UpdatedAt = a.CreatedAt
 		}
 		if rt, err := f.runtimeForAgent(a.ID); err == nil {
+			sid := f.sessionIDFor(rt)
 			// Registry.Pending is the authority on whether anything is
 			// still outstanding; live.pending only supplies the payload.
 			// A resolved request therefore stops being advertised even
 			// though its payload is still cached.
-			pending := rt.reg.Pending(rt.sessionID)
+			pending := rt.reg.Pending(sid)
 			if pending != "" && live.pending != nil && live.pending.kind == pending {
 				st.Pending = &PendingRequest{
 					Kind: live.pending.kind, ID: live.pending.id, Params: live.pending.params,
@@ -661,7 +671,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			case "question":
 				st.Status = "awaiting-question"
 			default:
-				if info, ok := rt.reg.lookup(rt.sessionID); ok && info.Busy {
+				if info, ok := rt.reg.lookup(sid); ok && info.Busy {
 					st.Status = "running"
 				}
 			}
@@ -724,7 +734,7 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 		}
 		rt, err := f.startRuntime(a)
 		if err != nil {
-			f.slots.release()
+			f.stopAgent(a.ID) // removes the failed runtime and releases the slot
 			errs = append(errs, fmt.Errorf("reattach agent %s: %w", a.ID, err))
 			continue
 		}

@@ -569,25 +569,27 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 		b.WriteString("\n\n")
 		b.WriteString(d)
 	}
-	b.WriteString("\n\nAvailable tools:\n")
-	for _, tool := range tools {
-		// Deferred tools the agent hasn't loaded are announced compactly via
-		// writeDeferredAnnouncement; listing them in full here would
-		// double-pay the prompt cost deferral exists to save. Loaded
-		// deferred tools, though, must appear here so the agent knows it has
-		// opted in and can call them — especially in JSON/envelope mode,
-		// where this text is the only tool representation.
-		if tool.Deferred && !loaded[tool.Name] {
-			continue
+	if !nativeTools {
+		b.WriteString("\n\nAvailable tools:\n")
+		for _, tool := range tools {
+			// Deferred tools the agent hasn't loaded are announced compactly via
+			// writeDeferredAnnouncement; listing them in full here would
+			// double-pay the prompt cost deferral exists to save. Loaded
+			// deferred tools, though, must appear here so the agent knows it has
+			// opted in and can call them — especially in JSON/envelope mode,
+			// where this text is the only tool representation.
+			if tool.Deferred && !loaded[tool.Name] {
+				continue
+			}
+			line := fmt.Sprintf("- %s (%s): %s", tool.Name, tool.Risk, tool.Description)
+			if hint := summarizeToolSchema(tool.Schema); hint != "" {
+				line += " — " + hint
+			}
+			b.WriteString(line + "\n")
 		}
-		line := fmt.Sprintf("- %s (%s): %s", tool.Name, tool.Risk, tool.Description)
-		if hint := summarizeToolSchema(tool.Schema); hint != "" {
-			line += " — " + hint
+		if mode == policy.ModeDefault {
+			b.WriteString("- mode.request: Ask the user to switch to an editing mode (edit, copilot, or auto) so you can make changes.\n")
 		}
-		b.WriteString(line + "\n")
-	}
-	if mode == policy.ModeDefault {
-		b.WriteString("- mode.request: Ask the user to switch to an editing mode (edit, copilot, or auto) so you can make changes.\n")
 	}
 	// Don't advertise tools the agent has already loaded as still "not
 	// loaded" — that would tell the model a tool it now has is unavailable.

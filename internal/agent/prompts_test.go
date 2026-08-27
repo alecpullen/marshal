@@ -188,8 +188,6 @@ func TestBuildSystemPromptNativeModeOmitsJSONEnvelopeScaffolding(t *testing.T) {
 		"You are Marshal, a local-friendly coding assistant",
 		"Prefer small, verifiable changes",
 		"You are an implementer",
-		"Available tools:",
-		"file.read",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("native prompt missing expected content %q\n%s", want, content)
@@ -213,6 +211,46 @@ func TestBuildSystemPromptNativeModeOmitsJSONEnvelopeScaffolding(t *testing.T) {
 
 	if !strings.Contains(content, "Allowed actions for this role: tool_call, final") {
 		t.Errorf("native implementer allowed actions incorrect; got:\n%s", content)
+	}
+}
+
+func TestNativeModeOmitsAvailableToolsProseList(t *testing.T) {
+	tools := []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly, Description: "Read a file."},
+		{Name: "shell.run", Risk: registry.RiskCommand, Description: "Run a shell command."},
+	}
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, true)
+	content := msg.Content
+	if strings.Contains(content, "Available tools:") {
+		t.Errorf("native mode should not contain the Available tools prose list\n%s", content)
+	}
+	// Tool descriptions should not appear as prose in native mode
+	if strings.Contains(content, "Read a file.") {
+		t.Errorf("native mode should not include tool descriptions as prose\n%s", content)
+	}
+}
+
+func TestNativeModeDefaultOmitsModeRequestLine(t *testing.T) {
+	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, true, policy.ModeDefault)
+	content := msg.Content
+	if strings.Contains(content, "mode.request: Ask the user to switch") {
+		t.Errorf("native default mode should not manually append mode.request line (it's in the API payload)\n%s", content)
+	}
+}
+
+func TestJSONModeStillIncludesAvailableToolsList(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
+	content := msg.Content
+	if !strings.Contains(content, "Available tools:") {
+		t.Errorf("JSON mode must still include the Available tools prose list\n%s", content)
+	}
+}
+
+func TestJSONModeDefaultStillIncludesModeRequestLine(t *testing.T) {
+	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeDefault)
+	content := msg.Content
+	if !strings.Contains(content, "mode.request: Ask the user to switch") {
+		t.Errorf("JSON default mode must still include the mode.request line\n%s", content)
 	}
 }
 

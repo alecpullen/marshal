@@ -194,3 +194,39 @@ func TestApproveRefusesAnExpiredSubmission(t *testing.T) {
 		t.Fatal("an expired submission was approved")
 	}
 }
+
+// TestCapsAreScopedPerClient proves that one client's agents do not count
+// against another client's cap. Without the ClientID filter in
+// checkCaps, client B's agent would exhaust client A's MaxPerDay=1.
+func TestCapsAreScopedPerClient(t *testing.T) {
+	f := testFleetWithClient(t, MCPClient{
+		ID: "cA", OwnerID: DefaultOwnerID, Autonomous: true, MaxPerDay: 1,
+	})
+	if err := f.ws.PutClient(MCPClient{
+		ID: "cB", OwnerID: DefaultOwnerID, Autonomous: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registerGitRepo(t, f, "r1")
+
+	// Client B uses the (shared) daily quota first.
+	if _, err := f.Submit(context.Background(), SpawnRequest{
+		Origin: OriginMCP, ClientID: "cB", RepoID: "r1", Title: "b work", Prompt: "y",
+	}); err != nil {
+		t.Fatalf("client B submit: %v", err)
+	}
+
+	// Client A must still be able to submit — its cap is independent.
+	if _, err := f.Submit(context.Background(), SpawnRequest{
+		Origin: OriginMCP, ClientID: "cA", RepoID: "r1", Title: "a work", Prompt: "y",
+	}); err != nil {
+		t.Fatalf("client A submit after B used its own quota: %v", err)
+	}
+
+	// Now client A's own cap is exhausted; a second submit must fail.
+	if _, err := f.Submit(context.Background(), SpawnRequest{
+		Origin: OriginMCP, ClientID: "cA", RepoID: "r1", Title: "a again", Prompt: "y",
+	}); !errors.Is(err, ErrCapExceeded) {
+		t.Fatalf("client A second submit = %v, want ErrCapExceeded", err)
+	}
+}

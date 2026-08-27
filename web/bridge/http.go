@@ -38,10 +38,14 @@ func NewServer(target any, args ...any) *Server {
 	var token string
 	var reg *Registry
 	var log *EventLog
+	var publicURLBase string
 	if f, ok := target.(*Fleet); ok {
 		fleet = f
 		if len(args) > 0 {
 			token, _ = args[0].(string)
+		}
+		if len(args) > 1 {
+			publicURLBase, _ = args[1].(string)
 		}
 	} else if r, ok := target.(*Registry); ok {
 		reg = r
@@ -51,11 +55,11 @@ func NewServer(target any, args ...any) *Server {
 		if len(args) > 1 {
 			token, _ = args[1].(string)
 		}
+		if len(args) > 2 {
+			publicURLBase, _ = args[2].(string)
+		}
 	}
-	s := &Server{fleet: fleet, reg: reg, log: log, mux: http.NewServeMux()}
-	if len(args) > 2 {
-		s.publicURLBase, _ = args[2].(string)
-	}
+	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux()}
 	s.routes()
 	s.http = s.mux
 	if token != "" {

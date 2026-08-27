@@ -199,6 +199,9 @@ func (f *Fleet) startPlan(ctx context.Context, agentID, pendingID, plan string) 
 }
 
 // checkCaps enforces the client's concurrency and daily budgets.
+//
+// Counts are scoped to the calling client: one client's agents must not
+// count against another's cap.
 func (f *Fleet) checkCaps(c MCPClient) error {
 	if c.MaxConcurrent <= 0 && c.MaxPerDay <= 0 {
 		return nil
@@ -206,7 +209,7 @@ func (f *Fleet) checkCaps(c MCPClient) error {
 	var live, today int
 	cutoff := time.Now().UTC().Add(-24 * time.Hour)
 	for _, a := range f.ws.Agents() {
-		if a.Origin != OriginMCP {
+		if a.Origin != OriginMCP || a.ClientID != c.ID {
 			continue
 		}
 		if a.CreatedAt.After(cutoff) {

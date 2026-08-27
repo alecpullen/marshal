@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -224,7 +226,13 @@ func (s *Server) mcpSend(w http.ResponseWriter, r *http.Request, c MCPClient, id
 		return
 	}
 	go func() {
-		_ = rt.reg.Prompt(r.Context(), rt.sessionID, a.Text)
+		// Use a detached context: r.Context() is cancelled as soon as
+		// the handler returns, which would abort the prompt before it
+		// starts. The REST prompt handler does the same.
+		ctx := context.Background()
+		if err := rt.reg.Prompt(ctx, rt.sessionID, a.Text); err != nil {
+			slog.Warn("mcp send: prompt failed", "agentId", a.AgentID, "err", err)
+		}
 	}()
 	writeRPC(w, id, map[string]any{"status": "sent"}, nil)
 }

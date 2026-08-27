@@ -26,6 +26,10 @@ type Server struct {
 	http  http.Handler
 	reg   *Registry
 	log   *EventLog
+	// publicURLBase is the externally reachable base URL, used to build
+	// absolute links (e.g. the operator-approval URL an MCP spawn
+	// returns). Empty falls back to the listen address.
+	publicURLBase string
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -48,12 +52,25 @@ func NewServer(target any, args ...any) *Server {
 		}
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, mux: http.NewServeMux()}
+	if len(args) > 2 {
+		s.publicURLBase, _ = args[2].(string)
+	}
 	s.routes()
 	s.http = s.mux
 	if token != "" {
 		s.http = bearerAuth(token, s.mux)
 	}
 	return s
+}
+
+// publicURL builds an absolute URL from the configured public URL or
+// falls back to the listen address.
+func (s *Server) publicURL(path string) string {
+	base := s.publicURLBase
+	if base == "" {
+		base = "http://localhost:7700"
+	}
+	return strings.TrimRight(base, "/") + path
 }
 
 // ServeHTTP implements http.Handler. Non-API paths are served by the

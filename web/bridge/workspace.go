@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const workspaceVersion = 4
+const workspaceVersion = 5
 
 // DefaultOwnerID is the single implicit owner in a single-operator
 // deployment. Every agent carries an owner from the first commit so that
@@ -96,11 +96,38 @@ type Repo struct {
 	OwnerID string `json:"ownerId"`
 }
 
+// PendingSpawn is an intake submission awaiting operator confirmation.
+//
+// It is persisted so a pending spawn survives a control-plane restart,
+// for the same reason S1 made spawn records durable: the operator's
+// decision is the slow part, and losing the queue to a restart discards
+// work someone is waiting on.
+type PendingSpawn struct {
+	ID       string `json:"id"`
+	Origin   string `json:"origin"`
+	ClientID string `json:"clientId,omitempty"`
+	// Title is what the operator reads when deciding. It comes from the
+	// calling agent and is therefore untrusted: render as text, never
+	// as markup.
+	Title  string `json:"title"`
+	RepoID string `json:"repoId"`
+	Ref    string `json:"ref,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+	// Plan is markdown in the format pipeline.ParsePlan reads. It is
+	// stored here so the operator can read what they are approving.
+	Plan      string    `json:"plan,omitempty"`
+	Mode      string    `json:"mode,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
 type workspaceFile struct {
-	Version  int      `json:"version"`
-	Projects []string `json:"projects"`
-	Repos    []Repo   `json:"repos,omitempty"`
-	Agents   []Agent  `json:"agents"`
+	Version  int            `json:"version"`
+	Projects []string       `json:"projects"`
+	Repos    []Repo         `json:"repos,omitempty"`
+	Agents   []Agent        `json:"agents"`
+	Clients  []MCPClient    `json:"clients,omitempty"`
+	Pending  []PendingSpawn `json:"pending,omitempty"`
 }
 
 type Workspace struct {
@@ -109,10 +136,18 @@ type Workspace struct {
 	projects []string
 	repos    map[string]Repo
 	agents   map[string]Agent
+	clients  map[string]MCPClient
+	pending  map[string]PendingSpawn
 }
 
 func NewWorkspace(path string) *Workspace {
-	return &Workspace{path: path, repos: make(map[string]Repo), agents: make(map[string]Agent)}
+	return &Workspace{
+		path:    path,
+		repos:   make(map[string]Repo),
+		agents:  make(map[string]Agent),
+		clients: make(map[string]MCPClient),
+		pending: make(map[string]PendingSpawn),
+	}
 }
 
 func DefaultWorkspacePath() (string, error) {
@@ -152,6 +187,14 @@ func (w *Workspace) Load() (string, error) {
 	w.agents = make(map[string]Agent, len(f.Agents))
 	for _, a := range f.Agents {
 		w.agents[a.ID] = a
+	}
+	w.clients = make(map[string]MCPClient, len(f.Clients))
+	for _, c := range f.Clients {
+		w.clients[c.ID] = c
+	}
+	w.pending = make(map[string]PendingSpawn, len(f.Pending))
+	for _, p := range f.Pending {
+		w.pending[p.ID] = p
 	}
 	return "", nil
 }
@@ -198,6 +241,14 @@ func (w *Workspace) save() error {
 		f.Agents = append(f.Agents, a)
 	}
 	sort.Slice(f.Agents, func(i, j int) bool { return f.Agents[i].ID < f.Agents[j].ID })
+	for _, c := range w.clients {
+		f.Clients = append(f.Clients, c)
+	}
+	sort.Slice(f.Clients, func(i, j int) bool { return f.Clients[i].ID < f.Clients[j].ID })
+	for _, p := range w.pending {
+		f.Pending = append(f.Pending, p)
+	}
+	sort.Slice(f.Pending, func(i, j int) bool { return f.Pending[i].ID < f.Pending[j].ID })
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace: %w", err)
@@ -339,4 +390,94 @@ func (w *Workspace) PutRepo(r Repo) error {
 	defer w.mu.Unlock()
 	w.repos[r.ID] = r
 	return w.save()
+}
+
+func (w *Workspace) Clients() []MCPClient {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]MCPClient, 0, len(w.clients))
+	for _, c := range w.clients {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func (w *Workspace) PutClient(c MCPClient) error {
+	if c.ID == "" {
+		return errors.New("client id is required")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.clients[c.ID] = c
+	return w.save()
+}
+
+func (w *Workspace) DeleteClient(id string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.clients, id)
+	return w.save()
+}
+
+func (w *Workspace) Client(id string) (MCPClient, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c, ok := w.clients[id]
+	return c, ok
+}
+
+func (w *Workspace) Pending() []PendingSpawn {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]PendingSpawn, 0, len(w.pending))
+	for _, p := range w.pending {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func (w *Workspace) PutPending(p PendingSpawn) error {
+	if p.ID == "" {
+		return errors.New("pending id is required")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending[p.ID] = p
+	return w.save()
+}
+
+func (w *Workspace) DeletePending(id string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.pending, id)
+	return w.save()
+}
+
+func (w *Workspace) PendingByID(id string) (PendingSpawn, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	p, ok := w.pending[id]
+	return p, ok
+}
+
+// SweepExpired drops pending spawns past their deadline and reports how
+// many went. An unconfirmed spawn should not linger: the context that
+// made it sensible goes stale, and a queue that only grows stops being
+// read.
+func (w *Workspace) SweepExpired(now time.Time) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var removed int
+	for id, p := range w.pending {
+		if !p.ExpiresAt.IsZero() && now.After(p.ExpiresAt) {
+			delete(w.pending, id)
+			removed++
+		}
+	}
+	if removed > 0 {
+		_ = w.save()
+	}
+	return removed
 }

@@ -4,9 +4,15 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func testFleet(t *testing.T) *Fleet {
+	t.Helper()
+	return newTestFleetWithLimit(t, 4)
+}
+
+func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	t.Helper()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
 	if _, err := ws.Load(); err != nil {
@@ -15,6 +21,7 @@ func testFleet(t *testing.T) *Fleet {
 	f := NewFleet(ws, "unused")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.slots = newSlots(limit)
 	t.Cleanup(f.Close)
 	return f
 }
@@ -255,4 +262,77 @@ func TestNewAgentIDIsUnique(t *testing.T) {
 		}
 		seen[id] = true
 	}
+}
+
+func TestReattachAllReconnectsPersistedAgents(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	// Simulate a control-plane restart: drop every live runtime but keep
+	// the persisted records, exactly as a process restart would.
+	f.dropRuntimesForTest()
+	if _, err := f.runtimeForAgent(id); err == nil {
+		t.Fatal("runtime survived the simulated restart; the test is not exercising reattach")
+	}
+
+	if errs := f.ReattachAll(context.Background()); len(errs) != 0 {
+		t.Fatalf("ReattachAll: %v", errs)
+	}
+	if _, err := f.runtimeForAgent(id); err != nil {
+		t.Fatalf("agent %s was not reattached: %v", id, err)
+	}
+}
+
+func TestPauseStopsContainerAndKeepsRecord(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := f.Pause(id); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if _, err := f.runtimeForAgent(id); err == nil {
+		t.Fatal("paused agent still has a live runtime")
+	}
+
+	agents := f.ws.Agents()
+	var found bool
+	for _, a := range agents {
+		if a.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Pause removed the persisted agent record; it must survive")
+	}
+}
+
+func TestPauseFreesASlot(t *testing.T) {
+	f := newTestFleetWithLimit(t, 1)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := f.Pause(id); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := f.Spawn(ctx, "/p", SpawnOptions{Prompt: "two"}); err != nil {
+		t.Fatalf("Spawn after Pause: %v — the paused agent did not free its slot", err)
+	}
+}
+
+// dropRuntimesForTest discards every live runtime without touching the
+// persisted records, standing in for a control-plane restart.
+func (f *Fleet) dropRuntimesForTest() {
+	f.mu.Lock()
+	f.runtimes = make(map[string]*agentRuntime)
+	f.sessionAgent = make(map[string]string)
+	f.mu.Unlock()
 }

@@ -151,6 +151,12 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	fleet := bridge.NewFleet(ws, cfg.marshalBin)
 
+	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
+		for _, err := range errs {
+			slog.Default().Warn("webbridge: reattach agent", "err", err)
+		}
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.addr,
 		Handler:           bridge.NewServer(fleet, cfg.token),

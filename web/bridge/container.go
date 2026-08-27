@@ -106,6 +106,22 @@ func (c *containerTransport) buildRunArgs() []string {
 // over the single duplex connection so that closing the write side does
 // not tear down the read side.
 func (c *containerTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	// A container under this name means the agent outlived the control
+	// plane. Reconnect to it rather than starting a duplicate.
+	if running, err := listAgentContainers(c.cfg.Runtime); err == nil {
+		for _, name := range running {
+			if name == c.cfg.Name {
+				return c.Reattach()
+			}
+		}
+	}
+	return c.start()
+}
+
+// start launches a fresh container and dials its socket, returning
+// half-closers over the single duplex connection so that closing the
+// write side does not tear down the read side.
+func (c *containerTransport) start() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
 	if err := os.MkdirAll(c.cfg.SocketDir, 0o700); err != nil {
 		return nil, nil, nil, fmt.Errorf("bridge: create socket dir: %w", err)
 	}

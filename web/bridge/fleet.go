@@ -21,6 +21,17 @@ var ErrUnknownProject = errors.New("bridge: unknown project")
 // does not track. The HTTP layer maps it to 404.
 var ErrUnknownAgent = errors.New("bridge: unknown agent")
 
+// Agent lifecycle states, reported to the fleet UI.
+const (
+	AgentQueued           = "queued"
+	AgentProvisioning     = "provisioning"
+	AgentRunning          = "running"
+	AgentAwaitingApproval = "awaiting-approval"
+	AgentParked           = "parked"
+	AgentDone             = "done"
+	AgentFailed           = "failed"
+)
+
 // agentRuntime is one agent: its own container, its own JSON-RPC child,
 // its own registry and event log. Two agents on the same project share
 // nothing.
@@ -674,6 +685,59 @@ func (f *Fleet) stopAgent(id string) {
 		rt.child.Stop()
 		f.slots.release()
 	}
+}
+
+// ReattachAll reconnects to every persisted agent that is still running.
+// It is called once at start-up: an agent kept working while the control
+// plane was down, and respawning it would duplicate its work.
+//
+// Errors are collected rather than returned on the first failure — one
+// unreachable agent must not prevent the rest from reattaching.
+func (f *Fleet) ReattachAll(ctx context.Context) []error {
+	var errs []error
+	for _, a := range f.ws.Agents() {
+		if _, err := f.runtimeForAgent(a.ID); err == nil {
+			continue // already live
+		}
+		if err := f.slots.acquire(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
+			continue
+		}
+		if _, err := f.startRuntime(a); err != nil {
+			f.slots.release()
+			errs = append(errs, fmt.Errorf("reattach agent %s: %w", a.ID, err))
+		}
+	}
+	return errs
+}
+
+// Pause stops an agent's container while keeping its workspace volume and
+// its persisted record. The agent can be resumed later onto the same work.
+func (f *Fleet) Pause(id string) error {
+	if _, err := f.runtimeForAgent(id); err != nil {
+		return err
+	}
+	f.stopAgent(id)
+	return nil
+}
+
+// Resume restarts a paused agent against its existing workspace.
+func (f *Fleet) Resume(ctx context.Context, id string) error {
+	if _, err := f.runtimeForAgent(id); err == nil {
+		return nil // already running
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok {
+		return fmt.Errorf("%w: agent %s", ErrUnknownAgent, id)
+	}
+	if err := f.slots.acquire(ctx); err != nil {
+		return fmt.Errorf("wait for an agent slot: %w", err)
+	}
+	if _, err := f.startRuntime(a); err != nil {
+		f.slots.release()
+		return err
+	}
+	return nil
 }
 
 func (f *Fleet) StopProject(root string) {

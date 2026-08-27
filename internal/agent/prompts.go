@@ -351,8 +351,7 @@ For patch actions use search/replace blocks, one block per file. Unified diffs a
 const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.
 
 Rules for native tool calls:
-- Each tool call's arguments must be a single valid JSON object matching the tool's schema. Do not concatenate multiple JSON objects together. Do not include extra keys not declared in the schema.
-- If the request is broad and there are several materially different valid directions — not just a single obvious interpretation — call ask_user before picking one and implementing it. A narrow binary fork ("archive or delete the record?") and an open-ended request with multiple valid directions ("improve the retry behavior" could mean backoff policy, error classification, a retry budget, or something else) both qualify; guessing wrong on either risks reworking substantial code.`
+- Each tool call's arguments must be a single valid JSON object matching the tool's schema. Do not concatenate multiple JSON objects together. Do not include extra keys not declared in the schema.`
 
 const nativePatchFormat = `## file.write_patch format
 
@@ -409,7 +408,7 @@ func modeDirective(mode policy.ApprovalMode) string {
 	case policy.ModeCopilot:
 		return "You are in copilot mode. File changes are auto-approved except for destructive guardrails and git push. You may ask the user a question if you hit a genuine ambiguity that would materially change the outcome."
 	case policy.ModeAuto:
-		return "You are in auto mode. File changes are auto-approved except for destructive guardrails and git push. You cannot ask the user questions — proceed with your best judgment and state the assumptions you make. Any ask_user or question.ask examples shown elsewhere in this prompt do not apply in this mode; do not call them."
+		return "You are in auto mode. File changes are auto-approved except for destructive guardrails and git push. You cannot ask the user questions — proceed with your best judgment and state the assumptions you make."
 	default:
 		return ""
 	}

@@ -822,9 +822,6 @@ func TestBuildSystemPromptNativeModeIncludesAskUserExample(t *testing.T) {
 	if !strings.Contains(content, "ask_user") {
 		t.Errorf("native-mode system prompt has no ask_user guidance at all\n%s", content)
 	}
-	if !strings.Contains(content, "materially different") {
-		t.Errorf("native-mode system prompt missing broad-scope ask_user guidance\n%s", content)
-	}
 }
 
 // RoleSubtask's prompt used to claim "You MUST NOT attempt to write, modify,
@@ -891,9 +888,6 @@ func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {
 		content := msg.Content
 		if !strings.Contains(content, "cannot ask the user") {
 			t.Fatalf("native=%v: auto mode prompt missing the cannot-ask directive\n%s", native, content)
-		}
-		if !strings.Contains(content, "ask_user") || !strings.Contains(content, "do not apply") {
-			t.Errorf("native=%v: auto mode prompt does not explicitly override the ask_user examples shown later in the prompt\n%s", native, content)
 		}
 	}
 }

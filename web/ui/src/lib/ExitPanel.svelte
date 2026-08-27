@@ -3,7 +3,7 @@
   import Button from './ui/Button.svelte'
   import DiffView from './DiffView.svelte'
   import GateResult from './GateResult.svelte'
-  import { APIError, discardAgent, exitAgent, getDiff, listAgents, mergeAgent, patchUrl, type ExitResult, type MergeResult } from './api'
+  import { APIError, discardAgent, ensureToken, exitAgent, getDiff, listAgents, mergeAgent, patchUrl, type ExitResult, type MergeResult } from './api'
   import { diffTotals, mergeRefusalMessage } from './diff'
   import { exitDestination } from './exit'
 
@@ -27,6 +27,8 @@
   let busy = $state(false)
   let totals = $state({ files: 0, added: 0, removed: 0 })
   let pushResult = $state<ExitResult | null>(null)
+  let patchReady = $state(false)
+  let patchError = $state<string | null>(null)
 
   // The destination follows the agent's source and is never a user choice.
   const destination = $derived(exitDestination({ sourceKind, readOnly }))
@@ -108,6 +110,32 @@
       busy = false
     }
   }
+
+  async function downloadPatch() {
+    patchError = null
+    busy = true
+    try {
+      const token = ensureToken()
+      const res = await fetch(patchUrl(agentId), {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error(`Download failed: ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `marshal-${agentId}.patch`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      patchReady = true
+    } catch (e) {
+      patchError = e instanceof Error ? e.message : String(e)
+    } finally {
+      busy = false
+    }
+  }
 </script>
 
 {#if destination === 'merge'}
@@ -153,11 +181,8 @@
   {/if}
 {:else if destination === 'push'}
   <div class="flex flex-col gap-3">
-    {#if pushResult?.verify}
+    {#if pushResult?.blocked && pushResult?.verify}
       <GateResult result={pushResult.verify} onOverride={(reason) => doPush({ reason })} />
-    {/if}
-
-    {#if pushResult?.blocked}
       <div class="rounded-md border border-attention bg-attention/10 p-3 text-sm">Push was blocked.</div>
     {/if}
 
@@ -191,13 +216,13 @@
     <div class="text-sm text-muted">
       This agent is read-only. Download its changes as a patch to apply elsewhere.
     </div>
+    {#if patchError}
+      <div class="rounded-md border border-attention bg-attention/10 p-3 text-sm">{patchError}</div>
+    {/if}
     <div>
-      <a
-        href={patchUrl(agentId)}
-        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-bg transition hover:opacity-90"
-      >
-        Download patch
-      </a>
+      <Button disabled={busy} onclick={downloadPatch}>
+        {patchReady ? 'Download again' : 'Download patch'}
+      </Button>
     </div>
   </div>
 {/if}

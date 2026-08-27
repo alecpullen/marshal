@@ -782,7 +782,18 @@ func (f *Fleet) Snapshot() []AgentStatus {
 	out := make([]AgentStatus, 0)
 	for _, a := range f.ws.Agents() {
 		live := f.live.get(a.ID)
-		st := AgentStatus{ID: a.ID, Project: a.Project, Name: a.Name, Mode: a.Mode, Status: "idle", Activity: live.activity, ContextPct: live.contextPct, ChangedFiles: live.changedFiles, Interrupted: a.Interrupted, Isolated: a.Isolated, Branch: a.Branch, UpdatedAt: live.updatedAt}
+		st := AgentStatus{
+			ID: a.ID, Project: a.Project, Name: a.Name, Mode: a.Mode,
+			Status: "idle", Activity: live.activity, ContextPct: live.contextPct,
+			ChangedFiles: live.changedFiles, Interrupted: a.Interrupted,
+			Isolated: a.Isolated, Branch: a.Branch, UpdatedAt: live.updatedAt,
+			SourceKind: a.SourceKind, ReadOnly: a.ReadOnly,
+			TargetBranch: a.TargetBranch, PRUrl: a.PRUrl,
+			GateOverride: a.GateOverride,
+		}
+		if !a.PushedAt.IsZero() {
+			st.PushedAt = &a.PushedAt
+		}
 		if live.mode != "" {
 			st.Mode = live.mode
 		}

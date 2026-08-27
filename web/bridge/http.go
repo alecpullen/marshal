@@ -118,6 +118,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrGone):
 		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownAgent):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 	}

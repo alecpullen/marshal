@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"marshal/internal/app/session"
 	"marshal/internal/pipeline"
@@ -162,5 +163,10 @@ func tailBytes(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "…(truncated)…\n" + s[len(s)-n:]
+	// Back up to a rune boundary so we don't split a multi-byte sequence.
+	start := len(s) - n
+	for start > 0 && !utf8.RuneStart(s[start]) {
+		start--
+	}
+	return "…(truncated)…\n" + s[start:]
 }

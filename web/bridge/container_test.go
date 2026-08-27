@@ -67,3 +67,38 @@ func TestContainerEnvIsExplicitNotInherited(t *testing.T) {
 		t.Errorf("explicit env missing from container args: %s", joined)
 	}
 }
+
+func TestContainerNameForIsStableAndPrefixed(t *testing.T) {
+	got := containerNameFor("7f3a")
+	if got != "marshal-agent-7f3a" {
+		t.Fatalf("containerNameFor(7f3a) = %q, want marshal-agent-7f3a", got)
+	}
+	if containerNameFor("7f3a") != got {
+		t.Fatal("containerNameFor is not deterministic")
+	}
+}
+
+func TestReattachFailsWhenSocketAbsent(t *testing.T) {
+	dir := t.TempDir()
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", Image: "img",
+		Name:      containerNameFor("missing"),
+		SocketDir: dir,
+	})
+	// No container is running, so no socket exists on the volume.
+	if _, _, _, err := tr.Reattach(); err == nil {
+		t.Fatal("Reattach to an absent socket succeeded, want error")
+	}
+}
+
+func TestAgentIDRoundTripsThroughContainerName(t *testing.T) {
+	for _, id := range []string{"7f3a", "abc-123", "x"} {
+		got, ok := agentIDFromContainer(containerNameFor(id))
+		if !ok || got != id {
+			t.Errorf("round trip %q = (%q, %v), want (%q, true)", id, got, ok, id)
+		}
+	}
+	if _, ok := agentIDFromContainer("some-other-container"); ok {
+		t.Error("agentIDFromContainer claimed a foreign container")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -205,3 +206,72 @@ func (r readHalf) Close() error {
 type emptyReader struct{}
 
 func (emptyReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+// containerNamePrefix marks containers this bridge owns, so a restart
+// can find its own agents without touching anything else on the host.
+const containerNamePrefix = "marshal-agent-"
+
+// containerNameFor derives a container name from an agent id. It must be
+// deterministic: after a restart the name is the only handle the bridge
+// has on a running agent.
+func containerNameFor(agentID string) string {
+	return containerNamePrefix + agentID
+}
+
+// reattachDialTimeout is shorter than dialTimeout: a container we are
+// reattaching to has already bound its socket, so a slow dial means it
+// is gone rather than still starting.
+const reattachDialTimeout = 3 * time.Second
+
+// Reattach connects to an already-running container's socket without
+// starting anything. It is the restart path: the agent kept working
+// while the control plane was down.
+//
+// Notifications emitted while detached were dropped by the agent's
+// notify sink, so the caller must re-sync session state with
+// session/resume after reattaching.
+func (c *containerTransport) Reattach() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	deadline := time.Now().Add(reattachDialTimeout)
+	for {
+		conn, err := net.Dial("unix", c.socketPath())
+		if err == nil {
+			c.mu.Lock()
+			c.conn = conn
+			c.mu.Unlock()
+			return writeHalf{conn}, readHalf{conn}, io.NopCloser(emptyReader{}), nil
+		}
+		if time.Now().After(deadline) {
+			return nil, nil, nil, fmt.Errorf("bridge: reattach to %s: %w", c.cfg.Name, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// listAgentContainers returns the names of running containers this
+// bridge owns, newest first.
+func listAgentContainers(runtime string) ([]string, error) {
+	cmd := exec.Command(runtime, "ps",
+		"--filter", "name="+containerNamePrefix,
+		"--format", "{{.Names}}")
+	cmd.Env = []string{}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("bridge: list agent containers: %w", err)
+	}
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// agentIDFromContainer is the inverse of containerNameFor. The second
+// return is false for a name that is not ours.
+func agentIDFromContainer(name string) (string, bool) {
+	if !strings.HasPrefix(name, containerNamePrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(name, containerNamePrefix), true
+}

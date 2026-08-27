@@ -66,9 +66,8 @@ func ForgeFor(r Repo, c *http.Client) (Forge, error) {
 	switch r.Forge {
 	case "github":
 		return newGitHubForge(c), nil
-	// TODO(Task 3): add "gitea" -> newGiteaForge(c) once the Gitea
-	// client lands. Until then an unhandled forge is the documented
-	// degradation path.
+	case "gitea":
+		return newGiteaForge(c), nil
 	default:
 		return nil, errNoForge
 	}

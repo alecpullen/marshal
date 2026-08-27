@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const workspaceVersion = 5
+const workspaceVersion = 6
 
 // DefaultOwnerID is the single implicit owner in a single-operator
 // deployment. Every agent carries an owner from the first commit so that
@@ -72,6 +72,10 @@ type Agent struct {
 	PRUrl string `json:"prUrl,omitempty"`
 	// GateOverride is nil when the gate passed on its own merits.
 	GateOverride *GateOverride `json:"gateOverride,omitempty"`
+	// IssueNumber and IssueURL are set when this agent was spawned from
+	// an issue, so the exit path can link the pull request back to it.
+	IssueNumber int    `json:"issueNumber,omitempty"`
+	IssueURL    string `json:"issueUrl,omitempty"`
 }
 
 // GateOverride records an operator's decision to push despite a failed
@@ -97,6 +101,23 @@ type Repo struct {
 	Branch  string `json:"branch,omitempty"`
 	CredRef string `json:"credRef,omitempty"`
 	OwnerID string `json:"ownerId"`
+	// Forge names the hosting provider's API family: "github" or
+	// "gitea" (which also serves Forgejo). Declared at registration
+	// rather than sniffed from the hostname, because a self-hosted
+	// instance can live at any domain.
+	Forge string `json:"forge,omitempty"`
+	// APIBase overrides the API root for a self-hosted instance, e.g.
+	// https://code.example.com/api/v1. Empty uses the family default.
+	APIBase string `json:"apiBase,omitempty"`
+	// Watch enables the issue poller for this repo. Off by default: a
+	// watcher that starts itself is a surprise.
+	Watch bool `json:"watch,omitempty"`
+	// WatchLabel is the issue label that triggers a spawn.
+	WatchLabel string `json:"watchLabel,omitempty"`
+	// LastPolled and LastPollErr are surfaced in the UI. A silently
+	// dead watcher is indistinguishable from "no matching issues".
+	LastPolled  time.Time `json:"lastPolled,omitempty"`
+	LastPollErr string    `json:"lastPollErr,omitempty"`
 }
 
 // PendingSpawn is an intake submission awaiting operator confirmation.
@@ -125,31 +146,34 @@ type PendingSpawn struct {
 }
 
 type workspaceFile struct {
-	Version  int            `json:"version"`
-	Projects []string       `json:"projects"`
-	Repos    []Repo         `json:"repos,omitempty"`
-	Agents   []Agent        `json:"agents"`
-	Clients  []MCPClient    `json:"clients,omitempty"`
-	Pending  []PendingSpawn `json:"pending,omitempty"`
+	Version         int              `json:"version"`
+	Projects        []string         `json:"projects"`
+	Repos           []Repo           `json:"repos,omitempty"`
+	Agents          []Agent          `json:"agents"`
+	Clients         []MCPClient      `json:"clients,omitempty"`
+	Pending         []PendingSpawn   `json:"pending,omitempty"`
+	SubmittedIssues map[string][]int `json:"submittedIssues,omitempty"`
 }
 
 type Workspace struct {
-	path     string
-	mu       sync.Mutex
-	projects []string
-	repos    map[string]Repo
-	agents   map[string]Agent
-	clients  map[string]MCPClient
-	pending  map[string]PendingSpawn
+	path            string
+	mu              sync.Mutex
+	projects        []string
+	repos           map[string]Repo
+	agents          map[string]Agent
+	clients         map[string]MCPClient
+	pending         map[string]PendingSpawn
+	submittedIssues map[string][]int
 }
 
 func NewWorkspace(path string) *Workspace {
 	return &Workspace{
-		path:    path,
-		repos:   make(map[string]Repo),
-		agents:  make(map[string]Agent),
-		clients: make(map[string]MCPClient),
-		pending: make(map[string]PendingSpawn),
+		path:            path,
+		repos:           make(map[string]Repo),
+		agents:          make(map[string]Agent),
+		clients:         make(map[string]MCPClient),
+		pending:         make(map[string]PendingSpawn),
+		submittedIssues: make(map[string][]int),
 	}
 }
 
@@ -198,6 +222,10 @@ func (w *Workspace) Load() (string, error) {
 	w.pending = make(map[string]PendingSpawn, len(f.Pending))
 	for _, p := range f.Pending {
 		w.pending[p.ID] = p
+	}
+	w.submittedIssues = make(map[string][]int, len(f.SubmittedIssues))
+	for id, nums := range f.SubmittedIssues {
+		w.submittedIssues[id] = append([]int(nil), nums...)
 	}
 	return "", nil
 }
@@ -252,6 +280,12 @@ func (w *Workspace) save() error {
 		f.Pending = append(f.Pending, p)
 	}
 	sort.Slice(f.Pending, func(i, j int) bool { return f.Pending[i].ID < f.Pending[j].ID })
+	if len(w.submittedIssues) > 0 {
+		f.SubmittedIssues = make(map[string][]int, len(w.submittedIssues))
+		for id, nums := range w.submittedIssues {
+			f.SubmittedIssues[id] = append([]int(nil), nums...)
+		}
+	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace: %w", err)
@@ -392,6 +426,31 @@ func (w *Workspace) PutRepo(r Repo) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.repos[r.ID] = r
+	return w.save()
+}
+
+// SubmittedIssues returns the issue numbers already submitted for a
+// repo, so the poller does not resubmit work the operator has already
+// seen.
+func (w *Workspace) SubmittedIssues(repoID string) []int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]int(nil), w.submittedIssues[repoID]...)
+}
+
+// MarkIssueSubmitted records that an issue was submitted for a repo.
+// A polled issue that is edited upstream reappears in a since query,
+// so the number record — not the cursor alone — is what stops a
+// resubmission.
+func (w *Workspace) MarkIssueSubmitted(repoID string, number int) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, n := range w.submittedIssues[repoID] {
+		if n == number {
+			return nil // already recorded
+		}
+	}
+	w.submittedIssues[repoID] = append(w.submittedIssues[repoID], number)
 	return w.save()
 }
 

@@ -282,3 +282,63 @@ func TestV3MigratesToV4(t *testing.T) {
 		t.Fatal("migration invented a GateOverride")
 	}
 }
+
+func TestRepoCarriesForgeIdentity(t *testing.T) {
+	ws := NewWorkspace(t.TempDir() + "/fleet.json")
+	r := Repo{ID: "r1", URL: "https://code.example.com/you/repo.git",
+		Forge: "gitea", APIBase: "https://code.example.com/api/v1",
+		OwnerID: DefaultOwnerID}
+	if err := ws.PutRepo(r); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := ws.Repo("r1")
+	if !ok || got.Forge != "gitea" || got.APIBase == "" {
+		t.Fatalf("forge identity did not round-trip: %+v", got)
+	}
+}
+
+func TestSubmittedIssuesPreventResubmission(t *testing.T) {
+	ws := NewWorkspace(t.TempDir() + "/fleet.json")
+	if err := ws.MarkIssueSubmitted("r1", 42); err != nil {
+		t.Fatal(err)
+	}
+	got := ws.SubmittedIssues("r1")
+	if len(got) != 1 || got[0] != 42 {
+		t.Fatalf("got %v, want [42]", got)
+	}
+	// A different repo must not inherit it.
+	if len(ws.SubmittedIssues("r2")) != 0 {
+		t.Fatal("submitted issues leaked across repos")
+	}
+	// Marking twice must not duplicate.
+	if err := ws.MarkIssueSubmitted("r1", 42); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.SubmittedIssues("r1")) != 1 {
+		t.Fatal("MarkIssueSubmitted duplicated an entry")
+	}
+}
+
+func TestV5MigratesToV6(t *testing.T) {
+	path := t.TempDir() + "/fleet.json"
+	v5 := `{"version":5,"repos":[{"id":"r","url":"u","ownerId":"local"}],` +
+		`"agents":[{"id":"a1","ownerId":"local","origin":"ui"}],"clients":[],"pending":[]}`
+	if err := os.WriteFile(path, []byte(v5), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := NewWorkspace(path)
+	backup, err := ws.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup != "" {
+		t.Fatalf("v5 was quarantined to %q; it must migrate", backup)
+	}
+	r, _ := ws.Repo("r")
+	if r.Watch {
+		t.Fatal("migration turned watching on; it must default off")
+	}
+	if ws.Agents()[0].IssueNumber != 0 {
+		t.Fatal("migration invented an issue number")
+	}
+}

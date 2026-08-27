@@ -11,7 +11,21 @@ import (
 	"time"
 )
 
-const workspaceVersion = 1
+const workspaceVersion = 2
+
+// DefaultOwnerID is the single implicit owner in a single-operator
+// deployment. Every agent carries an owner from the first commit so that
+// adding real accounts later is a new auth layer, not a migration of
+// every persisted record.
+const DefaultOwnerID = "local"
+
+// Spawn origins. Policy varies by origin: an agent created by the UI is
+// the operator acting directly, while other origins are subject to
+// confirmation and scoping rules.
+const (
+	OriginUI  = "ui"
+	OriginCLI = "cli"
+)
 
 type Agent struct {
 	ID          string    `json:"id"`
@@ -26,6 +40,17 @@ type Agent struct {
 	// TargetBranch is the project's branch at spawn — the merge target. It
 	// cannot be derived later, so it is persisted here.
 	TargetBranch string `json:"targetBranch,omitempty"`
+	// OwnerID is the human this agent belongs to. Always populated.
+	OwnerID string `json:"ownerId"`
+	// Origin records how the agent was created (OriginUI, OriginCLI, …).
+	Origin string `json:"origin"`
+	// Profile is the resolved container shape this agent runs under.
+	Profile RuntimeProfile `json:"profile"`
+	// SourceKind is the workspace source ("local" in S1; "git" in S2).
+	SourceKind string `json:"sourceKind,omitempty"`
+	// SourceRef is the source-specific locator: a path for "local", a
+	// repo URL for "git".
+	SourceRef string `json:"sourceRef,omitempty"`
 }
 
 type workspaceFile struct {
@@ -62,12 +87,15 @@ func (w *Workspace) Load() (string, error) {
 		return "", fmt.Errorf("read workspace: %w", err)
 	}
 	var f workspaceFile
-	if json.Unmarshal(data, &f) != nil || f.Version != workspaceVersion {
+	if json.Unmarshal(data, &f) != nil || f.Version < 1 || f.Version > workspaceVersion {
 		backup := w.path + ".corrupt." + time.Now().UTC().Format("20060102T150405Z")
 		if err := os.Rename(w.path, backup); err != nil {
 			return "", fmt.Errorf("quarantine corrupt workspace: %w", err)
 		}
 		return backup, nil
+	}
+	if f.Version < workspaceVersion {
+		migrateWorkspace(&f)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -77,6 +105,30 @@ func (w *Workspace) Load() (string, error) {
 		w.agents[a.ID] = a
 	}
 	return "", nil
+}
+
+// migrateWorkspace upgrades an older workspace file in place. A v1
+// record predates owners, origins, and runtime profiles: it was created
+// by the operator through the UI against a local checkout, so those are
+// the defaults it receives.
+func migrateWorkspace(f *workspaceFile) {
+	for i := range f.Agents {
+		a := &f.Agents[i]
+		if a.OwnerID == "" {
+			a.OwnerID = DefaultOwnerID
+		}
+		if a.Origin == "" {
+			a.Origin = OriginUI
+		}
+		if a.Profile.Image == "" {
+			a.Profile = DefaultRuntimeProfile()
+		}
+		if a.SourceKind == "" {
+			a.SourceKind = "local"
+			a.SourceRef = a.Project
+		}
+	}
+	f.Version = workspaceVersion
 }
 
 func (w *Workspace) save() error {

@@ -119,3 +119,52 @@ func TestWorkspaceAddProjectIsIdempotent(t *testing.T) {
 		t.Fatalf("expected 1 project, got %v", got)
 	}
 }
+
+func TestLoadMigratesV1AgentsToV2(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fleet.json")
+	v1 := `{"version":1,"projects":["/p"],"agents":[{"id":"a1","project":"/p","name":"one"}]}`
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := NewWorkspace(path)
+	backup, err := ws.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if backup != "" {
+		t.Fatalf("v1 file was quarantined to %q; it must migrate instead", backup)
+	}
+
+	agents := ws.Agents()
+	if len(agents) != 1 {
+		t.Fatalf("got %d agents, want 1", len(agents))
+	}
+	got := agents[0]
+	if got.OwnerID != DefaultOwnerID {
+		t.Errorf("OwnerID = %q, want %q", got.OwnerID, DefaultOwnerID)
+	}
+	if got.Origin != OriginUI {
+		t.Errorf("Origin = %q, want %q", got.Origin, OriginUI)
+	}
+	if got.Profile.Image == "" {
+		t.Error("migrated agent has no runtime profile image")
+	}
+}
+
+func TestLoadStillQuarantinesUnknownVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fleet.json")
+	if err := os.WriteFile(path, []byte(`{"version":99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := NewWorkspace(path)
+	backup, err := ws.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if backup == "" {
+		t.Fatal("a future version must be quarantined, not migrated")
+	}
+}

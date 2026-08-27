@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil)
+	f := NewFleet(ws, "unused", nil, "")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	f.slots = newSlots(limit)
@@ -97,7 +98,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil)
+	f := NewFleet(ws, "unused", nil, "")
 	bin, args, env := helperCommand("registry-merged")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -148,7 +149,7 @@ func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
 	if err := ws.AddProject(plain); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil)
+	f := NewFleet(ws, "unused", nil, "")
 	t.Cleanup(f.Close)
 
 	for _, st := range f.ProjectStatus() {
@@ -192,7 +193,7 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "not-a-real-marshal-binary", nil)
+	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "")
 	defer f.Close()
 	if _, err := f.Spawn(context.Background(), "/home/u/a", SpawnOptions{Name: "one"}); err == nil {
 		t.Fatal("expected spawn failure")
@@ -208,7 +209,7 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"})
+	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "")
 	t.Cleanup(f.Close)
 
 	// Invoke the production newRuntime closure directly so no real
@@ -477,5 +478,65 @@ func TestRuntimeForSessionDoesNotLoadAnAgentIDAsASession(t *testing.T) {
 	}
 	if rt.sessionID != a.SessionID {
 		t.Fatalf("restored session %q, want the persisted %q", rt.sessionID, a.SessionID)
+	}
+}
+
+func TestSpawnAgainstRegisteredRepoIsWritable(t *testing.T) {
+	f := testFleet(t)
+	if f.git == nil {
+		t.Skip("git not installed")
+	}
+	if err := f.ws.PutRepo(Repo{ID: "r1", URL: newBareRepoFixture(t),
+		Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := f.Spawn(context.Background(), "", SpawnOptions{RepoID: "r1", Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, _ := f.ws.Agent(id)
+	if a.SourceKind != "git" {
+		t.Errorf("SourceKind = %q, want git", a.SourceKind)
+	}
+	if a.ReadOnly {
+		t.Error("a registered repo must not produce a read-only agent")
+	}
+	if a.TargetBranch != "main" {
+		t.Errorf("TargetBranch = %q, want main (the repo's default branch)", a.TargetBranch)
+	}
+}
+
+func TestSpawnAgainstRawURLIsReadOnly(t *testing.T) {
+	f := testFleet(t)
+	if f.git == nil {
+		t.Skip("git not installed")
+	}
+	id, err := f.Spawn(context.Background(), "", SpawnOptions{
+		URL: newBareRepoFixture(t), Ref: "main", Prompt: "x",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, _ := f.ws.Agent(id)
+	if !a.ReadOnly {
+		t.Fatal("an unregistered URL must produce a read-only agent")
+	}
+}
+
+func TestRawURLIsRejectedForNonUIOrigins(t *testing.T) {
+	f := testFleet(t)
+	_, err := f.Spawn(context.Background(), "", SpawnOptions{
+		URL: newBareRepoFixture(t), Ref: "main", Origin: OriginMCP, Prompt: "x",
+	})
+	if !errors.Is(err, ErrUnregisteredRepo) {
+		t.Fatalf("MCP spawn against a raw URL = %v, want ErrUnregisteredRepo", err)
+	}
+}
+
+func TestLocalPathSpawnStillWorks(t *testing.T) {
+	f := testFleet(t)
+	if _, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"}); err != nil {
+		t.Fatalf("local-path spawn regressed: %v", err)
 	}
 }

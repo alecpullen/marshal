@@ -37,6 +37,7 @@ type config struct {
 	cwdRoot    string
 	projects   []string
 	workspace  string
+	stateDir   string
 	agentEnv   stringList
 }
 
@@ -53,6 +54,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
+	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (defaults beside the workspace file)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -61,7 +63,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, agentEnv: agentEnv}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv}
 	if cfg.workspace == "" {
 		p, err := bridge.DefaultWorkspacePath()
 		if err != nil {
@@ -186,7 +188,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		agentEnv[k] = v
 	}
 
-	fleet := bridge.NewFleet(ws, cfg.marshalBin, agentEnv)
+	fleet := bridge.NewFleet(ws, cfg.marshalBin, agentEnv, cfg.stateDir)
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

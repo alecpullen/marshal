@@ -23,8 +23,10 @@ const DefaultOwnerID = "local"
 // the operator acting directly, while other origins are subject to
 // confirmation and scoping rules.
 const (
-	OriginUI  = "ui"
-	OriginCLI = "cli"
+	OriginUI    = "ui"
+	OriginCLI   = "cli"
+	OriginMCP   = "mcp"
+	OriginIssue = "issue"
 )
 
 type Agent struct {

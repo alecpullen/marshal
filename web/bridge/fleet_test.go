@@ -384,3 +384,74 @@ func (f *Fleet) dropRuntimesForTest() {
 	f.sessionAgent = make(map[string]string)
 	f.mu.Unlock()
 }
+
+func TestReattachAllRestoresSessionMapping(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	rt, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatalf("runtimeForAgent: %v", err)
+	}
+	sessionID := rt.sessionID
+	if sessionID == "" {
+		t.Fatal("Spawn left no session id")
+	}
+
+	f.dropRuntimesForTest()
+	if errs := f.ReattachAll(context.Background()); len(errs) != 0 {
+		t.Fatalf("ReattachAll: %v", errs)
+	}
+
+	// The agent must be reachable by its session id, not merely present.
+	if _, err := f.liveRuntimeForSession(sessionID); err != nil {
+		t.Fatalf("reattached agent is not addressable by session %s: %v", sessionID, err)
+	}
+	rt2, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatalf("runtimeForAgent after reattach: %v", err)
+	}
+	if rt2.sessionID != sessionID {
+		t.Fatalf("session id = %q after reattach, want %q", rt2.sessionID, sessionID)
+	}
+}
+
+func TestSpawnPersistsSessionID(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok {
+		t.Fatalf("agent %s not persisted", id)
+	}
+	if a.SessionID == "" {
+		t.Fatal("SessionID was not persisted; reattach cannot restore the session")
+	}
+	if a.SessionID == a.ID {
+		t.Fatal("SessionID equals the agent id; the two must stay distinct")
+	}
+}
+
+func TestRuntimeForSessionDoesNotLoadAnAgentIDAsASession(t *testing.T) {
+	f := testFleet(t)
+	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, _ := f.ws.Agent(id)
+	f.dropRuntimesForTest()
+
+	// Look the agent up by AGENT id; the restore must use the persisted
+	// session id, never the agent id.
+	rt, err := f.RuntimeForSession(id)
+	if err != nil {
+		t.Fatalf("RuntimeForSession(agent id): %v", err)
+	}
+	if rt.sessionID != a.SessionID {
+		t.Fatalf("restored session %q, want the persisted %q", rt.sessionID, a.SessionID)
+	}
+}

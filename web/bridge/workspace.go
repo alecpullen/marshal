@@ -40,6 +40,11 @@ type Agent struct {
 	// TargetBranch is the project's branch at spawn — the merge target. It
 	// cannot be derived later, so it is persisted here.
 	TargetBranch string `json:"targetBranch,omitempty"`
+	// SessionID is the ACP session inside this agent, assigned by the
+	// agent at session/new. It is persisted because reattaching to a
+	// surviving container is useless without it: the transport
+	// reconnects, but nothing can be addressed.
+	SessionID string `json:"sessionId,omitempty"`
 	// OwnerID is the human this agent belongs to. Always populated.
 	OwnerID string `json:"ownerId"`
 	// Origin records how the agent was created (OriginUI, OriginCLI, …).

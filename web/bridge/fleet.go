@@ -263,14 +263,10 @@ func (f *Fleet) RuntimeForSession(id string) (*agentRuntime, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := rt.reg.Load(ctx, a.Project, id); err != nil {
+	if err := f.restoreSession(ctx, rt, a); err != nil {
 		f.stopAgent(a.ID)
-		return nil, fmt.Errorf("restore agent %s: %w", id, err)
+		return nil, err
 	}
-	f.mu.Lock()
-	rt.sessionID = id
-	f.sessionAgent[id] = a.ID
-	f.mu.Unlock()
 	return rt, nil
 }
 func (f *Fleet) LogForSession(id string) (*EventLog, error) {
@@ -398,6 +394,10 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	rt.sessionID = out.SessionID
 	f.sessionAgent[out.SessionID] = a.ID
 	f.mu.Unlock()
+
+	// Persist the session id with the agent record so a later reattach
+	// can restore the mapping. Must be set before the copy below.
+	a.SessionID = out.SessionID
 
 	rt.reg.track(out.SessionID, root)
 	agent := a // copy the resolved agent
@@ -687,6 +687,23 @@ func (f *Fleet) stopAgent(id string) {
 	}
 }
 
+// restoreSession reattaches the bridge to the ACP session already
+// running inside a reattached container. An agent with no persisted
+// session id (a pre-v2 record) is left addressable by agent id only.
+func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) error {
+	if a.SessionID == "" {
+		return nil
+	}
+	if err := rt.reg.Load(ctx, a.Project, a.SessionID); err != nil {
+		return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
+	}
+	f.mu.Lock()
+	rt.sessionID = a.SessionID
+	f.sessionAgent[a.SessionID] = a.ID
+	f.mu.Unlock()
+	return nil
+}
+
 // ReattachAll reconnects to every persisted agent that is still running.
 // It is called once at start-up: an agent kept working while the control
 // plane was down, and respawning it would duplicate its work.
@@ -703,9 +720,14 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
 			continue
 		}
-		if _, err := f.startRuntime(a); err != nil {
+		rt, err := f.startRuntime(a)
+		if err != nil {
 			f.slots.release()
 			errs = append(errs, fmt.Errorf("reattach agent %s: %w", a.ID, err))
+			continue
+		}
+		if err := f.restoreSession(ctx, rt, a); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errs
@@ -733,8 +755,13 @@ func (f *Fleet) Resume(ctx context.Context, id string) error {
 	if err := f.slots.acquire(ctx); err != nil {
 		return fmt.Errorf("wait for an agent slot: %w", err)
 	}
-	if _, err := f.startRuntime(a); err != nil {
+	rt, err := f.startRuntime(a)
+	if err != nil {
 		f.slots.release()
+		return err
+	}
+	if err := f.restoreSession(ctx, rt, a); err != nil {
+		f.stopAgent(id)
 		return err
 	}
 	return nil

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"marshal/internal/app/session"
 )
 
 // ErrGone is returned by ResolvePermission and ResolveQuestion when the
@@ -27,12 +25,23 @@ type Decision struct {
 	Edited   string `json:"edited,omitempty"`
 }
 
+// Answer is one question-and-response pair on the wire.
+//
+// This deliberately duplicates the agent-side shape rather than
+// importing it: web/bridge is an external ACP client, and the JSON
+// contract — not a shared Go type — is what binds the two halves. The
+// duplication is what lets web/ ship as its own module.
+type Answer struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
 // Answers is the HTTP-facing shape of a question response. Declined
 // maps to the ACP {declined:true} result; otherwise Answers carries one
 // entry per question, in order.
 type Answers struct {
-	Answers  []session.Answer `json:"answers,omitempty"`
-	Declined bool             `json:"declined,omitempty"`
+	Answers  []Answer `json:"answers,omitempty"`
+	Declined bool     `json:"declined,omitempty"`
 }
 
 // sessionInfo tracks one active session's bridge-side state.

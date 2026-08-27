@@ -27,6 +27,24 @@ func TestRunDispatchesACPSubcommand(t *testing.T) {
 	}
 }
 
+func TestACPListenFlagRoutesToListener(t *testing.T) {
+	var gotNetwork, gotAddr string
+	orig := acpListener
+	acpListener = func(ctx context.Context, network, addr string, stderr io.Writer) error {
+		gotNetwork, gotAddr = network, addr
+		return nil
+	}
+	t.Cleanup(func() { acpListener = orig })
+
+	args := []string{"acp", "--listen", "unix:///run/marshal/agent.sock"}
+	if err := run(context.Background(), args, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if gotNetwork != "unix" || gotAddr != "/run/marshal/agent.sock" {
+		t.Fatalf("got (%q, %q), want (unix, /run/marshal/agent.sock)", gotNetwork, gotAddr)
+	}
+}
+
 func TestRunPrintsVersionAndSkipsApp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	called := false

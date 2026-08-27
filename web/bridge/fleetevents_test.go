@@ -32,13 +32,14 @@ func TestSnapshotDerivesIdleAndPending(t *testing.T) {
 	if len(s) != 1 || s[0].ID != id || s[0].Status != "idle" {
 		t.Fatalf("snapshot = %+v", s)
 	}
-	reg, err := f.RegistryForSession(id)
+	rt, err := f.runtimeForAgent(id)
 	if err != nil {
 		t.Fatal(err)
 	}
+	reg := rt.reg
 	reg.permMu.Lock()
 	reg.permissions["tc1"] = make(chan Decision, 1)
-	reg.permSession["tc1"] = id
+	reg.permSession["tc1"] = rt.sessionID
 	reg.permMu.Unlock()
 	if got := f.Snapshot()[0].Status; got != "awaiting-approval" {
 		t.Fatalf("status = %q", got)
@@ -55,7 +56,7 @@ func TestSnapshotCarriesPendingApprovalPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := f.liveRuntimeForSession(id)
+	rt, err := f.runtimeForAgent(id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +64,12 @@ func TestSnapshotCarriesPendingApprovalPayload(t *testing.T) {
 	// Park a permission, exactly as awaitPermission does.
 	rt.reg.permMu.Lock()
 	rt.reg.permissions["tc-7"] = make(chan Decision, 1)
-	rt.reg.permSession["tc-7"] = id
+	rt.reg.permSession["tc-7"] = rt.sessionID
 	rt.reg.permMu.Unlock()
-	rt.reg.emitEvent(id, map[string]any{
+	rt.reg.emitEvent(rt.sessionID, map[string]any{
 		"type":       "permission_request",
 		"toolCallId": "tc-7",
-		"params":     json.RawMessage(`{"sessionId":"` + id + `","toolCallId":"tc-7","toolName":"shell.run","command":"rm -rf build"}`),
+		"params":     json.RawMessage(`{"sessionId":"` + rt.sessionID + `","toolCallId":"tc-7","toolName":"shell.run","command":"rm -rf build"}`),
 	})
 
 	snap := f.Snapshot()
@@ -103,16 +104,16 @@ func TestSnapshotDropsPendingPayloadOnceResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := f.liveRuntimeForSession(id)
+	rt, err := f.runtimeForAgent(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	rt.reg.permMu.Lock()
 	rt.reg.permissions["tc-7"] = make(chan Decision, 1)
-	rt.reg.permSession["tc-7"] = id
+	rt.reg.permSession["tc-7"] = rt.sessionID
 	rt.reg.permMu.Unlock()
-	rt.reg.emitEvent(id, map[string]any{
+	rt.reg.emitEvent(rt.sessionID, map[string]any{
 		"type": "permission_request", "toolCallId": "tc-7",
 		"params": json.RawMessage(`{"toolName":"shell.run"}`),
 	})
@@ -146,16 +147,16 @@ func TestSnapshotCarriesPendingQuestionPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := f.liveRuntimeForSession(id)
+	rt, err := f.runtimeForAgent(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	rt.reg.quesMu.Lock()
 	rt.reg.questions["q-3"] = make(chan Answers, 1)
-	rt.reg.quesSession["q-3"] = id
+	rt.reg.quesSession["q-3"] = rt.sessionID
 	rt.reg.quesMu.Unlock()
-	rt.reg.emitEvent(id, map[string]any{
+	rt.reg.emitEvent(rt.sessionID, map[string]any{
 		"type": "question_request", "questionId": "q-3",
 		"params": json.RawMessage(`{"questions":[{"question":"proceed?"}]}`),
 	})

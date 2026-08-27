@@ -37,6 +37,7 @@ type config struct {
 	cwdRoot    string
 	projects   []string
 	workspace  string
+	agentEnv   stringList
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -52,13 +53,15 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
+	var agentEnv stringList
+	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, agentEnv: agentEnv}
 	if cfg.workspace == "" {
 		p, err := bridge.DefaultWorkspacePath()
 		if err != nil {
@@ -149,7 +152,22 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 			return err
 		}
 	}
-	fleet := bridge.NewFleet(ws, cfg.marshalBin)
+	agentEnv := bridge.InheritedAgentEnv()
+	explicit, err := bridge.ParseAgentEnv(cfg.agentEnv)
+	if err != nil {
+		return err
+	}
+	for k, v := range explicit {
+		agentEnv[k] = v
+	}
+
+	fleet := bridge.NewFleet(ws, cfg.marshalBin, agentEnv)
+
+	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
+		for _, err := range errs {
+			slog.Default().Warn("webbridge: reattach agent", "err", err)
+		}
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.addr,

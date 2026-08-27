@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,28 +39,78 @@ func (CLICommandRunner) Run(ctx context.Context, dir string, argv []string) (str
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+
+	// Use pipes instead of assigning a shared buffer to cmd.Stdout/
+	// cmd.Stderr. os/exec spawns copy goroutines that write to the
+	// assigned writer, and cmd.Wait does not join them before returning,
+	// so reading a shared buffer after Wait can race with a still-live
+	// copy goroutine. With pipes we own the copy goroutines and can
+	// join them with a WaitGroup before reading the buffer.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
 
 	// Start the command. If the context is cancelled, kill the entire
 	// process group so child processes don't survive as orphans.
 	if err := cmd.Start(); err != nil {
-		return out.String(), err
+		return "", err
 	}
+
+	var out bytes.Buffer
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); io.Copy(lockedWriter{mu: &mu, b: &out}, stdout) }()
+	go func() { defer wg.Done(); io.Copy(lockedWriter{mu: &mu, b: &out}, stderr) }()
+
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
 	}()
 	select {
 	case err := <-done:
-		return out.String(), err
+		wg.Wait()
+		mu.Lock()
+		s := out.String()
+		mu.Unlock()
+		return s, err
 	case <-ctx.Done():
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		return out.String(), ctx.Err()
+		<-done
+		wg.Wait()
+		mu.Lock()
+		s := out.String()
+		mu.Unlock()
+		return s, ctx.Err()
 	}
+}
+
+// lockedWriter wraps a bytes.Buffer with a mutex so concurrent writes
+// from two copy goroutines (stdout + stderr) are safe. It implements
+// io.ReaderFrom so io.Copy cannot bypass the lock by calling
+// bytes.Buffer.ReadFrom directly.
+type lockedWriter struct {
+	mu *sync.Mutex
+	b  *bytes.Buffer
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w lockedWriter) ReadFrom(r io.Reader) (int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.ReadFrom(r)
 }
 
 // VerifyResult is the outcome of one gate run. Skipped means no build or

@@ -697,6 +697,38 @@ func TestModeDirectiveAuto(t *testing.T) {
 	}
 }
 
+func TestNativeOutputFormatOmitsAskUserParagraph(t *testing.T) {
+	// The ask_user guidance is in baseRules; nativeOutputFormat should
+	// not duplicate it.
+	if strings.Contains(nativeOutputFormat, "ask_user") {
+		t.Errorf("nativeOutputFormat should not contain ask_user guidance (it's in baseRules):\n%s", nativeOutputFormat)
+	}
+	if strings.Contains(nativeOutputFormat, "materially different") {
+		t.Errorf("nativeOutputFormat should not contain the broad-scope ask_user paragraph:\n%s", nativeOutputFormat)
+	}
+}
+
+func TestNativeOutputFormatKeepsJSONObjectRule(t *testing.T) {
+	for _, want := range []string{
+		"single valid JSON object",
+		"Do not concatenate multiple JSON objects",
+	} {
+		if !strings.Contains(nativeOutputFormat, want) {
+			t.Errorf("nativeOutputFormat missing JSON-object rule %q:\n%s", want, nativeOutputFormat)
+		}
+	}
+}
+
+func TestAutoModeDirectiveOmitsRetraction(t *testing.T) {
+	d := modeDirective(policy.ModeAuto)
+	if !strings.Contains(d, "cannot ask the user") {
+		t.Errorf("auto directive must still say 'cannot ask the user':\n%s", d)
+	}
+	if strings.Contains(d, "do not apply") {
+		t.Errorf("auto directive should not contain the retraction sentence:\n%s", d)
+	}
+}
+
 func TestBuildSystemPromptWithModeDirectives(t *testing.T) {
 	tests := []struct {
 		name    string

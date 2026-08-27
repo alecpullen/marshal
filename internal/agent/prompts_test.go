@@ -1175,3 +1175,36 @@ func TestBuildSystemPromptLoadedDeferredToolMovesToAvailableList(t *testing.T) {
 		t.Fatalf("unloaded deferred tool missing from the announcement:\n%s", announceSection)
 	}
 }
+
+func TestSystemPromptOptionsMatchesWrappers(t *testing.T) {
+	tools := []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly, Description: "Read a file."},
+		{Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite, Description: "Patch files."},
+	}
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{Name: "debug", Description: "Debugging"})
+
+	// BuildSystemPromptWithAddendum is the superset wrapper — it exercises
+	// every parameter. Compare it against a direct buildSystemPrompt call
+	// with the equivalent SystemPromptOptions.
+	want := BuildSystemPromptWithAddendum(
+		RoleGeneral, tools, nil, idx, []string{"debug"},
+		true, policy.ModeAuto, "extra addendum", "/tmp", "roster text", "config.read",
+	)
+	got := buildSystemPrompt(SystemPromptOptions{
+		Role:         RoleGeneral,
+		Tools:        tools,
+		Deferred:     nil,
+		SkillIndex:   idx,
+		ActiveSkills: []string{"debug"},
+		NativeTools:  true,
+		Mode:         policy.ModeAuto,
+		Addendum:     "extra addendum",
+		WorkingDir:   "/tmp",
+		Roster:       "roster text",
+		LoadedNames:  []string{"config.read"},
+	})
+	if want.Content != got.Content {
+		t.Fatalf("struct-based prompt differs from wrapper:\n--- want ---\n%s\n--- got ---\n%s", want.Content, got.Content)
+	}
+}

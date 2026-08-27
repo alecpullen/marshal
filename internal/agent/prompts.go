@@ -452,8 +452,28 @@ func modeDirective(mode policy.ApprovalMode) string {
 	}
 }
 
+// SystemPromptOptions carries every parameter buildSystemPrompt needs.
+// Replacing 11 positional params (plus a variadic) with a struct prevents
+// arg-index bugs (3c68762 was one) and makes future fields free.
+type SystemPromptOptions struct {
+	Role         AgentRole
+	Tools        []registry.Tool
+	Deferred     []registry.Tool
+	SkillIndex   *skills.Index
+	ActiveSkills []string
+	NativeTools  bool
+	Mode         policy.ApprovalMode
+	Addendum     string
+	WorkingDir   string
+	Roster       string
+	LoadedNames  []string
+}
+
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "", "")
+	return buildSystemPrompt(SystemPromptOptions{
+		Role: role, Tools: tools, SkillIndex: skillIndex, ActiveSkills: activeSkills,
+		NativeTools: nativeTools, Mode: policy.ModeEdit,
+	})
 }
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
@@ -462,14 +482,20 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 // announcement. The runner passes the registry's ListDeferred() so the
 // agent can see what it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "", "", "")
+	return buildSystemPrompt(SystemPromptOptions{
+		Role: role, Tools: tools, Deferred: deferred, SkillIndex: skillIndex,
+		ActiveSkills: activeSkills, NativeTools: nativeTools, Mode: policy.ModeEdit,
+	})
 }
 
 // BuildSystemPromptWithMode is BuildSystemPromptWithDeferred with an
 // explicit approval mode. The runner calls this to inject the per-mode
 // directive into the system prompt.
 func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, "", "", "")
+	return buildSystemPrompt(SystemPromptOptions{
+		Role: role, Tools: tools, Deferred: deferred, SkillIndex: skillIndex,
+		ActiveSkills: activeSkills, NativeTools: nativeTools, Mode: mode,
+	})
 }
 
 // BuildSystemPromptWithAddendum is BuildSystemPromptWithMode plus a
@@ -484,7 +510,12 @@ func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred [
 // mode where the tool list exists only as this text. Pass r.State's
 // LoadedToolNames().
 func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string, loadedNames ...string) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum, workingDir, roster, loadedNames...)
+	return buildSystemPrompt(SystemPromptOptions{
+		Role: role, Tools: tools, Deferred: deferred, SkillIndex: skillIndex,
+		ActiveSkills: activeSkills, NativeTools: nativeTools, Mode: mode,
+		Addendum: addendum, WorkingDir: workingDir, Roster: roster,
+		LoadedNames: loadedNames,
+	})
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
@@ -496,7 +527,19 @@ func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferr
 // tools.select. They render as available tools rather than remaining in the
 // "not loaded" announcement. Variadic so existing callers (and the older
 // BuildSystemPrompt*/buildSystemPrompt call sites) need no change.
-func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string, loadedNames ...string) schema.ChatMessage {
+func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
+	role := opts.Role
+	tools := opts.Tools
+	deferredTools := opts.Deferred
+	skillIndex := opts.SkillIndex
+	activeSkills := opts.ActiveSkills
+	nativeTools := opts.NativeTools
+	mode := opts.Mode
+	addendum := opts.Addendum
+	workingDir := opts.WorkingDir
+	roster := opts.Roster
+	loadedNames := opts.LoadedNames
+
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]

@@ -56,6 +56,11 @@ type Forge interface {
 // not an error worth logging — the caller falls back to URL extraction.
 var errNoForge = errors.New("bridge: no forge or no HTTP-capable credential for this repo")
 
+// forgeHTTPClient is the shared HTTP client for all forge API calls.
+// It has a timeout so a hung forge endpoint cannot block the poller or
+// the exit path indefinitely.
+var forgeHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // ForgeFor builds the client for a repo, or reports why none applies.
 //
 // A repo with no forge declared, or one whose credential cannot make

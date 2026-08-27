@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // The Gitea family (Gitea and Forgejo, which forked from it and keeps
@@ -101,9 +102,9 @@ func (g *giteaForge) ListIssues(ctx context.Context, repo Repo, q IssueQuery, cr
 	if err != nil {
 		return nil, err
 	}
-	u := g.apiBase(repo) + "/repos/" + owner + "/" + name + "/issues?state=open&type=issues"
+	u := g.apiBase(repo) + "/repos/" + owner + "/" + name + "/issues?state=open&type=issues&per_page=100"
 	if q.Label != "" {
-		u += "&labels=" + q.Label
+		u += "&labels=" + url.QueryEscape(q.Label)
 	}
 	if !q.Since.IsZero() {
 		u += "&since=" + q.Since.UTC().Format("2006-01-02T15:04:05Z")

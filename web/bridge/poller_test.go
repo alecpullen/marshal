@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // registerWatchingRepo registers a repo with watch enabled and a label.
@@ -123,7 +124,7 @@ func TestPollBacksOffOnRateLimit(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Retry-After", "120")
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
@@ -137,6 +138,16 @@ func TestPollBacksOffOnRateLimit(t *testing.T) {
 	}
 
 	f.pollOnce(context.Background())
+
+	// The Retry-After: 120 header must set a 120-second backoff, not
+	// the default 60. Verify the exact "not before" time.
+	f.rateMu.Lock()
+	notBefore := f.rateLimits["r1"]
+	f.rateMu.Unlock()
+	if got := time.Until(notBefore); got < 100*time.Second || got > 130*time.Second {
+		t.Fatalf("backoff = %v, want ~120s (from Retry-After header)", got)
+	}
+
 	f.pollOnce(context.Background())
 
 	// The second poll must respect the backoff rather than hammering.

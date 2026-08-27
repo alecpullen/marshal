@@ -107,6 +107,8 @@ type Fleet struct {
 	// done is closed by Close to signal background goroutines (the
 	// poller) to stop.
 	done chan struct{}
+	// closeOnce guards Close against a double-close panic on done.
+	closeOnce sync.Once
 	// rateLimits tracks per-repo "not before" times for backoff.
 	rateMu     sync.Mutex
 	rateLimits map[string]time.Time
@@ -1004,7 +1006,7 @@ func (f *Fleet) StopProject(root string) {
 }
 
 func (f *Fleet) Close() {
-	close(f.done)
+	f.closeOnce.Do(func() { close(f.done) })
 	f.mu.Lock()
 	rts := make([]*agentRuntime, 0, len(f.runtimes))
 	for _, rt := range f.runtimes {

@@ -14,7 +14,9 @@ const defaultPollInterval = 5 * time.Minute
 // StartPoller runs the issue watcher until the fleet closes.
 //
 // web/bridge cannot import internal/worker, so this is a plain goroutine
-// owned by the Fleet and stopped by Close.
+// owned by the Fleet and stopped by Close. The poller derives its
+// context from f.done so an in-flight HTTP call is cancelled at shutdown
+// rather than blocking indefinitely.
 func (f *Fleet) StartPoller(interval time.Duration) {
 	if interval <= 0 {
 		interval = defaultPollInterval
@@ -27,7 +29,9 @@ func (f *Fleet) StartPoller(interval time.Duration) {
 			case <-f.done:
 				return
 			case <-t.C:
-				f.pollOnce(context.Background())
+				ctx, cancel := context.WithTimeout(context.Background(), interval)
+				f.pollOnce(ctx)
+				cancel()
 			}
 		}
 	}()
@@ -116,10 +120,11 @@ func (f *Fleet) rateLimited(repoID string) bool {
 // Retry-After header sets the "not before" time; other errors get a
 // short fixed backoff so a transient failure does not hammer the API.
 func (f *Fleet) noteRateLimit(repoID string, err error) {
-	// For now, use a fixed 60-second backoff on any error. The plan
-	// notes that per-token budgeting is an S3 item; per-repo backoff is
-	// the conservative approximation.
+	backoff := 60 * time.Second
+	if d, ok := retryAfterDuration(err); ok && d > 0 {
+		backoff = d
+	}
 	f.rateMu.Lock()
 	defer f.rateMu.Unlock()
-	f.rateLimits[repoID] = time.Now().Add(60 * time.Second)
+	f.rateLimits[repoID] = time.Now().Add(backoff)
 }

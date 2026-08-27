@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"time"
 )
 
 // githubForge implements Forge against the GitHub REST API.
@@ -31,6 +35,38 @@ func (g *githubForge) authHeader(cred Credential) string {
 	return "Bearer " + cred.literal
 }
 
+// forgeAPIError carries the HTTP response so callers (the poller's
+// rate-limit logic) can inspect headers like Retry-After. The Error()
+// string never includes request headers, which carry the credential.
+type forgeAPIError struct {
+	statusCode int
+	message    string
+	retryAfter string // raw Retry-After header value, "" if absent
+}
+
+func (e *forgeAPIError) Error() string {
+	if e.message != "" {
+		return fmt.Sprintf("forge API returned %d: %s", e.statusCode, e.message)
+	}
+	return fmt.Sprintf("forge API returned %d", e.statusCode)
+}
+
+// retryAfterDuration parses the Retry-After header on a forgeAPIError.
+// Returns ok=false when the error is not a forgeAPIError or the header
+// is absent/unparseable.
+func retryAfterDuration(err error) (time.Duration, bool) {
+	var fae *forgeAPIError
+	if !errors.As(err, &fae) || fae.retryAfter == "" {
+		return 0, false
+	}
+	// Retry-After can be seconds or an HTTP-date; handle the common
+	// seconds form.
+	if secs, perr := strconv.Atoi(fae.retryAfter); perr == nil {
+		return time.Duration(secs) * time.Second, true
+	}
+	return 0, false
+}
+
 // doJSON performs one API call and decodes into out.
 //
 // The error path deliberately reports the forge's own message and the
@@ -49,10 +85,15 @@ func doJSON(ctx context.Context, client *http.Client, req *http.Request, out any
 		var apiErr struct {
 			Message string `json:"message"`
 		}
+		msg := ""
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
-			return fmt.Errorf("forge API returned %d: %s", resp.StatusCode, apiErr.Message)
+			msg = apiErr.Message
 		}
-		return fmt.Errorf("forge API returned %d", resp.StatusCode)
+		return &forgeAPIError{
+			statusCode: resp.StatusCode,
+			message:    msg,
+			retryAfter: resp.Header.Get("Retry-After"),
+		}
 	}
 	if out == nil {
 		return nil
@@ -127,9 +168,9 @@ func (g *githubForge) ListIssues(ctx context.Context, repo Repo, q IssueQuery, c
 	if err != nil {
 		return nil, err
 	}
-	u := g.apiBase(repo) + "/repos/" + owner + "/" + name + "/issues?state=open"
+	u := g.apiBase(repo) + "/repos/" + owner + "/" + name + "/issues?state=open&per_page=100"
 	if q.Label != "" {
-		u += "&labels=" + q.Label
+		u += "&labels=" + url.QueryEscape(q.Label)
 	}
 	if !q.Since.IsZero() {
 		u += "&since=" + q.Since.UTC().Format("2006-01-02T15:04:05Z")

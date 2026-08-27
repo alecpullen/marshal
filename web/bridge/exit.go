@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -204,7 +203,7 @@ func (f *Fleet) forgeFor(repo Repo) (Forge, Credential, error) {
 	if cred.Kind != "pat" {
 		return nil, Credential{}, errNoForge
 	}
-	forge, err := ForgeFor(repo, http.DefaultClient)
+	forge, err := ForgeFor(repo, forgeHTTPClient)
 	if err != nil {
 		return nil, Credential{}, err
 	}

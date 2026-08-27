@@ -29,6 +29,7 @@ var stdoutAllowlist = map[string]bool{
 	"cmd/marshal/calibrate.go":                      true,
 	"cmd/marshal/history.go":                        true,
 	"cmd/marshal/plugin.go":                         true,
+	"cmd/webbridge/main.go":                         true,
 	filepath.Join("internal", "trust", "prompt.go"): true,
 }
 

@@ -375,3 +375,56 @@ func TestUpArrowRecallsHistoryWhenNotDrilled(t *testing.T) {
 		t.Fatal("up arrow should not affect view stack when not drilled")
 	}
 }
+
+// TestClickThinkingBlockWhileDrilledIntoSubagent verifies the off-by-one
+// fix in contentLineForClick: when drilled into a subagent, a breadcrumb
+// row is prepended above the viewport, so the click offset must include
+// breadcrumbRows() in addition to scrollHintRows(). Without the fix, every
+// click while drilled lands one row too high and fails to hit its region.
+func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+
+	// Set up a child session with a thinking block.
+	child := newChildState(t)
+	ts := time.Unix(800, 0)
+	child.LogThinking(session.ThinkingEntry{Text: "child reasoning", Duration: time.Second, StartedAt: ts})
+	child.AddMessage(session.RoleAssistant, "child answer", session.ContentTypePlain)
+
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	// Verify we're drilled in.
+	if m.breadcrumbRows() != 1 {
+		t.Fatalf("breadcrumbRows = %d, want 1 while drilled in", m.breadcrumbRows())
+	}
+
+	// Find the click region for the child's thinking block.
+	key := itemKey{ts: ts, kind: session.KindThinking}
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.key == key {
+			region, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("expected a click region for the child's thinking block while drilled in")
+	}
+
+	// Compute the screen Y using the FIXED offset (scrollHintRows + breadcrumbRows).
+	top := m.scrollHintRows() + m.breadcrumbRows()
+	y := top + region.startLine - m.viewport.YOffset()
+
+	// The click must land on the correct region and expand it.
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+	if !mm.isExpanded(key) {
+		t.Fatal("expected the click to expand the child's thinking block while drilled in (off-by-one fix)")
+	}
+	if !strings.Contains(stripANSI(mm.viewport.GetContent()), "child reasoning") {
+		t.Fatal("expected the reasoning text to be visible after the click")
+	}
+}

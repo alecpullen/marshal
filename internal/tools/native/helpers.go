@@ -139,6 +139,24 @@ func workspaceRel(root string, abs string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
+// effectiveAdditionalRoots returns the configured additional roots, plus the
+// project root when a worktree is active (i.e. the active root differs from
+// the project root). This keeps the project root reachable from inside a
+// worktree: an agent isolated in /project/.marshal/worktrees/feat-x can still
+// read ../docs/architecture.md because the project root is an allowed root.
+// additionalRoots is set once at construction and never updated, so the
+// project root must be injected dynamically at resolution time.
+func (t *toolSet) effectiveAdditionalRoots() []string {
+	roots := t.additionalRoots
+	if ws := t.wsState(); ws != nil {
+		w := ws.Workspace()
+		if w.ActiveRoot != "" && w.ProjectRoot != "" && w.ActiveRoot != w.ProjectRoot {
+			roots = append(roots, w.ProjectRoot)
+		}
+	}
+	return roots
+}
+
 // resolveNamedRoot resolves paths that may use a named alias prefix (e.g.
 // "@run/task-1-brief.md"). If the path does not start with a known alias,
 // it falls through to resolveWorkspacePathMulti for normal resolution.

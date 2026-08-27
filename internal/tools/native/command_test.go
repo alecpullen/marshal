@@ -215,3 +215,60 @@ func TestCommandOutputIsLimited(t *testing.T) {
 		t.Fatalf("Content = %q, want truncation marker", result.Content)
 	}
 }
+
+func TestShellRunNonZeroExitReturnsOutputNotError(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeRunner{
+		result: CommandResult{Stdout: "FAIL: test_a\n", Stderr: "exit status 1\n", ExitCode: 1},
+		err:    fmt.Errorf("exit status 1"),
+	}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string) error { return nil }}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	result, err := invokeTool(t, reg, "shell.run", `{"command":"go test ./..."}`)
+	if err != nil {
+		t.Fatalf("non-zero exit must not return an error, got: %v", err)
+	}
+	if result.CommandExitCode == nil || *result.CommandExitCode != 1 {
+		t.Fatalf("CommandExitCode = %v, want 1", result.CommandExitCode)
+	}
+	if !strings.Contains(result.Content, "FAIL: test_a") {
+		t.Fatalf("Content must contain stdout, got: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "exit status 1") {
+		t.Fatalf("Content must contain stderr, got: %q", result.Content)
+	}
+}
+
+func TestShellRunTimeoutStillReturnsError(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeRunner{
+		result: CommandResult{ExitCode: -1, Meta: registry.SandboxMeta{KilledReason: "timeout"}},
+		err:    fmt.Errorf("signal: killed"),
+	}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string) error { return nil }}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	_, err := invokeTool(t, reg, "shell.run", `{"command":"go test ./..."}`)
+	if err == nil {
+		t.Fatal("timeout must still return an error")
+	}
+}
+
+func TestShellRunStartupFailureStillReturnsError(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeRunner{
+		result: CommandResult{}, // zero-valued: ExitCode=0, empty Meta
+		err:    fmt.Errorf("exec: not found"),
+	}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string) error { return nil }}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	_, err := invokeTool(t, reg, "shell.run", `{"command":"nonexistent-binary"}`)
+	if err == nil {
+		t.Fatal("startup failure must still return an error")
+	}
+}

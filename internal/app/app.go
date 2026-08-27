@@ -1248,6 +1248,13 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 			Config:         cfg,
 			NamedRoots:     ctx.NamedRoots(),
 		}
+		// When the pipeline runs in a worktree (WorkspaceRoot != RepoRoot),
+		// expose the project root as an additional root so workers can read
+		// files outside the worktree (e.g. ../docs/architecture.md) without
+		// the path escaping every allowed root.
+		if ctx.WorkspaceRoot != ctx.RepoRoot {
+			nativeOpts.AdditionalRoots = []string{ctx.RepoRoot}
+		}
 		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 			return nil, fmt.Errorf("pipeline registry factory: register: %w", err)
 		}

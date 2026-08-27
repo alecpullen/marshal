@@ -75,10 +75,12 @@ func (m Model) renderAgentLane() string {
 		overflow = allRunning - len(entries)
 	}
 	for _, v := range entries {
-		b.WriteString(dimStyle().Render(spinnerLabel(spinner, fmt.Sprintf("#%d  %s  %s",
+		label := fmt.Sprintf("#%d  %s  %s",
 			v.ID,
-			strutil.Truncate(v.Label, max(width/2, 12), true),
-			formatElapsed(max(time.Since(v.StartedAt), 0))))))
+			v.Label,
+			formatElapsed(max(time.Since(v.StartedAt), 0)))
+		b.WriteString(gutterPrefix(spinner, dimColor) +
+			dimStyle().Render(strutil.Truncate(label, max(width-4, 1), true)))
 		b.WriteString("\n")
 	}
 	if overflow > 0 {

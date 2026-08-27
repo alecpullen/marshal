@@ -310,6 +310,7 @@ func (h *agentHost) registerHandlers(srv *Server) {
 		},
 	})
 	srv.Handle("session/commit", exitMgr.Commit)
+	srv.Handle("session/verify", exitMgr.Verify)
 
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {

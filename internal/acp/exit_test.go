@@ -3,7 +3,10 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"marshal/internal/pipeline"
 )
 
 // fakeExitGit records calls and returns scripted results.
@@ -83,5 +86,58 @@ func TestCommitRejectsAnUnknownSession(t *testing.T) {
 	if _, err := m.Commit(context.Background(),
 		json.RawMessage(`{"sessionId":"nope","message":"x"}`)); err == nil {
 		t.Fatal("Commit accepted an unknown session")
+	}
+}
+
+func TestVerifyReportsFailureWithOutput(t *testing.T) {
+	m := NewExitManager(ExitManagerConfig{
+		Lookup: func(string) (*ExitRuntime, bool) { return &ExitRuntime{Dir: "/work"}, true },
+		Verify: func(context.Context, string) (pipeline.VerifyResult, error) {
+			return pipeline.VerifyResult{OK: false, FailedCommand: "go test ./...",
+				Output: "FAIL marshal/internal/foo"}, nil
+		},
+	})
+	raw, err := m.Verify(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	res := raw.(VerifyReply)
+	if res.OK || res.FailedCommand != "go test ./..." {
+		t.Fatalf("got %+v", res)
+	}
+	if res.Output == "" {
+		t.Fatal("Output is empty; a gate failure must be actionable without a second fetch")
+	}
+}
+
+func TestVerifyReportsSkippedSeparatelyFromPass(t *testing.T) {
+	m := NewExitManager(ExitManagerConfig{
+		Lookup: func(string) (*ExitRuntime, bool) { return &ExitRuntime{Dir: "/work"}, true },
+		Verify: func(context.Context, string) (pipeline.VerifyResult, error) {
+			return pipeline.VerifyResult{Skipped: true}, nil
+		},
+	})
+	raw, _ := m.Verify(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	res := raw.(VerifyReply)
+	if !res.Skipped {
+		t.Fatal("Skipped was not reported")
+	}
+	if res.OK {
+		t.Fatal("a skipped gate must not report OK; it blocks and needs an override")
+	}
+}
+
+func TestVerifyBoundsOutput(t *testing.T) {
+	huge := strings.Repeat("x", 512*1024)
+	m := NewExitManager(ExitManagerConfig{
+		Lookup: func(string) (*ExitRuntime, bool) { return &ExitRuntime{Dir: "/work"}, true },
+		Verify: func(context.Context, string) (pipeline.VerifyResult, error) {
+			return pipeline.VerifyResult{OK: false, Output: huge}, nil
+		},
+	})
+	raw, _ := m.Verify(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	res := raw.(VerifyReply)
+	if len(res.Output) >= len(huge) {
+		t.Fatalf("output was not bounded (%d bytes); a failing suite can emit megabytes", len(res.Output))
 	}
 }

@@ -140,19 +140,40 @@ func TestBuildSystemPromptDescribesPatchFormat(t *testing.T) {
 	}
 }
 
+func TestNativePatchFormatIsTrimmed(t *testing.T) {
+	// The trimmed format must contain the delimiter syntax and the
+	// exact-match rule, but must NOT contain the full multi-line examples
+	// or the unified-diff example.
+	for _, want := range []string{
+		"<<<<<<< SEARCH",
+		">>>>>>> REPLACE",
+		"must match the file content exactly",
+		"prefer the file.write tool",
+	} {
+		if !strings.Contains(nativePatchFormat, want) {
+			t.Errorf("nativePatchFormat missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"File: internal/app/config/types_test.go",
+		"--- a/internal/app/config/types.go",
+		"@@ -1,4 +1,5 @@",
+	} {
+		if strings.Contains(nativePatchFormat, unwanted) {
+			t.Errorf("nativePatchFormat should not contain %q (example removed)", unwanted)
+		}
+	}
+	if len(nativePatchFormat) > 600 {
+		t.Errorf("nativePatchFormat is %d chars, should be under 600 (was 1708)", len(nativePatchFormat))
+	}
+}
+
 func TestNativePatchFormatIncludesChainedExample(t *testing.T) {
 	for _, want := range []string{
-		"create a new file",
-		"empty SEARCH section",
-		"unique",
-		"chain",
-		">>>>>>> REPLACE",
-		"File: internal/app/config/types_test.go",
 		"prefer the file.write tool",
-		"Unified diffs",
-		"--- a/internal/app/config/types.go",
-		"+++ b/internal/app/config/types.go",
-		"@@ -1,4 +1,5 @@",
+		">>>>>>> REPLACE",
+		"chain",
+		"must match the file content exactly",
 	} {
 		if !strings.Contains(nativePatchFormat, want) {
 			t.Errorf("nativePatchFormat missing %q", want)
@@ -729,12 +750,10 @@ func TestBuildSystemPromptNativePatchFormatCoversAuditFindings(t *testing.T) {
 	content := msg.Content
 
 	for _, want := range []string{
-		"create a new file",
-		"empty SEARCH section",
-		"unique",
-		"chain",
 		">>>>>>> REPLACE",
-		"File: internal/app/config/types_test.go",
+		"must match the file content exactly",
+		"prefer the file.write tool",
+		"chain",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("native system prompt missing audit guidance %q\n%s", want, content)

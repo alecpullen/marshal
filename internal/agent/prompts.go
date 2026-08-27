@@ -356,7 +356,7 @@ Rules for native tool calls:
 
 const nativePatchFormat = `## file.write_patch format
 
-For whole-file creation or full rewrites, prefer the file.write tool (path + content) over an empty-SEARCH patch block.
+For whole-file creation or full rewrites, prefer the file.write tool over an empty-SEARCH patch block.
 
 The file.write_patch tool takes a single "patch" string argument containing one or more search/replace blocks. Each block has this exact syntax:
 
@@ -367,44 +367,7 @@ exact existing text to find
 replacement text
 >>>>>>> REPLACE
 
-Rules:
-- The SEARCH section must match the file content exactly (including whitespace and indentation).
-- Use one block per file. To edit multiple files in one call, chain blocks back-to-back in the same patch string.
-- Every SEARCH block must be unique within its file; do not repeat the same SEARCH text for the same file.
-- To create a new file, use an empty SEARCH section.
-- Unified diffs (---/+++/@@ hunks) are also accepted and converted internally, but prefer the SEARCH/REPLACE format above.
-- Every block must end with the line >>>>>>> REPLACE.
-
-Example (two files chained in one patch):
-
-File: internal/app/config/types.go
-<<<<<<< SEARCH
-    DigestModel             string ` + "`toml:\"digest_model\"`" + `
-=======
-    DigestModel             string ` + "`toml:\"digest_model\"`" + `
-    DigestProvider          string ` + "`toml:\"digest_provider\"`" + `
->>>>>>> REPLACE
-
-File: internal/app/config/types_test.go
-<<<<<<< SEARCH
-func TestTypes(t *testing.T) {
-=======
-func TestTypes(t *testing.T) {
-    t.Run("digest provider", func(t *testing.T) {
-        // TODO
-    })
->>>>>>> REPLACE
-
-A unified diff is also accepted (converted internally):
-
---- a/internal/app/config/types.go
-+++ b/internal/app/config/types.go
-@@ -1,4 +1,5 @@
- const (
-+	DefaultDigestTimeout  = 30
- 	DefaultIdleTimeout    = 60
- 	DefaultTokenBudget    = 8000
- )`
+The SEARCH section must match the file content exactly (including whitespace and indentation). Use one block per file; chain multiple files in one patch string. Every block must end with the line >>>>>>> REPLACE.`
 
 func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	var b strings.Builder

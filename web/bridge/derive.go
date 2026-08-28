@@ -43,14 +43,17 @@ func (f *Fleet) runRuntime(runtime string, args ...string) ([]byte, error) {
 }
 
 // buildDerived runs `docker build` feeding the Dockerfile on stdin, so no
-// temporary build context is written to disk. The runner seam cannot carry
-// stdin, so the production path (nil runner) uses exec.Command directly.
+// temporary build context is written to disk. The build context is the
+// current directory; the Dockerfile only does `FROM <base>` and
+// `COPY --from=<agentImage>`, so no context files are needed. The runner
+// seam cannot carry stdin, so the production path (nil runner) uses
+// exec.Command directly.
 func (f *Fleet) buildDerived(runtime, tag, base, dockerfile string) error {
 	if f.runner != nil {
-		_, err := f.runner(runtime, "build", "-t", tag, "-f", "-", base)
+		_, err := f.runner(runtime, "build", "-t", tag, "-f", "-", ".")
 		return err
 	}
-	cmd := exec.Command(runtime, "build", "-t", tag, "-f", "-", base)
+	cmd := exec.Command(runtime, "build", "-t", tag, "-f", "-", ".")
 	cmd.Env = clientEnv()
 	cmd.Stdin = strings.NewReader(dockerfile)
 	out, err := cmd.CombinedOutput()
@@ -84,9 +87,15 @@ func (f *Fleet) baseDigest(runtime, base string) (string, error) {
 // returns an error and no image — falling back to the default would run
 // the agent in an environment the repo did not ask for.
 func (f *Fleet) ensureDerivedImage(ctx context.Context, base string) (string, error) {
-	runtime, _, ok := detectedRuntime()
-	if !ok {
-		return "", fmt.Errorf("bridge: no container runtime to derive %s", base)
+	var runtime string
+	if f.runner != nil {
+		runtime = "docker" // test mode: fake runner intercepts all commands
+	} else {
+		_, name, ok := detectedRuntime()
+		if !ok {
+			return "", fmt.Errorf("bridge: no container runtime to derive %s", base)
+		}
+		runtime = name
 	}
 
 	digest, err := f.baseDigest(runtime, base)
@@ -95,10 +104,9 @@ func (f *Fleet) ensureDerivedImage(ctx context.Context, base string) (string, er
 	}
 	tag := derivedTag(digest, f.buildVersion)
 
-	// The derived image exists when `image inspect` returns empty output
-	// with no error. Any other outcome means it is absent and must be
-	// built.
-	if out, err := f.runRuntime(runtime, "image", "inspect", tag); err == nil && len(out) == 0 {
+	// The derived image exists when `image inspect` succeeds. Any other
+	// outcome means it is absent and must be built.
+	if _, err := f.runRuntime(runtime, "image", "inspect", tag); err == nil {
 		return tag, nil
 	}
 

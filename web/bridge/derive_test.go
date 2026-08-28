@@ -41,6 +41,7 @@ func TestDerivedTagKeysOnDigestNotTag(t *testing.T) {
 
 func TestEnsureDerivedImageReusesTheCache(t *testing.T) {
 	var builds int
+	var inspects int
 	f := testFleetWithRunner(t, func(name string, args ...string) ([]byte, error) {
 		switch {
 		case len(args) > 0 && args[0] == "build":
@@ -49,7 +50,13 @@ func TestEnsureDerivedImageReusesTheCache(t *testing.T) {
 		case len(args) > 0 && args[0] == "inspect":
 			return []byte("sha256:aaaa\n"), nil
 		case len(args) > 0 && args[0] == "image":
-			return nil, nil // exists
+			// First call: image absent (inspect errors). Subsequent calls:
+			// image exists after the build.
+			inspects++
+			if inspects == 1 {
+				return nil, errors.New("no such image")
+			}
+			return nil, nil
 		}
 		return nil, nil
 	})
@@ -59,8 +66,8 @@ func TestEnsureDerivedImageReusesTheCache(t *testing.T) {
 			t.Fatalf("ensureDerivedImage: %v", err)
 		}
 	}
-	if builds > 1 {
-		t.Fatalf("built %d times; the cache did not hold", builds)
+	if builds != 1 {
+		t.Fatalf("built %d times; expected exactly one build then cache reuse", builds)
 	}
 }
 
@@ -68,6 +75,9 @@ func TestBuildFailureNeverFallsBackToTheDefault(t *testing.T) {
 	f := testFleetWithRunner(t, func(name string, args ...string) ([]byte, error) {
 		if len(args) > 0 && args[0] == "build" {
 			return []byte("no builder available"), errors.New("build failed")
+		}
+		if len(args) > 0 && args[0] == "image" {
+			return nil, errors.New("no such image") // absent, so we build
 		}
 		return []byte("sha256:aaaa\n"), nil
 	})

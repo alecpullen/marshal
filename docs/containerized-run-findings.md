@@ -1,4 +1,4 @@
-# Containerized run — findings from the first end-to-end verification
+# Containerized run — findings from the verification campaign
 
 This document records the manual verification campaign for running the
 marshal agent inside a container, end to end: the bridge (`webbridge`)
@@ -6,7 +6,7 @@ spawning agent containers, the agent image they run on, and everything
 built on top of that path — remote git sources, the exit path, MCP
 intake, forge integration, and the limits/audit layer.
 
-**Campaign run 2026-08-28** on macOS 15 / arm64, Docker 29.4.3.
+**S0 campaign run 2026-08-28** on macOS 15 / arm64, Docker 29.4.3.
 
 **Result: BLOCKED at the transport layer.** The image and the container
 boundary check out. The bridge cannot talk to a containerized agent on
@@ -20,6 +20,32 @@ this host at all, so every check downstream of that is unrunnable here.
 | No host escape | **Pass** |
 | ACP socket transport | **Fail — blocking** |
 | Everything downstream | **Blocked** |
+
+**S0b campaign run 2026-08-28** on macOS 15 / arm64, Docker 29.4.3.
+
+**Result: TRANSPORT PASSES. Downstream blocked by a path-translation
+issue, not by the transport.** The bridge runs as a Linux container
+with state on a named volume. The Unix socket transport works over the
+shared volume — `chmod 0600` succeeds, the bridge dials the agent's
+socket, and JSON-RPC round-trips. The S0 blockers are resolved.
+
+The downstream checks (S1–S3a) remain blocked, but for a different
+reason: the bridge sends its own in-container path (`/host-projects/…`)
+as `cwd` to `session/new`, but the agent sees `/work`. The agent's
+trusted-roots validation rejects the path. This is a path-translation
+issue in the bridge's JSON-RPC forwarding, not a transport failure. It
+is recorded as a new finding (see BLOCKER 3 below) and requires its own
+follow-up.
+
+| Area | Result |
+|---|---|
+| ACP socket transport (named volume) | **Pass** |
+| `chmod 0600` on socket | **Pass** |
+| Bridge dials agent socket | **Pass** |
+| JSON-RPC round-trip | **Pass** (initialize succeeds) |
+| `session/new` with `cwd` | **Fail — path translation** |
+| S1–S3a checks | **Blocked** (behind path translation) |
+| Agent isolation (subpath) | **Pass** (unit-tested, not live-verified) |
 
 ## BLOCKER 1 — the socket chmod kills the agent
 
@@ -79,21 +105,57 @@ to catch, and the stale image is the case it handles least well.
 Rebuilding from branch code resolved it: `agentInfo` then reported
 `version: v0.0.0-campaign`.
 
-## Open design question
+## Open design question (resolved by S0b)
 
 The ACP endpoint needs a transport that works on both platforms, and TCP
 removes the filesystem permission that was its only guard. Options are
 recorded for design rather than decided here.
 
+**Resolved:** the containerized-bridge approach (S0b) preserves the Unix
+socket and its `0600` guard. No TCP, no new authentication. See the
+"Resolution" section below.
+
+## BLOCKER 3 — the bridge sends its own path as `cwd`, not the agent's
+
+**Found during the S0b campaign.** The transport works — the bridge
+dials the agent's socket over the named volume and JSON-RPC round-trips.
+But `session/new` fails with `invalid params` because the bridge sends
+its own in-container path (`/host-projects/marshal`) as `cwd`, while the
+agent sees the same checkout at `/work`. The agent's trusted-roots
+validation rejects the path because `/host-projects/marshal` does not
+exist inside the agent container.
+
+This is a path-translation issue in the bridge's JSON-RPC forwarding,
+not a transport failure. The bridge already translates the workspace
+mount path (via `TranslateToHost` / `--project-mount`), but it does not
+translate the `cwd` parameter in `session/new`, `session/worktree_prune`,
+or other ACP calls that take a path.
+
+**Triage:** this is its own follow-up. The bridge needs a bidirectional
+path translation layer: host↔container for mount sources (done), and
+bridge-view↔agent-view for JSON-RPC parameters (not done). The latter
+requires the bridge to know that the agent's `/work` corresponds to the
+bridge's `/host-projects/marshal` (for local-path agents) or
+`/state/work/<id>` (for git-sourced agents).
+
 ## Resolution — run the bridge in a container too, on named volumes
 
-Proposed after the campaign and **verified experimentally on this host**.
-Both blockers are artifacts of the macOS↔VM *file-sharing layer*. They
-disappear entirely if the socket never crosses it — which it does not
-when the bridge is itself a Linux container and the state lives on a
-named volume.
+Proposed after the S0 campaign and **verified experimentally on this
+host**. Both S0 blockers are artifacts of the macOS↔VM *file-sharing
+layer*. They disappear entirely if the socket never crosses it — which
+it does not when the bridge is itself a Linux container and the state
+lives on a named volume.
 
-Four experiments, all run on macOS 15 / arm64, Docker 29.4.3:
+**S0b implemented this and re-verified.** The bridge now has its own
+image (`build/Dockerfile.bridge`), a compose file, and all state under
+one named volume (`marshal-state` at `/state`). The S0b campaign
+confirmed the transport works end to end: the bridge container dials
+the agent container's Unix socket over the shared volume, `chmod 0600`
+succeeds, and JSON-RPC round-trips. See BLOCKER 3 above for the
+remaining issue.
+
+Four experiments from the S0 campaign, all run on macOS 15 / arm64,
+Docker 29.4.3:
 
 | Experiment | Result |
 |---|---|
@@ -127,15 +189,34 @@ Four experiments, all run on macOS 15 / arm64, Docker 29.4.3:
   bridge running as a host process that can invoke `docker` already had
   it — but it is now explicit and worth documenting.
 - `volume-subpath` requires Docker 25.0 or newer. Podman support is
-  unverified and must be checked before claiming parity.
+  unverified and must be checked before claiming parity. **S0b note:**
+  the bridge Dockerfile originally installed `docker.io` from Debian
+  bookworm, which gives Docker CLI 20.10 — too old for `volume-subpath`.
+  Fixed by installing `docker-ce-cli` from Docker's own repository.
 - `webbridge` needs its own image and a documented compose deployment.
+  **S0b delivered both:** `build/Dockerfile.bridge`, `compose.yaml`,
+  `docs/DEPLOYMENT.md`.
+
+### S0b additional findings
+
+- **The agent image's ENTRYPOINT is `["marshal"]`**, but `buildRunArgs`
+  passed `"marshal", "acp"` as the command — producing `marshal marshal
+  acp …`, which fails. Fixed by removing the redundant `"marshal"` from
+  the args. This was a pre-existing bug that S0 never hit because the
+  transport was blocked.
+- **`volume-subpath` requires the subpath to exist in the volume before
+  mounting.** The bridge creates the socket directory via `os.MkdirAll`
+  before starting the agent container, so the socket subpath is always
+  present. The workspace subpath is only needed for git-sourced agents
+  (created by `PrepareTree`); local-path agents use a bind mount.
 
 ---
 
 ## Detailed results
 
 Checks below retain their original text. Statuses are updated where the
-campaign reached them; the remainder are blocked behind BLOCKER 2.
+campaign reached them; the remainder are blocked behind BLOCKER 3 (path
+translation).
 
 ## How to read a finding
 
@@ -170,16 +251,23 @@ To be honest about the starting point:
   docker socket mount; reattach-preference and dial-failure cleanup are
   unit-tested against a fake runner; the mirror/credential/exit/forge/
   limits paths are covered by unit tests with faked git and HTTP.
+- **Verified by S0b (end to end, transport layer):** the bridge
+  container dials the agent container's Unix socket over a named
+  volume; `chmod 0600` succeeds on the socket; JSON-RPC `initialize`
+  round-trips. The `volume-subpath` mount syntax works for both the
+  workspace and socket subpaths. The `--project-mount` flag correctly
+  translates host paths for local-path agent bind mounts.
 - **Not verified:** any of the checks below on a live host — real
   container caps under load, a real bridge restart with surviving
   containers, real credentials against a real remote, a real push, a
   real MCP client, a real forge, real disk accounting against real
-  container volumes.
-- **Known environment limitation:** on macOS hosts, a Unix socket in a
-  host bind-mounted directory cannot be `chmod`ed from inside the
-  container (APFS returns EINVAL). The first smoke test hit this; the
-  socket works on the container's own filesystem. The campaign must run
-  on Linux, or use a named volume for the socket directory.
+  container volumes. All are blocked behind BLOCKER 3 (path
+  translation), not behind the transport.
+- **Known environment limitation (resolved by S0b):** on macOS hosts, a
+  Unix socket in a host bind-mounted directory cannot be `chmod`ed
+  from inside the container (APFS returns EINVAL). **Resolved:** the
+  bridge is now a container itself, and the socket lives on a named
+  volume that never crosses the file-sharing layer. `chmod` works.
 
 ---
 

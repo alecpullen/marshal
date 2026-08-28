@@ -1,0 +1,21 @@
+FROM golang:1.26-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=1 go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /out/webbridge ./cmd/webbridge
+
+FROM debian:bookworm-slim
+# git: the bridge runs every git operation itself (S2a, bridge-mediated).
+# docker-cli: it spawns agent containers through the mounted socket.
+# ca-certificates: forge API calls (S2c-2) are HTTPS.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates docker.io \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/webbridge /usr/local/bin/webbridge
+VOLUME /state
+EXPOSE 7700
+ENTRYPOINT ["webbridge"]

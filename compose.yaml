@@ -1,0 +1,17 @@
+services:
+  bridge:
+    image: ghcr.io/marshal/webbridge:latest
+    ports:
+      - "127.0.0.1:7700:7700"
+    volumes:
+      - marshal-state:/state
+      # Root-equivalent on this host. The bridge spawns agent containers,
+      # so it needs the daemon. A host-process bridge that could invoke
+      # docker already had this privilege; here it is explicit.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WEBBRIDGE_ADDR: "0.0.0.0:7700"
+      WEBBRIDGE_STATE_DIR: "/state"
+
+volumes:
+  marshal-state:

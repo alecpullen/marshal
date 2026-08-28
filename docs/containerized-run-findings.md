@@ -85,6 +85,51 @@ The ACP endpoint needs a transport that works on both platforms, and TCP
 removes the filesystem permission that was its only guard. Options are
 recorded for design rather than decided here.
 
+## Resolution — run the bridge in a container too, on named volumes
+
+Proposed after the campaign and **verified experimentally on this host**.
+Both blockers are artifacts of the macOS↔VM *file-sharing layer*. They
+disappear entirely if the socket never crosses it — which it does not
+when the bridge is itself a Linux container and the state lives on a
+named volume.
+
+Four experiments, all run on macOS 15 / arm64, Docker 29.4.3:
+
+| Experiment | Result |
+|---|---|
+| Unix socket on a **named volume**, container A binds + `chmod 0600`, container B dials | **Works.** `chmod` succeeds, `DIAL OK` |
+| Container drives the Docker daemon via a mounted `docker.sock` | **Works.** daemon reachable |
+| Container bind-mounts one of *its own* paths into a sibling | **Fails loudly**: `mounts denied: path is not shared from the host` |
+| One state volume, agent mounts only its own subpath (`volume-subpath`) | **Works,** and agent1 cannot reach agent2's directory |
+
+### What this means
+
+- **BLOCKER 1 and 2 both vanish.** The socket stays inside the Linux VM
+  and never traverses the file-sharing layer. `chmod` works, so the
+  `0600` permission guard is preserved and **no new authentication is
+  needed** — unlike the TCP mitigation, which would have removed the
+  endpoint's only protection.
+- **Host paths must go.** A containerized bridge cannot bind-mount its
+  own paths into sibling containers; Docker resolves the source against
+  the daemon's view. `socketDirFor`, `workspaceDirFor` and `mirrorDir`
+  must become subpaths of one named volume rather than paths under
+  `os.TempDir()` and the state directory.
+- **Per-agent isolation survives.** `volume-subpath` gives each agent
+  only its own directory, verified: agent1 cannot see agent2's work.
+- **One code path, not two.** This is not a macOS special case — the
+  same arrangement works identically on Linux, so there is no
+  platform-conditional transport to maintain and test.
+
+### Costs, stated plainly
+
+- The bridge needs `docker.sock` mounted, making the bridge container
+  root-equivalent on its host. This is **not a new privilege** — a
+  bridge running as a host process that can invoke `docker` already had
+  it — but it is now explicit and worth documenting.
+- `volume-subpath` requires Docker 25.0 or newer. Podman support is
+  unverified and must be checked before claiming parity.
+- `webbridge` needs its own image and a documented compose deployment.
+
 ---
 
 ## Detailed results

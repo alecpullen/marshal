@@ -67,6 +67,11 @@ type agentRuntime struct {
 	// the agent's prepared working tree must be removed.
 	sourceKind string
 
+	// containerized is true when the agent runs in a container whose
+	// filesystem view differs from the bridge's. agentPath uses it to
+	// decide whether translation is needed.
+	containerized bool
+
 	// versionWarning is set when the agent's initialize handshake reported
 	// a version that differs from the bridge's buildVersion. It is a
 	// warning only — the spawn is never refused on skew.
@@ -433,7 +438,10 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	log := NewEventLog()
 	Attach(log, child, reg)
 
-	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile, child: child, reg: reg, log: log, sourceKind: a.SourceKind}
+	_, isContainer := child.Transport.(*containerTransport)
+	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
+		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
+		containerized: isContainer}
 	f.attachClassifier(rt)
 
 	if err := child.Start(); err != nil {

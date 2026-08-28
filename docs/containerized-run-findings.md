@@ -6,11 +6,91 @@ spawning agent containers, the agent image they run on, and everything
 built on top of that path — remote git sources, the exit path, MCP
 intake, forge integration, and the limits/audit layer.
 
-**This is the checklist, not the results.** The containerized path has
-not yet been exercised end to end on a real Docker host. Every check
-below is listed with status **Not yet run**. The campaign exists so the
-first real run has a fixed list to work through, and so any failure is
-traceable to the sub-project whose design assumed it.
+**Campaign run 2026-08-28** on macOS 15 / arm64, Docker 29.4.3.
+
+**Result: BLOCKED at the transport layer.** The image and the container
+boundary check out. The bridge cannot talk to a containerized agent on
+this host at all, so every check downstream of that is unrunnable here.
+
+| Area | Result |
+|---|---|
+| Agent image (contents, arch) | **Pass** |
+| Agent version handshake | **Pass** (after rebuilding a stale image) |
+| Container caps | **Pass** |
+| No host escape | **Pass** |
+| ACP socket transport | **Fail — blocking** |
+| Everything downstream | **Blocked** |
+
+## BLOCKER 1 — the socket chmod kills the agent
+
+`internal/acp/listen.go:51` calls `os.Chmod` on the unix socket. On a
+macOS bind mount this returns EINVAL, the error propagates, and the
+container **exits immediately**:
+
+```
+marshal: acp: restrict socket permissions: chmod /run/marshal/agent.sock: invalid argument
+```
+
+Not a warning — the agent never starts.
+
+## BLOCKER 2 — a bind-mounted unix socket is not dialable from a macOS host
+
+This one is a design finding, not a bug, and it survives fixing
+BLOCKER 1. Verified with an isolated probe (a Python listener in a
+container, socket in a bind-mounted directory):
+
+- the socket **file** appears on the host: `srwxr-xr-x probe.sock`
+- the container binds and listens successfully
+- the host connect fails: `ConnectionRefusedError [Errno 61]`
+
+The listening endpoint lives in the Linux VM's kernel. The file on the
+macOS side is an inert artifact of the file-sharing layer. **This is a
+property of Docker Desktop, not of marshal** — and it means S1's
+socket-based transport, which reattach depends on, cannot work on macOS.
+
+Expected to work on a Linux host, where the bind mount and the socket
+share one kernel. **Not verified here** — no Linux host was available.
+
+## Mitigation — proven working
+
+`marshal acp --listen tcp://…` works across the boundary. Verified end
+to end: the host dialed a published container port and completed an ACP
+`initialize`, receiving `agentInfo`.
+
+`ParseListenAddr` (`internal/acp/listen.go:119`) has supported `tcp://`
+since S1; nothing has ever used it. `web/bridge/container.go:141`
+hardcodes `unix://`.
+
+**This needs a design decision, not a patch** (see "Open design
+question" below), because the unix socket's `0600` permissions were the
+only thing guarding the ACP endpoint. A TCP port has no equivalent, so
+moving to TCP requires adding authentication that did not previously
+need to exist.
+
+## Finding — the agent image goes stale silently
+
+The image under test was built at 03:32; the agent-version work landed
+at 14:08. The running image reported no `version` in `agentInfo`, so the
+skew check Task 4 added would have seen an empty version rather than a
+mismatch. Nothing rebuilds the image or warns that it predates the
+binary driving it. Ironically this is exactly the scenario Task 4 exists
+to catch, and the stale image is the case it handles least well.
+
+Rebuilding from branch code resolved it: `agentInfo` then reported
+`version: v0.0.0-campaign`.
+
+## Open design question
+
+The ACP endpoint needs a transport that works on both platforms, and TCP
+removes the filesystem permission that was its only guard. Options are
+recorded for design rather than decided here.
+
+---
+
+## Detailed results
+
+Checks below retain their original text. Statuses are updated where the
+campaign reached them; the remainder are blocked behind BLOCKER 2.
 
 ## How to read a finding
 

@@ -8,7 +8,12 @@ import (
 
 // probeTimeout caps the runtime detection daemon probe so app startup does
 // not hang for long when the docker/podman daemon is unreachable.
-const probeTimeout = 4 * time.Second
+//
+// It is a var, not a const, so tests can widen it — the same reason
+// child.go keeps restartBackoff mutable. Under `go test ./...` the
+// machine is loaded enough that even a stub runtime's `info` can exceed
+// four seconds, which turned a detection assertion into a flake.
+var probeTimeout = 4 * time.Second
 
 // detectRuntime finds an available container runtime and pins its absolute
 // path. A configured value of "auto" (or empty) probes docker then podman;

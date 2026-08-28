@@ -16,7 +16,14 @@ import (
 // generous value keeps a loaded machine from failing a hook open and
 // turning an assertion about the hook's output into a flake.
 // TestHookTimeoutFailOpen sets its own deliberately tiny budget.
-const testHookTimeoutMS = 5000
+//
+// Raised from 5000: under `go test ./...` the machine is loaded enough
+// that spawning a trivial /bin/sh occasionally exceeded five seconds,
+// the runner correctly failed the hook open, and an assertion about the
+// hook's DECISION failed instead. This budget is not testing latency —
+// nothing here should ever come close to it — so a generous value costs
+// nothing and removes a recurring false failure.
+const testHookTimeoutMS = 30000
 
 func TestPreToolUseBlockDecision(t *testing.T) {
 	dir := t.TempDir()
@@ -34,8 +41,16 @@ func TestPreToolUseBlockDecision(t *testing.T) {
 	}
 }
 
+// TestPreToolUseStable guards against intermittent hook failures by
+// repeating an identical run.
+//
+// Twenty iterations, not a hundred: each spawns a shell, and at a
+// hundred this single test took 22.6s of the package's 25s — enough
+// parallel load to starve its own neighbours' hook budgets. Twenty
+// consecutive passes demonstrate stability just as well, and the run is
+// no longer a source of the flakiness it exists to detect.
 func TestPreToolUseStable(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 20; i++ {
 		dir := t.TempDir()
 		script := filepath.Join(dir, "hook.sh")
 		if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"block\",\"reason\":\"no patches\"}'\n"), 0755); err != nil {

@@ -782,7 +782,16 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// startup reconciliation never saw it.
 	f.reconcileOnce(ctx, workDir)
 
-	params := map[string]any{"cwd": workDir, "mcpServers": []any{}, "name": opts.Name}
+	// Translate the bridge-view workspace root into the agent's view
+	// before sending it as cwd. The agent sees /work, not the bridge's
+	// host path; sending the bridge's path produces "invalid params"
+	// because the agent's trusted-roots validation rejects it.
+	agentCwd, aerr := rt.agentPath(workDir)
+	if aerr != nil {
+		f.stopAgent(a.ID)
+		return "", fmt.Errorf("resolve cwd for agent %s: %w", a.ID, aerr)
+	}
+	params := map[string]any{"cwd": agentCwd, "mcpServers": []any{}, "name": opts.Name}
 	if opts.Isolated {
 		iso := map[string]any{}
 		if opts.Branch != "" {
@@ -819,11 +828,6 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// can restore the mapping. Must be set before the copy below.
 	a.SessionID = out.SessionID
 
-	agentCwd, aerr := rt.agentPath(workDir)
-	if aerr != nil {
-		f.stopAgent(a.ID)
-		return "", fmt.Errorf("resolve cwd for agent %s: %w", a.ID, aerr)
-	}
 	rt.reg.track(out.SessionID, agentCwd)
 	agent := a // copy the resolved agent
 	if out.Workspace != nil {

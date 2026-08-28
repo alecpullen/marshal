@@ -38,6 +38,14 @@ const (
 	AgentFailed           = "failed"
 )
 
+// Limits bounds the fleet's resource usage. Zero values mean "default"
+// or "unlimited" depending on the field.
+type Limits struct {
+	MaxConcurrent int
+	MaxDiskMB     int64
+	MaxCloneMB    int64
+}
+
 // agentRuntime is one agent: its own container, its own JSON-RPC child,
 // its own registry and event log. Two agents on the same project share
 // nothing.
@@ -93,6 +101,9 @@ type Fleet struct {
 	// audit is the security-relevant action log. Nil in tests that do
 	// not opt in; auditf tolerates that.
 	audit *AuditLog
+	// limits bounds concurrency and disk usage. Zero values mean
+	// "default" (4 concurrent) or "unlimited" (no disk/clone cap).
+	limits Limits
 
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
@@ -125,9 +136,13 @@ type Fleet struct {
 	diskCacheOK bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits) *Fleet {
 	if stateDir == "" {
 		stateDir = filepath.Dir(ws.path)
+	}
+	maxConcurrent := limits.MaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = 4
 	}
 	f := &Fleet{
 		ws: ws, marshalBin: marshalBin, agentEnv: agentEnv,
@@ -135,9 +150,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
-		slots:      newSlots(4),
+		slots:      newSlots(maxConcurrent),
 		stateDir:   stateDir,
 		audit:      NewAuditLog(stateDir),
+		limits:     limits,
 		done:       make(chan struct{}),
 		rateLimits: make(map[string]time.Time),
 	}
@@ -178,6 +194,31 @@ func (f *Fleet) auditf(e AuditEvent) {
 	if err := f.audit.Append(e); err != nil {
 		slog.Default().Warn("webbridge: audit append failed", "event", e.Event, "err", err)
 	}
+}
+
+// enforceDisk refuses a new spawn when the state directory is over
+// budget, after first reclaiming anything unreferenced.
+//
+// The order matters: prune, re-measure, then refuse. Refusing without
+// pruning would strand an operator whose disk is full of mirrors nothing
+// uses any more.
+func (f *Fleet) enforceDisk() error {
+	if f.limits.MaxDiskMB <= 0 {
+		return nil
+	}
+	budget := f.limits.MaxDiskMB << 20
+	if f.diskUsage().Total <= budget {
+		return nil
+	}
+	if _, err := f.Prune(); err != nil {
+		return fmt.Errorf("reclaim disk: %w", err)
+	}
+	if used := f.diskUsage().Total; used > budget {
+		return fmt.Errorf("state directory is %d MB, over the %d MB budget; "+
+			"raise --max-disk-mb or remove finished agents",
+			used>>20, f.limits.MaxDiskMB)
+	}
+	return nil
 }
 
 // newAgentID mints the bridge-side identifier for an agent. It is
@@ -545,6 +586,15 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// honoured. For local spawns workDir == root.
 	profile, _ := ResolveProfile(workDir, opts.Profile)
 	a.Profile = profile
+
+	// Enforce the disk budget before acquiring a slot: refusing a new
+	// spawn is the control, not stopping an existing agent.
+	if err := f.enforceDisk(); err != nil {
+		if src.kind == "git" && f.git != nil {
+			_ = f.git.RemoveTree(f.stateDir, a.ID)
+		}
+		return "", err
+	}
 
 	if err := f.slots.acquire(ctx); err != nil {
 		if src.kind == "git" && f.git != nil {

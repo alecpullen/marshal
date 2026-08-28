@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -20,7 +21,7 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{})
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	f.slots = newSlots(limit)
@@ -99,7 +100,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{})
 	bin, args, env := helperCommand("registry-merged")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -150,7 +151,7 @@ func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
 	if err := ws.AddProject(plain); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{})
 	t.Cleanup(f.Close)
 
 	for _, st := range f.ProjectStatus() {
@@ -194,7 +195,7 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "")
+	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{})
 	defer f.Close()
 	if _, err := f.Spawn(context.Background(), "/home/u/a", SpawnOptions{Name: "one"}); err == nil {
 		t.Fatal("expected spawn failure")
@@ -210,7 +211,7 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "")
+	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "", Limits{})
 	t.Cleanup(f.Close)
 
 	// Invoke the production newRuntime closure directly so no real
@@ -585,5 +586,70 @@ func TestLocalPathSpawnStillWorks(t *testing.T) {
 	f := testFleet(t)
 	if _, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"}); err != nil {
 		t.Fatalf("local-path spawn regressed: %v", err)
+	}
+}
+
+func testFleetWithLimits(t *testing.T, limits Limits) *Fleet {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	f := NewFleet(ws, "unused", nil, stateDir, limits)
+	tr := &scriptedTransport{gate: gateResult{OK: true}}
+	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
+	t.Cleanup(f.Close)
+	return f
+}
+
+func TestSpawnRefusesWhenOverDiskBudget(t *testing.T) {
+	f := testFleetWithLimits(t, Limits{MaxDiskMB: 1})
+	// Nothing prunable, and already over budget.
+	writeSized(t, filepath.Join(f.stateDir, "repos", "aaa", "pack"), 4<<20)
+	registerRepo(t, f, "r1")
+	f.invalidateDisk()
+	pin := spawnGitAgent(t, f) // holds the mirror live
+
+	// The live agent's mirror is small but the orphan is large and
+	// prunable. After pruning, the total is still over budget because
+	// we re-add a large unprunable file to the live agent's work dir.
+	writeSized(t, filepath.Join(f.stateDir, "work", pin, "big"), 4<<20)
+	f.invalidateDisk()
+
+	_, err := f.Spawn(context.Background(), "", SpawnOptions{RepoID: "r1", Prompt: "x"})
+	if err == nil {
+		t.Fatal("spawned while over the disk budget")
+	}
+	if !strings.Contains(err.Error(), "MB") {
+		t.Errorf("error does not name the budget or usage: %v", err)
+	}
+	// And nothing running was harmed to make room.
+	if _, rerr := f.runtimeForAgent(pin); rerr != nil {
+		t.Fatal("a running agent was stopped to reclaim disk")
+	}
+}
+
+func TestSpawnSucceedsAfterPruningReclaimsSpace(t *testing.T) {
+	f := testFleetWithLimits(t, Limits{MaxDiskMB: 8})
+	writeSized(t, filepath.Join(f.stateDir, "repos", "deadbeefdeadbeef", "pack"), 10<<20)
+	registerGitRepo(t, f, "r1")
+	f.invalidateDisk()
+
+	// The orphan is prunable, so the spawn proceeds after reclaiming it.
+	if _, err := f.Spawn(context.Background(), "", SpawnOptions{RepoID: "r1", Prompt: "x"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+}
+
+func TestMaxConcurrentIsConfigurable(t *testing.T) {
+	f := testFleetWithLimits(t, Limits{MaxConcurrent: 1})
+	if _, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := f.Spawn(ctx, "/p", SpawnOptions{Prompt: "b"}); err == nil {
+		t.Fatal("a second spawn ran despite MaxConcurrent=1")
 	}
 }

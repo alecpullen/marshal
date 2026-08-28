@@ -278,3 +278,13 @@ func TestServeHTTPStaysPlaintextWithoutCertificates(t *testing.T) {
 	}
 	defer resp.Body.Close()
 }
+
+func TestParseConfigLimitFlags(t *testing.T) {
+	cfg, err := parseConfig([]string{"--max-concurrent", "9", "--max-disk-mb", "100", "--max-clone-mb", "50"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.maxConcurrent != 9 || cfg.maxDiskMB != 100 || cfg.maxCloneMB != 50 {
+		t.Fatalf("got %+v", cfg)
+	}
+}

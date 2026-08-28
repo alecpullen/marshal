@@ -46,6 +46,12 @@ type config struct {
 	// dependency to replace something the environment provides.
 	tlsCert string
 	tlsKey  string
+	// maxConcurrent bounds concurrent agents (0 = default 4).
+	maxConcurrent int
+	// maxDiskMB bounds the state directory size in MB (0 = unlimited).
+	maxDiskMB int64
+	// maxCloneMB bounds a single clone size in MB (0 = unlimited).
+	maxCloneMB int64
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -66,13 +72,16 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (defaults beside the workspace file)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
+	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
+	maxDiskMB := fs.Int64("max-disk-mb", 0, "max state directory size in MB (0 = unlimited)")
+	maxCloneMB := fs.Int64("max-clone-mb", 0, "max clone size in MB (0 = unlimited)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB}
 	// Half-configured TLS fails loudly. Serving plaintext because one
 	// flag name was mistyped is the failure nobody notices.
 	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
@@ -202,7 +211,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		agentEnv[k] = v
 	}
 
-	fleet := bridge.NewFleet(ws, cfg.marshalBin, agentEnv, cfg.stateDir)
+	fleet := bridge.NewFleet(ws, cfg.marshalBin, agentEnv, cfg.stateDir, bridge.Limits{
+		MaxConcurrent: cfg.maxConcurrent,
+		MaxDiskMB:     cfg.maxDiskMB,
+		MaxCloneMB:    cfg.maxCloneMB,
+	})
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

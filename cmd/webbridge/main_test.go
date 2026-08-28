@@ -289,6 +289,23 @@ func TestServeHTTPStaysPlaintextWithoutCertificates(t *testing.T) {
 	defer resp.Body.Close()
 }
 
+func TestParseConfigStateVolume(t *testing.T) {
+	cfg, err := parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.stateVolume != "marshal-state" {
+		t.Fatalf("default = %q, want marshal-state", cfg.stateVolume)
+	}
+	cfg, err = parseConfig([]string{"--state-volume", "prod-state"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.stateVolume != "prod-state" {
+		t.Fatalf("got %q", cfg.stateVolume)
+	}
+}
+
 func TestParseConfigLimitFlags(t *testing.T) {
 	cfg, err := parseConfig([]string{"--max-concurrent", "9", "--max-disk-mb", "100", "--max-clone-mb", "50"}, io.Discard)
 	if err != nil {

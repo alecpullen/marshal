@@ -51,6 +51,13 @@ The option name differs by runtime: Docker spells it `volume-subpath=`,
 Podman spells it `subpath=` (per `podman-run(1)`). The bridge detects
 the runtime and builds the mount argument accordingly.
 
+`--state-volume` must name the volume mounted at `--state-dir` (default
+`marshal-state`). A mismatch — a volume name that does not match the
+volume actually mounted at the state directory — surfaces as a
+`cannot access path …` error from the runtime naming the configured
+volume rather than the mounted one, so the two flags must be kept in
+step.
+
 ## Local project mounts
 
 A containerized bridge sees a host checkout at its own mount point, but

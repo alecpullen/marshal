@@ -114,6 +114,9 @@ type Fleet struct {
 	creds *CredentialStore
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
+	// stateVolume is the name of the shared state volume mounted at
+	// stateDir. Agents mount subpaths of it.
+	stateVolume string
 	// audit is the security-relevant action log. Nil in tests that do
 	// not opt in; auditf tolerates that.
 	audit *AuditLog
@@ -157,9 +160,12 @@ type Fleet struct {
 	diskCacheOK bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
 	if stateDir == "" {
 		stateDir = filepath.Dir(ws.path)
+	}
+	if stateVolume == "" {
+		stateVolume = "marshal-state"
 	}
 	maxConcurrent := limits.MaxConcurrent
 	if maxConcurrent <= 0 {
@@ -174,6 +180,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
 		slots:         newSlots(maxConcurrent),
 		stateDir:      stateDir,
+		stateVolume:   stateVolume,
 		audit:         NewAuditLog(stateDir),
 		limits:        limits,
 		projectMounts: projectMounts,
@@ -201,7 +208,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			Name:          containerNameFor(a.ID),
 			WorkspaceDir:  a.Project,
 			SocketDir:     socketDirFor(f.stateDir, a.ID),
-			StateVolume:   "marshal-state",
+			StateVolume:   f.stateVolume,
 			WorkSubpath:   "work/" + a.ID,
 			SocketSubpath: "sockets/" + a.ID,
 			CPUs:          a.Profile.CPUs,

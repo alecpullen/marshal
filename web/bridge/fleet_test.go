@@ -21,7 +21,7 @@ func testFleetWithVersion(t *testing.T, version string) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, version, nil)
+	f := NewFleet(ws, "unused", nil, "", Limits{}, version, nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -32,6 +32,36 @@ func TestFleetCarriesTheBuildVersion(t *testing.T) {
 	f := testFleetWithVersion(t, "v1.2.3")
 	if f.buildVersion != "v1.2.3" {
 		t.Fatalf("buildVersion = %q", f.buildVersion)
+	}
+}
+
+// testFleetWithStateVolume builds a Fleet with the production newRuntime
+// closure intact, so the container transport's ContainerConfig can be
+// inspected for the configured state volume name.
+func testFleetWithStateVolume(t *testing.T, vol string) *Fleet {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, vol)
+	t.Cleanup(f.Close)
+	return f
+}
+
+func TestStateVolumeIsConfigurable(t *testing.T) {
+	f := testFleetWithStateVolume(t, "custom-state")
+	child := f.newRuntime(Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile()})
+	tr, ok := child.Transport.(*containerTransport)
+	if !ok {
+		t.Skip("no container runtime; newRuntime fell back to a host process")
+	}
+	joined := strings.Join(tr.buildRunArgs(), " ")
+	if !strings.Contains(joined, "source=custom-state") {
+		t.Fatalf("the configured volume name was not used:\n%s", joined)
+	}
+	if strings.Contains(joined, "source=marshal-state") {
+		t.Fatalf("the hardcoded default leaked through:\n%s", joined)
 	}
 }
 
@@ -76,7 +106,7 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil)
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	f.slots = newSlots(limit)
@@ -155,7 +185,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil)
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry-merged")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -206,7 +236,7 @@ func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
 	if err := ws.AddProject(plain); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil)
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	t.Cleanup(f.Close)
 
 	for _, st := range f.ProjectStatus() {
@@ -250,7 +280,7 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{}, "", nil)
+	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{}, "", nil, "marshal-state")
 	defer f.Close()
 	if _, err := f.Spawn(context.Background(), "/home/u/a", SpawnOptions{Name: "one"}); err == nil {
 		t.Fatal("expected spawn failure")
@@ -266,7 +296,7 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "", Limits{}, "", nil)
+	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "", Limits{}, "", nil, "marshal-state")
 	t.Cleanup(f.Close)
 
 	// Invoke the production newRuntime closure directly so no real
@@ -651,7 +681,7 @@ func testFleetWithLimits(t *testing.T, limits Limits) *Fleet {
 		t.Fatal(err)
 	}
 	stateDir := t.TempDir()
-	f := NewFleet(ws, "unused", nil, stateDir, limits, "", nil)
+	f := NewFleet(ws, "unused", nil, stateDir, limits, "", nil, "marshal-state")
 	tr := &scriptedTransport{gate: gateResult{OK: true}}
 	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
 	t.Cleanup(f.Close)

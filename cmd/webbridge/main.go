@@ -50,14 +50,15 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // config holds the resolved flag/env settings.
 type config struct {
-	addr       string
-	token      string
-	marshalBin string
-	cwdRoot    string
-	projects   []string
-	workspace  string
-	stateDir   string
-	agentEnv   stringList
+	addr        string
+	token       string
+	marshalBin  string
+	cwdRoot     string
+	projects    []string
+	workspace   string
+	stateDir    string
+	stateVolume string
+	agentEnv    stringList
 	// tlsCert and tlsKey enable HTTPS when both are set. Certificate
 	// lifecycle — issuance, renewal — is deliberately out of scope:
 	// every deployment already solves it differently (a reverse proxy,
@@ -94,6 +95,8 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	tlsCert := fs.String("tls-cert", envOr("WEBBRIDGE_TLS_CERT", ""), "PEM certificate file; enables HTTPS when set with --tls-key")
 	tlsKey := fs.String("tls-key", envOr("WEBBRIDGE_TLS_KEY", ""), "PEM private key file; enables HTTPS when set with --tls-cert")
 	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", defaultStateDir), "directory for repo mirrors and agent workspaces (defaults to /state)")
+	stateVolume := fs.String("state-volume", envOr("WEBBRIDGE_STATE_VOLUME", "marshal-state"),
+		"name of the volume mounted at --state-dir; agents mount subpaths of it")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
@@ -105,7 +108,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -271,7 +274,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	}, version, cfg.projectMounts)
+	}, version, cfg.projectMounts, cfg.stateVolume)
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

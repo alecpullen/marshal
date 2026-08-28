@@ -993,7 +993,12 @@ func (f *Fleet) reconcileOnce(ctx context.Context, root string) {
 	if rt == nil {
 		return
 	}
-	raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": root})
+	cwd, cerr := rt.agentPath(root)
+	if cerr != nil {
+		slog.Default().Warn("webbridge: skip worktree prune", "project", root, "err", cerr)
+		return
+	}
+	raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": cwd})
 	if rerr != nil {
 		slog.Default().Warn("webbridge: worktree prune failed", "project", root, "err", rerr)
 		return

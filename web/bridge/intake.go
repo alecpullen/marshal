@@ -215,8 +215,13 @@ func (f *Fleet) startPlan(ctx context.Context, agentID, pendingID, plan string) 
 	if err != nil {
 		return err
 	}
-	// The agent sees its workspace at /work, not at the host path.
-	inAgent := filepath.Join(containerWorkDir, intakeDir, filepath.Base(path))
+	// path is the bridge-side location just written. Translating it —
+	// rather than rebuilding the agent's view by hand — keeps knowledge
+	// of what /work means in exactly one place.
+	inAgent, perr := rt.agentPath(path)
+	if perr != nil {
+		return fmt.Errorf("resolve plan path for agent %s: %w", agentID, perr)
+	}
 	_, err = rt.child.Request(ctx, "session/sdd_start", map[string]any{
 		"sessionId": rt.sessionID,
 		"planPath":  inAgent,

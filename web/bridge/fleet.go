@@ -606,7 +606,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// Resolve the runtime profile now that workDir is known, so a
 	// git-sourced repo with a .devcontainer/devcontainer.json is
 	// honoured. For local spawns workDir == root.
-	profile, _ := ResolveProfile(workDir, opts.Profile)
+	profile, _ := ResolveProfile(workDir, opts.Profile, f.buildVersion)
 	a.Profile = profile
 
 	// Enforce the disk budget before acquiring a slot: refusing a new

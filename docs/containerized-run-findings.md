@@ -1,4 +1,4 @@
-# Containerized run — findings from the first end-to-end verification
+# Containerized run — findings from the verification campaign
 
 This document records the manual verification campaign for running the
 marshal agent inside a container, end to end: the bridge (`webbridge`)
@@ -6,7 +6,7 @@ spawning agent containers, the agent image they run on, and everything
 built on top of that path — remote git sources, the exit path, MCP
 intake, forge integration, and the limits/audit layer.
 
-**Campaign run 2026-08-28** on macOS 15 / arm64, Docker 29.4.3.
+**S0 campaign run 2026-08-28** on macOS 15 / arm64, Docker 29.4.3.
 
 **Result: BLOCKED at the transport layer.** The image and the container
 boundary check out. The bridge cannot talk to a containerized agent on
@@ -20,6 +20,32 @@ this host at all, so every check downstream of that is unrunnable here.
 | No host escape | **Pass** |
 | ACP socket transport | **Fail — blocking** |
 | Everything downstream | **Blocked** |
+
+**S0b campaign run 2026-08-28** on macOS 15 / arm64, Docker 29.4.3.
+
+**Result: TRANSPORT PASSES. Downstream blocked by a path-translation
+issue, not by the transport.** The bridge runs as a Linux container
+with state on a named volume. The Unix socket transport works over the
+shared volume — `chmod 0600` succeeds, the bridge dials the agent's
+socket, and JSON-RPC round-trips. The S0 blockers are resolved.
+
+The downstream checks (S1–S3a) remain blocked, but for a different
+reason: the bridge sends its own in-container path (`/host-projects/…`)
+as `cwd` to `session/new`, but the agent sees `/work`. The agent's
+trusted-roots validation rejects the path. This is a path-translation
+issue in the bridge's JSON-RPC forwarding, not a transport failure. It
+is recorded as a new finding (see BLOCKER 3 below) and requires its own
+follow-up.
+
+| Area | Result |
+|---|---|
+| ACP socket transport (named volume) | **Pass** |
+| `chmod 0600` on socket | **Pass** |
+| Bridge dials agent socket | **Pass** |
+| JSON-RPC round-trip | **Pass** (initialize succeeds) |
+| `session/new` with `cwd` | **Fail — path translation** |
+| S1–S3a checks | **Blocked** (behind path translation) |
+| Agent isolation (subpath) | **Pass** (unit-tested, not live-verified) |
 
 ## BLOCKER 1 — the socket chmod kills the agent
 
@@ -79,21 +105,63 @@ to catch, and the stale image is the case it handles least well.
 Rebuilding from branch code resolved it: `agentInfo` then reported
 `version: v0.0.0-campaign`.
 
-## Open design question
+## Open design question (resolved by S0b)
 
 The ACP endpoint needs a transport that works on both platforms, and TCP
 removes the filesystem permission that was its only guard. Options are
 recorded for design rather than decided here.
 
+**Resolved:** the containerized-bridge approach (S0b) preserves the Unix
+socket and its `0600` guard. No TCP, no new authentication. See the
+"Resolution" section below.
+
+## BLOCKER 3 — the bridge sends its own path as `cwd`, not the agent's
+
+**Found during the S0b campaign.** The transport works — the bridge
+dials the agent's socket over the named volume and JSON-RPC round-trips.
+But `session/new` fails with `invalid params` because the bridge sends
+its own in-container path (`/host-projects/marshal`) as `cwd`, while the
+agent sees the same checkout at `/work`. The agent's trusted-roots
+validation rejects the path because `/host-projects/marshal` does not
+exist inside the agent container.
+
+This is a path-translation issue in the bridge's JSON-RPC forwarding,
+not a transport failure. The bridge already translates the workspace
+mount path (via `TranslateToHost` / `--project-mount`), but it does not
+translate the `cwd` parameter in `session/new`, `session/worktree_prune`,
+or other ACP calls that take a path.
+
+**Triage:** this is its own follow-up. The bridge needs a bidirectional
+path translation layer: host↔container for mount sources (done), and
+bridge-view↔agent-view for JSON-RPC parameters (not done). The latter
+requires the bridge to know that the agent's `/work` corresponds to the
+bridge's `/host-projects/marshal` (for local-path agents) or
+`/state/work/<id>` (for git-sourced agents).
+
+> **Independently reproduced during review.** A spawn through the API
+> returned `jsonrpc error -32602: invalid params` from `session/new`,
+> with the socket subpath directory present in the volume. An
+> independently reproduced blocker is stronger evidence than a
+> self-reported one.
+
 ## Resolution — run the bridge in a container too, on named volumes
 
-Proposed after the campaign and **verified experimentally on this host**.
-Both blockers are artifacts of the macOS↔VM *file-sharing layer*. They
-disappear entirely if the socket never crosses it — which it does not
-when the bridge is itself a Linux container and the state lives on a
-named volume.
+Proposed after the S0 campaign and **verified experimentally on this
+host**. Both S0 blockers are artifacts of the macOS↔VM *file-sharing
+layer*. They disappear entirely if the socket never crosses it — which
+it does not when the bridge is itself a Linux container and the state
+lives on a named volume.
 
-Four experiments, all run on macOS 15 / arm64, Docker 29.4.3:
+**S0b implemented this and re-verified.** The bridge now has its own
+image (`build/Dockerfile.bridge`), a compose file, and all state under
+one named volume (`marshal-state` at `/state`). The S0b campaign
+confirmed the transport works end to end: the bridge container dials
+the agent container's Unix socket over the shared volume, `chmod 0600`
+succeeds, and JSON-RPC round-trips. See BLOCKER 3 above for the
+remaining issue.
+
+Four experiments from the S0 campaign, all run on macOS 15 / arm64,
+Docker 29.4.3:
 
 | Experiment | Result |
 |---|---|
@@ -127,15 +195,34 @@ Four experiments, all run on macOS 15 / arm64, Docker 29.4.3:
   bridge running as a host process that can invoke `docker` already had
   it — but it is now explicit and worth documenting.
 - `volume-subpath` requires Docker 25.0 or newer. Podman support is
-  unverified and must be checked before claiming parity.
+  unverified and must be checked before claiming parity. **S0b note:**
+  the bridge Dockerfile originally installed `docker.io` from Debian
+  bookworm, which gives Docker CLI 20.10 — too old for `volume-subpath`.
+  Fixed by installing `docker-ce-cli` from Docker's own repository.
 - `webbridge` needs its own image and a documented compose deployment.
+  **S0b delivered both:** `build/Dockerfile.bridge`, `compose.yaml`,
+  `docs/DEPLOYMENT.md`.
+
+### S0b additional findings
+
+- **The agent image's ENTRYPOINT is `["marshal"]`**, but `buildRunArgs`
+  passed `"marshal", "acp"` as the command — producing `marshal marshal
+  acp …`, which fails. Fixed by removing the redundant `"marshal"` from
+  the args. This was a pre-existing bug that S0 never hit because the
+  transport was blocked.
+- **`volume-subpath` requires the subpath to exist in the volume before
+  mounting.** The bridge creates the socket directory via `os.MkdirAll`
+  before starting the agent container, so the socket subpath is always
+  present. The workspace subpath is only needed for git-sourced agents
+  (created by `PrepareTree`); local-path agents use a bind mount.
 
 ---
 
 ## Detailed results
 
 Checks below retain their original text. Statuses are updated where the
-campaign reached them; the remainder are blocked behind BLOCKER 2.
+campaign reached them; the remainder are blocked behind BLOCKER 3 (path
+translation).
 
 ## How to read a finding
 
@@ -145,7 +232,9 @@ Each check carries:
 - **Source** — the sub-project whose design assumed this behaviour. A
   failure here invalidates that sub-project's assumption, not just a
   line of code.
-- **Status** — one of `Not yet run`, `Pass`, `Fail`, `Skipped`.
+- **Status** — one of `Not yet run`, `Pass`, `Fail`, `Skipped`, `Blocked`.
+  `Blocked` means *attempted, prevented by a recorded blocker* — distinct
+  from `Not yet run`, meaning *not attempted*.
 - **Findings** — what happened when the check ran. Until the campaign
   runs, this reads "not yet run".
 - For a **Fail**: what failed, which sub-project assumed it, whether it
@@ -170,16 +259,23 @@ To be honest about the starting point:
   docker socket mount; reattach-preference and dial-failure cleanup are
   unit-tested against a fake runner; the mirror/credential/exit/forge/
   limits paths are covered by unit tests with faked git and HTTP.
+- **Verified by S0b (end to end, transport layer):** the bridge
+  container dials the agent container's Unix socket over a named
+  volume; `chmod 0600` succeeds on the socket; JSON-RPC `initialize`
+  round-trips. The `volume-subpath` mount syntax works for both the
+  workspace and socket subpaths. The `--project-mount` flag correctly
+  translates host paths for local-path agent bind mounts.
 - **Not verified:** any of the checks below on a live host — real
   container caps under load, a real bridge restart with surviving
   containers, real credentials against a real remote, a real push, a
   real MCP client, a real forge, real disk accounting against real
-  container volumes.
-- **Known environment limitation:** on macOS hosts, a Unix socket in a
-  host bind-mounted directory cannot be `chmod`ed from inside the
-  container (APFS returns EINVAL). The first smoke test hit this; the
-  socket works on the container's own filesystem. The campaign must run
-  on Linux, or use a named volume for the socket directory.
+  container volumes. All are blocked behind BLOCKER 3 (path
+  translation), not behind the transport.
+- **Known environment limitation (resolved by S0b):** on macOS hosts, a
+  Unix socket in a host bind-mounted directory cannot be `chmod`ed
+  from inside the container (APFS returns EINVAL). **Resolved:** the
+  bridge is now a container itself, and the socket lives on a named
+  volume that never crosses the file-sharing layer. `chmod` works.
 
 ---
 
@@ -196,8 +292,10 @@ plan. These checks establish that the container is a real boundary.
   throttling / OOM-kill inside the cap) rather than the container
   silently running unlimited.
 - **Source:** S1 (containerized agent runtime).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3: cannot spawn an agent session to
+  exercise resource caps under load. The container starts, but
+  `session/new` rejects the `cwd` parameter.
 
 ### S1.2 — No host escape
 
@@ -207,8 +305,11 @@ plan. These checks establish that the container is a real boundary.
   deliberately grants none of these; this check confirms the running
   container matches the intent.
 - **Source:** S1 (containerized agent runtime).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3: cannot get a running agent session
+  to inspect a live container. `buildRunArgs` is unit-tested for the
+  absence of host escapes, but a live `docker inspect` was not
+  performed.
 
 ### S1.3 — Container has git and ca-certificates
 
@@ -217,8 +318,10 @@ plan. These checks establish that the container is a real boundary.
   `git ls-remote https://...`). The default image installs both
   deliberately; a derived image must inherit them.
 - **Source:** S0 task 1 (the image) / S1.
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3: cannot spawn an agent session to
+  run commands inside the container. The image build includes git and
+  ca-certificates, but a live `git ls-remote` was not performed.
 
 ---
 
@@ -233,8 +336,8 @@ the bridge; the bridge must find it again.
   (not the container). Confirm the agent container is still running
   (`docker ps`) and its socket still answers.
 - **Source:** S1 (containerized agent runtime).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### R.2 — Restart, confirm same container ids
 
@@ -243,8 +346,8 @@ the bridge; the bridge must find it again.
   names/ids) rather than starting duplicates. `Open` prefers reattach
   when a container under the agent's name is already running.
 - **Source:** S1 / S1 completion plan.
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### R.3 — Agent answers with prior context
 
@@ -254,8 +357,8 @@ the bridge; the bridge must find it again.
   Notifications emitted while detached are dropped by design; the
   re-sync is what must work.
 - **Source:** S1 completion plan (Resume restores the ACP session).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ---
 
@@ -273,8 +376,8 @@ anything on the host.
   anywhere under `/work/.git`. The PAT travels only via the askpass
   protocol to the bridge-side mirror fetch, never into the agent's tree.
 - **Source:** S2a (remote sources).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S2a.2 — Origin points at the real remote
 
@@ -283,8 +386,8 @@ anything on the host.
   from the mirror), so a push from the exit path goes to the real
   server, not the mirror path.
 - **Source:** S2a (remote sources).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S2a.3 — Two agents share one mirror
 
@@ -293,8 +396,8 @@ anything on the host.
   the second agent's clone is served from it without a second full
   clone. Concurrent spawns must not race on the mirror (per-URL mutex).
 - **Source:** S2a (remote sources).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S2a.4 — A planted hook does not fire on the host
 
@@ -306,8 +409,8 @@ anything on the host.
   `protocol.ext.allow=never`, and the agent's own git runs inside the
   container, not on the host.
 - **Source:** S2a (remote sources).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ---
 
@@ -325,8 +428,8 @@ toolchain by design; the gate must be honest about that.
   pending an override — a skipped gate has proved nothing.
 - **Source:** S2b (exit path) / S0 task 1 (deliberately toolchain-free
   image).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S2b.2 — Override exercises the push path
 
@@ -334,8 +437,8 @@ toolchain by design; the gate must be honest about that.
   reason. Confirm the push proceeds, the override is recorded on the
   agent and in the audit log, and the PR body states the override.
 - **Source:** S2b (exit path).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S2b.3 — Derived image with a toolchain: real gate pass
 
@@ -345,8 +448,8 @@ toolchain by design; the gate must be honest about that.
   the gate actually runs the build/test commands and passes on real
   success. Also confirm a real failure fails the gate (not skipped).
 - **Source:** S2b (exit path) / S0 task 5 (derived images).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ---
 
@@ -363,7 +466,10 @@ itself; approved plans reach the agent as files.
   `/api/` bearer middleware, so it must enforce client identity itself.
 - **Source:** S2c-1 (MCP intake).
 - **Status:** Not yet run
-- **Findings:** not yet run
+- **Findings:** This check exercises the HTTP layer only and does not
+  require a running agent; it is not blocked by BLOCKER 3. It was not
+  attempted during the S0b campaign, which focused on the transport
+  layer. It can be run independently.
 
 ### S2c-1.2 — A submission queues
 
@@ -373,8 +479,8 @@ itself; approved plans reach the agent as files.
   runs until an operator approves it. Confirm per-client caps and the
   registered-repo allowlist are enforced on the same path.
 - **Source:** S2c-1 (MCP intake).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S2c-1.3 — An approved plan lands inside the container
 
@@ -384,8 +490,8 @@ itself; approved plans reach the agent as files.
   with the in-container path). A hostile pending id must not be able to
   steer the write path.
 - **Source:** S2c-1 (MCP intake).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ---
 
@@ -401,8 +507,8 @@ Source sub-projects: forge issues (S2c-2) and limits/audit (S3a).
   (and "Closes #N" for issue-sourced agents), rather than a bare pushed
   URL. Confirm the fallback to URL extraction when no forge applies.
 - **Source:** S2c-2 (forge issues).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S2c-2.2 — Issue intake
 
@@ -413,8 +519,8 @@ Source sub-projects: forge issues (S2c-2) and limits/audit (S3a).
   the `since` cursor). Confirm a rate-limited forge backs off rather
   than hammering the API.
 - **Source:** S2c-2 (forge issues).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S3a.1 — Disk accounting against real container volumes
 
@@ -424,8 +530,8 @@ Source sub-projects: forge issues (S2c-2) and limits/audit (S3a).
   `--max-disk-mb` budget is refused after a prune attempt, not before
   reclaiming.
 - **Source:** S3a (limits and audit).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ### S3a.2 — Pruning with a live agent
 
@@ -435,8 +541,8 @@ Source sub-projects: forge issues (S2c-2) and limits/audit (S3a).
   workspace and its mirror are untouched, and the reclaimed byte count
   is reported (and audited).
 - **Source:** S3a (limits and audit).
-- **Status:** Not yet run
-- **Findings:** not yet run
+- **Status:** Blocked
+- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
 
 ---
 

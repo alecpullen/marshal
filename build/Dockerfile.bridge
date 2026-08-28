@@ -1,0 +1,30 @@
+FROM golang:1.26-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=1 go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /out/webbridge ./cmd/webbridge
+
+FROM debian:bookworm-slim
+# git: the bridge runs every git operation itself (S2a, bridge-mediated).
+# docker-cli: it spawns agent containers through the mounted socket.
+#   The stock docker.io package from Debian gives CLI 20.10, which does
+#   not support volume-subpath (added in Docker 25.0). Install from
+#   Docker's own repository instead so the CLI matches the daemon.
+# ca-certificates: forge API calls (S2c-2) are HTTPS.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+ && chmod a+r /etc/apt/keyrings/docker.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends docker-ce-cli \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/webbridge /usr/local/bin/webbridge
+VOLUME /state
+EXPOSE 7700
+ENTRYPOINT ["webbridge"]

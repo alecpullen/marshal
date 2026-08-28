@@ -19,6 +19,12 @@ func TestDerivedDockerfileCopiesMarshalIn(t *testing.T) {
 	if !strings.Contains(got, "/usr/local/bin/marshal") {
 		t.Errorf("marshal lands somewhere unexpected:\n%s", got)
 	}
+	// The bridge invokes the image with "acp --listen ...", relying on
+	// the ENTRYPOINT being marshal. A base like node:20 has no
+	// entrypoint, so it must be set explicitly in the derived Dockerfile.
+	if !strings.Contains(got, `ENTRYPOINT ["marshal"]`) {
+		t.Errorf("ENTRYPOINT missing; derived image would not start:\n%s", got)
+	}
 }
 
 // TestDerivedTagKeysOnDigestNotTag is the important one: keying on the
@@ -102,7 +108,7 @@ func testFleetWithRunner(t *testing.T, runner commandRunner) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	f.runner = runner
 	t.Cleanup(f.Close)
 	return f

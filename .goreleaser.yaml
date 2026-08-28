@@ -115,6 +115,24 @@ dockers:
       - "ghcr.io/marshal/agent:{{ .Version }}-arm64"
     build_flag_templates:
       - "--platform=linux/arm64"
+  - id: bridge-amd64
+    ids: [webbridge]
+    goos: linux
+    goarch: amd64
+    dockerfile: build/Dockerfile.bridge
+    image_templates:
+      - "ghcr.io/marshal/webbridge:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - id: bridge-arm64
+    ids: [webbridge]
+    goos: linux
+    goarch: arm64
+    dockerfile: build/Dockerfile.bridge
+    image_templates:
+      - "ghcr.io/marshal/webbridge:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
 
 docker_manifests:
   - name_template: "ghcr.io/marshal/agent:{{ .Version }}"
@@ -125,6 +143,14 @@ docker_manifests:
     image_templates:
       - "ghcr.io/marshal/agent:{{ .Version }}-amd64"
       - "ghcr.io/marshal/agent:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/marshal/webbridge:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/marshal/webbridge:{{ .Version }}-amd64"
+      - "ghcr.io/marshal/webbridge:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/marshal/webbridge:latest"
+    image_templates:
+      - "ghcr.io/marshal/webbridge:{{ .Version }}-amd64"
+      - "ghcr.io/marshal/webbridge:{{ .Version }}-arm64"
 
 release:
   draft: true

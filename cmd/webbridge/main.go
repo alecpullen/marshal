@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -36,6 +37,11 @@ func versionString() string {
 	return fmt.Sprintf("webbridge %s", v)
 }
 
+// defaultStateDir is the in-container mount point for the state volume.
+// When running as a host process (no container runtime), the state dir
+// defaults to beside the workspace file instead.
+const defaultStateDir = "/state"
+
 // stringList collects repeatable project flags.
 type stringList []string
 
@@ -44,14 +50,15 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // config holds the resolved flag/env settings.
 type config struct {
-	addr       string
-	token      string
-	marshalBin string
-	cwdRoot    string
-	projects   []string
-	workspace  string
-	stateDir   string
-	agentEnv   stringList
+	addr        string
+	token       string
+	marshalBin  string
+	cwdRoot     string
+	projects    []string
+	workspace   string
+	stateDir    string
+	stateVolume string
+	agentEnv    stringList
 	// tlsCert and tlsKey enable HTTPS when both are set. Certificate
 	// lifecycle — issuance, renewal — is deliberately out of scope:
 	// every deployment already solves it differently (a reverse proxy,
@@ -65,6 +72,9 @@ type config struct {
 	maxDiskMB int64
 	// maxCloneMB bounds a single clone size in MB (0 = unlimited).
 	maxCloneMB int64
+	// projectMounts maps host paths to the bridge's in-container view,
+	// for translating LocalPath agent workspace mounts.
+	projectMounts []bridge.ProjectMount
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -79,10 +89,14 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
+	var projectMounts stringList
+	fs.Var(&projectMounts, "project-mount", "host:container path mapping for local project mounts (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
 	tlsCert := fs.String("tls-cert", envOr("WEBBRIDGE_TLS_CERT", ""), "PEM certificate file; enables HTTPS when set with --tls-key")
 	tlsKey := fs.String("tls-key", envOr("WEBBRIDGE_TLS_KEY", ""), "PEM private key file; enables HTTPS when set with --tls-cert")
-	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (defaults beside the workspace file)")
+	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", defaultStateDir), "directory for repo mirrors and agent workspaces (defaults to /state)")
+	stateVolume := fs.String("state-volume", envOr("WEBBRIDGE_STATE_VOLUME", "marshal-state"),
+		"name of the volume mounted at --state-dir; agents mount subpaths of it")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
@@ -94,7 +108,12 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB}
+	pm, err := parseProjectMounts(projectMounts)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.projectMounts = pm
 	// Half-configured TLS fails loudly. Serving plaintext because one
 	// flag name was mistyped is the failure nobody notices.
 	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
@@ -115,6 +134,23 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		cfg.cwdRoot = cwd
 	}
 	return cfg, nil
+}
+
+// parseProjectMounts parses repeatable --project-mount HOST:CONTAINER
+// flags into ProjectMount entries.
+func parseProjectMounts(specs []string) ([]bridge.ProjectMount, error) {
+	var mounts []bridge.ProjectMount
+	for _, s := range specs {
+		parts := strings.SplitN(s, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("--project-mount %q: expected HOST:CONTAINER", s)
+		}
+		mounts = append(mounts, bridge.ProjectMount{
+			Host:      filepath.Clean(parts[0]),
+			Container: filepath.Clean(parts[1]),
+		})
+	}
+	return mounts, nil
 }
 
 // askpassResponse answers one git credential prompt. Git asks for a
@@ -238,7 +274,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	}, version)
+	}, version, cfg.projectMounts, cfg.stateVolume)
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

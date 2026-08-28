@@ -82,6 +82,16 @@ func TestParseConfigProjects(t *testing.T) {
 	}
 }
 
+func TestParseProjectMountRejectsMalformed(t *testing.T) {
+	if _, err := parseProjectMounts([]string{"no-colon"}); err == nil {
+		t.Fatal("accepted a mapping with no colon")
+	}
+	got, err := parseProjectMounts([]string{"/h:/c"})
+	if err != nil || len(got) != 1 || got[0].Host != "/h" || got[0].Container != "/c" {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+}
+
 func TestParseConfigRejectsArgs(t *testing.T) {
 	if _, err := parseConfig([]string{"bogus"}, io.Discard); err == nil {
 		t.Fatal("positional arg: expected error, got nil")
@@ -277,6 +287,24 @@ func TestServeHTTPStaysPlaintextWithoutCertificates(t *testing.T) {
 		t.Fatalf("plain HTTP failed: %v", err)
 	}
 	defer resp.Body.Close()
+}
+
+func TestParseConfigStateVolume(t *testing.T) {
+	t.Setenv("WEBBRIDGE_STATE_VOLUME", "")
+	cfg, err := parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.stateVolume != "marshal-state" {
+		t.Fatalf("default = %q, want marshal-state", cfg.stateVolume)
+	}
+	cfg, err = parseConfig([]string{"--state-volume", "prod-state"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.stateVolume != "prod-state" {
+		t.Fatalf("got %q", cfg.stateVolume)
+	}
 }
 
 func TestParseConfigLimitFlags(t *testing.T) {

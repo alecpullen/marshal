@@ -114,12 +114,20 @@ type Fleet struct {
 	creds *CredentialStore
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
+	// stateVolume is the name of the shared state volume mounted at
+	// stateDir. Agents mount subpaths of it.
+	stateVolume string
 	// audit is the security-relevant action log. Nil in tests that do
 	// not opt in; auditf tolerates that.
 	audit *AuditLog
 	// limits bounds concurrency and disk usage. Zero values mean
 	// "default" (4 concurrent) or "unlimited" (no disk/clone cap).
 	limits Limits
+
+	// projectMounts maps host paths to the bridge's in-container view,
+	// for translating LocalPath agent workspace mounts to the daemon's
+	// view. Empty when the bridge is a host process.
+	projectMounts []ProjectMount
 
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
@@ -152,9 +160,12 @@ type Fleet struct {
 	diskCacheOK bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
 	if stateDir == "" {
 		stateDir = filepath.Dir(ws.path)
+	}
+	if stateVolume == "" {
+		stateVolume = "marshal-state"
 	}
 	maxConcurrent := limits.MaxConcurrent
 	if maxConcurrent <= 0 {
@@ -167,12 +178,14 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
-		slots:      newSlots(maxConcurrent),
-		stateDir:   stateDir,
-		audit:      NewAuditLog(stateDir),
-		limits:     limits,
-		done:       make(chan struct{}),
-		rateLimits: make(map[string]time.Time),
+		slots:         newSlots(maxConcurrent),
+		stateDir:      stateDir,
+		stateVolume:   stateVolume,
+		audit:         NewAuditLog(stateDir),
+		limits:        limits,
+		projectMounts: projectMounts,
+		done:          make(chan struct{}),
+		rateLimits:    make(map[string]time.Time),
 	}
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
@@ -182,25 +195,69 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	}
 	f.creds = NewCredentialStore(nil)
 	f.newRuntime = func(a Agent) *Child {
-		runtime, _, ok := detectedRuntime()
+		runtime, name, ok := detectedRuntime()
 		if !ok {
 			// No container runtime: fall back to a host process so a
 			// laptop without docker still works.
 			return &Child{MarshalBin: marshalBin}
 		}
-		return &Child{Transport: newContainerTransport(ContainerConfig{
-			Runtime:      runtime,
-			Image:        a.Profile.Image,
-			Name:         containerNameFor(a.ID),
-			WorkspaceDir: a.Project,
-			SocketDir:    socketDirFor(a.ID),
-			CPUs:         a.Profile.CPUs,
-			MemoryMB:     a.Profile.MemoryMB,
-			Env:          f.agentEnv,
-		})}
+		cfg := ContainerConfig{
+			Runtime:       runtime,
+			RuntimeName:   name,
+			Image:         a.Profile.Image,
+			Name:          containerNameFor(a.ID),
+			WorkspaceDir:  a.Project,
+			SocketDir:     socketDirFor(f.stateDir, a.ID),
+			StateVolume:   f.stateVolume,
+			WorkSubpath:   "work/" + a.ID,
+			SocketSubpath: "sockets/" + a.ID,
+			CPUs:          a.Profile.CPUs,
+			MemoryMB:      a.Profile.MemoryMB,
+			Env:           f.agentEnv,
+		}
+		// A LocalPath agent works on the host checkout itself, so its
+		// workspace is a bind mount of the daemon's view of that path.
+		// Git-sourced agents use a volume subpath instead.
+		if a.SourceKind == "local" {
+			hostPath, err := f.localMountFor(a)
+			if err != nil {
+				// A declared root that the path is not under is a
+				// misconfiguration. newRuntime cannot return an error,
+				// so log the actionable message (it names
+				// --project-mount) and leave LocalMount empty. The
+				// container starts with a volume-subpath workspace
+				// instead of the intended bind mount, and session/new
+				// fails because cwd points at a path the agent cannot
+				// see. The API caller sees the JSON-RPC invalid-params
+				// error; the operator who reads the bridge logs sees
+				// the actionable message. Neither is great, but
+				// deferring to the runtime's "mounts denied" would be
+				// worse — it surfaces neither.
+				slog.Default().Error("webbridge: refuse local agent mount", "agent", a.ID, "err", err)
+			} else {
+				cfg.LocalMount = hostPath
+			}
+		}
+		return &Child{Transport: newContainerTransport(cfg)}
 	}
 	return f
 }
+
+// localMountFor resolves the bind-mount source for a LocalPath agent.
+//
+// Two situations look alike and are not. With no declared roots the
+// bridge is a host process: its own view is the daemon's view, and the
+// path passes through unchanged. With roots declared the bridge is
+// containerized, and a path under none of them is a misconfiguration —
+// returned as an error here, where it can name --project-mount, rather
+// than deferred to the runtime's "mounts denied", which cannot.
+func (f *Fleet) localMountFor(a Agent) (string, error) {
+	if len(f.projectMounts) == 0 {
+		return a.Project, nil
+	}
+	return TranslateToHost(f.projectMounts, a.Project)
+}
+
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
 
 // auditf appends a record, and never propagates a failure to the caller.
@@ -321,9 +378,14 @@ func detectedRuntime() (path, name string, ok bool) {
 	return p.path, p.name, p.ok
 }
 
-// socketDirFor is the host directory holding one agent's control socket.
-func socketDirFor(agentID string) string {
-	return filepath.Join(os.TempDir(), "marshal-agents", agentID)
+// socketDirFor is the per-agent ACP socket directory.
+//
+// It lives under the state root like every other piece of agent state.
+// It previously used os.TempDir(), which a containerized bridge cannot
+// share with a sibling container: a bind-mount source resolves against
+// the daemon's view, not the bridge's.
+func socketDirFor(stateDir, agentID string) string {
+	return filepath.Join(stateDir, "sockets", agentID)
 }
 
 // runtimeForAgent returns the live runtime for an agent id.

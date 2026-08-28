@@ -21,7 +21,7 @@ func testFleetWithVersion(t *testing.T, version string) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, version)
+	f := NewFleet(ws, "unused", nil, "", Limits{}, version, nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -32,6 +32,82 @@ func TestFleetCarriesTheBuildVersion(t *testing.T) {
 	f := testFleetWithVersion(t, "v1.2.3")
 	if f.buildVersion != "v1.2.3" {
 		t.Fatalf("buildVersion = %q", f.buildVersion)
+	}
+}
+
+// testFleetWithStateVolume builds a Fleet with the production newRuntime
+// closure intact, so the container transport's ContainerConfig can be
+// inspected for the configured state volume name.
+func testFleetWithStateVolume(t *testing.T, vol string) *Fleet {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, vol)
+	t.Cleanup(f.Close)
+	return f
+}
+
+func TestStateVolumeIsConfigurable(t *testing.T) {
+	f := testFleetWithStateVolume(t, "custom-state")
+	child := f.newRuntime(Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile()})
+	tr, ok := child.Transport.(*containerTransport)
+	if !ok {
+		t.Skip("no container runtime; newRuntime fell back to a host process")
+	}
+	joined := strings.Join(tr.buildRunArgs(), " ")
+	if !strings.Contains(joined, "source=custom-state") {
+		t.Fatalf("the configured volume name was not used:\n%s", joined)
+	}
+	if strings.Contains(joined, "source=marshal-state") {
+		t.Fatalf("the hardcoded default leaked through:\n%s", joined)
+	}
+}
+
+// testFleetWithProjectMounts builds a Fleet with the given declared
+// project mounts, so localMountFor's decision can be exercised directly.
+func testFleetWithProjectMounts(t *testing.T, mounts []ProjectMount) *Fleet {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", mounts, "marshal-state")
+	t.Cleanup(f.Close)
+	return f
+}
+
+func TestNoProjectMountsUsesTheBridgesOwnPath(t *testing.T) {
+	f := testFleetWithProjectMounts(t, nil)
+	got, err := f.localMountFor(Agent{SourceKind: "local", Project: "/home/me/code"})
+	if err != nil {
+		t.Fatalf("a bridge with no declared mounts must not error: %v", err)
+	}
+	if got != "/home/me/code" {
+		t.Fatalf("got %q, want the path unchanged", got)
+	}
+}
+
+func TestDeclaredMountsRefuseAnOutsidePath(t *testing.T) {
+	f := testFleetWithProjectMounts(t, []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}})
+	_, err := f.localMountFor(Agent{SourceKind: "local", Project: "/somewhere/else"})
+	if err == nil {
+		t.Fatal("a path outside every declared root was accepted; the spawn would fail later with mounts denied")
+	}
+	if !strings.Contains(err.Error(), "project-mount") {
+		t.Errorf("the error does not name the flag that fixes it: %v", err)
+	}
+}
+
+func TestDeclaredMountsTranslateAnInsidePath(t *testing.T) {
+	f := testFleetWithProjectMounts(t, []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}})
+	got, err := f.localMountFor(Agent{SourceKind: "local", Project: "/host-projects/marshal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/Users/you/code/marshal" {
+		t.Fatalf("got %q, want the host path", got)
 	}
 }
 
@@ -76,7 +152,7 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	f.slots = newSlots(limit)
@@ -155,7 +231,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry-merged")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -206,7 +282,7 @@ func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
 	if err := ws.AddProject(plain); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	t.Cleanup(f.Close)
 
 	for _, st := range f.ProjectStatus() {
@@ -250,7 +326,7 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{}, "")
+	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{}, "", nil, "marshal-state")
 	defer f.Close()
 	if _, err := f.Spawn(context.Background(), "/home/u/a", SpawnOptions{Name: "one"}); err == nil {
 		t.Fatal("expected spawn failure")
@@ -266,7 +342,7 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "", Limits{}, "")
+	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "", Limits{}, "", nil, "marshal-state")
 	t.Cleanup(f.Close)
 
 	// Invoke the production newRuntime closure directly so no real
@@ -651,7 +727,7 @@ func testFleetWithLimits(t *testing.T, limits Limits) *Fleet {
 		t.Fatal(err)
 	}
 	stateDir := t.TempDir()
-	f := NewFleet(ws, "unused", nil, stateDir, limits, "")
+	f := NewFleet(ws, "unused", nil, stateDir, limits, "", nil, "marshal-state")
 	tr := &scriptedTransport{gate: gateResult{OK: true}}
 	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
 	t.Cleanup(f.Close)
@@ -706,5 +782,32 @@ func TestMaxConcurrentIsConfigurable(t *testing.T) {
 	defer cancel()
 	if _, err := f.Spawn(ctx, "/p", SpawnOptions{Prompt: "b"}); err == nil {
 		t.Fatal("a second spawn ran despite MaxConcurrent=1")
+	}
+}
+
+func TestAllStatePathsShareOneRoot(t *testing.T) {
+	const root = "/state"
+	work := workspaceDirFor(root, "a1")
+	sock := socketDirFor(root, "a1")
+	mirror := mirrorDir(root, "https://example.com/r.git")
+
+	for name, p := range map[string]string{"work": work, "sockets": sock, "mirror": mirror} {
+		if !strings.HasPrefix(p, root+"/") {
+			t.Errorf("%s path %q escapes the state root; a containerized bridge "+
+				"cannot mount anything outside its volume", name, p)
+		}
+	}
+	// The socket used to live under os.TempDir(), unlike the other two.
+	if !strings.Contains(sock, "/sockets/") {
+		t.Errorf("socket path %q is not under the sockets subtree", sock)
+	}
+}
+
+func TestStatePathsAreDistinctPerAgent(t *testing.T) {
+	if socketDirFor("/state", "a1") == socketDirFor("/state", "a2") {
+		t.Fatal("two agents share a socket directory")
+	}
+	if workspaceDirFor("/state", "a1") == workspaceDirFor("/state", "a2") {
+		t.Fatal("two agents share a workspace directory")
 	}
 }

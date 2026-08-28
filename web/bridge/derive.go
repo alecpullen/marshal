@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -43,17 +44,23 @@ func (f *Fleet) runRuntime(runtime string, args ...string) ([]byte, error) {
 }
 
 // buildDerived runs `docker build` feeding the Dockerfile on stdin, so no
-// temporary build context is written to disk. The build context is the
-// current directory; the Dockerfile only does `FROM <base>` and
-// `COPY --from=<agentImage>`, so no context files are needed. The runner
-// seam cannot carry stdin, so the production path (nil runner) uses
-// exec.Command directly.
+// temporary build context is written to disk. The Dockerfile only does
+// `FROM <base>` and `COPY --from=<agentImage>`, so no context files are
+// needed. An empty temp directory is used as the build context so the
+// bridge's working directory is never serialized and uploaded to the
+// daemon. The runner seam cannot carry stdin, so the production path
+// (nil runner) uses exec.Command directly.
 func (f *Fleet) buildDerived(runtime, tag, base, dockerfile string) error {
 	if f.runner != nil {
 		_, err := f.runner(runtime, "build", "-t", tag, "-f", "-", ".")
 		return err
 	}
-	cmd := exec.Command(runtime, "build", "-t", tag, "-f", "-", ".")
+	ctxDir, err := os.MkdirTemp("", "marshal-derive-*")
+	if err != nil {
+		return fmt.Errorf("bridge: create build context: %w", err)
+	}
+	defer os.RemoveAll(ctxDir)
+	cmd := exec.Command(runtime, "build", "-t", tag, "-f", "-", ctxDir)
 	cmd.Env = clientEnv()
 	cmd.Stdin = strings.NewReader(dockerfile)
 	out, err := cmd.CombinedOutput()

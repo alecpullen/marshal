@@ -295,7 +295,7 @@ func TestWebbridgeReportsItsVersion(t *testing.T) {
 		&out, io.Discard); err != nil {
 		t.Fatalf("run --version: %v", err)
 	}
-	if strings.TrimSpace(out.String()) == "" {
-		t.Fatal("--version printed nothing")
+	if !strings.Contains(out.String(), "webbridge") {
+		t.Fatalf("--version output does not contain 'webbridge': %q", out.String())
 	}
 }

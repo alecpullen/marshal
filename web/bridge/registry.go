@@ -46,7 +46,9 @@ type Answers struct {
 
 // sessionInfo tracks one active session's bridge-side state.
 type sessionInfo struct {
-	Cwd string `json:"cwd"`
+	// Cwd is the agent's view, because it is re-sent on delete and
+	// resume rather than only recorded.
+	Cwd AgentPath `json:"cwd"`
 	// Busy is true while a turn is in flight (prompt sent, no turn end
 	// observed). A child restart marks it interrupted (Busy=false).
 	Busy bool `json:"busy"`
@@ -127,13 +129,13 @@ func NewRegistry(child *Child) *Registry {
 // sessionId, used by session/new, session/load, session/resume and
 // session/delete.
 type sessionParams struct {
-	Cwd       string `json:"cwd"`
-	SessionID string `json:"sessionId,omitempty"`
+	Cwd       AgentPath `json:"cwd"`
+	SessionID string    `json:"sessionId,omitempty"`
 }
 
 // New creates a session (session/new), or resumes an existing one when
 // sessionId is non-empty. Returns the active session id.
-func (r *Registry) New(ctx context.Context, cwd, sessionId string) (string, error) {
+func (r *Registry) New(ctx context.Context, cwd AgentPath, sessionId string) (string, error) {
 	res, err := r.child.Request(ctx, "session/new", sessionParams{Cwd: cwd, SessionID: sessionId})
 	if err != nil {
 		return "", err
@@ -153,7 +155,7 @@ func (r *Registry) New(ctx context.Context, cwd, sessionId string) (string, erro
 
 // Load attaches to an existing session (session/load) and starts
 // tracking it.
-func (r *Registry) Load(ctx context.Context, cwd, id string) error {
+func (r *Registry) Load(ctx context.Context, cwd AgentPath, id string) error {
 	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id}); err != nil {
 		return err
 	}
@@ -163,7 +165,7 @@ func (r *Registry) Load(ctx context.Context, cwd, id string) error {
 
 // track registers a session with a fresh cancel context so pending
 // permission/question waits can be drained on cancel/delete/disconnect.
-func (r *Registry) track(id, cwd string) {
+func (r *Registry) track(id string, cwd AgentPath) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
 	r.sessions[id] = &sessionInfo{Cwd: cwd, ctx: ctx, cancel: cancel, accepting: true}
@@ -588,7 +590,7 @@ func (r *Registry) resumeAll() {
 
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.sessions))
-	cwds := make(map[string]string, len(r.sessions))
+	cwds := make(map[string]AgentPath, len(r.sessions))
 	for id, info := range r.sessions {
 		ids = append(ids, id)
 		cwds[id] = info.Cwd

@@ -25,7 +25,7 @@ func newTestRegistry(t *testing.T, mode string) (*Registry, *Child) {
 
 func TestRegistryPendingReportsParkedKind(t *testing.T) {
 	r := NewRegistry(&Child{})
-	r.track("s1", "/home/u/repo")
+	r.track("s1", AgentPath("/home/u/repo"))
 	if got := r.Pending("s1"); got != "" {
 		t.Fatalf("Pending on idle session = %q, want empty", got)
 	}
@@ -57,7 +57,7 @@ func TestRegistryNew(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	id, err := r.New(ctx, "/tmp/work", "")
+	id, err := r.New(ctx, AgentPath("/tmp/work"), "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -75,10 +75,10 @@ func TestRegistryWrappers(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := r.Load(ctx, "/tmp/work", "s-2"); err != nil {
+	if err := r.Load(ctx, AgentPath("/tmp/work"), "s-2"); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	// session/prompt blocks until the turn completes (the fake child
@@ -154,7 +154,7 @@ func TestRegistryPermissionRoundTrip(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// Trigger the fake child to emit session/request_permission. Use a
@@ -200,7 +200,7 @@ func TestRegistryPermissionWaitsForDecision(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -248,7 +248,7 @@ func TestRegistryPermissionWaitsForeverWhenAbandoned(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
@@ -315,7 +315,7 @@ func TestRegistryQuestionRoundTrip(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// Use a long context for the trigger because the helper now forwards
@@ -356,7 +356,7 @@ func TestRegistryQuestionWaitsForAnswer(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -404,7 +404,7 @@ func TestRegistryQuestionWaitsForeverWhenAbandoned(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
@@ -471,7 +471,7 @@ func TestRegistryCancelDrainsPendingPermission(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -516,7 +516,7 @@ func TestRegistryCancelDrainsPendingQuestion(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -560,7 +560,7 @@ func TestRegistryCancelDoesNotPoisonFutureRequests(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// Trigger a permission, then cancel the session: the pending wait is
@@ -643,7 +643,7 @@ func TestRegistryLateRequestFromCancelledTurnIsRejected(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// Force a cancel in the window between a request's generation capture
@@ -768,7 +768,7 @@ func TestRegistryDrainSessionUnblocksWaiters(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -852,7 +852,7 @@ func TestRegistryRestartResumesSessions(t *testing.T) {
 		}
 	}
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// registry-die mode exits after the first request (the session/new
@@ -876,7 +876,7 @@ func TestRegistryRestartClearsPending(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// Wait for the restart (triggered by registry-die exiting after
@@ -956,5 +956,23 @@ func TestAnswersRoundTrip(t *testing.T) {
 	}
 	if len(a.Answers) != 2 || a.Answers[1].Answer != "a2" {
 		t.Fatalf("decoded %+v, want two answers ending a2", a.Answers)
+	}
+}
+
+func TestSessionParamsCarryTheAgentsView(t *testing.T) {
+	var info sessionInfo
+	info.Cwd = AgentPath("/work")
+	if string(info.Cwd) != "/work" {
+		t.Fatalf("got %q", info.Cwd)
+	}
+}
+
+func TestSessionParamsSerialiseAsPlainStrings(t *testing.T) {
+	blob, err := json.Marshal(sessionParams{Cwd: AgentPath("/work"), SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(blob) != `{"cwd":"/work","sessionId":"s1"}` {
+		t.Fatalf("wire format changed: %s", blob)
 	}
 }

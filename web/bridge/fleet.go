@@ -819,7 +819,12 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// can restore the mapping. Must be set before the copy below.
 	a.SessionID = out.SessionID
 
-	rt.reg.track(out.SessionID, workDir)
+	agentCwd, aerr := rt.agentPath(workDir)
+	if aerr != nil {
+		f.stopAgent(a.ID)
+		return "", fmt.Errorf("resolve cwd for agent %s: %w", a.ID, aerr)
+	}
+	rt.reg.track(out.SessionID, agentCwd)
 	agent := a // copy the resolved agent
 	if out.Workspace != nil {
 		agent.Isolated = true
@@ -1144,7 +1149,11 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 	if a.SessionID == "" {
 		return nil
 	}
-	if err := rt.reg.Load(ctx, a.Project, a.SessionID); err != nil {
+	cwd, cerr := rt.agentPath(a.Project)
+	if cerr != nil {
+		return fmt.Errorf("resolve cwd for agent %s: %w", a.ID, cerr)
+	}
+	if err := rt.reg.Load(ctx, cwd, a.SessionID); err != nil {
 		return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
 	}
 	f.mu.Lock()

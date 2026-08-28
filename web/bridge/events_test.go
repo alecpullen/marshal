@@ -11,7 +11,7 @@ func TestAttachDoesNotDrainOnUnsubscribe(t *testing.T) {
 	child := &Child{}
 	reg := NewRegistry(child)
 	Attach(l, child, reg)
-	reg.track("s1", "/home/u/repo")
+	reg.track("s1", AgentPath("/home/u/repo"))
 	ch := make(chan Decision, 1)
 	reg.permMu.Lock()
 	reg.permissions["tc1"] = ch
@@ -289,7 +289,7 @@ func TestEventLogAttach(t *testing.T) {
 
 	ctx, cancel := testContext(t)
 	t.Cleanup(cancel)
-	id, err := r.New(ctx, t.TempDir(), "")
+	id, err := r.New(ctx, AgentPath(t.TempDir()), "")
 	if err != nil {
 		t.Fatalf("session/new: %v", err)
 	}

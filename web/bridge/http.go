@@ -485,7 +485,7 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request) {
 	if s.fleet != nil {
 		id, err = s.fleet.Spawn(r.Context(), body.Cwd, SpawnOptions{})
 	} else {
-		id, err = s.reg.New(r.Context(), body.Cwd, body.SessionID)
+		id, err = s.reg.New(r.Context(), AgentPath(body.Cwd), body.SessionID)
 	}
 	if err != nil {
 		writeErr(w, err)
@@ -517,21 +517,36 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 	cwd := body.Cwd
 	if s.fleet != nil {
 		reg, log, sessionID, err = s.registryForSession(id)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
 	} else {
 		if cwd == "" {
 			cwd = s.reg.RootCwd
 		}
 		reg, log, sessionID = s.reg, s.log, id
 	}
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
 	if cwd == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cwd is required (body or configured root)"})
 		return
 	}
-	if err := reg.Load(r.Context(), cwd, sessionID); err != nil {
+	var agentCwd AgentPath
+	if s.fleet != nil {
+		rt, rerr := s.fleet.RuntimeForSession(id)
+		if rerr != nil {
+			writeErr(w, rerr)
+			return
+		}
+		agentCwd, err = rt.agentPath(cwd)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+	} else {
+		agentCwd = AgentPath(cwd)
+	}
+	if err := reg.Load(r.Context(), agentCwd, sessionID); err != nil {
 		writeErr(w, err)
 		return
 	}

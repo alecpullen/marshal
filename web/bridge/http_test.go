@@ -155,7 +155,7 @@ func TestHTTPSessionLifecycle(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestHTTPLoadSession(t *testing.T) {
 	r.RootCwd = "/tmp/root"
 
 	// Put one event in the ring so the load response carries a tail.
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if _, err := c.Request(ctx, "test/emit_update", nil); err != nil {
@@ -330,7 +330,7 @@ func TestHTTPValidationRejections(t *testing.T) {
 	s, r, _, _ := newTestServer(t, "")
 	ctx, cancel := testContext(t)
 	defer cancel()
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
@@ -354,7 +354,7 @@ func TestHTTPPromptBusyConflict(t *testing.T) {
 	s, r, _, _ := newTestServer(t, "")
 	ctx, cancel := testContext(t)
 	defer cancel()
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// The fake child holds session/prompt for 200 ms; start a turn and
@@ -398,7 +398,7 @@ func TestHTTPResolvePermission(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if _, err := c.Request(ctx, "test/ask_permission", nil); err != nil {
@@ -504,7 +504,7 @@ func TestHTTPResolveQuestion(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if _, err := c.Request(ctx, "test/ask_question", nil); err != nil {

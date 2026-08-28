@@ -41,6 +41,21 @@ func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgsUsesBindMountForLocalPath(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		LocalMount: "/host/path/to/project",
+	})
+	joined := strings.Join(tr.buildRunArgs(), " ")
+	if !strings.Contains(joined, "-v /host/path/to/project:/work") {
+		t.Fatalf("local mount should use a bind mount; got: %s", joined)
+	}
+	if strings.Contains(joined, "volume-subpath=work/") {
+		t.Fatalf("local mount should not use a volume subpath for /work; got: %s", joined)
+	}
+}
+
 func TestContainerRunArgsRefuseHostEscapes(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",

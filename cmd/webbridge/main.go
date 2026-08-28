@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -70,6 +71,9 @@ type config struct {
 	maxDiskMB int64
 	// maxCloneMB bounds a single clone size in MB (0 = unlimited).
 	maxCloneMB int64
+	// projectMounts maps host paths to the bridge's in-container view,
+	// for translating LocalPath agent workspace mounts.
+	projectMounts []bridge.ProjectMount
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -84,6 +88,8 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
+	var projectMounts stringList
+	fs.Var(&projectMounts, "project-mount", "host:container path mapping for local project mounts (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
 	tlsCert := fs.String("tls-cert", envOr("WEBBRIDGE_TLS_CERT", ""), "PEM certificate file; enables HTTPS when set with --tls-key")
 	tlsKey := fs.String("tls-key", envOr("WEBBRIDGE_TLS_KEY", ""), "PEM private key file; enables HTTPS when set with --tls-cert")
@@ -100,6 +106,11 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
 	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB}
+	pm, err := parseProjectMounts(projectMounts)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.projectMounts = pm
 	// Half-configured TLS fails loudly. Serving plaintext because one
 	// flag name was mistyped is the failure nobody notices.
 	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
@@ -120,6 +131,23 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		cfg.cwdRoot = cwd
 	}
 	return cfg, nil
+}
+
+// parseProjectMounts parses repeatable --project-mount HOST:CONTAINER
+// flags into ProjectMount entries.
+func parseProjectMounts(specs []string) ([]bridge.ProjectMount, error) {
+	var mounts []bridge.ProjectMount
+	for _, s := range specs {
+		parts := strings.SplitN(s, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("--project-mount %q: expected HOST:CONTAINER", s)
+		}
+		mounts = append(mounts, bridge.ProjectMount{
+			Host:      filepath.Clean(parts[0]),
+			Container: filepath.Clean(parts[1]),
+		})
+	}
+	return mounts, nil
 }
 
 // askpassResponse answers one git credential prompt. Git asks for a
@@ -243,7 +271,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	}, version)
+	}, version, cfg.projectMounts)
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

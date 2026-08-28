@@ -121,6 +121,11 @@ type Fleet struct {
 	// "default" (4 concurrent) or "unlimited" (no disk/clone cap).
 	limits Limits
 
+	// projectMounts maps host paths to the bridge's in-container view,
+	// for translating LocalPath agent workspace mounts to the daemon's
+	// view. Empty when the bridge is a host process.
+	projectMounts []ProjectMount
+
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
 	newRuntime func(a Agent) *Child
@@ -152,7 +157,7 @@ type Fleet struct {
 	diskCacheOK bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount) *Fleet {
 	if stateDir == "" {
 		stateDir = filepath.Dir(ws.path)
 	}
@@ -167,12 +172,13 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
-		slots:      newSlots(maxConcurrent),
-		stateDir:   stateDir,
-		audit:      NewAuditLog(stateDir),
-		limits:     limits,
-		done:       make(chan struct{}),
-		rateLimits: make(map[string]time.Time),
+		slots:         newSlots(maxConcurrent),
+		stateDir:      stateDir,
+		audit:         NewAuditLog(stateDir),
+		limits:        limits,
+		projectMounts: projectMounts,
+		done:          make(chan struct{}),
+		rateLimits:    make(map[string]time.Time),
 	}
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
@@ -188,7 +194,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			// laptop without docker still works.
 			return &Child{MarshalBin: marshalBin}
 		}
-		return &Child{Transport: newContainerTransport(ContainerConfig{
+		cfg := ContainerConfig{
 			Runtime:       runtime,
 			RuntimeName:   name,
 			Image:         a.Profile.Image,
@@ -201,7 +207,23 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			CPUs:          a.Profile.CPUs,
 			MemoryMB:      a.Profile.MemoryMB,
 			Env:           f.agentEnv,
-		})}
+		}
+		// A LocalPath agent works on the host checkout itself, so its
+		// workspace is a bind mount of the daemon's view of that path.
+		// Git-sourced agents use a volume subpath instead.
+		if a.SourceKind == "local" {
+			if hostPath, err := TranslateToHost(f.projectMounts, a.Project); err == nil {
+				cfg.LocalMount = hostPath
+			} else {
+				// No declared mount: use the bridge's own view. This
+				// works when the bridge is a host process; a
+				// containerized bridge will fail at spawn with "mounts
+				// denied", which is the good failure mode that surfaces
+				// the missing --project-mount declaration.
+				cfg.LocalMount = a.Project
+			}
+		}
+		return &Child{Transport: newContainerTransport(cfg)}
 	}
 	return f
 }

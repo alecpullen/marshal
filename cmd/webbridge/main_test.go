@@ -82,6 +82,16 @@ func TestParseConfigProjects(t *testing.T) {
 	}
 }
 
+func TestParseProjectMountRejectsMalformed(t *testing.T) {
+	if _, err := parseProjectMounts([]string{"no-colon"}); err == nil {
+		t.Fatal("accepted a mapping with no colon")
+	}
+	got, err := parseProjectMounts([]string{"/h:/c"})
+	if err != nil || len(got) != 1 || got[0].Host != "/h" || got[0].Container != "/c" {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+}
+
 func TestParseConfigRejectsArgs(t *testing.T) {
 	if _, err := parseConfig([]string{"bogus"}, io.Discard); err == nil {
 		t.Fatal("positional arg: expected error, got nil")

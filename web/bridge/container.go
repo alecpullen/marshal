@@ -53,6 +53,11 @@ type ContainerConfig struct {
 	// SocketSubpath is the subpath within the state volume for the
 	// agent's socket directory (e.g. "sockets/<agentID>").
 	SocketSubpath string
+	// LocalMount, when non-empty, is a host path bind-mounted at /work
+	// for LocalPath agents. When empty, the workspace is a volume
+	// subpath. The source is the daemon's view of the path, so a
+	// containerized bridge must hand it the translated host path.
+	LocalMount string
 	// CPUs and MemoryMB cap the container. Zero means unlimited.
 	CPUs     float64
 	MemoryMB int
@@ -129,8 +134,15 @@ func (c *containerTransport) buildRunArgs() []string {
 		"--name", c.cfg.Name,
 		"-w", containerWorkDir,
 	}
-	args = append(args,
-		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerWorkDir, c.cfg.WorkSubpath)...)
+	if c.cfg.LocalMount != "" {
+		// A LocalPath agent works on the host checkout itself, so its
+		// workspace is a bind mount of the (translated) host path rather
+		// than a volume subpath.
+		args = append(args, "-v", c.cfg.LocalMount+":"+containerWorkDir)
+	} else {
+		args = append(args,
+			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerWorkDir, c.cfg.WorkSubpath)...)
+	}
 	args = append(args,
 		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerSocketDir, c.cfg.SocketSubpath)...)
 	if c.cfg.CPUs > 0 {

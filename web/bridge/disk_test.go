@@ -23,7 +23,7 @@ func testFleetWithState(t *testing.T) *Fleet {
 		t.Fatal(err)
 	}
 	stateDir := t.TempDir()
-	f := NewFleet(ws, "unused", nil, stateDir, Limits{}, "")
+	f := NewFleet(ws, "unused", nil, stateDir, Limits{}, "", nil)
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)

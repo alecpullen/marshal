@@ -102,7 +102,7 @@ func testFleetWithRunner(t *testing.T, runner commandRunner) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil)
 	f.runner = runner
 	t.Cleanup(f.Close)
 	return f

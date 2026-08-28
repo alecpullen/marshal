@@ -51,3 +51,33 @@ func TestAgentSubpathsAreDistinct(t *testing.T) {
 		t.Fatal("two agents produced identical mount arguments")
 	}
 }
+
+func TestTranslateToHostMapsADeclaredRoot(t *testing.T) {
+	m := []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}}
+	got, err := TranslateToHost(m, "/host-projects/marshal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/Users/you/code/marshal" {
+		t.Fatalf("got %q, want the HOST path", got)
+	}
+}
+
+func TestTranslateToHostRefusesAnUndeclaredPath(t *testing.T) {
+	m := []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}}
+	_, err := TranslateToHost(m, "/somewhere/else")
+	if err == nil {
+		t.Fatal("an undeclared path was accepted; the spawn would fail later with mounts denied")
+	}
+	if !strings.Contains(err.Error(), "project-mount") {
+		t.Errorf("the error does not say how to fix it: %v", err)
+	}
+}
+
+// A prefix match must respect path boundaries.
+func TestTranslateToHostDoesNotMatchAPartialSegment(t *testing.T) {
+	m := []ProjectMount{{Host: "/h", Container: "/host-projects"}}
+	if _, err := TranslateToHost(m, "/host-projects-evil/x"); err == nil {
+		t.Fatal("matched a path that merely shares a prefix with the declared root")
+	}
+}

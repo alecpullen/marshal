@@ -272,6 +272,61 @@ func TestRunInitializeCapabilities(t *testing.T) {
 	})
 }
 
+// initializeResult sends an initialize request over stdin and returns the
+// decoded result map. It follows the existing run_test pattern: a stub
+// startRuntime, a single JSON-RPC frame, and a scan of the response.
+func initializeResult(t *testing.T) map[string]any {
+	t.Helper()
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}` + "\n")
+	out := &bytes.Buffer{}
+
+	cfg := runConfig{
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			return &app.Runtime{}, nil
+		},
+		closeRuntime: func(ctx context.Context, rt *app.Runtime) error { return nil },
+		shutdown:     0,
+	}
+
+	if err := runWithConfig(context.Background(), in, out, cfg); err != nil {
+		t.Fatalf("runWithConfig() = %v", err)
+	}
+
+	scan := bufio.NewScanner(out)
+	scan.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	if !scan.Scan() {
+		t.Fatalf("no response; output=%q", out.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(scan.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("response error: %+v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T", resp.Result)
+	}
+	return result
+}
+
+func TestInitializeReportsAnAgentVersion(t *testing.T) {
+	// The bridge cannot detect a stale derived image without this. The
+	// version is stamped at build time; the test sets it explicitly since
+	// the package default is empty.
+	AgentVersion = "v1.2.3"
+	t.Cleanup(func() { AgentVersion = "" })
+	res := initializeResult(t)
+	info, _ := res["agentInfo"].(map[string]any)
+	if info["version"] == nil || info["version"] == "" {
+		t.Fatalf("agentInfo carries no version: %+v", info)
+	}
+	if info["version"] != "v1.2.3" {
+		t.Fatalf("agentInfo.version = %v, want v1.2.3", info["version"])
+	}
+}
+
 func TestRunEOFClosesAllSessionsExactlyOnce(t *testing.T) {
 	pr, pw := io.Pipe()
 	out := &lockedBuffer{}

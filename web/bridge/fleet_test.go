@@ -35,6 +35,41 @@ func TestFleetCarriesTheBuildVersion(t *testing.T) {
 	}
 }
 
+// spawnWithAgentVersion spawns an agent whose child reports the given
+// version in its initialize response, so a version-skew test can drive the
+// bridge's handshake check. It overrides the fleet's runtime factory with a
+// helper child that answers initialize with agentInfo.version set to
+// version.
+func (f *Fleet) spawnWithAgentVersion(ctx context.Context, version string) (string, error) {
+	bin, args, env := helperCommand("registry-version")
+	env = append(env, "HELPER_VERSION="+version)
+	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	return f.Spawn(ctx, "/p", SpawnOptions{Prompt: "x"})
+}
+
+// versionWarned reports whether a version-mismatch warning was recorded
+// for the given agent.
+func (f *Fleet) versionWarned(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rt, ok := f.runtimes[id]
+	return ok && rt.versionWarning
+}
+
+func TestVersionMismatchWarnsButDoesNotRefuse(t *testing.T) {
+	f := testFleetWithVersion(t, "v1.2.3")
+	// An agent reporting a different version must still start: a stale
+	// derived image is usually a nuisance, and refusing would turn a
+	// warning into an outage.
+	id, err := f.spawnWithAgentVersion(context.Background(), "v1.0.0")
+	if err != nil {
+		t.Fatalf("a version mismatch refused the spawn: %v", err)
+	}
+	if !f.versionWarned(id) {
+		t.Fatal("a version mismatch was not recorded")
+	}
+}
+
 func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	t.Helper()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))

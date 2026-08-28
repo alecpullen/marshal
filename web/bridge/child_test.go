@@ -79,7 +79,7 @@ func runHelperChild(mode string) {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "helper saw request %s\n", req.Method)
-		if mode == "registry" || mode == "registry-die" || mode == "registry-merged" {
+		if mode == "registry" || mode == "registry-die" || mode == "registry-merged" || mode == "registry-version" {
 			handleRegistryMode(&req, enc, mode)
 			// registry-die kills the process only after session/new, so
 			// the post-restart session/resume survives on generation 2.
@@ -111,6 +111,23 @@ func handleRegistryMode(req *struct {
 	Params json.RawMessage `json:"params"`
 }, enc *json.Encoder, mode string) {
 	switch req.Method {
+	case "initialize":
+		// The handshake reports the agent's own version so the bridge can
+		// detect skew on derived/custom images. The version is injected via
+		// HELPER_VERSION; default to "dev" so a missing env var still
+		// produces a well-formed response.
+		version := os.Getenv("HELPER_VERSION")
+		if version == "" {
+			version = "dev"
+		}
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result": map[string]any{
+				"protocolVersion": 1,
+				"agentInfo":       map[string]any{"name": "marshal", "title": "Marshal", "version": version},
+			},
+		})
 	case "session/new":
 		result := map[string]any{"sessionId": "s-1"}
 		if strings.Contains(string(req.Params), `"isolation"`) {

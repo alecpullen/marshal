@@ -66,6 +66,11 @@ type agentRuntime struct {
 	// the agent's prepared working tree must be removed.
 	sourceKind string
 
+	// versionWarning is set when the agent's initialize handshake reported
+	// a version that differs from the bridge's buildVersion. It is a
+	// warning only — the spawn is never refused on skew.
+	versionWarning bool
+
 	spawnErr error
 }
 
@@ -352,8 +357,8 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 }
 
 // startRuntime builds and starts one agent's runtime. The caller owns
-// persisting the Agent record.
-func (f *Fleet) startRuntime(a Agent) (*agentRuntime, error) {
+// persisting the Agent record. ctx bounds the initialize handshake.
+func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error) {
 	child := f.newRuntime(a)
 	reg := NewRegistry(child)
 	reg.RootCwd = a.Project
@@ -366,12 +371,52 @@ func (f *Fleet) startRuntime(a Agent) (*agentRuntime, error) {
 	if err := child.Start(); err != nil {
 		rt.spawnErr = fmt.Errorf("start agent %s for %s: %w (stderr: %s)",
 			a.ID, a.Project, err, child.StderrLog())
+	} else {
+		// Handshake: learn the agent's own version so a stale derived or
+		// custom image can be flagged. A mismatch is a warning, never a
+		// refusal — refusing would turn a nuisance into an outage.
+		f.checkAgentVersion(ctx, rt)
 	}
 
 	f.mu.Lock()
 	f.runtimes[a.ID] = rt
 	f.mu.Unlock()
 	return rt, rt.spawnErr
+}
+
+// checkAgentVersion calls initialize on a freshly started child, compares
+// the reported agentInfo.version against the bridge's buildVersion, and
+// records a warning on the runtime when they differ. It never refuses the
+// spawn: a failed or unparseable handshake is logged and ignored.
+func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
+	raw, err := rt.child.Request(ctx, "initialize", map[string]any{"protocolVersion": 1})
+	if err != nil {
+		slog.Default().Warn("webbridge: initialize handshake failed",
+			"agent", rt.id, "err", err)
+		return
+	}
+	var res struct {
+		AgentInfo struct {
+			Version string `json:"version"`
+		} `json:"agentInfo"`
+	}
+	if uerr := json.Unmarshal(raw, &res); uerr != nil {
+		slog.Default().Warn("webbridge: decode initialize handshake failed",
+			"agent", rt.id, "err", uerr)
+		return
+	}
+	agentVersion := res.AgentInfo.Version
+	// Both sides must carry a real version; an empty or "dev" value on
+	// either side means a source build, where skew is meaningless.
+	if agentVersion == "" || agentVersion == "dev" ||
+		f.buildVersion == "" || f.buildVersion == "dev" {
+		return
+	}
+	if agentVersion != f.buildVersion {
+		rt.versionWarning = true
+		slog.Default().Warn("webbridge: agent version differs from bridge",
+			"agent", rt.id, "agentVersion", agentVersion, "bridgeVersion", f.buildVersion)
+	}
 }
 
 func (f *Fleet) liveRuntimeForSession(sessionID string) (*agentRuntime, error) {
@@ -408,7 +453,7 @@ func (f *Fleet) RuntimeForSession(id string) (*agentRuntime, error) {
 	if err := f.slots.acquire(context.Background()); err != nil {
 		return nil, fmt.Errorf("wait for an agent slot: %w", err)
 	}
-	rt, err := f.startRuntime(a)
+	rt, err := f.startRuntime(context.Background(), a)
 	if err != nil {
 		f.stopAgent(a.ID) // removes the failed runtime and releases the slot
 		return nil, err
@@ -625,7 +670,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
 	}
 
-	rt, err := f.startRuntime(a)
+	rt, err := f.startRuntime(ctx, a)
 	if err != nil {
 		// startRuntime stores the failed runtime in f.runtimes so
 		// ProjectStatus can report the error. For local spawns we
@@ -1033,7 +1078,7 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
 			continue
 		}
-		rt, err := f.startRuntime(a)
+		rt, err := f.startRuntime(ctx, a)
 		if err != nil {
 			f.stopAgent(a.ID) // removes the failed runtime and releases the slot
 			errs = append(errs, fmt.Errorf("reattach agent %s: %w", a.ID, err))
@@ -1069,7 +1114,7 @@ func (f *Fleet) Resume(ctx context.Context, id string) error {
 	if err := f.slots.acquire(ctx); err != nil {
 		return fmt.Errorf("wait for an agent slot: %w", err)
 	}
-	rt, err := f.startRuntime(a)
+	rt, err := f.startRuntime(ctx, a)
 	if err != nil {
 		f.slots.release()
 		return err

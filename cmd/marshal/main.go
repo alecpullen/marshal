@@ -58,6 +58,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return calibrateRunner(args[1:], stdout)
 	}
 	if len(args) > 0 && args[0] == "acp" {
+		// Report the agent's own version in the initialize handshake so a
+		// bridge can detect skew on derived/custom images.
+		acp.AgentVersion = version
 		spec, err := acpListenSpec(args[1:])
 		if err != nil {
 			return err

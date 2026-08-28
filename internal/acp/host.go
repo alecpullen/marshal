@@ -17,6 +17,12 @@ import (
 	"marshal/internal/tools/policy"
 )
 
+// AgentVersion is the release version of the marshal binary, stamped at
+// build time via -ldflags -X and reported in the initialize handshake's
+// agentInfo so a bridge can detect skew on derived/custom images. It is
+// set by cmd/marshal at startup; empty when built from source.
+var AgentVersion = ""
+
 // notifySink forwards JSON-RPC notifications to whichever connection is
 // currently attached. When no connection is attached (fn is nil),
 // notifications are dropped silently. This lets the agentHost outlive a
@@ -220,8 +226,9 @@ func (h *agentHost) registerHandlers(srv *Server) {
 				},
 			},
 			"agentInfo": map[string]any{
-				"name":  "marshal",
-				"title": "Marshal",
+				"name":    "marshal",
+				"title":   "Marshal",
+				"version": AgentVersion,
 			},
 			"authMethods": []any{},
 		}, nil

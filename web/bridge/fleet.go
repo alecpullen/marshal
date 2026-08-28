@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -99,6 +100,11 @@ type Fleet struct {
 	// at build time via -ldflags -X. Empty when built from source; the
 	// --version banner reports "dev" in that case.
 	buildVersion string
+
+	// runner executes container-runtime commands for derived-image builds.
+	// Nil means the real runner (exec.Command); tests inject a fake so the
+	// derive path is exercisable without a daemon.
+	runner commandRunner
 
 	// git runs hardened git subprocesses for remote sources (mirroring,
 	// worktree prep). Nil when git was not found at startup; local-path
@@ -653,6 +659,22 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// honoured. For local spawns workDir == root.
 	profile, _ := ResolveProfile(workDir, opts.Profile, f.buildVersion)
 	a.Profile = profile
+
+	// A declared base (e.g. node:20) carries no marshal. Derive an image
+	// that adds marshal on top, and run the agent against that. A marshal
+	// image is used as-is. A build failure refuses the spawn — running an
+	// agent in an environment the repo did not ask for is worse than
+	// refusing to run it.
+	if !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
+		derived, err := f.ensureDerivedImage(ctx, a.Profile.Image)
+		if err != nil {
+			if src.kind == "git" && f.git != nil {
+				_ = f.git.RemoveTree(f.stateDir, a.ID)
+			}
+			return "", err
+		}
+		a.Profile.Image = derived
+	}
 
 	// Enforce the disk budget before acquiring a slot: refusing a new
 	// spawn is the control, not stopping an existing agent.

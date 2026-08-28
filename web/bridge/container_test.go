@@ -11,13 +11,17 @@ import (
 
 func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
-		Runtime:      "/usr/bin/docker",
-		Image:        "marshal/agent:latest",
-		Name:         "marshal-agent-7f3a",
-		WorkspaceDir: "/srv/work/7f3a",
-		SocketDir:    "/srv/sock/7f3a",
-		CPUs:         2,
-		MemoryMB:     4096,
+		Runtime:       "/usr/bin/docker",
+		RuntimeName:   "docker",
+		Image:         "marshal/agent:latest",
+		Name:          "marshal-agent-7f3a",
+		WorkspaceDir:  "/srv/work/7f3a",
+		SocketDir:     "/srv/sock/7f3a",
+		StateVolume:   "marshal-state",
+		WorkSubpath:   "work/7f3a",
+		SocketSubpath: "sockets/7f3a",
+		CPUs:          2,
+		MemoryMB:      4096,
 	})
 	args := tr.buildRunArgs()
 	joined := strings.Join(args, " ")
@@ -26,8 +30,8 @@ func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 		"--name marshal-agent-7f3a",
 		"--cpus 2",
 		"--memory 4096m",
-		"/srv/work/7f3a:/work",
-		"/srv/sock/7f3a:/run/marshal",
+		"volume-subpath=work/7f3a",
+		"volume-subpath=sockets/7f3a",
 		"marshal/agent:latest",
 		"--listen unix:///run/marshal/agent.sock",
 	} {
@@ -39,8 +43,9 @@ func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 
 func TestContainerRunArgsRefuseHostEscapes(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
-		Runtime: "/usr/bin/docker", Image: "img", Name: "n",
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
 		WorkspaceDir: "/w", SocketDir: "/s",
+		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")
 
@@ -58,8 +63,9 @@ func TestContainerRunArgsRefuseHostEscapes(t *testing.T) {
 func TestContainerEnvIsExplicitNotInherited(t *testing.T) {
 	t.Setenv("MARSHAL_SECRET_TOKEN", "leaked")
 	tr := newContainerTransport(ContainerConfig{
-		Runtime: "/usr/bin/docker", Image: "img", Name: "n",
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
 		WorkspaceDir: "/w", SocketDir: "/s",
+		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 		Env: map[string]string{"MARSHAL_ROLE": "agent"},
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")

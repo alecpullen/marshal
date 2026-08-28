@@ -182,21 +182,25 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	}
 	f.creds = NewCredentialStore(nil)
 	f.newRuntime = func(a Agent) *Child {
-		runtime, _, ok := detectedRuntime()
+		runtime, name, ok := detectedRuntime()
 		if !ok {
 			// No container runtime: fall back to a host process so a
 			// laptop without docker still works.
 			return &Child{MarshalBin: marshalBin}
 		}
 		return &Child{Transport: newContainerTransport(ContainerConfig{
-			Runtime:      runtime,
-			Image:        a.Profile.Image,
-			Name:         containerNameFor(a.ID),
-			WorkspaceDir: a.Project,
-			SocketDir:    socketDirFor(f.stateDir, a.ID),
-			CPUs:         a.Profile.CPUs,
-			MemoryMB:     a.Profile.MemoryMB,
-			Env:          f.agentEnv,
+			Runtime:       runtime,
+			RuntimeName:   name,
+			Image:         a.Profile.Image,
+			Name:          containerNameFor(a.ID),
+			WorkspaceDir:  a.Project,
+			SocketDir:     socketDirFor(f.stateDir, a.ID),
+			StateVolume:   "marshal-state",
+			WorkSubpath:   "work/" + a.ID,
+			SocketSubpath: "sockets/" + a.ID,
+			CPUs:          a.Profile.CPUs,
+			MemoryMB:      a.Profile.MemoryMB,
+			Env:           f.agentEnv,
 		})}
 	}
 	return f

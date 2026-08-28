@@ -42,6 +42,17 @@ type ContainerConfig struct {
 	WorkspaceDir string
 	// SocketDir is the host directory bind-mounted at /run/marshal.
 	SocketDir string
+	// RuntimeName is "docker" or "podman" — selects the volume-subpath
+	// option spelling. Empty defaults to docker syntax.
+	RuntimeName string
+	// StateVolume is the name of the shared state volume.
+	StateVolume string
+	// WorkSubpath is the subpath within the state volume for the agent's
+	// workspace (e.g. "work/<agentID>").
+	WorkSubpath string
+	// SocketSubpath is the subpath within the state volume for the
+	// agent's socket directory (e.g. "sockets/<agentID>").
+	SocketSubpath string
 	// CPUs and MemoryMB cap the container. Zero means unlimited.
 	CPUs     float64
 	MemoryMB int
@@ -116,10 +127,12 @@ func (c *containerTransport) buildRunArgs() []string {
 	args := []string{
 		"run", "--rm", "-d",
 		"--name", c.cfg.Name,
-		"-v", c.cfg.WorkspaceDir + ":" + containerWorkDir,
-		"-v", c.cfg.SocketDir + ":" + containerSocketDir,
 		"-w", containerWorkDir,
 	}
+	args = append(args,
+		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerWorkDir, c.cfg.WorkSubpath)...)
+	args = append(args,
+		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerSocketDir, c.cfg.SocketSubpath)...)
 	if c.cfg.CPUs > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(c.cfg.CPUs, 'f', -1, 64))
 	}

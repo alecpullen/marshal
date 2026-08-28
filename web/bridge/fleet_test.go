@@ -65,6 +65,52 @@ func TestStateVolumeIsConfigurable(t *testing.T) {
 	}
 }
 
+// testFleetWithProjectMounts builds a Fleet with the given declared
+// project mounts, so localMountFor's decision can be exercised directly.
+func testFleetWithProjectMounts(t *testing.T, mounts []ProjectMount) *Fleet {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", mounts, "marshal-state")
+	t.Cleanup(f.Close)
+	return f
+}
+
+func TestNoProjectMountsUsesTheBridgesOwnPath(t *testing.T) {
+	f := testFleetWithProjectMounts(t, nil)
+	got, err := f.localMountFor(Agent{SourceKind: "local", Project: "/home/me/code"})
+	if err != nil {
+		t.Fatalf("a bridge with no declared mounts must not error: %v", err)
+	}
+	if got != "/home/me/code" {
+		t.Fatalf("got %q, want the path unchanged", got)
+	}
+}
+
+func TestDeclaredMountsRefuseAnOutsidePath(t *testing.T) {
+	f := testFleetWithProjectMounts(t, []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}})
+	_, err := f.localMountFor(Agent{SourceKind: "local", Project: "/somewhere/else"})
+	if err == nil {
+		t.Fatal("a path outside every declared root was accepted; the spawn would fail later with mounts denied")
+	}
+	if !strings.Contains(err.Error(), "project-mount") {
+		t.Errorf("the error does not name the flag that fixes it: %v", err)
+	}
+}
+
+func TestDeclaredMountsTranslateAnInsidePath(t *testing.T) {
+	f := testFleetWithProjectMounts(t, []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}})
+	got, err := f.localMountFor(Agent{SourceKind: "local", Project: "/host-projects/marshal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/Users/you/code/marshal" {
+		t.Fatalf("got %q, want the host path", got)
+	}
+}
+
 // spawnWithAgentVersion spawns an agent whose child reports the given
 // version in its initialize response, so a version-skew test can drive the
 // bridge's handshake check. It overrides the fleet's runtime factory with a

@@ -219,20 +219,36 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		// workspace is a bind mount of the daemon's view of that path.
 		// Git-sourced agents use a volume subpath instead.
 		if a.SourceKind == "local" {
-			if hostPath, err := TranslateToHost(f.projectMounts, a.Project); err == nil {
-				cfg.LocalMount = hostPath
+			hostPath, err := f.localMountFor(a)
+			if err != nil {
+				// A declared root that the path is not under is a
+				// misconfiguration. newRuntime cannot return an error, so
+				// log the actionable message and leave LocalMount empty:
+				// the spawn fails at session/new rather than reaching the
+				// runtime with an opaque "mounts denied".
+				slog.Default().Error("webbridge: refuse local agent mount", "agent", a.ID, "err", err)
 			} else {
-				// No declared mount: use the bridge's own view. This
-				// works when the bridge is a host process; a
-				// containerized bridge will fail at spawn with "mounts
-				// denied", which is the good failure mode that surfaces
-				// the missing --project-mount declaration.
-				cfg.LocalMount = a.Project
+				cfg.LocalMount = hostPath
 			}
 		}
 		return &Child{Transport: newContainerTransport(cfg)}
 	}
 	return f
+}
+
+// localMountFor resolves the bind-mount source for a LocalPath agent.
+//
+// Two situations look alike and are not. With no declared roots the
+// bridge is a host process: its own view is the daemon's view, and the
+// path passes through unchanged. With roots declared the bridge is
+// containerized, and a path under none of them is a misconfiguration —
+// returned as an error here, where it can name --project-mount, rather
+// than deferred to the runtime's "mounts denied", which cannot.
+func (f *Fleet) localMountFor(a Agent) (string, error) {
+	if len(f.projectMounts) == 0 {
+		return a.Project, nil
+	}
+	return TranslateToHost(f.projectMounts, a.Project)
 }
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
 

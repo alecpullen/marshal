@@ -13,10 +13,12 @@ docker compose up -d
 ```
 
 The compose file mounts the Docker socket into the bridge container so
-it can spawn agent containers. The bridge listens on `127.0.0.1:7700`
-and rejects unauthenticated API calls — generate a token with
-`webbridge --token` or let it auto-generate one (printed to stderr on
-first boot).
+it can spawn agent containers. Inside the container the bridge binds to
+`0.0.0.0:7700` (required for Docker's port forwarding to reach it); the
+compose file publishes the port as `127.0.0.1:7700` on the host, so the
+API is reachable only from localhost. The bridge rejects unauthenticated
+API calls — generate a token with `webbridge --token` or let it
+auto-generate one (printed to stderr on first boot).
 
 ## The Docker socket
 

@@ -54,6 +54,10 @@ func TestBuildRunArgsUsesBindMountForLocalPath(t *testing.T) {
 	if strings.Contains(joined, "volume-subpath=work/") {
 		t.Fatalf("local mount should not use a volume subpath for /work; got: %s", joined)
 	}
+	// The socket mount is still a volume subpath even for local-path agents.
+	if !strings.Contains(joined, "volume-subpath=sockets/n") {
+		t.Errorf("socket volume subpath missing for local-path agent; got: %s", joined)
+	}
 }
 
 func TestContainerRunArgsRefuseHostEscapes(t *testing.T) {

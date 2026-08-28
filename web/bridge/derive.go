@@ -15,12 +15,18 @@ import (
 // marshal version, so an upstream push of the base invalidates the cache.
 const derivedTagPrefix = "marshal-derived-"
 
-// derivedDockerfile emits a two-line Dockerfile that copies the marshal
-// binary out of the agent image into the declared base. The base carries
-// the project's toolchain; the agent image supplies marshal itself.
+// derivedDockerfile emits a Dockerfile that copies the marshal binary
+// out of the agent image into the declared base. The base carries the
+// project's toolchain; the agent image supplies marshal itself.
+//
+// ENTRYPOINT is set explicitly so the bridge can invoke the image with
+// "acp --listen ..." regardless of what entrypoint the base declared
+// (or none at all, e.g. node:20). The stock agent image sets this in its
+// own Dockerfile; a derived image must not depend on inheriting it.
 func derivedDockerfile(base, agentImage string) string {
 	return "FROM " + base + "\n" +
-		"COPY --from=" + agentImage + " /usr/local/bin/marshal /usr/local/bin/marshal\n"
+		"COPY --from=" + agentImage + " /usr/local/bin/marshal /usr/local/bin/marshal\n" +
+		`ENTRYPOINT ["marshal"]` + "\n"
 }
 
 // derivedTag hashes the base digest plus the marshal version to produce a

@@ -290,6 +290,7 @@ func TestServeHTTPStaysPlaintextWithoutCertificates(t *testing.T) {
 }
 
 func TestParseConfigStateVolume(t *testing.T) {
+	t.Setenv("WEBBRIDGE_STATE_VOLUME", "")
 	cfg, err := parseConfig(nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)

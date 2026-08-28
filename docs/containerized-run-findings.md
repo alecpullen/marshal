@@ -293,7 +293,9 @@ plan. These checks establish that the container is a real boundary.
   silently running unlimited.
 - **Source:** S1 (containerized agent runtime).
 - **Status:** Blocked
-- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
+- **Findings:** Blocked by BLOCKER 3: cannot spawn an agent session to
+  exercise resource caps under load. The container starts, but
+  `session/new` rejects the `cwd` parameter.
 
 ### S1.2 — No host escape
 
@@ -304,7 +306,10 @@ plan. These checks establish that the container is a real boundary.
   container matches the intent.
 - **Source:** S1 (containerized agent runtime).
 - **Status:** Blocked
-- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
+- **Findings:** Blocked by BLOCKER 3: cannot get a running agent session
+  to inspect a live container. `buildRunArgs` is unit-tested for the
+  absence of host escapes, but a live `docker inspect` was not
+  performed.
 
 ### S1.3 — Container has git and ca-certificates
 
@@ -314,7 +319,9 @@ plan. These checks establish that the container is a real boundary.
   deliberately; a derived image must inherit them.
 - **Source:** S0 task 1 (the image) / S1.
 - **Status:** Blocked
-- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
+- **Findings:** Blocked by BLOCKER 3: cannot spawn an agent session to
+  run commands inside the container. The image build includes git and
+  ca-certificates, but a live `git ls-remote` was not performed.
 
 ---
 
@@ -458,8 +465,11 @@ itself; approved plans reach the agent as files.
   rejected). Each must get 401. The endpoint does not sit under the
   `/api/` bearer middleware, so it must enforce client identity itself.
 - **Source:** S2c-1 (MCP intake).
-- **Status:** Blocked
-- **Findings:** Blocked by BLOCKER 3 (path translation): the bridge sends its own in-container path as `cwd`, which the agent rejects. The transport itself works.
+- **Status:** Not yet run
+- **Findings:** This check exercises the HTTP layer only and does not
+  require a running agent; it is not blocked by BLOCKER 3. It was not
+  attempted during the S0b campaign, which focused on the transport
+  layer. It can be run independently.
 
 ### S2c-1.2 — A submission queues
 

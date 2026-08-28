@@ -121,4 +121,12 @@ func TestLocalAndGitAgentsDifferOnlyInTheWorkspaceMount(t *testing.T) {
 			t.Errorf("%q should appear in both argument vectors", shared)
 		}
 	}
+	// The differentiator: the git agent mounts a workspace subpath, the
+	// local agent bind-mounts the host checkout.
+	if !strings.Contains(gitArgs, "volume-subpath=work/a1") {
+		t.Errorf("git agent missing workspace subpath: %s", gitArgs)
+	}
+	if !strings.Contains(localArgs, "-v /host/checkout:"+containerWorkDir) {
+		t.Errorf("local agent missing bind mount: %s", localArgs)
+	}
 }

@@ -222,10 +222,17 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			hostPath, err := f.localMountFor(a)
 			if err != nil {
 				// A declared root that the path is not under is a
-				// misconfiguration. newRuntime cannot return an error, so
-				// log the actionable message and leave LocalMount empty:
-				// the spawn fails at session/new rather than reaching the
-				// runtime with an opaque "mounts denied".
+				// misconfiguration. newRuntime cannot return an error,
+				// so log the actionable message (it names
+				// --project-mount) and leave LocalMount empty. The
+				// container starts with a volume-subpath workspace
+				// instead of the intended bind mount, and session/new
+				// fails because cwd points at a path the agent cannot
+				// see. The API caller sees the JSON-RPC invalid-params
+				// error; the operator who reads the bridge logs sees
+				// the actionable message. Neither is great, but
+				// deferring to the runtime's "mounts denied" would be
+				// worse — it surfaces neither.
 				slog.Default().Error("webbridge: refuse local agent mount", "agent", a.ID, "err", err)
 			} else {
 				cfg.LocalMount = hostPath
@@ -250,6 +257,7 @@ func (f *Fleet) localMountFor(a Agent) (string, error) {
 	}
 	return TranslateToHost(f.projectMounts, a.Project)
 }
+
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
 
 // auditf appends a record, and never propagates a failure to the caller.

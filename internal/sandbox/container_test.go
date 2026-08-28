@@ -302,6 +302,13 @@ func TestBuildContainerEnv_StripsSecrets(t *testing.T) {
 // TestContainerDetectWithFakeInfoRuntime verifies that New can detect a
 // fake runtime on PATH with the info command succeeding.
 func TestContainerDetectWithFakeInfoRuntime(t *testing.T) {
+	// The stub runtime does trivial work, but under full-suite load
+	// spawning it has exceeded the four-second production probe budget.
+	// This test is about detection, not latency.
+	orig := probeTimeout
+	probeTimeout = 30 * time.Second
+	t.Cleanup(func() { probeTimeout = orig })
+
 	fakePath := writeFakeInfoRuntime(t)
 	fakeDir := filepath.Dir(fakePath)
 	t.Setenv("PATH", fakeDir)

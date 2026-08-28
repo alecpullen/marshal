@@ -90,6 +90,9 @@ type Fleet struct {
 	creds *CredentialStore
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
+	// audit is the security-relevant action log. Nil in tests that do
+	// not opt in; auditf tolerates that.
+	audit *AuditLog
 
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
@@ -134,6 +137,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
 		slots:      newSlots(4),
 		stateDir:   stateDir,
+		audit:      NewAuditLog(stateDir),
 		done:       make(chan struct{}),
 		rateLimits: make(map[string]time.Time),
 	}
@@ -165,6 +169,16 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	return f
 }
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
+
+// auditf appends a record, and never propagates a failure to the caller.
+func (f *Fleet) auditf(e AuditEvent) {
+	if f.audit == nil {
+		return
+	}
+	if err := f.audit.Append(e); err != nil {
+		slog.Default().Warn("webbridge: audit append failed", "event", e.Event, "err", err)
+	}
+}
 
 // newAgentID mints the bridge-side identifier for an agent. It is
 // generated before the agent starts, because a container must be named
@@ -612,6 +626,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if err := f.ws.PutAgent(agent); err != nil {
 		return a.ID, fmt.Errorf("agent created but recording it failed: %w", err)
 	}
+	f.auditf(AuditEvent{Event: AuditSpawn, OwnerID: a.OwnerID, AgentID: a.ID, Origin: origin})
 	return a.ID, nil
 }
 

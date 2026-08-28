@@ -36,5 +36,10 @@ func (f *Fleet) Patch(ctx context.Context, agentID string) ([]byte, error) {
 	if a.SourceKind != "git" {
 		return nil, fmt.Errorf("bridge: patch export applies to git-sourced agents only")
 	}
-	return f.git.FormatPatch(a.Project, a.TargetBranch)
+	out, err := f.git.FormatPatch(a.Project, a.TargetBranch)
+	if err != nil {
+		return nil, err
+	}
+	f.auditf(AuditEvent{Event: AuditPatchExport, OwnerID: a.OwnerID, AgentID: a.ID})
+	return out, nil
 }

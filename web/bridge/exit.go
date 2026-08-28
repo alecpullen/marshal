@@ -96,6 +96,7 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 	if err != nil {
 		return ExitResult{}, err
 	}
+	f.auditf(AuditEvent{Event: AuditPush, OwnerID: a.OwnerID, AgentID: a.ID, Detail: branch})
 
 	a.Branch = branch
 	a.PushedAt = time.Now().UTC()
@@ -124,6 +125,8 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 		rec.FailedCommand = verify.FailedCommand
 		rec.Skipped = verify.Skipped
 		a.GateOverride = &rec
+		f.auditf(AuditEvent{Event: AuditGateOverride, OwnerID: a.OwnerID,
+			AgentID: a.ID, Reason: rec.Reason})
 	}
 	if err := f.ws.PutAgent(a); err != nil {
 		return ExitResult{}, fmt.Errorf("persist exit state for %s: %w", a.ID, err)

@@ -750,6 +750,8 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.fleet.auditf(AuditEvent{Event: AuditClientCreated, OwnerID: c.OwnerID,
+		ClientID: c.ID, Detail: c.Name})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         c.ID,
 		"name":       c.Name,
@@ -769,6 +771,7 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.fleet.auditf(AuditEvent{Event: AuditClientRevoked, OwnerID: DefaultOwnerID, ClientID: id})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

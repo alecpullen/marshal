@@ -288,3 +288,14 @@ func TestParseConfigLimitFlags(t *testing.T) {
 		t.Fatalf("got %+v", cfg)
 	}
 }
+
+func TestWebbridgeReportsItsVersion(t *testing.T) {
+	var out strings.Builder
+	if err := run(context.Background(), []string{"--version"},
+		&out, io.Discard); err != nil {
+		t.Fatalf("run --version: %v", err)
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		t.Fatal("--version printed nothing")
+	}
+}

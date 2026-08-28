@@ -90,6 +90,11 @@ type Fleet struct {
 	fleetLog   *EventLog
 	live       *liveState
 
+	// buildVersion is the release version of the webbridge binary, stamped
+	// at build time via -ldflags -X. Empty when built from source; the
+	// --version banner reports "dev" in that case.
+	buildVersion string
+
 	// git runs hardened git subprocesses for remote sources (mirroring,
 	// worktree prep). Nil when git was not found at startup; local-path
 	// spawns still work, git-sourced spawns fail with a clear error.
@@ -136,7 +141,7 @@ type Fleet struct {
 	diskCacheOK bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string) *Fleet {
 	if stateDir == "" {
 		stateDir = filepath.Dir(ws.path)
 	}
@@ -146,7 +151,8 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	}
 	f := &Fleet{
 		ws: ws, marshalBin: marshalBin, agentEnv: agentEnv,
-		fleetLog: NewEventLog(), live: newLiveState(),
+		buildVersion: buildVersion,
+		fleetLog:     NewEventLog(), live: newLiveState(),
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),

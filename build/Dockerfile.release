@@ -1,0 +1,11 @@
+# Consumed by GoReleaser, which supplies the already-built binary in the
+# build context. It deliberately does NOT compile: the released image and
+# the released archive must contain the same artifact, and rebuilding
+# here would produce a second binary nobody verified.
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY marshal /usr/local/bin/marshal
+WORKDIR /work
+ENTRYPOINT ["marshal"]

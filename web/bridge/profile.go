@@ -8,11 +8,30 @@ import (
 	"strings"
 )
 
+// agentImageRepo is the repository part of the agent image reference,
+// without a tag. The tag is chosen by defaultAgentImageFor so the
+// containerised marshal speaks the same ACP as the bridge outside it.
+const agentImageRepo = "ghcr.io/marshal/agent"
+
 // defaultAgentImage is the fallback agent image. It must carry a C
 // toolchain: marshal needs CGO_ENABLED=1 for the tree-sitter dependency
 // used by Go symbol extraction, so a scratch or distroless base cannot
 // run an agent.
-const defaultAgentImage = "ghcr.io/marshal/agent:latest"
+const defaultAgentImage = agentImageRepo + ":latest"
+
+// defaultAgentImageFor pins the agent image to the bridge's own build,
+// so the marshal inside the container speaks the same ACP as the bridge
+// outside it.
+//
+// A dev or unstamped build has no published tag to pin to and falls back
+// to :latest. A released build never does — that is the case where a
+// silent version mismatch would be hardest to diagnose.
+func defaultAgentImageFor(version string) string {
+	if version == "" || version == "dev" {
+		return agentImageRepo + ":latest"
+	}
+	return agentImageRepo + ":" + version
+}
 
 // Default resource caps. Zero would mean unlimited, which lets one
 // runaway test suite starve the whole fleet.
@@ -54,8 +73,9 @@ type devcontainer struct {
 // Only devcontainer's "image" is honoured. A devcontainer that builds
 // from a Dockerfile or declares features falls back to the default with
 // a reason — full devcontainer support is out of scope.
-func ResolveProfile(projectDir string, override RuntimeProfile) (RuntimeProfile, string) {
+func ResolveProfile(projectDir string, override RuntimeProfile, buildVersion string) (RuntimeProfile, string) {
 	out := DefaultRuntimeProfile()
+	out.Image = defaultAgentImageFor(buildVersion)
 	reason := "default image"
 
 	if img, why, ok := devcontainerImage(projectDir); ok {

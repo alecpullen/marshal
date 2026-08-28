@@ -23,6 +23,19 @@ import (
 	"marshal/web/bridge"
 )
 
+// version is stamped at release time via -ldflags -X (see .goreleaser.yaml).
+// A plain `go build` leaves it empty and versionString reports "dev".
+var version = ""
+
+// versionString renders the one-line version banner printed by --version.
+func versionString() string {
+	v := version
+	if v == "" {
+		v = "dev"
+	}
+	return fmt.Sprintf("webbridge %s", v)
+}
+
 // stringList collects repeatable project flags.
 type stringList []string
 
@@ -150,6 +163,16 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// --version is handled before flag parsing: parseConfig uses
+	// flag.ContinueOnError and would reject the flag as unknown. The
+	// banner goes to stdout (the caller's writer), never os.Stdout.
+	for _, a := range args {
+		if a == "--version" {
+			fmt.Fprintln(stdout, versionString())
+			return nil
+		}
+	}
+
 	// GIT_ASKPASS mode: git re-execs this binary to ask for a credential.
 	// Answer from the environment and exit before doing anything else —
 	// this process must not start a server or touch the workspace.
@@ -215,7 +238,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	})
+	}, version)
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

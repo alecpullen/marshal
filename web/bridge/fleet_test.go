@@ -15,13 +15,68 @@ func testFleet(t *testing.T) *Fleet {
 	return newTestFleetWithLimit(t, 4)
 }
 
+func testFleetWithVersion(t *testing.T, version string) *Fleet {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused", nil, "", Limits{}, version)
+	bin, args, env := helperCommand("registry")
+	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	t.Cleanup(f.Close)
+	return f
+}
+
+func TestFleetCarriesTheBuildVersion(t *testing.T) {
+	f := testFleetWithVersion(t, "v1.2.3")
+	if f.buildVersion != "v1.2.3" {
+		t.Fatalf("buildVersion = %q", f.buildVersion)
+	}
+}
+
+// spawnWithAgentVersion spawns an agent whose child reports the given
+// version in its initialize response, so a version-skew test can drive the
+// bridge's handshake check. It overrides the fleet's runtime factory with a
+// helper child that answers initialize with agentInfo.version set to
+// version.
+func (f *Fleet) spawnWithAgentVersion(ctx context.Context, version string) (string, error) {
+	bin, args, env := helperCommand("registry-version")
+	env = append(env, "HELPER_VERSION="+version)
+	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	return f.Spawn(ctx, "/p", SpawnOptions{Prompt: "x"})
+}
+
+// versionWarned reports whether a version-mismatch warning was recorded
+// for the given agent.
+func (f *Fleet) versionWarned(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rt, ok := f.runtimes[id]
+	return ok && rt.versionWarning
+}
+
+func TestVersionMismatchWarnsButDoesNotRefuse(t *testing.T) {
+	f := testFleetWithVersion(t, "v1.2.3")
+	// An agent reporting a different version must still start: a stale
+	// derived image is usually a nuisance, and refusing would turn a
+	// warning into an outage.
+	id, err := f.spawnWithAgentVersion(context.Background(), "v1.0.0")
+	if err != nil {
+		t.Fatalf("a version mismatch refused the spawn: %v", err)
+	}
+	if !f.versionWarned(id) {
+		t.Fatal("a version mismatch was not recorded")
+	}
+}
+
 func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	t.Helper()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{})
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	f.slots = newSlots(limit)
@@ -100,7 +155,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{})
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
 	bin, args, env := helperCommand("registry-merged")
 	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
 	t.Cleanup(f.Close)
@@ -151,7 +206,7 @@ func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
 	if err := ws.AddProject(plain); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{})
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
 	t.Cleanup(f.Close)
 
 	for _, st := range f.ProjectStatus() {
@@ -195,7 +250,7 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{})
+	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{}, "")
 	defer f.Close()
 	if _, err := f.Spawn(context.Background(), "/home/u/a", SpawnOptions{Name: "one"}); err == nil {
 		t.Fatal("expected spawn failure")
@@ -211,7 +266,7 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "", Limits{})
+	f := NewFleet(ws, "unused", map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, "", Limits{}, "")
 	t.Cleanup(f.Close)
 
 	// Invoke the production newRuntime closure directly so no real
@@ -596,7 +651,7 @@ func testFleetWithLimits(t *testing.T, limits Limits) *Fleet {
 		t.Fatal(err)
 	}
 	stateDir := t.TempDir()
-	f := NewFleet(ws, "unused", nil, stateDir, limits)
+	f := NewFleet(ws, "unused", nil, stateDir, limits, "")
 	tr := &scriptedTransport{gate: gateResult{OK: true}}
 	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
 	t.Cleanup(f.Close)

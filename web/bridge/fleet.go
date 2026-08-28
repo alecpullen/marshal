@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -66,6 +67,11 @@ type agentRuntime struct {
 	// the agent's prepared working tree must be removed.
 	sourceKind string
 
+	// versionWarning is set when the agent's initialize handshake reported
+	// a version that differs from the bridge's buildVersion. It is a
+	// warning only — the spawn is never refused on skew.
+	versionWarning bool
+
 	spawnErr error
 }
 
@@ -89,6 +95,16 @@ type Fleet struct {
 	agentEnv   map[string]string
 	fleetLog   *EventLog
 	live       *liveState
+
+	// buildVersion is the release version of the webbridge binary, stamped
+	// at build time via -ldflags -X. Empty when built from source; the
+	// --version banner reports "dev" in that case.
+	buildVersion string
+
+	// runner executes container-runtime commands for derived-image builds.
+	// Nil means the real runner (exec.Command); tests inject a fake so the
+	// derive path is exercisable without a daemon.
+	runner commandRunner
 
 	// git runs hardened git subprocesses for remote sources (mirroring,
 	// worktree prep). Nil when git was not found at startup; local-path
@@ -136,7 +152,7 @@ type Fleet struct {
 	diskCacheOK bool
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits) *Fleet {
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string) *Fleet {
 	if stateDir == "" {
 		stateDir = filepath.Dir(ws.path)
 	}
@@ -146,7 +162,8 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	}
 	f := &Fleet{
 		ws: ws, marshalBin: marshalBin, agentEnv: agentEnv,
-		fleetLog: NewEventLog(), live: newLiveState(),
+		buildVersion: buildVersion,
+		fleetLog:     NewEventLog(), live: newLiveState(),
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
@@ -346,8 +363,8 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 }
 
 // startRuntime builds and starts one agent's runtime. The caller owns
-// persisting the Agent record.
-func (f *Fleet) startRuntime(a Agent) (*agentRuntime, error) {
+// persisting the Agent record. ctx bounds the initialize handshake.
+func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error) {
 	child := f.newRuntime(a)
 	reg := NewRegistry(child)
 	reg.RootCwd = a.Project
@@ -360,12 +377,52 @@ func (f *Fleet) startRuntime(a Agent) (*agentRuntime, error) {
 	if err := child.Start(); err != nil {
 		rt.spawnErr = fmt.Errorf("start agent %s for %s: %w (stderr: %s)",
 			a.ID, a.Project, err, child.StderrLog())
+	} else {
+		// Handshake: learn the agent's own version so a stale derived or
+		// custom image can be flagged. A mismatch is a warning, never a
+		// refusal — refusing would turn a nuisance into an outage.
+		f.checkAgentVersion(ctx, rt)
 	}
 
 	f.mu.Lock()
 	f.runtimes[a.ID] = rt
 	f.mu.Unlock()
 	return rt, rt.spawnErr
+}
+
+// checkAgentVersion calls initialize on a freshly started child, compares
+// the reported agentInfo.version against the bridge's buildVersion, and
+// records a warning on the runtime when they differ. It never refuses the
+// spawn: a failed or unparseable handshake is logged and ignored.
+func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
+	raw, err := rt.child.Request(ctx, "initialize", map[string]any{"protocolVersion": 1})
+	if err != nil {
+		slog.Default().Warn("webbridge: initialize handshake failed",
+			"agent", rt.id, "err", err)
+		return
+	}
+	var res struct {
+		AgentInfo struct {
+			Version string `json:"version"`
+		} `json:"agentInfo"`
+	}
+	if uerr := json.Unmarshal(raw, &res); uerr != nil {
+		slog.Default().Warn("webbridge: decode initialize handshake failed",
+			"agent", rt.id, "err", uerr)
+		return
+	}
+	agentVersion := res.AgentInfo.Version
+	// Both sides must carry a real version; an empty or "dev" value on
+	// either side means a source build, where skew is meaningless.
+	if agentVersion == "" || agentVersion == "dev" ||
+		f.buildVersion == "" || f.buildVersion == "dev" {
+		return
+	}
+	if agentVersion != f.buildVersion {
+		rt.versionWarning = true
+		slog.Default().Warn("webbridge: agent version differs from bridge",
+			"agent", rt.id, "agentVersion", agentVersion, "bridgeVersion", f.buildVersion)
+	}
 }
 
 func (f *Fleet) liveRuntimeForSession(sessionID string) (*agentRuntime, error) {
@@ -402,7 +459,7 @@ func (f *Fleet) RuntimeForSession(id string) (*agentRuntime, error) {
 	if err := f.slots.acquire(context.Background()); err != nil {
 		return nil, fmt.Errorf("wait for an agent slot: %w", err)
 	}
-	rt, err := f.startRuntime(a)
+	rt, err := f.startRuntime(context.Background(), a)
 	if err != nil {
 		f.stopAgent(a.ID) // removes the failed runtime and releases the slot
 		return nil, err
@@ -600,8 +657,24 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// Resolve the runtime profile now that workDir is known, so a
 	// git-sourced repo with a .devcontainer/devcontainer.json is
 	// honoured. For local spawns workDir == root.
-	profile, _ := ResolveProfile(workDir, opts.Profile)
+	profile, _ := ResolveProfile(workDir, opts.Profile, f.buildVersion)
 	a.Profile = profile
+
+	// A declared base (e.g. node:20) carries no marshal. Derive an image
+	// that adds marshal on top, and run the agent against that. A marshal
+	// image is used as-is. A build failure refuses the spawn — running an
+	// agent in an environment the repo did not ask for is worse than
+	// refusing to run it.
+	if !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
+		derived, err := f.ensureDerivedImage(ctx, a.Profile.Image)
+		if err != nil {
+			if src.kind == "git" && f.git != nil {
+				_ = f.git.RemoveTree(f.stateDir, a.ID)
+			}
+			return "", err
+		}
+		a.Profile.Image = derived
+	}
 
 	// Enforce the disk budget before acquiring a slot: refusing a new
 	// spawn is the control, not stopping an existing agent.
@@ -619,7 +692,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
 	}
 
-	rt, err := f.startRuntime(a)
+	rt, err := f.startRuntime(ctx, a)
 	if err != nil {
 		// startRuntime stores the failed runtime in f.runtimes so
 		// ProjectStatus can report the error. For local spawns we
@@ -1027,7 +1100,7 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
 			continue
 		}
-		rt, err := f.startRuntime(a)
+		rt, err := f.startRuntime(ctx, a)
 		if err != nil {
 			f.stopAgent(a.ID) // removes the failed runtime and releases the slot
 			errs = append(errs, fmt.Errorf("reattach agent %s: %w", a.ID, err))
@@ -1063,7 +1136,7 @@ func (f *Fleet) Resume(ctx context.Context, id string) error {
 	if err := f.slots.acquire(ctx); err != nil {
 		return fmt.Errorf("wait for an agent slot: %w", err)
 	}
-	rt, err := f.startRuntime(a)
+	rt, err := f.startRuntime(ctx, a)
 	if err != nil {
 		f.slots.release()
 		return err

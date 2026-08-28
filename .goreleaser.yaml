@@ -96,6 +96,36 @@ archives:
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
 
+dockers:
+  - id: agent-amd64
+    ids: [marshal]
+    goos: linux
+    goarch: amd64
+    dockerfile: build/Dockerfile.release
+    image_templates:
+      - "ghcr.io/marshal/agent:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - id: agent-arm64
+    ids: [marshal]
+    goos: linux
+    goarch: arm64
+    dockerfile: build/Dockerfile.release
+    image_templates:
+      - "ghcr.io/marshal/agent:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
+docker_manifests:
+  - name_template: "ghcr.io/marshal/agent:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/marshal/agent:{{ .Version }}-amd64"
+      - "ghcr.io/marshal/agent:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/marshal/agent:latest"
+    image_templates:
+      - "ghcr.io/marshal/agent:{{ .Version }}-amd64"
+      - "ghcr.io/marshal/agent:{{ .Version }}-arm64"
+
 release:
   draft: true
   prerelease: auto

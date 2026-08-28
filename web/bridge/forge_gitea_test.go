@@ -38,6 +38,21 @@ func TestGiteaUsesTokenAuthAndIndexField(t *testing.T) {
 	}
 }
 
+func TestGiteaRepoSizeReadsKilobytes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"size":512}`))
+	}))
+	defer srv.Close()
+
+	f := newGiteaForge(srv.Client())
+	got, err := f.RepoSize(context.Background(),
+		Repo{URL: "https://code.example.com/you/r.git", APIBase: srv.URL + "/api/v1"},
+		Credential{Kind: "pat", literal: "x"})
+	if err != nil || got != 512<<10 {
+		t.Fatalf("RepoSize = %d, err = %v", got, err)
+	}
+}
+
 func TestGiteaListIssuesFiltersByLabel(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

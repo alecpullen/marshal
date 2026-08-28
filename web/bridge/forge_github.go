@@ -104,6 +104,28 @@ func doJSON(ctx context.Context, client *http.Client, req *http.Request, out any
 	return nil
 }
 
+// RepoSize reports the repository's size in bytes. GitHub reports the
+// size in kilobytes on the repository object, so it is shifted to bytes.
+func (g *githubForge) RepoSize(ctx context.Context, repo Repo, cred Credential) (int64, error) {
+	owner, name, err := parseOwnerRepo(repo.URL)
+	if err != nil {
+		return 0, err
+	}
+	httpReq, err := http.NewRequest("GET", g.apiBase(repo)+"/repos/"+owner+"/"+name, nil)
+	if err != nil {
+		return 0, err
+	}
+	httpReq.Header.Set("Authorization", g.authHeader(cred))
+	httpReq.Header.Set("Accept", "application/vnd.github+json")
+	var resp struct {
+		Size int64 `json:"size"` // KB
+	}
+	if err := doJSON(ctx, g.client, httpReq, &resp); err != nil {
+		return 0, err
+	}
+	return resp.Size << 10, nil
+}
+
 func (g *githubForge) CreatePR(ctx context.Context, repo Repo, req PRRequest, cred Credential) (PR, error) {
 	owner, name, err := parseOwnerRepo(repo.URL)
 	if err != nil {

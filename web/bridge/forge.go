@@ -49,6 +49,10 @@ type Forge interface {
 	GetIssue(ctx context.Context, repo Repo, number int, cred Credential) (Issue, error)
 	ListIssues(ctx context.Context, repo Repo, q IssueQuery, cred Credential) ([]Issue, error)
 	CommentIssue(ctx context.Context, repo Repo, number int, body string, cred Credential) error
+	// RepoSize reports the repository's size in bytes, as reported by
+	// the forge. It is a fast-path pre-check: a repo already over the
+	// clone cap is refused before any bandwidth is spent cloning it.
+	RepoSize(ctx context.Context, repo Repo, cred Credential) (int64, error)
 }
 
 // errNoForge signals the documented degradation path: the repo has no

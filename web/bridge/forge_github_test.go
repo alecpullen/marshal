@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -59,6 +60,117 @@ func TestGitHubCreatePRUsesTheRightPathAndAuth(t *testing.T) {
 	}
 	if pr.Number != 7 || pr.URL == "" {
 		t.Errorf("got %+v", pr)
+	}
+}
+
+func TestGitHubRepoSizeReadsKilobytes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/you/r" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"size":2048}`)) // GitHub reports KB
+	}))
+	defer srv.Close()
+
+	f := newGitHubForge(srv.Client())
+	got, err := f.RepoSize(context.Background(),
+		Repo{URL: "https://github.com/you/r.git", APIBase: srv.URL}, Credential{Kind: "pat", literal: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 2048<<10 {
+		t.Fatalf("RepoSize = %d bytes, want %d — KB were not converted", got, 2048<<10)
+	}
+}
+
+func TestOversizeRepoIsRefusedBeforeCloning(t *testing.T) {
+	var cloned bool
+	f := testFleetWithLimits(t, Limits{MaxCloneMB: 1})
+	if f.git == nil {
+		t.Skip("git not installed")
+	}
+	// Stub git so a clone attempt is observable (and would fail offline).
+	f.git.exec = func(dir string, env []string, args ...string) ([]byte, error) {
+		cloned = true
+		return nil, fmt.Errorf("clone should never have been attempted")
+	}
+
+	// A forge server reporting a repo far over the 1 MB cap.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"size":4096}`)) // 4096 KB = 4 MB
+	}))
+	defer srv.Close()
+
+	// Register a PAT repo pointing at the test server (APIBase is empty
+	// in registerPATRepo, so set it explicitly).
+	repo := Repo{
+		ID:      "r1",
+		URL:     "https://github.com/you/r.git",
+		Branch:  "main",
+		CredRef: "pat1",
+		OwnerID: DefaultOwnerID,
+		Forge:   "github",
+		APIBase: srv.URL,
+	}
+	if err := f.ws.PutRepo(repo); err != nil {
+		t.Fatal(err)
+	}
+	f.creds = NewCredentialStore([]Credential{{
+		ID: "pat1", Kind: "pat", OwnerID: DefaultOwnerID, EnvVar: "TEST_PAT",
+	}})
+	t.Setenv("TEST_PAT", "test-token")
+
+	if _, err := f.Spawn(context.Background(), "", SpawnOptions{RepoID: "r1", Prompt: "x"}); err == nil {
+		t.Fatal("an oversize repo was accepted")
+	}
+	if cloned {
+		t.Fatal("the clone started despite a forge size that already exceeded the cap")
+	}
+}
+
+func TestMissingForgeSizeStillProceedsToClone(t *testing.T) {
+	var cloned bool
+	f := testFleetWithLimits(t, Limits{MaxCloneMB: 1})
+	if f.git == nil {
+		t.Skip("git not installed")
+	}
+	// Stub git so a clone attempt is observable (and would fail offline).
+	f.git.exec = func(dir string, env []string, args ...string) ([]byte, error) {
+		cloned = true
+		return nil, fmt.Errorf("clone should never have been attempted")
+	}
+
+	// A forge server that errors on the size lookup.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	repo := Repo{
+		ID:      "r1",
+		URL:     "https://github.com/you/r.git",
+		Branch:  "main",
+		CredRef: "pat1",
+		OwnerID: DefaultOwnerID,
+		Forge:   "github",
+		APIBase: srv.URL,
+	}
+	if err := f.ws.PutRepo(repo); err != nil {
+		t.Fatal(err)
+	}
+	f.creds = NewCredentialStore([]Credential{{
+		ID: "pat1", Kind: "pat", OwnerID: DefaultOwnerID, EnvVar: "TEST_PAT",
+	}})
+	t.Setenv("TEST_PAT", "test-token")
+
+	// A failed forge size lookup must not block the spawn: it proceeds to
+	// the clone step, which has its own monitor. The clone here is stubbed
+	// to fail, so we only assert that the clone step was reached.
+	if _, err := f.Spawn(context.Background(), "", SpawnOptions{RepoID: "r1", Prompt: "x"}); err == nil {
+		t.Fatal("expected the stubbed clone to fail")
+	}
+	if !cloned {
+		t.Fatal("a failed forge size lookup prevented the clone step from running")
 	}
 }
 

@@ -40,6 +40,27 @@ func (g *giteaForge) authHeader(cred Credential) string {
 	return "token " + cred.literal
 }
 
+// RepoSize reports the repository's size in bytes. Gitea reports the
+// size in kilobytes on the repository object, so it is shifted to bytes.
+func (g *giteaForge) RepoSize(ctx context.Context, repo Repo, cred Credential) (int64, error) {
+	owner, name, err := parseOwnerRepo(repo.URL)
+	if err != nil {
+		return 0, err
+	}
+	httpReq, err := http.NewRequest("GET", g.apiBase(repo)+"/repos/"+owner+"/"+name, nil)
+	if err != nil {
+		return 0, err
+	}
+	httpReq.Header.Set("Authorization", g.authHeader(cred))
+	var resp struct {
+		Size int64 `json:"size"` // KB
+	}
+	if err := doJSON(ctx, g.client, httpReq, &resp); err != nil {
+		return 0, err
+	}
+	return resp.Size << 10, nil
+}
+
 func (g *giteaForge) CreatePR(ctx context.Context, repo Repo, req PRRequest, cred Credential) (PR, error) {
 	owner, name, err := parseOwnerRepo(repo.URL)
 	if err != nil {

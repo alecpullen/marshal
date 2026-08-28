@@ -555,6 +555,22 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		if err != nil {
 			return "", fmt.Errorf("resolve credential for %s: %w", src.ref, err)
 		}
+		// Fast-path pre-check: ask the forge for the repo size and refuse
+		// before spending bandwidth on a repo the clone cap would reject
+		// anyway. This is not the control — the clone monitor below is —
+		// so a failed forge lookup (no forge, no PAT, API error) degrades
+		// to proceeding with the clone, which has its own monitor.
+		if f.limits.MaxCloneMB > 0 {
+			if repo, ok := f.ws.Repo(src.ref); ok {
+				cap := f.limits.MaxCloneMB << 20
+				if forge, fcred, ferr := f.forgeFor(repo); ferr == nil {
+					if size, serr := forge.RepoSize(ctx, repo, fcred); serr == nil && size > cap {
+						return "", fmt.Errorf("repo %s is %d MB, over the %d MB clone cap",
+							repo.ID, size>>20, f.limits.MaxCloneMB)
+					}
+				}
+			}
+		}
 		mirror, err := f.git.EnsureMirrorCapped(ctx, f.stateDir, src.url, cred, f.limits.MaxCloneMB<<20)
 		if err != nil {
 			return "", err

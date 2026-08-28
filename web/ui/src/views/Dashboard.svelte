@@ -7,6 +7,7 @@
   import Button from '../lib/ui/Button.svelte'
   import PendingList from '../lib/PendingList.svelte'
   import ClientsPanel from '../lib/ClientsPanel.svelte'
+  import ActivityFeed from '../lib/ActivityFeed.svelte'
   import IssuePicker from '../lib/IssuePicker.svelte'
   import { listPending, type PendingSubmission } from '../lib/api'
 
@@ -145,4 +146,6 @@
   {/each}
 
   <ClientsPanel />
+
+  <ActivityFeed />
 </div>

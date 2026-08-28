@@ -573,8 +573,37 @@ func postJSON(t *testing.T, s *Server, path, body string) map[string]any {
 
 func getJSON(t *testing.T, s *Server, path string) string {
 	t.Helper()
-	req := httptest.NewRequest("GET", path, nil)
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, req)
+	rec := doReq(t, s, "GET", path, nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: status %d, body %s", path, rec.Code, rec.Body.String())
+	}
 	return rec.Body.String()
+}
+
+func testServerWithAudit(t *testing.T) *Server {
+	t.Helper()
+	f := testFleet(t)
+	f.audit = NewAuditLog(t.TempDir())
+	return NewServer(f, "")
+}
+
+func TestAuditEndpointRequiresAuth(t *testing.T) {
+	s := testServerWithToken(t, "shared")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest("GET", "/api/audit", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d without a token, want 401", rec.Code)
+	}
+}
+
+func TestAuditEndpointBoundsTheLimit(t *testing.T) {
+	s := testServerWithAudit(t)
+	body := getJSON(t, s, "/api/audit?limit=100000")
+	var out []AuditEvent
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > maxAuditTail {
+		t.Fatalf("returned %d records, want at most %d", len(out), maxAuditTail)
+	}
 }

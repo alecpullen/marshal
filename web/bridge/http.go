@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,11 @@ import (
 // maxBodyBytes bounds inbound request bodies. Prompt and steer text
 // dominate; 1 MiB matches the ACP inbound frame cap.
 const maxBodyBytes = 1 << 20
+
+// maxAuditTail caps how many audit records a single feed request may
+// return. The UI polls every few seconds; a bounded tail keeps the
+// response small and the log readable.
+const maxAuditTail = 200
 
 // Server exposes the Registry and EventLog over HTTP: a JSON REST API
 // under /api plus the SSE event stream. When a token is configured,
@@ -123,6 +129,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/pending/{id}/deny", s.denyPending)
 	s.mux.HandleFunc("GET /api/repos/{id}/issues", s.listRepoIssues)
 	s.mux.HandleFunc("POST /api/repos/{id}/issues/{number}/spawn", s.spawnFromIssue)
+	s.mux.HandleFunc("GET /api/audit", s.listAudit)
 	// NOTE: with a token configured this stream requires an
 	// Authorization header, which the browser-native EventSource API
 	// cannot send. The SPA must consume SSE over fetch (Task 7 does);
@@ -854,4 +861,28 @@ func (s *Server) spawnFromIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, res)
+}
+
+// listAudit returns the most recent audit records, oldest first. The
+// limit is bounded by maxAuditTail so a hostile or buggy client cannot
+// force the whole log across the wire.
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxAuditTail {
+		limit = maxAuditTail
+	}
+	events, err := s.fleet.audit.Tail(limit)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if events == nil {
+		events = []AuditEvent{}
+	}
+	writeJSON(w, http.StatusOK, events)
 }

@@ -36,6 +36,11 @@ func versionString() string {
 	return fmt.Sprintf("webbridge %s", v)
 }
 
+// defaultStateDir is the in-container mount point for the state volume.
+// When running as a host process (no container runtime), the state dir
+// defaults to beside the workspace file instead.
+const defaultStateDir = "/state"
+
 // stringList collects repeatable project flags.
 type stringList []string
 
@@ -82,7 +87,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
 	tlsCert := fs.String("tls-cert", envOr("WEBBRIDGE_TLS_CERT", ""), "PEM certificate file; enables HTTPS when set with --tls-key")
 	tlsKey := fs.String("tls-key", envOr("WEBBRIDGE_TLS_KEY", ""), "PEM private key file; enables HTTPS when set with --tls-cert")
-	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (defaults beside the workspace file)")
+	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", defaultStateDir), "directory for repo mirrors and agent workspaces (defaults to /state)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")

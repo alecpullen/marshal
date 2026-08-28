@@ -708,3 +708,30 @@ func TestMaxConcurrentIsConfigurable(t *testing.T) {
 		t.Fatal("a second spawn ran despite MaxConcurrent=1")
 	}
 }
+
+func TestAllStatePathsShareOneRoot(t *testing.T) {
+	const root = "/state"
+	work := workspaceDirFor(root, "a1")
+	sock := socketDirFor(root, "a1")
+	mirror := mirrorDir(root, "https://example.com/r.git")
+
+	for name, p := range map[string]string{"work": work, "sockets": sock, "mirror": mirror} {
+		if !strings.HasPrefix(p, root+"/") {
+			t.Errorf("%s path %q escapes the state root; a containerized bridge "+
+				"cannot mount anything outside its volume", name, p)
+		}
+	}
+	// The socket used to live under os.TempDir(), unlike the other two.
+	if !strings.Contains(sock, "/sockets/") {
+		t.Errorf("socket path %q is not under the sockets subtree", sock)
+	}
+}
+
+func TestStatePathsAreDistinctPerAgent(t *testing.T) {
+	if socketDirFor("/state", "a1") == socketDirFor("/state", "a2") {
+		t.Fatal("two agents share a socket directory")
+	}
+	if workspaceDirFor("/state", "a1") == workspaceDirFor("/state", "a2") {
+		t.Fatal("two agents share a workspace directory")
+	}
+}

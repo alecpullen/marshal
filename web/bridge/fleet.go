@@ -193,7 +193,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			Image:        a.Profile.Image,
 			Name:         containerNameFor(a.ID),
 			WorkspaceDir: a.Project,
-			SocketDir:    socketDirFor(a.ID),
+			SocketDir:    socketDirFor(f.stateDir, a.ID),
 			CPUs:         a.Profile.CPUs,
 			MemoryMB:     a.Profile.MemoryMB,
 			Env:          f.agentEnv,
@@ -321,9 +321,14 @@ func detectedRuntime() (path, name string, ok bool) {
 	return p.path, p.name, p.ok
 }
 
-// socketDirFor is the host directory holding one agent's control socket.
-func socketDirFor(agentID string) string {
-	return filepath.Join(os.TempDir(), "marshal-agents", agentID)
+// socketDirFor is the per-agent ACP socket directory.
+//
+// It lives under the state root like every other piece of agent state.
+// It previously used os.TempDir(), which a containerized bridge cannot
+// share with a sibling container: a bind-mount source resolves against
+// the daemon's view, not the bridge's.
+func socketDirFor(stateDir, agentID string) string {
+	return filepath.Join(stateDir, "sockets", agentID)
 }
 
 // runtimeForAgent returns the live runtime for an agent id.

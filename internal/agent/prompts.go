@@ -465,15 +465,12 @@ func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferr
 	})
 }
 
-// buildSystemPrompt accepts an additional deferredTools list (used by the
-// runner to advertise deferred tools the agent hasn't loaded yet but may
-// want to opt into). Tests that pass nil get the old behavior with no
-// announcement appended.
-//
-// loadedNames are deferred tools the agent already opted into via
-// tools.select. They render as available tools rather than remaining in the
-// "not loaded" announcement. Variadic so existing callers (and the older
-// BuildSystemPrompt*/buildSystemPrompt call sites) need no change.
+// buildSystemPrompt assembles the system prompt from the provided
+// options. The Deferred field advertises tools the agent hasn't loaded
+// yet but may want to opt into; tests that pass nil get no announcement.
+// LoadedNames are deferred tools the agent already opted into via
+// tools.select — they render as available tools rather than remaining
+// in the "not loaded" announcement.
 func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	role := opts.Role
 	tools := opts.Tools

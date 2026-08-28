@@ -959,13 +959,8 @@ func TestTodoAddendumIncludedWhenToolAvailable(t *testing.T) {
 	}
 }
 
-// ModeAuto's directive ("You cannot ask the user questions") is composed
-// into the SAME prompt as the ask_user few-shot examples in
-// baseOutputFormat/nativeOutputFormat, which appear later in the text. A
-// model reading top-to-bottom sees "you cannot ask" immediately followed,
-// further down, by worked examples of calling ask_user — a visible
-// contradiction. The auto-mode directive must explicitly override those
-// examples rather than silently coexist with them.
+// ModeAuto's directive must tell the model it cannot ask the user
+// questions, in both native and JSON modes.
 func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {
 	for _, native := range []bool{false, true} {
 		msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, native, policy.ModeAuto)

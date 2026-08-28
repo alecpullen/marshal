@@ -60,6 +60,9 @@ func (f *Fleet) Submit(ctx context.Context, req SpawnRequest) (SubmitResult, err
 	// an unvetted remote.
 	if req.Origin != OriginUI {
 		if _, ok := f.ws.Repo(req.RepoID); !ok {
+			f.auditf(AuditEvent{Event: AuditSpawnDenied, OwnerID: DefaultOwnerID,
+				ClientID: req.ClientID, RepoID: req.RepoID, Origin: req.Origin,
+				Reason: "unregistered repo"})
 			return SubmitResult{}, fmt.Errorf("%w: %s", ErrUnregisteredRepo, req.RepoID)
 		}
 	}
@@ -72,9 +75,15 @@ func (f *Fleet) Submit(ctx context.Context, req SpawnRequest) (SubmitResult, err
 		}
 		client = c
 		if !repoAllowed(client, req.RepoID) {
+			f.auditf(AuditEvent{Event: AuditSpawnDenied, OwnerID: DefaultOwnerID,
+				ClientID: req.ClientID, RepoID: req.RepoID, Origin: req.Origin,
+				Reason: "repo not allowed for client"})
 			return SubmitResult{}, fmt.Errorf("%w: %s", ErrRepoNotAllowed, req.RepoID)
 		}
 		if err := f.checkCaps(client); err != nil {
+			f.auditf(AuditEvent{Event: AuditSpawnDenied, OwnerID: DefaultOwnerID,
+				ClientID: req.ClientID, RepoID: req.RepoID, Origin: req.Origin,
+				Reason: err.Error()})
 			return SubmitResult{}, err
 		}
 	}
@@ -163,12 +172,23 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 			return "", err
 		}
 	}
+	f.auditf(AuditEvent{Event: AuditPendingApproved, OwnerID: DefaultOwnerID,
+		AgentID: agentID, ClientID: p.ClientID, RepoID: p.RepoID, Origin: p.Origin})
 	return agentID, nil
 }
 
 // Deny discards a submission without starting anything.
 func (f *Fleet) Deny(pendingID string) error {
-	return f.ws.DeletePending(pendingID)
+	p, ok := f.ws.PendingByID(pendingID)
+	if !ok {
+		return fmt.Errorf("bridge: unknown pending submission %s", pendingID)
+	}
+	if err := f.ws.DeletePending(pendingID); err != nil {
+		return err
+	}
+	f.auditf(AuditEvent{Event: AuditPendingDenied, OwnerID: DefaultOwnerID,
+		ClientID: p.ClientID, RepoID: p.RepoID, Origin: p.Origin})
+	return nil
 }
 
 // startPlan writes the submitted markdown into the agent's workspace and

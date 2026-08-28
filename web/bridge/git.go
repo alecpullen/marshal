@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -111,17 +112,18 @@ func (g *gitRunner) mirrorMutex(dir string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// run executes git with dir as the working directory and cred supplying
-// any authentication. The error message deliberately omits the env: it
-// can carry an askpass secret, and a stderr echo on a shared CI log
-// would leak it.
-func (g *gitRunner) run(dir string, cred Credential, args ...string) ([]byte, error) {
+// runCtx executes git with dir as the working directory and cred
+// supplying any authentication, honouring ctx so a long-running operation
+// (a clone) can be aborted. The error message deliberately omits the
+// env: it can carry an askpass secret, and a stderr echo on a shared CI
+// log would leak it.
+func (g *gitRunner) runCtx(ctx context.Context, dir string, cred Credential, args ...string) ([]byte, error) {
 	full := hardenedGitArgs(args...)
 	env := gitEnv(g.askpassBin, cred)
 	if g.exec != nil {
 		return g.exec(dir, env, full...)
 	}
-	cmd := exec.Command(g.bin, full...)
+	cmd := exec.CommandContext(ctx, g.bin, full...)
 	cmd.Dir = dir
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -131,4 +133,11 @@ func (g *gitRunner) run(dir string, cred Credential, args ...string) ([]byte, er
 		return out, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return out, nil
+}
+
+// run executes git with dir as the working directory and cred supplying
+// any authentication. It is the context-free convenience wrapper over
+// runCtx.
+func (g *gitRunner) run(dir string, cred Credential, args ...string) ([]byte, error) {
+	return g.runCtx(context.Background(), dir, cred, args...)
 }

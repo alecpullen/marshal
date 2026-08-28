@@ -352,3 +352,9 @@ export async function listIssues(repoId: string): Promise<Issue[]> {
 export async function spawnFromIssue(repoId: string, number: number): Promise<SubmitResult> {
   return request('POST', `/api/repos/${encodeURIComponent(repoId)}/issues/${number}/spawn`)
 }
+
+export type { AuditEvent } from './audit'
+
+export async function listAudit(limit = 50): Promise<AuditEvent[]> {
+  return request('GET', `/api/audit?limit=${limit}`)
+}

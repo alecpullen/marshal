@@ -162,7 +162,7 @@ func (c *containerTransport) buildRunArgs() []string {
 	}
 	args = append(args,
 		c.cfg.Image,
-		"marshal", "acp",
+		"acp",
 		"--listen", "unix://"+containerSocketDir+"/"+containerSocketName,
 	)
 	return args

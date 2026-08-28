@@ -555,7 +555,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		if err != nil {
 			return "", fmt.Errorf("resolve credential for %s: %w", src.ref, err)
 		}
-		mirror, err := f.git.EnsureMirror(f.stateDir, src.url, cred)
+		mirror, err := f.git.EnsureMirrorCapped(ctx, f.stateDir, src.url, cred, f.limits.MaxCloneMB<<20)
 		if err != nil {
 			return "", err
 		}

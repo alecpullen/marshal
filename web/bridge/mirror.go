@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // mirrorDir is the on-disk location of a repo's bare mirror.
@@ -51,6 +53,73 @@ func (g *gitRunner) EnsureMirror(stateDir, url string, cred Credential) (string,
 		return "", fmt.Errorf("create mirror: %w", err)
 	}
 	return dir, nil
+}
+
+// EnsureMirrorCapped is EnsureMirror with a clone size cap. While the
+// mirror is being cloned, the on-disk size is sampled on a ticker; if it
+// exceeds maxBytes the clone is cancelled, the partial mirror removed,
+// and an error returned. A maxBytes of 0 means unbounded (no watcher).
+// An existing mirror is refreshed with a fetch and never size-checked.
+func (g *gitRunner) EnsureMirrorCapped(ctx context.Context, stateDir, url string, cred Credential, maxBytes int64) (string, error) {
+	dir := mirrorDir(stateDir, url)
+
+	// Serialise concurrent calls for the same URL so two agents spawning
+	// against one repo do not race on the shared bare mirror.
+	mu := g.mirrorMutex(dir)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err == nil {
+		// --prune so deleted upstream branches do not linger forever.
+		if _, err := g.runCtx(ctx, dir, cred, "fetch", "--prune"); err != nil {
+			return "", fmt.Errorf("refresh mirror: %w", err)
+		}
+		return dir, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("stat mirror: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return "", fmt.Errorf("create mirror parent: %w", err)
+	}
+
+	cloneCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := g.runCtx(cloneCtx, "", cred, "clone", "--mirror", url, dir)
+		done <- err
+	}()
+
+	if maxBytes <= 0 {
+		// No cap — wait for the clone to finish.
+		if err := <-done; err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("create mirror: %w", err)
+		}
+		return dir, nil
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				_ = os.RemoveAll(dir)
+				return "", fmt.Errorf("create mirror: %w", err)
+			}
+			return dir, nil
+		case <-ticker.C:
+			if size, serr := sumTree(dir); serr == nil && size > maxBytes {
+				cancel()
+				<-done // wait for the clone to actually stop
+				_ = os.RemoveAll(dir)
+				return "", fmt.Errorf("clone exceeds %d byte cap", maxBytes)
+			}
+		}
+	}
 }
 
 // mirrorHead reports the branch a mirror's HEAD points at, used as the

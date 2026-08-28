@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -88,4 +89,104 @@ func (f *Fleet) invalidateDisk() {
 	f.diskCacheMu.Lock()
 	f.diskCacheOK = false
 	f.diskCacheMu.Unlock()
+}
+
+// liveMirrors is the set of mirror directories some agent still depends
+// on.
+//
+// Membership is by PERSISTED agent, not by live runtime: a paused agent
+// has no runtime but its workspace and its history are still there, and
+// pruning its mirror would strand it.
+func (f *Fleet) liveMirrors() map[string]bool {
+	live := make(map[string]bool)
+	for _, a := range f.ws.Agents() {
+		if a.SourceKind != "git" {
+			continue
+		}
+		url := a.SourceRef
+		if r, ok := f.ws.Repo(a.SourceRef); ok {
+			url = r.URL
+		}
+		live[mirrorDir(f.stateDir, url)] = true
+	}
+	return live
+}
+
+// Prune removes state no agent depends on and reports the bytes
+// reclaimed.
+//
+// It removes only two things: mirrors no persisted agent resolves to,
+// and work directories whose agent is gone from the workspace. It never
+// stops an agent and never removes a live agent's workspace — reclaiming
+// a gigabyte is not worth destroying an hour of work.
+func (f *Fleet) Prune() (int64, error) {
+	live := f.liveMirrors()
+	liveAgents := make(map[string]bool)
+	for _, a := range f.ws.Agents() {
+		liveAgents[a.ID] = true
+	}
+
+	var reclaimed int64
+
+	// Prune unreferenced mirrors.
+	reposDir := filepath.Join(f.stateDir, "repos")
+	if entries, err := os.ReadDir(reposDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			dir := filepath.Join(reposDir, entry.Name())
+			if live[dir] {
+				continue
+			}
+			n, err := removeTree(dir)
+			if err != nil {
+				return reclaimed, fmt.Errorf("prune mirror %s: %w", dir, err)
+			}
+			reclaimed += n
+		}
+	}
+
+	// Prune orphaned work directories.
+	workDir := filepath.Join(f.stateDir, "work")
+	if entries, err := os.ReadDir(workDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			dir := filepath.Join(workDir, entry.Name())
+			agentID := entry.Name()
+			if liveAgents[agentID] {
+				continue
+			}
+			n, err := removeTree(dir)
+			if err != nil {
+				return reclaimed, fmt.Errorf("prune work dir %s: %w", dir, err)
+			}
+			reclaimed += n
+		}
+	}
+
+	f.invalidateDisk()
+	f.auditf(AuditEvent{Event: AuditPrune, Bytes: reclaimed})
+	return reclaimed, nil
+}
+
+// removeTree removes a directory tree and returns the total size in
+// bytes of the regular files it contained.
+func removeTree(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return size, os.RemoveAll(path)
 }

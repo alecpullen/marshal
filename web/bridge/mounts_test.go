@@ -81,3 +81,44 @@ func TestTranslateToHostDoesNotMatchAPartialSegment(t *testing.T) {
 		t.Fatal("matched a path that merely shares a prefix with the declared root")
 	}
 }
+
+func TestLocalPathAgentBindMountsTheHostPath(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+		StateVolume: "marshal-state", SocketSubpath: "sockets/a1",
+		LocalMount: "/Users/you/code/marshal",
+	})
+	joined := strings.Join(tr.buildRunArgs(), " ")
+
+	if !strings.Contains(joined, "-v /Users/you/code/marshal:"+containerWorkDir) {
+		t.Fatalf("the host checkout was not bind-mounted at /work:\n%s", joined)
+	}
+	// The socket still comes from the volume even for a local agent.
+	if !strings.Contains(joined, "volume-subpath=sockets/a1") {
+		t.Fatalf("the socket subpath is missing:\n%s", joined)
+	}
+	// And no workspace subpath: a local agent works on the checkout.
+	if strings.Contains(joined, "volume-subpath=work/") {
+		t.Fatalf("a local agent was given a workspace subpath as well:\n%s", joined)
+	}
+}
+
+func TestLocalAndGitAgentsDifferOnlyInTheWorkspaceMount(t *testing.T) {
+	base := ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+		StateVolume: "marshal-state", SocketSubpath: "sockets/a1",
+	}
+	gitCfg := base
+	gitCfg.WorkSubpath = "work/a1"
+	localCfg := base
+	localCfg.LocalMount = "/host/checkout"
+
+	gitArgs := strings.Join(newContainerTransport(gitCfg).buildRunArgs(), " ")
+	localArgs := strings.Join(newContainerTransport(localCfg).buildRunArgs(), " ")
+
+	for _, shared := range []string{"--name n", "volume-subpath=sockets/a1", "img"} {
+		if !strings.Contains(gitArgs, shared) || !strings.Contains(localArgs, shared) {
+			t.Errorf("%q should appear in both argument vectors", shared)
+		}
+	}
+}

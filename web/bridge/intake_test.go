@@ -1,11 +1,15 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -228,5 +232,163 @@ func TestCapsAreScopedPerClient(t *testing.T) {
 		Origin: OriginMCP, ClientID: "cA", RepoID: "r1", Title: "a again", Prompt: "y",
 	}); !errors.Is(err, ErrCapExceeded) {
 		t.Fatalf("client A second submit = %v, want ErrCapExceeded", err)
+	}
+}
+
+// capturingTransport is a test transport that records the params of
+// each JSON-RPC request and returns canned responses.
+type capturingTransport struct {
+	mu       sync.Mutex
+	captured map[string]any // method -> params (as decoded map)
+}
+
+func (t *capturingTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go t.serve(stdinR, stdoutW)
+	return stdinW, stdoutR, io.NopCloser(strings.NewReader("")), nil
+}
+
+func (t *capturingTransport) serve(r io.Reader, w io.WriteCloser) {
+	defer w.Close()
+	sc := bufio.NewScanner(r)
+	enc := json.NewEncoder(w)
+	for sc.Scan() {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
+			continue
+		}
+		// Record the params for this method.
+		var params map[string]any
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params, &params)
+		}
+		t.mu.Lock()
+		if t.captured == nil {
+			t.captured = make(map[string]any)
+		}
+		t.captured[req.Method] = params
+		t.mu.Unlock()
+
+		var result any
+		switch req.Method {
+		case "session/new":
+			result = map[string]any{"sessionId": "s-1"}
+		default:
+			result = map[string]any{}
+		}
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}
+}
+
+func (t *capturingTransport) Wait() error                { return nil }
+func (t *capturingTransport) Signal(sig os.Signal) error { return nil }
+func (t *capturingTransport) Kill() error                { return nil }
+
+func (t *capturingTransport) params(method string) map[string]any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	v, _ := t.captured[method].(map[string]any)
+	return v
+}
+
+// testFleetWithContainerizedAgent builds a fleet whose single agent has
+// containerized: true and the given root, with a capturingTransport
+// recording outbound requests.
+func testFleetWithContainerizedAgent(t *testing.T, root string) (*Fleet, *capturingTransport) {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
+	tr := &capturingTransport{}
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
+	t.Cleanup(f.Close)
+	return f, tr
+}
+
+func TestStartPlanSendsTheAgentsViewOfThePlanPath(t *testing.T) {
+	// The project root must be a real, writable directory: startPlan
+	// writes the plan to the bridge-side path before translating it.
+	root := t.TempDir()
+	f, tr := testFleetWithContainerizedAgent(t, root)
+
+	// The agent must exist in the workspace and have a live runtime.
+	a := Agent{ID: "a1", Project: root, SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	if err := f.ws.PutAgent(a); err != nil {
+		t.Fatal(err)
+	}
+	// Start the runtime so rt.agentPath is available.
+	rt, err := f.startRuntime(context.Background(), a)
+	if err != nil {
+		t.Fatalf("startRuntime: %v", err)
+	}
+	// Mark it containerized (the capturingTransport is not a *containerTransport,
+	// so the type assertion in startRuntime set containerized=false).
+	rt.containerized = true
+
+	if err := f.startPlan(context.Background(), "a1", "p1", "## Task 1: x\n"); err != nil {
+		t.Fatalf("startPlan: %v", err)
+	}
+	got, _ := tr.params("session/sdd_start")["planPath"].(string)
+	if got != "/work/.marshal/intake/p1.md" {
+		t.Fatalf("planPath = %q, want /work/.marshal/intake/p1.md", got)
+	}
+}
+
+func TestWorktreePruneSendsTheAgentsView(t *testing.T) {
+	root := t.TempDir()
+	f, tr := testFleetWithContainerizedAgent(t, root)
+
+	a := Agent{ID: "a1", Project: root, SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	if err := f.ws.PutAgent(a); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := f.startRuntime(context.Background(), a)
+	if err != nil {
+		t.Fatalf("startRuntime: %v", err)
+	}
+	rt.containerized = true
+
+	f.reconcileOnce(context.Background(), root)
+	got, _ := tr.params("session/worktree_prune")["cwd"].(string)
+	if got != "/work" {
+		t.Fatalf("cwd = %q, want /work", got)
+	}
+}
+
+func TestSpawnSendsTheAgentsViewOfCwd(t *testing.T) {
+	root := t.TempDir()
+	f, tr := testFleetWithContainerizedAgent(t, root)
+
+	a := Agent{ID: "a1", Project: root, SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	if err := f.ws.PutAgent(a); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := f.startRuntime(context.Background(), a)
+	if err != nil {
+		t.Fatalf("startRuntime: %v", err)
+	}
+	// Mark it containerized (the capturingTransport is not a *containerTransport,
+	// so the type assertion in startRuntime set containerized=false).
+	rt.containerized = true
+
+	// Mirror Spawn's session/new call: translate the bridge-view root
+	// into the agent's view and send it as cwd.
+	agentCwd, err := rt.agentPath(root)
+	if err != nil {
+		t.Fatalf("agentPath: %v", err)
+	}
+	if _, err := rt.child.Request(context.Background(), "session/new", map[string]any{"cwd": agentCwd}); err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	got, _ := tr.params("session/new")["cwd"].(string)
+	if got != "/work" {
+		t.Fatalf("session/new cwd = %q, want /work", got)
 	}
 }

@@ -67,6 +67,11 @@ type agentRuntime struct {
 	// the agent's prepared working tree must be removed.
 	sourceKind string
 
+	// containerized is true when the agent runs in a container whose
+	// filesystem view differs from the bridge's. agentPath uses it to
+	// decide whether translation is needed.
+	containerized bool
+
 	// versionWarning is set when the agent's initialize handshake reported
 	// a version that differs from the bridge's buildVersion. It is a
 	// warning only — the spawn is never refused on skew.
@@ -131,7 +136,7 @@ type Fleet struct {
 
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
-	newRuntime func(a Agent) *Child
+	newRuntime func(a Agent) (*Child, error)
 
 	// slots bounds concurrent agent spawns.
 	slots *slots
@@ -194,12 +199,12 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		f.git = g
 	}
 	f.creds = NewCredentialStore(nil)
-	f.newRuntime = func(a Agent) *Child {
+	f.newRuntime = func(a Agent) (*Child, error) {
 		runtime, name, ok := detectedRuntime()
 		if !ok {
 			// No container runtime: fall back to a host process so a
 			// laptop without docker still works.
-			return &Child{MarshalBin: marshalBin}
+			return &Child{MarshalBin: marshalBin}, nil
 		}
 		cfg := ContainerConfig{
 			Runtime:       runtime,
@@ -221,24 +226,11 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		if a.SourceKind == "local" {
 			hostPath, err := f.localMountFor(a)
 			if err != nil {
-				// A declared root that the path is not under is a
-				// misconfiguration. newRuntime cannot return an error,
-				// so log the actionable message (it names
-				// --project-mount) and leave LocalMount empty. The
-				// container starts with a volume-subpath workspace
-				// instead of the intended bind mount, and session/new
-				// fails because cwd points at a path the agent cannot
-				// see. The API caller sees the JSON-RPC invalid-params
-				// error; the operator who reads the bridge logs sees
-				// the actionable message. Neither is great, but
-				// deferring to the runtime's "mounts denied" would be
-				// worse — it surfaces neither.
-				slog.Default().Error("webbridge: refuse local agent mount", "agent", a.ID, "err", err)
-			} else {
-				cfg.LocalMount = hostPath
+				return nil, fmt.Errorf("bridge: refuse local agent mount for %s: %w (declare the root with --project-mount)", a.ID, err)
 			}
+			cfg.LocalMount = hostPath
 		}
-		return &Child{Transport: newContainerTransport(cfg)}
+		return &Child{Transport: newContainerTransport(cfg)}, nil
 	}
 	return f
 }
@@ -427,13 +419,24 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 // startRuntime builds and starts one agent's runtime. The caller owns
 // persisting the Agent record. ctx bounds the initialize handshake.
 func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error) {
-	child := f.newRuntime(a)
+	child, err := f.newRuntime(a)
+	if err != nil {
+		// Build a runtime that records the spawn error so ProjectStatus can report it.
+		rt := &agentRuntime{id: a.ID, root: a.Project, spawnErr: err}
+		f.mu.Lock()
+		f.runtimes[a.ID] = rt
+		f.mu.Unlock()
+		return rt, err
+	}
 	reg := NewRegistry(child)
 	reg.RootCwd = a.Project
 	log := NewEventLog()
 	Attach(log, child, reg)
 
-	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile, child: child, reg: reg, log: log, sourceKind: a.SourceKind}
+	_, isContainer := child.Transport.(*containerTransport)
+	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
+		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
+		containerized: isContainer}
 	f.attachClassifier(rt)
 
 	if err := child.Start(); err != nil {
@@ -774,7 +777,16 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// startup reconciliation never saw it.
 	f.reconcileOnce(ctx, workDir)
 
-	params := map[string]any{"cwd": workDir, "mcpServers": []any{}, "name": opts.Name}
+	// Translate the bridge-view workspace root into the agent's view
+	// before sending it as cwd. The agent sees /work, not the bridge's
+	// host path; sending the bridge's path produces "invalid params"
+	// because the agent's trusted-roots validation rejects it.
+	agentCwd, aerr := rt.agentPath(workDir)
+	if aerr != nil {
+		f.stopAgent(a.ID)
+		return "", fmt.Errorf("resolve cwd for agent %s: %w", a.ID, aerr)
+	}
+	params := map[string]any{"cwd": agentCwd, "mcpServers": []any{}, "name": opts.Name}
 	if opts.Isolated {
 		iso := map[string]any{}
 		if opts.Branch != "" {
@@ -811,7 +823,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// can restore the mapping. Must be set before the copy below.
 	a.SessionID = out.SessionID
 
-	rt.reg.track(out.SessionID, workDir)
+	rt.reg.track(out.SessionID, agentCwd)
 	agent := a // copy the resolved agent
 	if out.Workspace != nil {
 		agent.Isolated = true
@@ -980,7 +992,12 @@ func (f *Fleet) reconcileOnce(ctx context.Context, root string) {
 	if rt == nil {
 		return
 	}
-	raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": root})
+	cwd, cerr := rt.agentPath(root)
+	if cerr != nil {
+		slog.Default().Warn("webbridge: skip worktree prune", "project", root, "err", cerr)
+		return
+	}
+	raw, rerr := rt.child.Request(ctx, "session/worktree_prune", map[string]any{"cwd": cwd})
 	if rerr != nil {
 		slog.Default().Warn("webbridge: worktree prune failed", "project", root, "err", rerr)
 		return
@@ -991,8 +1008,20 @@ func (f *Fleet) reconcileOnce(ctx context.Context, root string) {
 	if json.Unmarshal(raw, &out) != nil {
 		return
 	}
+	// The agent reports orphan worktrees in its own namespace (/work/...).
+	// Reverse-translate each back to the bridge's view so the operator,
+	// who sees the bridge's filesystem, gets usable paths.
+	translated := make([]string, 0, len(out.Unknown))
+	for _, p := range out.Unknown {
+		bp, berr := rt.bridgePath(p)
+		if berr != nil {
+			translated = append(translated, p) // fall back to agent view
+		} else {
+			translated = append(translated, bp)
+		}
+	}
 	f.mu.Lock()
-	f.orphans[root] = out.Unknown
+	f.orphans[root] = translated
 	f.mu.Unlock()
 }
 
@@ -1136,7 +1165,11 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 	if a.SessionID == "" {
 		return nil
 	}
-	if err := rt.reg.Load(ctx, a.Project, a.SessionID); err != nil {
+	cwd, cerr := rt.agentPath(a.Project)
+	if cerr != nil {
+		return fmt.Errorf("resolve cwd for agent %s: %w", a.ID, cerr)
+	}
+	if err := rt.reg.Load(ctx, cwd, a.SessionID); err != nil {
 		return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
 	}
 	f.mu.Lock()

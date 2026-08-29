@@ -80,7 +80,7 @@ func TestSpawnIsAudited(t *testing.T) {
 	// Use a scripted transport so the test does not depend on a real
 	// child process or git — the audit emission is the same either way.
 	tr := &scriptedTransport{gate: gateResult{OK: true}}
-	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	id, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "x"})
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func testFleetWithAuditAndGate(t *testing.T, gate gateResult) *Fleet {
 		t.Skip("git not installed")
 	}
 	tr := &scriptedTransport{gate: gate}
-	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	return f
 }
 

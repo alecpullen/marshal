@@ -68,3 +68,72 @@ func TestAgentPathRefusesWhenTheWorkspaceRootIsUnset(t *testing.T) {
 		t.Fatal("a containerized runtime with no workspace root accepted a path")
 	}
 }
+
+func TestAgentPathRefusesARelativePath(t *testing.T) {
+	rt := rtFor("/state/work/a1", true)
+	if _, err := rt.agentPath("relative/path"); !errors.Is(err, ErrOutsideWorkspace) {
+		t.Fatalf("accepted a relative path: %v", err)
+	}
+}
+
+func TestAgentPathHandlesExplicitTraversal(t *testing.T) {
+	rt := rtFor("/state/work/a1", true)
+	if _, err := rt.agentPath("/state/work/a1/../../etc/passwd"); !errors.Is(err, ErrOutsideWorkspace) {
+		t.Fatalf("accepted a path that escapes via ..: %v", err)
+	}
+}
+
+func TestAgentPathHandlesTrailingSlashRoot(t *testing.T) {
+	rt := rtFor("/state/work/a1/", true)
+	got, err := rt.agentPath("/state/work/a1/pkg/x.go")
+	if err != nil {
+		t.Fatalf("agentPath: %v", err)
+	}
+	if got != AgentPath("/work/pkg/x.go") {
+		t.Fatalf("got %q, want /work/pkg/x.go", got)
+	}
+}
+
+func TestBridgePathReversesTheTranslation(t *testing.T) {
+	rt := rtFor("/state/work/a1", true)
+	got, err := rt.bridgePath("/work/cmd/marshal/main.go")
+	if err != nil {
+		t.Fatalf("bridgePath: %v", err)
+	}
+	if got != "/state/work/a1/cmd/marshal/main.go" {
+		t.Fatalf("got %q, want /state/work/a1/cmd/marshal/main.go", got)
+	}
+}
+
+func TestBridgePathMapsTheWorkspaceRootItself(t *testing.T) {
+	rt := rtFor("/state/work/a1", true)
+	got, err := rt.bridgePath("/work")
+	if err != nil {
+		t.Fatalf("bridgePath: %v", err)
+	}
+	if got != "/state/work/a1" {
+		t.Fatalf("got %q, want /state/work/a1", got)
+	}
+}
+
+func TestBridgePathIsIdentityForAHostProcessAgent(t *testing.T) {
+	rt := rtFor("/home/me/code", false)
+	got, err := rt.bridgePath("/home/me/code/pkg/x.go")
+	if err != nil {
+		t.Fatalf("bridgePath: %v", err)
+	}
+	if got != "/home/me/code/pkg/x.go" {
+		t.Fatalf("got %q, want the path unchanged", got)
+	}
+}
+
+func TestBridgePathLeavesUntranslatablePathsAsIs(t *testing.T) {
+	rt := rtFor("/state/work/a1", true)
+	got, err := rt.bridgePath("/something/else")
+	if err != nil {
+		t.Fatalf("bridgePath: %v", err)
+	}
+	if got != "/something/else" {
+		t.Fatalf("got %q, want /something/else", got)
+	}
+}

@@ -152,7 +152,7 @@ func testFleetWithGate(t *testing.T, gate gateResult) *Fleet {
 		t.Skip("git not installed")
 	}
 	tr := &scriptedTransport{gate: gate}
-	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	return f
 }
 

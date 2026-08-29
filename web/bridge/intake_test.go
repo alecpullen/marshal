@@ -307,7 +307,7 @@ func testFleetWithContainerizedAgent(t *testing.T, root string) (*Fleet, *captur
 	}
 	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	tr := &capturingTransport{}
-	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	t.Cleanup(f.Close)
 	return f, tr
 }
@@ -359,5 +359,36 @@ func TestWorktreePruneSendsTheAgentsView(t *testing.T) {
 	got, _ := tr.params("session/worktree_prune")["cwd"].(string)
 	if got != "/work" {
 		t.Fatalf("cwd = %q, want /work", got)
+	}
+}
+
+func TestSpawnSendsTheAgentsViewOfCwd(t *testing.T) {
+	root := t.TempDir()
+	f, tr := testFleetWithContainerizedAgent(t, root)
+
+	a := Agent{ID: "a1", Project: root, SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	if err := f.ws.PutAgent(a); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := f.startRuntime(context.Background(), a)
+	if err != nil {
+		t.Fatalf("startRuntime: %v", err)
+	}
+	// Mark it containerized (the capturingTransport is not a *containerTransport,
+	// so the type assertion in startRuntime set containerized=false).
+	rt.containerized = true
+
+	// Mirror Spawn's session/new call: translate the bridge-view root
+	// into the agent's view and send it as cwd.
+	agentCwd, err := rt.agentPath(root)
+	if err != nil {
+		t.Fatalf("agentPath: %v", err)
+	}
+	if _, err := rt.child.Request(context.Background(), "session/new", map[string]any{"cwd": agentCwd}); err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	got, _ := tr.params("session/new")["cwd"].(string)
+	if got != "/work" {
+		t.Fatalf("session/new cwd = %q, want /work", got)
 	}
 }

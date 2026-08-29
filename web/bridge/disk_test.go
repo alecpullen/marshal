@@ -25,7 +25,7 @@ func testFleetWithState(t *testing.T) *Fleet {
 	stateDir := t.TempDir()
 	f := NewFleet(ws, "unused", nil, stateDir, Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
-	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
 	t.Cleanup(f.Close)
 	return f
 }
@@ -84,7 +84,7 @@ func testFleetWithStateAndGate(t *testing.T, gate gateResult) *Fleet {
 		t.Skip("git not installed")
 	}
 	tr := &scriptedTransport{gate: gate}
-	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	return f
 }
 

@@ -63,9 +63,9 @@ filesystem view, and the trusted-roots validation accepts it.
 | Area | Result |
 |---|---|
 | `session/new` with translated `cwd` | **Pass** |
-| Container caps (CPU, memory) | **Pass** |
+| Container caps (CPU, memory) | **Partial** |
 | No host escape | **Pass** |
-| Git and ca-certificates in image | **Pass** |
+| Git and ca-certificates in image | **Partial** |
 | `session/worktree_prune` with translated `cwd` | **Pass** |
 | MCP `/mcp` authentication | **Pass** |
 | Agent isolation (local-path, shared bind mount) | **Pass** (by design — shared checkout) |
@@ -331,7 +331,7 @@ plan. These checks establish that the container is a real boundary.
   throttling / OOM-kill inside the cap) rather than the container
   silently running unlimited.
 - **Source:** S1 (containerized agent runtime).
-- **Status:** Pass
+- **Status:** Partial
 - **Findings:** S1 campaign 2026-08-29: spawned a local-path agent and
   inspected the cgroup limits. `memory.max` reads 4294967296 (4 GB),
   `cpu.max` reads `200000 100000` (2 cores). The caps match the
@@ -362,7 +362,7 @@ plan. These checks establish that the container is a real boundary.
   `git ls-remote https://...`). The default image installs both
   deliberately; a derived image must inherit them.
 - **Source:** S0 task 1 (the image) / S1.
-- **Status:** Pass
+- **Status:** Partial
 - **Findings:** S1 campaign 2026-08-29: `docker exec` into a live agent
   container confirms `git version 2.39.5` and
   `/etc/ssl/certs/ca-certificates.crt` is present. A live

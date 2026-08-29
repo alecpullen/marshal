@@ -23,7 +23,7 @@ func testFleetWithVersion(t *testing.T, version string) *Fleet {
 	}
 	f := NewFleet(ws, "unused", nil, "", Limits{}, version, nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
-	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
 	t.Cleanup(f.Close)
 	return f
 }
@@ -51,7 +51,7 @@ func testFleetWithStateVolume(t *testing.T, vol string) *Fleet {
 
 func TestStateVolumeIsConfigurable(t *testing.T) {
 	f := testFleetWithStateVolume(t, "custom-state")
-	child := f.newRuntime(Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile()})
+	child, _ := f.newRuntime(Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile()})
 	tr, ok := child.Transport.(*containerTransport)
 	if !ok {
 		t.Skip("no container runtime; newRuntime fell back to a host process")
@@ -119,7 +119,7 @@ func TestDeclaredMountsTranslateAnInsidePath(t *testing.T) {
 func (f *Fleet) spawnWithAgentVersion(ctx context.Context, version string) (string, error) {
 	bin, args, env := helperCommand("registry-version")
 	env = append(env, "HELPER_VERSION="+version)
-	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
 	return f.Spawn(ctx, "/p", SpawnOptions{Prompt: "x"})
 }
 
@@ -154,7 +154,7 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	}
 	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
-	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
 	f.slots = newSlots(limit)
 	t.Cleanup(f.Close)
 	return f
@@ -233,7 +233,7 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	}
 	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry-merged")
-	f.newRuntime = func(a Agent) *Child { return &Child{MarshalBin: bin, Args: args, Env: env} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
 	t.Cleanup(f.Close)
 
 	ctx, cancel := testContext(t)
@@ -348,7 +348,7 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 	// Invoke the production newRuntime closure directly so no real
 	// container or session/new round-trip is needed. The closure must
 	// copy f.agentEnv into the ContainerConfig.
-	child := f.newRuntime(Agent{ID: "abc", Project: "/p", Profile: RuntimeProfile{Image: "img"}})
+	child, _ := f.newRuntime(Agent{ID: "abc", Project: "/p", Profile: RuntimeProfile{Image: "img"}})
 	tr, ok := child.Transport.(*containerTransport)
 	if !ok {
 		// No container runtime on this host: the production closure falls
@@ -729,7 +729,7 @@ func testFleetWithLimits(t *testing.T, limits Limits) *Fleet {
 	stateDir := t.TempDir()
 	f := NewFleet(ws, "unused", nil, stateDir, limits, "", nil, "marshal-state")
 	tr := &scriptedTransport{gate: gateResult{OK: true}}
-	f.newRuntime = func(a Agent) *Child { return &Child{Transport: tr} }
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	t.Cleanup(f.Close)
 	return f
 }

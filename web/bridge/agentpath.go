@@ -13,15 +13,13 @@ var ErrOutsideWorkspace = errors.New("bridge: path is outside the agent's worksp
 
 // AgentPath is a path in the agent's namespace, not the bridge's.
 //
-// Its only constructor is (*agentRuntime).agentPath. That is deliberate:
-// the previous approach — a convention of translating at each call site
-// — was applied at exactly one of six sites, and the five misses cost a
-// verification campaign to diagnose. Making the type unconstructable
-// from a bare string turns a missed call site into a build failure.
-//
-// Paths that were never the bridge's are NOT this type. session/diff's
-// path is repo-relative and comes from the agent's own diff output; it
-// stays a plain string, and the absence of the type says so.
+// Its sanctioned constructor is (*agentRuntime).agentPath. A raw
+// AgentPath("...") conversion is allowed for paths that were never the
+// bridge's (e.g. the non-fleet path, or a repo-relative diff path), but
+// using it for a bridge path is a review flag, not a build error. The
+// type turns a missed call site that passes a typed sessionParams into
+// a build failure; map[string]any call sites are not protected and must
+// be checked by review.
 type AgentPath string
 
 // agentPath converts a path as the bridge sees it into the agent's view.
@@ -51,4 +49,23 @@ func (rt *agentRuntime) agentPath(bridgePath string) (AgentPath, error) {
 		return "", err
 	}
 	return AgentPath(filepath.Join(containerWorkDir, rel)), nil
+}
+
+// bridgePath converts a path as the agent sees it back into the bridge's
+// view — the inverse of agentPath. A non-containerized agent shares the
+// bridge's filesystem, so the translation is the identity. A containerized
+// agent sees its workspace at containerWorkDir; a path under that is
+// mapped back onto rt.root. A path outside the agent's workspace is
+// returned unchanged: it may be an error message rather than a path.
+func (rt *agentRuntime) bridgePath(agentPath string) (string, error) {
+	if !rt.containerized {
+		return agentPath, nil
+	}
+	if agentPath == containerWorkDir {
+		return rt.root, nil
+	}
+	if strings.HasPrefix(agentPath, containerWorkDir+"/") {
+		return filepath.Join(rt.root, strings.TrimPrefix(agentPath, containerWorkDir+"/")), nil
+	}
+	return agentPath, nil
 }

@@ -960,10 +960,14 @@ func TestAnswersRoundTrip(t *testing.T) {
 }
 
 func TestSessionParamsCarryTheAgentsView(t *testing.T) {
-	var info sessionInfo
-	info.Cwd = AgentPath("/work")
-	if string(info.Cwd) != "/work" {
-		t.Fatalf("got %q", info.Cwd)
+	reg := NewRegistry(&Child{})
+	reg.track("s-1", AgentPath("/work"))
+	info, ok := reg.lookup("s-1")
+	if !ok {
+		t.Fatal("session not tracked")
+	}
+	if info.Cwd != AgentPath("/work") {
+		t.Fatalf("Cwd = %q, want /work", info.Cwd)
 	}
 }
 

@@ -165,6 +165,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownAgent):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrOutsideWorkspace):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 	}
@@ -452,10 +454,22 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
 		params["cursor"] = cursor
 	}
-	reg, _, err := s.registryForRoot(cwd)
-	if err != nil {
-		writeErr(w, err)
-		return
+	var reg *Registry
+	if s.fleet != nil {
+		rt, err := s.fleet.runtimeForRoot(cwd)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		agentCwd, err := rt.agentPath(cwd)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		params["cwd"] = string(agentCwd)
+		reg = rt.reg
+	} else {
+		reg = s.reg
 	}
 	res, err := reg.child.Request(r.Context(), "session/list", params)
 	if err != nil {
@@ -513,10 +527,16 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 	var reg *Registry
 	var log *EventLog
 	var sessionID string
-	var err error
 	cwd := body.Cwd
+	var agentCwd AgentPath
 	if s.fleet != nil {
-		reg, log, sessionID, err = s.registryForSession(id)
+		rt, err := s.fleet.RuntimeForSession(id)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		reg, log, sessionID = rt.reg, rt.log, rt.sessionID
+		agentCwd, err = rt.agentPath(cwd)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -526,25 +546,11 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 			cwd = s.reg.RootCwd
 		}
 		reg, log, sessionID = s.reg, s.log, id
+		agentCwd = AgentPath(cwd)
 	}
 	if cwd == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cwd is required (body or configured root)"})
 		return
-	}
-	var agentCwd AgentPath
-	if s.fleet != nil {
-		rt, rerr := s.fleet.RuntimeForSession(id)
-		if rerr != nil {
-			writeErr(w, rerr)
-			return
-		}
-		agentCwd, err = rt.agentPath(cwd)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-	} else {
-		agentCwd = AgentPath(cwd)
 	}
 	if err := reg.Load(r.Context(), agentCwd, sessionID); err != nil {
 		writeErr(w, err)

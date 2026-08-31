@@ -200,7 +200,12 @@
   .chat {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    /*
+      100% of the shell's main pane, not the viewport. With 100vh the chat
+      is as tall as the window while sitting inside an already-bounded
+      pane, so the composer is pushed below the fold.
+    */
+    height: 100%;
     max-width: 960px;
     margin: 0 auto;
     background: var(--color-surface);

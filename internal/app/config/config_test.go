@@ -1538,10 +1538,14 @@ func TestSkillsAutoloadRoundTripsThroughSave(t *testing.T) {
 	}
 }
 
-// The default must stay empty: nothing autoloads unless asked for.
-func TestSkillsAutoloadDefaultsEmpty(t *testing.T) {
-	if got := Default().Skills.Autoload; len(got) != 0 {
-		t.Fatalf("default Autoload = %v, want empty", got)
+// The default ships with the entry-point skill so skill activation works
+// out of the box, including for users with no embedding model. Users opt
+// out via skills.autoload = [] or the /skills panel toggle.
+func TestSkillsAutoloadDefaultsToEntryPoint(t *testing.T) {
+	want := []string{"using-skills"}
+	got := Default().Skills.Autoload
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("default Autoload = %v, want %v", got, want)
 	}
 }
 

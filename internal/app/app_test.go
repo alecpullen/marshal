@@ -1388,11 +1388,13 @@ func TestRunResumesExistingSession(t *testing.T) {
 	// isolated HOME the developer's own config leaks into the assertion —
 	// a populated skills.autoload, for one, prepends skill bodies to the
 	// transcript and pushes the resumed message out of the captured view.
+	// The default autoload now ships the using-skills entry point, so the
+	// project config opts out to keep the transcript deterministic.
 	t.Setenv("HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"test\"\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"test\"\n[skills]\nautoload = []\n"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -2069,13 +2071,17 @@ func TestRunReloadsAfterInlineTrust(t *testing.T) {
 func TestStartRuntimeLoadsExistingSessionWithoutDuplicateInsert(t *testing.T) {
 	tmp := t.TempDir()
 	// Isolate from the developer's real user config: an autoloaded skill
-	// adds a system message and throws off the transcript count.
+	// adds a system message and throws off the transcript count. The
+	// default autoload now ships the using-skills entry point, so the
+	// project config opts out to keep the transcript deterministic.
 	t.Setenv("HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}
 	configContent := `[project]
 name = "existing-test"
+[skills]
+autoload = []
 [profile]
 default = "mock_profile"
 [providers.mock]
@@ -3851,6 +3857,9 @@ func TestRuntimeNewSessionResetsState(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("session-test")
+	// The default autoload injects the using-skills body into a fresh
+	// session; opt out so the reset assertion sees an empty transcript.
+	cfg.Skills.Autoload = nil
 
 	rt, err := StartRuntime(ctx,
 		WithWorkingDir(tmp),

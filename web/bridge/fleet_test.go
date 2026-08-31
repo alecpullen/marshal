@@ -697,7 +697,7 @@ func TestStopAgentRemovesGitSourcedTree(t *testing.T) {
 	if _, err := os.Stat(treeDir); err != nil {
 		t.Fatalf("working tree was not created: %v", err)
 	}
-	f.Pause(id)
+	f.stopAgent(id)
 	if _, err := os.Stat(treeDir); !os.IsNotExist(err) {
 		t.Fatalf("working tree was not removed after stop: %v", err)
 	}
@@ -809,5 +809,64 @@ func TestStatePathsAreDistinctPerAgent(t *testing.T) {
 	}
 	if workspaceDirFor("/state", "a1") == workspaceDirFor("/state", "a2") {
 		t.Fatal("two agents share a workspace directory")
+	}
+}
+
+func TestFleetCloseDetachesRatherThanStopping(t *testing.T) {
+	f := testFleet(t)
+	tr := newFakeTransport()
+	f.newRuntime = func(a Agent) (*Child, error) {
+		return &Child{Transport: tr, Containerized: true}, nil
+	}
+	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	if err := f.ws.PutAgent(a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.startRuntime(context.Background(), a); err != nil {
+		t.Fatalf("startRuntime: %v", err)
+	}
+
+	f.Close()
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.detached != 1 {
+		t.Fatalf("agent detached %d times, want 1 — the bridge killed its own agents", tr.detached)
+	}
+}
+
+func TestPauseKeepsAGitSourcedWorkspace(t *testing.T) {
+	f := testFleetWithStateAndGate(t, gateResult{OK: true})
+	registerRepo(t, f, "r1")
+	id := spawnGitAgent(t, f)
+	tree := workspaceDirFor(f.stateDir, id)
+	if _, err := os.Stat(tree); err != nil {
+		t.Fatalf("working tree was not created: %v", err)
+	}
+
+	if err := f.Pause(id); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Resume documents itself as restarting "against its existing
+	// workspace"; pausing must not delete it.
+	if _, err := os.Stat(tree); err != nil {
+		t.Fatalf("Pause removed the workspace Resume needs: %v", err)
+	}
+}
+
+func TestPauseResumeKeepsAGitSourcedAgentWorking(t *testing.T) {
+	f := testFleetWithStateAndGate(t, gateResult{OK: true})
+	registerRepo(t, f, "r1")
+	id := spawnGitAgent(t, f)
+
+	if err := f.Pause(id); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := f.Resume(context.Background(), id); err != nil {
+		t.Fatalf("Resume after Pause: %v", err)
+	}
+	if _, err := f.runtimeForAgent(id); err != nil {
+		t.Fatalf("resumed agent has no live runtime: %v", err)
 	}
 }

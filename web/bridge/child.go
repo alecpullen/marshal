@@ -69,6 +69,17 @@ type Child struct {
 	// Transport supplies each generation's streams and lifecycle. Nil
 	// means a local process built from MarshalBin, Args, and Env.
 	Transport agentTransport
+	// Containerized reports whether this child runs in a container whose
+	// filesystem view differs from the bridge's, so paths crossing the
+	// boundary must be translated (see agentRuntime.agentPath). The
+	// production newRuntime closure sets it wherever it sets a container
+	// Transport.
+	//
+	// It is a field rather than a type assertion on Transport because a
+	// type assertion no test transport can satisfy leaves every
+	// translating call site untestable — which is how the primary
+	// translation site shipped with only a tautological test.
+	Containerized bool
 
 	// OnRestart is invoked after each unexpected exit, once the
 	// replacement process has spawned. Intended for session resume.
@@ -153,6 +164,36 @@ func (c *Child) Stop() {
 	kill := time.AfterFunc(stopGrace, c.killCurrent)
 	defer kill.Stop()
 	<-c.done
+}
+
+// Detach releases the agent without ending it: the container keeps
+// running under its name so a later Open reattaches instead of starting
+// a duplicate. Used when the bridge is going away and the agent is not.
+//
+// Unlike Stop it does not wait on c.done. supervise blocks in
+// tr.Wait(), which for a container is `docker wait` — and the container
+// is deliberately still running, so that never returns. The supervise
+// goroutine stays parked; Detach runs only on the shutdown path, and
+// the process exits immediately after.
+func (c *Child) Detach() {
+	c.mu.Lock()
+	if c.stopping || !c.started {
+		c.mu.Unlock()
+		return
+	}
+	// Set before detaching: supervise checks this after Wait returns
+	// and respawns when it is false.
+	c.stopping = true
+	stdin := c.stdin
+	tr := c.transport
+	c.mu.Unlock()
+
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if tr != nil {
+		_ = tr.Detach()
+	}
 }
 
 // Request sends one JSON-RPC request and blocks until the matching

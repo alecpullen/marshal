@@ -142,6 +142,7 @@ func (t *scriptedTransport) serve(r io.Reader, w io.WriteCloser) {
 func (t *scriptedTransport) Wait() error                { return nil }
 func (t *scriptedTransport) Signal(sig os.Signal) error { return nil }
 func (t *scriptedTransport) Kill() error                { return nil }
+func (t *scriptedTransport) Detach() error              { return nil }
 
 // testFleetWithGate builds a fleet whose agent child scripts the given
 // gate result for session/verify.

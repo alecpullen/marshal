@@ -1,9 +1,12 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -978,5 +981,114 @@ func TestSessionParamsSerialiseAsPlainStrings(t *testing.T) {
 	}
 	if string(blob) != `{"cwd":"/work","sessionId":"s1"}` {
 		t.Fatalf("wire format changed: %s", blob)
+	}
+}
+
+// captureTransport is a fake agentTransport that records the method and
+// raw JSON params of every lifecycle request it receives, so tests can
+// assert on the exact wire payload the bridge sends to the agent.
+type captureTransport struct {
+	mu   sync.Mutex
+	seen []capturedFrame
+}
+
+type capturedFrame struct {
+	method string
+	params string
+}
+
+func (t *captureTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go t.serve(stdinR, stdoutW)
+	return stdinW, stdoutR, io.NopCloser(strings.NewReader("")), nil
+}
+
+func (t *captureTransport) serve(r io.Reader, w io.WriteCloser) {
+	defer w.Close()
+	sc := bufio.NewScanner(r)
+	enc := json.NewEncoder(w)
+	for sc.Scan() {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
+			continue
+		}
+		t.mu.Lock()
+		t.seen = append(t.seen, capturedFrame{method: req.Method, params: string(req.Params)})
+		t.mu.Unlock()
+		var result any
+		switch req.Method {
+		case "session/new":
+			result = map[string]any{"sessionId": "s-1"}
+		default:
+			result = map[string]any{}
+		}
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}
+}
+
+func (t *captureTransport) Wait() error                { return nil }
+func (t *captureTransport) Signal(sig os.Signal) error { return nil }
+func (t *captureTransport) Kill() error                { return nil }
+func (t *captureTransport) Detach() error              { return nil }
+
+// TestLifecycleRequestsCarryMCPServers asserts that the wire payload of
+// session/new, session/load and session/resume includes an explicit
+// empty "mcpServers" array, which the agent's lifecycle validation
+// requires. session/delete must keep its natural payload (no
+// mcpServers), since the agent's delete validation does not require it.
+func TestLifecycleRequestsCarryMCPServers(t *testing.T) {
+	tr := &captureTransport{}
+	c := &Child{Transport: tr}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(c.Stop)
+	r := NewRegistry(c)
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Load(ctx, AgentPath("/tmp/work"), "s-2"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// resumeAll is what the child-restart hook runs; invoke it directly
+	// so the test does not depend on a real process respawn.
+	r.resumeAll()
+	if err := r.Delete(ctx, "s-1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	// session/new, session/load and session/resume must carry an
+	// explicit empty mcpServers array; session/delete must not.
+	require := func(method, want string) {
+		t.Helper()
+		for _, f := range tr.seen {
+			if f.method == method {
+				if !strings.Contains(f.params, want) {
+					t.Fatalf("%s payload %s missing %s", method, f.params, want)
+				}
+				return
+			}
+		}
+		t.Fatalf("no %s frame captured; got %v", method, tr.seen)
+	}
+	require("session/new", `"mcpServers":[]`)
+	require("session/load", `"mcpServers":[]`)
+	require("session/resume", `"mcpServers":[]`)
+	require("session/delete", `"cwd":"/tmp/work"`)
+	for _, f := range tr.seen {
+		if f.method == "session/delete" && strings.Contains(f.params, `"mcpServers"`) {
+			t.Fatalf("session/delete payload unexpectedly carries mcpServers: %s", f.params)
+		}
 	}
 }

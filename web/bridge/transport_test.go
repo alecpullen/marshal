@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"bufio"
+	"encoding/json"
 	"io"
 	"os"
 	"sync"
@@ -13,6 +15,7 @@ type fakeTransport struct {
 	opens       int
 	signals     []os.Signal
 	killed      bool
+	detached    int
 	exit        chan error
 	toChild     *io.PipeWriter
 	fromChld    *io.PipeReader
@@ -31,11 +34,30 @@ func (f *fakeTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, er
 	outR, outW := io.Pipe()
 	f.toChild = inW
 	f.fromChld = outR
-	// Echo nothing; tests drive outW directly via ChildStdout.
-	go func() { _, _ = io.Copy(io.Discard, inR) }()
+	// Answer every request with an empty result so the child's
+	// initialize handshake (checkAgentVersion) does not block.
+	go f.serve(inR, outW)
 	f.childStdout = outW
 	errR, _ := io.Pipe()
 	return inW, outR, errR, nil
+}
+
+// serve reads JSON-RPC requests from the child and answers each with an
+// empty result, so a request that blocks on a response (the initialize
+// handshake) returns instead of hanging the test.
+func (f *fakeTransport) serve(r io.Reader, w io.WriteCloser) {
+	defer w.Close()
+	sc := bufio.NewScanner(r)
+	enc := json.NewEncoder(w)
+	for sc.Scan() {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
+			continue
+		}
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+	}
 }
 
 func (f *fakeTransport) Wait() error { return <-f.exit }
@@ -59,6 +81,13 @@ func (f *fakeTransport) Kill() error {
 	f.mu.Lock()
 	f.killed = true
 	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeTransport) Detach() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.detached++
 	return nil
 }
 

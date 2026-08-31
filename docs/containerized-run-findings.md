@@ -383,18 +383,33 @@ the bridge; the bridge must find it again.
   (not the container). Confirm the agent container is still running
   (`docker ps`) and its socket still answers.
 - **Source:** S1 (containerized agent runtime).
-- **Status:** Fail
-- **Findings:** S1 campaign 2026-08-29: the agent container does not
-  survive the bridge stopping. The agent container has
-  `AutoRemove: true`, and the `marshal acp --listen` process exits when
-  its only client (the bridge) disconnects. When the bridge container
-  stops, the ACP connection drops, the agent process exits, and the
-  container is auto-removed. This is a design issue, not a path-
-  translation bug: the agent process needs to stay alive without a
-  connected client for reattach to work. **Triage:** this is a follow-up
-  for the containerized agent runtime, not for the path-translation
-  sub-project. The agent's `--listen` mode should keep the process
-  alive across client disconnects.
+- **Status:** Pass
+- **Findings:** Agent-lifetime campaign 2026-08-31 (podman 6.1.0,
+  libkrun machine, macOS 15 / arm64): the agent container survives the
+  bridge stopping. `docker stop marshal-bridge`, then:
+
+  ```
+  $ podman ps --format '{{.Names}} {{.Status}}'   # after the stop
+  marshal-agent-4887d2963b2db892 Up 27 seconds
+  ```
+
+  The agent process is still serving (`/proc/1/cmdline` is
+  `marshal acp --listen unix:///run/marshal/agent.sock`) and its socket
+  is present (`srw------- /run/marshal/agent.sock`).
+
+  **Correction of the earlier diagnosis.** The S1 campaign (2026-08-29)
+  recorded two causes: `AutoRemove: true`, and "`marshal acp --listen`
+  exits when its only client disconnects". The second was wrong —
+  `internal/acp/listen.go:19` is explicit that a hangup is not a
+  shutdown; the agent process stays up across client disconnects. The
+  real cause was the bridge stopping its own agents on exit:
+  `cmd/webbridge/main.go:344` → `fleet.Close()` → `child.Stop()` →
+  `containerTransport.Signal` running `docker stop`, with `--rm`
+  removing the container afterwards. `Fleet.Close` now detaches
+  (`child.Detach()`) instead: the bridge goes away, the agents do not.
+  `--rm` is retained deliberately — it is the cleanup for a container
+  that stops on its own, and `Kill()` remains the force-remove
+  backstop.
 
 ### R.2 — Restart, confirm same container ids
 
@@ -403,11 +418,33 @@ the bridge; the bridge must find it again.
   names/ids) rather than starting duplicates. `Open` prefers reattach
   when a container under the agent's name is already running.
 - **Source:** S1 / S1 completion plan.
-- **Status:** Blocked
-- **Findings:** Blocked by R.1: the agent container does not survive the
-  bridge stopping, so there is nothing to reattach to. The reattach
-  code path (`containerTransport.Open` checking for a running container)
-  is unit-tested but cannot be exercised live until R.1 is resolved.
+- **Status:** Pass
+- **Findings:** Agent-lifetime campaign 2026-08-31: same container id
+  before and after the bridge restart — a reattach, not a duplicate:
+
+  ```
+  $ podman ps --no-trunc --format '{{.ID}} {{.Names}}'   # before restart
+  53d31ad5805acb2e2e6a342387df19df4a042cf7e9af4e2a3e8df1cfe4ce6a9a marshal-agent-4887d2963b2db892
+  $ podman start marshal-bridge
+  $ podman ps --no-trunc --format '{{.ID}} {{.Names}}'   # after restart
+  88eee5b6605bd48aee6d441fe74b8e7994e97267aab95635c824145becd47211 marshal-bridge
+  53d31ad5805acb2e2e6a342387df19df4a042cf7e9af4e2a3e8df1cfe4ce6a9a marshal-agent-4887d2963b2db892
+  ```
+
+  The bridge lists the agent as live with `"interrupted": true` (the
+  restart-resume marker), and no duplicate container exists.
+
+  **A pre-existing bug surfaced here and was fixed.** The first restart
+  attempt failed: `ReattachAll` → `restoreSession` → `Registry.Load`
+  sent `session/load` without the `mcpServers` field, which the agent's
+  lifecycle validation requires as an explicit empty array
+  (`internal/acp/session.go:269`), so the reattached agent was rejected
+  with `-32602` and then stopped by the bridge's error path. The
+  bridge's `sessionParams` now carries `mcpServers` at the
+  `session/new`, `session/load`, and `session/resume` call sites
+  (`session/delete` never required it). `Fleet.Spawn` had worked only
+  because it bypassed the typed struct with a map that included
+  `mcpServers`.
 
 ### R.3 — Agent answers with prior context
 
@@ -417,9 +454,33 @@ the bridge; the bridge must find it again.
   Notifications emitted while detached are dropped by design; the
   re-sync is what must work.
 - **Source:** S1 completion plan (Resume restores the ACP session).
-- **Status:** Blocked
-- **Findings:** Blocked by R.1: the agent container does not survive the
-  bridge restart, so there is no session to resume.
+- **Status:** Pass
+- **Findings:** Agent-lifetime campaign 2026-08-31: after the bridge
+  restart and reattach, a prompt that forbids re-reading files —
+  "Without re-reading any file: based only on what you read earlier in
+  this session, what did the README say this project builds, and what
+  command does it give for building it?" — was answered from retained
+  context:
+
+  ```
+  According to what I read earlier, the README says the project builds
+  a `marshal` binary using the command `go build ./cmd/marshal`.
+  ```
+
+  The pre-restart turn had asked the agent to read `README.md` and
+  answer the same question; the post-restart answer matches it without
+  touching the file. The persisted session id was restored and the
+  re-sync worked end to end.
+
+  **The Pause/Resume workspace bug was found and fixed in this
+  campaign's sub-project.** `Fleet.Pause` had delegated to
+  `stopAgent`, which for a git-sourced agent also deleted the working
+  tree that `Resume` documents itself as restarting against — while
+  `Prune` simultaneously protected a paused agent's mirror on the
+  premise that "its work is still there". Both paths now go through
+  `releaseAgent(id, destroy)`: Pause parks (detach, keep the
+  workspace), retirement (`stopAgent`) still destroys. The codebase's
+  stated intent and its behaviour now agree.
 
 ---
 

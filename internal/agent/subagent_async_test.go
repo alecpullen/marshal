@@ -544,7 +544,7 @@ func TestAgentKillSchemaAdvertisesID(t *testing.T) {
 	if !strings.Contains(string(kill.Schema), `"additionalProperties":false`) {
 		t.Fatal("schema must reject additional properties")
 	}
-	if !strings.Contains(kill.Description, "agent.await") {
+	if !strings.Contains(kill.Description, "agent.output") {
 		t.Fatal("description must document the asynchronous terminal-state follow-up")
 	}
 }

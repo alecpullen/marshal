@@ -258,7 +258,7 @@ type agentKillArgs struct {
 func NewSubagentKillTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
 		Name:        "agent.kill",
-		Description: `Cancel a background subagent started by agent.run. Kills are immediate but asynchronous: the child's context is cancelled and its normal completion path marks it failed with "context canceled" and delivers a [subagent N failed] report, so call agent.await (or agent.output) afterwards to observe the terminal state. Returns "killed", "already finished", or an error for an unknown id. Kills cannot be used on pipeline/SDD cards that share this session (they have no cancel handle).`,
+		Description: `Cancel a background subagent. Kills are immediate but asynchronous: the child's context is cancelled and its normal completion path marks it failed with "context canceled". For a child started by agent.run, a [subagent N failed] report is delivered; a pipeline/SDD card that shares this session may also be killable when it carries a cancel handle, but it delivers no [subagent N failed] report — use agent.output to observe its terminal state. Returns "killed", "already finished", or an error for an unknown id. A card with no cancel handle cannot be killed from here.`,
 		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."}},"required":["id"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
@@ -289,12 +289,12 @@ func NewSubagentKillTool(state *session.State) registry.Tool {
 		if !state.CancelSubagent(args.ID) {
 			return registry.ToolResult{
 				Summary: fmt.Sprintf("subagent %d cannot be killed", args.ID),
-				Content: fmt.Sprintf("Subagent %d (%s) is running but has no cancel handle — it was not started by agent.run (a pipeline/SDD card sharing this session) and cannot be killed from here.", args.ID, v.Label),
+				Content: fmt.Sprintf("Subagent %d (%s) is running but no cancel handle is stored for this card (it may be a pipeline/SDD card sharing this session, or a card whose cancel was already consumed), so it cannot be killed from here.", args.ID, v.Label),
 			}, nil
 		}
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("killed subagent %d", args.ID),
-			Content: fmt.Sprintf("Subagent %d (%s) cancelled. Its completion path will mark it failed (\"context canceled\") and deliver a [subagent %d failed] report; call agent.await or agent.output with \"id\": %d to observe the terminal state.", args.ID, v.Label, args.ID, args.ID),
+			Content: fmt.Sprintf("Subagent %d (%s) cancelled. Its completion path will mark it failed (\"context canceled\"). If it was started by agent.run, a [subagent %d failed] report will be delivered; otherwise (a pipeline/SDD card) no report is pushed — use agent.output with \"id\": %d to observe its terminal state.", args.ID, v.Label, args.ID, args.ID),
 		}, nil
 	}
 	return tool

@@ -1,12 +1,17 @@
 ---
 name: systematic-debugging
-description: Find the root cause of a bug, test failure, crash, or unexpected behaviour before changing any code. Use the moment something does not work as expected, and especially when a first fix attempt did not work.
+description: Find the root cause of a bug, test failure, crash, or unexpected behaviour before changing any code. Also use for open-ended investigations into why a system misbehaves or behaves inconsistently, even when no fix is requested. Use the moment something does not work as expected, and especially when a first fix attempt did not work.
 risk: read_only
 ---
 
 # Systematic Debugging
 
 The goal is to find the cause. Changing code before you have one is guessing, and guessing is what turns a one-line bug into an afternoon.
+
+The same loop applies to investigations with no fix requested ("why does
+config behave differently across machines?"): reproduce, hypothesise, test
+cheaply, and report the cause with the evidence that confirms it — not a
+list of files you read.
 
 ## The loop
 

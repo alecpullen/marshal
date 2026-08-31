@@ -48,6 +48,35 @@ func TestLoadSkillsIncludesBuiltInExecutingPlansSkill(t *testing.T) {
 	}
 }
 
+func TestLoadSkillsIncludesBuiltInWritingPlansSkill(t *testing.T) {
+	idx, err := LoadSkills(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	skill, ok := idx.Load("marshal-writing-plans")
+	if !ok {
+		t.Fatal("built-in writing-plans skill is missing")
+	}
+	if skill.Description == "" || !strings.Contains(skill.Body, "marshal-executing-plans") {
+		t.Fatalf("built-in skill is incomplete: %+v", skill)
+	}
+}
+
+func TestProjectSkillOverridesBuiltInWritingPlansSkill(t *testing.T) {
+	project := t.TempDir()
+	writeSkillFile(t, project, "marshal-writing-plans.md", skillContent(
+		"marshal-writing-plans", "project override"))
+
+	idx, err := LoadSkills(t.TempDir(), project)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	skill, ok := idx.Load("marshal-writing-plans")
+	if !ok || skill.Description != "project override" {
+		t.Fatalf("skill = %+v, want project override", skill)
+	}
+}
+
 func TestProjectSkillOverridesBuiltInExecutingPlansSkill(t *testing.T) {
 	project := t.TempDir()
 	writeSkillFile(t, project, "marshal-executing-plans.md", skillContent(
@@ -73,6 +102,7 @@ func TestBuiltInSkillsAllLoad(t *testing.T) {
 		"dispatching-parallel-agents",
 		"marshal-executing-plans",
 		"marshal-sdd-plan-authoring",
+		"marshal-writing-plans",
 		"systematic-debugging",
 		"test-driven-development",
 		"verification-before-completion",

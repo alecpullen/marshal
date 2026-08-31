@@ -11,6 +11,9 @@ var marshalSDDPlanAuthoring []byte
 //go:embed builtin/marshal-executing-plans.md
 var marshalExecutingPlans []byte
 
+//go:embed builtin/marshal-writing-plans.md
+var marshalWritingPlans []byte
+
 //go:embed builtin/brainstorming.md
 var brainstormingSkill []byte
 
@@ -37,6 +40,7 @@ func loadBuiltIns(idx *Index) error {
 	for name, raw := range map[string][]byte{
 		"marshal-sdd-plan-authoring":     marshalSDDPlanAuthoring,
 		"marshal-executing-plans":        marshalExecutingPlans,
+		"marshal-writing-plans":          marshalWritingPlans,
 		"brainstorming":                  brainstormingSkill,
 		"test-driven-development":        testDrivenDevelopmentSkill,
 		"work-decomposition":             workDecompositionSkill,

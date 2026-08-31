@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -243,5 +244,41 @@ func TestContainerKillsPartialStartOnDialFailure(t *testing.T) {
 	}
 	if !killed {
 		t.Fatal("a container that never bound its socket was left running")
+	}
+}
+
+func TestContainerDetachExecsNothing(t *testing.T) {
+	var calls [][]string
+	c := newContainerTransport(ContainerConfig{Runtime: "docker", Name: "agent-a1"})
+	c.run = func(bin string, args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return nil, nil
+	}
+
+	if err := c.Detach(); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	// A stop or rm here is exactly the R.1 regression: it is what kills
+	// the agent when the bridge shuts down.
+	if len(calls) != 0 {
+		t.Fatalf("Detach ran runtime commands %v, want none", calls)
+	}
+}
+
+func TestContainerSignalStillStopsTheContainer(t *testing.T) {
+	var calls [][]string
+	c := newContainerTransport(ContainerConfig{Runtime: "docker", Name: "agent-a1"})
+	c.run = func(bin string, args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return nil, nil
+	}
+
+	if err := c.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("Signal: %v", err)
+	}
+	// Signal is Child.Stop's graceful termination step. Without the
+	// stop, every retirement degrades to a force-remove after stopGrace.
+	if len(calls) != 1 || calls[0][0] != "stop" || calls[0][1] != "agent-a1" {
+		t.Fatalf("Signal ran %v, want one [stop agent-a1]", calls)
 	}
 }

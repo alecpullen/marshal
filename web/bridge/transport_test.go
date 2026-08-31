@@ -13,6 +13,7 @@ type fakeTransport struct {
 	opens       int
 	signals     []os.Signal
 	killed      bool
+	detached    int
 	exit        chan error
 	toChild     *io.PipeWriter
 	fromChld    *io.PipeReader
@@ -59,6 +60,13 @@ func (f *fakeTransport) Kill() error {
 	f.mu.Lock()
 	f.killed = true
 	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeTransport) Detach() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.detached++
 	return nil
 }
 

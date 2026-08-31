@@ -235,20 +235,33 @@ func (c *containerTransport) Wait() error {
 	return err
 }
 
-// Signal asks the container to stop. Docker has no general signal verb
-// for graceful shutdown here, so SIGTERM maps to `stop` (which sends
-// SIGTERM then escalates) and anything else is ignored.
+// Signal terminates the container. Docker has no general signal verb
+// here, so SIGTERM maps to `stop` (which sends SIGTERM then escalates)
+// and anything else is ignored. This is Child.Stop's graceful step;
+// Kill's `rm -f` is only the backstop. To release the agent without
+// ending it, use Detach.
 func (c *containerTransport) Signal(sig os.Signal) error {
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
 	if conn != nil {
-		// Closing the connection ends the current ACP session cleanly;
-		// the agent itself keeps running and can be reattached.
 		_ = conn.Close()
 	}
 	_, err := c.exec("stop", c.cfg.Name)
 	return err
+}
+
+// Detach drops the connection and leaves the container running, so the
+// agent outlives the bridge and Open can reattach to it by name.
+func (c *containerTransport) Detach() error {
+	c.mu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.mu.Unlock()
+	if conn != nil {
+		return conn.Close()
+	}
+	return nil
 }
 
 // Kill force-removes the container.

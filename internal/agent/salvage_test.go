@@ -67,6 +67,27 @@ func TestSalvageProseToolCallEnvelopeShape(t *testing.T) {
 	}
 }
 
+// A model emitting Hermes-style XML (the live qwen3.8/LM Studio failure)
+// must have the call executed, not shown to the user as markup.
+func TestSalvageProseToolCallXMLShape(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`<tool_call><function=noop.tool><parameter=path>src/hello.go</parameter></function></tool_call>`,
+			"all done",
+		},
+		FinishReasons: []string{"stop", "stop"},
+	}
+	var executed []string
+	r := newSalvageRunner(t, p, &executed)
+
+	if err := r.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(executed) != 1 {
+		t.Fatalf("tool executed %d times, want 1 (XML tool call was not salvaged)", len(executed))
+	}
+}
+
 // Prose without a tool call must keep the existing accept-as-answer path.
 func TestSalvageLeavesPlainProseAlone(t *testing.T) {
 	p := &agenttest.ScriptedProvider{
@@ -101,12 +122,24 @@ func TestSalvageTextToolCallsUnit(t *testing.T) {
 		wantArgs string
 	}{
 		{"flat shape", `{"name": "noop.tool", "arguments": {"a": 1}}`, true, `{"a": 1}`},
+		{"qwen tool_name shape", `<tool_call>` + "\n" + `{"tool_name": "noop.tool", "arguments": {"a": 1}}]` + "\n" + `</parameter>` + "\n" + `</function>` + "\n" + `</tool_call>`, true, `{"a": 1}`},
 		{"nested function shape", `{"function": {"name": "noop.tool", "arguments": {"a": 2}}}`, true, `{"a": 2}`},
 		{"arguments as JSON string", `{"name": "noop.tool", "arguments": "{\"a\": 3}"}`, true, `{"a": 3}`},
 		{"tool_calls wrapper", `{"tool_calls": [{"name": "noop.tool", "arguments": {}}]}`, true, `{}`},
 		{"tool/args shape", `{"tool": "noop.tool", "args": {"a": 4}}`, true, `{"a": 4}`},
 		{"prose around the JSON", "Let me check.\n" + `{"name": "noop.tool", "arguments": {}}`, true, `{}`},
+		{"hermes XML in tool_call block", `<tool_call><function=noop.tool><parameter=path>src/hello.go</parameter></function></tool_call>`, true, `{"path":"src/hello.go"}`},
+		{"hermes XML without tool_call wrapper", `<function=noop.tool><parameter=path>src/hello.go</parameter></function>`, true, `{"path":"src/hello.go"}`},
+		{"hermes XML zero parameters", `<tool_call><function=noop.tool></function></tool_call>`, true, `{}`},
+		{"hermes XML unterminated parameter", `<tool_call> <function=noop.tool> <parameter=path> src/hello.go   </tool_call>`, true, `{"path":"src/hello.go"}`},
+		{"hermes XML keeps JSON value types", `<function=noop.tool><parameter=count>5</parameter></function>`, true, `{"count":5}`},
+		{"mangled = separator", `<tool_call><function=noop=tool><parameter=path>src/hello.go</parameter></function></tool_call>`, true, `{"path":"src/hello.go"}`},
+		{"mangled / separator", `<tool_call><function=noop/tool><parameter=path>src/hello.go</parameter></function></tool_call>`, true, `{"path":"src/hello.go"}`},
+		{"bare argument tags", `<tool_call><function=noop.tool><path>src/big.go</path></function></tool_call>`, true, `{"path":"src/big.go"}`},
+		{"tool-name-keyed JSON", `<tool_call>` + "\n" + `{"noop.tool": {"path": "DIAG.txt"}}` + "\n" + `</tool_call>`, true, `{"path": "DIAG.txt"}`},
+		{"JSON body inside function tags", `<tool_call><function=noop.tool>{"path": "src/big.go"}</function></tool_call>`, true, `{"path": "src/big.go"}`},
 		{"unknown tool is not salvaged", `{"name": "does.not.exist", "arguments": {}}`, false, ""},
+		{"unknown XML tool is not salvaged", `<function=does.not.exist><parameter=a>1</parameter></function>`, false, ""},
 		{"plain prose", "no JSON here at all", false, ""},
 		{"JSON but not a tool call", `{"answer": "42"}`, false, ""},
 	}

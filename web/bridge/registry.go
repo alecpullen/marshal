@@ -127,16 +127,20 @@ func NewRegistry(child *Child) *Registry {
 
 // sessionParams mirrors internal/acp sessionParams: cwd plus optional
 // sessionId, used by session/new, session/load, session/resume and
-// session/delete.
+// session/delete. mcpServers is required by the agent's lifecycle
+// validation as an explicit empty array on session/new, session/load
+// and session/resume; it is omitted on session/delete, whose validation
+// does not require it.
 type sessionParams struct {
-	Cwd       AgentPath `json:"cwd"`
-	SessionID string    `json:"sessionId,omitempty"`
+	Cwd        AgentPath          `json:"cwd"`
+	SessionID  string             `json:"sessionId,omitempty"`
+	MCPServers *[]json.RawMessage `json:"mcpServers,omitempty"`
 }
 
 // New creates a session (session/new), or resumes an existing one when
 // sessionId is non-empty. Returns the active session id.
 func (r *Registry) New(ctx context.Context, cwd AgentPath, sessionId string) (string, error) {
-	res, err := r.child.Request(ctx, "session/new", sessionParams{Cwd: cwd, SessionID: sessionId})
+	res, err := r.child.Request(ctx, "session/new", sessionParams{Cwd: cwd, SessionID: sessionId, MCPServers: &[]json.RawMessage{}})
 	if err != nil {
 		return "", err
 	}
@@ -156,7 +160,7 @@ func (r *Registry) New(ctx context.Context, cwd AgentPath, sessionId string) (st
 // Load attaches to an existing session (session/load) and starts
 // tracking it.
 func (r *Registry) Load(ctx context.Context, cwd AgentPath, id string) error {
-	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id}); err != nil {
+	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id, MCPServers: &[]json.RawMessage{}}); err != nil {
 		return err
 	}
 	r.track(id, cwd)
@@ -601,7 +605,7 @@ func (r *Registry) resumeAll() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, id := range ids {
-		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id})
+		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id, MCPServers: &[]json.RawMessage{}})
 		r.emitEvent(id, map[string]any{"type": "bridge_restarted"})
 	}
 }

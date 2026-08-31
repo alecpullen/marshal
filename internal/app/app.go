@@ -1450,8 +1450,9 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)
 			}
 			// Copy non-native tools (MCP, skills, desktop) from the parent's
-			// scoped registry so the child still sees them. SubtaskScopeView
-			// already removed agent.run/agent.await/agent.output/question.ask/ask_user.
+			// scoped registry so the child still sees them. The authoritative
+			// exclusion list lives on SubtaskScopeView's doc comment
+			// (internal/agent/subagent.go) — don't duplicate it here.
 			for _, tool := range agent.SubtaskScopeView(parentReg).List() {
 				if _, exists := childReg.Lookup(tool.Name); !exists {
 					_ = childReg.Register(tool)

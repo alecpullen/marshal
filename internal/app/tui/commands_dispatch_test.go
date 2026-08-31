@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
 	"marshal/internal/trust"
@@ -117,6 +118,9 @@ func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
 	// No trustDecide wired: the handler's docpanel opens, then the effect
 	// must NOT open a trustpanel and must steer to the shell path.
 	m.dispatchCommand("/trust")
+	if _, ok := m.dock.Panel().(*docpanel.Panel); !ok {
+		t.Fatalf("expected the handler's docpanel to stay docked, got %T", m.dock.Panel())
+	}
 	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
 		t.Fatal("expected no trustpanel when no decision is pending")
 	}

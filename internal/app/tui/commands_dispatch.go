@@ -176,7 +176,7 @@ func init() {
 				// No pending decision (or none wired): the informative panel from
 				// the handler already rendered; steer to the shell path instead
 				// of opening a panel whose callback would panic on nil.
-				m.state.AddMessage(session.RoleSystem, "No trust decision pending. Grant permanent trust with `marshal --trust`, or restart in this directory to re-prompt.", session.ContentTypePlain)
+				m.state.AddMessage(session.RoleSystem, "No trust decision pending. Grant permanent trust with `marshal --trust`, or restart in this directory to re-prompt once `.marshal/config.toml` exists here.", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}

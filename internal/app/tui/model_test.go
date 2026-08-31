@@ -7402,20 +7402,27 @@ func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 	}
 }
 
-func TestRefreshViewportResetsActiveToolExpandedOnNewTool(t *testing.T) {
+func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 	m := newTestModel(t)
+	keyA := activeToolKey{startedAt: time.Unix(500, 0), name: "shell.run"}
+	keyB := activeToolKey{startedAt: time.Unix(501, 0), name: "shell.run"}
+	m.toggleActiveToolExpanded(keyA) // expand tool A
+
 	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0)})
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
-	m.activeToolExpanded = true
 
-	// A new tool starts (different StartedAt): the override must reset.
+	// A new tool starts (different StartedAt): the old override must stay
+	// inert in the map, and the new tool must be collapsed.
 	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0)})
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 
-	if m.activeToolExpanded {
-		t.Fatal("expected activeToolExpanded to reset when a new tool starts")
+	if !m.activeToolIsExpanded(keyA) {
+		t.Fatal("expected tool A's override to be retained (inert) after a new tool starts")
+	}
+	if m.activeToolIsExpanded(keyB) {
+		t.Fatal("expected the new tool B to be collapsed")
 	}
 }
 
@@ -7489,6 +7496,50 @@ func TestDrillInDoesNothingWithoutARunningSubagent(t *testing.T) {
 	}
 	if _, ok := m.drilledInto(); ok {
 		t.Error("the view stack must stay empty")
+	}
+}
+
+// A drilled-in child's active-tool override is keyed by the child's own
+// StartedAt+name, so it survives a refreshViewport while drilled in.
+func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	child := newChildState(t)
+	started := time.Now()
+	child.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started})
+	m.state.RegisterSubagent("child", child)
+	m.drillIntoLatestRunningSubagent()
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	// Locate the active-tool region (resolved from the child's transcript).
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.isActiveTool {
+			region, found = r, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected a click region for the child's active tool call")
+	}
+
+	top := m.scrollHintRows() + m.breadcrumbRows()
+	y := top + region.startLine - m.viewport.YOffset()
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+
+	key := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started})
+	if !mm.activeToolIsExpanded(key) {
+		t.Fatal("expected the child's active tool call to expand on click")
+	}
+
+	// A repaint while drilled in must keep the child's override.
+	mm.lastTranscriptHash = 0
+	mm.refreshViewport()
+	if !mm.activeToolIsExpanded(key) {
+		t.Fatal("expected the child's override to survive a refreshViewport repaint")
 	}
 }
 

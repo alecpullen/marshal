@@ -110,7 +110,7 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.viewStack = nil
 	m.lastTranscriptHash = 0
 	m.detailExpanded = false
-	m.activeToolExpanded = false
+	m.clearActiveToolExpansions()
 	m.activeToolStartedAt = time.Time{}
 	m.clickRegions = nil
 	// The old session's changed-files list must never render in the new

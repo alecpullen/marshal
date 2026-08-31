@@ -13,7 +13,11 @@ import (
 type clickTarget struct {
 	key          itemKey
 	isActiveTool bool
-	subagent     *session.SubagentView
+	// toolKey identifies the in-flight tool call an active-tool click target
+	// toggles, so the override is keyed by tool-call identity rather than a
+	// single global flag.
+	toolKey  activeToolKey
+	subagent *session.SubagentView
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
@@ -206,7 +210,7 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if target.subagent != nil {
 		m.drillIntoSubagent(*target.subagent)
 	} else if target.isActiveTool {
-		m.activeToolExpanded = !m.activeToolExpanded
+		m.toggleActiveToolExpanded(target.toolKey)
 	} else {
 		m.toggleItemExpanded(target.key)
 	}

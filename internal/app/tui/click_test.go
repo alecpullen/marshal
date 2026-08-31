@@ -114,6 +114,51 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	}
 }
 
+func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	started := time.Now()
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	// Locate the active-tool region.
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.isActiveTool {
+			region, found = r, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected a click region for the active tool call")
+	}
+
+	top := m.scrollHintRows()
+	y := top + region.startLine - m.viewport.YOffset()
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+
+	key := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started})
+	if !mm.activeToolIsExpanded(key) {
+		t.Fatal("expected the click to expand the active tool call")
+	}
+
+	// A repaint (hash invalidation + rebuild) must keep the override.
+	mm.lastTranscriptHash = 0
+	mm.refreshViewport()
+	if !mm.activeToolIsExpanded(key) {
+		t.Fatal("expected the override to survive a refreshViewport repaint")
+	}
+
+	// A different StartedAt (new tool call) collapses back.
+	key2 := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started.Add(time.Second)})
+	if mm.activeToolIsExpanded(key2) {
+		t.Fatal("expected a different tool call to be collapsed")
+	}
+}
+
 func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)

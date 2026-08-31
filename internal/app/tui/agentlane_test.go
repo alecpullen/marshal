@@ -26,13 +26,13 @@ func registerRunningSubagent(t *testing.T, m *Model, label string) {
 
 func TestAgentLaneEmptyWithNoRunningSubagents(t *testing.T) {
 	m := newTestModel(t)
-	if got := m.renderAgentLane(); got != "" {
+	if got := m.renderActivityLane(); got != "" {
 		t.Fatalf("no subagents must render nothing, got %q", got)
 	}
 	registerRunningSubagent(t, &m, "review")
 	v := m.state.Subagents()[0]
 	m.state.FinishSubagent(v.ID, "done", nil)
-	if got := m.renderAgentLane(); got != "" {
+	if got := m.renderActivityLane(); got != "" {
 		t.Fatalf("finished subagents must not render, got %q", got)
 	}
 }
@@ -41,7 +41,7 @@ func TestAgentLaneShowsRunningSubagents(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
-	plain := ansi.Strip(m.renderAgentLane())
+	plain := ansi.Strip(m.renderActivityLane())
 	for _, want := range []string{"2 agents", "tests", "review"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("lane missing %q:\n%s", want, plain)
@@ -52,12 +52,12 @@ func TestAgentLaneShowsRunningSubagents(t *testing.T) {
 func TestAgentLaneSkipsPipelineCards(t *testing.T) {
 	m := newTestModel(t)
 	m.state.RegisterSubagent("pipeline role", nil) // Child nil: pipeline/SDD shares the parent state
-	if got := m.renderAgentLane(); got != "" {
+	if got := m.renderActivityLane(); got != "" {
 		t.Fatalf("pipeline cards are pinned by the run panel, not the lane; got %q", got)
 	}
 }
 
-// agentLaneRows must equal what the lane actually renders, or the height
+// laneRows must equal what the lane actually renders, or the height
 // budget drifts and pushes the input area off the bottom of the frame.
 func TestAgentLaneRowsMatchesRender(t *testing.T) {
 	m := newTestModel(t)
@@ -68,13 +68,13 @@ func TestAgentLaneRowsMatchesRender(t *testing.T) {
 		for i := 0; i < n; i++ {
 			registerRunningSubagent(t, &m, "task")
 		}
-		out := m.renderAgentLane()
+		out := m.renderActivityLane()
 		want := 0
 		if out != "" {
 			want = strings.Count(out, "\n")
 		}
-		if got := m.agentLaneRows(); got != want {
-			t.Fatalf("%d running: agentLaneRows()=%d but lane rendered %d rows:\n%s", n, got, want, out)
+		if got := m.laneRows(); got != want {
+			t.Fatalf("%d running: laneRows()=%d but lane rendered %d rows:\n%s", n, got, want, out)
 		}
 	}
 }
@@ -84,11 +84,9 @@ func TestAgentLaneCapsWithOverflowRow(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		registerRunningSubagent(t, &m, "task")
 	}
-	out := m.renderAgentLane()
-	// The lane carries a merged header+rule line, so a full lane is the
-	// capped row budget (no extra separator row).
-	if got := strings.Count(out, "\n"); got > agentLaneMaxRows {
-		t.Fatalf("lane rendered %d rows, cap is %d", got, agentLaneMaxRows)
+	out := m.renderActivityLane()
+	if got := strings.Count(out, "\n"); got > laneMaxRows {
+		t.Fatalf("lane rendered %d rows, cap is %d", got, laneMaxRows)
 	}
 	if !strings.Contains(ansi.Strip(out), "more") {
 		t.Fatalf("expected an overflow row:\n%s", ansi.Strip(out))
@@ -98,18 +96,21 @@ func TestAgentLaneCapsWithOverflowRow(t *testing.T) {
 func TestAgentLaneHasSeparatorAndRail(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "reviewer")
-	out := m.renderAgentLane()
+	out := m.renderActivityLane()
 	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	// Header line carries the count text AND the divider rule on the same
-	// line (merged via chrome.Header, matching the sidebar/todo panel).
-	header := ansi.Strip(rows[0])
-	if !strings.Contains(header, "1 agent") {
-		t.Fatalf("lane must open with the header, got %q", header)
+	// Row 0 is the separator rule; row 1 the caption.
+	sep := ansi.Strip(rows[0])
+	if !strings.Contains(sep, "─") {
+		t.Fatalf("lane must open with a separator rule, got %q", sep)
 	}
-	if !strings.Contains(header, "─") {
-		t.Fatalf("header must carry the divider rule on the same line, got %q", header)
+	caption := ansi.Strip(rows[1])
+	if !strings.Contains(caption, "1 agent") {
+		t.Fatalf("caption must be count-first, got %q", caption)
 	}
-	// Every row (including the header) carries the vertical rail.
+	if !strings.Contains(caption, "─") {
+		t.Fatalf("caption must carry the divider rule on the same line, got %q", caption)
+	}
+	// Every row (including the separator and caption) carries the vertical rail.
 	for i, r := range rows {
 		if !strings.Contains(ansi.Strip(r), glyph.Rail) {
 			t.Errorf("lane row %d has no rail: %q", i, ansi.Strip(r))
@@ -124,23 +125,23 @@ func TestAgentLaneRowsMatchesRenderAfterChrome(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		registerRunningSubagent(t, &m, fmt.Sprintf("agent-%d", i))
 	}
-	out := m.renderAgentLane()
+	out := m.renderActivityLane()
 	want := 0
 	if out != "" {
 		want = strings.Count(out, "\n")
 	}
-	if got := m.agentLaneRows(); got != want {
-		t.Fatalf("agentLaneRows()=%d but lane rendered %d rows:\n%s", got, want, ansi.Strip(out))
+	if got := m.laneRows(); got != want {
+		t.Fatalf("laneRows()=%d but lane rendered %d rows:\n%s", got, want, ansi.Strip(out))
 	}
 }
 
 func TestAgentLaneEmptyHasNoSeparator(t *testing.T) {
 	m := newTestModel(t)
-	if out := m.renderAgentLane(); out != "" {
+	if out := m.renderActivityLane(); out != "" {
 		t.Fatalf("no running agents must render nothing, got %q", out)
 	}
-	if got := m.agentLaneRows(); got != 0 {
-		t.Fatalf("agentLaneRows()=%d with no agents, want 0", got)
+	if got := m.laneRows(); got != 0 {
+		t.Fatalf("laneRows()=%d with no agents, want 0", got)
 	}
 }
 
@@ -154,7 +155,7 @@ func TestAgentLaneRailAlignsWithTodoPanel(t *testing.T) {
 		t.Fatalf("SetTodos: %v", err)
 	}
 
-	laneRows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
+	laneRows := strings.Split(strings.TrimRight(m.renderActivityLane(), "\n"), "\n")
 	todoRows := strings.Split(strings.TrimRight(m.renderTodoPanel(), "\n"), "\n")
 	if len(laneRows) == 0 || len(todoRows) == 0 {
 		t.Fatal("expected both panels to render")
@@ -169,17 +170,17 @@ func TestAgentLaneRailAlignsWithTodoPanel(t *testing.T) {
 	}
 }
 
-// The header line's divider rule must not break the vertical rail.
+// The separator line's divider rule must not break the vertical rail.
 func TestLaneSeparatorBridgesTheRail(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "reviewer")
-	rows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
-	header := ansi.Strip(rows[0])
-	if !strings.HasPrefix(header, glyph.Rail) {
-		t.Fatalf("header must start with the rail so the vertical line is continuous, got %q", header)
+	rows := strings.Split(strings.TrimRight(m.renderActivityLane(), "\n"), "\n")
+	sep := ansi.Strip(rows[0])
+	if !strings.HasPrefix(sep, glyph.Rail) {
+		t.Fatalf("separator must start with the rail so the vertical line is continuous, got %q", sep)
 	}
-	if !strings.Contains(header, "─") {
-		t.Fatalf("header must still carry the rule, got %q", header)
+	if !strings.Contains(sep, "─") {
+		t.Fatalf("separator must still carry the rule, got %q", sep)
 	}
 }
 
@@ -187,19 +188,19 @@ func TestAgentLaneShowsSpinnerWhileRunning(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "reviewer")
 	m.spinnerFrame = "⠋"
-	if !strings.Contains(ansi.Strip(m.renderAgentLane()), "⠋") {
-		t.Fatalf("a running lane must show the spinner:\n%s", ansi.Strip(m.renderAgentLane()))
+	if !strings.Contains(ansi.Strip(m.renderActivityLane()), "⠋") {
+		t.Fatalf("a running lane must show the spinner:\n%s", ansi.Strip(m.renderActivityLane()))
 	}
 }
 
-// The lane renders a header line (count + divider rule on the same line),
-// then the agent rows. The header must carry both the count text and the
-// rule; the first agent row follows on the next line.
+// The lane renders a separator rule row, then a caption row, then the agent
+// rows. The caption must carry both the count text and the rule; the first
+// agent row follows on the next line.
 func TestAgentLaneStructureHeaderThenRuleThenRows(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
-	plain := ansi.Strip(m.renderAgentLane())
+	plain := ansi.Strip(m.renderActivityLane())
 	if !strings.Contains(plain, "2 agents") {
 		t.Fatalf("header must be count-first and pluralized, got:\n%s", plain)
 	}
@@ -223,9 +224,9 @@ func TestAgentLaneStructureHeaderThenRuleThenRows(t *testing.T) {
 	if headerIdx < 0 || firstRowIdx < 0 {
 		t.Fatalf("lane missing header/row:\n%s", plain)
 	}
-	// The header line must carry the divider rule on the same line.
-	if !strings.Contains(lines[headerIdx], "─") {
-		t.Fatalf("header line must carry the rule on the same line, got %q:\n%s", lines[headerIdx], plain)
+	// The rule lives on the separator line (row 0), not the caption line.
+	if !strings.Contains(lines[0], "─") {
+		t.Fatalf("separator line must carry the rule, got %q:\n%s", lines[0], plain)
 	}
 	// The first agent row must follow the header.
 	if firstRowIdx <= headerIdx {
@@ -234,18 +235,18 @@ func TestAgentLaneStructureHeaderThenRuleThenRows(t *testing.T) {
 	}
 }
 
-// The lane's rendered line count must always equal agentLaneRows(), which
+// The lane's rendered line count must always equal laneRows(), which
 // the frame height budget relies on.
 func TestAgentLaneRowsEqualsRenderedLineCount(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
-	out := m.renderAgentLane()
+	out := m.renderActivityLane()
 	// Count every newline including the trailing one, matching the existing
 	// TestAgentLaneRowsMatchesRender convention.
 	lines := strings.Count(out, "\n")
-	if got := m.agentLaneRows(); got != lines {
-		t.Fatalf("agentLaneRows()=%d but lane rendered %d lines:\n%s", got, lines, ansi.Strip(out))
+	if got := m.laneRows(); got != lines {
+		t.Fatalf("laneRows()=%d but lane rendered %d lines:\n%s", got, lines, ansi.Strip(out))
 	}
 }
 
@@ -342,26 +343,30 @@ func TestLaneCursorDisarmsOnTyping(t *testing.T) {
 	}
 }
 
-// The lane's header is built at full width and then re-truncated by
-// chromeRailWidth to width-1, which ate the last cell of the rule and
-// replaced it with an ellipsis. Assert the width arithmetic, not just the
-// absence of "…", so this stays a guard against the off-by-one itself.
+// The lane's separator and caption rows are built at full width and then
+// re-truncated by chromeRailWidth to width-1, which ate the last cell of the
+// rule and replaced it with an ellipsis. Assert the width arithmetic, not
+// just the absence of "…", so this stays a guard against the off-by-one
+// itself.
 func TestAgentLaneHeaderFillsExactlyOneRow(t *testing.T) {
 	for _, w := range []int{40, 60, 80, 100} {
 		m := newTestModel(t)
 		m.resize(w, 30)
 		registerRunningSubagent(t, &m, "reviewer")
 
-		out := m.renderAgentLane()
+		out := m.renderActivityLane()
 		if out == "" {
 			t.Fatalf("w=%d: lane rendered nothing", w)
 		}
-		first := strings.Split(out, "\n")[0]
-		if strings.Contains(first, "…") {
-			t.Errorf("w=%d: divider truncated: %q", w, first)
-		}
-		if got := ansi.StringWidth(first); got != m.leftWidth {
-			t.Errorf("w=%d: header width = %d, want leftWidth %d", w, got, m.leftWidth)
+		rows := strings.Split(out, "\n")
+		// Row 0 is the separator, row 1 the caption.
+		for i := 0; i < 2; i++ {
+			if strings.Contains(rows[i], "…") {
+				t.Errorf("w=%d: row %d truncated: %q", w, i, rows[i])
+			}
+			if got := ansi.StringWidth(rows[i]); got != m.leftWidth {
+				t.Errorf("w=%d: row %d width = %d, want leftWidth %d", w, i, got, m.leftWidth)
+			}
 		}
 	}
 }
@@ -381,10 +386,10 @@ func TestAgentLaneBodyTextAlignsWithTodoPanelBody(t *testing.T) {
 		t.Fatalf("SetTodos: %v", err)
 	}
 
-	laneRows := strings.Split(strings.TrimRight(m.renderAgentLane(), "\n"), "\n")
+	laneRows := strings.Split(strings.TrimRight(m.renderActivityLane(), "\n"), "\n")
 	todoRows := strings.Split(strings.TrimRight(m.renderTodoPanel(), "\n"), "\n")
-	if len(laneRows) < 2 || len(todoRows) < 2 {
-		t.Fatalf("need at least 2 rows in each panel; lane=%d todo=%d", len(laneRows), len(todoRows))
+	if len(laneRows) < 3 || len(todoRows) < 2 {
+		t.Fatalf("need at least 3 lane rows and 2 todo rows; lane=%d todo=%d", len(laneRows), len(todoRows))
 	}
 
 	// Find the text-start column (first non-space, non-rail char) in a body row.
@@ -436,7 +441,7 @@ func TestAgentLaneRowShowsModel(t *testing.T) {
 	m.state.RegisterSubagentWithMeta("fleet-reviewer", child, session.SubagentMeta{
 		Model: "glm-5.2", Provider: "zhipu",
 	})
-	plain := ansi.Strip(m.renderAgentLane())
+	plain := ansi.Strip(m.renderActivityLane())
 	for _, want := range []string{"fleet-reviewer", "glm-5.2", "@ zhipu"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("lane missing %q:\n%s", want, plain)
@@ -453,7 +458,7 @@ func TestAgentLaneRowHidesOffParent(t *testing.T) {
 	m.state.RegisterSubagentWithMeta("fleet-reviewer", child, session.SubagentMeta{
 		Model: "glm-5.2", Provider: "zhipu",
 	})
-	plain := ansi.Strip(m.renderAgentLane())
+	plain := ansi.Strip(m.renderActivityLane())
 	if !strings.Contains(plain, "glm-5.2") {
 		t.Fatalf("lane must show the model:\n%s", plain)
 	}
@@ -467,7 +472,7 @@ func TestAgentLaneRowHidesOffParent(t *testing.T) {
 func TestAgentLaneRowWithoutMetaKeepsLegacyShape(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "review")
-	plain := ansi.Strip(m.renderAgentLane())
+	plain := ansi.Strip(m.renderActivityLane())
 	if !strings.Contains(plain, "#") {
 		t.Fatalf("row must carry the #-prefixed id:\n%s", plain)
 	}
@@ -491,7 +496,7 @@ func TestAgentLaneRowFitsWidth(t *testing.T) {
 	m.state.RegisterSubagentWithMeta(strings.Repeat("x", 200), child, session.SubagentMeta{
 		Model: "glm-5.2", Provider: "zhipu",
 	})
-	out := m.renderAgentLane()
+	out := m.renderActivityLane()
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if n := ansi.StringWidth(line); n > m.leftWidth {
 			t.Fatalf("lane row width %d exceeds leftWidth %d:\n%s", n, m.leftWidth, ansi.Strip(line))

@@ -105,10 +105,7 @@ func (m *Model) viewString() string {
 		if strip := m.renderLiveStrip(); strip != "" {
 			rows = append(rows, strip)
 		}
-		if lane := m.renderJobLane(); lane != "" {
-			rows = append(rows, lane)
-		}
-		if lane := m.renderAgentLane(); lane != "" {
+		if lane := m.renderActivityLane(); lane != "" {
 			rows = append(rows, lane)
 		}
 		if dockView != "" {

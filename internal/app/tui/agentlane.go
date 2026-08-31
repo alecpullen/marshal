@@ -7,61 +7,46 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
-	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
 
-// agentLaneMaxRows caps the lane: a header row plus up to three subagent
-// rows, the last of which becomes an overflow row when more are running.
-// Every row here is subtracted from the transcript viewport, so the lane
-// must not grow without bound.
-const agentLaneMaxRows = 4
-
-// renderAgentLane renders running background subagents as a persistent lane
-// above the input so a running child stays visible after its transcript
-// card scrolls away. Follows renderJobLane (jobs.go): no tint — position
-// already separates it. Only views with a live Child state are listed:
-// pipeline/SDD cards share the parent's state (Child == nil) and are
-// already pinned by the run panel.
+// renderActivityLane renders the consolidated lane above the input: a
+// separator rule row, one count-first chrome.Header caption ("2 agents · 1
+// job"), then agent rows followed by job rows sharing one overflow budget
+// capped at laneMaxRows. Agents render before jobs (agents are
+// click-drillable; jobs are ambient), and the overflow row is a single
+// shared "… N more" captioning both.
 //
-// Each row shows the child's dispatched model when the dispatcher populated
-// it, and the provider only when it differs from the parent's
+// Each agent row shows the child's dispatched model when the dispatcher
+// populated it, and the provider only when it differs from the parent's
 // ActiveRoute().Provider — a same-provider child adds no information the
-// turn spinner doesn't already carry.
-func (m Model) renderAgentLane() string {
-	entries := m.agentLaneEntries()
-	if len(entries) == 0 {
+// turn spinner doesn't already carry. Only views with a live Child state
+// are listed: pipeline/SDD cards share the parent's state (Child == nil)
+// and are already pinned by the run panel.
+func (m Model) renderActivityLane() string {
+	plan := m.lanePlan()
+	if plan.total == 0 {
 		return ""
-	}
-	// Count all running for the header (includes overflow)
-	var allRunning int
-	for _, v := range m.state.Subagents() {
-		if v.Status == session.SubagentRunning && v.Child != nil {
-			allRunning++
-		}
 	}
 	width := max(m.leftWidth, 1)
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 
-	var b strings.Builder
-	// Header: count-first, pluralized ("2 agents" / "1 agent"), with the
-	// divider rule on the same line — matching the sidebar and todo panel
-	// via chrome.Header.
-	plural := "agents"
-	if allRunning == 1 {
-		plural = "agent"
+	// Caption: count-first, pluralized, zero parts omitted.
+	var parts []string
+	if plan.nAgents > 0 {
+		parts = append(parts, laneItem(plan.nAgents, "agent", "agents"))
 	}
+	if plan.nJobs > 0 {
+		parts = append(parts, laneItem(plan.nJobs, "job", "jobs"))
+	}
+	caption := strings.Join(parts, dimSeparator)
 	// Built at width-1: chromeRailWidth below truncates every line to
 	// width-1 and then prefixes the one-cell rail, so a header built at
 	// the full width loses its last cell to an ellipsis.
-	b.WriteString(chrome.Header(fmt.Sprintf("%d %s", allRunning, plural), "", max(width-1, 1)))
-	b.WriteString("\n")
+	header := chrome.Header(caption, "", max(width-1, 1))
 
-	overflow := 0
-	if allRunning > len(entries) {
-		overflow = allRunning - len(entries)
-	}
-	for _, v := range entries {
+	rows := make([]string, 0, len(plan.agents)+len(plan.jobTexts)+1)
+	for _, v := range plan.agents {
 		label := fmt.Sprintf("#%d  %s", v.ID, v.Label)
 		if v.Model != "" {
 			label += dimSeparator + v.Model
@@ -70,60 +55,41 @@ func (m Model) renderAgentLane() string {
 			}
 		}
 		line := label + dimSeparator + formatElapsed(max(time.Since(v.StartedAt), 0))
-		b.WriteString(gutterPrefix(spinner, dimColor) +
+		rows = append(rows, gutterPrefix(spinner, dimColor)+
 			dimStyle().Render(strutil.Truncate(line, max(width-4, 1), true)))
-		b.WriteString("\n")
 	}
-	if overflow > 0 {
-		b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
-		b.WriteString("\n")
+	rows = append(rows, plan.jobTexts...)
+	if plan.overflow > 0 {
+		rows = append(rows, dimStyle().Render(fmt.Sprintf("… %d more", plan.overflow)))
 	}
 
-	out := chromeRailWidth(b.String(), dimColor, max(width-1, 1))
-	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
+	out := renderLane(header, rows, width)
+	return paintLane(out, m.leftWidth)
 }
 
 // agentLaneEntries returns the running subagents in the order the lane
 // renders them, capped the same way. The click handler and the renderer
 // must agree on this ordering or a click drills into the wrong child.
 func (m Model) agentLaneEntries() []session.SubagentView {
-	var running []session.SubagentView
-	for _, v := range m.state.Subagents() {
-		if v.Status == session.SubagentRunning && v.Child != nil {
-			running = append(running, v)
-		}
-	}
-	if rows := agentLaneMaxRows - 1; len(running) > rows {
-		running = running[:rows-1]
-	}
-	return running
+	return m.lanePlan().agents
 }
 
-// agentLaneRows reports the lane's rendered height for the frame's height
-// budget. It must agree with renderAgentLane exactly; a mismatch pushes the
-// input area or the status footer off the bottom of the screen.
+// laneRows reports the lane's rendered height for the frame's height
+// budget. It must agree with renderActivityLane exactly; a mismatch pushes
+// the input area or the status footer off the bottom of the screen.
 //
-// M-2: this previously called renderAgentLane (computing the full render
-// twice per frame — once here for the height budget, once in View for the
-// actual output). Now it computes the row count directly from the running
-// count, matching renderAgentLane's layout: 1 merged header+rule row +
-// up to (agentLaneMaxRows-2) agent rows, with an overflow row when
-// running exceeds the cap.
-func (m Model) agentLaneRows() int {
-	var running int
-	for _, v := range m.state.Subagents() {
-		if v.Status == session.SubagentRunning && v.Child != nil {
-			running++
-		}
-	}
-	if running == 0 {
+// M-2: this computes the row count directly from lanePlan (never calling
+// the renderer), matching renderActivityLane's layout: 1 separator row + 1
+// caption row + shown item rows + an overflow row when total exceeds the
+// cap. Max 2 + (laneMaxItems-1) + 1 = 7 = laneMaxRows.
+func (m Model) laneRows() int {
+	plan := m.lanePlan()
+	if plan.total == 0 {
 		return 0
 	}
-	rows := agentLaneMaxRows - 1
-	if running > rows {
-		// merged header+rule + (rows-1) shown + overflow
-		return 1 + (rows - 1) + 1
+	rows := 2 + len(plan.agents) + len(plan.jobTexts)
+	if plan.overflow > 0 {
+		rows++
 	}
-	// merged header+rule + running rows
-	return 1 + running
+	return rows
 }

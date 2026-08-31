@@ -135,7 +135,7 @@ func (t *toolSet) filePageTool() registry.Tool {
 // It performs the same path validation, TOCTOU size check, and read tracking
 // used by both file.read and file.page.
 func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byte, error) {
-	path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), requestedPath)
+	path, err := resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), requestedPath)
 	if err != nil {
 		return nil, err
 	}

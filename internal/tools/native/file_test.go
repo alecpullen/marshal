@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,137 @@ func TestFileReadRejectsTraversal(t *testing.T) {
 	_, err := invokeTool(t, reg, "file.read", `{"path":"../secret.txt"}`)
 	if err == nil {
 		t.Fatal("file.read traversal returned nil error")
+	}
+}
+
+func TestFileReadAcceptsAbsolutePathInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "README.md"), "hello\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{"path": filepath.Join(root, "README.md")})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result, err := invokeTool(t, reg, "file.read", string(args))
+	if err != nil {
+		t.Fatalf("file.read absolute path inside root returned error: %v", err)
+	}
+	if result.Content != "hello\n" {
+		t.Fatalf("Content = %q, want %q", result.Content, "hello\n")
+	}
+}
+
+func TestFileReadAcceptsAbsolutePathInAdditionalRoot(t *testing.T) {
+	projectRoot := t.TempDir()
+	worktreePath := t.TempDir()
+
+	docPath := filepath.Join(projectRoot, "docs", "architecture.md")
+	writeFile(t, docPath, "architecture\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:   worktreePath,
+		AdditionalRoots: []string{projectRoot},
+		CommandRunner:   &fakeRunner{},
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{"path": docPath})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result, err := invokeTool(t, reg, "file.read", string(args))
+	if err != nil {
+		t.Fatalf("file.read absolute path in additional root returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "architecture") {
+		t.Fatalf("Content should contain the file body, got: %q", result.Content)
+	}
+}
+
+func TestFileReadRejectsAbsolutePathOutsideAllRoots(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	outsideFile := filepath.Join(other, "secret.txt")
+	writeFile(t, outsideFile, "secret\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Absolute path of a file in an unrelated temp dir must fail.
+	args, err := json.Marshal(map[string]string{"path": outsideFile})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = invokeTool(t, reg, "file.read", string(args))
+	if err == nil {
+		t.Fatal("file.read absolute path outside all roots returned nil error")
+	}
+	if !strings.Contains(err.Error(), "outside all allowed roots") {
+		t.Fatalf("error should name the allowed roots, got: %v", err)
+	}
+
+	// /etc/passwd must also fail through the tool.
+	_, err = invokeTool(t, reg, "file.read", `{"path":"/etc/passwd"}`)
+	if err == nil {
+		t.Fatal("file.read /etc/passwd returned nil error")
+	}
+}
+
+func TestFileReadRejectsSymlinkEscapingAbsolutePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests not supported on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(outside, "secret.txt"), "secret\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{"path": filepath.Join(root, "link", "secret.txt")})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = invokeTool(t, reg, "file.read", string(args))
+	if err == nil {
+		t.Fatal("file.read symlink-escaping absolute path returned nil error")
+	}
+	if !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("error should mention escape, got: %v", err)
+	}
+}
+
+func TestFilePageAcceptsAbsolutePathInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\nfour\nfive\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]any{"path": filepath.Join(root, "notes.txt"), "page": 1})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result, err := invokeTool(t, reg, "file.page", string(args))
+	if err != nil {
+		t.Fatalf("file.page absolute path inside root returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "one") {
+		t.Fatalf("Content should contain first-page content, got: %q", result.Content)
 	}
 }
 

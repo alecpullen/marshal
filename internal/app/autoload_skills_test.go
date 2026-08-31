@@ -114,11 +114,42 @@ func TestAutoloadSkillsSkipsUnknownAndEmptyNames(t *testing.T) {
 func TestAutoloadSkillsNoopWhenUnconfigured(t *testing.T) {
 	idx := skills.NewIndex()
 	idx.Set("real", skills.Skill{Name: "real", Description: "d", Body: "b"})
+	cfg := config.Default()
+	cfg.Skills.Autoload = nil // opt out; Default() now ships the entry point
+	state := autoloadTestState(t, cfg)
+
+	autoloadSkills(cfg, idx, state, discardLogger())
+
+	if state.HasActiveSkill("real") {
+		t.Fatal("nothing should autoload without config")
+	}
+}
+
+// The shipped default activates the entry-point skill with zero config, so
+// skill activation works for users with no embedding model.
+func TestAutoloadSkillsDefaultActivatesEntryPoint(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("using-skills", skills.Skill{
+		Name: "using-skills", Description: "entry point", Body: "Scan the roster before acting.",
+	})
 	state := autoloadTestState(t, config.Default())
 
 	autoloadSkills(config.Default(), idx, state, discardLogger())
 
-	if state.HasActiveSkill("real") {
-		t.Fatal("nothing should autoload without config")
+	if !state.HasActiveSkill("using-skills") {
+		t.Fatal("the default autoload should activate using-skills")
+	}
+}
+
+// A missing entry point (renamed, uninstalled) must degrade to a logged
+// warning — the unknown-name skip path is load-bearing for the default.
+func TestAutoloadSkillsDefaultToleratesMissingEntryPoint(t *testing.T) {
+	idx := skills.NewIndex() // no using-skills installed
+	state := autoloadTestState(t, config.Default())
+
+	autoloadSkills(config.Default(), idx, state, discardLogger())
+
+	if state.HasActiveSkill("using-skills") {
+		t.Fatal("nothing should be active when the entry point is absent")
 	}
 }

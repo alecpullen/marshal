@@ -428,6 +428,11 @@ type SkillsConfig struct {
 	//
 	// Unknown names are logged and skipped, never fatal — a config that
 	// outlives an uninstalled skill should not stop the session starting.
+	//
+	// The default ships with the "using-skills" entry point (see
+	// config.Default) so skill activation works out of the box, including
+	// for users with no embedding model. Remove it via
+	// skills.autoload = [] in config or the /skills panel toggle.
 	Autoload []string `toml:"autoload"`
 	// MaxActive caps how many skills the model may have explicitly loaded
 	// via skill.load at once (autoloaded skills are user-configured

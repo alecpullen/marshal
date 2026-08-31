@@ -59,6 +59,7 @@ import (
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
+	coreskills "marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -4524,6 +4525,17 @@ func (m *Model) setMode(mode string) {
 	}
 	m.approvalMode = policy.ApprovalMode(mode)
 	m.state.Config.Agent.ApprovalMode = mode
+	// Pair Plan mode with the writing-plans skill so inline plans follow
+	// the house format and chain into marshal-executing-plans. Living here
+	// (not in the /plan handler) keeps every entry point consistent:
+	// /plan, /mode plan, the mode picker, and Tab/Shift+Tab cycling. A
+	// missing or renamed skill must never block the mode switch, so the
+	// error is ignored. Like any quiet load this counts against
+	// skills.max_active and may evict the oldest non-pinned active skill
+	// when the cap is full.
+	if mode == "plan" && m.skillIndex != nil {
+		_ = coreskills.LoadSkillIntoSessionQuiet(m.skillIndex, m.state, "marshal-writing-plans")
+	}
 }
 
 // modeOrder is the canonical cycle order used by Tab/Shift+Tab.

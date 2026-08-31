@@ -32,6 +32,9 @@ var systematicDebuggingSkill []byte
 //go:embed builtin/verification-before-completion.md
 var verificationBeforeCompletionSkill []byte
 
+//go:embed builtin/using-skills.md
+var usingSkillsSkill []byte
+
 // loadBuiltIns registers the skills embedded in the binary. They load before
 // the global and project skill directories (see LoadSkills), and the index is
 // keyed by name — so a user-installed skill of the same name overrides the
@@ -47,6 +50,7 @@ func loadBuiltIns(idx *Index) error {
 		"dispatching-parallel-agents":    dispatchingParallelAgentsSkill,
 		"systematic-debugging":           systematicDebuggingSkill,
 		"verification-before-completion": verificationBeforeCompletionSkill,
+		"using-skills":                   usingSkillsSkill,
 	} {
 		skill, err := Parse(string(raw))
 		if err != nil {

@@ -181,6 +181,9 @@ func init() {
 		},
 		"plan": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.setMode("plan")
+			// Pair Plan mode with the writing-plans skill so inline plans
+			// follow the house format; the load itself lives in setMode so
+			// every entry into plan mode behaves identically.
 			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["plan"], session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil

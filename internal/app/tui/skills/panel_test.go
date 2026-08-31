@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -237,8 +238,10 @@ func TestAutoloadToggleWritesUserConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Skills.Autoload) != 1 || cfg.Skills.Autoload[0] != "debug" {
-		t.Fatalf("on-disk autoload = %v, want [debug]", cfg.Skills.Autoload)
+	// Default() ships ["using-skills"]; toggling debug on appends to it.
+	want := []string{"using-skills", "debug"}
+	if !reflect.DeepEqual(cfg.Skills.Autoload, want) {
+		t.Fatalf("on-disk autoload = %v, want %v", cfg.Skills.Autoload, want)
 	}
 
 	auto.SetBool(false)
@@ -246,8 +249,10 @@ func TestAutoloadToggleWritesUserConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Skills.Autoload) != 0 {
-		t.Fatalf("autoload should be empty after toggling off, got %v", cfg.Skills.Autoload)
+	// Toggling debug off leaves the shipped default in place.
+	want = []string{"using-skills"}
+	if !reflect.DeepEqual(cfg.Skills.Autoload, want) {
+		t.Fatalf("autoload = %v after toggling off, want %v", cfg.Skills.Autoload, want)
 	}
 }
 

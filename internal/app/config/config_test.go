@@ -1538,10 +1538,35 @@ func TestSkillsAutoloadRoundTripsThroughSave(t *testing.T) {
 	}
 }
 
-// The default must stay empty: nothing autoloads unless asked for.
-func TestSkillsAutoloadDefaultsEmpty(t *testing.T) {
-	if got := Default().Skills.Autoload; len(got) != 0 {
-		t.Fatalf("default Autoload = %v, want empty", got)
+// The default ships with the entry-point skill so skill activation works
+// out of the box, including for users with no embedding model. Users opt
+// out via skills.autoload = [] or the /skills panel toggle.
+func TestSkillsAutoloadDefaultsToEntryPoint(t *testing.T) {
+	want := []string{"using-skills"}
+	got := Default().Skills.Autoload
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("default Autoload = %v, want %v", got, want)
+	}
+}
+
+// The opt-out half of the default: an explicit empty list in a config file
+// must survive the merge and suppress the entry-point default, not be
+// treated as "unset".
+func TestSkillsAutoloadEmptyListOptsOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[skills]\nautoload = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&cfg, file); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skills.Autoload) != 0 {
+		t.Fatalf("merged Autoload = %v, want empty (explicit opt-out)", cfg.Skills.Autoload)
 	}
 }
 

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+**Config and project identity**
+- Marshal anchors `.marshal/`, the session database, project config, and
+  trust records at the git repository root instead of the launch
+  directory: launching from a subdirectory no longer creates a second,
+  divergent project.
+- Trust records are keyed by the symlink-resolved project root, so
+  symlinked checkouts and macOS `/var` vs `/private/var` no longer
+  re-prompt.
+- `.marshal/config.toml` is committable: Marshal no longer force-appends
+  `.marshal/` to `.gitignore` once a project config exists; machine-local
+  state is excluded by a generated `.marshal/.gitignore`.
+- Project-scope saves no longer bake user-global settings into
+  `.marshal/config.toml`.
+- `MARSHAL_CONFIG_DIR`, `MARSHAL_DATA_DIR`, `XDG_CONFIG_HOME`, and
+  `XDG_DATA_HOME` are honoured for all Marshal state locations.
+
+### Fixed
+
+**Config**
+- `[session]`, `[lsp]`, `[history]`, `[scratchpad]`, and `[agents]` are
+  persisted again; config.session.rollover.set and config.lsp.set
+  previously reported success but lost their values on restart.
+- On first launch after this change, a session database left in a stray
+  subdirectory `.marshal/` is adopted at the repository root.
+- The settings layer reloader passes the same home/trust context as
+  startup, so provenance no longer shows a project layer the session
+  never trusted.
+
 ### Added
 
 **Skills**

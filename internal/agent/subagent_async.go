@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -171,8 +172,9 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 }
 
 type agentOutputArgs struct {
-	ID        int64 `json:"id"`
-	TailLines int   `json:"tail_lines"`
+	ID         int64 `json:"id"`
+	TailLines  int   `json:"tail_lines"`
+	Transcript bool  `json:"transcript"`
 }
 
 // NewSubagentOutputTool returns the registry.Tool entry for agent.output,
@@ -181,8 +183,8 @@ type agentOutputArgs struct {
 func NewSubagentOutputTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
 		Name:        "agent.output",
-		Description: `Peek at a background subagent started by agent.run without waiting for it: returns its status (running/finished/failed), its final report once finished (or the failure text), and a short tail of its recent activity while running. Use agent.await to block until a subagent finishes.`,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"tail_lines":{"type":"integer","description":"Number of recent activity lines to include while running (default 5)."}},"required":["id"],"additionalProperties":false}`),
+		Description: `Peek at a background subagent started by agent.run without waiting for it: returns its status (running/finished/failed), its final report once finished (or the failure text), and a short tail of its recent activity while running. Use agent.await to block until a subagent finishes. Pass "transcript": true to also receive a bounded transcript of the subagent's committed messages — it can be large, so use it only when the status, report, or activity tail is insufficient.`,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"tail_lines":{"type":"integer","description":"Number of recent activity lines to include while running (default 5)."},"transcript":{"type":"boolean","description":"Include a bounded transcript of the subagent's committed messages (role + truncated content per message). Can be large — use only when the summary is insufficient."}},"required":["id"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -225,6 +227,13 @@ func NewSubagentOutputTool(state *session.State) registry.Tool {
 			}
 		case session.SubagentFailed:
 			b.WriteString("\nerror: " + v.Error + "\n")
+		}
+		if args.Transcript {
+			if t := subagentTranscriptText(v.Child); t != "" {
+				b.WriteString("\ntranscript:\n")
+				b.WriteString(t)
+				b.WriteString("\n")
+			}
 		}
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("subagent %d is %s", v.ID, status),
@@ -303,6 +312,46 @@ func subagentStatusName(s session.SubagentStatus) string {
 	default:
 		return "running"
 	}
+}
+
+// maxAgentOutputTranscriptMsgChars truncates each message's content in the
+// transcript block; maxAgentOutputTranscriptChars caps the whole block so an
+// agent.output result carrying a transcript never approaches the runner's
+// DefaultMaxToolResultChars (8000) and gets bluntly re-truncated.
+const (
+	maxAgentOutputTranscriptMsgChars = 240
+	maxAgentOutputTranscriptChars    = 6000
+	transcriptTruncationMarker       = "\n[transcript truncated — %d message(s) omitted]"
+)
+
+// subagentTranscriptText renders a child's committed message log as
+// "N. role: content" lines. Only committed messages are read
+// (State.Messages()); the in-flight reasoning buffer is intentionally not
+// exposed beyond what SubagentActivityTail already returns. Narration and
+// loaded-skill bodies are skipped: narration duplicates the activity tail,
+// and skill bodies are reference dumps with no decision value for the
+// parent.
+func subagentTranscriptText(child *session.State) string {
+	if child == nil {
+		return ""
+	}
+	msgs := child.Messages()
+	var b strings.Builder
+	truncatedCount := 0
+	for i, m := range msgs {
+		if m.ContentType == session.ContentTypeNarration || m.ContentType == session.ContentTypeSkillBody {
+			continue
+		}
+		if b.Len() >= maxAgentOutputTranscriptChars {
+			truncatedCount = len(msgs) - i
+			break
+		}
+		fmt.Fprintf(&b, "%d. %s: %s\n", i, m.Role, strutil.Truncate(m.Content, maxAgentOutputTranscriptMsgChars, true))
+	}
+	if truncatedCount > 0 {
+		fmt.Fprintf(&b, transcriptTruncationMarker, truncatedCount)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // subagentActivityTail delegates to the shared session implementation so

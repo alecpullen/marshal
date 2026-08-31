@@ -320,6 +320,139 @@ func TestAgentOutputUnknownID(t *testing.T) {
 	}
 }
 
+// runOutputChildWithMessages starts a background child whose exec adds the
+// given messages to the child state and returns a fixed report, then waits
+// for it to finish. It returns the finished view and the output tool.
+func runOutputChildWithMessages(t *testing.T, state *session.State, add func(childState *session.State)) (session.SubagentView, registry.Tool) {
+	t.Helper()
+	childState := newChildState(t)
+	run := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, childState, nil },
+		nil,
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			if add != nil {
+				add(childState)
+			}
+			return "report text", "", nil
+		}),
+	)
+	output := NewSubagentOutputTool(state)
+	if _, err := run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	viewID := state.Subagents()[0].ID
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, viewID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	return view, output
+}
+
+func TestAgentOutputTranscriptIncludesCommittedMessages(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		childState.AddMessage(session.RoleUser, "build the widget", session.ContentTypePlain)
+		childState.AddMessage(session.RoleAssistant, "done building", session.ContentTypePlain)
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if !strings.Contains(res.Content, "transcript:") {
+		t.Fatalf("content missing transcript block: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "build the widget") {
+		t.Fatalf("content missing committed user message: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "done building") {
+		t.Fatalf("content missing committed assistant message: %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptExcludesNarrationAndSkillBodies(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		childState.AddMessage(session.RoleAssistant, "about to check the guard", session.ContentTypeNarration)
+		childState.AddMessage(session.RoleSystem, "big skill", session.ContentTypeSkillBody)
+		childState.AddMessage(session.RoleUser, "plain message", session.ContentTypePlain)
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if !strings.Contains(res.Content, "plain message") {
+		t.Fatalf("content missing plain message: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "about to check the guard") {
+		t.Fatalf("content must not include narration: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "big skill") {
+		t.Fatalf("content must not include skill bodies: %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptBoundedByDefault(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		for i := 0; i < 30; i++ {
+			childState.AddMessage(session.RoleUser, strings.Repeat("x", 2000), session.ContentTypePlain)
+		}
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if len(res.Content) >= 8000 {
+		t.Fatalf("transcript content too large: %d bytes", len(res.Content))
+	}
+	if !strings.Contains(res.Content, "transcript truncated") {
+		t.Fatalf("content missing truncation marker: %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptAbsentWithoutArg(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		childState.AddMessage(session.RoleUser, "build the widget", session.ContentTypePlain)
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if strings.Contains(res.Content, "transcript:") {
+		t.Fatalf("transcript must be opt-in, got %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptOmittedForPipelineCards(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	// A pipeline/SDD card: Child == nil.
+	view := state.RegisterSubagentWithMeta("review · main.go", nil, session.SubagentMeta{})
+	state.FinishSubagent(view.ID, "review done", nil)
+	output := NewSubagentOutputTool(state)
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if strings.Contains(res.Content, "transcript:") {
+		t.Fatalf("pipeline card must not emit a transcript block, got %q", res.Content)
+	}
+}
+
 func TestAgentKillRunningSubagent(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	run, _, _ := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {

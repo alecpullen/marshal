@@ -3,6 +3,8 @@ package config
 import "testing"
 
 func TestPaths(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
 	if got := UserDir("/home/u"); got != "/home/u/.config/marshal" {
 		t.Errorf("UserDir = %q", got)
 	}

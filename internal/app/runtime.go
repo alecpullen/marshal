@@ -25,6 +25,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
+	"marshal/internal/repo"
 	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
 	"marshal/internal/tools/native"
@@ -862,13 +863,23 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, newReg, nil
 }
 
+// resolveWorkingDir resolves the session working directory. When the
+// directory (or an explicit override) sits inside a git repository, the
+// repository root is returned, so launching from a subdirectory lands in
+// the same project — same config, database, trust record, and .marshal/
+// directory — as launching from the root. Non-git directories are
+// returned unchanged.
 func resolveWorkingDir(override string) (string, error) {
-	if override != "" {
-		return override, nil
+	dir := override
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("find working directory: %w", err)
+		}
+		dir = wd
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("find working directory: %w", err)
+	if root := repo.FindRoot(dir); root != "" {
+		return root, nil
 	}
-	return wd, nil
+	return dir, nil
 }

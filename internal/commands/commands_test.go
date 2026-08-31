@@ -923,6 +923,23 @@ func TestTrustPanelShowsProjectConfigState(t *testing.T) {
 	}
 }
 
+func TestTrustCommandRemainsHeadlessRunnable(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	cmd, ok := cmdReg.Lookup("trust")
+	if !ok {
+		t.Fatal("trust command not registered")
+	}
+	if cmd.Handler == nil {
+		t.Fatal("trust must keep a headless Handler even though it is TUIOnly")
+	}
+	state := newTestState()
+	if res := cmd.Handler(state, nil); res.Doc == nil {
+		t.Fatal("headless /trust must return the informative panel Doc")
+	}
+}
+
 func TestResultPlainTextRendersDoc(t *testing.T) {
 	res := Panel("Things", false, []Row{
 		{Header: "Group A"},

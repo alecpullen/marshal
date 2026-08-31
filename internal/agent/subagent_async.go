@@ -234,6 +234,77 @@ func NewSubagentOutputTool(state *session.State) registry.Tool {
 	return tool
 }
 
+type agentKillArgs struct {
+	ID int64 `json:"id"`
+}
+
+// NewSubagentKillTool returns the registry.Tool entry for agent.kill, the
+// parent-agent counterpart to the TUI's per-child interrupt (keypress.go:398
+// calls State.CancelSubagent with the drilled-in card's ID). It cancels the
+// child's context; the child's own completion goroutine then finishes the
+// view (FinishSubagent marks it failed with the cancellation error) and
+// delivers the report like any other completion, so the parent observes the
+// terminal state with agent.await or agent.output rather than getting a
+// synchronous completion here.
+func NewSubagentKillTool(state *session.State) registry.Tool {
+	tool := registry.Tool{
+		Name:        "agent.kill",
+		Description: `Cancel a background subagent started by agent.run. Kills are immediate but asynchronous: the child's context is cancelled and its normal completion path marks it failed with "context canceled" and delivers a [subagent N failed] report, so call agent.await (or agent.output) afterwards to observe the terminal state. Returns "killed", "already finished", or an error for an unknown id. Kills cannot be used on pipeline/SDD cards that share this session (they have no cancel handle).`,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."}},"required":["id"],"additionalProperties":false}`),
+		Risk:        registry.RiskReadOnly,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args agentKillArgs
+		if len(call.Args) > 0 {
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("decode %s arguments: %w", tool.Name, err)
+			}
+		}
+		if args.ID == 0 {
+			return registry.ToolResult{}, fmt.Errorf("%s requires \"id\"", tool.Name)
+		}
+		v, ok := state.Subagent(args.ID)
+		if !ok {
+			return registry.ToolResult{}, fmt.Errorf("agent.kill: unknown subagent id %d", args.ID)
+		}
+		if v.Status != session.SubagentRunning {
+			detail := v.Summary
+			if v.Error != "" {
+				detail = "error: " + v.Error
+			}
+			return registry.ToolResult{
+				Summary: fmt.Sprintf("subagent %d already finished", args.ID),
+				Content: fmt.Sprintf("Subagent %d (%s) already finished with status %s — nothing to kill. %s", args.ID, v.Label, subagentStatusName(v.Status), detail),
+			}, nil
+		}
+		if !state.CancelSubagent(args.ID) {
+			return registry.ToolResult{
+				Summary: fmt.Sprintf("subagent %d cannot be killed", args.ID),
+				Content: fmt.Sprintf("Subagent %d (%s) is running but has no cancel handle — it was not started by agent.run (a pipeline/SDD card sharing this session) and cannot be killed from here.", args.ID, v.Label),
+			}, nil
+		}
+		return registry.ToolResult{
+			Summary: fmt.Sprintf("killed subagent %d", args.ID),
+			Content: fmt.Sprintf("Subagent %d (%s) cancelled. Its completion path will mark it failed (\"context canceled\") and deliver a [subagent %d failed] report; call agent.await or agent.output with \"id\": %d to observe the terminal state.", args.ID, v.Label, args.ID, args.ID),
+		}, nil
+	}
+	return tool
+}
+
+// subagentStatusName renders a SubagentStatus as a human-readable word for
+// tool result text. SubagentStatus is an int with no String() method, so the
+// agent tools map it explicitly rather than printing a raw integer.
+func subagentStatusName(s session.SubagentStatus) string {
+	switch s {
+	case session.SubagentDone:
+		return "done"
+	case session.SubagentFailed:
+		return "failed"
+	default:
+		return "running"
+	}
+}
+
 // subagentActivityTail delegates to the shared session implementation so
 // agent.output and the TUI card read the same tail source and cannot drift.
 func subagentActivityTail(child *session.State, n int) []string {

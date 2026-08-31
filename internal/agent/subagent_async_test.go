@@ -320,6 +320,110 @@ func TestAgentOutputUnknownID(t *testing.T) {
 	}
 }
 
+func TestAgentKillRunningSubagent(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	run, _, _ := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	})
+	kill := NewSubagentKillTool(state)
+	// Start the child via run.Handler directly (returns immediately while
+	// the child blocks on <-ctx.Done()); do not use runAsyncSubagent, which
+	// waits for the child to finish on its own.
+	if _, err := run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	viewID := state.Subagents()[0].ID
+
+	res, err := kill.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, viewID)),
+	})
+	if err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if !strings.Contains(res.Summary, "killed subagent") {
+		t.Fatalf("kill summary = %q, want killed subagent", res.Summary)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, viewID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	if view.Status != session.SubagentFailed {
+		t.Fatalf("status = %v, want SubagentFailed after kill", view.Status)
+	}
+	if !strings.Contains(view.Error, "context canceled") {
+		t.Fatalf("view.Error = %q, want context canceled", view.Error)
+	}
+	reports := state.SubagentReports()
+	if len(reports) != 1 || !strings.Contains(reports[0], "failed") {
+		t.Fatalf("report queue = %v, want one failure report", reports)
+	}
+	if got := state.SubagentConcurrency(); got != 0 {
+		t.Fatalf("concurrency after kill = %d, want 0", got)
+	}
+}
+
+func TestAgentKillAlreadyFinished(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view := state.RegisterSubagentWithMeta("done child", childState, session.SubagentMeta{})
+	state.FinishSubagent(view.ID, "already done", nil)
+
+	kill := NewSubagentKillTool(state)
+	res, err := kill.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if !strings.Contains(res.Summary, "already finished") {
+		t.Fatalf("kill summary = %q, want already finished", res.Summary)
+	}
+}
+
+func TestAgentKillUnknownID(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	_, err := kill.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"id": 999}`)})
+	if err == nil || !strings.Contains(err.Error(), "unknown subagent id") {
+		t.Fatalf("err = %v, want unknown-id error", err)
+	}
+}
+
+func TestAgentKillRequiresID(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	_, err := kill.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{}`)})
+	if err == nil || !strings.Contains(err.Error(), `"id"`) {
+		t.Fatalf("err = %v, want an id-required error", err)
+	}
+}
+
+func TestAgentKillSchemaAdvertisesID(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	if !strings.Contains(string(kill.Schema), `"required":["id"]`) {
+		t.Fatal("schema must require id")
+	}
+	if !strings.Contains(string(kill.Schema), `"additionalProperties":false`) {
+		t.Fatal("schema must reject additional properties")
+	}
+	if !strings.Contains(kill.Description, "agent.await") {
+		t.Fatal("description must document the asynchronous terminal-state follow-up")
+	}
+}
+
+func TestAgentKillIsReadOnlyRisk(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	if kill.Risk != registry.RiskReadOnly {
+		t.Fatalf("agent.kill risk = %v, want RiskReadOnly", kill.Risk)
+	}
+}
+
 func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 	src := registry.New()
 	for _, name := range []string{"agent.run", "agent.await", "agent.output", "file.read"} {

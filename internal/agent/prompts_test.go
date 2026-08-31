@@ -1303,6 +1303,33 @@ func TestRenderAgentRosterUnknownPricingRendersNothing(t *testing.T) {
 	}
 }
 
+func TestRenderAgentRosterDiscoveredAnnotations(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+	yes := true
+	discovered := map[string][]schema.ModelInfo{
+		"openai": {
+			{ID: "gpt-5.6-luna", ContextWindow: 1000000, ToolCalling: &yes},
+			{ID: "bare-model"},
+		},
+	}
+	got := RenderAgentRosterWithDiscovered(cfg, discovered)
+	if !strings.Contains(got, "- openai/gpt-5.6-luna (discovered) · 1M ctx · tools: yes") {
+		t.Errorf("discovered annotation missing:\n%s", got)
+	}
+	if strings.Contains(got, "bare-model ·") {
+		t.Errorf("unprobed discovered model must carry no guessed facts:\n%s", got)
+	}
+	if !strings.Contains(got, "- openai/bare-model (discovered)\n") {
+		t.Errorf("bare discovered line changed shape:\n%s", got)
+	}
+	if strings.Contains(got, "gpt-5.6-luna (discovered) — roles:") {
+		t.Errorf("discovered models must never claim role bindings:\n%s", got)
+	}
+}
+
 // TestDiscoveredModelsFromCache verifies the bridge from the on-disk
 // modelcache to the roster's discovered map: only fresh, config-matching
 // entries are included, keyed per provider.

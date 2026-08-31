@@ -253,6 +253,25 @@ func presetFactNote(p routing.ModelPreset) string {
 	return strings.Join(frag, " · ")
 }
 
+// discoveredFactNote renders only the facts a probe actually reported.
+// Discovered models are never pinned, so no roles and no pricing exist for
+// them — they get capability hints only, or "" when the endpoint said
+// nothing beyond the ID.
+func discoveredFactNote(mi schema.ModelInfo) string {
+	var frag []string
+	if mi.ContextWindow > 0 {
+		frag = append(frag, fmtCtxTokens(mi.ContextWindow)+" ctx")
+	}
+	if mi.ToolCalling != nil {
+		if *mi.ToolCalling {
+			frag = append(frag, "tools: yes")
+		} else {
+			frag = append(frag, "tools: no")
+		}
+	}
+	return strings.Join(frag, " · ")
+}
+
 // RenderAgentRoster returns a human-readable listing of the configured
 // custom agents and model presets for injection into the system prompt
 // when agent.run is available. The provider/model pairs are exactly what
@@ -357,7 +376,12 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 				if mi.ID == "" || seen[mi.ID] {
 					continue
 				}
-				lines = append(lines, fmt.Sprintf("- %s/%s (discovered)\n", name, mi.ID))
+				notes := discoveredFactNote(mi)
+				entry := fmt.Sprintf("- %s/%s (discovered)", name, mi.ID)
+				if notes != "" {
+					entry += " · " + notes
+				}
+				lines = append(lines, entry+"\n")
 			}
 		}
 		if len(lines) > 0 {

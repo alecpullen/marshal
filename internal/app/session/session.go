@@ -357,6 +357,11 @@ type State struct {
 	// known (tests, or discovery never configured) and the roster omits
 	// discovered entries.
 	modelCacheDir string
+
+	// homeDir is the user's home directory, recorded so in-session layer
+	// reloads (config.LoadSessionLayers) can locate the user config layer
+	// without each caller re-deriving it. Empty means unknown (tests).
+	homeDir string
 }
 
 // SetModelCacheDir records the data directory that holds the on-disk model
@@ -374,6 +379,21 @@ func (s *State) ModelCacheDir() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.modelCacheDir
+}
+
+// SetHomeDir records the user's home directory for in-session layer
+// reloads. Called once by buildAgentRunnerWithLock at startup.
+func (s *State) SetHomeDir(dir string) {
+	s.mu.Lock()
+	s.homeDir = dir
+	s.mu.Unlock()
+}
+
+// HomeDir returns the recorded home directory (empty when never set).
+func (s *State) HomeDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.homeDir
 }
 
 // SDDGate is the open question a pipeline subagent raised. The controller

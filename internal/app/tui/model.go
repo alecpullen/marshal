@@ -880,6 +880,10 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 	if m.trustRefresh != nil {
 		m.trustRefresh(m.state.WorkingDir)
 	}
+	// The project file changed on disk, so the load-time snapshots are
+	// stale. Refresh them before rebuilding the runtime: the session
+	// snapshot is what the next project-scope save diffs against.
+	m.reloadLayers()
 	if m.configReloader != nil {
 		// reloadAgentRuntime may install cfg before reporting a cleanup
 		// error; invalidate config-derived state before attempting it.
@@ -895,6 +899,44 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 	m.applyNewConfig(cfg)
 	m.refreshDiagnostics()
 	return nil, nil
+}
+
+// reloadLayers refreshes the load-time config snapshots after any save.
+// It publishes the fresh Layers to both consumers: the provenance pointer
+// (*m.configLayers) and the session state (state.SetLayers). The session
+// snapshot is what project-scope saves compare against (see
+// config.SaveProjectConfig), so skipping it makes the next project save
+// diff against a stale user layer and re-bake user-global values into the
+// committable .marshal/config.toml — the exact defect layer-aware saves
+// exist to prevent. Open dock panels that captured a snapshot at open
+// time are refreshed through the setLayersPublisher interface.
+func (m *Model) reloadLayers() {
+	if m.layerReloader == nil {
+		return
+	}
+	layers, ok := m.layerReloader()
+	if !ok {
+		return
+	}
+	m.adoptLayers(&layers)
+}
+
+// adoptLayers installs an externally produced Layers snapshot into every
+// consumer: the provenance pointer, the session state, and any open dock
+// panel that captured a snapshot when it opened.
+func (m *Model) adoptLayers(layers *config.Layers) {
+	if layers == nil {
+		return
+	}
+	if m.configLayers != nil {
+		*m.configLayers = layers
+	}
+	m.state.SetLayers(*layers)
+	if panel := m.dock.Panel(); panel != nil {
+		if pub, ok := panel.(interface{ SetLayers(config.Layers) }); ok {
+			pub.SetLayers(*layers)
+		}
+	}
 }
 
 // afterRuntimeReload runs the recovery steps that become valid once the
@@ -1008,11 +1050,7 @@ func (m *Model) handleSetCommand(args []string) {
 				m.afterRuntimeReload()
 			}
 			m.applyNewConfig(reg.Config())
-			if m.configLayers != nil && m.layerReloader != nil {
-				if layers, ok := m.layerReloader(); ok {
-					*m.configLayers = &layers
-				}
-			}
+			m.reloadLayers()
 			m.refreshOpenSettingsBrowser()
 			if !change.Changed {
 				sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, config.UserConfigPath(home))))
@@ -1575,11 +1613,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !msg.GlobalTarget && m.trustRefresh != nil {
 				m.trustRefresh(m.state.WorkingDir)
 			}
-			if m.configLayers != nil && m.layerReloader != nil {
-				if layers, ok := m.layerReloader(); ok {
-					*m.configLayers = &layers
-				}
-			}
+			m.reloadLayers()
 			cfgPath := projectConfigPath(m.state.WorkingDir)
 			base := m.state.WorkingDir
 			if msg.GlobalTarget {
@@ -1627,11 +1661,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		if m.configLayers != nil && m.layerReloader != nil {
-			if layers, ok := m.layerReloader(); ok {
-				*m.configLayers = &layers
-			}
-		}
+		// persistAndReload already refreshed the layer snapshots.
 		for _, receipt := range msg.Receipts {
 			m.state.AddMessage(session.RoleSystem,
 				"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),

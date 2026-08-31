@@ -33,9 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously reported success but lost their values on restart.
 - On first launch after this change, a session database left in a stray
   subdirectory `.marshal/` is adopted at the repository root.
-- The settings layer reloader passes the same home/trust context as
-  startup, so provenance no longer shows a project layer the session
-  never trusted.
+- The settings layer reloader replays the session's trust decision
+  through a non-prompting resolver, so provenance no longer shows a
+  project layer the session never trusted — and a `/settings` save can
+  never run the interactive trust prompt inside the TUI event loop.
+- A global-scope settings save (user config) now refreshes the session's
+  config-layer snapshot, so the next project-scope save no longer
+  re-bakes user-global values into the committable
+  `.marshal/config.toml`.
+- `marshal --trust` keys the permanent-trust record on the repository
+  root, so running it from a subdirectory writes a record the next
+  root-anchored launch actually matches (and stores the root config's
+  hash, not an empty one).
 
 ### Added
 

@@ -18,7 +18,7 @@ func TestSaveProjectConfigDoesNotBakeUserValues(t *testing.T) {
 	user.Providers = map[string]ProviderConfig{
 		"ollama": {Type: "ollama", BaseURL: "http://127.0.0.1:11434"},
 	}
-	merged := user // project layer contributes nothing
+	merged := user                                  // project layer contributes nothing
 	merged.Commands.Test = "go test ./internal/..." // differs from the user layer
 
 	layers := Layers{User: user, Merged: merged}

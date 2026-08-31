@@ -170,6 +170,36 @@ func (l Layers) ProvenanceOf(dottedPath string) Provenance {
 	return Provenance{SetBy: LayerDefault, Overrides: LayerDefault}
 }
 
+// LoadSessionLayers loads the config layers the way an in-session reload
+// sees them: the session's own trust decision decides whether the project
+// layer applies, and no prompt is ever possible. Used by callers that
+// refresh layers outside startup (the TUI layer reloader, the agent-driven
+// config tools) so they cannot reach the interactive trust prompt.
+//
+// A trusted session keeps the project layer even when no store record can
+// confirm it (session-only trust never writes one); an untrusted session
+// skips the project layer entirely.
+func LoadSessionLayers(home, work string, trusted bool) (Layers, error) {
+	opts := LoadOptions{HomeDir: home, WorkingDir: work}
+	if trusted {
+		opts.TrustResolver = trust.FixedResolver{Decision: trust.DecisionTrustSession}
+	} else {
+		// Without a resolver the loader consults the trust store, which
+		// cannot see a session-only decision; mirror the session's explicit
+		// "don't trust" by skipping the project layer.
+		opts.SkipProjectConfig = true
+	}
+	return LoadLayers(opts)
+}
+
+// ProjectApplied reports whether the project layer contributed to Merged:
+// true when a project config exists, trust allowed it, and at least one
+// value differs from the user layer. Tests use it to assert that a reload
+// kept (or dropped) the project layer.
+func (l Layers) ProjectApplied() bool {
+	return !reflect.DeepEqual(l.Merged, l.User)
+}
+
 // valuesEqual compares two any values. For the common scalar types
 // (string, int, bool, float64) it uses direct == comparison, which is exact
 // and avoids reflect.DeepEqual's reflection overhead. Other values —

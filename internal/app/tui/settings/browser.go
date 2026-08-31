@@ -154,6 +154,10 @@ func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption)
 // saves to avoid baking user-layer values into the project file.
 func (b *BrowserPanel) SetLayers(layers config.Layers) { b.layers = layers }
 
+// Layers returns the panel's current snapshot, for tests and for the
+// model's post-save refresh path.
+func (b *BrowserPanel) Layers() config.Layers { return b.layers }
+
 // FilterValue returns the current browser filter text so callers can reopen
 // the browser with the same query after an external config change.
 func (b *BrowserPanel) FilterValue() string { return b.filter.Value() }

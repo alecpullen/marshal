@@ -503,6 +503,9 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if dataDir != "" {
 		state.SetModelCacheDir(dataDir)
 	}
+	// Record the home directory so in-session layer reloads
+	// (config.LoadSessionLayers) can locate the user config layer.
+	state.SetHomeDir(homeDir)
 
 	// Milestone Q: construct the JobManager from the sandboxed command
 	// runner so background jobs honour the configured sandbox backend,
@@ -1792,22 +1795,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
 		configLayers := &rt.Layers
 		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
-		tuiOpts = append(tuiOpts, tui.WithLayerReloader(func() (config.Layers, bool) {
-			layers, err := config.LoadLayers(config.LoadOptions{
-				HomeDir:    homeDir,
-				WorkingDir: workingDir,
-				// The session already answered the trust question at
-				// startup. The terminal resolver never prompts here (the
-				// TUI owns stdin), so a config that changed since trust
-				// was recorded drops the project layer exactly as a fresh
-				// launch would re-prompt for it.
-				TrustResolver: trust.NewTerminalResolver(trust.NewStore(trustStoreDir)),
-			})
-			if err != nil {
-				return config.Layers{}, false
-			}
-			return layers, true
-		}))
+		tuiOpts = append(tuiOpts, tui.WithLayerReloader(layerReloaderFor(homeDir, workingDir, state.Trusted)))
 		// F18: eager-seed the @file completion popup with the repo file
 		// index. Failures (no DB, empty index) are non-fatal — the TUI
 		// falls back to a lazy load on the first @-keystroke.
@@ -2044,6 +2032,29 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// prompt; the deferred Close covers the final rt, this covers reload
 		// iterations.
 		_ = rt.Close(context.Background())
+	}
+}
+
+// layerReloaderFor returns the TUI's layer-reload function: it re-runs
+// LoadLayers with the same home/working context as startup and replays the
+// session's trust decision through config.LoadSessionLayers, which never
+// prompts and never persists. The interactive TerminalResolver must never
+// run here: the reloader executes inside the TUI event loop, where its
+// stdin prompt would freeze the interface (the TUI owns stdin, and the fd
+// is still a terminal in a real launch). A session that answered the trust
+// question at startup — permanently, per-session, or not at all — keeps
+// that answer for the rest of the session.
+func layerReloaderFor(homeDir, workingDir string, trusted func() bool) func() (config.Layers, bool) {
+	return func() (config.Layers, bool) {
+		t := false
+		if trusted != nil {
+			t = trusted()
+		}
+		layers, err := config.LoadSessionLayers(homeDir, workingDir, t)
+		if err != nil {
+			return config.Layers{}, false
+		}
+		return layers, true
 	}
 }
 

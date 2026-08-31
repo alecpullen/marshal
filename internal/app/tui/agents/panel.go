@@ -67,6 +67,10 @@ type Panel struct {
 // saves to avoid baking user-layer values into the project file.
 func (p *Panel) SetLayers(layers config.Layers) { p.layers = layers }
 
+// Layers returns the panel's current snapshot, for the model's post-save
+// refresh path and tests.
+func (p *Panel) Layers() config.Layers { return p.layers }
+
 var _ dock.Panel = (*Panel)(nil)
 
 // NewRosterPanel builds the roster panel pre-filtered by `arg` (a role

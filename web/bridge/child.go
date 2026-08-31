@@ -69,6 +69,17 @@ type Child struct {
 	// Transport supplies each generation's streams and lifecycle. Nil
 	// means a local process built from MarshalBin, Args, and Env.
 	Transport agentTransport
+	// Containerized reports whether this child runs in a container whose
+	// filesystem view differs from the bridge's, so paths crossing the
+	// boundary must be translated (see agentRuntime.agentPath). The
+	// production newRuntime closure sets it wherever it sets a container
+	// Transport.
+	//
+	// It is a field rather than a type assertion on Transport because a
+	// type assertion no test transport can satisfy leaves every
+	// translating call site untestable — which is how the primary
+	// translation site shipped with only a tautological test.
+	Containerized bool
 
 	// OnRestart is invoked after each unexpected exit, once the
 	// replacement process has spawned. Intended for session resume.

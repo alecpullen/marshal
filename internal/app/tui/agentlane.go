@@ -5,29 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
-
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
-	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
-
-// laneSeparator is the rule that opens a lane, marking where the
-// transcript ends. Without it the lanes blend into the todo panel and the
-// input area directly beneath them.
-//
-// It reuses renderTurnSeparator's construction — the one `─` rule already
-// sanctioned in a codebase that otherwise forbids box-drawing chrome — so
-// the two horizontal rules on screen match.
-func laneSeparator(width int) string {
-	bar := lipgloss.NewStyle().Foreground(dimColor).Render(glyph.Rail)
-	w := max(width-1, 1)
-	return bar +
-		lipgloss.NewStyle().Foreground(theme.Current().BorderMuted).Render(strings.Repeat("─", w)) +
-		"\n"
-}
 
 // agentLaneMaxRows caps the lane: a header row plus up to three subagent
 // rows, the last of which becomes an overflow row when more are running.

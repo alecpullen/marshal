@@ -171,7 +171,7 @@ func TestRosterPersistViaDirectPickedMsg(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.SaveProjectConfig(cfgPath, cfg); err != nil {
+	if err := config.SaveProjectConfig(cfgPath, cfg, config.Layers{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,7 +276,7 @@ func TestRosterRolePickerOpensOverlay(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.SaveProjectConfig(cfgPath, cfg); err != nil {
+	if err := config.SaveProjectConfig(cfgPath, cfg, config.Layers{}); err != nil {
 		t.Fatal(err)
 	}
 

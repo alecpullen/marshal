@@ -871,7 +871,7 @@ func (m *Model) refreshDiagnostics() {
 // without losing their edit. Messaging is the caller's job.
 func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 	path := projectConfigPath(m.state.WorkingDir)
-	if err := config.SaveProjectConfig(path, cfg); err != nil {
+	if err := config.SaveProjectConfig(path, cfg, m.state.Layers()); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
 		return err, nil
@@ -1079,6 +1079,7 @@ func (m *Model) openSettingsBrowser(query string) {
 	// empty on construction. Seed savePending so a repeated commit still
 	// retries persistence instead of silently no-op'ing (see
 	// BrowserPanel.SetSavePending and flushChanges).
+	browser.SetLayers(m.state.Layers())
 	browser.SetSavePending(m.configSavePending)
 	m.dock.Open(browser)
 }
@@ -1098,13 +1099,15 @@ func (m *Model) openAgentsRoster(arg string) {
 		_, cmd := m.startAgentRun(runner, goal)
 		return cmd
 	}
-	m.dock.Open(agents.NewRosterPanelWithRegistry(
+	roster := agents.NewRosterPanelWithRegistry(
 		m.state.Config,
 		projectConfigPath(m.state.WorkingDir),
 		arg,
 		dispatch,
 		m.toolRegistry,
-	))
+	)
+	roster.SetLayers(m.state.Layers())
+	m.dock.Open(roster)
 }
 
 // buildCustomAgentRunner builds an AgentRunner for the named custom agent.

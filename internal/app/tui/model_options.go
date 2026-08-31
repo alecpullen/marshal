@@ -122,7 +122,7 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 		return nil
 	}
 
-	if err := config.SaveProjectConfig(config.ProjectConfigPath(m.workDir), msg.Config); err != nil {
+	if err := config.SaveProjectConfig(config.ProjectConfigPath(m.workDir), msg.Config, m.state.Layers()); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Saved %s option failed: %v", msg.FieldID, err), session.ContentTypePlain)
 		return nil
 	}

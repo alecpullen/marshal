@@ -76,7 +76,7 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b"},
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestSaveProjectConfigRoundTripsAgentScalars(t *testing.T) {
 		},
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -265,7 +265,7 @@ timeout_ms = 2500
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 
@@ -294,7 +294,7 @@ func TestSaveProjectConfigRoundTripsPlanFirst(t *testing.T) {
 	cfg.AgentProfiles = nil
 	cfg.Agent.PlanFirst = true
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -316,7 +316,7 @@ func TestSaveProjectConfigRoundTripsParseRepairFeedback(t *testing.T) {
 	cfg.AgentProfiles = nil
 	cfg.Agent.ParseRepairFeedback = strutil.Ptr(false)
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -339,7 +339,7 @@ func TestRemoteLimitDiscoveryConfigurable(t *testing.T) {
 	cfg.Privacy.RemoteProvidersAllowed = false
 	cfg.Privacy.RemoteLimitDiscovery = true
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -359,7 +359,7 @@ func TestSDDDispatchRetriesRoundTrip(t *testing.T) {
 	cfg := Default()
 	cfg.SDD.DispatchRetries = 5
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestSaveProjectConfigRoundTripsTUI(t *testing.T) {
 		Mode:    "ask",
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -417,7 +417,7 @@ use_treesitter = true
 		t.Fatalf("Load failed: %v", err)
 	}
 	cfg.Profile.Default = "local_balanced"
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -443,7 +443,7 @@ func TestSaveProjectConfigEmbeddingPresetRoundTrip(t *testing.T) {
 	// An empty value on an otherwise-default config must not emit the key
 	// into the saved TOML (the whole [indexing] table is omitted).
 	emptyCfg := Default()
-	if err := SaveProjectConfig(path, emptyCfg); err != nil {
+	if err := SaveProjectConfig(path, emptyCfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig (empty) failed: %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -460,7 +460,7 @@ func TestSaveProjectConfigEmbeddingPresetRoundTrip(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 	cfg.Indexing.EmbeddingPreset = "ollama/nomic-embed-text"
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -502,7 +502,7 @@ func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, ".marshal", "config.toml")
 	cfg := fullEditedConfig()
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: filepath.Join(dir, "no-home"), WorkingDir: dir})
@@ -592,7 +592,7 @@ vet = "go vet ./..."
 	loaded.Project.Name = "newname"
 	loaded.Commands.Test = "make test"
 
-	if err := SaveProjectConfig(path, loaded); err != nil {
+	if err := SaveProjectConfig(path, loaded, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 
@@ -615,7 +615,7 @@ func TestSaveProjectConfigOmitsDefaultNewSections(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".marshal", "config.toml")
 
-	if err := SaveProjectConfig(path, Default()); err != nil {
+	if err := SaveProjectConfig(path, Default(), Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -645,7 +645,7 @@ func TestSaveSDDConfig(t *testing.T) {
 	cfg.SDD.MaxFixRounds = 7
 	cfg.SDD.PlansDir = "custom/plans"
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: work, WorkingDir: work})
@@ -671,7 +671,7 @@ func TestSaveProjectConfigRejectsBadBaseURL(t *testing.T) {
 			"evil": {Type: "openai_compatible", BaseURL: "javascript:alert(1)"},
 		},
 	}
-	if err := SaveProjectConfig(path, cfg); err == nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err == nil {
 		t.Fatal("expected SaveProjectConfig to reject javascript: URL, got nil")
 	}
 }
@@ -691,7 +691,7 @@ func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	loadedFile, err := loadFile(path)
@@ -726,7 +726,7 @@ func TestSaveProjectConfigWritesAgentProfiles(t *testing.T) {
 		},
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
 
@@ -783,7 +783,7 @@ func TestApprovalModeRoundTrip(t *testing.T) {
 	path := tmp + "/.marshal/config.toml"
 	cfg := Default()
 	cfg.Agent.ApprovalMode = "auto"
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
@@ -816,7 +816,7 @@ func TestSaveProjectConfigDoesNotResurrectDeletedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -833,7 +833,7 @@ func TestSaveProjectConfigDoesNotResurrectDeletedKeys(t *testing.T) {
 	// covered by round-trip tests above; this checks that an existing key
 	// is updated rather than dropped when it holds a non-default value.
 	cfg.Skills.MaxActive = Default().Skills.MaxActive
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save after reset: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
@@ -874,7 +874,7 @@ func TestSaveProjectConfigDeletedSkillsKeyStaysDeleted(t *testing.T) {
 	if err := os.WriteFile(path, []byte("[skills]\nautoload = []\n"), 0o644); err != nil {
 		t.Fatalf("rewrite file without max_active: %v", err)
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
@@ -934,7 +934,7 @@ func TestSaveProjectConfigRoundTripsMCPServerTrust(t *testing.T) {
 	cfg.MCP.Servers = map[string]MCPServerConfig{
 		"local": {Command: "node", Trust: "unrestricted"},
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 
@@ -954,7 +954,7 @@ func TestSaveSidePanelRoundTrip(t *testing.T) {
 	cfg.TUI.SidePanel.WidthPct = 33
 	cfg.TUI.SidePanel.Hidden = []string{"repo", "rules"}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
@@ -979,7 +979,7 @@ func TestPresetThinkingRoundTrip(t *testing.T) {
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3", Thinking: "medium"},
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: filepath.Join(dir, "no-home"), WorkingDir: dir})
@@ -994,7 +994,7 @@ func TestPresetThinkingRoundTrip(t *testing.T) {
 	p := cfg.Models.Presets["ollama/qwen3"]
 	p.Thinking = ""
 	cfg.Models.Presets["ollama/qwen3"] = p
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save (empty): %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -1021,7 +1021,7 @@ func TestPresetPricingRoundTrip(t *testing.T) {
 			},
 		},
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
@@ -1340,7 +1340,7 @@ func TestSaveProjectConfigPreservesProviderTemplate(t *testing.T) {
 	cfg.Providers = map[string]ProviderConfig{
 		"work": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
 	}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 	data, err := os.ReadFile(path)

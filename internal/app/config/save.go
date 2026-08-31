@@ -17,7 +17,14 @@ import (
 // SaveProjectConfig writes the essential settings-editable sections of cfg to
 // path (typically .marshal/config.toml). It preserves any unrelated sections
 // already present in the file.
-func SaveProjectConfig(path string, cfg Config) error {
+//
+// layers carries the load-time snapshots (config.LoadLayers). Only values
+// the project layer itself contributes are persisted: a section whose
+// merged value equals the user-layer value came from the user config or
+// defaults, so writing it here would bake machine-local state into a
+// shared, often-committed file. A zero Layers (tests, callers without
+// snapshots) preserves the historical behaviour.
+func SaveProjectConfig(path string, cfg Config, layers Layers) error {
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load existing project config: %w", err)
@@ -43,6 +50,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 
 	writeSections(&file, cfg, Default())
+	applyProjectLayer(&file, cfg, layers)
 
 	data, err := toml.Marshal(&file)
 	if err != nil {

@@ -142,7 +142,13 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 		if t.configPath == "" {
 			return registry.ToolResult{}, fmt.Errorf("project config path not configured")
 		}
-		saveErr = config.SaveProjectConfig(t.configPath, next)
+		// sessionState is nil in some tests and headless contexts; a zero
+		// Layers preserves the historical write-everything behaviour.
+		var layers config.Layers
+		if t.sessionState != nil {
+			layers = t.sessionState.Layers()
+		}
+		saveErr = config.SaveProjectConfig(t.configPath, next, layers)
 	}
 	if saveErr != nil {
 		return registry.ToolResult{}, fmt.Errorf("save config: %w", saveErr)

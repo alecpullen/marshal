@@ -20,7 +20,7 @@ func TestSaveProjectConfigWritesSessionRollover(t *testing.T) {
 	cfg.Session.Rollover.Enabled = true
 	cfg.Session.Rollover.ContextPercentThreshold = 55
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -54,7 +54,7 @@ func TestSaveProjectConfigWritesLSP(t *testing.T) {
 		"go": {Command: "gopls"},
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	loaded, err := Load(LoadOptions{WorkingDir: dir, HomeDir: filepath.Join(dir, "home")})
@@ -80,7 +80,7 @@ func TestSaveProjectConfigWritesHistoryScratchpadAgents(t *testing.T) {
 		routing.RolePlanner: {Context: routing.ContextBudget{MaxRepoContextTokens: 1234}},
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	loaded, err := Load(LoadOptions{WorkingDir: dir, HomeDir: filepath.Join(dir, "home")})

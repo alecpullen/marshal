@@ -71,6 +71,7 @@ type BrowserPanel struct {
 	list     *fieldList
 	stack    *paneStack
 	baseline config.Config
+	layers   config.Layers
 
 	pickerModel  *picker.Model
 	pickerOnPick func(string) error
@@ -148,6 +149,10 @@ func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption)
 	}
 	return browser
 }
+
+// SetLayers supplies the load-time config snapshots used by project-scope
+// saves to avoid baking user-layer values into the project file.
+func (b *BrowserPanel) SetLayers(layers config.Layers) { b.layers = layers }
 
 // FilterValue returns the current browser filter text so callers can reopen
 // the browser with the same query after an external config change.
@@ -662,7 +667,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		return tea.Batch(inner, changed)
 	}
 
-	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config())
+	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config(), b.layers)
 	var receipts []string
 	switch {
 	case saveErr != nil:

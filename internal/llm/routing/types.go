@@ -1,6 +1,10 @@
 package routing
 
-import "github.com/pelletier/go-toml/v2"
+import (
+	"sort"
+
+	"github.com/pelletier/go-toml/v2"
+)
 
 type AgentRole string
 
@@ -230,4 +234,71 @@ type Config struct {
 	// embedding role binding, which ResolveEmbedding still consults as a
 	// fallback for configs built without the load-time migration.
 	EmbeddingPreset string
+}
+
+// PresetRoleBinding reports one profile's binding of roles to a preset,
+// as produced by the PresetRoleBindings inversion used by the agent
+// roster to annotate which model suits which kind of task.
+type PresetRoleBinding struct {
+	Profile string
+	Roles   []AgentRole
+}
+
+// PresetRoleBindings inverts cfg.Profiles into a per-preset view: for
+// every preset name bound anywhere, the profiles that bind it and the
+// roles each profile binds, where a role counts only when
+// EffectiveBinding resolves it from that exact role (bindings inherited
+// from the fast rung or the implementer rung are attributed to that rung,
+// mirroring what ResolveRoleIfBound treats as "explicitly bound"). Roles
+// are sorted in AllRoles declaration order; profile names are sorted.
+// Iterates AllRoles only — RoleEmbedding and RoleFast are excluded there
+// by design (embedding is not a chat role; fast is a fallback source), so
+// neither can ever be advertised as a binding.
+// The cfg is not mutated.
+func PresetRoleBindings(cfg Config) map[string][]PresetRoleBinding {
+	profiles := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		profiles = append(profiles, name)
+	}
+	sort.Strings(profiles)
+
+	m := map[string]map[string][]AgentRole{} // preset -> profile -> roles
+	for _, pname := range profiles {
+		profile := cfg.Profiles[pname]
+		for _, r := range AllRoles {
+			b, from, ok := profile.EffectiveBinding(r)
+			if !ok || from != r || b.Preset == "" {
+				continue
+			}
+			if m[b.Preset] == nil {
+				m[b.Preset] = map[string][]AgentRole{}
+			}
+			m[b.Preset][pname] = append(m[b.Preset][pname], r)
+		}
+	}
+
+	out := make(map[string][]PresetRoleBinding, len(m))
+	for preset, byProfile := range m {
+		profNames := make([]string, 0, len(byProfile))
+		for pname := range byProfile {
+			profNames = append(profNames, pname)
+		}
+		sort.Strings(profNames)
+		for _, pname := range profNames {
+			out[preset] = append(out[preset], PresetRoleBinding{Profile: pname, Roles: byProfile[pname]})
+		}
+	}
+	return out
+}
+
+// PresetRoleBindingsSorted is PresetRoleBindings plus the sorted preset
+// names, so callers can render deterministically in one pass.
+func PresetRoleBindingsSorted(cfg Config) (map[string][]PresetRoleBinding, []string) {
+	m := PresetRoleBindings(cfg)
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return m, names
 }

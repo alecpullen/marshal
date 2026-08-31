@@ -53,3 +53,41 @@ func TestSingleModelProfileResolvesThroughTheRouter(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetRoleBindingsInvertsProfiles(t *testing.T) {
+	cfg := Config{
+		Profiles: map[string]AgentProfile{
+			"single": {Name: "single", Roles: map[AgentRole]RoleBinding{
+				RoleImplementer: {Preset: "ollama/qwen2.5-coder:14b"},
+				RoleReviewer:    {Preset: "ollama/qwen2.5-coder:14b"},
+				RoleRepoScout:   {Preset: "ollama/qwen2.5-coder:7b"},
+			}},
+		},
+	}
+	got, names := PresetRoleBindingsSorted(cfg)
+	if len(names) != 2 || names[0] != "ollama/qwen2.5-coder:14b" || names[1] != "ollama/qwen2.5-coder:7b" {
+		t.Fatalf("preset keys = %v, want sorted [14b, 7b]", names)
+	}
+	reviewerBinds := got["ollama/qwen2.5-coder:14b"]
+	if len(reviewerBinds) != 1 || reviewerBinds[0].Profile != "single" {
+		t.Fatalf("bindings for 14b = %+v", reviewerBinds)
+	}
+	if got["ollama/qwen2.5-coder:7b"][0].Roles[0] != RoleRepoScout {
+		t.Fatalf("bindings for 7b = %+v", got["ollama/qwen2.5-coder:7b"])
+	}
+}
+
+func TestPresetRoleBindingsAttributionNotInheritance(t *testing.T) {
+	cfg := Config{
+		Profiles: map[string]AgentProfile{
+			"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+				RoleImplementer: {Preset: "base"},
+			}},
+		},
+	}
+	got := PresetRoleBindings(cfg)
+	roles := got["base"][0].Roles
+	if len(roles) != 1 || roles[0] != RoleImplementer {
+		t.Fatalf("inherited roles leaked into attribution: %+v", roles)
+	}
+}

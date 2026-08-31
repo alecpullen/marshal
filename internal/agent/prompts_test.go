@@ -1176,6 +1176,42 @@ func TestRenderAgentRosterFooterIsHonest(t *testing.T) {
 	}
 }
 
+// TestAgentRosterRendersDeterministicLines pins sorted iteration of the
+// custom-agent and preset sections: identical configs must render
+// byte-identical rosters (Go map range order is randomized), keeping
+// system prompts prefix-cache friendly.
+func TestAgentRosterRendersDeterministicLines(t *testing.T) {
+	newCfg := func() config.Config {
+		cfg := config.Default()
+		cfg.Models.Presets = map[string]routing.ModelPreset{
+			"ollama/qwen2.5-coder:14b": {Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+			"openai/gpt-4o-mini":       {Provider: "openai", Model: "gpt-4o-mini"},
+			"ollama/qwen2.5-coder:7b":  {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		}
+		cfg.CustomAgents = map[string]routing.CustomAgent{
+			"reviewer": {Name: "reviewer", Preset: "openai/gpt-4o-mini", SystemPrompt: "Read-only reviewer"},
+			"scout":    {Name: "scout", Preset: "ollama/qwen2.5-coder:7b", SystemPrompt: "Repo scout"},
+			"planner":  {Name: "planner", Preset: "openai/gpt-4o-mini", SystemPrompt: "Plan only"},
+		}
+		return cfg
+	}
+	first := RenderAgentRoster(newCfg())
+	for i := 0; i < 50; i++ {
+		if got := RenderAgentRoster(newCfg()); got != first {
+			t.Fatalf("roster is not deterministic (iteration %d):\n--- first ---\n%s\n--- other ---\n%s", i, first, got)
+		}
+	}
+	if !strings.Contains(first, "- ollama/qwen2.5-coder:14b\n- ollama/qwen2.5-coder:7b\n- openai/gpt-4o-mini\n") {
+		t.Errorf("preset lines not in sorted key order:\n%s", first)
+	}
+	if !strings.Contains(first, "- planner (openai/gpt-4o-mini)") || !strings.Contains(first, "- reviewer (openai/gpt-4o-mini)") {
+		t.Errorf("custom agents missing expected lines:\n%s", first)
+	}
+	if strings.Count(first, "Custom agents:") != 1 {
+		t.Errorf("custom agents header printed more than once:\n%s", first)
+	}
+}
+
 // TestDiscoveredModelsFromCache verifies the bridge from the on-disk
 // modelcache to the roster's discovered map: only fresh, config-matching
 // entries are included, keyed per provider.

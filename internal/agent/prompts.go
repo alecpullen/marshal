@@ -182,7 +182,13 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 	var b strings.Builder
 	if len(cfg.CustomAgents) > 0 {
 		b.WriteString("Custom agents:\n")
-		for name, agent := range cfg.CustomAgents {
+		agentNames := make([]string, 0, len(cfg.CustomAgents))
+		for name := range cfg.CustomAgents {
+			agentNames = append(agentNames, name)
+		}
+		sort.Strings(agentNames)
+		for _, name := range agentNames {
+			agent := cfg.CustomAgents[name]
 			preset := agent.Preset
 			if p, ok := cfg.Models.Presets[preset]; ok && p.Provider != "" && p.Model != "" {
 				preset = fmt.Sprintf("%s/%s", p.Provider, p.Model)
@@ -200,7 +206,13 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 	}
 	if len(cfg.Models.Presets) > 0 {
 		b.WriteString("Model presets (valid provider/model pairs):\n")
-		for _, p := range cfg.Models.Presets {
+		presetNames := make([]string, 0, len(cfg.Models.Presets))
+		for name := range cfg.Models.Presets {
+			presetNames = append(presetNames, name)
+		}
+		sort.Strings(presetNames)
+		for _, pname := range presetNames {
+			p := cfg.Models.Presets[pname]
 			b.WriteString(fmt.Sprintf("- %s/%s\n", p.Provider, p.Model))
 		}
 	}

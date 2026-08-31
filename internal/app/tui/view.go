@@ -125,15 +125,23 @@ func (m *Model) viewString() string {
 		leftHeight -= lipgloss.Height(topBar)
 	}
 	left = clipLeftColumn(left, leftHeight)
-	// Suppress the side rail while drilled into a subagent: the rail shows
-	// parent-session telemetry that is irrelevant (and squashing) while
-	// viewing a child transcript. The breadcrumb row already identifies the
-	// drilled-in state, so the left column gets the full frame width.
-	if m.railEnabled() && len(m.viewStack) == 0 {
-		railHeight := m.height - statusLineRows
-		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {
-			rv = chrome.PaintBand(rv, m.railWidth, theme.Current().ChromeBG())
-			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
+	// The rail renders whenever there is relevant data: parent-scoped when
+	// not drilled in, child-scoped while drilled into a real subagent (the
+	// breadcrumb already identifies the drilled-in state). It stays hidden
+	// for pipeline/SDD card drill-ins, whose transcript is still the
+	// parent's and which have no child state to scope to.
+	if m.railEnabled() {
+		child := m.drilledRailState()
+		if child != nil || len(m.viewStack) == 0 {
+			d := m.railData()
+			if child != nil {
+				d = m.childRailData(child)
+			}
+			railHeight := m.height - statusLineRows
+			if rv := m.rail.View(d, m.railWidth, railHeight); rv != "" {
+				rv = chrome.PaintBand(rv, m.railWidth, theme.Current().ChromeBG())
+				left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
+			}
 		}
 	}
 	if topBar != "" {

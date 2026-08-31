@@ -1510,6 +1510,40 @@ func (m Model) railData() sidepanel.Data {
 	}
 }
 
+// drilledRailState returns the child session the rail should render while
+// drilled into a subagent, or nil when the rail should show the parent (no
+// drill-in, or a pipeline/SDD card with no Child state). Mirrors
+// refreshViewport's transcriptState resolution.
+func (m Model) drilledRailState() *session.State {
+	if len(m.viewStack) == 0 {
+		return nil
+	}
+	v, ok := m.drilledInto()
+	if !ok || v.Child == nil {
+		return nil
+	}
+	return v.Child
+}
+
+// childRailData assembles a rail snapshot scoped to a drilled-in subagent:
+// session-scoped telemetry (audit trail, rules, skills) comes from the
+// child, while environment-level sections (git, repo index) stay parent-
+// sourced — they describe the workspace, not the conversation. Parent turn
+// telemetry (Changed/Pack/Swarm/SDD/Turns/Totals) is omitted: it has no
+// per-child meaning and nothing per-child is cached at turn boundaries yet.
+func (m Model) childRailData(child *session.State) sidepanel.Data {
+	return sidepanel.Data{
+		State:   child,
+		Audit:   child.AuditLog(),
+		Rules:   child.SessionRules(),
+		Skills:  child.ActiveSkills(),
+		Git:     m.gitInfo,
+		Repo:    m.railRepoStats,
+		Spinner: m.turnSpinnerFrame(),
+		Now:     m.now(),
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Clear interruptArmed for any non-keypress message so a stale flag
 	// doesn't cause the next Ctrl+C to quit instead of interrupt. Only an

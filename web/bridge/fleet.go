@@ -230,7 +230,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			}
 			cfg.LocalMount = hostPath
 		}
-		return &Child{Transport: newContainerTransport(cfg)}, nil
+		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
 	}
 	return f
 }
@@ -433,10 +433,9 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	log := NewEventLog()
 	Attach(log, child, reg)
 
-	_, isContainer := child.Transport.(*containerTransport)
 	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
 		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
-		containerized: isContainer}
+		containerized: child.Containerized}
 	f.attachClassifier(rt)
 
 	if err := child.Start(); err != nil {

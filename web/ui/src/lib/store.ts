@@ -6,8 +6,16 @@ export type Mode = 'read' | 'default' | 'plan' | 'edit' | 'copilot' | 'auto'
 
 export const MODES: Mode[] = ['read', 'default', 'plan', 'edit', 'copilot', 'auto']
 
+/*
+  Messages and tool calls are kept in separate arrays because they are
+  updated by different events and looked up in different ways — a tool
+  call is patched by id long after it arrives. `seq` is what lets them be
+  put back into one chronological transcript: a single counter stamped on
+  arrival, so ordering does not depend on which array something is in.
+*/
 export interface Message {
   id: string
+  seq: number
   role: 'user' | 'assistant' | 'system'
   text: string
   reasoning?: string
@@ -15,11 +23,30 @@ export interface Message {
 
 export interface ToolCall {
   id: string
+  seq: number
   name: string
   args: unknown
   status: 'pending' | 'running' | 'success' | 'error'
   output?: string
   error?: string
+}
+
+/** One row of the rendered transcript, in arrival order. */
+export type TranscriptEntry =
+  | { kind: 'message'; key: string; seq: number; value: Message }
+  | { kind: 'toolCall'; key: string; seq: number; value: ToolCall }
+
+/*
+  Merge the two arrays into the order things actually happened. Keys are
+  prefixed by kind: a message id and a tool call id are minted from
+  different sources and must not be assumed distinct.
+*/
+export function transcriptEntries(s: SessionState): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = [
+    ...s.messages.map((m): TranscriptEntry => ({ kind: 'message', key: `m:${m.id}`, seq: m.seq, value: m })),
+    ...s.toolCalls.map((t): TranscriptEntry => ({ kind: 'toolCall', key: `t:${t.id}`, seq: t.seq, value: t })),
+  ]
+  return entries.sort((a, b) => a.seq - b.seq)
 }
 
 export interface PendingPermission {
@@ -62,6 +89,33 @@ export interface SessionState {
 
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+/*
+  Derived from state rather than a standalone counter so the sequence
+  cannot drift from what the arrays actually hold. Every append runs
+  inside state.update, which is serialized, so max+1 is unambiguous.
+*/
+function nextSeq(s: SessionState): number {
+  let max = 0
+  for (const m of s.messages) if (m.seq > max) max = m.seq
+  for (const t of s.toolCalls) if (t.seq > max) max = t.seq
+  return max + 1
+}
+
+/*
+  The assistant message a streaming chunk may still be appended to.
+
+  A trailing assistant message only stays open while nothing else has
+  arrived after it. Once a tool call lands, further chunks are text the
+  agent wrote *after* that call, and folding them back into the earlier
+  message would render them above it permanently.
+*/
+function openAssistantMessage(s: SessionState): Message | null {
+  const last = s.messages[s.messages.length - 1]
+  if (!last || last.role !== 'assistant') return null
+  for (const t of s.toolCalls) if (t.seq > last.seq) return null
+  return last
 }
 
 function createSessionState(id: string, cwd: string): SessionState {
@@ -202,7 +256,7 @@ export function createSessionStore(id: string, cwd: string) {
       state.update((s) => ({
         ...s,
         busy: true,
-        messages: [...s.messages, { id: uid(), role: 'user', text }],
+        messages: [...s.messages, { id: uid(), seq: nextSeq(s), role: 'user', text }],
       }))
       await api.promptSession(id, text)
     },
@@ -242,12 +296,12 @@ function applyACP(state: ReturnType<typeof writable<SessionState>>, method: stri
       const text = chunk?.text as string | undefined
       if (!text) return
       state.update((s) => {
-        const last = s.messages[s.messages.length - 1]
-        if (last && last.role === 'assistant') {
-          last.text += text
+        const open = openAssistantMessage(s)
+        if (open) {
+          open.text += text
           return { ...s, messages: [...s.messages] }
         }
-        return { ...s, messages: [...s.messages, { id: uid(), role: 'assistant', text }] }
+        return { ...s, messages: [...s.messages, { id: uid(), seq: nextSeq(s), role: 'assistant', text }] }
       })
       break
     }
@@ -256,12 +310,15 @@ function applyACP(state: ReturnType<typeof writable<SessionState>>, method: stri
       const text = chunk?.text as string | undefined
       if (!text) return
       state.update((s) => {
-        const last = s.messages[s.messages.length - 1]
-        if (last && last.role === 'assistant') {
-          last.reasoning = (last.reasoning ?? '') + text
+        const open = openAssistantMessage(s)
+        if (open) {
+          open.reasoning = (open.reasoning ?? '') + text
           return { ...s, messages: [...s.messages] }
         }
-        return { ...s, messages: [...s.messages, { id: uid(), role: 'assistant', text: '', reasoning: text }] }
+        return {
+          ...s,
+          messages: [...s.messages, { id: uid(), seq: nextSeq(s), role: 'assistant', text: '', reasoning: text }],
+        }
       })
       break
     }
@@ -274,6 +331,7 @@ function applyACP(state: ReturnType<typeof writable<SessionState>>, method: stri
           ...s.toolCalls,
           {
             id: toolCallId,
+            seq: nextSeq(s),
             name: String(params.name ?? ''),
             args: params.arguments ?? params.args,
             status: 'pending',

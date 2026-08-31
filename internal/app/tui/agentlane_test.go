@@ -427,3 +427,74 @@ func TestAgentLaneBodyTextAlignsWithTodoPanelBody(t *testing.T) {
 			laneCol, todoCol, ansi.Strip(laneBody), ansi.Strip(todoBody))
 	}
 }
+
+// A dispatched subagent carries its model in the lane row, and its provider
+// when that provider differs from the parent's active route.
+func TestAgentLaneRowShowsModel(t *testing.T) {
+	m := newTestModel(t)
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	m.state.RegisterSubagentWithMeta("fleet-reviewer", child, session.SubagentMeta{
+		Model: "glm-5.2", Provider: "zhipu",
+	})
+	plain := ansi.Strip(m.renderAgentLane())
+	for _, want := range []string{"fleet-reviewer", "glm-5.2", "@ zhipu"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("lane missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+// When the child's provider matches the parent's active route, the provider
+// collapses away — the model alone is shown.
+func TestAgentLaneRowHidesOffParent(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Provider: "zhipu"})
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	m.state.RegisterSubagentWithMeta("fleet-reviewer", child, session.SubagentMeta{
+		Model: "glm-5.2", Provider: "zhipu",
+	})
+	plain := ansi.Strip(m.renderAgentLane())
+	if !strings.Contains(plain, "glm-5.2") {
+		t.Fatalf("lane must show the model:\n%s", plain)
+	}
+	if strings.Contains(plain, " @ ") {
+		t.Fatalf("same-provider child must not show the provider:\n%s", plain)
+	}
+}
+
+// A subagent registered without meta keeps the legacy #ID Label Elapsed
+// shape, with no empty segments.
+func TestAgentLaneRowWithoutMetaKeepsLegacyShape(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "review")
+	plain := ansi.Strip(m.renderAgentLane())
+	if !strings.Contains(plain, "#") {
+		t.Fatalf("row must carry the #-prefixed id:\n%s", plain)
+	}
+	if !strings.Contains(plain, "review") {
+		t.Fatalf("row must carry the label:\n%s", plain)
+	}
+	if !strings.Contains(plain, "s") {
+		t.Fatalf("row must carry an elapsed seconds suffix:\n%s", plain)
+	}
+	if strings.Contains(plain, "·  ·") {
+		t.Fatalf("row must not contain empty segments:\n%s", plain)
+	}
+}
+
+// The composed row must never exceed the lane width, even with a very long
+// label plus model.
+func TestAgentLaneRowFitsWidth(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(40, 24)
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	m.state.RegisterSubagentWithMeta(strings.Repeat("x", 200), child, session.SubagentMeta{
+		Model: "glm-5.2", Provider: "zhipu",
+	})
+	out := m.renderAgentLane()
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if n := ansi.StringWidth(line); n > m.leftWidth {
+			t.Fatalf("lane row width %d exceeds leftWidth %d:\n%s", n, m.leftWidth, ansi.Strip(line))
+		}
+	}
+}

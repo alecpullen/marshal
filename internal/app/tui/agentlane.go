@@ -23,6 +23,11 @@ const agentLaneMaxRows = 4
 // already separates it. Only views with a live Child state are listed:
 // pipeline/SDD cards share the parent's state (Child == nil) and are
 // already pinned by the run panel.
+//
+// Each row shows the child's dispatched model when the dispatcher populated
+// it, and the provider only when it differs from the parent's
+// ActiveRoute().Provider — a same-provider child adds no information the
+// turn spinner doesn't already carry.
 func (m Model) renderAgentLane() string {
 	entries := m.agentLaneEntries()
 	if len(entries) == 0 {
@@ -57,12 +62,16 @@ func (m Model) renderAgentLane() string {
 		overflow = allRunning - len(entries)
 	}
 	for _, v := range entries {
-		label := fmt.Sprintf("#%d  %s  %s",
-			v.ID,
-			v.Label,
-			formatElapsed(max(time.Since(v.StartedAt), 0)))
+		label := fmt.Sprintf("#%d  %s", v.ID, v.Label)
+		if v.Model != "" {
+			label += dimSeparator + v.Model
+			if v.Provider != "" && v.Provider != m.state.ActiveRoute().Provider {
+				label += " @ " + v.Provider
+			}
+		}
+		line := label + dimSeparator + formatElapsed(max(time.Since(v.StartedAt), 0))
 		b.WriteString(gutterPrefix(spinner, dimColor) +
-			dimStyle().Render(strutil.Truncate(label, max(width-4, 1), true)))
+			dimStyle().Render(strutil.Truncate(line, max(width-4, 1), true)))
 		b.WriteString("\n")
 	}
 	if overflow > 0 {

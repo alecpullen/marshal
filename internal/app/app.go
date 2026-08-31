@@ -424,15 +424,18 @@ func (minimalDigestProvider) Digest(_ context.Context, h rollover.GenerationHand
 }
 
 // NewRolloverController creates a rollover.Controller from config. When
-// rollover is disabled, it returns nil, nil (no generation rows are created).
+// rollover is not effectively enabled for the model's window (see
+// RolloverConfig.EffectiveEnabled), it returns nil, nil (no generation rows
+// are created). A nil database also yields nil, nil: the controller
+// archives generations to the DB and cannot function without one.
 // modelContextWindow is the model's full context window in tokens; when >0,
 // the controller uses it for context_percent calculations instead of the
 // per-turn compaction budget.
 // digestProvider is the DigestProvider to use; when nil, minimalDigestProvider
 // is used as a safe fallback. usageCounter, when non-nil, is passed to
 // ResolveCounter so the "usage" counter can observe provider-reported tokens.
-func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB, modelContextWindow int, digestProvider rollover.DigestProvider, usageCounter *rollover.UsageCounter) (*rollover.Controller, error) {
-	if !cfg.Enabled {
+func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB, localOnly bool, modelContextWindow int, digestProvider rollover.DigestProvider, usageCounter *rollover.UsageCounter) (*rollover.Controller, error) {
+	if !cfg.EffectiveEnabled(localOnly, modelContextWindow) || database == nil {
 		return nil, nil
 	}
 	pol := rolloverPolicyFromConfig(cfg)
@@ -474,6 +477,20 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+	}
+
+	// Resolve rollover enablement against the route once, up front: when
+	// session.rollover.enabled is unset, local routes with small windows
+	// default on and everything else stays off (see
+	// RolloverConfig.EffectiveEnabled). Normalizing here lets every
+	// downstream consumer — the recall_history gate, the usage counter, the
+	// controller — read the plain flag. cfg is a value copy, so this does
+	// not leak into the stored config or the /settings view. Skipped without
+	// a database: the controller archives generations to the DB, so rollover
+	// cannot function (and must not start) without one.
+	if !cfg.Session.Rollover.EnabledSet && database != nil {
+		window, _ := agent.ResolveModelLimits(route.Preset, nil, state.Logger())
+		cfg.Session.Rollover.Enabled = cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, window)
 	}
 
 	reg := registry.New()
@@ -675,12 +692,11 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 
 	// T17: wire UsageCounter so the rollover controller can use
 	// provider-reported prompt_tokens as the numerator for context_percent
-	// (branch review finding #2). Create the counter before the UsageObserver
-	// so the observer can feed it.
+	// (branch review finding #2). The counter itself is allocated just
+	// before the controller below, once the model window is known — the
+	// small-window default makes enablement window-dependent. The observer
+	// reads the variable at call time, long after allocation.
 	var usageCounter *rollover.UsageCounter
-	if cfg.Session.Rollover.Enabled && cfg.Session.Rollover.TokenCounter == "usage" {
-		usageCounter = rollover.NewUsageCounter()
-	}
 	runner.UsageObserver = func(usage schema.TokenUsage) {
 		state.SetTurnUsage(usage.PromptTokens + usage.CompletionTokens)
 		if usageCounter != nil {
@@ -750,6 +766,11 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// minimalDigestProvider only when the runner's provider is not available
 	// (branch review finding #1).
 	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable, state.Logger())
+	// Allocate the usage counter (declared above) once enablement can be
+	// resolved against the model window.
+	if cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, modelCtxWindow) && cfg.Session.Rollover.TokenCounter == "usage" {
+		usageCounter = rollover.NewUsageCounter()
+	}
 	var digestProvider rollover.DigestProvider
 	switch cfg.Session.Rollover.DigestProvider {
 	case "files":
@@ -771,7 +792,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			digestProvider = rollover.NewLLMSummaryProvider(runner, rollover.SummaryDirective)
 		}
 	}
-	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
+	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, route.Preset.LocalOnly, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
@@ -1011,30 +1032,32 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	// they keep the summarize-and-continue fallback (now correctly sized
 	// via the RouteResolver above). Digests use minimalDigestProvider:
 	// ephemeral subagent generations are not worth an LLM call.
-	if s.childSession && s.database != nil && s.cfg.Session.Rollover.Enabled {
-		childSessionID := "sess_sub_" + uuid.New().String()
-		if err := s.database.CreateSession(childSessionID, s.projectID, "sdd:"+string(role), time.Now()); err != nil {
-			if l := s.state.Logger(); l != nil {
-				l.Warn("pipeline child session insert failed; rollover disabled", "role", role, "error", err)
-			}
-		} else {
-			window, _ := agent.ResolveModelLimits(route.Preset, s.limitsTable, s.state.Logger())
-			ctrl, cerr := NewRolloverController(childSessionID, s.cfg.Session.Rollover, s.database, window, minimalDigestProvider{}, nil)
-			switch {
-			case cerr != nil:
+	if s.childSession && s.database != nil {
+		window, _ := agent.ResolveModelLimits(route.Preset, s.limitsTable, s.state.Logger())
+		if s.cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, window) {
+			childSessionID := "sess_sub_" + uuid.New().String()
+			if err := s.database.CreateSession(childSessionID, s.projectID, "sdd:"+string(role), time.Now()); err != nil {
 				if l := s.state.Logger(); l != nil {
-					l.Warn("pipeline rollover controller failed; continuing without rollover", "role", role, "error", cerr)
+					l.Warn("pipeline child session insert failed; rollover disabled", "role", role, "error", err)
 				}
-			case ctrl == nil:
-				// Rollover disabled between the check above and construction.
-			default:
-				if serr := ctrl.Start(context.Background()); serr != nil {
+			} else {
+				ctrl, cerr := NewRolloverController(childSessionID, s.cfg.Session.Rollover, s.database, route.Preset.LocalOnly, window, minimalDigestProvider{}, nil)
+				switch {
+				case cerr != nil:
 					if l := s.state.Logger(); l != nil {
-						l.Warn("pipeline rollover start failed; continuing without rollover", "role", role, "error", serr)
+						l.Warn("pipeline rollover controller failed; continuing without rollover", "role", role, "error", cerr)
 					}
-				} else {
-					r.Rollover = &agent.Rollover{Controller: ctrl, State: runnerState}
-					r.CloseRolloverOnDone = true
+				case ctrl == nil:
+					// Rollover disabled between the check above and construction.
+				default:
+					if serr := ctrl.Start(context.Background()); serr != nil {
+						if l := s.state.Logger(); l != nil {
+							l.Warn("pipeline rollover start failed; continuing without rollover", "role", role, "error", serr)
+						}
+					} else {
+						r.Rollover = &agent.Rollover{Controller: ctrl, State: runnerState}
+						r.CloseRolloverOnDone = true
+					}
 				}
 			}
 		}

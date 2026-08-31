@@ -93,7 +93,7 @@ func TestRolloverPolicyFromConfig_DefaultsUseThresholds(t *testing.T) {
 
 func TestNewRolloverController_Disabled(t *testing.T) {
 	cfg := config.RolloverConfig{Enabled: false}
-	ctrl, err := NewRolloverController("sess_test", cfg, nil, 0, nil, nil)
+	ctrl, err := NewRolloverController("sess_test", cfg, nil, false, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRolloverController disabled: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestNewRolloverController_Enabled(t *testing.T) {
 		Enabled: true,
 		Policy:  "context_percent",
 	}
-	ctrl, err := NewRolloverController("sess_test", cfg, database, 0, nil, nil)
+	ctrl, err := NewRolloverController("sess_test", cfg, database, false, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRolloverController enabled: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestNewRolloverController_Enabled_SetsModelContextWindow(t *testing.T) {
 		Policy:  "context_percent",
 	}
 	// Pass a non-zero model context window and verify it's set on the controller.
-	ctrl, err := NewRolloverController("sess_test", cfg, database, 128000, nil, nil)
+	ctrl, err := NewRolloverController("sess_test", cfg, database, false, 128000, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRolloverController: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestNewRolloverController_StartsGenerationZero(t *testing.T) {
 		Enabled: true,
 		Policy:  "context_percent",
 	}
-	ctrl, err := NewRolloverController("sess_test", cfg, database, 0, nil, nil)
+	ctrl, err := NewRolloverController("sess_test", cfg, database, false, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRolloverController: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestNewRolloverController_DisabledNoGenerationRows(t *testing.T) {
 
 	// Disabled config: controller is nil, no generation rows created.
 	cfg := config.RolloverConfig{Enabled: false}
-	ctrl, err := NewRolloverController("sess_test", cfg, database, 0, nil, nil)
+	ctrl, err := NewRolloverController("sess_test", cfg, database, false, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRolloverController disabled: %v", err)
 	}

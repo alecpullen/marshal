@@ -226,6 +226,42 @@ type RolloverConfig struct {
 	Retention               string            `toml:"retention"`
 	BlobThresholdBytes      int               `toml:"blob_threshold_bytes"`
 	Calibration             CalibrationConfig `toml:"calibration"`
+
+	// EnabledSet records whether enabled was explicitly configured at any
+	// merge layer (user or project file). It distinguishes "unset" from an
+	// explicit false, which EffectiveEnabled needs for the small-window
+	// default. Not user-facing; populated by the merger.
+	EnabledSet bool `toml:"-"`
+}
+
+// SmallWindowRolloverMaxTokens is the largest model window for which
+// rollover defaults on when session.rollover.enabled is unset. On small
+// windows (local models) mid-turn compaction fires constantly and each
+// summarize-and-continue pass costs a full model call — minutes on a slow
+// local backend — so generation rollover with recall is the better default.
+// Large-window (remote) models keep the off default: rollover there is an
+// opt-in workflow, not a survival mechanism.
+const SmallWindowRolloverMaxTokens = 32768
+
+// EffectiveEnabled resolves rollover enablement. Enabled=true always wins
+// (the zero default means any true is someone's explicit choice, in a file
+// or in code). An explicit enabled=false (tracked via EnabledSet) forces
+// off. When unset, rollover defaults on for local routes with small
+// windows (≤ SmallWindowRolloverMaxTokens) and off otherwise.
+//
+// The default-on is gated on locality, not just window size: an unknown
+// remote model resolves to the 8192 catalog fallback, and defaulting
+// rollover on there would roll a 128k-context model at a fraction of its
+// real window. localOnly comes from the preset, so only models the user
+// declared (or the TUI detected) as local get the survival default.
+func (c RolloverConfig) EffectiveEnabled(localOnly bool, modelContextWindow int) bool {
+	if c.Enabled {
+		return true
+	}
+	if c.EnabledSet {
+		return false // explicitly disabled
+	}
+	return localOnly && modelContextWindow > 0 && modelContextWindow <= SmallWindowRolloverMaxTokens
 }
 
 // LSPConfig holds the LSP server configuration. Enabled defaults to true

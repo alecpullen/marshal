@@ -169,3 +169,30 @@ func TestMergeRolloverCalibration(t *testing.T) {
 		t.Error("calibration.Enabled not merged")
 	}
 }
+
+func TestRolloverEffectiveEnabled(t *testing.T) {
+	cases := []struct {
+		name      string
+		cfg       RolloverConfig
+		localOnly bool
+		window    int
+		want      bool
+	}{
+		{"explicit true wins on large remote", RolloverConfig{Enabled: true, EnabledSet: true}, false, 128000, true},
+		{"explicit true wins without EnabledSet (in-code config)", RolloverConfig{Enabled: true}, false, 128000, true},
+		{"explicit false on small local", RolloverConfig{Enabled: false, EnabledSet: true}, true, 16384, false},
+		{"unset small local window defaults on", RolloverConfig{}, true, 16384, true},
+		{"unset tiny local window defaults on", RolloverConfig{}, true, 8192, true},
+		{"unset boundary window defaults on", RolloverConfig{}, true, SmallWindowRolloverMaxTokens, true},
+		{"unset large local window stays off", RolloverConfig{}, true, 131072, false},
+		{"unset remote small window stays off (catalog fallback guard)", RolloverConfig{}, false, 8192, false},
+		{"unset unknown window stays off", RolloverConfig{}, true, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.EffectiveEnabled(tc.localOnly, tc.window); got != tc.want {
+				t.Errorf("EffectiveEnabled(%v, %d) = %v, want %v", tc.localOnly, tc.window, got, tc.want)
+			}
+		})
+	}
+}

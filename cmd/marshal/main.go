@@ -107,10 +107,7 @@ func recordPermanentTrust() error {
 	if err != nil {
 		return fmt.Errorf("find working directory: %w", err)
 	}
-	abs, err := filepath.Abs(wd)
-	if err != nil {
-		return fmt.Errorf("resolve working directory: %w", err)
-	}
+	abs := trust.Canonicalize(wd)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("find home directory: %w", err)

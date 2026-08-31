@@ -1735,7 +1735,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	trustDecide := func(d trust.Decision) {
 		switch d {
 		case trust.DecisionTrustPermanent:
-			abs, _ := filepath.Abs(workingDir)
+			abs := trust.Canonicalize(workingDir)
 			hash, _ := trust.ConfigHashFor(workingDir)
 			_ = trust.NewStore(trustStoreDir).SetTrust(abs, true, hash)
 			reloadForTrust = true
@@ -1750,10 +1750,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	// has no permanent-trust record, so external or agent-made config edits
 	// (which never hit this path) still force re-trust.
 	trustRefresh := func(dir string) {
-		abs, err := filepath.Abs(dir)
-		if err != nil {
-			return
-		}
+		abs := trust.Canonicalize(dir)
 		hash, err := trust.ConfigHashFor(dir)
 		if err != nil {
 			return

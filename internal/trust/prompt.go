@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/x/term"
@@ -38,7 +37,7 @@ func (r *TerminalResolver) SetOut(out io.Writer) {
 }
 
 func (r *TerminalResolver) Resolve(workingDir string, hasProjectConfig bool) (Decision, error) {
-	abs, _ := filepath.Abs(workingDir)
+	abs := Canonicalize(workingDir)
 	if !hasProjectConfig {
 		return DecisionDontTrust, nil
 	}
@@ -93,7 +92,7 @@ func (r *TerminalResolver) Resolve(workingDir string, hasProjectConfig bool) (De
 }
 
 func (r *TerminalResolver) Record(workingDir string, decision Decision) error {
-	abs, _ := filepath.Abs(workingDir)
+	abs := Canonicalize(workingDir)
 	// Persist the current config hash alongside the trust decision so
 	// future Resolve calls can detect config changes and re-prompt.
 	// Hash errors fall back to empty string (treated as "no hash" by

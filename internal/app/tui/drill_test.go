@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -239,6 +240,35 @@ func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("breadcrumb missing %q, frame:\n%s", want, frame)
 		}
+	}
+}
+
+func TestBreadcrumbShowsDispatchedRole(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	view := m.state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{
+		Role: routing.RoleReviewer,
+	})
+	m.drillIntoSubagent(view)
+
+	frame := stripANSI(m.renderTranscriptFrame())
+	if !strings.Contains(frame, "reviewer — review") {
+		t.Fatalf("breadcrumb missing dispatched role, frame:\n%s", frame)
+	}
+}
+
+func TestBreadcrumbOmitsRoleWhenUnset(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+
+	frame := stripANSI(m.renderTranscriptFrame())
+	if !strings.Contains(frame, "explore repo") {
+		t.Fatalf("breadcrumb missing label, frame:\n%s", frame)
+	}
+	if strings.Contains(frame, " — explore") {
+		t.Fatalf("breadcrumb must not render a separator without a role, frame:\n%s", frame)
 	}
 }
 

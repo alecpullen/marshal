@@ -175,6 +175,9 @@ func (m Model) renderTranscriptFrame() string {
 	}
 	if v, ok := m.drilledInto(); ok {
 		label := v.Label
+		if v.Role != "" {
+			label = string(v.Role) + " — " + label
+		}
 		if v.Model != "" {
 			if v.Provider != "" {
 				label += fmt.Sprintf(" · %s @ %s", v.Model, v.Provider)

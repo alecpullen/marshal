@@ -15,6 +15,7 @@ import (
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
+	"marshal/internal/app/dbmigrate"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
@@ -459,6 +460,10 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// is committed. Best-effort as well.
 	if err := config.EnsureMarshalDirIgnored(workingDir); err != nil {
 		slog.Warn("could not write .marshal/.gitignore", "error", err)
+	}
+
+	if err := dbmigrate.AdoptStrayProjectDB(workingDir, slog.Default()); err != nil {
+		slog.Warn("stray .marshal migration", "error", err)
 	}
 
 	database, err := db.Open(db.Path(workingDir))

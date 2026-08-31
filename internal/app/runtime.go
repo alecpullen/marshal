@@ -455,6 +455,11 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if err := config.EnsureMarshalIgnored(workingDir); err != nil {
 		slog.Warn("could not update .gitignore", "error", err)
 	}
+	// Machine-local state stays out of git even when .marshal/config.toml
+	// is committed. Best-effort as well.
+	if err := config.EnsureMarshalDirIgnored(workingDir); err != nil {
+		slog.Warn("could not write .marshal/.gitignore", "error", err)
+	}
 
 	database, err := db.Open(db.Path(workingDir))
 	if err != nil {

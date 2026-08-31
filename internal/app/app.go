@@ -1731,7 +1731,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	// First-run detection: when no config exists yet, open the connect
 	// panel in the TUI instead of running a separate onboarding wizard.
 	firstRun := !config.HasConfig(config.LoadOptions{HomeDir: homeDir, WorkingDir: workingDir})
-	trustStoreDir := filepath.Join(homeDir, ".local", "share", "marshal")
+	trustStoreDir := config.DataDir(homeDir)
 	trustDecide := func(d trust.Decision) {
 		switch d {
 		case trust.DecisionTrustPermanent:
@@ -1823,7 +1823,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
-		tuiOpts = append(tuiOpts, tui.WithDataDir(filepath.Join(homeDir, ".local", "share", "marshal")))
+		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
 		if rt.LSPManager != nil {

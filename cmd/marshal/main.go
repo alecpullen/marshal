@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"marshal/internal/acp"
 	"marshal/internal/app"
+	"marshal/internal/app/config"
 	"marshal/internal/trust"
 )
 
@@ -112,7 +112,7 @@ func recordPermanentTrust() error {
 	if err != nil {
 		return fmt.Errorf("find home directory: %w", err)
 	}
-	store := trust.NewStore(filepath.Join(home, ".local", "share", "marshal"))
+	store := trust.NewStore(config.DataDir(home))
 	hash, err := trust.ConfigHashFor(abs)
 	if err != nil {
 		return fmt.Errorf("hash project config: %w", err)

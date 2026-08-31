@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"marshal/internal/app"
+	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/trust"
 )
@@ -28,8 +29,7 @@ func ListenAndServe(ctx context.Context, network, addr string, stderr io.Writer)
 	if err != nil {
 		return fmt.Errorf("acp: find home directory: %w", err)
 	}
-	dataDir := filepath.Join(home, ".local", "share", "marshal")
-	trustStore := trust.NewStore(dataDir)
+	trustStore := trust.NewStore(config.DataDir(home))
 
 	if network == "unix" {
 		if err := os.MkdirAll(filepath.Dir(addr), 0o700); err != nil {

@@ -410,7 +410,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find home directory: %w", err)
 	}
-	dataDir := filepath.Join(homeDir, ".local", "share", "marshal")
+	dataDir := config.DataDir(homeDir)
 
 	var cfg config.Config
 	var layers config.Layers

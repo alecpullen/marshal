@@ -5,7 +5,9 @@ package agent
 // (a hard ceiling, like MaxTurnContextTokens). When configured == 0,
 // the budget derives from the window:
 //
-//	window ≤ 32000   → 4000  (small local models can't afford more)
+//	window ≤ 32000   → clamp(window/8, 1000, 4000)  (small local models
+//	                  can't afford more than 4k, but a flat 4k floor would
+//	                  eat a 16k window's per-turn budget — 16384 → 2048)
 //	32000 < window ≤ 1_024_000 → window / 8
 //	window > 1_024_000 → 128000  (cap so big-cloud models don't drown the
 //	                              prompt in old turns; the rest of the
@@ -15,8 +17,9 @@ package agent
 //
 //   - On a 32k or smaller model, history beyond ~4k tokens eats into the
 //     per-turn budget so aggressively that even tool-heavy turns trip
-//     compaction. 4k is enough for ~10 user+assistant turns at our
-//     typical message sizes, which covers the common debugging loop.
+//     compaction. Scaling the floor with the window keeps a 16k model at
+//     ~2k tokens of history — enough for the last few exchanges, which
+//     covers the common debugging loop.
 //
 //   - On a 1M+ model, naive window/8 = 128k tokens of old turns is
 //     pure noise: a model with that much context already has plenty
@@ -24,14 +27,21 @@ package agent
 //     lets the prompt pack in current-turn work.
 func historyBudget(window, configured int) int {
 	const (
-		min = 4000
+		min = 1000
 		max = 128000
 	)
 	if configured > 0 {
 		return configured
 	}
 	if window <= 32000 {
-		return min
+		budget := window / 8
+		if budget < min {
+			budget = min
+		}
+		if budget > 4000 {
+			budget = 4000
+		}
+		return budget
 	}
 	if window > 1_024_000 {
 		return max

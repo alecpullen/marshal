@@ -8,7 +8,14 @@ import (
 )
 
 // DefaultMaxToolResultChars is a rough 4-char-per-token budget for 2000 tokens.
+// It is the fallback cap when no turn threshold is available; the derived cap
+// (deriveToolResultChars) scales below it on small-window models.
 const DefaultMaxToolResultChars = 8000
+
+// minToolResultChars is the smallest derived cap: below this a tool result
+// cannot carry even a useful file excerpt, and the spill preview floor
+// (spill.go) would exceed the cap.
+const minToolResultChars = 2000
 
 // maxDerivedToolResultChars bounds the derived cap so a single tool
 // result cannot swallow a huge window's whole budget.
@@ -17,11 +24,13 @@ const maxDerivedToolResultChars = 200000
 // deriveToolResultChars sizes one tool result at ~5% of the turn's token
 // budget. At the 4-chars-per-token estimate the runner uses throughout
 // (see estimateTokens), 5% of `threshold` tokens is threshold/5 chars.
-// Clamped to [DefaultMaxToolResultChars, maxDerivedToolResultChars].
+// Clamped to [minToolResultChars, maxDerivedToolResultChars]. The floor is
+// deliberately small — a fixed 8000-char floor would hand a 16k-window model
+// (~12k-token turn threshold) ~17% of its budget per tool result.
 func deriveToolResultChars(threshold int) int {
 	chars := threshold / 5
-	if chars < DefaultMaxToolResultChars {
-		return DefaultMaxToolResultChars
+	if chars < minToolResultChars {
+		return minToolResultChars
 	}
 	if chars > maxDerivedToolResultChars {
 		return maxDerivedToolResultChars

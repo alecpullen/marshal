@@ -88,6 +88,43 @@ func TestEffectiveTurnThreshold_CapsOutputReserve(t *testing.T) {
 	}
 }
 
+// A known tiny window (e.g. a 4096-token local model) must not collapse to
+// the 60000 unknown-window safety net — that is 15× the real window and
+// disables compaction exactly when it is needed most. The threshold clamps
+// to a window-proportional value instead.
+func TestEffectiveTurnThreshold_TinyWindowClampsToWindow(t *testing.T) {
+	r := NewRunner(nil, nil, nil, newTestState(t), "m")
+	got, fb, collapsed := r.effectiveTurnThreshold(4096, 4096, 0)
+	if fb {
+		t.Fatalf("known window should not trigger the unknown-window fallback")
+	}
+	if !collapsed {
+		t.Fatalf("expected the derivedCollapsed flag for a tiny window")
+	}
+	if got > 4096 {
+		t.Fatalf("threshold = %d, want ≤ 4096 (the real window)", got)
+	}
+	// 0.85*4096 - min(4096, 512) = 2969, which is above window/2 — the
+	// genuine derivation survives.
+	if got != 2969 {
+		t.Fatalf("threshold = %d, want 2969", got)
+	}
+}
+
+// An even smaller window whose derivation falls below window/2 clamps to
+// window/2 so output still has room.
+func TestEffectiveTurnThreshold_MinuteWindowUsesHalfWindow(t *testing.T) {
+	r := NewRunner(nil, nil, nil, newTestState(t), "m")
+	// 0.85*2048 - 256 = 1484 < 4000 → collapsed; 1484 > 2048/2 → keep 1484.
+	got, _, collapsed := r.effectiveTurnThreshold(2048, 2048, 0)
+	if !collapsed {
+		t.Fatalf("expected the derivedCollapsed flag")
+	}
+	if got != 1484 {
+		t.Fatalf("threshold = %d, want 1484", got)
+	}
+}
+
 // NewRunner must not pre-seed the ceiling: a seeded value is
 // indistinguishable from an explicit user setting, which made the
 // window-derived branch unreachable in production.
@@ -107,8 +144,9 @@ func TestThresholdSource(t *testing.T) {
 		{256000, 50000, false, "configured"},
 		{256000, 0, false, "derived"},
 		{0, 0, false, "fallback"},
-		// A small window whose derived value collapses to the 60k safety
-		// net must be labeled a fallback, not a derivation.
+		// A small window whose derived value fell below minDerivedTurnTokens
+		// and clamped to the window-proportional floor must be labeled a
+		// fallback, not a derivation.
 		{2000, 0, true, "fallback"},
 	}
 	for _, tc := range cases {

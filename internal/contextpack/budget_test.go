@@ -10,9 +10,9 @@ func TestBudgetForWindow(t *testing.T) {
 	}{
 		{"unknown window falls back to the flat default", 0, DefaultMaxTokens},
 		{"negative window falls back to the flat default", -1, DefaultMaxTokens},
-		{"tiny window is held to a quarter, not the flat floor", 8192, 2048},
-		{"16k window is held to a quarter", 16000, 4000},
-		{"32k window sits exactly on the floor", 32000, minPackTokens},
+		{"8k window gets an eighth", 8192, 1024},
+		{"16k window gets an eighth", 16384, 2048},
+		{"32k window gets an eighth", 32768, 4096},
 		{"128k window gets an eighth", 128000, 16000},
 		{"200k window gets an eighth", 200000, 25000},
 		{"1M window clamps to the ceiling", 1000000, maxPackTokens},

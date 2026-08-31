@@ -1045,6 +1045,24 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		raw := res.Text
 
 		if r.NativeTools {
+			// Weak local models sometimes emit their tool call as prose JSON
+			// in the text channel instead of as a structured call. Salvage it
+			// before the text is treated as a final answer — executing the
+			// intended call is strictly better than showing the user raw JSON.
+			// Skipped on a length-truncated response: its arguments may be
+			// incomplete, and the truncation guard below already handles it.
+			if len(res.ToolCalls) == 0 && !isLengthFinish(res.FinishReason) {
+				if calls, ok := r.salvageTextToolCalls(res.Text); ok {
+					names := make([]string, 0, len(calls))
+					for _, c := range calls {
+						names = append(names, c.Name)
+					}
+					r.State.Logger().Info("salvaged prose-emitted tool call(s)",
+						"tools", names, "raw", truncateForLog(res.Text))
+					r.withStats(func(s *turnStats) { s.m.ParseRepairs++ })
+					res.ToolCalls = calls
+				}
+			}
 			if len(res.ToolCalls) == 0 {
 				if strings.TrimSpace(res.Text) == "" {
 					// Empty response: the model went silent. Charge it to the

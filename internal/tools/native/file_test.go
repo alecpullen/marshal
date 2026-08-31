@@ -1063,6 +1063,80 @@ func TestFileWriteRejectsPathEscapingRoot(t *testing.T) {
 	}
 }
 
+func TestFileWriteRejectsAbsolutePathInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	absPath := filepath.Join(root, "w.txt")
+	args, err := json.Marshal(map[string]string{"path": absPath, "content": "x"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = invokeTool(t, reg, "file.write", string(args))
+	if err == nil {
+		t.Fatal("file.write absolute path inside root returned nil error")
+	}
+	if !strings.Contains(err.Error(), "must be relative") {
+		t.Fatalf("error should mention 'must be relative', got: %v", err)
+	}
+	// The file must NOT have been written.
+	if _, statErr := os.Stat(absPath); !os.IsNotExist(statErr) {
+		t.Fatalf("file.write absolute path should not create the file, stat err = %v", statErr)
+	}
+}
+
+func TestFileWritePatchRejectsAbsolutePathInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	absPath := filepath.Join(root, "w.txt")
+	args, err := json.Marshal(map[string]string{
+		"patch": "File: " + absPath + "\n<<<<<<< SEARCH\n=======\nnew\n>>>>>>> REPLACE\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = invokeTool(t, reg, "file.write_patch", string(args))
+	if err == nil {
+		t.Fatal("file.write_patch absolute path inside root returned nil error")
+	}
+	if !strings.Contains(err.Error(), "must be relative") {
+		t.Fatalf("error should mention 'must be relative', got: %v", err)
+	}
+	// No file should have been created at the absolute path.
+	if _, statErr := os.Stat(absPath); !os.IsNotExist(statErr) {
+		t.Fatalf("file.write_patch absolute path should not create the file, stat err = %v", statErr)
+	}
+}
+
+func TestFileWriteRejectsAbsolutePathOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	absPath := filepath.Join(other, "w.txt")
+	args, err := json.Marshal(map[string]string{"path": absPath, "content": "x"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = invokeTool(t, reg, "file.write", string(args))
+	if err == nil {
+		t.Fatal("file.write absolute path outside root returned nil error")
+	}
+	if !strings.Contains(err.Error(), "must be relative") {
+		t.Fatalf("error should mention 'must be relative', got: %v", err)
+	}
+}
+
 func TestFileWritePatchToolAcceptsUnifiedDiff(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "app.go")

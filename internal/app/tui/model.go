@@ -3122,6 +3122,22 @@ func isUserTurn(item session.TranscriptItem) bool {
 		item.Message.ContentType != session.ContentTypeSubagentReport
 }
 
+// hasConversationTurns reports whether the transcript holds any real
+// conversation content — a user prompt or an assistant message. Boot-time
+// system items (the autoloaded-skill body, startup notices) must not
+// suppress the welcome banner, or every first run opens on a bare screen.
+func hasConversationTurns(items []session.TranscriptItem) bool {
+	for _, item := range items {
+		if item.Kind != session.KindMessage || item.Message == nil {
+			continue
+		}
+		if isUserTurn(item) || item.Message.Role == session.RoleAssistant {
+			return true
+		}
+	}
+	return false
+}
+
 // drilledInto returns the subagent whose transcript is currently drilled
 // into (top of viewStack), or false when the viewport shows the
 // orchestrator's own transcript.
@@ -3256,7 +3272,7 @@ func (m *Model) refreshViewport() {
 		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
 	}
 
-	if len(items) == 0 {
+	if !hasConversationTurns(items) {
 		addBlock(renderWelcomeBanner(m.viewport.Width()), nil)
 	}
 	firstTurn := true

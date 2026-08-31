@@ -1202,7 +1202,12 @@ func TestAgentRosterRendersDeterministicLines(t *testing.T) {
 			t.Fatalf("roster is not deterministic (iteration %d):\n--- first ---\n%s\n--- other ---\n%s", i, first, got)
 		}
 	}
-	if !strings.Contains(first, "- ollama/qwen2.5-coder:14b\n- ollama/qwen2.5-coder:7b\n- openai/gpt-4o-mini\n") {
+	// Preset lines are annotated (Task 4), so pin the sorted key order by
+	// the leading pair of each line rather than the bare pair.
+	ollama14 := strings.Index(first, "- ollama/qwen2.5-coder:14b")
+	ollama7 := strings.Index(first, "- ollama/qwen2.5-coder:7b")
+	openai := strings.Index(first, "- openai/gpt-4o-mini")
+	if !(ollama14 >= 0 && ollama7 > ollama14 && openai > ollama7) {
 		t.Errorf("preset lines not in sorted key order:\n%s", first)
 	}
 	if !strings.Contains(first, "- planner (openai/gpt-4o-mini)") || !strings.Contains(first, "- reviewer (openai/gpt-4o-mini)") {
@@ -1252,8 +1257,49 @@ func TestRenderAgentRosterUnboundPresetOmitsRoles(t *testing.T) {
 	if strings.Contains(got, "[\""+pc+"\"] — roles:") {
 		t.Errorf("second preset must not claim synthesized roles:\n%s", got)
 	}
-	if !strings.Contains(got, "- paid/gpt-4o-mini\n") || !strings.Contains(got, "- paid/local-only\n") {
+	if !strings.Contains(got, "- paid/gpt-4o-mini — 4k ctx · cheap\n") || !strings.Contains(got, "- paid/local-only — 4k ctx · cheap (no cost data — likely local/unpriced)\n") {
 		t.Errorf("unbound preset line changed shape:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterObjectiveFactAnnotations(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		// Two presets (no synthesis) + an explicit Pricing override: the
+		// model is known-expensive so no price fact may appear, while the
+		// config-declared ctx, local flag, and pinned thinking ride along.
+		"anthropic/claude-sonnet-4": {Provider: "anthropic", Model: "claude-sonnet-4", LocalOnly: true, ContextWindow: 200000, Thinking: "high", Pricing: &pricing.ModelPricing{InputPerMTokCents: 300, OutputPerMTokCents: 1500}},
+		"anthropic/claude-haiku-x":  {Provider: "anthropic", Model: "claude-haiku-x", ContextWindow: 200000},
+	}
+	got := RenderAgentRoster(cfg)
+	if !strings.Contains(got, "- anthropic/claude-sonnet-4 — 200k ctx · local · thinking: high") {
+		t.Errorf("sonnet preset missing facts or priced as cheap:\n%s", got)
+	}
+	if !strings.Contains(got, "- anthropic/claude-haiku-x — 200k ctx · cheap (no cost data — likely local/unpriced)") {
+		t.Errorf("unpriced preset missing cost-data note:\n%s", got)
+	}
+	if strings.Count(got, "roles:") != 0 {
+		t.Errorf("no profiles configured, so no preset may claim roles:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterUnknownPricingRendersNothing(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		// Two presets → the one-preset synthesis trigger never fires. With
+		// no profiles, NOTHING is bound and NO fact may be guessed: gpt-4o
+		// and claude-sonnet-4 are pricing-tabled but expensive (no "cheap"
+		// fact), and neither model has a catalog entry or configured window
+		// (no "ctx" fact).
+		"openai/gpt-4o":             {Provider: "openai", Model: "gpt-4o"},
+		"anthropic/claude-sonnet-4": {Provider: "anthropic", Model: "claude-sonnet-4"},
+	}
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "cheap") || strings.Contains(got, "ctx") {
+		t.Errorf("expensive model priced as cheap, or context window guessed:\n%s", got)
+	}
+	if !strings.Contains(got, "- openai/gpt-4o\n") || !strings.Contains(got, "- anthropic/claude-sonnet-4\n") {
+		t.Errorf("unannotated preset lines changed shape:\n%s", got)
 	}
 }
 

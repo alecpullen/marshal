@@ -8,6 +8,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/catalog"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -173,6 +175,84 @@ func presetRoleNote(bindings map[string][]routing.PresetRoleBinding, name string
 	return "roles: " + strings.Join(parts, ", ")
 }
 
+// fmtCtxTokens renders a context size the way model datasheets write it,
+// rounded to the nearest unit: 131072 → "131k", 1048576 → "1M", 8192 →
+// "8k", 940 → "940". (strutil.CompactTokens formats 1048576 as "1048k",
+// which is not how any model card says it.)
+func fmtCtxTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%dM", (n+500_000)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dk", (n+500)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// cheapThreshold is the combined input+output rate below which a preset is
+// annotated "cheap": ≤ $1.00 per million tokens (rates are hundredths of a
+// cent per MTok, from internal/llm/pricing/prices.go:4).
+const cheapThreshold = 100
+
+// pricingNote classifies a preset's price from config + built-in table
+// data (pricing.Lookup). All-zero rates mean the model is unpriced — most
+// often a local deployment — and saying so is useful, not a guess; a
+// known-but-pricey model renders no price fact at all rather than a
+// guess, keeping the roster honest.
+func pricingNote(p routing.ModelPreset) string {
+	r := pricing.Lookup(p, nil)
+	if r.InputPerMTokCents+r.OutputPerMTokCents == 0 {
+		return "cheap (no cost data — likely local/unpriced)"
+	}
+	if r.InputPerMTokCents+r.OutputPerMTokCents <= cheapThreshold {
+		return "cheap"
+	}
+	return ""
+}
+
+// presetFactNote renders the objective per-preset facts as " · "-joined
+// fragments: context window (from the preset, else the catalog for
+// plain-model IDs), local-only, thinking effort, price class. The
+// catalog fallback below renders only for catalog-listed models — never
+// catalog.Lookup's 8192/4096 default pair (catalog.go:39-40), which would
+// turn "unknown" into a fake claim. Only configured/known facts appear;
+// an unannotated preset renders "".
+func presetFactNote(p routing.ModelPreset) string {
+	var frag []string
+	if p.ContextWindow <= 0 {
+		model := p.Model
+		if _, m, ok := strings.Cut(p.Model, "/"); ok { // openrouter-style ids: strip provider
+			model = m
+		}
+		// catalog.Lookup answers 8192/4096 for models it does not know
+		// (catalog.go:39-40); rendering that would print a guessed "8k
+		// ctx", so the exact default pair is treated as unknown. A
+		// catalog-listed model gets its real window; unknown models
+		// render nothing.
+		if ctx, out := catalog.Lookup(model, nil); ctx > 0 && !(ctx == 8192 && out == 4096) {
+			frag = append(frag, fmtCtxTokens(ctx)+" ctx")
+		}
+	} else {
+		frag = append(frag, fmtCtxTokens(p.ContextWindow)+" ctx")
+	}
+	if p.LocalOnly {
+		frag = append(frag, "local")
+	}
+	switch p.Thinking {
+	case "":
+		// provider default, nothing to say
+	case "off":
+		frag = append(frag, "thinking: off")
+	default:
+		frag = append(frag, "thinking: "+p.Thinking)
+	}
+	if note := pricingNote(p); note != "" {
+		frag = append(frag, note)
+	}
+	return strings.Join(frag, " · ")
+}
+
 // RenderAgentRoster returns a human-readable listing of the configured
 // custom agents and model presets for injection into the system prompt
 // when agent.run is available. The provider/model pairs are exactly what
@@ -238,9 +318,16 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 		sort.Strings(presetNames)
 		for _, pname := range presetNames {
 			p := cfg.Models.Presets[pname]
-			line := fmt.Sprintf("- %s/%s", p.Provider, p.Model)
+			notes := make([]string, 0, 2)
 			if note := presetRoleNote(bindings, pname); note != "" {
-				line += " — " + note
+				notes = append(notes, note)
+			}
+			if note := presetFactNote(p); note != "" {
+				notes = append(notes, note)
+			}
+			line := fmt.Sprintf("- %s/%s", p.Provider, p.Model)
+			if len(notes) > 0 {
+				line += " — " + strings.Join(notes, " · ")
 			}
 			b.WriteString(line)
 			b.WriteString("\n")

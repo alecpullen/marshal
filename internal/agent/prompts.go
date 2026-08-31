@@ -448,7 +448,7 @@ func BuildSkillHintMessage(hints []skills.Skill) (schema.ChatMessage, bool) {
 }
 
 const todoAddendum = `
-Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end.
+Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end. When the carried-over list is corrupted or stale and you need to replace it wholesale, pass "drop_unfinished": true — the submitted list becomes the whole list and no items are carried over.
 `
 
 const scratchpadAddendum = `

@@ -960,6 +960,16 @@ func TestTodoAddendumIncludedWhenToolAvailable(t *testing.T) {
 	}
 }
 
+func TestTodoAddendumDocumentsDropUnfinished(t *testing.T) {
+	tools := append(dummyTools(), registry.Tool{
+		Name: "todo.write", Risk: registry.RiskWorkspaceWrite, Description: "Track task progress.",
+	})
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
+	if !strings.Contains(msg.Content, "drop_unfinished") {
+		t.Errorf("todoAddendum must document the drop_unfinished escape hatch\n%s", msg.Content)
+	}
+}
+
 // ModeAuto's directive must tell the model it cannot ask the user
 // questions, in both native and JSON modes.
 func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {

@@ -1199,3 +1199,44 @@ func TestFileWritePatchDescriptionMentionsUnifiedDiff(t *testing.T) {
 		t.Fatalf("description missing unified-diff acceptance: %s", tool.Description)
 	}
 }
+
+func TestReadToolSchemasDocumentAbsolutePaths(t *testing.T) {
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	readTools := []string{"file.read", "file.page"}
+	writeTools := []string{"file.write", "file.write_patch"}
+
+	for _, name := range readTools {
+		tool, ok := reg.Lookup(name)
+		if !ok {
+			t.Fatalf("%s not registered", name)
+		}
+		if !strings.Contains(string(tool.Schema), "absolute paths that resolve inside an allowed root") {
+			t.Fatalf("%s schema should document absolute-path acceptance, got: %s", name, tool.Schema)
+		}
+		var v any
+		if err := json.Unmarshal(tool.Schema, &v); err != nil {
+			t.Fatalf("%s schema is not valid JSON: %v", name, err)
+		}
+	}
+
+	for _, name := range writeTools {
+		tool, ok := reg.Lookup(name)
+		if !ok {
+			t.Fatalf("%s not registered", name)
+		}
+		if strings.Contains(string(tool.Schema), "absolute path") {
+			t.Fatalf("%s schema should not mention absolute paths, got: %s", name, tool.Schema)
+		}
+		if !strings.Contains(string(tool.Schema), "relative to the workspace") {
+			t.Fatalf("%s schema should still say paths are workspace-relative, got: %s", name, tool.Schema)
+		}
+		var v any
+		if err := json.Unmarshal(tool.Schema, &v); err != nil {
+			t.Fatalf("%s schema is not valid JSON: %v", name, err)
+		}
+	}
+}

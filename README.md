@@ -99,7 +99,7 @@ internal/worktree/             — git worktree helpers
 - **Git integration** — automatically checkpoint the working tree before tooling.
 - **Persistent sessions** — project state, messages, and memory stored in SQLite.
 - **Knowledge agent** — durable project knowledge survives session boundaries.
-- **Skill system** — loadable skill-based instruction sets for specialised workflows.
+- **Skill system** — loadable skill-based instruction sets for specialised workflows, with an autoloaded entry point so the agent reaches for them unprompted.
 - **Slash commands** — `/plan`, `/review`, `/test`, `/memory`, `/profile`, etc.
 - **Swarm runtime** — multi-agent orchestration with specialist roles.
 - **MCP/plugin ecosystem** — connect external tools via MCP protocol, namespaced and permissioned.

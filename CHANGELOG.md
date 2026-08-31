@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**Skills**
+- `using-skills` entry-point skill that teaches the model to scan the skill
+  roster and load matching skills before acting.
+- Class-triggered skill hints: edit-class turns suggest test-driven
+  development and verification skills, and investigation-shaped questions
+  suggest systematic-debugging — no embedding model required.
+- `/plan` now loads the `marshal-writing-plans` skill so inline plans follow
+  the house format and chain into plan execution.
+- Skill hint shortlists are logged per turn so misses can be tuned.
+
+### Changed
+
+**Skills**
+- `skills.autoload` now defaults to `["using-skills"]` so skill activation
+  works out of the box, including for users with no embedding model. Opt out
+  with `skills.autoload = []` or the `/skills` panel toggle.
+
 ## [0.0.2-alpha] - 2026-08-27
 
 ### Fixed

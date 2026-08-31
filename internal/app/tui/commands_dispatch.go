@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
+	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/pipeline"
 	"marshal/internal/worktree"
 )
@@ -163,6 +164,23 @@ func init() {
 		},
 		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
+			m.refreshViewport()
+			return m, nil
+		},
+		"trust": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			if m.state.Trusted() {
+				m.refreshViewport()
+				return m, nil
+			}
+			if m.trustDecide == nil || m.workDir == "" {
+				// No pending decision (or none wired): the informative panel from
+				// the handler already rendered; steer to the shell path instead
+				// of opening a panel whose callback would panic on nil.
+				m.state.AddMessage(session.RoleSystem, "No trust decision pending. Grant permanent trust with `marshal --trust`, or restart in this directory to re-prompt.", session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+			m.dock.Open(trustpanel.New(m.workDir, m.trustDecide))
 			m.refreshViewport()
 			return m, nil
 		},

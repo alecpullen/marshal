@@ -479,8 +479,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "trust",
-			Description: "Show or re-open the project trust decision",
+			Description: "Explain project trust and, when a decision is pending, open the trust prompt",
 			Group:       groupSettings,
+			TUIOnly:     true,
 			Handler: func(state *session.State, args []string) Result {
 				trusted := state.Trusted()
 				hasConfig := trust.HasProjectConfig(state.WorkingDir)

@@ -64,7 +64,8 @@ func TestDeriveToolResultChars(t *testing.T) {
 		{"kimi k3-256k 185600 -> 37120", 185600, 37120},
 		{"deepseek 725000 -> 145000", 725000, 145000},
 		{"very large threshold clamps to 200000", 1_200_000, 200000},
-		{"tiny threshold clamps up to the default", 10000, DefaultMaxToolResultChars},
+		{"16k-model threshold derives below the old 8000 floor", 11878, 2375},
+		{"tiny threshold clamps to the 2000 floor", 5000, minToolResultChars},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

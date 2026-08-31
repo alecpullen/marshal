@@ -20,9 +20,11 @@ import (
 
 // minDerivedTurnTokens is the smallest effective per-turn threshold the
 // model-derived heuristic will produce. At very small windows
-// (0.85*window - maxOutput) can collapse below this floor, in which case
-// fall back to DefaultMaxTurnContextTokens (the model-window-unknown
-// safety net) and surface a state flag so callers know to use it.
+// (0.85*window - maxOutput) can collapse below this floor; the derivation
+// then falls back to a window-proportional value (window/2) rather than the
+// 60000-token unknown-window safety net, which would be many times the real
+// window and would disable compaction exactly when it is needed most. The
+// derivedCollapsed flag is surfaced so callers can label the result.
 const minDerivedTurnTokens = 4000
 
 // effectiveTurnThreshold derives the mid-turn compaction threshold for the
@@ -43,12 +45,12 @@ const minDerivedTurnTokens = 4000
 // usedFallback reports whether the window-unknown fallback fired (window
 // was <=0 with no configured override).
 //
-// derivedCollapsed reports whether the model-derived branch collapsed to
-// the DefaultMaxTurnContextTokens safety net because 0.85*window - reserve
-// fell below minDerivedTurnTokens (a very small window). It is distinct
-// from usedFallback: the window is known, but the derived value is too
-// small to be usable, so the caller must label the result as a fallback
-// rather than a genuine derivation.
+// derivedCollapsed reports whether the model-derived branch fell below
+// minDerivedTurnTokens (a very small window) and was clamped to the
+// window-proportional floor (window/2) instead. It is distinct from
+// usedFallback: the window is known, but the derived value is too small to
+// be a genuine 0.85*window-reserve derivation, so the caller labels the
+// result as a fallback rather than a genuine derivation.
 func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured int) (threshold int, usedFallback bool, derivedCollapsed bool) {
 	if configured > 0 {
 		return configured, false, false
@@ -67,16 +69,24 @@ func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured in
 	}
 	effective := int(float64(window)*0.85) - reserve
 	if effective < minDerivedTurnTokens {
-		return DefaultMaxTurnContextTokens, false, true
+		// A genuinely tiny window: the 60000 unknown-window safety net would
+		// be many times the real window, so compaction would never fire and
+		// requests would overflow server-side. Clamp to a window-proportional
+		// floor that still leaves room for output.
+		if floor := window / 2; effective < floor {
+			effective = floor
+		}
+		return effective, false, true
 	}
 	return effective, false, false
 }
 
 // thresholdSource labels where a turn's threshold came from, for the
 // per-turn budget log line and the /context panel. derivedCollapsed is the
-// flag reported by effectiveTurnThreshold when the model-derived branch
-// collapsed to the DefaultMaxTurnContextTokens safety net; such a value is
-// a fallback, not a genuine derivation, so it is labeled "fallback".
+// flag reported by effectiveTurnThreshold when the model-derived branch fell
+// below minDerivedTurnTokens and was clamped to the window-proportional
+// floor; such a value is not a genuine derivation, so it is labeled
+// "fallback".
 func thresholdSource(window, configured int, derivedCollapsed bool) string {
 	switch {
 	case configured > 0:

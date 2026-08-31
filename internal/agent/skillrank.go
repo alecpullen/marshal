@@ -221,4 +221,19 @@ func (r *Runner) computeSkillHints(ctx context.Context, goal string, class TaskC
 		}
 	}
 	r.skillHints = merged
+
+	// Telemetry: one line per turn that produced hints, so misses (a hint
+	// shortlist the model ignored) are visible in the session log and
+	// descriptions can be tuned over time. The empty case is not logged —
+	// it would be one line per plain question for zero value.
+	if len(r.skillHints) > 0 {
+		source := "defaults"
+		if len(ranked) > 0 {
+			source = "ranked"
+		}
+		r.State.Logger().Info("skill hints",
+			"hints", r.skillHints,
+			"class", string(class),
+			"source", source)
+	}
 }

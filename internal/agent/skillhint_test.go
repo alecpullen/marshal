@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -181,6 +183,48 @@ func TestComputeSkillHintsRankedWinsOverDefaults(t *testing.T) {
 	want := []string{"tdd", "lint", "test-driven-development"}
 	if !reflect.DeepEqual(r.skillHints, want) {
 		t.Fatalf("hints = %v, want %v", r.skillHints, want)
+	}
+}
+
+// Hint generation is observable: a turn that produces hints logs one line
+// naming them, so misses can be tuned from the session log.
+func TestComputeSkillHintsLogsHintShortlist(t *testing.T) {
+	var buf bytes.Buffer
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{
+		Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+	})
+	idx := skills.NewIndex()
+	for _, name := range []string{"test-driven-development", "verification-before-completion"} {
+		idx.Set(name, skills.Skill{Name: name, Description: "d"})
+	}
+	r := &Runner{SkillIndex: idx, State: state}
+
+	r.computeSkillHints(context.Background(), "fix the flaky test", ClassEdit)
+
+	logged := buf.String()
+	if !strings.Contains(logged, "skill hints") || !strings.Contains(logged, "test-driven-development") {
+		t.Fatalf("expected a skill hints log line naming the hint, got:\n%s", logged)
+	}
+	if !strings.Contains(logged, "source=defaults") {
+		t.Fatalf("no-embedder turn should log source=defaults, got:\n%s", logged)
+	}
+}
+
+// A turn with no hints logs nothing — one line per plain question would be
+// noise for zero value.
+func TestComputeSkillHintsNoLogWhenNoHints(t *testing.T) {
+	var buf bytes.Buffer
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{
+		Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+	})
+	idx := skills.NewIndex()
+	idx.Set("a", skills.Skill{Name: "a", Description: "alpha"})
+	r := &Runner{SkillIndex: idx, State: state}
+
+	r.computeSkillHints(context.Background(), "what does this function return", ClassQuestion)
+
+	if buf.Len() != 0 {
+		t.Fatalf("empty hint set must not log, got:\n%s", buf.String())
 	}
 }
 

@@ -238,3 +238,69 @@ func TestTodoWriteSchemaHasNoForce(t *testing.T) {
 		t.Fatal("force parameter must be removed from the schema")
 	}
 }
+
+func TestTodoWriteDropUnfinishedReplacesList(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	if err := state.SetTodos([]db.TodoItem{
+		{Content: "old pending", Status: "pending"},
+		{Content: "old in progress", Status: "in_progress"},
+		{Content: "old done", Status: "completed"},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	tool := TodoWriteTool(state)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "todo.write",
+		Args: []byte(`{"todos":[{"content":"new task","status":"pending"}],"drop_unfinished":true}`),
+	})
+	if err != nil {
+		t.Fatalf("todo.write returned error: %v", err)
+	}
+	got := state.Todos()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 item after drop, got %d: %+v", len(got), got)
+	}
+	if got[0].Content != "new task" || got[0].Status != "pending" {
+		t.Fatalf("unexpected item after drop: %+v", got[0])
+	}
+	if !strings.Contains(res.Content, "dropped 2 unfinished") {
+		t.Errorf("result should note the drop, got %q", res.Content)
+	}
+}
+
+func TestTodoWriteDropUnfinishedEmptiesList(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	if err := state.SetTodos([]db.TodoItem{
+		{Content: "old pending", Status: "pending"},
+		{Content: "old in progress", Status: "in_progress"},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	tool := TodoWriteTool(state)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "todo.write",
+		Args: []byte(`{"todos":[],"drop_unfinished":true}`),
+	})
+	if err != nil {
+		t.Fatalf("todo.write returned error: %v", err)
+	}
+	if got := state.Todos(); len(got) != 0 {
+		t.Fatalf("expected empty list after drop, got %+v", got)
+	}
+	if res.Summary != "tasks updated · 0 items" {
+		t.Errorf("summary = %q, want tasks updated · 0 items", res.Summary)
+	}
+}
+
+func TestTodoWriteSchemaAdvertisesDropUnfinished(t *testing.T) {
+	tool := TodoWriteTool(session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	if !strings.Contains(string(tool.Schema), `"drop_unfinished"`) {
+		t.Fatal("schema must advertise drop_unfinished")
+	}
+	if !strings.Contains(tool.Description, "drop_unfinished") {
+		t.Fatal("description must document drop_unfinished")
+	}
+	if strings.Contains(string(tool.Schema), "mode") {
+		t.Fatal("schema must not use a mode enum")
+	}
+}

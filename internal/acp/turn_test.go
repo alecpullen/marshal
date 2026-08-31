@@ -272,8 +272,14 @@ func TestPromptTurnReturnsRunnerError(t *testing.T) {
 		Notify: func(method string, params any) error { return nil },
 	})
 	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
-	if err == nil || err.Error() != "boom" {
-		t.Fatalf("err = %v, want boom", err)
+	// Turn failures are wrapped as serverError so the client sees the actual
+	// cause instead of an opaque -32603 "internal error".
+	var rpcErr *jsonRPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != serverError {
+		t.Fatalf("err = %v, want a serverError wrapping the runner error", err)
+	}
+	if rpcErr.Message != "turn failed: boom" {
+		t.Fatalf("err message = %q, want %q", rpcErr.Message, "turn failed: boom")
 	}
 }
 

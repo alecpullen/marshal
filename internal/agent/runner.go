@@ -40,8 +40,18 @@ const (
 	finalizePressureThreshold   = 2
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 	maxConsecutiveParseFailures = 3
-	groundingNudgeMessage       = "You have not made any tool calls this turn, but this task requires code changes or commands. If the work is already done from an earlier turn, verify it now with a tool call (for example, re-read the changed file or re-run the test command) before declaring completion. Otherwise, use the appropriate tool to make the change now."
-	verificationNudgeMessage    = "You made changes this session (last: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
+
+	// LocalDefaultMaxToolIterations is the tool ceiling applied per turn
+	// when the route is local (preset local_only) and the user has not set
+	// agent.max_tool_iterations. An aimless local model is pure wall time —
+	// observed live: 26 distinct tool calls over 7+ minutes without
+	// converging — and neither the overhead cap nor the loop detector
+	// catches it, because every call looks like real work. Remote routes
+	// keep the unlimited default: powerful models self-limit, and long
+	// autonomous runs are the point of configuring them.
+	LocalDefaultMaxToolIterations = 25
+	groundingNudgeMessage         = "You have not made any tool calls this turn, but this task requires code changes or commands. If the work is already done from an earlier turn, verify it now with a tool call (for example, re-read the changed file or re-run the test command) before declaring completion. Otherwise, use the appropriate tool to make the change now."
+	verificationNudgeMessage      = "You made changes this session (last: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
 	// emptyModelResponsePlaceholder stands in for a truly empty model
 	// response when recording the assistant's turn in the conversation.
 	// Some providers reject the next request outright if any assistant
@@ -869,7 +879,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
 	verificationNudgeSent := false
-	budget := newTurnBudget(r.MaxToolIterations, task.Class, len(task.Plan))
+	budget := newTurnBudget(r.effectiveMaxToolIterations(route), task.Class, len(task.Plan))
 	r.turnBudget = budget
 	defer func() { r.turnBudget = nil }()
 	countIterations := func() { r.withStats(func(s *turnStats) { s.m.Iterations = budget.total() }) }

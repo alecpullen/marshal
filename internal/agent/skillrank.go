@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -10,6 +11,43 @@ import (
 	"marshal/internal/llm/embedding"
 	"marshal/internal/skills"
 )
+
+// investigationPatterns marks a question-class goal as an open-ended
+// investigation, which is what the systematic-debugging skill covers —
+// including the fix-less "why does X behave inconsistently" shape that a
+// fix-oriented description alone does not surface. Checked case-insensitively.
+var investigationPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bwhy\b`),
+	regexp.MustCompile(`\bhow come\b`),
+	regexp.MustCompile(`\binvestigat(?:e|ing|ion)\b`),
+	regexp.MustCompile(`\bfigure out\b`),
+	regexp.MustCompile(`\broot cause\b`),
+	regexp.MustCompile(`\bdoesn'?t work\b`),
+	regexp.MustCompile(`\bnot working\b`),
+	regexp.MustCompile(`\bbroken\b`),
+	regexp.MustCompile(`\binconsisten(?:t|cy|cies)\b`),
+	regexp.MustCompile(`\bflaky\b`),
+	regexp.MustCompile(`\bregress(?:ed|ion)\b`),
+}
+
+// classDefaultHints returns deterministic skill suggestions for a turn
+// class, independent of any embedding model. These are suggestions only —
+// the model decides whether to load — but they guarantee the core suite is
+// surfaced on the turns where it matters, even with hints otherwise off.
+func classDefaultHints(class TaskClass, goal string) []string {
+	switch class {
+	case ClassEdit:
+		return []string{"test-driven-development", "verification-before-completion"}
+	case ClassQuestion:
+		lower := strings.ToLower(goal)
+		for _, p := range investigationPatterns {
+			if p.MatchString(lower) {
+				return []string{"systematic-debugging"}
+			}
+		}
+	}
+	return nil
+}
 
 const (
 	// skillHintMaxK bounds how many skills a turn may hint at. Three fits
@@ -127,8 +165,8 @@ func cosineSim(a, b []float32) float64 {
 // applicability; the ranker only narrows the roster.
 //
 // General role only. Unconfigured embeddings, embed errors, and timeouts are
-// all silent no-ops.
-func (r *Runner) computeSkillHints(ctx context.Context, goal string) {
+// all silent no-ops for the ranked path; class defaults still apply.
+func (r *Runner) computeSkillHints(ctx context.Context, goal string, class TaskClass) {
 	r.skillHints = nil
 	if r.role() != RoleGeneral || r.SkillIndex == nil || r.State == nil {
 		return
@@ -145,15 +183,42 @@ func (r *Runner) computeSkillHints(ctx context.Context, goal string) {
 	if len(candidates) == 0 {
 		return
 	}
+
+	// Class defaults come first so deterministic suggestions survive even
+	// when ranking is a no-op (no embedder configured). Ranked hints, when
+	// present, are merged ahead of them: a measured match is more specific
+	// than a class-level one. Both are capped at skillHintMaxK.
+	defaults := classDefaultHints(class, goal)
 	e := r.SkillEmbedder
 	if e == nil {
 		e = resolveEmbedder(r.State.Config)
 	}
-	if e == nil {
-		return
+	var ranked []string
+	if e != nil {
+		if r.skillRanker == nil {
+			r.skillRanker = newSkillRanker()
+		}
+		ranked = r.skillRanker.rank(ctx, e, candidates, goal)
 	}
-	if r.skillRanker == nil {
-		r.skillRanker = newSkillRanker()
+
+	available := make(map[string]bool, len(candidates))
+	for _, sk := range candidates {
+		available[sk.Name] = true
 	}
-	r.skillHints = r.skillRanker.rank(ctx, e, candidates, goal)
+	merged := make([]string, 0, len(ranked)+len(defaults))
+	seen := make(map[string]bool, len(ranked)+len(defaults))
+	for _, name := range append(append([]string{}, ranked...), defaults...) {
+		// Ranked names are drawn from candidates, but a class default may
+		// name a skill that is not installed — hinting it would only
+		// produce a failed skill.load.
+		if seen[name] || !available[name] || r.State.HasActiveSkill(name) {
+			continue
+		}
+		seen[name] = true
+		merged = append(merged, name)
+		if len(merged) >= skillHintMaxK {
+			break
+		}
+	}
+	r.skillHints = merged
 }

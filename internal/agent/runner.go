@@ -747,8 +747,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
 	// Rank skills against the goal so the prompt can suggest them. This
 	// only suggests — see computeSkillHints for why gating on similarity
-	// does not work.
-	r.computeSkillHints(ctx, goal)
+	// does not work. Class defaults (no embedder needed) are merged in.
+	r.computeSkillHints(ctx, goal, task.Class)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 

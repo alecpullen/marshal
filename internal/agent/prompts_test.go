@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -1209,6 +1210,50 @@ func TestAgentRosterRendersDeterministicLines(t *testing.T) {
 	}
 	if strings.Count(first, "Custom agents:") != 1 {
 		t.Errorf("custom agents header printed more than once:\n%s", first)
+	}
+}
+
+func TestRenderAgentRosterAnnotatesRoleBindings(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:14b": {Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+		"ollama/qwen2.5-coder:7b":  {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
+			"implementer": {Preset: "ollama/qwen2.5-coder:14b"},
+			"reviewer":    {Preset: "ollama/qwen2.5-coder:7b"},
+			"repo_scout":  {Preset: "ollama/qwen2.5-coder:7b"},
+		}},
+	}
+	got := RenderAgentRoster(cfg)
+	if !strings.Contains(got, "- ollama/qwen2.5-coder:14b — roles: implementer (profile local_balanced)") {
+		t.Errorf("implementer preset not annotated:\n%s", got)
+	}
+	if !strings.Contains(got, "- ollama/qwen2.5-coder:7b — roles: repo_scout, reviewer (profile local_balanced)") {
+		t.Errorf("scout/reviewer preset not annotated (want AllRoles order: repo_scout before reviewer):\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterUnboundPresetOmitsRoles(t *testing.T) {
+	cfg := config.Default()
+	pa := "paid/gpt-4o-mini" // not in any pricing table → no cost data
+	pc := "paid/local-only"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		pa: {Provider: "paid", Model: "gpt-4o-mini", ContextWindow: 4096},
+		pc: {Provider: "paid", Model: "local-only", ContextWindow: 4096, Pricing: &pricing.ModelPricing{}},
+	}
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "roles:") {
+		t.Errorf("no profiles configured, so no preset may claim roles:\n%s", got)
+	}
+	// Exactly one pricing-tabled preset ⇒ synthesis binds ONLY that one;
+	// the unpriced sibling must stay unannotated.
+	if strings.Contains(got, "[\""+pc+"\"] — roles:") {
+		t.Errorf("second preset must not claim synthesized roles:\n%s", got)
+	}
+	if !strings.Contains(got, "- paid/gpt-4o-mini\n") || !strings.Contains(got, "- paid/local-only\n") {
+		t.Errorf("unbound preset line changed shape:\n%s", got)
 	}
 }
 

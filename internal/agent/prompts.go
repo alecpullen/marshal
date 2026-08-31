@@ -152,6 +152,27 @@ func DiscoveredModelsFromCache(cfg config.Config, dataDir string, now time.Time)
 	return out
 }
 
+// presetRoleNote renders the role-binding annotation for one preset map
+// key: "roles: implementer, reviewer (profile single)" — one segment per
+// profile, profiles in sorted order, roles in AllRoles order. Returns ""
+// when the preset is bound by no profile, so unbound presets render
+// exactly as before.
+func presetRoleNote(bindings map[string][]routing.PresetRoleBinding, name string) string {
+	segs, ok := bindings[name]
+	if !ok || len(segs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(segs))
+	for _, seg := range segs {
+		roleStrs := make([]string, 0, len(seg.Roles))
+		for _, r := range seg.Roles {
+			roleStrs = append(roleStrs, string(r))
+		}
+		parts = append(parts, fmt.Sprintf("%s (profile %s)", strings.Join(roleStrs, ", "), seg.Profile))
+	}
+	return "roles: " + strings.Join(parts, ", ")
+}
+
 // RenderAgentRoster returns a human-readable listing of the configured
 // custom agents and model presets for injection into the system prompt
 // when agent.run is available. The provider/model pairs are exactly what
@@ -178,6 +199,10 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 	if len(cfg.CustomAgents) == 0 && len(cfg.Models.Presets) == 0 && len(discovered) == 0 {
 		return ""
 	}
+
+	rc := cfg.RoutingConfig()
+	bindings, bindingKeys := routing.PresetRoleBindingsSorted(rc)
+	_ = bindingKeys // consumed in Task 6
 
 	var b strings.Builder
 	if len(cfg.CustomAgents) > 0 {
@@ -213,7 +238,12 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 		sort.Strings(presetNames)
 		for _, pname := range presetNames {
 			p := cfg.Models.Presets[pname]
-			b.WriteString(fmt.Sprintf("- %s/%s\n", p.Provider, p.Model))
+			line := fmt.Sprintf("- %s/%s", p.Provider, p.Model)
+			if note := presetRoleNote(bindings, pname); note != "" {
+				line += " — " + note
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
 		}
 	}
 	// Discovered section: what providers were actually probed as serving.

@@ -8,6 +8,7 @@
   import QuestionModal from '../lib/QuestionModal.svelte'
   import ExitPanel from '../lib/ExitPanel.svelte'
   import { renderMarkdown, initHighlighter } from '../lib/markdown'
+  import { listAgents } from '../lib/api'
 
   interface Props {
     sessionId: string
@@ -25,6 +26,14 @@
   // until it is ready, then `ready` flips and the transcript re-renders —
   // rather than withholding the transcript behind a loading state.
   let ready = $state(false)
+
+  /*
+    The route carries the agent id, which is also the key the bridge maps
+    to a session. It is not a name a person chose, so the header resolves
+    it to one and keeps the id only as a fallback.
+  */
+  let agentName = $state<string | null>(null)
+  let projectName = $state<string | null>(null)
 
   let transcriptEl = $state<HTMLDivElement | null>(null)
   // Whether the view is following the tail. Scrolling up to read
@@ -69,6 +78,17 @@
   })
 
   onMount(() => {
+    listAgents()
+      .then((agents) => {
+        const a = agents.find((x) => x.id === sessionId)
+        if (!a) return
+        agentName = a.name || null
+        projectName = a.project.split('/').filter(Boolean).pop() ?? null
+      })
+      .catch(() => {
+        // The header falls back to the id; a failed lookup is not worth
+        // an error banner over.
+      })
     initHighlighter().then(() => (ready = true)).catch(() => {
       // Highlighting is an enhancement. A failure here leaves fenced code
       // as escaped plain blocks, which is still readable.
@@ -99,8 +119,11 @@
 
 <div class="chat">
   <header>
-    <button class="back" onclick={onBack}>← Sessions</button>
-    <div class="title">{sessionId}</div>
+    <button class="back" onclick={onBack}>← Fleet</button>
+    <div class="title">
+      <span class="name">{agentName ?? sessionId}</span>
+      {#if projectName}<span class="project">{projectName}</span>{/if}
+    </div>
     <ModeSwitcher mode={$session.mode} onChange={changeMode} />
     <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'}>
       {$session.connected ? '●' : '○'}
@@ -197,9 +220,23 @@
     color: var(--color-muted);
   }
   .title {
+    display: flex;
+    min-width: 0;
     flex: 1;
-    font-weight: 600;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .name {
     overflow: hidden;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .project {
+    overflow: hidden;
+    flex-shrink: 0;
+    font-size: 0.8125rem;
+    color: var(--color-muted);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

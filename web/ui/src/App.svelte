@@ -25,7 +25,16 @@
 
 <main>
   {#if chatSessionId}
-    <Chat sessionId={chatSessionId} onBack={() => (window.location.hash = '#')} />
+    <!--
+      Keyed so a hash change from one chat to another builds a fresh Chat
+      rather than reusing the instance. createSessionStore captures the
+      session id for the component's lifetime and says so; without the key
+      that assumption is false, and going straight between two chats keeps
+      the first one's store, header and transcript.
+    -->
+    {#key chatSessionId}
+      <Chat sessionId={chatSessionId} onBack={() => (window.location.hash = '#')} />
+    {/key}
   {:else if isNew}
     <NewAgent onDone={(id) => (window.location.hash = id ? `#chat/${id}` : '#')} />
   {:else}

@@ -105,6 +105,7 @@ func TestBuiltInSkillsAllLoad(t *testing.T) {
 		"marshal-writing-plans",
 		"systematic-debugging",
 		"test-driven-development",
+		"using-skills",
 		"verification-before-completion",
 		"work-decomposition",
 	}

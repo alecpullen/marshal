@@ -1794,7 +1794,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
 		tuiOpts = append(tuiOpts, tui.WithLayerReloader(func() (config.Layers, bool) {
 			layers, err := config.LoadLayers(config.LoadOptions{
+				HomeDir:    homeDir,
 				WorkingDir: workingDir,
+				// The session already answered the trust question at
+				// startup. The terminal resolver never prompts here (the
+				// TUI owns stdin), so a config that changed since trust
+				// was recorded drops the project layer exactly as a fresh
+				// launch would re-prompt for it.
+				TrustResolver: trust.NewTerminalResolver(trust.NewStore(trustStoreDir)),
 			})
 			if err != nil {
 				return config.Layers{}, false

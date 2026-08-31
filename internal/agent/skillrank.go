@@ -23,11 +23,13 @@ var investigationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bfigure out\b`),
 	regexp.MustCompile(`\broot cause\b`),
 	regexp.MustCompile(`\bdoesn'?t work\b`),
+	regexp.MustCompile(`\bdoes not work\b`),
 	regexp.MustCompile(`\bnot working\b`),
 	regexp.MustCompile(`\bbroken\b`),
+	regexp.MustCompile(`\bbroke\b`),
 	regexp.MustCompile(`\binconsisten(?:t|cy|cies)\b`),
 	regexp.MustCompile(`\bflaky\b`),
-	regexp.MustCompile(`\bregress(?:ed|ion)\b`),
+	regexp.MustCompile(`\bregress(?:e[ds]?|ion|ions)\b`),
 }
 
 // classDefaultHints returns deterministic skill suggestions for a turn
@@ -225,11 +227,16 @@ func (r *Runner) computeSkillHints(ctx context.Context, goal string, class TaskC
 	// Telemetry: one line per turn that produced hints, so misses (a hint
 	// shortlist the model ignored) are visible in the session log and
 	// descriptions can be tuned over time. The empty case is not logged —
-	// it would be one line per plain question for zero value.
+	// it would be one line per plain question for zero value. The source
+	// label reflects what actually contributed: "ranked" only when at
+	// least one ranked name survived filtering into the shortlist.
 	if len(r.skillHints) > 0 {
 		source := "defaults"
-		if len(ranked) > 0 {
-			source = "ranked"
+		for _, name := range ranked {
+			if seen[name] {
+				source = "ranked"
+				break
+			}
 		}
 		r.State.Logger().Info("skill hints",
 			"hints", r.skillHints,

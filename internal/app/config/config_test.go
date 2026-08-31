@@ -1549,6 +1549,27 @@ func TestSkillsAutoloadDefaultsToEntryPoint(t *testing.T) {
 	}
 }
 
+// The opt-out half of the default: an explicit empty list in a config file
+// must survive the merge and suppress the entry-point default, not be
+// treated as "unset".
+func TestSkillsAutoloadEmptyListOptsOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[skills]\nautoload = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&cfg, file); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skills.Autoload) != 0 {
+		t.Fatalf("merged Autoload = %v, want empty (explicit opt-out)", cfg.Skills.Autoload)
+	}
+}
+
 func TestSkillsMaxActiveDefaultsEight(t *testing.T) {
 	if got := Default().Skills.MaxActive; got != 8 {
 		t.Fatalf("Default().Skills.MaxActive = %d, want 8", got)

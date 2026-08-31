@@ -71,6 +71,38 @@ func TestPlanCommandToleratesMissingWritingPlansSkill(t *testing.T) {
 	}
 }
 
+// Tab/Shift+Tab cycling into Plan mode pairs the skill exactly like /plan
+// does — the load lives in setMode, so every entry point behaves the same.
+func TestCycleModeIntoPlanLoadsWritingPlansSkill(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	idx := skills.NewIndex()
+	idx.Set("marshal-writing-plans", skills.Skill{
+		Name:        "marshal-writing-plans",
+		Description: "author a plan",
+		Body:        "Write the plan.",
+	})
+	m := newDispatchModel(t, state, WithSkillIndex(idx))
+	if m.approvalMode != policy.ModeDefault {
+		t.Fatalf("precondition: mode = %v, want default", m.approvalMode)
+	}
+
+	m.cycleMode(true) // default -> edit
+	if m.state.HasActiveSkill("marshal-writing-plans") {
+		t.Fatal("non-plan cycle must not load the writing-plans skill")
+	}
+
+	m.cycleMode(true) // edit -> copilot
+	m.cycleMode(true) // copilot -> auto
+	m.cycleMode(true) // auto -> plan
+
+	if m.approvalMode != policy.ModePlan {
+		t.Fatalf("mode = %v, want plan after cycling", m.approvalMode)
+	}
+	if !m.state.HasActiveSkill("marshal-writing-plans") {
+		t.Fatal("cycling into plan mode should activate marshal-writing-plans")
+	}
+}
+
 // A nil skill index (model built without one) must not panic.
 func TestPlanCommandNilSkillIndex(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})

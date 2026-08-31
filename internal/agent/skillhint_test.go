@@ -247,6 +247,44 @@ func TestComputeSkillHintsSkipsActiveSkills(t *testing.T) {
 	}
 }
 
+// Command-class turns (slash commands, /plan, /test) never get class
+// defaults — classDefaultHints has no ClassCommand case, and this pins
+// that contract rather than relying on the switch's fall-through.
+func TestComputeSkillHintsCommandClassGetsNoDefaults(t *testing.T) {
+	idx := skills.NewIndex()
+	for _, name := range []string{"test-driven-development", "verification-before-completion", "systematic-debugging"} {
+		idx.Set(name, skills.Skill{Name: name, Description: "d"})
+	}
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	r := &Runner{SkillIndex: idx, State: state}
+
+	r.computeSkillHints(context.Background(), "fix the flaky test", ClassCommand)
+
+	if len(r.skillHints) != 0 {
+		t.Fatalf("hints = %v, want none for command class", r.skillHints)
+	}
+}
+
+// A class default naming an already-active skill is dropped — hinting a
+// skill whose body is already on the wire is noise. (The ranked path's
+// equivalent is TestComputeSkillHintsSkipsActiveSkills.)
+func TestComputeSkillHintsActiveDefaultDropped(t *testing.T) {
+	idx := skills.NewIndex()
+	for _, name := range []string{"test-driven-development", "verification-before-completion"} {
+		idx.Set(name, skills.Skill{Name: name, Description: "d"})
+	}
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	r := &Runner{SkillIndex: idx, State: state}
+	r.State.ActivateSkill("test-driven-development")
+
+	r.computeSkillHints(context.Background(), "fix the flaky test", ClassEdit)
+
+	want := []string{"verification-before-completion"}
+	if !reflect.DeepEqual(r.skillHints, want) {
+		t.Fatalf("hints = %v, want %v", r.skillHints, want)
+	}
+}
+
 func TestBuildSkillHintMessageListsNamesAndDescriptions(t *testing.T) {
 	msg, ok := BuildSkillHintMessage([]skills.Skill{
 		{Name: "tdd", Description: "tests before implementation"},

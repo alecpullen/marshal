@@ -17,7 +17,6 @@ import (
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/pipeline"
-	coreskills "marshal/internal/skills"
 	"marshal/internal/worktree"
 )
 
@@ -183,12 +182,8 @@ func init() {
 		"plan": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.setMode("plan")
 			// Pair Plan mode with the writing-plans skill so inline plans
-			// follow the house format and chain into
-			// marshal-executing-plans. A missing or renamed skill must
-			// never block the mode switch, so the error is ignored.
-			if m.skillIndex != nil {
-				_ = coreskills.LoadSkillIntoSessionQuiet(m.skillIndex, m.state, "marshal-writing-plans")
-			}
+			// follow the house format; the load itself lives in setMode so
+			// every entry into plan mode behaves identically.
 			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["plan"], session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil

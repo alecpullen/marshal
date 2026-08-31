@@ -772,7 +772,21 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		newState.SetTitleManual(name)
 	}
 	newState.SetTrusted(rt.State.Trusted())
-	newState.SetLayers(rt.Layers)
+	// rt.Layers is a startup snapshot: the TUI refreshes its own layer
+	// snapshot after each config save but not the runtime's, so seeding a
+	// new session from rt.Layers would make its first project-scope save
+	// diff against the stale user layer and re-bake user-global values into
+	// the committable .marshal/config.toml. Reload with the same
+	// non-prompting trust replay used at startup; on error keep the startup
+	// snapshot rather than fail session creation.
+	layers := rt.Layers
+	if fresh, err := config.LoadSessionLayers(rt.HomeDir, rt.WorkingDir, rt.State.Trusted()); err == nil {
+		layers = fresh
+		rt.Layers = fresh
+	} else if rt.Logger != nil {
+		rt.Logger.Warn("layer reload for new session failed; using startup snapshot", "error", err)
+	}
+	newState.SetLayers(layers)
 	if rt.SteeringBroker != nil {
 		newState.SetSteeringBroker(must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker))
 	}

@@ -1406,6 +1406,15 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents))
+		// Seed the child with the parent's session context. Layer-aware
+		// project saves (config.SaveProjectConfig) compare against
+		// state.Layers(): a child without the snapshot silently regresses to
+		// write-everything, and the config.*.set tools are loadable in the
+		// child via the shared ConfigReloader — so a subagent could bake
+		// user-global values into the committable .marshal/config.toml.
+		childState.SetLayers(parentState.Layers())
+		childState.SetHomeDir(parentState.HomeDir())
+		childState.SetTrusted(parentState.Trusted())
 		// The child needs its own native toolset, not a filtered view of the
 		// parent's. SubtaskScopeView re-registers the parent's existing Tool
 		// values, whose handlers close over the parent's toolSet — so a

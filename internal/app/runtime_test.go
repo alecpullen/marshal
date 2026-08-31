@@ -576,6 +576,55 @@ func TestRuntimeNewSessionWithName(t *testing.T) {
 	}
 }
 
+func TestRuntimeNewSessionReloadsLayerSnapshot(t *testing.T) {
+	// Regression for the stale-snapshot re-bake: in-session config saves
+	// refresh the TUI's layer snapshot but not rt.Layers. NewSession must
+	// seed the new session from a fresh load — otherwise its first
+	// project-scope save diffs against the startup user layer and bakes
+	// user-global values into the committable .marshal/config.toml.
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MARSHAL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MARSHAL_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(t.TempDir()),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return knowledgeEnabledConfig("http://127.0.0.1:1", "test-provider"), nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+
+	// The user config changes on disk after startup; the startup snapshot
+	// in rt.Layers cannot see the write.
+	if err := os.MkdirAll(config.UserDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(home), []byte("[commands]\ntest = \"go test -run changed\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.Layers.User.Commands.Test; got == "go test -run changed" {
+		t.Fatal("test premise broken: startup snapshot already saw the post-startup write")
+	}
+
+	state, _, _, _, _, _, _, err := rt.NewSession("layers-refresh")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if got := state.Layers().User.Commands.Test; got != "go test -run changed" {
+		t.Errorf("new session Layers().User.Commands.Test = %q, want the on-disk value", got)
+	}
+	// The runtime snapshot converges too, so later sessions stay fresh.
+	if got := rt.Layers.User.Commands.Test; got != "go test -run changed" {
+		t.Errorf("rt.Layers.User.Commands.Test = %q, want the refreshed snapshot", got)
+	}
+}
+
 func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	prevTimeout := jobShutdownTimeout
 	jobShutdownTimeout = 50 * time.Millisecond

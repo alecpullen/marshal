@@ -213,6 +213,7 @@ func (t *capturingTransport) serve(r io.Reader, w io.WriteCloser) {
 func (t *capturingTransport) Wait() error                { return nil }
 func (t *capturingTransport) Signal(sig os.Signal) error { return nil }
 func (t *capturingTransport) Kill() error                { return nil }
+func (t *capturingTransport) Detach() error              { return nil }
 
 func (t *capturingTransport) params(method string) map[string]any {
 	t.mu.Lock()

@@ -1133,9 +1133,11 @@ func (f *Fleet) Snapshot() []AgentStatus {
 	return out
 }
 
-// stopAgent stops one agent's child and drops its runtime. The Agent
-// record is left in the workspace; removing it is the caller's choice.
-func (f *Fleet) stopAgent(id string) {
+// releaseAgent drops an agent's runtime bookkeeping and frees its slot.
+// destroy selects retirement — stop the agent, remove a git-sourced
+// tree — over parking, which detaches and leaves the workspace intact
+// so Resume can restart against it.
+func (f *Fleet) releaseAgent(id string, destroy bool) {
 	f.mu.Lock()
 	rt := f.runtimes[id]
 	delete(f.runtimes, id)
@@ -1143,19 +1145,29 @@ func (f *Fleet) stopAgent(id string) {
 		delete(f.sessionAgent, rt.sessionID)
 	}
 	f.mu.Unlock()
-	if rt != nil {
-		// Stop the child first so it is no longer writing to the
-		// bind-mounted workspace, then remove the git-sourced tree.
-		rt.child.Stop()
-		if rt.sourceKind == "git" && f.git != nil {
-			if err := f.git.RemoveTree(f.stateDir, id); err != nil {
-				slog.Default().Warn("webbridge: remove agent workspace failed",
-					"agent", id, "err", err)
-			}
-		}
-		f.slots.release()
+	if rt == nil {
+		return
 	}
+	if !destroy {
+		rt.child.Detach()
+		f.slots.release()
+		return
+	}
+	// Stop the child first so it is no longer writing to the
+	// bind-mounted workspace, then remove the git-sourced tree.
+	rt.child.Stop()
+	if rt.sourceKind == "git" && f.git != nil {
+		if err := f.git.RemoveTree(f.stateDir, id); err != nil {
+			slog.Default().Warn("webbridge: remove agent workspace failed",
+				"agent", id, "err", err)
+		}
+	}
+	f.slots.release()
 }
+
+// stopAgent retires an agent: it stops the child and removes a
+// git-sourced working tree.
+func (f *Fleet) stopAgent(id string) { f.releaseAgent(id, true) }
 
 // restoreSession reattaches the bridge to the ACP session already
 // running inside a reattached container. An agent with no persisted
@@ -1208,13 +1220,14 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 	return errs
 }
 
-// Pause stops an agent's container while keeping its workspace volume and
-// its persisted record. The agent can be resumed later onto the same work.
+// Pause parks a running agent: the runtime is released and its slot
+// freed, but the workspace is left intact so Resume can restart against
+// it. Retiring an agent is stopAgent, not Pause.
 func (f *Fleet) Pause(id string) error {
 	if _, err := f.runtimeForAgent(id); err != nil {
 		return err
 	}
-	f.stopAgent(id)
+	f.releaseAgent(id, false)
 	return nil
 }
 
@@ -1272,10 +1285,13 @@ func (f *Fleet) Close() {
 	f.sessionAgent = make(map[string]string)
 	f.mu.Unlock()
 
+	// The bridge is going away; the agents are not. Detaching leaves
+	// each container running under its name, so Open reattaches to it
+	// on the next start instead of spawning a duplicate.
 	var wg sync.WaitGroup
 	for _, rt := range rts {
 		wg.Add(1)
-		go func(rt *agentRuntime) { defer wg.Done(); rt.child.Stop() }(rt)
+		go func(rt *agentRuntime) { defer wg.Done(); rt.child.Detach() }(rt)
 	}
 	wg.Wait()
 }

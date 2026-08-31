@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 )
 
 // agentTransport supplies one generation of a running agent: its framed
@@ -26,6 +27,10 @@ type agentTransport interface {
 	Signal(sig os.Signal) error
 	// Kill force-terminates the current generation.
 	Kill() error
+	// Detach releases this generation without ending it, when the
+	// generation can outlive the bridge. A transport whose agent cannot
+	// survive the bridge terminates it instead.
+	Detach() error
 }
 
 // processTransport runs the agent as a local child process. It is the
@@ -105,4 +110,13 @@ func (p *processTransport) Kill() error {
 		return nil
 	}
 	return cmd.Process.Kill()
+}
+
+// Detach terminates the process. A bare process has no name to reattach
+// by, so leaving it running would orphan it with no route back.
+func (p *processTransport) Detach() error {
+	if err := p.Signal(syscall.SIGTERM); err != nil {
+		return err
+	}
+	return nil
 }

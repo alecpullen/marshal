@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -513,5 +514,83 @@ func TestChildStopDuringRestartReturns(t *testing.T) {
 	case <-stopped:
 	case <-time.After(20 * time.Second):
 		t.Fatal("Stop did not return: it is waiting on a generation it never signalled")
+	}
+}
+
+// blockingWaitTransport never returns from Wait, like `docker wait` on a
+// container that is still running after a detach.
+type blockingWaitTransport struct {
+	mu       sync.Mutex
+	opens    int
+	detached int
+	release  chan struct{}
+}
+
+func (b *blockingWaitTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	b.mu.Lock()
+	b.opens++
+	b.mu.Unlock()
+	_, stdinW := io.Pipe()
+	stdoutR, _ := io.Pipe()
+	return stdinW, stdoutR, io.NopCloser(strings.NewReader("")), nil
+}
+
+func (b *blockingWaitTransport) Wait() error {
+	<-b.release // never closed by the test: Wait must not gate Detach
+	return nil
+}
+
+func (b *blockingWaitTransport) Signal(sig os.Signal) error { return nil }
+func (b *blockingWaitTransport) Kill() error                { return nil }
+
+func (b *blockingWaitTransport) Detach() error {
+	b.mu.Lock()
+	b.detached++
+	b.mu.Unlock()
+	return nil
+}
+
+func TestChildDetachReturnsWhileTheAgentIsStillRunning(t *testing.T) {
+	tr := &blockingWaitTransport{release: make(chan struct{})}
+	c := &Child{Transport: tr}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() { c.Detach(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		// Stop ends with <-c.done, which supervise closes only after
+		// Wait returns. Detach must not, or Fleet.Close deadlocks and
+		// the bridge never exits.
+		t.Fatal("Detach blocked on a transport whose Wait never returns")
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.detached != 1 {
+		t.Fatalf("transport detached %d times, want 1", tr.detached)
+	}
+}
+
+func TestChildDetachDoesNotRespawn(t *testing.T) {
+	tr := &blockingWaitTransport{release: make(chan struct{})}
+	c := &Child{Transport: tr}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	c.Detach()
+
+	// Let supervise observe the release and take its branch.
+	close(tr.release)
+	time.Sleep(50 * time.Millisecond)
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.opens != 1 {
+		t.Fatalf("transport opened %d times, want 1 — Detach respawned the agent", tr.opens)
 	}
 }

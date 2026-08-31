@@ -832,7 +832,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		Model:     route.Preset.Model,
 		LocalOnly: route.Preset.LocalOnly,
 		Thinking:  route.Preset.Thinking,
-		Agent:     string(route.Role),
 		Active:    true,
 	})
 
@@ -2192,7 +2191,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 			Model:     route.Preset.Model,
 			LocalOnly: route.Preset.LocalOnly,
 			Thinking:  route.Preset.Thinking,
-			Agent:     string(route.Role),
 			Active:    true,
 		})
 	}

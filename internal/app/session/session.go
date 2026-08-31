@@ -151,11 +151,7 @@ type RouteInfo struct {
 	// ("" = provider default). Mirrored from Route.Preset.Thinking so the
 	// TUI can show the effort flag without reaching into routing.
 	Thinking string
-	// Agent is the route's agent-role label as dispatched (e.g.
-	// "implementer"); mirrored from Route.Role. Populated for all routes,
-	// but most visible on subagent cards whose Role field is empty.
-	Agent  string
-	Active bool
+	Active   bool
 }
 
 type ToolBudget struct {

@@ -157,8 +157,8 @@ func (m Model) modeSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, think=4, branch=5, dir=5,
-//	swarm tokens=6, jobs=7, queued=8
+//	mode=0, untrusted=0, route=1, local=2, ctx=3, think=4, gen=4,
+//	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
 		{text: modeStyle().Render(m.modeSegment()), priority: 0},

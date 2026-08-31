@@ -166,6 +166,36 @@ func (c *Child) Stop() {
 	<-c.done
 }
 
+// Detach releases the agent without ending it: the container keeps
+// running under its name so a later Open reattaches instead of starting
+// a duplicate. Used when the bridge is going away and the agent is not.
+//
+// Unlike Stop it does not wait on c.done. supervise blocks in
+// tr.Wait(), which for a container is `docker wait` — and the container
+// is deliberately still running, so that never returns. The supervise
+// goroutine stays parked; Detach runs only on the shutdown path, and
+// the process exits immediately after.
+func (c *Child) Detach() {
+	c.mu.Lock()
+	if c.stopping || !c.started {
+		c.mu.Unlock()
+		return
+	}
+	// Set before detaching: supervise checks this after Wait returns
+	// and respawns when it is false.
+	c.stopping = true
+	stdin := c.stdin
+	tr := c.transport
+	c.mu.Unlock()
+
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if tr != nil {
+		_ = tr.Detach()
+	}
+}
+
 // Request sends one JSON-RPC request and blocks until the matching
 // response arrives, ctx is done, or the child stops. The returned
 // RawMessage is the response's "result".

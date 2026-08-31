@@ -300,8 +300,7 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 	}
 
 	rc := cfg.RoutingConfig()
-	bindings, bindingKeys := routing.PresetRoleBindingsSorted(rc)
-	_ = bindingKeys // consumed in Task 6
+	bindings, _ := routing.PresetRoleBindingsSorted(rc)
 
 	var b strings.Builder
 	if len(cfg.CustomAgents) > 0 {
@@ -328,6 +327,7 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 			b.WriteString("\n")
 		}
 	}
+	annotated := 0
 	if len(cfg.Models.Presets) > 0 {
 		b.WriteString("Model presets (valid provider/model pairs):\n")
 		presetNames := make([]string, 0, len(cfg.Models.Presets))
@@ -347,6 +347,7 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 			line := fmt.Sprintf("- %s/%s", p.Provider, p.Model)
 			if len(notes) > 0 {
 				line += " — " + strings.Join(notes, " · ")
+				annotated++
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
@@ -391,6 +392,9 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 				b.WriteString(line)
 			}
 		}
+	}
+	if annotated > 0 {
+		b.WriteString("Choosing a subagent model: match the subtask to the role bindings written above — the role bindings are the user's own task-to-model ranking. Give a review or security-review subtask the preset bound to that role, and give quick lookups, titles, or summaries a preset marked cheap. Prefer bound presets over unbound presets and discovered models for tool-heavy subtasks, and prefer a preset marked local when the subtask touches secrets or private data. Only capabilities written on these lines are claimed; when no listed model suits the subtask, dispatch without the model argument and the parent's default model is used.\n")
 	}
 	b.WriteString("model must be a provider/model pair; the provider must be configured. The listed presets are only what is configured locally — any model the provider serves is valid, and discovered entries above reflect each provider's current model list.")
 	return b.String()

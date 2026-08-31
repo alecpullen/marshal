@@ -1330,6 +1330,66 @@ func TestRenderAgentRosterDiscoveredAnnotations(t *testing.T) {
 	}
 }
 
+func TestRenderAgentRosterGuidanceRanksByBindings(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:14b": {Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true, ContextWindow: 131072},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
+			"implementer": {Preset: "ollama/qwen2.5-coder:14b"},
+		}},
+	}
+	// Single-model synthesis: the active preset binds every chat role, so
+	// the annotation truthfully claims implementer and reviewer alike.
+	cfg.Profile.ActivePreset = "ollama/qwen2.5-coder:14b"
+	got := RenderAgentRoster(cfg)
+	for _, want := range []string{
+		"match the subtask to the role bindings",
+		"review",
+		"cheap",
+		"marked local",
+		"model must be a provider/model pair; the provider must be configured.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("guidance/footer missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), "model must be a provider/model pair; the provider must be configured. The listed presets are only what is configured locally — any model the provider serves is valid, and discovered entries above reflect each provider's current model list.") {
+		t.Errorf("guidance must precede, not replace, the footer contract:\n%s", got)
+	}
+	// The synthesized single-model profile binds every chat role to the
+	// active preset; the annotation must say so (implementer + reviewer).
+	if !strings.Contains(got, "roles:") || !strings.Contains(got, "implementer") || !strings.Contains(got, "reviewer") {
+		t.Errorf("synthesized single-model binding not annotated truthfully:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterNoGuidanceWhenNothingAnnotated(t *testing.T) {
+	cfg := config.Default()
+	// Two presets → the one-preset synthesis trigger never fires, and with
+	// no profiles nothing is bound. Both models are pricing-tabled but
+	// expensive (no "cheap" fact) and have no catalog entry or configured
+	// window (no "ctx" fact), so no annotation is built and the guidance
+	// paragraph must not appear.
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o":             {Provider: "openai", Model: "gpt-4o"},
+		"anthropic/claude-sonnet-4": {Provider: "anthropic", Model: "claude-sonnet-4"},
+	}
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "match the subtask to the role bindings") {
+		t.Errorf("guidance emitted with no annotations to back it:\n%s", got)
+	}
+	for _, want := range []string{
+		"model must be a provider/model pair; the provider must be configured",
+		"listed presets are only what is configured locally — any model the provider serves is valid",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("footer missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestDiscoveredModelsFromCache verifies the bridge from the on-disk
 // modelcache to the roster's discovered map: only fresh, config-matching
 // entries are included, keyed per provider.

@@ -7,6 +7,7 @@
   import PermissionModal from '../lib/PermissionModal.svelte'
   import QuestionModal from '../lib/QuestionModal.svelte'
   import ExitPanel from '../lib/ExitPanel.svelte'
+  import { renderMarkdown, initHighlighter } from '../lib/markdown'
 
   interface Props {
     sessionId: string
@@ -20,7 +21,16 @@
   // svelte-ignore state_referenced_locally
   const { state: session, actions } = createSessionStore(sessionId, '/')
 
+  // Shiki loads its grammars asynchronously. Messages render unhighlighted
+  // until it is ready, then `ready` flips and the transcript re-renders —
+  // rather than withholding the transcript behind a loading state.
+  let ready = $state(false)
+
   onMount(() => {
+    initHighlighter().then(() => (ready = true)).catch(() => {
+      // Highlighting is an enhancement. A failure here leaves fenced code
+      // as escaped plain blocks, which is still readable.
+    })
     actions.connect()
     actions.load().catch(() => {
       // load failures are surfaced via the session error if severe; the SSE
@@ -65,7 +75,15 @@
               <pre>{message.reasoning}</pre>
             </details>
           {/if}
-          <div class="text">{message.text}</div>
+          {#if message.role === 'user'}
+            <!-- The user's own text is shown as typed; rendering it as
+                 markdown would reformat their input under them. -->
+            <div class="text">{message.text}</div>
+          {:else}
+            {#key ready}
+              <div class="text prose">{@html renderMarkdown(message.text)}</div>
+            {/key}
+          {/if}
         </div>
       </div>
     {/each}
@@ -73,6 +91,13 @@
     {#each $session.toolCalls as tc (tc.id)}
       <ToolCallCard toolCall={tc} />
     {/each}
+
+    {#if $session.messages.length === 0 && $session.toolCalls.length === 0 && !$session.busy}
+      <div class="empty">
+        <p>No messages yet.</p>
+        <p class="hint">Describe a task below to start this agent working.</p>
+      </div>
+    {/if}
 
     {#if $session.busy}
       <div class="typing">Marshal is working…</div>
@@ -157,8 +182,14 @@
     padding: 0.75rem 1rem;
     border-radius: 12px;
     background: var(--color-bg);
-    white-space: pre-wrap;
     word-break: break-word;
+  }
+  /*
+    pre-wrap belongs to plain text only. Rendered markdown carries its own
+    block elements, and pre-wrap on the container doubles their whitespace.
+  */
+  .text:not(.prose) {
+    white-space: pre-wrap;
   }
   .message.user .bubble {
     background: var(--color-accent);
@@ -177,6 +208,125 @@
   .typing {
     color: var(--color-muted);
     font-style: italic;
+  }
+  .empty {
+    margin: auto;
+    text-align: center;
+    color: var(--color-muted);
+  }
+  .empty p {
+    margin: 0;
+  }
+  .empty .hint {
+    margin-top: 0.25rem;
+    font-size: 0.875rem;
+    opacity: 0.75;
+  }
+
+  /*
+    Markdown styling for agent output. Kept tight rather than airy: a
+    transcript is read in sequence, so generous vertical rhythm costs more
+    than it buys. :global is required because this HTML is injected with
+    {@html} and never passes through Svelte's style scoping.
+  */
+  .prose :global(> :first-child) {
+    margin-top: 0;
+  }
+  .prose :global(> :last-child) {
+    margin-bottom: 0;
+  }
+  .prose :global(p) {
+    margin: 0.5rem 0;
+  }
+  .prose :global(h1),
+  .prose :global(h2),
+  .prose :global(h3),
+  .prose :global(h4) {
+    margin: 1rem 0 0.5rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .prose :global(h1) {
+    font-size: 1.25rem;
+  }
+  .prose :global(h2) {
+    font-size: 1.125rem;
+  }
+  .prose :global(h3),
+  .prose :global(h4) {
+    font-size: 1rem;
+  }
+  /*
+    Tailwind's preflight sets list-style: none on ul/ol, so markdown lists
+    render as unmarked lines unless the marker is restored here. An agent's
+    numbered steps losing their numbers is a real loss of meaning.
+  */
+  .prose :global(ul),
+  .prose :global(ol) {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+  }
+  .prose :global(ul) {
+    list-style: disc;
+  }
+  .prose :global(ol) {
+    list-style: decimal;
+  }
+  .prose :global(li) {
+    margin: 0.125rem 0;
+  }
+  .prose :global(a) {
+    color: var(--color-accent);
+    text-decoration: underline;
+  }
+  .prose :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.875em;
+    background: var(--color-surface);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+  /* Shiki paints its own background and colours on the pre it emits. */
+  .prose :global(pre) {
+    margin: 0.75rem 0;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    overflow-x: auto;
+  }
+  .prose :global(pre code) {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+  .prose :global(pre.shiki-fallback) {
+    background: var(--color-surface);
+  }
+  .prose :global(blockquote) {
+    margin: 0.5rem 0;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--color-border);
+    color: var(--color-muted);
+  }
+  .prose :global(table) {
+    border-collapse: collapse;
+    margin: 0.5rem 0;
+    font-size: 0.875rem;
+    display: block;
+    overflow-x: auto;
+  }
+  .prose :global(th),
+  .prose :global(td) {
+    border: 1px solid var(--color-border);
+    padding: 0.25rem 0.5rem;
+    text-align: left;
+  }
+  .prose :global(hr) {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    margin: 0.75rem 0;
   }
   .error-banner {
     background: color-mix(in oklch, var(--color-danger) 18%, var(--color-bg));

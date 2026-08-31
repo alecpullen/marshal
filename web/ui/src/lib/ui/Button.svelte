@@ -23,7 +23,10 @@
 <!-- min-h-11 keeps every control at a 44px touch target on mobile. -->
 <button
   class={cn(
-    'inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition disabled:pointer-events-none disabled:opacity-50',
+    // A dimmed accent reads as broken rather than disabled, so disabled
+    // gets its own flat treatment instead of an opacity knock-down.
+    'inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition',
+    'disabled:pointer-events-none disabled:bg-border disabled:text-muted disabled:opacity-100 disabled:border-transparent',
     variants[variant],
     klass,
   )}

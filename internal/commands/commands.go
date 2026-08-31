@@ -14,6 +14,7 @@ import (
 	"marshal/internal/history"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
+	"marshal/internal/trust"
 )
 
 // snapshotContext returns the snapshot service and database, or a
@@ -482,10 +483,42 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) Result {
 				trusted := state.Trusted()
+				hasConfig := trust.HasProjectConfig(state.WorkingDir)
+				hash, hashErr := trust.ConfigHashFor(state.WorkingDir)
+
+				trustDetail := "not trusted"
+				trustDesc := "Untrusted sessions run on user and default config only; the project-local .marshal/config.toml is not applied."
 				if trusted {
-					return Text("Project is trusted. Use --trust (permanent) or restart to re-prompt.")
+					trustDetail = "trusted"
+					trustDesc = "Trusted sessions have the project-local .marshal/config.toml applied."
 				}
-				return Text("Project is not trusted. Use --trust (permanent) or restart to re-prompt.")
+
+				configDetail := strconv.FormatBool(hasConfig)
+				configDesc := "A prompt appears only when .marshal/config.toml exists under the working directory."
+				hashDetail := "— (no project config)"
+				hashDesc := ""
+				if hashErr != nil {
+					hashDetail = "error reading config"
+					hashDesc = hashErr.Error()
+				} else if hash != "" {
+					hashDetail = hash[:12]
+					hashDesc = "Changed config since the last trust grant triggers a re-prompt at next launch."
+				}
+
+				rows := []Row{
+					{Header: "Trust decision"},
+					{Text: "This session", Detail: trustDetail, Desc: trustDesc},
+					{Text: "Trust store", Detail: "~/.local/share/marshal/trust.json", Desc: "Permanent decisions keyed by absolute project path; marshal --trust writes it without starting the TUI."},
+					{Text: "Project config found", Detail: configDetail, Desc: configDesc},
+					{Text: "Config hash", Detail: hashDetail, Desc: hashDesc},
+					{Header: "What trusting means"},
+					{Text: "Trusting lets Marshal load .marshal/config.toml, which can define providers, model presets, agents, hooks, and MCP servers — a code-execution-adjacent decision. A prompt appears only when this file exists."},
+					{Header: "How to grant or change trust"},
+					{Text: "In this TUI", Detail: "run /trust again — if a trust decision is pending, the choice panel opens"},
+					{Text: "From the shell", Detail: "marshal --trust (permanently trusts the current directory)"},
+					{Text: "Restart", Detail: "launching with .marshal/config.toml present re-prompts when trust is absent or the config hash changed"},
+				}
+				return Panel("Trust", false, rows)
 			},
 		},
 		{

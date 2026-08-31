@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -845,7 +846,7 @@ func TestRegisterNonTUICommandStillRequiresHandler(t *testing.T) {
 	}
 }
 
-func TestTrustReportsCurrentStatus(t *testing.T) {
+func TestTrustRendersInformativePanel(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
@@ -855,21 +856,70 @@ func TestTrustReportsCurrentStatus(t *testing.T) {
 		t.Fatal("trust command not registered")
 	}
 
-	// Default state: not trusted.
+	// Default state: not trusted, no project config.
 	state := newTestState()
-	out := cmd.Handler(state, nil).Text
-	if !strings.Contains(out, "not trusted") {
-		t.Fatalf("expected 'not trusted' in output, got: %q", out)
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil {
+		t.Fatal("expected a Doc panel result, got nil Doc")
+	}
+	if res.Text != "" {
+		t.Fatalf("panel result should not carry Text, got %q", res.Text)
+	}
+	if res.Doc.Title != "Trust" {
+		t.Fatalf("expected Doc title %q, got %q", "Trust", res.Doc.Title)
+	}
+	out := res.PlainText()
+	for _, want := range []string{
+		"not trusted",
+		"Trust decision",
+		"What trusting means",
+		"How to grant or change trust",
+		"marshal --trust",
+		"trust.json",
+		".marshal/config.toml",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("PlainText() missing %q:\n%s", want, out)
+		}
 	}
 
 	// After marking trusted.
 	state.SetTrusted(true)
-	out = cmd.Handler(state, nil).Text
+	out = cmd.Handler(state, nil).PlainText()
 	if !strings.Contains(out, "trusted") {
 		t.Fatalf("expected 'trusted' in output, got: %q", out)
 	}
 	if strings.Contains(out, "not trusted") {
 		t.Fatalf("trusted state should not say 'not trusted', got: %q", out)
+	}
+}
+
+func TestTrustPanelShowsProjectConfigState(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, ok := cmdReg.Lookup("trust")
+	if !ok {
+		t.Fatal("trust command not registered")
+	}
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	out := cmd.Handler(state, nil).PlainText()
+	if !strings.Contains(out, "true") {
+		t.Fatalf("expected 'true' for project config found, got:\n%s", out)
+	}
+	// A 12-char hex hash should appear in the Config hash row.
+	if !regexp.MustCompile(`[0-9a-f]{12}`).MatchString(out) {
+		t.Fatalf("expected a 12-char config hash in output, got:\n%s", out)
 	}
 }
 

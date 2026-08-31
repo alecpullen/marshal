@@ -86,23 +86,24 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summar
 }
 
 // SubtaskScopeView returns a registry view for a subtask child. It excludes
-// agent.run plus its companions agent.await and agent.output (a subtask's
-// own session has no subagents to wait on or peek at), deferred tools (MCP
-// tools above the disclosure threshold and low-use native tools — the child
-// should not auto-load arbitrary tool surfaces during an ad-hoc task), and
-// question.ask plus its alias ask_user (a subtask runs in its own orphaned
-// child session.State that no ACP client or TUI ever sees — there is no live
-// user who could answer a question, so the call would block forever). All
-// other tools are visible so the child can perform implementation work;
-// their own Risk levels and the shared policy engine still gate approval
-// for writes, commands, and destructive tools.
+// agent.run plus its companions agent.await, agent.output, and agent.kill (a
+// subtask's own session has no subagents to wait on, peek at, or cancel — a
+// child cannot have children), deferred tools (MCP tools above the
+// disclosure threshold and low-use native tools — the child should not
+// auto-load arbitrary tool surfaces during an ad-hoc task), and question.ask
+// plus its alias ask_user (a subtask runs in its own orphaned child
+// session.State that no ACP client or TUI ever sees — there is no live user
+// who could answer a question, so the call would block forever). All other
+// tools are visible so the child can perform implementation work; their own
+// Risk levels and the shared policy engine still gate approval for writes,
+// commands, and destructive tools.
 func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 	view := registry.New()
 	for _, tool := range src.List() {
 		if tool.Deferred {
 			continue
 		}
-		if tool.Name == "agent.run" || tool.Name == "agent.await" || tool.Name == "agent.output" || tool.Name == "question.ask" || tool.Name == "ask_user" {
+		if tool.Name == "agent.run" || tool.Name == "agent.await" || tool.Name == "agent.output" || tool.Name == "agent.kill" || tool.Name == "question.ask" || tool.Name == "ask_user" {
 			continue
 		}
 		_ = view.Register(tool)

@@ -426,7 +426,7 @@ func TestAgentKillIsReadOnlyRisk(t *testing.T) {
 
 func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 	src := registry.New()
-	for _, name := range []string{"agent.run", "agent.await", "agent.output", "file.read"} {
+	for _, name := range []string{"agent.run", "agent.await", "agent.output", "agent.kill", "file.read"} {
 		tool := registry.Tool{Name: name, Schema: json.RawMessage(`{"type":"object"}`), Risk: registry.RiskReadOnly}
 		tool.Handler = func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
 			return registry.ToolResult{}, nil
@@ -436,7 +436,7 @@ func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 		}
 	}
 	view := SubtaskScopeView(src)
-	for _, name := range []string{"agent.run", "agent.await", "agent.output"} {
+	for _, name := range []string{"agent.run", "agent.await", "agent.output", "agent.kill"} {
 		if _, ok := view.Lookup(name); ok {
 			t.Fatalf("%s must be excluded from the subtask scope view", name)
 		}

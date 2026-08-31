@@ -649,6 +649,10 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
 	}
+	if err := reg.Register(agent.NewSubagentKillTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
+	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
 	repoInstructions, _ := loadRepoInstructions(state.WorkingDir)

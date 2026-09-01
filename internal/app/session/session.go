@@ -147,7 +147,11 @@ type RouteInfo struct {
 	Provider  string
 	Model     string
 	LocalOnly bool
-	Active    bool
+	// Thinking is the resolved reasoning-effort level for the active route
+	// ("" = provider default). Mirrored from Route.Preset.Thinking so the
+	// TUI can show the effort flag without reaching into routing.
+	Thinking string
+	Active   bool
 }
 
 type ToolBudget struct {

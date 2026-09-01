@@ -22,11 +22,11 @@ func runningJob(id int, cmd string, ago time.Duration) native.JobInfo {
 
 func TestJobLaneEmptyWhenNoRunningJobs(t *testing.T) {
 	m := newTestModel(t)
-	if got := m.renderJobLane(); got != "" {
+	if got := m.renderActivityLane(); got != "" {
 		t.Fatalf("no jobs must render nothing, got %q", got)
 	}
 	m.jobs = []native.JobInfo{{ID: "job-1", Command: "x", Status: native.StatusCompleted}}
-	if got := m.renderJobLane(); got != "" {
+	if got := m.renderActivityLane(); got != "" {
 		t.Fatalf("only finished jobs must render nothing, got %q", got)
 	}
 }
@@ -37,8 +37,8 @@ func TestJobLaneShowsRunningJobs(t *testing.T) {
 		runningJob(1, "npm run dev", 4*time.Minute),
 		runningJob(2, "go test ./...", 47*time.Second),
 	}
-	plain := ansi.Strip(m.renderJobLane())
-	for _, want := range []string{"job-1", "npm run dev", "job-2", "go test ./..."} {
+	plain := ansi.Strip(m.renderActivityLane())
+	for _, want := range []string{"2 jobs", "job-1", "npm run dev", "job-2", "go test ./..."} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("lane missing %q:\n%s", want, plain)
 		}
@@ -49,12 +49,12 @@ func TestJobLaneShowsRunningJobs(t *testing.T) {
 func TestJobLaneIsNotTinted(t *testing.T) {
 	m := newTestModel(t)
 	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
-	if strings.Contains(m.renderJobLane(), "48;5;") {
+	if strings.Contains(m.renderActivityLane(), "48;5;") {
 		t.Fatal("the job lane must not be tinted: position already separates it")
 	}
 }
 
-// jobLaneRows must equal what the lane actually renders, or the height
+// laneRows must equal what the lane actually renders, or the height
 // budget drifts and pushes the input area off the bottom of the frame.
 func TestJobLaneRowsMatchesRender(t *testing.T) {
 	m := newTestModel(t)
@@ -63,13 +63,13 @@ func TestJobLaneRowsMatchesRender(t *testing.T) {
 		for i := 0; i < n; i++ {
 			m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
 		}
-		out := m.renderJobLane()
+		out := m.renderActivityLane()
 		want := 0
 		if out != "" {
 			want = strings.Count(out, "\n")
 		}
-		if got := m.jobLaneRows(); got != want {
-			t.Fatalf("%d jobs: jobLaneRows()=%d but lane rendered %d rows:\n%s", n, got, want, out)
+		if got := m.laneRows(); got != want {
+			t.Fatalf("%d jobs: laneRows()=%d but lane rendered %d rows:\n%s", n, got, want, out)
 		}
 	}
 }
@@ -79,11 +79,9 @@ func TestJobLaneCapsWithOverflowRow(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
 	}
-	out := m.renderJobLane()
-	// The separator carries an opening rule, so a full lane is the row
-	// budget plus one.
-	if got := strings.Count(out, "\n"); got > jobLaneMaxRows+1 {
-		t.Fatalf("lane rendered %d rows, cap is %d", got, jobLaneMaxRows+1)
+	out := m.renderActivityLane()
+	if got := strings.Count(out, "\n"); got > laneMaxRows {
+		t.Fatalf("lane rendered %d rows, cap is %d", got, laneMaxRows)
 	}
 	if !strings.Contains(ansi.Strip(out), "more") {
 		t.Fatalf("expected an overflow row:\n%s", ansi.Strip(out))
@@ -93,13 +91,13 @@ func TestJobLaneCapsWithOverflowRow(t *testing.T) {
 func TestJobLaneHasSeparatorAndRail(t *testing.T) {
 	m := newTestModel(t)
 	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
-	out := m.renderJobLane()
+	out := m.renderActivityLane()
 	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if !strings.Contains(ansi.Strip(rows[0]), "─") {
 		t.Fatalf("lane must open with a separator rule, got %q", ansi.Strip(rows[0]))
 	}
-	// The header row carries the rail but no job marker; the marker lives in
-	// the body rows, so check those (rows[2:] after the separator and header).
+	// The caption row carries the rail but no job marker; the marker lives in
+	// the body rows, so check those (rows[2:] after the separator and caption).
 	for i, r := range rows[2:] {
 		if !strings.Contains(ansi.Strip(r), glyph.Job) {
 			t.Errorf("lane row %d has no job marker: %q", i+2, ansi.Strip(r))
@@ -112,23 +110,23 @@ func TestJobLaneRowsMatchesRenderAfterChrome(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
 	}
-	out := m.renderJobLane()
+	out := m.renderActivityLane()
 	want := 0
 	if out != "" {
 		want = strings.Count(out, "\n")
 	}
-	if got := m.jobLaneRows(); got != want {
-		t.Fatalf("jobLaneRows()=%d but lane rendered %d rows:\n%s", got, want, ansi.Strip(out))
+	if got := m.laneRows(); got != want {
+		t.Fatalf("laneRows()=%d but lane rendered %d rows:\n%s", got, want, ansi.Strip(out))
 	}
 }
 
 func TestJobLaneEmptyHasNoSeparator(t *testing.T) {
 	m := newTestModel(t)
-	if out := m.renderJobLane(); out != "" {
+	if out := m.renderActivityLane(); out != "" {
 		t.Fatalf("no running jobs must render nothing, got %q", out)
 	}
-	if got := m.jobLaneRows(); got != 0 {
-		t.Fatalf("jobLaneRows()=%d with no jobs, want 0", got)
+	if got := m.laneRows(); got != 0 {
+		t.Fatalf("laneRows()=%d with no jobs, want 0", got)
 	}
 }
 
@@ -136,13 +134,41 @@ func TestJobLaneEmptyHasNoSeparator(t *testing.T) {
 func TestJobLaneSeparatorBridgesTheRail(t *testing.T) {
 	m := newTestModel(t)
 	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
-	rows := strings.Split(strings.TrimRight(m.renderJobLane(), "\n"), "\n")
+	rows := strings.Split(strings.TrimRight(m.renderActivityLane(), "\n"), "\n")
 	sep := ansi.Strip(rows[0])
 	if !strings.HasPrefix(sep, glyph.Rail) {
 		t.Fatalf("separator must start with the rail, got %q", sep)
 	}
 	if !strings.Contains(sep, "─") {
 		t.Fatalf("separator must still carry the rule, got %q", sep)
+	}
+}
+
+// Jobs render after agents in the consolidated lane, and the caption omits
+// the job part when none run.
+func TestJobLaneRendersAfterAgents(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "reviewer")
+	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
+	plain := ansi.Strip(m.renderActivityLane())
+	if !strings.Contains(plain, "1 agent · 1 job") {
+		t.Fatalf("caption must combine both parts, got:\n%s", plain)
+	}
+	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+	agentIdx, jobIdx := -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.Contains(l, "reviewer"):
+			agentIdx = i
+		case strings.Contains(l, "npm run dev"):
+			jobIdx = i
+		}
+	}
+	if agentIdx < 0 || jobIdx < 0 {
+		t.Fatalf("lane missing agent/job row:\n%s", plain)
+	}
+	if jobIdx <= agentIdx {
+		t.Fatalf("expected job row after agent row, got agent=%d job=%d:\n%s", agentIdx, jobIdx, plain)
 	}
 }
 

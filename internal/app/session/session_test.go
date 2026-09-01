@@ -222,15 +222,20 @@ func TestStateActiveRouteStoresCopies(t *testing.T) {
 		Provider:  "ollama",
 		Model:     "qwen2.5-coder:14b",
 		LocalOnly: true,
+		Thinking:  "high",
 		Active:    true,
 	}
 
 	state.SetActiveRoute(route)
 	route.Model = "mutated"
+	route.Thinking = "mutated"
 
 	got := state.ActiveRoute()
 	if got.Model != "qwen2.5-coder:14b" || !got.Active {
 		t.Fatalf("ActiveRoute() = %#v", got)
+	}
+	if got.Thinking != "high" {
+		t.Fatalf("ActiveRoute() lost Thinking = %#v", got)
 	}
 }
 

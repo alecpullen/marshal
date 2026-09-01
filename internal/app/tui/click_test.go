@@ -114,6 +114,51 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	}
 }
 
+func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	started := time.Now()
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	// Locate the active-tool region.
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.isActiveTool {
+			region, found = r, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected a click region for the active tool call")
+	}
+
+	top := m.scrollHintRows()
+	y := top + region.startLine - m.viewport.YOffset()
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+
+	key := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started})
+	if !mm.activeToolIsExpanded(key) {
+		t.Fatal("expected the click to expand the active tool call")
+	}
+
+	// A repaint (hash invalidation + rebuild) must keep the override.
+	mm.lastTranscriptHash = 0
+	mm.refreshViewport()
+	if !mm.activeToolIsExpanded(key) {
+		t.Fatal("expected the override to survive a refreshViewport repaint")
+	}
+
+	// A different StartedAt (new tool call) collapses back.
+	key2 := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started.Add(time.Second)})
+	if mm.activeToolIsExpanded(key2) {
+		t.Fatal("expected a different tool call to be collapsed")
+	}
+}
+
 func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
@@ -278,8 +323,8 @@ func TestAgentLaneClickDrillsIn(t *testing.T) {
 	if !ok {
 		t.Fatal("expected an agent lane band")
 	}
-	// Row 0 is the merged header+rule line, row 1 the first agent.
-	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 1}); !handled {
+	// Row 0 is the separator rule, row 1 the caption, row 2 the first agent.
+	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 2}); !handled {
 		t.Fatal("a click on an agent row must be handled")
 	}
 	if len(m.viewStack) != 1 {
@@ -287,22 +332,25 @@ func TestAgentLaneClickDrillsIn(t *testing.T) {
 	}
 }
 
-// The merged header+rule line is not an agent; clicking it must not drill.
+// The separator and caption rows are not agents; clicking them must not drill.
 func TestAgentLaneClickOnChromeDoesNothing(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 	top, _, _ := m.agentLaneBand()
-	// Only row 0 (the merged header+rule) is chrome now.
-	m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top})
+	// Rows 0 (separator) and 1 (caption) are chrome.
+	for _, y := range []int{top, top + 1} {
+		m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: y})
+	}
 	if len(m.viewStack) != 0 {
-		t.Fatal("clicking the header must not drill in")
+		t.Fatal("clicking the chrome rows must not drill in")
 	}
 }
 
-// The band must sit below the job lane, not above it.
-func TestAgentLaneBandSitsBelowTheJobLane(t *testing.T) {
+// The band must sit directly below the live strip (the job lane no longer
+// exists as a separate stacked row).
+func TestLaneBandSitsBelowLiveStrip(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
@@ -313,9 +361,9 @@ func TestAgentLaneBandSitsBelowTheJobLane(t *testing.T) {
 		t.Fatal("expected a band")
 	}
 	want := m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
-		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows() + m.jobLaneRows()
+		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows()
 	if top != want {
-		t.Fatalf("band top = %d, want %d (job lane must be counted)", top, want)
+		t.Fatalf("band top = %d, want %d (lane must sit below the live strip)", top, want)
 	}
 }
 

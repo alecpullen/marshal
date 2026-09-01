@@ -2,7 +2,16 @@ package tui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"time"
+
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
+	"marshal/internal/app/tui/docpanel"
+	"marshal/internal/app/tui/trustpanel"
+	"marshal/internal/commands"
+	"marshal/internal/trust"
 )
 
 func TestParseReviewArgs(t *testing.T) {
@@ -75,5 +84,65 @@ func TestParseReviewArgs(t *testing.T) {
 				t.Fatalf("remaining = %v, want %v", remaining, tc.focus)
 			}
 		})
+	}
+}
+
+func TestTrustCommandOpensTrustPanelWhenPending(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	reg := commands.New()
+	_ = commands.RegisterAll(reg, nil)
+	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+
+	var decided trust.Decision
+	m.trustDecide = func(d trust.Decision) { decided = d }
+
+	m.dispatchCommand("/trust")
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock to be open after /trust with a pending decision")
+	}
+	if _, ok := m.dock.Panel().(*trustpanel.Panel); !ok {
+		t.Fatalf("expected trustpanel, got %T", m.dock.Panel())
+	}
+	// Opening the panel must not itself trigger a decision.
+	if decided != "" {
+		t.Fatalf("expected no decision yet, got %q", decided)
+	}
+}
+
+func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	reg := commands.New()
+	_ = commands.RegisterAll(reg, nil)
+	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+
+	// No trustDecide wired: the handler's docpanel opens, then the effect
+	// must NOT open a trustpanel and must steer to the shell path.
+	m.dispatchCommand("/trust")
+	if _, ok := m.dock.Panel().(*docpanel.Panel); !ok {
+		t.Fatalf("expected the handler's docpanel to stay docked, got %T", m.dock.Panel())
+	}
+	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
+		t.Fatal("expected no trustpanel when no decision is pending")
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a system message steering to the shell path")
+	}
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Content, "marshal --trust") {
+		t.Fatalf("expected fallback message to mention marshal --trust, got %q", last.Content)
+	}
+}
+
+func TestTrustCommandTrustedDoesNothingExtra(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state.SetTrusted(true)
+	reg := commands.New()
+	_ = commands.RegisterAll(reg, nil)
+	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+
+	m.dispatchCommand("/trust")
+	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
+		t.Fatal("expected no trustpanel when already trusted")
 	}
 }

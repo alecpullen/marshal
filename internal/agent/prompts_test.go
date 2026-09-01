@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -959,6 +960,16 @@ func TestTodoAddendumIncludedWhenToolAvailable(t *testing.T) {
 	}
 }
 
+func TestTodoAddendumDocumentsDropUnfinished(t *testing.T) {
+	tools := append(dummyTools(), registry.Tool{
+		Name: "todo.write", Risk: registry.RiskWorkspaceWrite, Description: "Track task progress.",
+	})
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
+	if !strings.Contains(msg.Content, "drop_unfinished") {
+		t.Errorf("todoAddendum must document the drop_unfinished escape hatch\n%s", msg.Content)
+	}
+}
+
 // ModeAuto's directive must tell the model it cannot ask the user
 // questions, in both native and JSON modes.
 func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {
@@ -1165,6 +1176,219 @@ func TestRenderAgentRosterFooterIsHonest(t *testing.T) {
 	got := RenderAgentRoster(cfg)
 	if strings.Contains(got, "must name one of these") {
 		t.Errorf("footer still overstates authority:\n%s", got)
+	}
+	for _, want := range []string{
+		"model must be a provider/model pair; the provider must be configured",
+		"listed presets are only what is configured locally — any model the provider serves is valid",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("footer missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestAgentRosterRendersDeterministicLines pins sorted iteration of the
+// custom-agent and preset sections: identical configs must render
+// byte-identical rosters (Go map range order is randomized), keeping
+// system prompts prefix-cache friendly.
+func TestAgentRosterRendersDeterministicLines(t *testing.T) {
+	newCfg := func() config.Config {
+		cfg := config.Default()
+		cfg.Models.Presets = map[string]routing.ModelPreset{
+			"ollama/qwen2.5-coder:14b": {Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+			"openai/gpt-4o-mini":       {Provider: "openai", Model: "gpt-4o-mini"},
+			"ollama/qwen2.5-coder:7b":  {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		}
+		cfg.CustomAgents = map[string]routing.CustomAgent{
+			"reviewer": {Name: "reviewer", Preset: "openai/gpt-4o-mini", SystemPrompt: "Read-only reviewer"},
+			"scout":    {Name: "scout", Preset: "ollama/qwen2.5-coder:7b", SystemPrompt: "Repo scout"},
+			"planner":  {Name: "planner", Preset: "openai/gpt-4o-mini", SystemPrompt: "Plan only"},
+		}
+		return cfg
+	}
+	first := RenderAgentRoster(newCfg())
+	for i := 0; i < 50; i++ {
+		if got := RenderAgentRoster(newCfg()); got != first {
+			t.Fatalf("roster is not deterministic (iteration %d):\n--- first ---\n%s\n--- other ---\n%s", i, first, got)
+		}
+	}
+	// Preset lines are annotated (Task 4), so pin the sorted key order by
+	// the leading pair of each line rather than the bare pair.
+	ollama14 := strings.Index(first, "- ollama/qwen2.5-coder:14b")
+	ollama7 := strings.Index(first, "- ollama/qwen2.5-coder:7b")
+	openai := strings.Index(first, "- openai/gpt-4o-mini")
+	if !(ollama14 >= 0 && ollama7 > ollama14 && openai > ollama7) {
+		t.Errorf("preset lines not in sorted key order:\n%s", first)
+	}
+	if !strings.Contains(first, "- planner (openai/gpt-4o-mini)") || !strings.Contains(first, "- reviewer (openai/gpt-4o-mini)") {
+		t.Errorf("custom agents missing expected lines:\n%s", first)
+	}
+	if strings.Count(first, "Custom agents:") != 1 {
+		t.Errorf("custom agents header printed more than once:\n%s", first)
+	}
+}
+
+func TestRenderAgentRosterAnnotatesRoleBindings(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:14b": {Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+		"ollama/qwen2.5-coder:7b":  {Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
+			"implementer": {Preset: "ollama/qwen2.5-coder:14b"},
+			"reviewer":    {Preset: "ollama/qwen2.5-coder:7b"},
+			"repo_scout":  {Preset: "ollama/qwen2.5-coder:7b"},
+		}},
+	}
+	got := RenderAgentRoster(cfg)
+	if !strings.Contains(got, "- ollama/qwen2.5-coder:14b — roles: implementer (profile local_balanced)") {
+		t.Errorf("implementer preset not annotated:\n%s", got)
+	}
+	if !strings.Contains(got, "- ollama/qwen2.5-coder:7b — roles: repo_scout, reviewer (profile local_balanced)") {
+		t.Errorf("scout/reviewer preset not annotated (want AllRoles order: repo_scout before reviewer):\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterUnboundPresetOmitsRoles(t *testing.T) {
+	cfg := config.Default()
+	pa := "paid/gpt-4o-mini" // not in any pricing table → no cost data
+	pc := "paid/local-only"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		pa: {Provider: "paid", Model: "gpt-4o-mini", ContextWindow: 4096},
+		pc: {Provider: "paid", Model: "local-only", ContextWindow: 4096, Pricing: &pricing.ModelPricing{}},
+	}
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "roles:") {
+		t.Errorf("no profiles configured, so no preset may claim roles:\n%s", got)
+	}
+	// Exactly one pricing-tabled preset ⇒ synthesis binds ONLY that one;
+	// the unpriced sibling must stay unannotated.
+	if strings.Contains(got, "[\""+pc+"\"] — roles:") {
+		t.Errorf("second preset must not claim synthesized roles:\n%s", got)
+	}
+	if !strings.Contains(got, "- paid/gpt-4o-mini — 4k ctx · cheap\n") || !strings.Contains(got, "- paid/local-only — 4k ctx · cheap (no cost data — likely local/unpriced)\n") {
+		t.Errorf("unbound preset line changed shape:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterObjectiveFactAnnotations(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		// Two presets (no synthesis) + an explicit Pricing override: the
+		// model is known-expensive so no price fact may appear, while the
+		// config-declared ctx, local flag, and pinned thinking ride along.
+		"anthropic/claude-sonnet-4": {Provider: "anthropic", Model: "claude-sonnet-4", LocalOnly: true, ContextWindow: 200000, Thinking: "high", Pricing: &pricing.ModelPricing{InputPerMTokCents: 300, OutputPerMTokCents: 1500}},
+		"anthropic/claude-haiku-x":  {Provider: "anthropic", Model: "claude-haiku-x", ContextWindow: 200000},
+	}
+	got := RenderAgentRoster(cfg)
+	if !strings.Contains(got, "- anthropic/claude-sonnet-4 — 200k ctx · local · thinking: high") {
+		t.Errorf("sonnet preset missing facts or priced as cheap:\n%s", got)
+	}
+	if !strings.Contains(got, "- anthropic/claude-haiku-x — 200k ctx · cheap (no cost data — likely local/unpriced)") {
+		t.Errorf("unpriced preset missing cost-data note:\n%s", got)
+	}
+	if strings.Count(got, "roles:") != 0 {
+		t.Errorf("no profiles configured, so no preset may claim roles:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterUnknownPricingRendersNothing(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		// Two presets → the one-preset synthesis trigger never fires. With
+		// no profiles, NOTHING is bound and NO fact may be guessed: gpt-4o
+		// and claude-sonnet-4 are pricing-tabled but expensive (no "cheap"
+		// fact), and neither model has a catalog entry or configured window
+		// (no "ctx" fact).
+		"openai/gpt-4o":             {Provider: "openai", Model: "gpt-4o"},
+		"anthropic/claude-sonnet-4": {Provider: "anthropic", Model: "claude-sonnet-4"},
+	}
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "cheap") || strings.Contains(got, "ctx") {
+		t.Errorf("expensive model priced as cheap, or context window guessed:\n%s", got)
+	}
+	if !strings.Contains(got, "- openai/gpt-4o\n") || !strings.Contains(got, "- anthropic/claude-sonnet-4\n") {
+		t.Errorf("unannotated preset lines changed shape:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterDiscoveredAnnotations(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+	yes := true
+	discovered := map[string][]schema.ModelInfo{
+		"openai": {
+			{ID: "gpt-5.6-luna", ContextWindow: 1000000, ToolCalling: &yes},
+			{ID: "bare-model"},
+		},
+	}
+	got := RenderAgentRosterWithDiscovered(cfg, discovered)
+	if !strings.Contains(got, "- openai/gpt-5.6-luna (discovered) · 1M ctx · tools: yes") {
+		t.Errorf("discovered annotation missing:\n%s", got)
+	}
+	if strings.Contains(got, "bare-model ·") {
+		t.Errorf("unprobed discovered model must carry no guessed facts:\n%s", got)
+	}
+	if !strings.Contains(got, "- openai/bare-model (discovered)\n") {
+		t.Errorf("bare discovered line changed shape:\n%s", got)
+	}
+	if strings.Contains(got, "gpt-5.6-luna (discovered) — roles:") {
+		t.Errorf("discovered models must never claim role bindings:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterGuidanceRanksByBindings(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:14b": {Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true, ContextWindow: 131072},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
+			"implementer": {Preset: "ollama/qwen2.5-coder:14b"},
+		}},
+	}
+	// Single-model synthesis: the active preset binds every chat role, so
+	// the annotation truthfully claims implementer and reviewer alike.
+	cfg.Profile.ActivePreset = "ollama/qwen2.5-coder:14b"
+	got := RenderAgentRoster(cfg)
+	for _, want := range []string{
+		"match the subtask to the role bindings",
+		"review",
+		"cheap",
+		"marked local",
+		"model must be a provider/model pair; the provider must be configured.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("guidance/footer missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), "model must be a provider/model pair; the provider must be configured. The listed presets are only what is configured locally — any model the provider serves is valid, and discovered entries above reflect each provider's current model list.") {
+		t.Errorf("guidance must precede, not replace, the footer contract:\n%s", got)
+	}
+	// The synthesized single-model profile binds every chat role to the
+	// active preset; the annotation must say so (implementer + reviewer).
+	if !strings.Contains(got, "roles:") || !strings.Contains(got, "implementer") || !strings.Contains(got, "reviewer") {
+		t.Errorf("synthesized single-model binding not annotated truthfully:\n%s", got)
+	}
+}
+
+func TestRenderAgentRosterNoGuidanceWhenNothingAnnotated(t *testing.T) {
+	cfg := config.Default()
+	// Two presets → the one-preset synthesis trigger never fires, and with
+	// no profiles nothing is bound. Both models are pricing-tabled but
+	// expensive (no "cheap" fact) and have no catalog entry or configured
+	// window (no "ctx" fact), so no annotation is built and the guidance
+	// paragraph must not appear.
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o":             {Provider: "openai", Model: "gpt-4o"},
+		"anthropic/claude-sonnet-4": {Provider: "anthropic", Model: "claude-sonnet-4"},
+	}
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "match the subtask to the role bindings") {
+		t.Errorf("guidance emitted with no annotations to back it:\n%s", got)
 	}
 	for _, want := range []string{
 		"model must be a provider/model pair; the provider must be configured",

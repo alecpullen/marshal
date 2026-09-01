@@ -48,9 +48,10 @@ func NewCommandManager(cfg CommandManagerConfig) *CommandManager {
 
 // kindOf classifies a command for the session/command_list wire result.
 // "headless" commands have a real Handler and can be run via
-// session/command. "tui_only" commands are interactive and rejected by
-// session/command. "prompt" commands have no Handler — a client runs them
-// by sending PromptBody as a normal session/prompt instead.
+// session/command. "tui_only" commands are interactive; those without a
+// Handler are rejected by session/command — see Command.
+// "prompt" commands have no Handler — a client runs them by sending
+// PromptBody as a normal session/prompt instead.
 func kindOf(cmd commands.Command) string {
 	switch {
 	case cmd.TUIOnly:

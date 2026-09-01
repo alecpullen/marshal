@@ -614,7 +614,11 @@ func resultOrError(runErr error, slot *activeTurn) (any, error) {
 		return PromptTurnResult{StopReason: "cancelled"}, nil
 	}
 	if runErr != nil {
-		return nil, runErr
+		// Turn failures (provider errors, malformed model output) are
+		// server-generated, so they are safe to expose per F-SEC-37 —
+		// without this the client gets an opaque -32603 "internal error"
+		// and the actual cause exists only in the server's stderr log.
+		return nil, serverErrorf("turn failed: %v", runErr)
 	}
 	return PromptTurnResult{StopReason: "end_turn"}, nil
 }

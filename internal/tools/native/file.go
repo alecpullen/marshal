@@ -21,6 +21,10 @@ import (
 // page through big files a screen at a time.
 const maxPageableFileBytes = 10 * 1024 * 1024 // 10 MiB
 
+// readPathBaseDescription is the path schema base text for the read
+// tools; kept short — schema descriptions are prompt budget.
+const readPathBaseDescription = "file path relative to the workspace; absolute paths that resolve inside an allowed root are accepted"
+
 type fileReadArgs struct {
 	Path      string `json:"path"`
 	StartLine int    `json:"start_line"`
@@ -32,7 +36,7 @@ func (t *toolSet) fileReadTool() registry.Tool {
 		Name:        "file.read",
 		Description: "Read a workspace file. For large files, use start_line and end_line (1-based, inclusive) to page through content instead of reading the whole file at once.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
-			t.pathDescription("file path relative to the workspace") +
+			t.pathDescription(readPathBaseDescription) +
 			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
@@ -74,7 +78,7 @@ func (t *toolSet) filePageTool() registry.Tool {
 		Name:        "file.page",
 		Description: "Read a page of a workspace file by 1-based page number. Useful for iterating through large files without spilling tool output.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
-			t.pathDescription("file path relative to the workspace") +
+			t.pathDescription(readPathBaseDescription) +
 			`},"page":{"type":"integer","description":"1-based page number"},"page_size":{"type":"integer","description":"lines per page (default 200, max 1000)"}},"required":["path","page"],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
@@ -135,7 +139,7 @@ func (t *toolSet) filePageTool() registry.Tool {
 // It performs the same path validation, TOCTOU size check, and read tracking
 // used by both file.read and file.page.
 func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byte, error) {
-	path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), requestedPath)
+	path, err := resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), requestedPath)
 	if err != nil {
 		return nil, err
 	}

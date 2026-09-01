@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
+	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/pipeline"
 	"marshal/internal/worktree"
 )
@@ -110,7 +111,7 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.viewStack = nil
 	m.lastTranscriptHash = 0
 	m.detailExpanded = false
-	m.activeToolExpanded = false
+	m.clearActiveToolExpansions()
 	m.activeToolStartedAt = time.Time{}
 	m.clickRegions = nil
 	// The old session's changed-files list must never render in the new
@@ -163,6 +164,23 @@ func init() {
 		},
 		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
+			m.refreshViewport()
+			return m, nil
+		},
+		"trust": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			if m.state.Trusted() {
+				m.refreshViewport()
+				return m, nil
+			}
+			if m.trustDecide == nil || m.workDir == "" {
+				// No pending decision (or none wired): the informative panel from
+				// the handler already rendered; steer to the shell path instead
+				// of opening a panel whose callback would panic on nil.
+				m.state.AddMessage(session.RoleSystem, "No trust decision pending. Grant permanent trust with `marshal --trust`, or restart in this directory to re-prompt once `.marshal/config.toml` exists here.", session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+			m.dock.Open(trustpanel.New(m.workDir, m.trustDecide))
 			m.refreshViewport()
 			return m, nil
 		},

@@ -150,7 +150,97 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 // {"error":...} object, a dropped connection, or context cancellation) are
 // delivered as a single ChatEventError event, after which the channel is
 // closed.
+//
+// One transparent retry exists: when the server rejects the request because
+// its chat template demands the system message first (stock qwen3 templates
+// on llama.cpp / LM Studio), the request is retried once with trailing
+// system messages demoted to user messages. marshal's wire legitimately
+// carries mid-turn system messages (skill hints, correction nudges), and
+// demotion is the only way strict templates can serve them at all. The
+// rejection can arrive two ways: a synchronous HTTP 500, or — LM Studio's
+// habit — an embedded error event inside an HTTP-200 stream, which is why
+// the first stream event is peeked at before the channel is handed back.
 func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	events, err := p.chat(ctx, req)
+	if err != nil {
+		if isStrictSystemPositionError(err) && hasTrailingSystemMessage(req.Messages) {
+			req.Messages = demoteTrailingSystemMessages(req.Messages)
+			return p.chat(ctx, req)
+		}
+		return nil, err
+	}
+
+	// Peek at the first event so an embedded strict-template rejection can
+	// still trigger the demote-and-retry path.
+	var first schema.ChatEvent
+	var ok bool
+	select {
+	case first, ok = <-events:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if !ok {
+		closed := make(chan schema.ChatEvent)
+		close(closed)
+		return closed, nil
+	}
+	if first.Type == schema.ChatEventError && first.Err != nil &&
+		isStrictSystemPositionError(first.Err) && hasTrailingSystemMessage(req.Messages) {
+		req.Messages = demoteTrailingSystemMessages(req.Messages)
+		return p.chat(ctx, req)
+	}
+
+	out := make(chan schema.ChatEvent, 1)
+	out <- first
+	go func() {
+		defer close(out)
+		for ev := range events {
+			out <- ev
+		}
+	}()
+	return out, nil
+}
+
+// strictSystemPositionSubstr matches the Jinja template error llama.cpp and
+// LM Studio return when a chat template requires the system message first.
+const strictSystemPositionSubstr = "System message must be at the beginning"
+
+// isStrictSystemPositionError reports whether err carries the
+// strict-template rejection — either as a synchronous HTTP error
+// (*ProviderError) or as an embedded stream error (plain error text).
+func isStrictSystemPositionError(err error) bool {
+	var perr *ProviderError
+	if errors.As(err, &perr) {
+		return strings.Contains(perr.Body, strictSystemPositionSubstr)
+	}
+	return strings.Contains(err.Error(), strictSystemPositionSubstr)
+}
+
+// hasTrailingSystemMessage reports whether any message after the first is a
+// system message — the only situation where demotion changes the wire.
+func hasTrailingSystemMessage(msgs []schema.ChatMessage) bool {
+	for i, m := range msgs {
+		if i > 0 && m.Role == schema.RoleSystem {
+			return true
+		}
+	}
+	return false
+}
+
+// demoteTrailingSystemMessages rewrites every system message after the
+// first to a user message, preserving order and content.
+func demoteTrailingSystemMessages(msgs []schema.ChatMessage) []schema.ChatMessage {
+	out := make([]schema.ChatMessage, len(msgs))
+	copy(out, msgs)
+	for i := 1; i < len(out); i++ {
+		if out[i].Role == schema.RoleSystem {
+			out[i].Role = schema.RoleUser
+		}
+	}
+	return out
+}
+
+func (p *OpenAICompatible) chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
 	body, err := buildChatRequestBody(req, p.reasoningSummary)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)

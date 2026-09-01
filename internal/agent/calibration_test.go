@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"marshal/internal/llm/schema"
+	"marshal/internal/tools/registry"
 )
 
 func calibrationMsgs() []schema.ChatMessage {
@@ -54,5 +57,33 @@ func TestResetTokenRatioRestoresRawEstimate(t *testing.T) {
 	r.resetTokenRatio()
 	if got := r.calibratedEstimate(calibrationMsgs()); got != 100 {
 		t.Fatalf("after reset: calibratedEstimate = %d, want 100", got)
+	}
+}
+
+// In native-tools mode the tool-definition block travels on the wire with
+// every request but is not part of the message list — the estimate must
+// include it, or small-window turns trip compaction a turn late.
+func TestWireEstimateIncludesToolDefinitionsInNativeMode(t *testing.T) {
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "noop.tool", Description: "does nothing at all", Risk: registry.RiskReadOnly,
+		Schema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`),
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	})
+
+	msgs := calibrationMsgs()
+	r := &Runner{Registry: reg, NativeTools: true}
+	withDefs := r.calibratedEstimate(msgs)
+	withoutDefs := estimateTokens(msgs)
+	if withDefs <= withoutDefs {
+		t.Fatalf("native-mode estimate %d should exceed the message-only estimate %d", withDefs, withoutDefs)
+	}
+
+	// Envelope mode sends no tool definitions: identical estimates.
+	r.NativeTools = false
+	if got := r.calibratedEstimate(msgs); got != withoutDefs {
+		t.Fatalf("envelope-mode estimate = %d, want %d (no tool definitions on the wire)", got, withoutDefs)
 	}
 }

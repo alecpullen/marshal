@@ -157,8 +157,8 @@ func (m Model) modeSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, branch=5, dir=5,
-//	swarm tokens=6, jobs=7, queued=8
+//	mode=0, untrusted=0, route=1, local=2, ctx=3, think=4, gen=4,
+//	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
 		{text: modeStyle().Render(m.modeSegment()), priority: 0},
@@ -173,6 +173,12 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: identityStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})
 		if route.LocalOnly {
 			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
+		}
+		// The reasoning-effort flag rides next to the model identity: it is
+		// route-shaped config (like local/remote), not a consumable counter,
+		// so it collapses before branch/dir (priority 4) rather than after.
+		if route.Thinking != "" {
+			segs = append(segs, statusSeg{text: dimStyle().Render("think " + route.Thinking), priority: 4})
 		}
 	} else {
 		segs = append(segs, statusSeg{text: identityStyle().Render("no model"), priority: 1})

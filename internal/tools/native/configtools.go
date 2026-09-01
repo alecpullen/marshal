@@ -614,6 +614,7 @@ func (t *toolSet) configSessionRolloverSetTool() registry.Tool {
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
 			if args.Enabled != nil {
 				cfg.Session.Rollover.Enabled = *args.Enabled
+				cfg.Session.Rollover.EnabledSet = true
 			}
 			if args.Policy != nil {
 				cfg.Session.Rollover.Policy = *args.Policy

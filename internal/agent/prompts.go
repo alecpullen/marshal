@@ -8,6 +8,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/catalog"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -152,6 +154,124 @@ func DiscoveredModelsFromCache(cfg config.Config, dataDir string, now time.Time)
 	return out
 }
 
+// presetRoleNote renders the role-binding annotation for one preset map
+// key: "roles: implementer, reviewer (profile single)" — one segment per
+// profile, profiles in sorted order, roles in AllRoles order. Returns ""
+// when the preset is bound by no profile, so unbound presets render
+// exactly as before.
+func presetRoleNote(bindings map[string][]routing.PresetRoleBinding, name string) string {
+	segs, ok := bindings[name]
+	if !ok || len(segs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(segs))
+	for _, seg := range segs {
+		roleStrs := make([]string, 0, len(seg.Roles))
+		for _, r := range seg.Roles {
+			roleStrs = append(roleStrs, string(r))
+		}
+		parts = append(parts, fmt.Sprintf("%s (profile %s)", strings.Join(roleStrs, ", "), seg.Profile))
+	}
+	return "roles: " + strings.Join(parts, ", ")
+}
+
+// fmtCtxTokens renders a context size the way model datasheets write it,
+// rounded to the nearest unit: 131072 → "131k", 1048576 → "1M", 8192 →
+// "8k", 940 → "940". (strutil.CompactTokens formats 1048576 as "1048k",
+// which is not how any model card says it.)
+func fmtCtxTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%dM", (n+500_000)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dk", (n+500)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// cheapThreshold is the combined input+output rate below which a preset is
+// annotated "cheap": ≤ $1.00 per million tokens (rates are hundredths of a
+// cent per MTok, from internal/llm/pricing/prices.go:4).
+const cheapThreshold = 100
+
+// pricingNote classifies a preset's price from config + built-in table
+// data (pricing.Lookup). All-zero rates mean the model is unpriced — most
+// often a local deployment — and saying so is useful, not a guess; a
+// known-but-pricey model renders no price fact at all rather than a
+// guess, keeping the roster honest.
+func pricingNote(p routing.ModelPreset) string {
+	r := pricing.Lookup(p, nil)
+	if r.InputPerMTokCents+r.OutputPerMTokCents == 0 {
+		return "cheap (no cost data — likely local/unpriced)"
+	}
+	if r.InputPerMTokCents+r.OutputPerMTokCents <= cheapThreshold {
+		return "cheap"
+	}
+	return ""
+}
+
+// presetFactNote renders the objective per-preset facts as " · "-joined
+// fragments: context window (from the preset, else the catalog for
+// plain-model IDs), local-only, thinking effort, price class. The
+// catalog fallback below renders only for catalog-listed models — never
+// catalog.Lookup's 8192/4096 default pair (catalog.go:39-40), which would
+// turn "unknown" into a fake claim. Only configured/known facts appear;
+// an unannotated preset renders "".
+func presetFactNote(p routing.ModelPreset) string {
+	var frag []string
+	if p.ContextWindow <= 0 {
+		model := p.Model
+		if _, m, ok := strings.Cut(p.Model, "/"); ok { // openrouter-style ids: strip provider
+			model = m
+		}
+		// catalog.Lookup answers 8192/4096 for models it does not know
+		// (catalog.go:39-40); rendering that would print a guessed "8k
+		// ctx", so the exact default pair is treated as unknown. A
+		// catalog-listed model gets its real window; unknown models
+		// render nothing.
+		if ctx, out := catalog.Lookup(model, nil); ctx > 0 && !(ctx == 8192 && out == 4096) {
+			frag = append(frag, fmtCtxTokens(ctx)+" ctx")
+		}
+	} else {
+		frag = append(frag, fmtCtxTokens(p.ContextWindow)+" ctx")
+	}
+	if p.LocalOnly {
+		frag = append(frag, "local")
+	}
+	switch p.Thinking {
+	case "":
+		// provider default, nothing to say
+	case "off":
+		frag = append(frag, "thinking: off")
+	default:
+		frag = append(frag, "thinking: "+p.Thinking)
+	}
+	if note := pricingNote(p); note != "" {
+		frag = append(frag, note)
+	}
+	return strings.Join(frag, " · ")
+}
+
+// discoveredFactNote renders only the facts a probe actually reported.
+// Discovered models are never pinned, so no roles and no pricing exist for
+// them — they get capability hints only, or "" when the endpoint said
+// nothing beyond the ID.
+func discoveredFactNote(mi schema.ModelInfo) string {
+	var frag []string
+	if mi.ContextWindow > 0 {
+		frag = append(frag, fmtCtxTokens(mi.ContextWindow)+" ctx")
+	}
+	if mi.ToolCalling != nil {
+		if *mi.ToolCalling {
+			frag = append(frag, "tools: yes")
+		} else {
+			frag = append(frag, "tools: no")
+		}
+	}
+	return strings.Join(frag, " · ")
+}
+
 // RenderAgentRoster returns a human-readable listing of the configured
 // custom agents and model presets for injection into the system prompt
 // when agent.run is available. The provider/model pairs are exactly what
@@ -179,10 +299,19 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 		return ""
 	}
 
+	rc := cfg.RoutingConfig()
+	bindings, _ := routing.PresetRoleBindingsSorted(rc)
+
 	var b strings.Builder
 	if len(cfg.CustomAgents) > 0 {
 		b.WriteString("Custom agents:\n")
-		for name, agent := range cfg.CustomAgents {
+		agentNames := make([]string, 0, len(cfg.CustomAgents))
+		for name := range cfg.CustomAgents {
+			agentNames = append(agentNames, name)
+		}
+		sort.Strings(agentNames)
+		for _, name := range agentNames {
+			agent := cfg.CustomAgents[name]
 			preset := agent.Preset
 			if p, ok := cfg.Models.Presets[preset]; ok && p.Provider != "" && p.Model != "" {
 				preset = fmt.Sprintf("%s/%s", p.Provider, p.Model)
@@ -198,10 +327,30 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 			b.WriteString("\n")
 		}
 	}
+	annotated := 0
 	if len(cfg.Models.Presets) > 0 {
 		b.WriteString("Model presets (valid provider/model pairs):\n")
-		for _, p := range cfg.Models.Presets {
-			b.WriteString(fmt.Sprintf("- %s/%s\n", p.Provider, p.Model))
+		presetNames := make([]string, 0, len(cfg.Models.Presets))
+		for name := range cfg.Models.Presets {
+			presetNames = append(presetNames, name)
+		}
+		sort.Strings(presetNames)
+		for _, pname := range presetNames {
+			p := cfg.Models.Presets[pname]
+			notes := make([]string, 0, 2)
+			if note := presetRoleNote(bindings, pname); note != "" {
+				notes = append(notes, note)
+			}
+			if note := presetFactNote(p); note != "" {
+				notes = append(notes, note)
+			}
+			line := fmt.Sprintf("- %s/%s", p.Provider, p.Model)
+			if len(notes) > 0 {
+				line += " — " + strings.Join(notes, " · ")
+				annotated++
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
 		}
 	}
 	// Discovered section: what providers were actually probed as serving.
@@ -228,7 +377,12 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 				if mi.ID == "" || seen[mi.ID] {
 					continue
 				}
-				lines = append(lines, fmt.Sprintf("- %s/%s (discovered)\n", name, mi.ID))
+				notes := discoveredFactNote(mi)
+				entry := fmt.Sprintf("- %s/%s (discovered)", name, mi.ID)
+				if notes != "" {
+					entry += " · " + notes
+				}
+				lines = append(lines, entry+"\n")
 			}
 		}
 		if len(lines) > 0 {
@@ -238,6 +392,9 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 				b.WriteString(line)
 			}
 		}
+	}
+	if annotated > 0 {
+		b.WriteString("Choosing a subagent model: match the subtask to the role bindings written above — the role bindings are the user's own task-to-model ranking. Give a review or security-review subtask the preset bound to that role, and give quick lookups, titles, or summaries a preset marked cheap. Prefer bound presets over unbound presets and discovered models for tool-heavy subtasks, and prefer a preset marked local when the subtask touches secrets or private data. Only capabilities written on these lines are claimed; when no listed model suits the subtask, dispatch without the model argument and the parent's default model is used.\n")
 	}
 	b.WriteString("model must be a provider/model pair; the provider must be configured. The listed presets are only what is configured locally — any model the provider serves is valid, and discovered entries above reflect each provider's current model list.")
 	return b.String()
@@ -291,7 +448,7 @@ func BuildSkillHintMessage(hints []skills.Skill) (schema.ChatMessage, bool) {
 }
 
 const todoAddendum = `
-Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end.
+Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end. When the carried-over list is corrupted or stale and you need to replace it wholesale, pass "drop_unfinished": true — the submitted list becomes the whole list and no items are carried over.
 `
 
 const scratchpadAddendum = `

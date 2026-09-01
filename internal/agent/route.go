@@ -81,6 +81,22 @@ func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured in
 	return effective, false, false
 }
 
+// effectiveMaxToolIterations derives the per-turn tool ceiling. Explicit
+// config (agent.max_tool_iterations > 0) always wins. When it is unset,
+// local routes get LocalDefaultMaxToolIterations while remote routes keep
+// the unlimited default — see the const's comment for the rationale. Like
+// effectiveTurnThreshold this is a per-turn computation, so one local-model
+// turn cannot poison later remote turns and vice versa.
+func (r *Runner) effectiveMaxToolIterations(route routing.Route) int {
+	if r.MaxToolIterations > 0 {
+		return r.MaxToolIterations
+	}
+	if route.Preset.LocalOnly {
+		return LocalDefaultMaxToolIterations
+	}
+	return DefaultMaxToolIterations
+}
+
 // thresholdSource labels where a turn's threshold came from, for the
 // per-turn budget log line and the /context panel. derivedCollapsed is the
 // flag reported by effectiveTurnThreshold when the model-derived branch fell
@@ -131,6 +147,7 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 		Provider:  route.Preset.Provider,
 		Model:     route.Preset.Model,
 		LocalOnly: route.Preset.LocalOnly,
+		Thinking:  route.Preset.Thinking,
 		Active:    true,
 	})
 	// F12: resolve the model's context window, preferring explicit config on

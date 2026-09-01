@@ -155,3 +155,26 @@ func TestThresholdSource(t *testing.T) {
 		}
 	}
 }
+
+// Local routes get a bounded tool ceiling when the user has not configured
+// one; remote routes keep the unlimited default; explicit config always wins.
+func TestEffectiveMaxToolIterations(t *testing.T) {
+	localRoute := routing.Route{Preset: routing.ModelPreset{Name: "local", Model: "m", LocalOnly: true}}
+	remoteRoute := routing.Route{Preset: routing.ModelPreset{Name: "remote", Model: "m"}}
+
+	r := NewRunner(nil, nil, nil, newTestState(t), "m")
+	if got := r.effectiveMaxToolIterations(localRoute); got != LocalDefaultMaxToolIterations {
+		t.Fatalf("local route = %d, want %d", got, LocalDefaultMaxToolIterations)
+	}
+	if got := r.effectiveMaxToolIterations(remoteRoute); got != 0 {
+		t.Fatalf("remote route = %d, want 0 (unlimited)", got)
+	}
+
+	r.MaxToolIterations = 7
+	if got := r.effectiveMaxToolIterations(localRoute); got != 7 {
+		t.Fatalf("explicit config on local route = %d, want 7 (config wins)", got)
+	}
+	if got := r.effectiveMaxToolIterations(remoteRoute); got != 7 {
+		t.Fatalf("explicit config on remote route = %d, want 7", got)
+	}
+}

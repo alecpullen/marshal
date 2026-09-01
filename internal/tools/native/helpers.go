@@ -69,23 +69,59 @@ func resolveWorkspacePath(root string, rel string) (string, error) {
 }
 
 // resolveWorkspacePathMulti resolves a relative path against the primary
-// root and any additional roots. The primary root is checked first; if the
-// path is within it, the absolute path under the primary root is returned.
-// If it escapes the primary root, each additional root is tried. A path
-// that escapes ALL roots is rejected.
+// root and any additional roots. Write semantics: absolute paths are
+// always rejected. See resolveWorkspacePathMultiMode for the read-tool
+// variant that accepts absolute paths contained in a root.
 func resolveWorkspacePathMulti(root string, additionalRoots []string, rel string) (string, error) {
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q must be relative", rel)
-	}
+	return resolveWorkspacePathMultiMode(root, additionalRoots, rel, false)
+}
+
+// resolveWorkspacePathMultiRead is the read-tool variant of
+// resolveWorkspacePathMulti: an absolute path is accepted when it
+// resolves — symlinks included — inside the primary root or any
+// additional root. An absolute path contained in no root is rejected
+// with an error naming the allowed roots.
+func resolveWorkspacePathMultiRead(root string, additionalRoots []string, rel string) (string, error) {
+	return resolveWorkspacePathMultiMode(root, additionalRoots, rel, true)
+}
+
+func resolveWorkspacePathMultiMode(root string, additionalRoots []string, rel string, allowAbsolute bool) (string, error) {
 	cleaned := filepath.Clean(rel)
-	if cleaned == "." {
-		return root, nil
-	}
 
 	// Collect all roots: primary first, then additional.
 	roots := make([]string, 1+len(additionalRoots))
 	roots[0] = root
 	copy(roots[1:], additionalRoots)
+
+	if allowAbsolute && filepath.IsAbs(rel) {
+		// Absolute path: accept only if it is contained within one of
+		// the roots. resolveAbsolute (saferesolve.go) is the single
+		// source of truth for symlink containment; per-root failures
+		// (missing root, symlink escape) are collapsed into one error
+		// that names the allowed roots so the model can retry.
+		for _, r := range roots {
+			absRoot, err := filepath.Abs(r)
+			if err != nil {
+				continue
+			}
+			resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+			if err != nil {
+				continue
+			}
+			if resolved, err := resolveAbsolute(resolvedRoot, cleaned); err == nil {
+				return resolved, nil
+			}
+		}
+		return "", fmt.Errorf("%w: absolute path %q resolves outside all allowed roots [%s]",
+			ErrPathEscapes, rel, strings.Join(roots, ", "))
+	}
+
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path %q must be relative", rel)
+	}
+	if cleaned == "." {
+		return root, nil
+	}
 
 	// First pass: lexical check. Pick the first root under which the
 	// path is lexically contained. This intentionally allows `..` at the
@@ -158,10 +194,20 @@ func (t *toolSet) effectiveAdditionalRoots() []string {
 }
 
 // resolveNamedRoot resolves paths that may use a named alias prefix (e.g.
-// "@run/task-1-brief.md"). If the path does not start with a known alias,
-// it falls through to resolveWorkspacePathMulti for normal resolution.
-// Unknown aliases are rejected; traversal outside an alias root is rejected.
+// "@run/task-1-brief.md") with write semantics: absolute paths are
+// rejected. See resolveWorkspacePathMultiMode.
 func resolveNamedRoot(namedRoots map[string]string, root string, additionalRoots []string, rel string) (string, error) {
+	return resolveNamedRootMode(namedRoots, root, additionalRoots, rel, false)
+}
+
+// resolveNamedRootRead is the read-tool variant: the alias path gets the
+// same absolute-path leniency as ordinary reads, because the alias root
+// is itself an allowed root.
+func resolveNamedRootRead(namedRoots map[string]string, root string, additionalRoots []string, rel string) (string, error) {
+	return resolveNamedRootMode(namedRoots, root, additionalRoots, rel, true)
+}
+
+func resolveNamedRootMode(namedRoots map[string]string, root string, additionalRoots []string, rel string, allowAbsolute bool) (string, error) {
 	for alias, aliasRoot := range namedRoots {
 		prefix := alias + "/"
 		if rel == alias {
@@ -169,13 +215,23 @@ func resolveNamedRoot(namedRoots map[string]string, root string, additionalRoots
 		}
 		if strings.HasPrefix(rel, prefix) {
 			sub := rel[len(prefix):]
-			return resolveWorkspacePathMulti(aliasRoot, nil, sub)
+			return resolveWorkspacePathMultiMode(aliasRoot, nil, sub, allowAbsolute)
 		}
 	}
 	if strings.HasPrefix(rel, "@") {
 		return "", fmt.Errorf("unknown named alias in path %q", rel)
 	}
-	return resolveWorkspacePathMulti(root, additionalRoots, rel)
+	if allowAbsolute && filepath.IsAbs(rel) {
+		// An absolute path in read mode may also live under an alias root,
+		// which is itself an allowed root. Try each alias root before
+		// falling through to the ordinary multi-root check.
+		for _, aliasRoot := range namedRoots {
+			if resolved, err := resolveWorkspacePathMultiMode(aliasRoot, nil, rel, true); err == nil {
+				return resolved, nil
+			}
+		}
+	}
+	return resolveWorkspacePathMultiMode(root, additionalRoots, rel, allowAbsolute)
 }
 
 func limitOutput(s string, maxBytes int) string {

@@ -376,11 +376,14 @@ type Model struct {
 	// a transcript block. An item with no entry here follows detailExpanded.
 	// Cleared whenever ctrl+g flips the global default (see keypress.go).
 	itemExpanded map[itemKey]bool
-	// activeToolExpanded is a click override for the single in-flight tool
-	// call block (renderActiveToolCall) — it has no stable itemKey since it
-	// isn't logged to the audit log until it completes. Reset to false
-	// whenever a new tool starts; see refreshViewport.
-	activeToolExpanded bool
+	// activeToolExpanded holds per-tool-call click overrides for the in-flight
+	// tool block (renderActiveToolCall, transcript.go:902). It has no stable
+	// itemKey (the audit event isn't logged until completion), so keys are the
+	// call's StartedAt + display name. Overrides for previous calls stay in
+	// the map but become inert: refreshViewport only consults the key of the
+	// current ActiveToolCall. Cleared by ctrl+g (keypress.go) and on starting
+	// a new conversation (commands_dispatch.go).
+	activeToolExpanded map[activeToolKey]bool
 	// regionOffset holds the per-region body scroll offset for bounded live
 	// regions (see internal/app/tui/liveregion), keyed the same way
 	// itemExpanded is. Rebuilt-and-pruned on every refreshViewport, so a
@@ -518,6 +521,43 @@ type Model struct {
 	// The bool reports whether the reload succeeded; when false the caller
 	// must not write through *m.configLayers.
 	layerReloader func() (config.Layers, bool)
+}
+
+// activeToolKey identifies one in-flight tool call. StartedAt disambiguates
+// rapid same-tool churn; the display name keeps distinct concurrent-ish
+// calls from sharing a key. Drilled-in children get their own keys for
+// free: refreshViewport resolves the key from transcriptState (the child
+// when drilling), and a child's StartedAt never equals the parent's.
+type activeToolKey struct {
+	startedAt time.Time
+	name      string
+}
+
+func activeToolKeyFor(atc session.ActiveToolCall) activeToolKey {
+	return activeToolKey{startedAt: atc.StartedAt, name: atc.Name}
+}
+
+// activeToolIsExpanded reports whether the given in-flight tool call has a
+// click override to expand. Default collapsed, as today — no global default
+// involved.
+func (m Model) activeToolIsExpanded(key activeToolKey) bool {
+	return m.activeToolExpanded[key]
+}
+
+// toggleActiveToolExpanded flips the click override for one in-flight tool
+// call and records it, so it no longer tracks the (collapsed) default until
+// the next ctrl+g or new conversation.
+func (m *Model) toggleActiveToolExpanded(key activeToolKey) {
+	if m.activeToolExpanded == nil {
+		m.activeToolExpanded = map[activeToolKey]bool{}
+	}
+	m.activeToolExpanded[key] = !m.activeToolIsExpanded(key)
+}
+
+// clearActiveToolExpansions resets all per-tool-call click overrides. Called
+// by ctrl+g and on starting a new conversation.
+func (m *Model) clearActiveToolExpansions() {
+	m.activeToolExpanded = nil
 }
 
 // pendingAgentRun captures the runner and goal for a run that is waiting
@@ -1430,7 +1470,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.jobLaneRows()-m.agentLaneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1506,6 +1546,40 @@ func (m Model) railData() sidepanel.Data {
 		Skills:  m.state.ActiveSkills(),
 		Swarm:   m.state.SwarmProgress(),
 		SDD:     m.state.SDDProgress(),
+		Spinner: m.turnSpinnerFrame(),
+		Now:     m.now(),
+	}
+}
+
+// drilledRailState returns the child session the rail should render while
+// drilled into a subagent, or nil when the rail should show the parent (no
+// drill-in, or a pipeline/SDD card with no Child state). Mirrors
+// refreshViewport's transcriptState resolution.
+func (m Model) drilledRailState() *session.State {
+	if len(m.viewStack) == 0 {
+		return nil
+	}
+	v, ok := m.drilledInto()
+	if !ok || v.Child == nil {
+		return nil
+	}
+	return v.Child
+}
+
+// childRailData assembles a rail snapshot scoped to a drilled-in subagent:
+// session-scoped telemetry (audit trail, rules, skills) comes from the
+// child, while environment-level sections (git, repo index) stay parent-
+// sourced — they describe the workspace, not the conversation. Parent turn
+// telemetry (Changed/Pack/Swarm/SDD/Turns/Totals) is omitted: it has no
+// per-child meaning and nothing per-child is cached at turn boundaries yet.
+func (m Model) childRailData(child *session.State) sidepanel.Data {
+	return sidepanel.Data{
+		State:   child,
+		Audit:   child.AuditLog(),
+		Rules:   child.SessionRules(),
+		Skills:  child.ActiveSkills(),
+		Git:     m.gitInfo,
+		Repo:    m.railRepoStats,
 		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
@@ -2639,7 +2713,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.jobLaneRows()-m.agentLaneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -2741,7 +2815,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.jobLaneRows()-m.agentLaneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -3155,6 +3229,22 @@ func isUserTurn(item session.TranscriptItem) bool {
 		item.Message.ContentType != session.ContentTypeSubagentReport
 }
 
+// hasConversationTurns reports whether the transcript holds any real
+// conversation content — a user prompt or an assistant message. Boot-time
+// system items (the autoloaded-skill body, startup notices) must not
+// suppress the welcome banner, or every first run opens on a bare screen.
+func hasConversationTurns(items []session.TranscriptItem) bool {
+	for _, item := range items {
+		if item.Kind != session.KindMessage || item.Message == nil {
+			continue
+		}
+		if isUserTurn(item) || item.Message.Role == session.RoleAssistant {
+			return true
+		}
+	}
+	return false
+}
+
 // drilledInto returns the subagent whose transcript is currently drilled
 // into (top of viewStack), or false when the viewport shows the
 // orchestrator's own transcript.
@@ -3248,7 +3338,6 @@ func (m *Model) refreshViewport() {
 	if activeTool {
 		if atc.StartedAt != m.activeToolStartedAt {
 			m.activeToolStartedAt = atc.StartedAt
-			m.activeToolExpanded = false
 		}
 	} else {
 		m.activeToolStartedAt = time.Time{}
@@ -3289,7 +3378,7 @@ func (m *Model) refreshViewport() {
 		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
 	}
 
-	if len(items) == 0 {
+	if !hasConversationTurns(items) {
 		addBlock(renderWelcomeBanner(m.viewport.Width()), nil)
 	}
 	firstTurn := true
@@ -3375,8 +3464,8 @@ func (m *Model) refreshViewport() {
 		// deduplicated above; this is the in-flight counterpart.
 		suppress := !drilling && atc.Name == "agent.run" && m.state.HasRunningSubagent()
 		if !suppress {
-			s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width())
-			addBlock(s, &clickTarget{isActiveTool: true})
+			s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolIsExpanded(activeToolKeyFor(atc)), m.viewport.Width())
+			addBlock(s, &clickTarget{isActiveTool: true, toolKey: activeToolKeyFor(atc)})
 		}
 	}
 	if n, ok := m.state.Notice(); ok {

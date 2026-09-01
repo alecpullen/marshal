@@ -350,6 +350,9 @@ func merge(cfg *Config, file configFile) error {
 	if file.Session != nil && file.Session.Rollover != nil {
 		r := file.Session.Rollover
 		set(&cfg.Session.Rollover.Enabled, r.Enabled)
+		if r.Enabled != nil {
+			cfg.Session.Rollover.EnabledSet = true
+		}
 		set(&cfg.Session.Rollover.Policy, r.Policy)
 		set(&cfg.Session.Rollover.ContextPercentThreshold, r.ContextPercentThreshold)
 		set(&cfg.Session.Rollover.TurnCountThreshold, r.TurnCountThreshold)

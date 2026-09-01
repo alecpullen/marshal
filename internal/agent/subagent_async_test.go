@@ -320,9 +320,246 @@ func TestAgentOutputUnknownID(t *testing.T) {
 	}
 }
 
+// runOutputChildWithMessages starts a background child whose exec adds the
+// given messages to the child state and returns a fixed report, then waits
+// for it to finish. It returns the finished view and the output tool.
+func runOutputChildWithMessages(t *testing.T, state *session.State, add func(childState *session.State)) (session.SubagentView, registry.Tool) {
+	t.Helper()
+	childState := newChildState(t)
+	run := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, childState, nil },
+		nil,
+		registry.New(),
+		state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			if add != nil {
+				add(childState)
+			}
+			return "report text", "", nil
+		}),
+	)
+	output := NewSubagentOutputTool(state)
+	if _, err := run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	viewID := state.Subagents()[0].ID
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, viewID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	return view, output
+}
+
+func TestAgentOutputTranscriptIncludesCommittedMessages(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		childState.AddMessage(session.RoleUser, "build the widget", session.ContentTypePlain)
+		childState.AddMessage(session.RoleAssistant, "done building", session.ContentTypePlain)
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if !strings.Contains(res.Content, "transcript:") {
+		t.Fatalf("content missing transcript block: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "build the widget") {
+		t.Fatalf("content missing committed user message: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "done building") {
+		t.Fatalf("content missing committed assistant message: %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptExcludesNarrationAndSkillBodies(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		childState.AddMessage(session.RoleAssistant, "about to check the guard", session.ContentTypeNarration)
+		childState.AddMessage(session.RoleSystem, "big skill", session.ContentTypeSkillBody)
+		childState.AddMessage(session.RoleUser, "plain message", session.ContentTypePlain)
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if !strings.Contains(res.Content, "plain message") {
+		t.Fatalf("content missing plain message: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "about to check the guard") {
+		t.Fatalf("content must not include narration: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "big skill") {
+		t.Fatalf("content must not include skill bodies: %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptBoundedByDefault(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		for i := 0; i < 30; i++ {
+			childState.AddMessage(session.RoleUser, strings.Repeat("x", 2000), session.ContentTypePlain)
+		}
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if len(res.Content) >= 8000 {
+		t.Fatalf("transcript content too large: %d bytes", len(res.Content))
+	}
+	if !strings.Contains(res.Content, "transcript truncated") {
+		t.Fatalf("content missing truncation marker: %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptAbsentWithoutArg(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
+		childState.AddMessage(session.RoleUser, "build the widget", session.ContentTypePlain)
+	})
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if strings.Contains(res.Content, "transcript:") {
+		t.Fatalf("transcript must be opt-in, got %q", res.Content)
+	}
+}
+
+func TestAgentOutputTranscriptOmittedForPipelineCards(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	// A pipeline/SDD card: Child == nil.
+	view := state.RegisterSubagentWithMeta("review · main.go", nil, session.SubagentMeta{})
+	state.FinishSubagent(view.ID, "review done", nil)
+	output := NewSubagentOutputTool(state)
+	res, err := output.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if strings.Contains(res.Content, "transcript:") {
+		t.Fatalf("pipeline card must not emit a transcript block, got %q", res.Content)
+	}
+}
+
+func TestAgentKillRunningSubagent(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	run, _, _ := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	})
+	kill := NewSubagentKillTool(state)
+	// Start the child via run.Handler directly (returns immediately while
+	// the child blocks on <-ctx.Done()); do not use runAsyncSubagent, which
+	// waits for the child to finish on its own.
+	if _, err := run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	viewID := state.Subagents()[0].ID
+
+	res, err := kill.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, viewID)),
+	})
+	if err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if !strings.Contains(res.Summary, "killed subagent") {
+		t.Fatalf("kill summary = %q, want killed subagent", res.Summary)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, viewID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	if view.Status != session.SubagentFailed {
+		t.Fatalf("status = %v, want SubagentFailed after kill", view.Status)
+	}
+	if !strings.Contains(view.Error, "context canceled") {
+		t.Fatalf("view.Error = %q, want context canceled", view.Error)
+	}
+	reports := state.SubagentReports()
+	if len(reports) != 1 || !strings.Contains(reports[0], "failed") {
+		t.Fatalf("report queue = %v, want one failure report", reports)
+	}
+	if got := state.SubagentConcurrency(); got != 0 {
+		t.Fatalf("concurrency after kill = %d, want 0", got)
+	}
+}
+
+func TestAgentKillAlreadyFinished(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view := state.RegisterSubagentWithMeta("done child", childState, session.SubagentMeta{})
+	state.FinishSubagent(view.ID, "already done", nil)
+
+	kill := NewSubagentKillTool(state)
+	res, err := kill.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if !strings.Contains(res.Summary, "already finished") {
+		t.Fatalf("kill summary = %q, want already finished", res.Summary)
+	}
+}
+
+func TestAgentKillUnknownID(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	_, err := kill.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"id": 999}`)})
+	if err == nil || !strings.Contains(err.Error(), "unknown subagent id") {
+		t.Fatalf("err = %v, want unknown-id error", err)
+	}
+}
+
+func TestAgentKillRequiresID(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	_, err := kill.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{}`)})
+	if err == nil || !strings.Contains(err.Error(), `"id"`) {
+		t.Fatalf("err = %v, want an id-required error", err)
+	}
+}
+
+func TestAgentKillSchemaAdvertisesID(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	if !strings.Contains(string(kill.Schema), `"required":["id"]`) {
+		t.Fatal("schema must require id")
+	}
+	if !strings.Contains(string(kill.Schema), `"additionalProperties":false`) {
+		t.Fatal("schema must reject additional properties")
+	}
+	if !strings.Contains(kill.Description, "agent.output") {
+		t.Fatal("description must document the asynchronous terminal-state follow-up")
+	}
+}
+
+func TestAgentKillIsReadOnlyRisk(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	kill := NewSubagentKillTool(state)
+	if kill.Risk != registry.RiskReadOnly {
+		t.Fatalf("agent.kill risk = %v, want RiskReadOnly", kill.Risk)
+	}
+}
+
 func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 	src := registry.New()
-	for _, name := range []string{"agent.run", "agent.await", "agent.output", "file.read"} {
+	for _, name := range []string{"agent.run", "agent.await", "agent.output", "agent.kill", "file.read"} {
 		tool := registry.Tool{Name: name, Schema: json.RawMessage(`{"type":"object"}`), Risk: registry.RiskReadOnly}
 		tool.Handler = func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
 			return registry.ToolResult{}, nil
@@ -332,7 +569,7 @@ func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 		}
 	}
 	view := SubtaskScopeView(src)
-	for _, name := range []string{"agent.run", "agent.await", "agent.output"} {
+	for _, name := range []string{"agent.run", "agent.await", "agent.output", "agent.kill"} {
 		if _, ok := view.Lookup(name); ok {
 			t.Fatalf("%s must be excluded from the subtask scope view", name)
 		}

@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/tools/registry"
 )
 
 // newTestModelForRail builds a Model at the given size with the rail
@@ -134,15 +135,47 @@ func TestRailDataCarriesTotals(t *testing.T) {
 	}
 }
 
-func TestRailSuppressedDuringSubagentDrillIn(t *testing.T) {
+// TestNilChildCardCannotDrillIn: pipeline/SDD cards have no child state, so
+// drillIntoSubagent must refuse them — the "drilled into a nil-Child card"
+// view state is unreachable, and the child-scoped rail must never see a nil
+// situation it cannot render.
+func TestNilChildCardCannotDrillIn(t *testing.T) {
 	m := newTestModelForRail(t, 160, 40, true)
 	if !m.railEnabled() {
 		t.Fatal("rail should be enabled at 160 cols")
 	}
-	// Register a subagent and drill into it.
+	m.state.RegisterSubagent("sdd task card", nil)
+	views := m.state.Subagents()
+	if len(views) != 1 {
+		t.Fatalf("registered subagents = %d, want 1", len(views))
+	}
+	m.drillIntoSubagent(views[0])
+	if len(m.viewStack) != 0 {
+		t.Fatal("nil-Child card must not be pushed onto the view stack")
+	}
+	if m.drilledRailState() != nil {
+		t.Error("drilledRailState = non-nil with an empty view stack")
+	}
+	// The parent rail still renders: nothing about the refusal changes the
+	// undrilled frame.
+	if !strings.Contains(stripANSI(m.viewString()), "│") {
+		t.Error("rail divider absent in the undrilled parent view")
+	}
+}
+
+// TestRailShownAndChildScopedDuringDrillIn: while drilled into a real
+// subagent the rail reappears, rendering the child's audit trail — and not
+// the parent's.
+func TestRailShownAndChildScopedDuringDrillIn(t *testing.T) {
+	m := newTestModelForRail(t, 160, 40, true)
+	if !m.railEnabled() {
+		t.Fatal("rail should be enabled at 160 cols")
+	}
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	child.LogToolCall(registry.AuditEvent{ToolName: "zchild-only-probe", Error: "childsentinel"})
 	m.state.RegisterSubagent("explore repo", child)
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "zparent-only-probe", Error: "parentsentinel"})
 	views := m.state.Subagents()
 	if len(views) != 1 {
 		t.Fatalf("registered subagents = %d, want 1", len(views))
@@ -151,8 +184,18 @@ func TestRailSuppressedDuringSubagentDrillIn(t *testing.T) {
 	if len(m.viewStack) != 1 {
 		t.Fatalf("viewStack len = %d, want 1 after drill-in", len(m.viewStack))
 	}
-	// The rail must not be rendered while drilled in.
-	if strings.Contains(stripANSI(m.viewString()), "│") {
-		t.Error("rail divider rendered while drilled into a subagent")
+	if m.drilledRailState() == nil {
+		t.Fatal("drilledRailState = nil for a real child")
+	}
+	view := m.viewString()
+	if !strings.Contains(stripANSI(view), "│") {
+		t.Fatal("rail divider absent while drilled into a real child")
+	}
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "zchild-only-probe") {
+		t.Error("child audit entry missing from the drilled-in rail")
+	}
+	if strings.Contains(plain, "zparent-only-probe") {
+		t.Error("parent audit entry leaked into the drilled-in rail")
 	}
 }

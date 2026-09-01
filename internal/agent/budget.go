@@ -24,13 +24,15 @@ const (
 // wasted. Burning the work budget on overhead is what made long tasks die
 // early, so each gets its own ceiling.
 //
-// maxTools starts at the configured MaxToolIterations and is raised by
-// grantSteps as the task's real size becomes known (see scaledMaxTools).
+// maxTools starts at the effective MaxToolIterations (explicit config, or
+// the local-route default — see Runner.effectiveMaxToolIterations) and is
+// raised by grantSteps as the task's real size becomes known (see
+// scaledMaxTools).
 type turnBudget struct {
 	tools    int
 	overhead int
 
-	base     int // configured MaxToolIterations; 0 disables the ceiling
+	base     int // effective MaxToolIterations; 0 disables the ceiling
 	class    TaskClass
 	steps    int // known units of work: plan steps or todo items
 	maxTools int

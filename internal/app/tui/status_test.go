@@ -42,6 +42,24 @@ func TestStatusLineShowsRouteAndContext(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsThinkingEffort(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high"})
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, "think high") {
+		t.Fatalf("status line missing thinking flag:\n%s", line)
+	}
+}
+
+func TestStatusLineOmitsThinkingWhenUnset(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p"})
+	line := stripANSI(m.renderStatusLine(100))
+	if strings.Contains(line, "think ") {
+		t.Fatalf("status line must omit the thinking flag when unset:\n%s", line)
+	}
+}
+
 func TestStatusLineShowsToolActivityWithElapsed(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.spinnerFrame = "⠋"

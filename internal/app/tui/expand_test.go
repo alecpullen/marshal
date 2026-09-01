@@ -59,6 +59,30 @@ func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 	}
 }
 
+func TestCtrlGClearsActiveToolOverrides(t *testing.T) {
+	m := newTestModel(t)
+	keyA := activeToolKey{startedAt: time.Unix(500, 0), name: "shell.run"}
+	keyB := activeToolKey{startedAt: time.Unix(501, 0), name: "file.read"}
+	m.toggleActiveToolExpanded(keyA)
+	m.toggleActiveToolExpanded(keyB)
+	if !m.activeToolIsExpanded(keyA) || !m.activeToolIsExpanded(keyB) {
+		t.Fatal("precondition: both overrides should be set")
+	}
+
+	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if !handled {
+		t.Fatal("ctrl+g was not handled")
+	}
+	mm := asModel(t, updated)
+
+	if len(mm.activeToolExpanded) != 0 {
+		t.Fatalf("activeToolExpanded = %v, want cleared", mm.activeToolExpanded)
+	}
+	if mm.activeToolIsExpanded(keyA) || mm.activeToolIsExpanded(keyB) {
+		t.Fatal("expected all active-tool overrides to be cleared")
+	}
+}
+
 func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
 	m := newTestModel(t)
 	ts1 := time.Unix(300, 0)

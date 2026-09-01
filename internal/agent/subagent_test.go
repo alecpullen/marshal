@@ -296,6 +296,7 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	mustReg(&registry.Tool{Name: "file.read", Description: "read", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "agent.run", Description: "delegate", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
+	mustReg(&registry.Tool{Name: "agent.kill", Description: "cancel", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "web.fetch", Description: "fetch", Schema: []byte(`{}`), Risk: registry.RiskNetwork, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "shell.run", Description: "shell", Schema: []byte(`{}`), Risk: registry.RiskCommand, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "diagnostics.check", Description: "diag", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Deferred: true, Handler: stubAgentRunHandler})
@@ -315,6 +316,12 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	if names["agent.run"] {
 		t.Fatal("subtask view must NOT contain agent.run (no nested subagents)")
+	}
+	if names["agent.kill"] {
+		t.Fatal("subtask view must NOT contain agent.kill (children cannot cancel subagents)")
+	}
+	if _, ok := view.Lookup("agent.kill"); ok {
+		t.Fatal("Lookup(agent.kill) must fail in subtask view")
 	}
 	if !names["shell.run"] {
 		t.Fatal("subtask view missing shell.run (implementation tools must be visible to child)")

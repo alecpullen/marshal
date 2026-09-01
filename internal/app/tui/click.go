@@ -13,7 +13,11 @@ import (
 type clickTarget struct {
 	key          itemKey
 	isActiveTool bool
-	subagent     *session.SubagentView
+	// toolKey identifies the in-flight tool call an active-tool click target
+	// toggles, so the override is keyed by tool-call identity rather than a
+	// single global flag.
+	toolKey  activeToolKey
+	subagent *session.SubagentView
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
@@ -101,17 +105,17 @@ func (m *Model) handleTodoPanelClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	return nil, true
 }
 
-// agentLaneBand returns the half-open screen-row range the agents lane
-// occupies. The frame order (view.go) is: transcript frame, turn spinner,
-// todo panel, live strip, job lane, agent lane — so the job lane counts
-// toward the offset.
+// agentLaneBand returns the half-open screen-row range the consolidated
+// lane occupies. The frame order (view.go) is: transcript frame, turn
+// spinner, todo panel, live strip, consolidated lane — so the lane sits
+// directly below the live strip.
 func (m *Model) agentLaneBand() (top, bottom int, ok bool) {
-	rows := m.agentLaneRows()
+	rows := m.laneRows()
 	if rows == 0 {
 		return 0, 0, false
 	}
 	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
-		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows() + m.jobLaneRows()
+		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows()
 	return top, top + rows, true
 }
 
@@ -129,8 +133,8 @@ func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok || msg.Y < top || msg.Y >= bottom {
 		return nil, false
 	}
-	// Row 0 is the merged header+rule line; agents start at row 1.
-	const chromeRows = 1
+	// Row 0 is the separator rule, row 1 the caption; agents start at row 2.
+	const chromeRows = 2
 	idx := msg.Y - top - chromeRows
 	entries := m.agentLaneEntries()
 	if idx < 0 || idx >= len(entries) {
@@ -206,7 +210,7 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if target.subagent != nil {
 		m.drillIntoSubagent(*target.subagent)
 	} else if target.isActiveTool {
-		m.activeToolExpanded = !m.activeToolExpanded
+		m.toggleActiveToolExpanded(target.toolKey)
 	} else {
 		m.toggleItemExpanded(target.key)
 	}

@@ -136,6 +136,9 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 			// Wait a bit and re-observe.
 			select {
 			case <-scenarioCtx.Done():
+				if lastScreen != "" {
+					r.rep.Record("screen_on_timeout", map[string]any{"scenario": sc.Name, "screen": lastScreen})
+				}
 				result.Error = "scenario timeout during noop"
 				return finish(scenarioCtx.Err())
 			case <-time.After(100 * time.Millisecond):

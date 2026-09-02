@@ -3415,8 +3415,7 @@ func (m *Model) refreshViewport() {
 				target = &clickTarget{key: key}
 			case session.KindMessage:
 				if entry.Item.Message != nil &&
-					(entry.Item.Message.ContentType == session.ContentTypeNarration ||
-						entry.Item.Message.ContentType == session.ContentTypeSkillAuto) {
+					entry.Item.Message.ContentType == session.ContentTypeSkillAuto {
 					target = &clickTarget{key: key}
 				}
 			case session.KindSubagent:

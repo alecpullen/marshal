@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 )
 
 func TestNarrationRendersWithAmbientGutter(t *testing.T) {
-	out := renderNarration("Checking whether the guard already exists.", false, 60)
+	out := renderNarration("Checking whether the guard already exists.", 60)
 	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "Checking whether the guard already exists.") {
 		t.Fatalf("narration text missing:\n%s", plain)
@@ -24,7 +25,7 @@ func TestNarrationRendersWithAmbientGutter(t *testing.T) {
 
 func TestNarrationEmptyRendersNothing(t *testing.T) {
 	for _, in := range []string{"", "   ", "\n\t\n"} {
-		if out := renderNarration(in, false, 60); out != "" {
+		if out := renderNarration(in, 60); out != "" {
 			t.Errorf("input %q must render nothing, got %q", in, out)
 		}
 	}
@@ -32,7 +33,7 @@ func TestNarrationEmptyRendersNothing(t *testing.T) {
 
 // Short narration renders in full with no disclosure marker.
 func TestNarrationShortRendersInFull(t *testing.T) {
-	out := renderNarration("One short line.", false, 60)
+	out := renderNarration("One short line.", 60)
 	if n := strings.Count(out, "\n"); n != 1 {
 		t.Fatalf("want 1 row, got %d:\n%s", n, ansi.Strip(out))
 	}
@@ -41,52 +42,55 @@ func TestNarrationShortRendersInFull(t *testing.T) {
 	}
 }
 
-// The cap counts DISPLAY rows after wrapping, not logical lines — the same
-// ordering lesson as liveregion. One long logical line must still collapse.
-func TestNarrationLongSingleLineCollapses(t *testing.T) {
-	long := strings.Repeat("wordy ", 200)
-	out := renderNarration(long, false, 40)
-	if n := strings.Count(out, "\n"); n > narrationCollapsedRows {
-		t.Fatalf("collapsed narration = %d rows, cap is %d", n, narrationCollapsedRows)
-	}
-	if !strings.Contains(ansi.Strip(out), glyph.DisclosureCollapsed) {
-		t.Fatal("a collapsed narration must show a disclosure marker")
-	}
-}
-
-func TestNarrationExpandsInFull(t *testing.T) {
-	var sb strings.Builder
-	for i := 0; i < 20; i++ {
-		sb.WriteString("line of narration\n")
-	}
-	collapsed := strings.Count(renderNarration(sb.String(), false, 60), "\n")
-	expanded := strings.Count(renderNarration(sb.String(), true, 60), "\n")
-	if collapsed > narrationCollapsedRows {
-		t.Fatalf("collapsed = %d rows, cap is %d", collapsed, narrationCollapsedRows)
-	}
-	if expanded <= collapsed {
-		t.Fatalf("expanded (%d rows) must show more than collapsed (%d)", expanded, collapsed)
-	}
-	if !strings.Contains(ansi.Strip(renderNarration(sb.String(), true, 60)), glyph.DisclosureExpanded) {
-		t.Fatal("expanded narration must show the expanded marker")
-	}
-}
-
 // Narration is a record of something already said: flat, per the rule
 // established in UX batch 3 (tinted = happening now).
 func TestNarrationIsNotTinted(t *testing.T) {
 	theme.Reload(theme.LoadFor(false, "xterm-256color"))
 	t.Cleanup(func() { theme.Reload(theme.LoadFor(false, "xterm-256color")) })
-	if strings.Contains(renderNarration("some narration", false, 60), "48;5;") {
+	if strings.Contains(renderNarration("some narration", 60), "48;5;") {
 		t.Fatal("narration is history and must not be tinted")
 	}
 }
 
-// Narration is prose, not markdown: a stray '#' must not become a heading.
-func TestNarrationIsNotMarkdownRendered(t *testing.T) {
-	plain := ansi.Strip(renderNarration("# not a heading and *not* emphasis", false, 60))
-	if !strings.Contains(plain, "# not a heading") {
-		t.Fatalf("narration must render as plain prose, got %q", plain)
+// Narration must render through the same markdown pipeline as the final
+// answer: markup is interpreted, never shown literally.
+func TestNarrationRendersMarkdownLikeFinalAnswer(t *testing.T) {
+	plain := ansi.Strip(renderNarration("# Heading\n\n**bold** move", 60))
+	if strings.Contains(plain, "# Heading") {
+		t.Fatalf("narration markup must be interpreted, got %q", plain)
+	}
+	if strings.Contains(plain, "**") {
+		t.Fatalf("emphasis markers must not survive rendering, got %q", plain)
+	}
+	if !strings.Contains(plain, "Heading") || !strings.Contains(plain, "bold move") {
+		t.Fatalf("narration content missing after markdown rendering, got %q", plain)
+	}
+}
+
+// Narration is never truncated or shortened: every logical line renders,
+// however long the block is, with no disclosure marker.
+func TestNarrationNeverTruncates(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&sb, "narration line %d\n", i)
+	}
+	plain := ansi.Strip(renderNarration(sb.String(), 60))
+	for i := 0; i < 20; i++ {
+		if !strings.Contains(plain, fmt.Sprintf("narration line %d", i)) {
+			t.Fatalf("narration line %d missing — narration must never be truncated:\n%s", i, plain)
+		}
+	}
+	if strings.Contains(plain, glyph.DisclosureCollapsed) || strings.Contains(plain, glyph.DisclosureExpanded) {
+		t.Fatal("narration must never collapse behind a disclosure marker")
+	}
+}
+
+// A single long logical line wraps but loses no words — the row cap used
+// to cut these off behind a disclosure marker.
+func TestNarrationLongLineFullyRendered(t *testing.T) {
+	plain := ansi.Strip(renderNarration(strings.Repeat("wordy ", 200), 40))
+	if got := strings.Count(plain, "wordy"); got != 200 {
+		t.Fatalf("wordy count = %d, want 200 — nothing may be cut:\n%s", got, plain)
 	}
 }
 
@@ -122,30 +126,11 @@ func TestOrdinaryAssistantMessageUnaffected(t *testing.T) {
 	}
 }
 
-// Exactly at the cap: no marker, all rows shown.
-func TestNarrationExactlyAtCapNoMarker(t *testing.T) {
-	// Build content that wraps to exactly narrationCollapsedRows rows at
-	// width 40. Each row holds ~38 cells of content (cw = contentWidth(40)).
-	// We use short lines that each fit on one row.
-	var sb strings.Builder
-	for i := 0; i < narrationCollapsedRows; i++ {
-		sb.WriteString("short line\n")
-	}
-	out := renderNarration(sb.String(), false, 40)
-	if strings.Contains(ansi.Strip(out), glyph.DisclosureCollapsed) {
-		t.Fatal("at-cap narration must not show a disclosure marker")
-	}
-	if n := strings.Count(out, "\n"); n != narrationCollapsedRows {
-		t.Fatalf("at-cap narration = %d rows, want %d", n, narrationCollapsedRows)
-	}
-}
-
-// The disclosure marker must not push the last row past the content width.
-func TestNarrationCollapsedMarkerDoesNotOverflow(t *testing.T) {
-	// A long unbroken token fills the wrap budget, so the last collapsed
-	// row is at full width. The marker must fit within cw, not overflow.
+// Narration obeys the transcript width contract even when wrapping a long
+// unbroken token.
+func TestNarrationLinesFitWidth(t *testing.T) {
 	long := strings.Repeat("x", 200)
-	out := renderNarration(long, false, 40)
+	out := renderNarration(long, 40)
 	for _, line := range strings.Split(out, "\n") {
 		if line == "" {
 			continue
@@ -159,7 +144,7 @@ func TestNarrationCollapsedMarkerDoesNotOverflow(t *testing.T) {
 // Tabs in narration content are expanded before wrapping so width math
 // matches what the terminal renders.
 func TestNarrationExpandsTabs(t *testing.T) {
-	out := renderNarration("a\tb\nc\td", false, 60)
+	out := renderNarration("a\tb\nc\td", 60)
 	plain := ansi.Strip(out)
 	if strings.Contains(plain, "\t") {
 		t.Fatalf("tabs must be expanded, got %q", plain)

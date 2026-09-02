@@ -15,6 +15,7 @@ import (
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
+	"marshal/internal/app/dbmigrate"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
@@ -25,6 +26,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
+	"marshal/internal/repo"
 	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
 	"marshal/internal/tools/native"
@@ -408,7 +410,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find home directory: %w", err)
 	}
-	dataDir := filepath.Join(homeDir, ".local", "share", "marshal")
+	dataDir := config.DataDir(homeDir)
 
 	var cfg config.Config
 	var layers config.Layers
@@ -453,6 +455,15 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// the user's config could be committed, so it is worth logging.
 	if err := config.EnsureMarshalIgnored(workingDir); err != nil {
 		slog.Warn("could not update .gitignore", "error", err)
+	}
+	// Machine-local state stays out of git even when .marshal/config.toml
+	// is committed. Best-effort as well.
+	if err := config.EnsureMarshalDirIgnored(workingDir); err != nil {
+		slog.Warn("could not write .marshal/.gitignore", "error", err)
+	}
+
+	if err := dbmigrate.AdoptStrayProjectDB(workingDir, slog.Default()); err != nil {
+		slog.Warn("stray .marshal migration", "error", err)
 	}
 
 	database, err := db.Open(db.Path(workingDir))
@@ -761,7 +772,21 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		newState.SetTitleManual(name)
 	}
 	newState.SetTrusted(rt.State.Trusted())
-	newState.SetLayers(rt.Layers)
+	// rt.Layers is a startup snapshot: the TUI refreshes its own layer
+	// snapshot after each config save but not the runtime's, so seeding a
+	// new session from rt.Layers would make its first project-scope save
+	// diff against the stale user layer and re-bake user-global values into
+	// the committable .marshal/config.toml. Reload with the same
+	// non-prompting trust replay used at startup; on error keep the startup
+	// snapshot rather than fail session creation.
+	layers := rt.Layers
+	if fresh, err := config.LoadSessionLayers(rt.HomeDir, rt.WorkingDir, rt.State.Trusted()); err == nil {
+		layers = fresh
+		rt.Layers = fresh
+	} else if rt.Logger != nil {
+		rt.Logger.Warn("layer reload for new session failed; using startup snapshot", "error", err)
+	}
+	newState.SetLayers(layers)
 	if rt.SteeringBroker != nil {
 		newState.SetSteeringBroker(must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker))
 	}
@@ -862,13 +887,23 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, newReg, nil
 }
 
+// resolveWorkingDir resolves the session working directory. When the
+// directory (or an explicit override) sits inside a git repository, the
+// repository root is returned, so launching from a subdirectory lands in
+// the same project — same config, database, trust record, and .marshal/
+// directory — as launching from the root. Non-git directories are
+// returned unchanged.
 func resolveWorkingDir(override string) (string, error) {
-	if override != "" {
-		return override, nil
+	dir := override
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("find working directory: %w", err)
+		}
+		dir = wd
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("find working directory: %w", err)
+	if root := repo.FindRoot(dir); root != "" {
+		return root, nil
 	}
-	return wd, nil
+	return dir, nil
 }

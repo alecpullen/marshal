@@ -11,13 +11,21 @@ import (
 const marshalIgnoreEntry = ".marshal/"
 
 // EnsureMarshalIgnored appends .marshal/ to the repository's .gitignore
-// when it is not already covered. Marshal writes its project database,
-// logs, and config into .marshal/, and a committed config.toml would leak
-// whatever a user pasted into it.
+// when it is not already covered AND no project config exists yet.
+//
+// Once .marshal/config.toml exists it is a shared, often-committed file by
+// design: it travels with the clone so a project's commands, diagnostics,
+// and sandbox policy reproduce on other machines, and the trust system
+// gates it by content hash. Machine-local state (database, logs, spill
+// files, pipeline scratch) is kept out of git by the nested
+// .marshal/.gitignore written by EnsureMarshalDirIgnored.
 //
 // Not a git repository is not an error: there is nothing to ignore.
 func EnsureMarshalIgnored(workingDir string) error {
 	if _, err := os.Stat(filepath.Join(workingDir, ".git")); err != nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(workingDir, ".marshal", "config.toml")); err == nil {
 		return nil
 	}
 

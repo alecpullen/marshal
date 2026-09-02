@@ -2768,6 +2768,36 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	}
 }
 
+func TestBuildSubagentFactorySeedsChildSessionContext(t *testing.T) {
+	// Regression: a child session built without the parent's layer snapshot
+	// makes layer-aware project saves (config.SaveProjectConfig) fall back
+	// to write-everything, so a subagent running config.*.set tools would
+	// bake user-global values into the committable .marshal/config.toml.
+	cfg := config.Default()
+	cfg.Project.Name = "child-context-test"
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	layers := config.Layers{Default: config.Default(), User: config.Default(), Merged: cfg}
+	layers.User.Commands.Test = "user-scoped-test-command"
+	state.SetLayers(layers)
+	state.SetHomeDir("/home/child-context-test")
+	state.SetTrusted(true)
+
+	factory, _ := buildSubagentFactory(cfg, state, nil, registry.New(), nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	_, childState, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if got := childState.Layers().User.Commands.Test; got != "user-scoped-test-command" {
+		t.Errorf("child Layers().User.Commands.Test = %q, want the parent's snapshot", got)
+	}
+	if got := childState.HomeDir(); got != "/home/child-context-test" {
+		t.Errorf("child HomeDir = %q, want the parent's", got)
+	}
+	if !childState.Trusted() {
+		t.Error("child Trusted = false, want the parent's true")
+	}
+}
+
 func TestBuildSubagentFactoryCustomAgentSamplingOverrides(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true

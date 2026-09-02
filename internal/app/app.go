@@ -520,6 +520,9 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if dataDir != "" {
 		state.SetModelCacheDir(dataDir)
 	}
+	// Record the home directory so in-session layer reloads
+	// (config.LoadSessionLayers) can locate the user config layer.
+	state.SetHomeDir(homeDir)
 
 	// Milestone Q: construct the JobManager from the sandboxed command
 	// runner so background jobs honour the configured sandbox backend,
@@ -1431,6 +1434,15 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents))
+		// Seed the child with the parent's session context. Layer-aware
+		// project saves (config.SaveProjectConfig) compare against
+		// state.Layers(): a child without the snapshot silently regresses to
+		// write-everything, and the config.*.set tools are loadable in the
+		// child via the shared ConfigReloader — so a subagent could bake
+		// user-global values into the committable .marshal/config.toml.
+		childState.SetLayers(parentState.Layers())
+		childState.SetHomeDir(parentState.HomeDir())
+		childState.SetTrusted(parentState.Trusted())
 		// The child needs its own native toolset, not a filtered view of the
 		// parent's. SubtaskScopeView re-registers the parent's existing Tool
 		// values, whose handlers close over the parent's toolSet — so a
@@ -1760,11 +1772,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	// First-run detection: when no config exists yet, open the connect
 	// panel in the TUI instead of running a separate onboarding wizard.
 	firstRun := !config.HasConfig(config.LoadOptions{HomeDir: homeDir, WorkingDir: workingDir})
-	trustStoreDir := filepath.Join(homeDir, ".local", "share", "marshal")
+	trustStoreDir := config.DataDir(homeDir)
 	trustDecide := func(d trust.Decision) {
 		switch d {
 		case trust.DecisionTrustPermanent:
-			abs, _ := filepath.Abs(workingDir)
+			abs := trust.Canonicalize(workingDir)
 			hash, _ := trust.ConfigHashFor(workingDir)
 			_ = trust.NewStore(trustStoreDir).SetTrust(abs, true, hash)
 			reloadForTrust = true
@@ -1779,10 +1791,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	// has no permanent-trust record, so external or agent-made config edits
 	// (which never hit this path) still force re-trust.
 	trustRefresh := func(dir string) {
-		abs, err := filepath.Abs(dir)
-		if err != nil {
-			return
-		}
+		abs := trust.Canonicalize(dir)
 		hash, err := trust.ConfigHashFor(dir)
 		if err != nil {
 			return
@@ -1824,15 +1833,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
 		configLayers := &rt.Layers
 		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
-		tuiOpts = append(tuiOpts, tui.WithLayerReloader(func() (config.Layers, bool) {
-			layers, err := config.LoadLayers(config.LoadOptions{
-				WorkingDir: workingDir,
-			})
-			if err != nil {
-				return config.Layers{}, false
-			}
-			return layers, true
-		}))
+		tuiOpts = append(tuiOpts, tui.WithLayerReloader(layerReloaderFor(homeDir, workingDir, state.Trusted)))
 		// F18: eager-seed the @file completion popup with the repo file
 		// index. Failures (no DB, empty index) are non-fatal — the TUI
 		// falls back to a lazy load on the first @-keystroke.
@@ -1848,7 +1849,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
-		tuiOpts = append(tuiOpts, tui.WithDataDir(filepath.Join(homeDir, ".local", "share", "marshal")))
+		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
 		if rt.LSPManager != nil {
@@ -2069,6 +2070,29 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// prompt; the deferred Close covers the final rt, this covers reload
 		// iterations.
 		_ = rt.Close(context.Background())
+	}
+}
+
+// layerReloaderFor returns the TUI's layer-reload function: it re-runs
+// LoadLayers with the same home/working context as startup and replays the
+// session's trust decision through config.LoadSessionLayers, which never
+// prompts and never persists. The interactive TerminalResolver must never
+// run here: the reloader executes inside the TUI event loop, where its
+// stdin prompt would freeze the interface (the TUI owns stdin, and the fd
+// is still a terminal in a real launch). A session that answered the trust
+// question at startup — permanently, per-session, or not at all — keeps
+// that answer for the rest of the session.
+func layerReloaderFor(homeDir, workingDir string, trusted func() bool) func() (config.Layers, bool) {
+	return func() (config.Layers, bool) {
+		t := false
+		if trusted != nil {
+			t = trusted()
+		}
+		layers, err := config.LoadSessionLayers(homeDir, workingDir, t)
+		if err != nil {
+			return config.Layers{}, false
+		}
+		return layers, true
 	}
 }
 

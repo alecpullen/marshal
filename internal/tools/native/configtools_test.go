@@ -269,6 +269,72 @@ func TestScalarWorkspaceWriteTools(t *testing.T) {
 	testSectionWrite(t, "config.profile.set", (*toolSet).configProfileSetTool, `{"default":"fast"}`, func(c config.Config) bool { return c.Profile.Default == "fast" })
 }
 
+// TestConfigGlobalSaveRefreshesSessionLayers pins the agent-side half of
+// the layer-staleness fix: a global-scope config write changes the user
+// layer on disk, so the session's layer snapshot must be refreshed — or
+// the next project-scope save diffs against a stale user layer and
+// re-bakes user-global values into the committable project config.
+func TestConfigGlobalSaveRefreshesSessionLayers(t *testing.T) {
+	dir := t.TempDir()
+	userPath := config.UserConfigPath(dir)
+	work := t.TempDir()
+
+	cfg := config.Default()
+	state := session.New(cfg, work, time.Now(), session.Persistence{})
+	state.SetHomeDir(dir)
+	state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
+
+	// Auto-approve in a goroutine: when a pending approval arrives, approve it.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := state.PendingApproval(); p != nil {
+				p.Respond(session.UserApprovalDecision{Approved: true})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	ts := toolSet{
+		config:         cfg,
+		userConfigPath: userPath,
+		configReloader: func(c config.Config) error { return nil },
+		sessionState:   state,
+	}
+	reg := registry.New()
+	tools, err := newConfigToolSet(ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(tools.configAgentSetTool()); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := reg.Lookup("config.agent.set")
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID:   "1",
+		Name: "config.agent.set",
+		Args: json.RawMessage(`{"scope":"global","max_tool_iterations":30}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "reloaded") {
+		t.Fatalf("expected reloaded receipt, got: %s", res.Summary)
+	}
+
+	// The session snapshot must reflect the new user layer.
+	layers := state.Layers()
+	if layers.Merged.Agent.MaxToolIterations != 30 {
+		t.Fatalf("session layer snapshot went stale after a global save: MaxToolIterations = %d, want 30",
+			layers.Merged.Agent.MaxToolIterations)
+	}
+	if layers.User.Agent.MaxToolIterations != 30 {
+		t.Fatalf("user layer snapshot not refreshed: MaxToolIterations = %d, want 30",
+			layers.User.Agent.MaxToolIterations)
+	}
+}
+
 func TestConfigAgentSetGlobalScopeDeniedAborts(t *testing.T) {
 	dir := t.TempDir()
 	userPath := config.UserConfigPath(dir)

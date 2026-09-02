@@ -17,7 +17,14 @@ import (
 // SaveProjectConfig writes the essential settings-editable sections of cfg to
 // path (typically .marshal/config.toml). It preserves any unrelated sections
 // already present in the file.
-func SaveProjectConfig(path string, cfg Config) error {
+//
+// layers carries the load-time snapshots (config.LoadLayers). Only values
+// the project layer itself contributes are persisted: a section whose
+// merged value equals the user-layer value came from the user config or
+// defaults, so writing it here would bake machine-local state into a
+// shared, often-committed file. A zero Layers (tests, callers without
+// snapshots) preserves the historical behaviour.
+func SaveProjectConfig(path string, cfg Config, layers Layers) error {
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load existing project config: %w", err)
@@ -43,6 +50,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 
 	writeSections(&file, cfg, Default())
+	applyProjectLayer(&file, cfg, layers)
 
 	data, err := toml.Marshal(&file)
 	if err != nil {
@@ -427,6 +435,93 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			ca.Name = name
 			file.CustomAgents[name] = ca
 		}
+	}
+	// Sections below were previously merged on load but never written
+	// back, so config.session.rollover.set / config.lsp.set /
+	// config.history.set / config.scratchpad.set / config.agents.set
+	// reported success and lost their values on restart. Same rule as the
+	// sections above: write when the file already carries the section or
+	// the merged value differs from Default().
+	if file.Session != nil || !reflect.DeepEqual(cfg.Session, def.Session) {
+		session := &fileSession{}
+		if file.Session != nil && file.Session.Rollover != nil {
+			session.Rollover = file.Session.Rollover
+		} else {
+			session.Rollover = &fileRollover{}
+		}
+		r := cfg.Session.Rollover
+		dr := def.Session.Rollover
+		putKey(&session.Rollover.Enabled, fileField[bool](session.Rollover, "Enabled"), r.Enabled, dr.Enabled)
+		putKey(&session.Rollover.Policy, fileField[string](session.Rollover, "Policy"), r.Policy, dr.Policy)
+		putKey(&session.Rollover.ContextPercentThreshold, fileField[int](session.Rollover, "ContextPercentThreshold"), r.ContextPercentThreshold, dr.ContextPercentThreshold)
+		putKey(&session.Rollover.TurnCountThreshold, fileField[int](session.Rollover, "TurnCountThreshold"), r.TurnCountThreshold, dr.TurnCountThreshold)
+		putKey(&session.Rollover.TokenCounter, fileField[string](session.Rollover, "TokenCounter"), r.TokenCounter, dr.TokenCounter)
+		putKey(&session.Rollover.DigestModel, fileField[string](session.Rollover, "DigestModel"), r.DigestModel, dr.DigestModel)
+		putKey(&session.Rollover.DigestProvider, fileField[string](session.Rollover, "DigestProvider"), r.DigestProvider, dr.DigestProvider)
+		putKey(&session.Rollover.RecallToolEnabled, fileField[string](session.Rollover, "RecallToolEnabled"), r.RecallToolEnabled, dr.RecallToolEnabled)
+		putKey(&session.Rollover.Retention, fileField[string](session.Rollover, "Retention"), r.Retention, dr.Retention)
+		putKey(&session.Rollover.BlobThresholdBytes, fileField[int](session.Rollover, "BlobThresholdBytes"), r.BlobThresholdBytes, dr.BlobThresholdBytes)
+		if session.Rollover.Calibration == nil {
+			session.Rollover.Calibration = &fileCalibration{}
+		}
+		putKey(&session.Rollover.Calibration.Enabled, fileField[bool](session.Rollover.Calibration, "Enabled"), r.Calibration.Enabled, dr.Calibration.Enabled)
+		file.Session = session
+	}
+	if file.LSP != nil || (cfg.LSP.Enabled != nil && !*cfg.LSP.Enabled) || len(cfg.LSP.Servers) > 0 {
+		lsp := &fileLSP{}
+		if file.LSP != nil {
+			lsp.Enabled = file.LSP.Enabled
+			if file.LSP.Servers != nil {
+				lsp.Servers = map[string]fileLSPServer{}
+				for name, srv := range file.LSP.Servers {
+					lsp.Servers[name] = srv
+				}
+			}
+		}
+		// LSPConfig.Enabled is nil-means-true; only an explicit false
+		// differs from the default and needs persisting.
+		if cfg.LSP.Enabled != nil && !*cfg.LSP.Enabled {
+			lsp.Enabled = strutil.Ptr(false)
+		}
+		if len(cfg.LSP.Servers) > 0 {
+			if lsp.Servers == nil {
+				lsp.Servers = map[string]fileLSPServer{}
+			}
+			for name, srv := range cfg.LSP.Servers {
+				entry := fileLSPServer{Args: srv.Args}
+				if srv.Command != "" {
+					entry.Command = strutil.Ptr(srv.Command)
+				}
+				if srv.Disabled {
+					entry.Disabled = strutil.Ptr(true)
+				}
+				lsp.Servers[name] = entry
+			}
+		}
+		file.LSP = lsp
+	}
+	if file.History != nil || cfg.History.Enabled != def.History.Enabled {
+		file.History = &fileHistory{Enabled: strutil.Ptr(cfg.History.Enabled)}
+	}
+	if file.Scratchpad != nil || !reflect.DeepEqual(cfg.Scratchpad, def.Scratchpad) {
+		file.Scratchpad = &fileScratchpad{
+			MaxEntries:          strutil.Ptr(cfg.Scratchpad.MaxEntries),
+			MaxTotalTokens:      strutil.Ptr(cfg.Scratchpad.MaxTotalTokens),
+			MaxEntryTokens:      strutil.Ptr(cfg.Scratchpad.MaxEntryTokens),
+			ProjectionMaxTokens: strutil.Ptr(cfg.Scratchpad.ProjectionMaxTokens),
+		}
+	}
+	if file.Agents != nil || len(cfg.Agents) > 0 {
+		agents := map[routing.AgentRole]fileAgentEntry{}
+		if file.Agents != nil {
+			for role, entry := range file.Agents {
+				agents[role] = entry
+			}
+		}
+		for role, agentCfg := range cfg.Agents {
+			agents[role] = fileAgentEntry{Context: agentCfg.Context}
+		}
+		file.Agents = agents
 	}
 }
 

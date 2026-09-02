@@ -11,6 +11,49 @@ Marshal is a terminal-native coding agent built in Go. It wires together a Bubbl
 5. Tools (`internal/tools/`) operate on the working tree under policy and approval.
 6. State and history are persisted in SQLite (`internal/db/`).
 
+## Project identity and config layers
+
+Marshal anchors everything project-scoped at the **git repository root**,
+not the launch directory. `resolveWorkingDir` (internal/app) walks up from
+the working directory with `repo.FindRoot` until it finds a `.git` entry;
+non-git directories are used as-is. The resolved root decides where
+`.marshal/` lives, which session database opens (`db.Path` re-derives the
+same root, so a subdirectory launch shares one project), and which
+project config loads. Launching from a subdirectory therefore lands in
+the same project — same config, database, and history — as launching
+from the root.
+
+**Trust key.** Trust records are keyed by `trust.Canonicalize(workingDir)`:
+the symlink-resolved absolute path of the repository root. This makes
+symlinked checkouts and macOS `/var` vs `/private/var` one identity, so a
+record written by one launch style is found by every other. The record
+also stores the SHA-256 hash of `.marshal/config.toml` at trust time;
+`trust.Evaluate` revalidates it on every launch and re-prompts when the
+file changed outside a trusted session. Interactive project-config saves
+(`/settings`, `/set`, `/agents`) advance the stored hash via
+`RefreshConfigHash`, so a user's own edit does not force a re-prompt.
+
+**Committable project config.** `.marshal/config.toml` is a shared,
+often-committed file: it travels with the clone so commands, diagnostics,
+and sandbox policy reproduce on other machines, gated by the trust hash
+above. Two mechanisms keep machine-local state out of it:
+
+- `SaveProjectConfig` is layer-aware. It receives the load-time
+  `config.Layers` snapshot and drops any section whose merged value equals
+  the user-layer value, so user-global providers, presets, and profiles
+  are never baked into the project file. Callers without a snapshot (zero
+  `Layers`) keep the historical write-everything behaviour.
+- A generated `.marshal/.gitignore` excludes machine-local state
+  (`marshal.db`, logs, tool results, pipeline scratch) even when the
+  config itself is committed. The top-level `.gitignore` is only appended
+  while no project config exists.
+
+**Environment overrides.** `MARSHAL_CONFIG_DIR` (or
+`$XDG_CONFIG_HOME/marshal`) relocates the user config directory;
+`MARSHAL_DATA_DIR` (or `$XDG_DATA_HOME/marshal`) relocates the data
+directory holding the trust store, model cache, and logs. Defaults remain
+`~/.config/marshal` and `~/.local/share/marshal`.
+
 ## SDD plan workflow
 
 Feature exploration may use the normal brainstorming workflow. An approved

@@ -103,15 +103,22 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 	defer cancel()
 
 	keystrokes := 0
+	var lastScreen string
 	for {
 		select {
 		case <-scenarioCtx.Done():
+			if lastScreen != "" {
+				r.rep.Record("screen_on_timeout", map[string]any{"scenario": sc.Name, "screen": lastScreen})
+			}
 			result.Error = "scenario timeout"
 			return finish(scenarioCtx.Err())
 		default:
 		}
 
 		scr, _ := screen.Parse(sess.Snapshot())
+		if scr.Content != "" {
+			lastScreen = scr.Content
+		}
 		act, err := sc.Actor.Act(scenarioCtx, scr)
 		if err != nil {
 			result.Error = err.Error()
@@ -129,6 +136,9 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 			// Wait a bit and re-observe.
 			select {
 			case <-scenarioCtx.Done():
+				if lastScreen != "" {
+					r.rep.Record("screen_on_timeout", map[string]any{"scenario": sc.Name, "screen": lastScreen})
+				}
 				result.Error = "scenario timeout during noop"
 				return finish(scenarioCtx.Err())
 			case <-time.After(100 * time.Millisecond):

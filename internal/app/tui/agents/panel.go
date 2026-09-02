@@ -57,7 +57,19 @@ type Panel struct {
 	// deleteArmed tracks the two-press delete confirm inside a custom
 	// agent's edit frame.
 	deleteArmed bool
+
+	// layers carries the load-time config snapshots for layer-aware
+	// project saves (see config.SaveProjectConfig).
+	layers config.Layers
 }
+
+// SetLayers supplies the load-time config snapshots used by project-scope
+// saves to avoid baking user-layer values into the project file.
+func (p *Panel) SetLayers(layers config.Layers) { p.layers = layers }
+
+// Layers returns the panel's current snapshot, for the model's post-save
+// refresh path and tests.
+func (p *Panel) Layers() config.Layers { return p.layers }
 
 var _ dock.Panel = (*Panel)(nil)
 
@@ -595,7 +607,7 @@ func (p *Panel) persistNow() tea.Cmd {
 		if p.cfgPath == "" {
 			return settings.ChangedMsg{Cfg: cfg, Receipts: nil}
 		}
-		saveErr := config.SaveProjectConfig(p.cfgPath, cfg)
+		saveErr := config.SaveProjectConfig(p.cfgPath, cfg, p.layers)
 		return settings.ChangedMsg{Cfg: cfg, Receipts: nil, SaveErr: saveErr}
 	}
 }
@@ -612,7 +624,7 @@ func (p *Panel) maybePersist(inner tea.Cmd) tea.Cmd {
 		if p.cfgPath == "" {
 			return settings.ChangedMsg{Cfg: cfg, Receipts: nil}
 		}
-		saveErr := config.SaveProjectConfig(p.cfgPath, cfg)
+		saveErr := config.SaveProjectConfig(p.cfgPath, cfg, p.layers)
 		return settings.ChangedMsg{Cfg: cfg, Receipts: nil, SaveErr: saveErr}
 	}
 	if inner == nil {

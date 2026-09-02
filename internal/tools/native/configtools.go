@@ -142,10 +142,30 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 		if t.configPath == "" {
 			return registry.ToolResult{}, fmt.Errorf("project config path not configured")
 		}
-		saveErr = config.SaveProjectConfig(t.configPath, next)
+		// sessionState is nil in some tests and headless contexts; a zero
+		// Layers preserves the historical write-everything behaviour.
+		var layers config.Layers
+		if t.sessionState != nil {
+			layers = t.sessionState.Layers()
+		}
+		saveErr = config.SaveProjectConfig(t.configPath, next, layers)
 	}
 	if saveErr != nil {
 		return registry.ToolResult{}, fmt.Errorf("save config: %w", saveErr)
+	}
+
+	// A global-scope save changes the user layer on disk. Refresh the
+	// session's layer snapshot so the next project-scope save diffs against
+	// the new user layer instead of a stale one — otherwise user-global
+	// values get re-baked into the committable project config. The reload
+	// replays the session's trust decision through a non-prompting resolver:
+	// this runs inside an agent turn, where the interactive trust prompt
+	// would block the tool call. Best-effort: a failed refresh leaves the
+	// previous snapshot in place.
+	if scope == "global" && t.sessionState != nil {
+		if layers, lerr := config.LoadSessionLayers(t.sessionState.HomeDir(), t.sessionState.WorkingDir, t.sessionState.Trusted()); lerr == nil {
+			t.sessionState.SetLayers(layers)
+		}
 	}
 
 	if err := t.configReloader(next); err != nil {

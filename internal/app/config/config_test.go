@@ -338,7 +338,7 @@ func TestSaveProjectConfigStripsProviderAPIKeys(t *testing.T) {
 		},
 	}
 
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 
@@ -1522,7 +1522,7 @@ func TestSkillsAutoloadRoundTripsThroughSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := Default()
 	cfg.Skills.Autoload = []string{"using-superpowers"}
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatal(err)
 	}
 	reloaded := Default()
@@ -1598,7 +1598,7 @@ func TestSkillsMaxActiveRoundTripsThroughSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := Default()
 	cfg.Skills.MaxActive = 5
-	if err := SaveProjectConfig(path, cfg); err != nil {
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatal(err)
 	}
 	reloaded := Default()

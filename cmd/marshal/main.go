@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"marshal/internal/acp"
 	"marshal/internal/app"
+	"marshal/internal/app/config"
+	"marshal/internal/repo"
 	"marshal/internal/trust"
 )
 
@@ -100,23 +101,31 @@ func acpListenSpec(args []string) (string, error) {
 	return "", nil
 }
 
-// recordPermanentTrust writes a permanent trust record for the current working
-// directory so the next normal startup skips the trust prompt.
+// recordPermanentTrust writes a permanent trust record for the current
+// working directory so the next normal startup skips the trust prompt.
 func recordPermanentTrust() error {
 	wd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("find working directory: %w", err)
 	}
-	abs, err := filepath.Abs(wd)
-	if err != nil {
-		return fmt.Errorf("resolve working directory: %w", err)
-	}
+	return recordPermanentTrustIn(wd)
+}
+
+// recordPermanentTrustIn anchors the trust record the same way a session
+// is anchored: at the repository root containing dir (repo.Root), then
+// canonicalized. Keying on the launch subdirectory would write a record
+// the next root-anchored launch never matches, and hashing the
+// subdirectory's (absent) config would store an empty hash that forces a
+// re-prompt even with the right key.
+func recordPermanentTrustIn(dir string) error {
+	root := repo.Root(dir)
+	abs := trust.Canonicalize(root)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("find home directory: %w", err)
 	}
-	store := trust.NewStore(filepath.Join(home, ".local", "share", "marshal"))
-	hash, err := trust.ConfigHashFor(abs)
+	store := trust.NewStore(config.DataDir(home))
+	hash, err := trust.ConfigHashFor(root)
 	if err != nil {
 		return fmt.Errorf("hash project config: %w", err)
 	}

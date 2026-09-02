@@ -128,6 +128,22 @@ func (s *Store) IsTrusted(absPath string) (bool, error) {
 	return ok && r.Trusted, nil
 }
 
+// Canonicalize returns the symlink-resolved absolute form of workingDir so
+// trust records key on one stable identity per checkout: /var and
+// /private/var (macOS), symlinked checkouts, and subdirectory launches all
+// resolve to the same key. When the path cannot be resolved it falls back
+// to filepath.Abs so a not-yet-created directory still gets a stable key.
+func Canonicalize(workingDir string) string {
+	abs, err := filepath.Abs(workingDir)
+	if err != nil {
+		return workingDir
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
 // ConfigHashFor returns the SHA-256 hex digest of the project config
 // file at workingDir/.marshal/config.toml. Returns an empty string
 // (not an error) when the file does not exist, since the absence of a
@@ -217,7 +233,7 @@ func Evaluate(store *Store, workingDir string) (decision Decision, needsPrompt b
 	if !HasProjectConfig(workingDir) {
 		return DecisionDontTrust, false, nil
 	}
-	abs, _ := filepath.Abs(workingDir)
+	abs := Canonicalize(workingDir)
 	trusted, err := store.IsTrusted(abs)
 	if err != nil {
 		return DecisionDontTrust, false, err

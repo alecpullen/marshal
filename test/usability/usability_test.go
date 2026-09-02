@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"marshal/test/usability/scenario"
@@ -57,12 +58,30 @@ implementer = "coder"
 		t.Fatalf("write temp marshal config: %v", err)
 	}
 
-	env := os.Environ()
-	for i, e := range env {
-		if len(e) >= 5 && e[:5] == "HOME=" {
-			env[i] = "HOME=" + homeDir
-			break
+	// HOME alone no longer isolates the config: Marshal honours
+	// XDG_CONFIG_HOME / XDG_DATA_HOME / MARSHAL_*_DIR ahead of HOME
+	// (config-project-identity refactor), and CI runners export the XDG
+	// variables. Pin every config-location override into the temp home so
+	// the app reads this file and nothing else.
+	overrides := map[string]string{
+		"HOME":               homeDir,
+		"XDG_CONFIG_HOME":    filepath.Join(homeDir, ".config"),
+		"XDG_DATA_HOME":      filepath.Join(homeDir, ".local", "share"),
+		"MARSHAL_CONFIG_DIR": filepath.Join(homeDir, ".config", "marshal"),
+		"MARSHAL_DATA_DIR":   filepath.Join(homeDir, ".local", "share", "marshal"),
+	}
+	env := os.Environ()[:0]
+	for _, e := range os.Environ() {
+		eq := strings.Index(e, "=")
+		if eq > 0 {
+			if _, pinned := overrides[e[:eq]]; pinned {
+				continue
+			}
 		}
+		env = append(env, e)
+	}
+	for k, v := range overrides {
+		env = append(env, k+"="+v)
 	}
 	return env
 }

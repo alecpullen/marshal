@@ -2,7 +2,6 @@ package trust
 
 import (
 	"log/slog"
-	"path/filepath"
 )
 
 // HeadlessResolver implements Resolver for headless (ACP) sessions.
@@ -38,7 +37,7 @@ func (r *HeadlessResolver) Resolve(workingDir string, hasProjectConfig bool) (De
 		return DecisionDontTrust, nil
 	}
 
-	abs, _ := filepath.Abs(workingDir)
+	abs := Canonicalize(workingDir)
 
 	trusted, err := r.store.IsTrusted(abs)
 	if err != nil {

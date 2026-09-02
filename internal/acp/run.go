@@ -7,10 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"time"
 
 	"marshal/internal/app"
+	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/trust"
 )
@@ -72,8 +72,7 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("acp: find home directory: %w", err)
 	}
-	dataDir := filepath.Join(home, ".local", "share", "marshal")
-	trustStore := trust.NewStore(dataDir)
+	trustStore := trust.NewStore(config.DataDir(home))
 	return runWithConfig(ctx, stdin, stdout, runConfig{
 		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
 			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(trustStore, log)))

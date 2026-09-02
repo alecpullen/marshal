@@ -41,7 +41,13 @@ jobs:
       - name: Trust the workspace checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      # --skip=docker: the dockers/docker_manifests sections in
+      # .goreleaser.yaml push to ghcr.io/marshal/*, but this workflow has no
+      # registry login and no packages:write permission, so the push would
+      # fail and abort the release before the draft is created. Binaries-only
+      # until the registry side is wired up; the docker sections stay for
+      # that release.
       - name: Run GoReleaser
-        run: goreleaser release --clean
+        run: goreleaser release --clean --skip=docker
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

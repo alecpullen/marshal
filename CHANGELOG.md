@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3-alpha] - 2026-09-02
+
+### Added
+
+**Web bridge — fleet control plane**
+- `webbridge`, a fleet control plane for running many agents at once: it
+  supervises one `marshal acp` child per project, brokers approvals, and
+  serves the REST API, SSE streams, an MCP endpoint, and an embedded web
+  UI. Ships as a second binary in the release archives, with the build
+  version stamped into the fleet.
+- Containerized agents: each agent runs in its own container with CPU and
+  memory caps, no privileged mode, no host mounts, and a bounded spawn
+  queue; agents can be paused and resumed.
+- Agents survive bridge restarts: the bridge detaches on shutdown instead
+  of stopping its agents, and reattaches on startup, restoring each
+  agent's ACP session.
+- Remote git sources: spawn agents against git remotes through a
+  credential broker — secrets stay env-indirected and reach git only via
+  `GIT_ASKPASS`, never the agent's tree — with a shared bare-mirror cache
+  per repo and bridge-side git hardened against planted hooks.
+- An exit path for agent work: commit, a build-and-test verify gate
+  (`session/verify`), push with a forge-created pull request, or export as
+  a patch series for read-only agents. A failed or skipped gate blocks the
+  push unless an override with a reason is recorded; the agent drafts its
+  own commit message when the operator supplies none.
+- MCP intake: a `/mcp` JSON-RPC endpoint with per-client bearer tokens
+  (the shared API token is deliberately rejected), six tools — spawn,
+  status, result, send, cancel, list — scoped per client, and an
+  origin-tagged intake seam: submissions queue for operator confirmation
+  under per-client concurrency and daily caps and a registered-repo
+  allowlist. Approved plans land inside the agent's workspace.
+- Forge integration: GitHub, Gitea, and Forgejo clients; rich pull
+  requests created through the forge API; an issue watcher that spawns
+  agents from labelled issues (deduplicated, with backoff); oversize
+  repos refused before cloning.
+- Limits and audit: an append-only audit log with rotation, surfaced as a
+  fleet activity feed; cached disk accounting; reference-counted pruning
+  of unreferenced state; configurable concurrency and disk limits.
+  `webbridge` serves TLS directly when given a certificate and key.
+- Deployment: a bridge container image with all state on one named volume
+  (`compose.yaml`, `docs/DEPLOYMENT.md`), a marshal agent image
+  (`docs/AGENT-IMAGE.md`), and derived per-project images declared via
+  `.devcontainer/devcontainer.json` when a project needs a toolchain.
+- Web UI: a Svelte 5 single-page app embedded in the bridge — fleet
+  dashboard, spawn composer, per-agent chat with markdown rendering and
+  real dialogs, confirmation queue, MCP client management, forge
+  registration with an issue picker, and an activity feed, under a
+  persistent navigation sidebar.
+
+**ACP**
+- `marshal acp --listen unix://…|tcp://…` serves the protocol over a
+  socket with reattachable sessions: clients may disconnect and reconnect
+  without losing sessions, which is what lets a containerized agent
+  survive a control-plane restart.
+- `initialize` reports the agent version so the bridge can detect image
+  skew.
+- Turn failures surface the actual provider error to ACP clients instead
+  of an opaque internal error.
+
+**Agent tooling**
+- `agent.kill` cancels a running background subagent; `agent.output` peeks
+  at its status, report, and transcript without waiting.
+- `todo.write` gains a `drop_unfinished` escape hatch for replacing the
+  carried-over todo list wholesale.
+- The model roster in the system prompt includes discovered models from
+  provider probes, annotates presets with context size, locality,
+  thinking support, and price facts, and adds model-selection guidance
+  for subagent dispatch.
+
+**TUI**
+- The status footer shows the thinking-effort state for effort-capable
+  routes; a preset effort silently dropped by a non-reasoning backend
+  logs a warning, and opt-in `MARSHAL_WIRE_CAPTURE_REQUESTS` captures
+  outbound request bodies for verification.
+- The side rail follows the drilled-in subagent, and the breadcrumb shows
+  the dispatched role.
+- `/trust` returns an informative panel, and a pending trust decision
+  opens the trust panel.
+
+**Skills**
+- `using-skills` entry-point skill that teaches the model to scan the skill
+  roster and load matching skills before acting.
+- Class-triggered skill hints: edit-class turns suggest test-driven
+  development and verification skills, and investigation-shaped questions
+  suggest systematic-debugging — no embedding model required.
+- `/plan` now loads the `marshal-writing-plans` skill so inline plans follow
+  the house format and chain into plan execution.
+- Skill hint shortlists are logged per turn so misses can be tuned.
+
 ### Changed
 
 **Config and project identity**
@@ -33,6 +122,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MARSHAL_CONFIG_DIR`, `MARSHAL_DATA_DIR`, `XDG_CONFIG_HOME`, and
   `XDG_DATA_HOME` are honoured for all Marshal state locations.
 
+**Agent**
+- Context budgets scale down for small-window local models: tool-result
+  caps, compaction thresholds, and pack/history floors derive from the
+  window instead of flat values that left 16k models one tool call from
+  compaction. The tool-definition block is counted in token estimates,
+  rollover defaults on for local routes with windows of 32k or less, and
+  local routes get a default tool-iteration ceiling so a weak model
+  cannot run away.
+- Narration — the prose a model emits alongside tool calls — renders as
+  full markdown, uncapped, like the final answer; differentiation is the
+  gutter glyph only.
+- `file.read` and `file.page` accept absolute paths that resolve inside
+  an allowed root (additional directories); write tools still require
+  relative paths.
+
+**Skills**
+- `skills.autoload` now defaults to `["using-skills"]` so skill activation
+  works out of the box, including for users with no embedding model. Opt out
+  with `skills.autoload = []` or the `/skills` panel toggle.
+
 ### Fixed
 
 **Config**
@@ -54,24 +163,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root-anchored launch actually matches (and stores the root config's
   hash, not an empty one).
 
-### Added
-
-**Skills**
-- `using-skills` entry-point skill that teaches the model to scan the skill
-  roster and load matching skills before acting.
-- Class-triggered skill hints: edit-class turns suggest test-driven
-  development and verification skills, and investigation-shaped questions
-  suggest systematic-debugging — no embedding model required.
-- `/plan` now loads the `marshal-writing-plans` skill so inline plans follow
-  the house format and chain into plan execution.
-- Skill hint shortlists are logged per turn so misses can be tuned.
-
-### Changed
-
-**Skills**
-- `skills.autoload` now defaults to `["using-skills"]` so skill activation
-  works out of the box, including for users with no embedding model. Opt out
-  with `skills.autoload = []` or the `/skills` panel toggle.
+**Agent and providers**
+- Native-mode tool calls are salvaged from non-JSON prose grammars —
+  Hermes-style XML, mangled tool names, and tool-name-keyed JSON — and
+  verified against the registry; live diagnostics went from zero tool
+  executions to tools executing in every tool-requiring scenario.
+- Chat templates that require the system message first (stock qwen3 on
+  llama.cpp/LM Studio) no longer fail every turn: Marshal retries once
+  with trailing system messages demoted to user, handling both the HTTP
+  500 and the embedded-error-event rejection forms.
+- The welcome banner renders on fresh sessions again; autoloading
+  `using-skills` had suppressed it by writing boot items into the
+  transcript.
+- A data race in the pipeline's CLI command runner on context cancel is
+  fixed, along with worktree cwd/path handling, a transcript click
+  off-by-one, and panel alignment.
 
 ## [0.0.2-alpha] - 2026-08-27
 
@@ -160,6 +266,7 @@ without a migration path before 0.1.0.
 - Building from source requires `CGO_ENABLED=1` and a C toolchain, because of
   the tree-sitter dependency.
 
-[Unreleased]: https://github.com/alecpullen/marshal/compare/v0.0.2-alpha...HEAD
+[Unreleased]: https://github.com/alecpullen/marshal/compare/v0.0.3-alpha...HEAD
+[0.0.3-alpha]: https://github.com/alecpullen/marshal/compare/v0.0.2-alpha...v0.0.3-alpha
 [0.0.2-alpha]: https://github.com/alecpullen/marshal/compare/v0.0.1-alpha...v0.0.2-alpha
 [0.0.1-alpha]: https://github.com/alecpullen/marshal/releases/tag/v0.0.1-alpha

@@ -2,7 +2,7 @@
 
 A terminal coding agent with local-friendly defaults and provider choice.
 
-> **Status: alpha (v0.0.1-alpha).** Usable day to day, but interfaces, config
+> **Status: alpha (v0.0.3-alpha).** Usable day to day, but interfaces, config
 > keys, and on-disk formats may change without a migration path before 0.1.0.
 
 Marshal is a terminal-native coding agent that understands your repository,
@@ -167,8 +167,8 @@ To cut a release:
 2. Tag and push:
 
 ```bash
-git tag -a v0.0.2-alpha -m "Release v0.0.2-alpha"
-git push origin v0.0.2-alpha
+git tag -a v0.0.3-alpha -m "Release v0.0.3-alpha"
+git push origin v0.0.3-alpha
 ```
 
 The `release` GitHub Actions workflow will run tests, build the binaries,

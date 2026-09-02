@@ -34,6 +34,13 @@ CGO_ENABLED=1 go build ./cmd/marshal
 ./marshal
 ```
 
+To use your dev build everywhere, symlink it onto your PATH — the link
+always resolves to the latest rebuild:
+
+```bash
+ln -sfn "$PWD/marshal" ~/.local/bin/marshal
+```
+
 On first launch Marshal creates `~/.config/marshal/config.toml` and walks you
 through the initial provider setup.
 

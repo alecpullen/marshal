@@ -54,7 +54,7 @@ func TestTrustChoiceQuitsForReload(t *testing.T) {
 func TestViewExplainsRisk(t *testing.T) {
 	p := New("/repo", func(trust.Decision) {})
 	out := p.View(80, 10)
-	for _, want := range []string{"config.toml", "Trust", "providers", "/repo"} {
+	for _, want := range []string{"config.toml", "Trust", "model selection", "/repo"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("view missing %q:\n%s", want, out)
 		}

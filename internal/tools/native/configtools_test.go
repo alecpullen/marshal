@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -567,47 +568,113 @@ func TestProvidersSetRejectsLiteralAPIKey(t *testing.T) {
 	}
 }
 
-func TestProvidersSetAllowsAPIKeyEnv(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	cfg := config.Default()
-	var reloaded *config.Config
-	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+// setupGlobalOnlyTool wires one provider/preset tool with separate project
+// and user config paths plus an auto-approving session state. It returns the
+// registered tool, the home and project config paths, a flag recording
+// whether approval was requested, and a pointer to the last reloaded config.
+func setupGlobalOnlyTool(t *testing.T, cfg config.Config, name string, build func(*toolSet) registry.Tool) (tool registry.Tool, home, projectPath string, approvalRequested *bool, reloaded **config.Config) {
+	t.Helper()
+	home = t.TempDir()
+	projectPath = filepath.Join(home, "project.toml")
+	state := session.New(config.Config{}, home, time.Now(), session.Persistence{})
+	requested := false
+	approvalRequested = &requested
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := state.PendingApproval(); p != nil {
+				requested = true
+				p.Respond(session.UserApprovalDecision{Approved: true})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	var reloadedCfg *config.Config
+	reloaded = &reloadedCfg
+	ts := toolSet{
+		config:         cfg,
+		configPath:     projectPath,
+		userConfigPath: config.UserConfigPath(home),
+		configReloader: func(c config.Config) error { cc := c; reloadedCfg = &cc; return nil },
+		sessionState:   state,
+	}
 	tools, _ := newConfigToolSet(ts)
 	reg := registry.New()
-	reg.Register(tools.configProvidersSetTool())
-	tool, _ := reg.Lookup("config.providers.set")
+	if err := reg.Register(build(&tools)); err != nil {
+		t.Fatalf("register %s: %v", name, err)
+	}
+	tool, _ = reg.Lookup(name)
+	return tool, home, projectPath, approvalRequested, reloaded
+}
+
+// assertGlobalWriteOnDisk verifies a global-only tool write landed in the
+// user config (check passes on the merged load) and never created the
+// project config file.
+func assertGlobalWriteOnDisk(t *testing.T, home, projectPath string, check func(config.Config) bool) {
+	t.Helper()
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("global-only write must not touch the project config: %v", err)
+	}
+	loaded, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !check(loaded) {
+		t.Fatalf("user config on disk missing the write: %+v", loaded)
+	}
+}
+
+func TestProvidersSetAllowsAPIKeyEnv(t *testing.T) {
+	tool, home, projectPath, approved, reloaded := setupGlobalOnlyTool(t, config.Default(), "config.providers.set", (*toolSet).configProvidersSetTool)
+	// Scope omitted: providers are user-global only, so the write lands in
+	// the user config and forces approval.
 	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.providers.set", Args: json.RawMessage(`{"name":"openai","base_url":"https://api.openai.com","api_key_env":"OPENAI_API_KEY"}`)})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	if reloaded.Providers["openai"].APIKeyEnv != "OPENAI_API_KEY" {
-		t.Fatalf("api_key_env not set: %+v", reloaded.Providers["openai"])
+	if !*approved {
+		t.Fatal("provider writes must force an approval request")
 	}
+	if (*reloaded).Providers["openai"].APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("api_key_env not set: %+v", (*reloaded).Providers["openai"])
+	}
+	assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
+		return c.Providers["openai"].APIKeyEnv == "OPENAI_API_KEY"
+	})
 }
 
 func TestProvidersDeleteRemovesKey(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{"openai": {BaseURL: "https://api.openai.com"}}
-	var reloaded *config.Config
-	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
-	tools, _ := newConfigToolSet(ts)
-	reg := registry.New()
-	reg.Register(tools.configProvidersDeleteTool())
-	tool, _ := reg.Lookup("config.providers.delete")
+	tool, home, projectPath, _, reloaded := setupGlobalOnlyTool(t, cfg, "config.providers.delete", (*toolSet).configProvidersDeleteTool)
 	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.providers.delete", Args: json.RawMessage(`{"name":"openai"}`)})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	if _, ok := reloaded.Providers["openai"]; ok {
+	if _, ok := (*reloaded).Providers["openai"]; ok {
 		t.Fatal("provider not deleted")
 	}
+	assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
+		_, ok := c.Providers["openai"]
+		return !ok
+	})
 }
 
 func TestModelsPresetSetRoundTrip(t *testing.T) {
-	testSectionWrite(t, "config.models.preset.set", (*toolSet).configModelsPresetSetTool, `{"name":"ollama/qwen2.5-coder","provider":"ollama","model":"qwen2.5-coder"}`, func(c config.Config) bool {
+	tool, home, projectPath, approved, reloaded := setupGlobalOnlyTool(t, config.Default(), "config.models.preset.set", (*toolSet).configModelsPresetSetTool)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.models.preset.set", Args: json.RawMessage(`{"name":"ollama/qwen2.5-coder","provider":"ollama","model":"qwen2.5-coder"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !*approved {
+		t.Fatal("preset writes must force an approval request")
+	}
+	p, ok := (*reloaded).Models.Presets["ollama/qwen2.5-coder"]
+	if !ok || p.Provider != "ollama" {
+		t.Fatalf("preset not applied: %+v", (*reloaded).Models.Presets)
+	}
+	assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
 		p, ok := c.Models.Presets["ollama/qwen2.5-coder"]
 		return ok && p.Provider == "ollama"
 	})
@@ -633,22 +700,67 @@ func TestModelsPresetSetRejectsNonCanonicalName(t *testing.T) {
 }
 
 func TestModelsPresetDeleteRemovesKey(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
 	cfg := config.Default()
 	cfg.Models.Presets = map[string]routing.ModelPreset{"fast": {Name: "fast", Provider: "ollama", Model: "qwen2.5-coder"}}
-	var reloaded *config.Config
-	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
-	tools, _ := newConfigToolSet(ts)
-	reg := registry.New()
-	reg.Register(tools.configModelsPresetDeleteTool())
-	tool, _ := reg.Lookup("config.models.preset.delete")
+	tool, home, projectPath, _, reloaded := setupGlobalOnlyTool(t, cfg, "config.models.preset.delete", (*toolSet).configModelsPresetDeleteTool)
 	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.models.preset.delete", Args: json.RawMessage(`{"name":"fast"}`)})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
-	if _, ok := reloaded.Models.Presets["fast"]; ok {
+	if _, ok := (*reloaded).Models.Presets["fast"]; ok {
 		t.Fatal("preset not deleted")
+	}
+	assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
+		_, ok := c.Models.Presets["fast"]
+		return !ok
+	})
+}
+
+// TestGlobalOnlyToolsRejectProjectScope pins the user-global-only rule:
+// providers and presets cannot live in the project config, so an explicit
+// scope="project" is an explanatory error and touches neither file.
+func TestGlobalOnlyToolsRejectProjectScope(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(*toolSet) registry.Tool
+		args  string
+	}{
+		{"config.providers.set", (*toolSet).configProvidersSetTool, `{"scope":"project","name":"openai","base_url":"https://api.openai.com"}`},
+		{"config.providers.delete", (*toolSet).configProvidersDeleteTool, `{"scope":"project","name":"openai"}`},
+		{"config.models.preset.set", (*toolSet).configModelsPresetSetTool, `{"scope":"project","name":"ollama/qwen2.5-coder","provider":"ollama","model":"qwen2.5-coder"}`},
+		{"config.models.preset.delete", (*toolSet).configModelsPresetDeleteTool, `{"scope":"project","name":"ollama/qwen2.5-coder"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			projectPath := filepath.Join(dir, "project.toml")
+			userPath := config.UserConfigPath(dir)
+			ts := toolSet{
+				config:         config.Default(),
+				configPath:     projectPath,
+				userConfigPath: userPath,
+				configReloader: func(c config.Config) error { return nil },
+			}
+			tools, _ := newConfigToolSet(ts)
+			reg := registry.New()
+			if err := reg.Register(tc.build(&tools)); err != nil {
+				t.Fatalf("register %s: %v", tc.name, err)
+			}
+			tool, _ := reg.Lookup(tc.name)
+			_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: tc.name, Args: json.RawMessage(tc.args)})
+			if err == nil {
+				t.Fatalf("%s must reject scope=\"project\"", tc.name)
+			}
+			if !strings.Contains(err.Error(), "user-global only") {
+				t.Fatalf("error must explain providers/presets are user-global only, got: %v", err)
+			}
+			if _, serr := os.Stat(projectPath); !os.IsNotExist(serr) {
+				t.Fatal("rejected write must not touch the project config")
+			}
+			if _, serr := os.Stat(userPath); !os.IsNotExist(serr) {
+				t.Fatal("rejected write must not touch the user config")
+			}
+		})
 	}
 }
 

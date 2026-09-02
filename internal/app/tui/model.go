@@ -900,7 +900,15 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 // reads as "default".
 func (m *Model) refreshDiagnostics() {
 	ds := config.Diagnose(m.state.Config, m.state.Layers())
-	m.diagnosticCount = len(ds)
+	// Info-severity entries are hoist notices, not problems; the badge
+	// counts only errors and warnings.
+	n := 0
+	for _, d := range ds {
+		if d.Severity != config.SeverityInfo {
+			n++
+		}
+	}
+	m.diagnosticCount = n
 }
 
 // persistAndReload saves cfg to the project config file, asks the runtime
@@ -4459,12 +4467,17 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 
 // openConnect opens the connect overlay for adding/reconnecting a provider.
 func (m *Model) openConnect(_ string) {
-	m.connectModel = connect.New(connect.Opts{
+	opts := connect.Opts{
 		Cfg:        m.state.Config,
 		Discovered: m.discovered,
-		CfgPath:    projectConfigPath(m.state.WorkingDir),
 		DataDir:    m.modelCacheDir,
-	})
+	}
+	// Providers are saved to the user-global config; the summary screen's
+	// "save to:" line should name that file.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		opts.CfgPath = config.UserConfigPath(home)
+	}
+	m.connectModel = connect.New(opts)
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
 }
@@ -4816,13 +4829,13 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	}
 	if msg.ProviderCfg.Type != "" {
 		// pc is an explicit copy: ProviderConfig is a value struct, and both
-		// this map entry and the SaveUserConfigProviderAPIKey call below
+		// this map entry and the SaveUserConfigProviders call below
 		// must observe the same cleared APIKeyEnv.
 		pc := msg.ProviderCfg
-		// A literal key was just persisted to the user config. Ensure the
-		// project snapshot (and therefore the project file) does not retain a
-		// stale api_key_env reference from the provider template, which would
-		// shadow the saved literal key during layered config merge.
+		// A literal key is persisted to the user config below. Ensure the
+		// saved entry does not retain a stale api_key_env reference from the
+		// provider template, which would shadow the saved literal key during
+		// layered config merge.
 		if pc.APIKey != "" {
 			pc.APIKeyEnv = ""
 		}
@@ -4859,24 +4872,27 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// overwriting any stale entry left by a legacy migration. Do not persist
 	// it here; that keeps the config file limited to provider + model pair.
 
-	// Credentials never go to project config. Write the key to the user
-	// config first; if that fails, configure nothing rather than leaving a
-	// provider entry pointing at a key that was never saved. The in-memory
-	// config keeps the key so the reloaded runtime can use it;
-	// SaveProjectConfig strips it from what reaches the project file.
-	if msg.ProviderCfg.APIKey != "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
-			return
-		}
-		if err := config.SaveUserConfigProviderAPIKey(
-			config.UserConfigPath(home), msg.Provider, msg.ProviderCfg); err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ Failed to save API key: %v", err), session.ContentTypePlain)
-			return
-		}
+	// Providers and presets are user-global; SaveProjectConfig never writes
+	// them. Persist both to the user config first — credentials included.
+	// If that fails, configure nothing rather than leaving a provider entry
+	// pointing at a key that was never saved. The in-memory config keeps the
+	// key so the reloaded runtime can use it.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
+		return
+	}
+	userPath := config.UserConfigPath(home)
+	if err := config.SaveUserConfigProviders(userPath, newCfg.Providers); err != nil {
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("✗ Failed to save provider: %v", err), session.ContentTypePlain)
+		return
+	}
+	if err := config.SaveUserConfigPresets(userPath, newCfg.Models.Presets); err != nil {
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
+		return
 	}
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
@@ -4911,6 +4927,7 @@ func (m *Model) switchModelPreset(presetName string) {
 		return
 	}
 	// Ensure an override exists if the user explicitly named a preset.
+	presetCreated := false
 	if _, ok := newCfg.Models.Presets[presetName]; !ok {
 		if newCfg.Models.Presets == nil {
 			newCfg.Models.Presets = map[string]routing.ModelPreset{}
@@ -4921,6 +4938,7 @@ func (m *Model) switchModelPreset(presetName string) {
 			Model:     model,
 			LocalOnly: routing.IsLocalProvider(newCfg.Providers[provider].BaseURL),
 		}
+		presetCreated = true
 	}
 	preset := newCfg.Models.Presets[presetName]
 	newCfg.Profile.Default = singleModelProfileName
@@ -4929,6 +4947,20 @@ func (m *Model) switchModelPreset(presetName string) {
 	// When ActivePreset is set, RoutingConfig always (re)synthesizes the
 	// "single" profile from it, overwriting any stale entry left by a
 	// legacy [agent] model migration.
+
+	// Presets are user-global; persist a newly created override to the user
+	// config before the project save ([profile] lives there).
+	if presetCreated {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
+			return
+		}
+		if err := config.SaveUserConfigPresets(config.UserConfigPath(home), newCfg.Models.Presets); err != nil {
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
+			return
+		}
+	}
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {

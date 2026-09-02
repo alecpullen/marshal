@@ -325,7 +325,7 @@ api_key_env = "PROJECT_OLLAMA_KEY"
 	}
 }
 
-func TestSaveProjectConfigStripsProviderAPIKeys(t *testing.T) {
+func TestSaveProjectConfigOmitsProviders(t *testing.T) {
 	work := t.TempDir()
 	path := ProjectConfigPath(work)
 
@@ -346,14 +346,16 @@ func TestSaveProjectConfigStripsProviderAPIKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read project config: %v", err)
 	}
+	// [providers] is user-global only: a project save must never emit the
+	// section at all, so no credential can land in this shared file.
+	if strings.Contains(string(data), "providers") {
+		t.Fatalf("providers section written to project config:\n%s", data)
+	}
 	if strings.Contains(string(data), "sk-secret-should-not-be-committed") {
 		t.Fatalf("literal API key written to project config:\n%s", data)
 	}
-	if !strings.Contains(string(data), "api.openai.com") {
-		t.Fatalf("provider entry missing from project config:\n%s", data)
-	}
-	// The caller's in-memory config must keep the key — the runtime resolves
-	// credentials from it, not from the file just written.
+	// The caller's in-memory config keeps the key — the runtime resolves
+	// credentials from it, not from any file.
 	if cfg.Providers["openai"].APIKey != "sk-secret-should-not-be-committed" {
 		t.Fatalf("SaveProjectConfig mutated the caller's provider entry: %#v", cfg.Providers["openai"])
 	}

@@ -36,13 +36,22 @@ file changed outside a trusted session. Interactive project-config saves
 **Committable project config.** `.marshal/config.toml` is a shared,
 often-committed file: it travels with the clone so commands, diagnostics,
 and sandbox policy reproduce on other machines, gated by the trust hash
-above. Two mechanisms keep machine-local state out of it:
+above. Three mechanisms keep machine-local state out of it:
 
+- Providers and presets are user-global only. `[providers]` and
+  `[models.presets]` live exclusively in the user config
+  (`~/.config/marshal/config.toml`, mode 0600) — `SaveProjectConfig` never
+  writes them, and every editing surface (connect, `/settings`, `/options`,
+  `/models`, the `config.providers.*`/`config.models.preset.*` tools) saves
+  them globally. On load, a trusted project file that still carries either
+  section is hoisted into the user config and stripped; an entry that
+  conflicts with an existing user-global one is kept project-local with a
+  deprecation diagnostic rather than overwriting user state.
 - `SaveProjectConfig` is layer-aware. It receives the load-time
   `config.Layers` snapshot and drops any section whose merged value equals
-  the user-layer value, so user-global providers, presets, and profiles
-  are never baked into the project file. Callers without a snapshot (zero
-  `Layers`) keep the historical write-everything behaviour.
+  the user-layer value, so user-global profiles and settings are never
+  baked into the project file. Callers without a snapshot (zero `Layers`)
+  keep the historical write-everything behaviour.
 - A generated `.marshal/.gitignore` excludes machine-local state
   (`marshal.db`, logs, tool results, pipeline scratch) even when the
   config itself is committed. The top-level `.gitignore` is only appended

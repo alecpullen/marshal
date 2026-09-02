@@ -93,7 +93,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	pw := min(max(width-2, 30), width)
 	var b strings.Builder
 	fmt.Fprintf(&b, "This project (%s) has a .marshal/config.toml.\n", p.workingDir)
-	b.WriteString("It can change providers, policy rules, and commands.\n\n")
+	b.WriteString("It can change policy rules, commands, and model selection.\n\n")
 	for i, label := range labels {
 		marker := "  "
 		style := lipgloss.NewStyle().Foreground(theme.Current().FGDefault)

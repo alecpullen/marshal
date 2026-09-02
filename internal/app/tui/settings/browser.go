@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -671,7 +672,29 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		return tea.Batch(inner, changed)
 	}
 
-	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config(), b.layers)
+	newCfg := b.reg.Config()
+	// Providers and presets are user-global; SaveProjectConfig never emits
+	// them, so persist changed sections to the user config first. DeepEqual
+	// keeps a benign project-only save from rewriting the 0600 user file.
+	// A provider rename rekeys both maps, so either change writes both. The
+	// retry branch repeats the writes because the baseline was rolled
+	// forward past the failed attempt, hiding the diff.
+	providersChanged := !reflect.DeepEqual(b.baseline.Providers, newCfg.Providers)
+	presetsChanged := !reflect.DeepEqual(b.baseline.Models.Presets, newCfg.Models.Presets)
+	var saveErr error
+	switch {
+	case (providersChanged || presetsChanged) && b.userConfigPath == "":
+		saveErr = fmt.Errorf("cannot save providers or presets: user config path is unavailable")
+	case providersChanged || presetsChanged || (retry && b.userConfigPath != ""):
+		if err := config.SaveUserConfigProviders(b.userConfigPath, newCfg.Providers); err != nil {
+			saveErr = err
+		} else if err := config.SaveUserConfigPresets(b.userConfigPath, newCfg.Models.Presets); err != nil {
+			saveErr = err
+		}
+	}
+	if saveErr == nil {
+		saveErr = config.SaveProjectConfig(b.cfgPath, newCfg, b.layers)
+	}
 	var receipts []string
 	switch {
 	case saveErr != nil:

@@ -79,6 +79,11 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
 	}
+	// [models.presets] is user-global only: project saves skip it, so the
+	// preset half of the round trip goes through the user config writer.
+	if err := SaveUserConfigPresets(UserConfigPath(tmp), cfg.Models.Presets); err != nil {
+		t.Fatalf("SaveUserConfigPresets failed: %v", err)
+	}
 
 	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
 	if err != nil {
@@ -543,15 +548,31 @@ func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(loaded.Hooks, cfg.Hooks) {
 		t.Errorf("hooks: got %+v want %+v", loaded.Hooks, cfg.Hooks)
 	}
-	// Literal API keys are stripped from the project file (they belong to the
-	// user config); every other provider field round trips.
-	wantProviders := make(map[string]ProviderConfig, len(cfg.Providers))
-	for name, p := range cfg.Providers {
-		p.APIKey = ""
-		wantProviders[name] = p
+	// [providers] and [models.presets] are user-global only: the project save
+	// must not emit them, so credentials can never land in the shared file.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
 	}
-	if !reflect.DeepEqual(loaded.Providers, wantProviders) {
-		t.Errorf("providers: got %+v want %+v", loaded.Providers, wantProviders)
+	if strings.Contains(string(raw), "providers") || strings.Contains(string(raw), "models") {
+		t.Errorf("project config carries user-global sections:\n%s", raw)
+	}
+
+	// The same sections round-trip through the user config writers,
+	// credentials included.
+	userPath := UserConfigPath(filepath.Join(dir, "no-home"))
+	if err := SaveUserConfigProviders(userPath, cfg.Providers); err != nil {
+		t.Fatalf("SaveUserConfigProviders: %v", err)
+	}
+	if err := SaveUserConfigPresets(userPath, cfg.Models.Presets); err != nil {
+		t.Fatalf("SaveUserConfigPresets: %v", err)
+	}
+	loaded, err = Load(LoadOptions{HomeDir: filepath.Join(dir, "no-home"), WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Providers, cfg.Providers) {
+		t.Errorf("providers: got %+v want %+v", loaded.Providers, cfg.Providers)
 	}
 	if !reflect.DeepEqual(loaded.Models.Presets["ollama/qwen3"], cfg.Models.Presets["ollama/qwen3"]) {
 		t.Errorf("preset ollama/qwen3: got %+v want %+v", loaded.Models.Presets["ollama/qwen3"], cfg.Models.Presets["ollama/qwen3"])
@@ -971,18 +992,17 @@ func TestSaveSidePanelRoundTrip(t *testing.T) {
 
 func TestPresetThinkingRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, ".marshal", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	// [models.presets] is user-global only, so the round trip goes through
+	// the user config writer.
+	path := UserConfigPath(dir)
 	cfg := Default()
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3", Thinking: "medium"},
 	}
-	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+	if err := SaveUserConfigPresets(path, cfg.Models.Presets); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	loaded, err := Load(LoadOptions{HomeDir: filepath.Join(dir, "no-home"), WorkingDir: dir})
+	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -994,7 +1014,7 @@ func TestPresetThinkingRoundTrip(t *testing.T) {
 	p := cfg.Models.Presets["ollama/qwen3"]
 	p.Thinking = ""
 	cfg.Models.Presets["ollama/qwen3"] = p
-	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+	if err := SaveUserConfigPresets(path, cfg.Models.Presets); err != nil {
 		t.Fatalf("save (empty): %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -1008,7 +1028,7 @@ func TestPresetThinkingRoundTrip(t *testing.T) {
 
 func TestPresetPricingRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
-	path := tmp + "/.marshal/config.toml"
+	path := UserConfigPath(tmp)
 	cfg := Default()
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		"hosted": {
@@ -1021,10 +1041,10 @@ func TestPresetPricingRoundTrip(t *testing.T) {
 			},
 		},
 	}
-	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
-		t.Fatalf("SaveProjectConfig: %v", err)
+	if err := SaveUserConfigPresets(path, cfg.Models.Presets); err != nil {
+		t.Fatalf("SaveUserConfigPresets: %v", err)
 	}
-	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -1333,15 +1353,14 @@ func TestSaveUserConfigProviderAPIKeyPreservesOtherProviders(t *testing.T) {
 	}
 }
 
-func TestSaveProjectConfigPreservesProviderTemplate(t *testing.T) {
+func TestSaveUserConfigProvidersPreservesProviderTemplate(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, ".marshal", "config.toml")
-	cfg := Default()
-	cfg.Providers = map[string]ProviderConfig{
+	path := UserConfigPath(dir)
+	providers := map[string]ProviderConfig{
 		"work": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
 	}
-	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
-		t.Fatalf("SaveProjectConfig: %v", err)
+	if err := SaveUserConfigProviders(path, providers); err != nil {
+		t.Fatalf("SaveUserConfigProviders: %v", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1350,5 +1369,47 @@ func TestSaveProjectConfigPreservesProviderTemplate(t *testing.T) {
 	if !strings.Contains(string(data), `template = "openai"`) &&
 		!strings.Contains(string(data), `template = 'openai'`) {
 		t.Fatalf("template field not persisted:\n%s", data)
+	}
+}
+
+func TestSaveUserConfigProvidersEmptyMapRemovesSection(t *testing.T) {
+	dir := t.TempDir()
+	path := UserConfigPath(dir)
+	providers := map[string]ProviderConfig{
+		"work": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+	if err := SaveUserConfigProviders(path, providers); err != nil {
+		t.Fatalf("SaveUserConfigProviders: %v", err)
+	}
+	if err := SaveUserConfigProviders(path, nil); err != nil {
+		t.Fatalf("SaveUserConfigProviders(nil): %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), "providers") {
+		t.Fatalf("[providers] not removed:\n%s", data)
+	}
+}
+
+func TestSaveUserConfigPresetsEmptyMapRemovesSection(t *testing.T) {
+	dir := t.TempDir()
+	path := UserConfigPath(dir)
+	presets := map[string]routing.ModelPreset{
+		"ollama/qwen3": {Provider: "ollama", Model: "qwen3"},
+	}
+	if err := SaveUserConfigPresets(path, presets); err != nil {
+		t.Fatalf("SaveUserConfigPresets: %v", err)
+	}
+	if err := SaveUserConfigPresets(path, nil); err != nil {
+		t.Fatalf("SaveUserConfigPresets(nil): %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), "models") {
+		t.Fatalf("[models] not removed:\n%s", data)
 	}
 }

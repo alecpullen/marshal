@@ -13,7 +13,7 @@ import (
 )
 
 func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
-	m, workDir, _ := newModelForConfigTest(t)
+	m, workDir, homeDir := newModelForConfigTest(t)
 	reloads := 0
 	m.configReloader = func(cfg config.Config) error {
 		reloads++
@@ -55,17 +55,22 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 	if m.state.Config.Models.Presets["coder"].ContextWindow != 64000 {
 		t.Fatalf("live preset context window = %d, want 64000", m.state.Config.Models.Presets["coder"].ContextWindow)
 	}
-	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	// Presets are user-global: the new value lands in the user config and
+	// never in the project file.
+	data, err := os.ReadFile(config.UserConfigPath(homeDir))
 	if err != nil {
-		t.Fatalf("read project config: %v", err)
+		t.Fatalf("read user config: %v", err)
 	}
 	if !strings.Contains(string(data), "64000") {
-		t.Fatalf("saved config missing new value:\n%s", string(data))
+		t.Fatalf("saved user config missing new value:\n%s", string(data))
+	}
+	if data, err := os.ReadFile(config.ProjectConfigPath(workDir)); err == nil && strings.Contains(string(data), "64000") {
+		t.Fatalf("preset value leaked into project config:\n%s", string(data))
 	}
 }
 
 func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
-	m, workDir, _ := newModelForConfigTest(t)
+	m, workDir, homeDir := newModelForConfigTest(t)
 	reloads := 0
 	m.configReloader = func(config.Config) error { reloads++; return nil }
 	m.busy = true
@@ -109,12 +114,15 @@ func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
 		}
 		t.Fatalf("expected pending candidate after busy commit; last system message: %q", last)
 	}
-	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	data, err := os.ReadFile(config.UserConfigPath(homeDir))
 	if err != nil {
-		t.Fatalf("read project config: %v", err)
+		t.Fatalf("read user config: %v", err)
 	}
 	if !strings.Contains(string(data), "64000") {
-		t.Fatalf("saved config missing candidate value:\n%s", string(data))
+		t.Fatalf("saved user config missing candidate value:\n%s", string(data))
+	}
+	if data, err := os.ReadFile(config.ProjectConfigPath(workDir)); err == nil && strings.Contains(string(data), "64000") {
+		t.Fatalf("preset value leaked into project config:\n%s", string(data))
 	}
 }
 

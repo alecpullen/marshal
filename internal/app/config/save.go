@@ -36,19 +36,10 @@ func SaveProjectConfig(path string, cfg Config, layers Layers) error {
 		}
 	}
 
-	// Literal API keys are user-specific secrets and must never land in the
-	// project file — they live in the user config (see
-	// SaveUserConfigProviderAPIKey). Strip them from the copy being
-	// persisted; the caller's in-memory config keeps them for the runtime.
-	if len(cfg.Providers) > 0 {
-		stripped := make(map[string]ProviderConfig, len(cfg.Providers))
-		for name, p := range cfg.Providers {
-			p.APIKey = ""
-			stripped[name] = p
-		}
-		cfg.Providers = stripped
-	}
-
+	// [providers] and [models.presets] are user-global only: writeSections
+	// never emits them, so API keys cannot land in this shared,
+	// often-committed file (they live in the user config; see
+	// SaveUserConfigProviderAPIKey and writeGlobalSections).
 	writeSections(&file, cfg, Default())
 	applyProjectLayer(&file, cfg, layers)
 
@@ -111,6 +102,9 @@ func SaveUserConfigSection(path string, cfg Config) error {
 		}
 	}
 	writeSections(&file, cfg, Default())
+	// [providers] and [models.presets] are user-global only — SaveProjectConfig
+	// deliberately never calls writeGlobalSections.
+	writeGlobalSections(&file, cfg)
 	data, err := toml.Marshal(&file)
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
@@ -380,36 +374,6 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		}
 		file.Hooks = &fileHooks{FailClosed: strutil.Ptr(cfg.Hooks.FailClosed), Entries: entries}
 	}
-	// Persist provider entries including API keys. This is intentional: the
-	// TUI /settings flow needs to save provider configuration to disk so it
-	// survives restart. Keys are only persisted in the user-global config
-	// (~/.config/marshal/config.toml), which writeUserConfigFile writes with
-	// owner-only 0600 permissions; the project config strips API keys before
-	// persisting. If a user does not want keys persisted, they should use
-	// api_key_env to reference an environment variable instead of embedding
-	// the key directly.
-	if len(cfg.Providers) > 0 {
-		file.Providers = cfg.Providers
-	}
-	if len(cfg.Models.Presets) > 0 {
-		if file.Models == nil {
-			file.Models = &fileModels{}
-		}
-		file.Models.Presets = map[string]routing.ModelPreset{}
-		for name, p := range cfg.Models.Presets {
-			preset := routing.ModelPreset{
-				ContextWindow:   p.ContextWindow,
-				MaxOutputTokens: p.MaxOutputTokens,
-				ToolCalling:     p.ToolCalling,
-				LocalOnly:       p.LocalOnly,
-				Thinking:        p.Thinking,
-				Pricing:         p.Pricing,
-			}
-			preset.Name = name
-			preset.Provider, preset.Model, _ = strings.Cut(name, "/")
-			file.Models.Presets[name] = preset
-		}
-	}
 	if file.AgentProfilesRaw != nil || len(cfg.AgentProfiles) > 0 {
 		file.AgentProfilesRaw = map[string]map[string]any{}
 		for name, profile := range cfg.AgentProfiles {
@@ -525,14 +489,59 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 }
 
+// writeGlobalSections applies the user-global-only sections of cfg onto file
+// in place: [providers] and [models.presets]. Only SaveUserConfigSection and
+// the targeted SaveUserConfig* writers may persist these — project saves
+// never emit them, so credentials cannot leak into a shared, often-committed
+// project file.
+//
+// Provider entries are persisted including API keys. This is intentional:
+// the TUI /settings flow needs to save provider configuration to disk so it
+// survives restart. Keys are only persisted in the user-global config
+// (~/.config/marshal/config.toml), which writeUserConfigFile writes with
+// owner-only 0600 permissions. If a user does not want keys persisted, they
+// should use api_key_env to reference an environment variable instead of
+// embedding the key directly.
+func writeGlobalSections(file *configFile, cfg Config) {
+	if len(cfg.Providers) > 0 {
+		file.Providers = cfg.Providers
+	}
+	if len(cfg.Models.Presets) > 0 {
+		if file.Models == nil {
+			file.Models = &fileModels{}
+		}
+		file.Models.Presets = normalizedPresets(cfg.Models.Presets)
+	}
+}
+
+// normalizedPresets re-keys identity fields from each preset's map key: Name
+// from the key, Provider/Model from its canonical "<provider>/<model>" form.
+func normalizedPresets(presets map[string]routing.ModelPreset) map[string]routing.ModelPreset {
+	out := make(map[string]routing.ModelPreset, len(presets))
+	for name, p := range presets {
+		preset := routing.ModelPreset{
+			ContextWindow:   p.ContextWindow,
+			MaxOutputTokens: p.MaxOutputTokens,
+			ToolCalling:     p.ToolCalling,
+			LocalOnly:       p.LocalOnly,
+			Thinking:        p.Thinking,
+			Pricing:         p.Pricing,
+		}
+		preset.Name = name
+		preset.Provider, preset.Model, _ = strings.Cut(name, "/")
+		out[name] = preset
+	}
+	return out
+}
+
 // userConfigFileMode and userConfigDirMode are the permissions for the
 // user-global config, which stores provider API keys inline
 // (SaveUserConfigProviderAPIKey). Every writer of that file must go through
 // writeUserConfigFile.
 //
 // These were 0644/0755, which left plaintext credentials readable by every
-// other user on the machine. The project config is exempt because
-// SaveProjectConfig strips API keys before persisting — it is a shared,
+// other user on the machine. The project config is exempt because providers
+// (and therefore keys) are never written to it — it is a shared,
 // often-committed file by design.
 const (
 	userConfigFileMode = 0o600
@@ -630,6 +639,59 @@ func SaveUserConfigProviderAPIKey(path, providerName string, pc ProviderConfig) 
 	// Prepend a minimal header if the file is being created for the first time.
 	// loadFile returns an empty configFile when the file does not exist, so we
 	// check whether the file exists on disk.
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		header := "# Marshal global configuration\n"
+		data = append([]byte(header), data...)
+	}
+	return writeUserConfigFile(path, data)
+}
+
+// SaveUserConfigProviders replaces the [providers] section of the user-global
+// config at path with the given entries, credentials included. An empty or
+// nil map removes the section from the file.
+func SaveUserConfigProviders(path string, providers map[string]ProviderConfig) error {
+	file, err := loadFile(path)
+	if err != nil {
+		return fmt.Errorf("load user config: %w", err)
+	}
+	for name, p := range providers {
+		if err := validateProviderBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("provider %q: %w", name, err)
+		}
+	}
+	if len(providers) == 0 {
+		file.Providers = nil
+	} else {
+		file.Providers = providers
+	}
+	return writeUserConfig(path, &file)
+}
+
+// SaveUserConfigPresets replaces the [models.presets] section of the
+// user-global config at path with the given presets, applying the save-path
+// normalization (identity fields derived from each map key). An empty or nil
+// map removes the presets — and the [models] section, which holds nothing
+// else — from the file.
+func SaveUserConfigPresets(path string, presets map[string]routing.ModelPreset) error {
+	file, err := loadFile(path)
+	if err != nil {
+		return fmt.Errorf("load user config: %w", err)
+	}
+	if len(presets) == 0 {
+		file.Models = nil
+	} else {
+		file.Models = &fileModels{Presets: normalizedPresets(presets)}
+	}
+	return writeUserConfig(path, &file)
+}
+
+// writeUserConfig marshals file and writes it to path via writeUserConfigFile,
+// prepending the standard header when the file is being created.
+func writeUserConfig(path string, file *configFile) error {
+	data, err := toml.Marshal(file)
+	if err != nil {
+		return fmt.Errorf("marshal user config: %w", err)
+	}
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		header := "# Marshal global configuration\n"
 		data = append([]byte(header), data...)

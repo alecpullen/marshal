@@ -1,18 +1,21 @@
 package config
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"sort"
 )
 
-// Severity ranks a diagnostic. SeverityError < SeverityWarning so that
-// sorting by severity places errors before warnings.
+// Severity ranks a diagnostic. SeverityError < SeverityWarning < SeverityInfo
+// so that sorting by severity places errors first, then warnings, then
+// informational notes.
 type Severity int
 
 const (
 	SeverityError   Severity = 0
 	SeverityWarning Severity = 1
+	SeverityInfo    Severity = 2
 )
 
 // Diagnostic is a single semantic check result on the merged config.
@@ -137,6 +140,34 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 			Path:     path,
 			Message:  "legacy settings were migrated for this session (agent.provider/agent.model, or the per-profile embedding role binding). The next config save will rewrite these settings.",
 			Source:   source,
+		})
+	}
+
+	// 8: hoist migration outcome. [providers]/[models.presets] in the project
+	// config are deprecated (user-global only); LoadLayers moves what it can
+	// and reports what it moved and what it could not reconcile.
+	for _, name := range layers.HoistConflicts {
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     name,
+			Message:  fmt.Sprintf("project config entry %q conflicts with the user config; kept project-local (deprecated) — resolve manually", name),
+			Source:   LayerProject.String(),
+		})
+	}
+	if n := len(layers.HoistedProviders); n > 0 {
+		ds = append(ds, Diagnostic{
+			Severity: SeverityInfo,
+			Path:     "providers",
+			Message:  fmt.Sprintf("moved %d provider(s) to the user config", n),
+			Source:   LayerProject.String(),
+		})
+	}
+	if n := len(layers.HoistedPresets); n > 0 {
+		ds = append(ds, Diagnostic{
+			Severity: SeverityInfo,
+			Path:     "models.presets",
+			Message:  fmt.Sprintf("moved %d preset(s) to the user config", n),
+			Source:   LayerProject.String(),
 		})
 	}
 

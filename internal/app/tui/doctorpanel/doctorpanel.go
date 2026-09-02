@@ -52,13 +52,15 @@ func diagsToFields(diags []config.Diagnostic, checks []Check) []*listpanel.Field
 			GetStr: func() string { return "" },
 		})
 	} else {
-		var errs, warns []config.Diagnostic
+		var errs, warns, infos []config.Diagnostic
 		for _, d := range diags {
 			switch d.Severity {
 			case config.SeverityError:
 				errs = append(errs, d)
 			case config.SeverityWarning:
 				warns = append(warns, d)
+			case config.SeverityInfo:
+				infos = append(infos, d)
 			}
 		}
 		if len(errs) > 0 {
@@ -68,6 +70,10 @@ func diagsToFields(diags []config.Diagnostic, checks []Check) []*listpanel.Field
 		if len(warns) > 0 {
 			out = append(out, &listpanel.Field{ID: "hwarnings", Title: "Warnings", Kind: listpanel.KindHeader})
 			out = append(out, diagRows(warns, true)...)
+		}
+		if len(infos) > 0 {
+			out = append(out, &listpanel.Field{ID: "hnotes", Title: "Notes", Kind: listpanel.KindHeader})
+			out = append(out, diagRows(infos, false)...)
 		}
 	}
 	if len(checks) > 0 {
@@ -109,10 +115,14 @@ func diagRows(diags []config.Diagnostic, includeActions bool) []*listpanel.Field
 			ID: d.Path, Title: d.Path, Kind: listpanel.KindScalar,
 			Desc: desc,
 			GetStr: func() string {
-				if d.Severity == config.SeverityError {
+				switch d.Severity {
+				case config.SeverityError:
 					return "error"
+				case config.SeverityInfo:
+					return "info"
+				default:
+					return "warning"
 				}
-				return "warning"
 			},
 		})
 	}

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 
 	tea "charm.land/bubbletea/v2"
@@ -107,13 +108,20 @@ func (m *Model) openModelOptionsForProvider(providerName string) {
 
 // handleModelOptionsChanged persists the candidate config and either reloads
 // it immediately when idle, or defers the reload until the runner is no longer
-// busy.
+// busy. Presets are user-global, so both paths write the user config; the
+// project file carries nothing for this change.
 func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	if m.pendingModelOptions != nil && m.pendingModelOptions.presetName == msg.PresetName {
 		m.pendingModelOptions.retry = false
 	}
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil || home == "" {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: locate home directory: %v", msg.FieldID, homeErr), session.ContentTypePlain)
+		return nil
+	}
+	userPath := config.UserConfigPath(home)
 	if !m.busy && m.state.RunningJobsCount() == 0 {
-		saveErr, reloadErr := m.persistAndReload(msg.Config)
+		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config)
 		if saveErr != nil || reloadErr != nil {
 			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr), session.ContentTypePlain)
 			return nil
@@ -122,12 +130,9 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 		return nil
 	}
 
-	if err := config.SaveProjectConfig(config.ProjectConfigPath(m.workDir), msg.Config, m.state.Layers()); err != nil {
+	if err := config.SaveUserConfigPresets(userPath, msg.Config.Models.Presets); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Saved %s option failed: %v", msg.FieldID, err), session.ContentTypePlain)
 		return nil
-	}
-	if m.trustRefresh != nil {
-		m.trustRefresh(m.workDir)
 	}
 	m.pendingModelOptions = &pendingModelOptionsState{
 		presetName: msg.PresetName,
@@ -135,6 +140,35 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("%s: %s → %s (saved for next idle turn)", fieldLabel(msg.FieldID), msg.OldValue, msg.NewValue), session.ContentTypePlain)
 	return nil
+}
+
+// savePresetsAndReload persists the presets of cfg to the user-global config
+// and reloads the runtime, mirroring persistAndReload minus the project
+// write (SaveProjectConfig never emits presets). It returns the save error
+// or, when saving succeeded, the reload error (nil on full success).
+func (m *Model) savePresetsAndReload(userPath string, cfg config.Config) (saveErr, reloadErr error) {
+	if err := config.SaveUserConfigPresets(userPath, cfg.Models.Presets); err != nil {
+		m.applyNewConfig(cfg)
+		m.configSavePending = true
+		return err, nil
+	}
+	m.configSavePending = false
+	// The user file changed on disk; refresh the load-time snapshots before
+	// rebuilding the runtime so the next save diffs against fresh layers.
+	m.reloadLayers()
+	if m.configReloader != nil {
+		// reloadAgentRuntime may install cfg before reporting a cleanup
+		// error; invalidate config-derived state before attempting it.
+		m.setReg = nil
+		if err := m.configReloader(cfg); err != nil {
+			m.applyNewConfig(cfg)
+			return nil, err
+		}
+		m.afterRuntimeReload()
+	}
+	m.applyNewConfig(cfg)
+	m.refreshDiagnostics()
+	return nil, nil
 }
 
 // flushPendingModelOptions applies a pending options candidate if the model is

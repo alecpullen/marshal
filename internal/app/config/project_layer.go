@@ -8,10 +8,8 @@ import "reflect"
 // baked into the project file. Sections absent from the file mirror are
 // left alone (they were not going to be written anyway).
 //
-// Providers are compared on non-credential fields only: the merged config
-// carries API keys in memory that are deliberately stripped before
-// persisting, so a naive DeepEqual would drop every provider entry from
-// the project file.
+// [providers] and [models.presets] need no handling here: they are
+// user-global only, so writeSections never emits them into a project save.
 func applyProjectLayer(file *configFile, merged Config, layers Layers) {
 	// A zero Layers means the caller has no load-time snapshot (tests and
 	// unusual callers): preserve the historical write-everything behaviour.
@@ -79,12 +77,6 @@ func applyProjectLayer(file *configFile, merged Config, layers Layers) {
 	if file.Skills != nil && reflect.DeepEqual(merged.Skills, user.Skills) {
 		file.Skills = nil
 	}
-	if file.Providers != nil && !providersDifferBeyondKeys(merged.Providers, user.Providers) {
-		file.Providers = nil
-	}
-	if file.Models != nil && reflect.DeepEqual(merged.Models, user.Models) {
-		file.Models = nil
-	}
 	if file.AgentProfilesRaw != nil && reflect.DeepEqual(merged.AgentProfiles, user.AgentProfiles) {
 		file.AgentProfilesRaw = nil
 	}
@@ -100,23 +92,4 @@ func applyProjectLayer(file *configFile, merged Config, layers Layers) {
 	if file.Scratchpad != nil && reflect.DeepEqual(merged.Scratchpad, user.Scratchpad) {
 		file.Scratchpad = nil
 	}
-}
-
-// providersDifferBeyondKeys reports whether merged holds any provider
-// entry whose non-credential fields differ from the user layer's entry.
-// API keys are ignored: they exist only in the in-memory merged config
-// and are stripped before persisting.
-func providersDifferBeyondKeys(merged, user map[string]ProviderConfig) bool {
-	for name, m := range merged {
-		u, ok := user[name]
-		if !ok {
-			return true
-		}
-		if m.Type != u.Type || m.BaseURL != u.BaseURL || m.Template != u.Template ||
-			m.ToolCalling != u.ToolCalling || m.KeepAlive != u.KeepAlive ||
-			m.ThinkingBudget != u.ThinkingBudget || m.ReasoningSummary != u.ReasoningSummary {
-			return true
-		}
-	}
-	return false
 }

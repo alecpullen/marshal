@@ -70,7 +70,7 @@ func (r *TerminalResolver) Resolve(workingDir string, hasProjectConfig bool) (De
 	}
 	// Prompt.
 	fmt.Fprintf(r.out, "\nThis project has a .marshal/config.toml.\n")
-	fmt.Fprintf(r.out, "It can change providers, policy rules, and commands.\n\n")
+	fmt.Fprintf(r.out, "It can change policy rules, commands, and model selection.\n\n")
 	fmt.Fprintf(r.out, "  1) Trust permanently (saved for this path)\n")
 	fmt.Fprintf(r.out, "  2) Trust this session only\n")
 	fmt.Fprintf(r.out, "  3) Don't trust (user + default config only)\n\n")

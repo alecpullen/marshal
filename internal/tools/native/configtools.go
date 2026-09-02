@@ -80,6 +80,17 @@ func (e configWriteEnvelope) resolvedScope() string {
 	return "project"
 }
 
+// globalOnlyScope resolves the scope for the provider/preset tools, which are
+// user-global only: an explicit project scope is rejected, and anything else
+// (omitted or "global") resolves to "global" so commitConfigWrite forces
+// approval and saves to the user config.
+func (e configWriteEnvelope) globalOnlyScope(tool string) (string, error) {
+	if e.Scope == "project" {
+		return "", fmt.Errorf("%s: [providers] and [models.presets] are user-global only and cannot be written to the project config — rerun with scope omitted or \"global\"", tool)
+	}
+	return "global", nil
+}
+
 // requestConfigApproval posts a forced approval prompt that bypasses the
 // policy mode-transform (so it prompts even in auto mode), reusing the
 // mode.request PendingToolCall pattern. Returns whether the user approved.
@@ -1100,7 +1111,7 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 func (t *toolSet) configProvidersSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.providers.set",
-		Description: "Set or add a provider entry in the [providers] section. Use api_key_env to reference an environment variable; literal api_key is blocked for security. Omitted fields are preserved. Existing api_key on disk is carried forward if not overwritten.",
+		Description: "Set or add a provider entry in the [providers] section of the user-global config (providers are user-global only; the write always requires approval). Use api_key_env to reference an environment variable; literal api_key is blocked for security. Omitted fields are preserved. Existing api_key on disk is carried forward if not overwritten.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Provider name key"},"base_url":{"type":"string"},"type":{"type":"string","description":"Provider type: \"openai_compatible\" (default) or \"ollama\""},"tool_calling":{"type":"boolean"},"api_key":{"type":"string","description":"BLOCKED — literal secrets cannot be set via this tool"},"api_key_env":{"type":"string","description":"Environment variable name to resolve at runtime"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
@@ -1120,7 +1131,10 @@ func (t *toolSet) configProvidersSetTool() registry.Tool {
 		if args.APIKey != "" {
 			return registry.ToolResult{}, fmt.Errorf("api_key cannot be set via this tool — literal secrets are blocked. Use api_key_env to reference an environment variable, or use /connect to enter a key interactively.")
 		}
-		scope := args.resolvedScope()
+		scope, err := args.globalOnlyScope("config.providers.set")
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
 		reason := fmt.Sprintf("config.providers.set (%s scope): set provider %q", scope, args.Name)
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
 			existing := cfg.Providers[args.Name]
@@ -1151,7 +1165,7 @@ func (t *toolSet) configProvidersSetTool() registry.Tool {
 func (t *toolSet) configProvidersDeleteTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.providers.delete",
-		Description: "Delete a provider entry from the [providers] section by name.",
+		Description: "Delete a provider entry from the [providers] section of the user-global config by name (providers are user-global only; the write always requires approval).",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Provider name key to delete"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
@@ -1163,7 +1177,10 @@ func (t *toolSet) configProvidersDeleteTool() registry.Tool {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.providers.delete args: %w", err)
 		}
-		scope := args.resolvedScope()
+		scope, err := args.globalOnlyScope("config.providers.delete")
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
 		reason := fmt.Sprintf("config.providers.delete (%s scope): delete provider %q", scope, args.Name)
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
 			delete(cfg.Providers, args.Name)
@@ -1175,7 +1192,7 @@ func (t *toolSet) configProvidersDeleteTool() registry.Tool {
 func (t *toolSet) configModelsPresetSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.models.preset.set",
-		Description: "Set or add a model preset in the [models.presets] section. Omitted fields are preserved.",
+		Description: "Set or add a model preset in the [models.presets] section of the user-global config (presets are user-global only; the write always requires approval). Omitted fields are preserved.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Preset name key"},"provider":{"type":"string"},"model":{"type":"string"},"context_window":{"type":"integer"},"max_output_tokens":{"type":"integer"},"tool_calling":{"type":"string"},"local_only":{"type":"boolean"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
@@ -1193,7 +1210,10 @@ func (t *toolSet) configModelsPresetSetTool() registry.Tool {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.models.preset.set args: %w", err)
 		}
-		scope := args.resolvedScope()
+		scope, err := args.globalOnlyScope("config.models.preset.set")
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
 		if !routing.IsCanonicalPresetName(args.Name) {
 			return registry.ToolResult{}, fmt.Errorf("preset name %q is not a canonical <provider>/<model> key", args.Name)
 		}
@@ -1239,7 +1259,7 @@ func (t *toolSet) configModelsPresetSetTool() registry.Tool {
 func (t *toolSet) configModelsPresetDeleteTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.models.preset.delete",
-		Description: "Delete a model preset from the [models.presets] section by name.",
+		Description: "Delete a model preset from the [models.presets] section of the user-global config by name (presets are user-global only; the write always requires approval).",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Preset name key to delete"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
@@ -1251,7 +1271,10 @@ func (t *toolSet) configModelsPresetDeleteTool() registry.Tool {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.models.preset.delete args: %w", err)
 		}
-		scope := args.resolvedScope()
+		scope, err := args.globalOnlyScope("config.models.preset.delete")
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
 		reason := fmt.Sprintf("config.models.preset.delete (%s scope): delete preset %q", scope, args.Name)
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
 			delete(cfg.Models.Presets, args.Name)

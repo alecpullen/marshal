@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 **Config and project identity**
+- `[providers]` and `[models.presets]` are user-global only. They live in
+  `~/.config/marshal/config.toml`; every editing surface (connect,
+  /settings, /options, /models, the config.providers.\* and
+  config.models.preset.\* tools) saves them there, and project saves never
+  emit them. On load, a trusted project config that still carries these
+  sections is hoisted into the user config and stripped; an entry that
+  conflicts with an existing user-global one is kept project-local with a
+  deprecation warning.
 - Marshal anchors `.marshal/`, the session database, project config, and
   trust records at the git repository root instead of the launch
   directory: launching from a subdirectory no longer creates a second,

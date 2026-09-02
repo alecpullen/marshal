@@ -28,6 +28,21 @@ type Layers struct {
 	// [agent] subtask_iterations — needed because the merged int cannot
 	// distinguish unset from an explicit 0 ("unlimited").
 	SubtaskIterationsSet bool
+	// HoistedProviders/HoistedPresets name the [providers]/[models.presets]
+	// entries LoadLayers moved out of the project config into the user config
+	// (or dropped as duplicates of user entries); those sections are
+	// user-global only. HoistConflicts names the project entries left in
+	// place because the user config carries a materially different entry
+	// under the same name, as dotted paths ("providers.x",
+	// "models.presets.x/y"). All three are empty unless the project layer
+	// was applied.
+	HoistedProviders []string
+	HoistedPresets   []string
+	HoistConflicts   []string
+	// HoistError is set when the hoist migration failed to persist. The
+	// merged config is unaffected (it was built from both files before the
+	// hoist ran) and the next load retries.
+	HoistError error
 }
 
 // LoadLayers loads config and exposes the cumulative snapshots used for
@@ -95,6 +110,23 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			return Layers{}, fmt.Errorf("merge config %s: %w", projectPath, err)
 		}
 	}
+	// Hoist [providers]/[models.presets] from the project file into the user
+	// config: those sections are user-global only. Runs only when the project
+	// layer was actually applied (present, trusted, not skipped). Best-effort:
+	// the merged config above already reflects both files, so a hoist failure
+	// changes nothing about this session — it is recorded on Layers and the
+	// next load retries. The hoist is idempotent: after a successful run the
+	// project file no longer carries the sections, so in-session reloads via
+	// LoadSessionLayers do not rewrite anything.
+	var hoistedProviders, hoistedPresets, hoistConflicts []string
+	var hoistError error
+	if hasProject && applyProject {
+		res, herr := hoistProjectGlobals(userPath, projectPath, &userFile, &projectFile)
+		if herr != nil {
+			hoistError = herr
+		}
+		hoistedProviders, hoistedPresets, hoistConflicts = res.providers, res.presets, res.conflicts
+	}
 	// The legacy [agent] provider/model pair is read from the raw file
 	// mirror (the fields no longer exist on AgentConfig — they moved to
 	// [providers] and [models.presets]). The project file wins over the
@@ -119,7 +151,14 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	migrated := MigrateLegacyAgentModel(&cfg, legacyProvider, legacyModel)
 	migrated = MigrateEmbeddingRoleBinding(&cfg) || migrated
 	coercePresetPricing(&cfg)
-	return Layers{Default: def, User: user, Merged: cfg, Migrated: migrated, SubtaskIterationsSet: subtaskSet}, nil
+	return Layers{
+		Default: def, User: user, Merged: cfg, Migrated: migrated,
+		SubtaskIterationsSet: subtaskSet,
+		HoistedProviders:     hoistedProviders,
+		HoistedPresets:       hoistedPresets,
+		HoistConflicts:       hoistConflicts,
+		HoistError:           hoistError,
+	}, nil
 }
 
 // LayerID identifies which merge layer supplied a value.

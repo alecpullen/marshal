@@ -687,6 +687,79 @@ func TestGlobalTargetSaveFailureDoesNotWriteProjectConfig(t *testing.T) {
 	}
 }
 
+func TestFlushChangesWritesProvidersAndPresetsGlobally(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userPath := config.UserConfigPath(home)
+	projectPath := filepath.Join(t.TempDir(), "config.toml")
+	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+
+	// Simulate a providers-drill edit: mutate the working config, then flush.
+	cfg := b.reg.Config()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3"},
+	}
+	b.reg.st.cfg = cfg
+
+	cmd := b.flushChanges(nil, true)
+	if cmd == nil {
+		t.Fatal("flush should produce a ChangedMsg command")
+	}
+	changed, ok := cmd().(ChangedMsg)
+	if !ok {
+		t.Fatalf("want ChangedMsg, got %T", cmd())
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("save failed: %v", changed.SaveErr)
+	}
+
+	userData, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(userData), "localhost:11434") || !strings.Contains(string(userData), "qwen3") {
+		t.Fatalf("provider/preset missing from user config:\n%s", userData)
+	}
+	projectData, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(projectData), "localhost:11434") || strings.Contains(string(projectData), "qwen3") {
+		t.Fatalf("provider/preset leaked into project config:\n%s", projectData)
+	}
+}
+
+func TestFlushChangesWithoutProviderChangesSkipsUserConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userPath := config.UserConfigPath(home)
+	projectPath := filepath.Join(t.TempDir(), "config.toml")
+	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+
+	// A benign project-scope edit must not rewrite the user config.
+	b.reg.st.cfg.Agent.PlanFirst = true
+	cmd := b.flushChanges(nil, true)
+	if cmd == nil {
+		t.Fatal("flush should produce a ChangedMsg command")
+	}
+	changed, ok := cmd().(ChangedMsg)
+	if !ok {
+		t.Fatalf("want ChangedMsg, got %T", cmd())
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("save failed: %v", changed.SaveErr)
+	}
+	if _, err := os.Stat(userPath); !os.IsNotExist(err) {
+		t.Fatalf("user config must not be written for a project-only change: %v", err)
+	}
+	if _, err := os.Stat(projectPath); err != nil {
+		t.Fatalf("project config not written: %v", err)
+	}
+}
+
 func TestHintsShowWriteTarget(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	drillBrowserToRow(t, b, "Theme")

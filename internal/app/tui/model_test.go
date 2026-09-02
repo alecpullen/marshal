@@ -5351,7 +5351,7 @@ func TestApplyConnectDoneMaterializeCollisionSurfacesError(t *testing.T) {
 }
 
 func TestApplyConnectDoneWritesAPresetAndPair(t *testing.T) {
-	m, workDir, _ := newModelForConfigTest(t)
+	m, workDir, homeDir := newModelForConfigTest(t)
 	m.applyConnectDone(connect.DoneMsg{
 		Provider:    "openai",
 		Model:       "gpt-4o",
@@ -5371,16 +5371,27 @@ func TestApplyConnectDoneWritesAPresetAndPair(t *testing.T) {
 		t.Errorf("preset = %s/%s, want openai/gpt-4o", preset.Provider, preset.Model)
 	}
 
-	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	// Providers and presets are user-global: both land in the user config.
+	userData, err := os.ReadFile(config.UserConfigPath(homeDir))
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(userData), "gpt-4o") {
+		t.Errorf("preset not persisted to user config:\n%s", userData)
+	}
+	if !strings.Contains(string(userData), "api.openai.com") {
+		t.Errorf("provider not persisted to user config:\n%s", userData)
+	}
+	projectData, err := os.ReadFile(config.ProjectConfigPath(workDir))
 	if err != nil {
 		t.Fatalf("read project config: %v", err)
 	}
-	if !strings.Contains(string(data), "gpt-4o") {
-		t.Errorf("preset not persisted:\n%s", data)
+	if strings.Contains(string(projectData), "[providers]") || strings.Contains(string(projectData), "[models.presets]") {
+		t.Errorf("provider/preset sections must not be written to the project config:\n%s", projectData)
 	}
 	// No agent_profiles section should be written for the simple case.
-	if strings.Contains(string(data), "[agent_profiles]") {
-		t.Errorf("simple model switch should not write agent_profiles:\n%s", data)
+	if strings.Contains(string(projectData), "[agent_profiles]") {
+		t.Errorf("simple model switch should not write agent_profiles:\n%s", projectData)
 	}
 }
 
@@ -5423,8 +5434,8 @@ func TestApplyConnectDoneKeepsAPIKeyOutOfProjectConfig(t *testing.T) {
 	if strings.Contains(string(projectData), "sk-secret-should-not-be-committed") {
 		t.Errorf("API key written to project config:\n%s", projectData)
 	}
-	if !strings.Contains(string(projectData), "api.openai.com") {
-		t.Errorf("base URL missing from project config:\n%s", projectData)
+	if strings.Contains(string(projectData), "api.openai.com") {
+		t.Errorf("provider written to project config:\n%s", projectData)
 	}
 
 	userData, err := os.ReadFile(config.UserConfigPath(homeDir))
@@ -5433,6 +5444,9 @@ func TestApplyConnectDoneKeepsAPIKeyOutOfProjectConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(userData), "sk-secret-should-not-be-committed") {
 		t.Errorf("API key missing from user config:\n%s", userData)
+	}
+	if !strings.Contains(string(userData), "api.openai.com") {
+		t.Errorf("base URL missing from user config:\n%s", userData)
 	}
 }
 
@@ -5473,8 +5487,8 @@ func TestApplyConnectDoneKeepsAPIKeyInRuntimeConfig(t *testing.T) {
 	}
 }
 
-func TestApplyConnectDoneWithoutKeyTouchesOnlyProjectConfig(t *testing.T) {
-	m, workDir, _ := newModelForConfigTest(t)
+func TestApplyConnectDoneWithoutKeyWritesUserConfig(t *testing.T) {
+	m, workDir, homeDir := newModelForConfigTest(t)
 
 	m.applyConnectDone(connect.DoneMsg{
 		Provider:    "ollama",
@@ -5482,17 +5496,24 @@ func TestApplyConnectDoneWithoutKeyTouchesOnlyProjectConfig(t *testing.T) {
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	})
 
-	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	userData, err := os.ReadFile(config.UserConfigPath(homeDir))
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(userData), "localhost:11434") {
+		t.Errorf("provider not persisted to user config:\n%s", userData)
+	}
+	projectData, err := os.ReadFile(config.ProjectConfigPath(workDir))
 	if err != nil {
 		t.Fatalf("read project config: %v", err)
 	}
-	if !strings.Contains(string(data), "localhost:11434") {
-		t.Errorf("provider not persisted:\n%s", data)
+	if strings.Contains(string(projectData), "localhost:11434") {
+		t.Errorf("provider written to project config:\n%s", projectData)
 	}
 }
 
 func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
-	m, workDir, _ := newModelForConfigTest(t)
+	m, _, homeDir := newModelForConfigTest(t)
 
 	m.applyConnectDone(connect.DoneMsg{
 		Provider:        "openai",
@@ -5512,12 +5533,12 @@ func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
 		t.Errorf("MaxOutputTokens = %d, want 16384", preset.MaxOutputTokens)
 	}
 
-	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	data, err := os.ReadFile(config.UserConfigPath(homeDir))
 	if err != nil {
-		t.Fatalf("read project config: %v", err)
+		t.Fatalf("read user config: %v", err)
 	}
 	if !strings.Contains(string(data), "128000") {
-		t.Errorf("context window not persisted:\n%s", data)
+		t.Errorf("context window not persisted to user config:\n%s", data)
 	}
 }
 

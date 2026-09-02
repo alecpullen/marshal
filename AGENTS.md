@@ -151,6 +151,11 @@ Config is merged in order (later wins):
 2. `~/.config/marshal/config.toml`
 3. `.marshal/config.toml` (project-local)
 
+`[providers]` and `[models.presets]` are user-global only: project configs
+never carry them, all editing surfaces save them to the user config, and a
+trusted project file that still has them is hoisted into the user config on
+load (conflicting entries stay project-local with a deprecation diagnostic).
+
 ### Dependency injection seams
 
 `app.Run()` accepts 10 functional options (`app.go:105-210`) so tests can inject fakes without spinning up a real TUI. The most-used are `WithConfigLoader`, `WithProgramRunner`, and `WithNow`; also available are `WithTrustResolver`, `WithWorkingDir`, `WithKnowledgeHook`, `WithWorker`, `WithSessionID`, `WithExistingSession`, and `WithAdditionalDirectories`. Tests in `app_test.go` use this pattern exclusively.

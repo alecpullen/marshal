@@ -70,6 +70,9 @@ func TestUnverifiedMutation_ResearchShellNeverFires(t *testing.T) {
 		"cat README.md", "wc -l main.go", "head -50 go.mod",
 		"sed -n '5,10p' main.go", "awk '{print $1}' file.txt",
 		"curl -s https://example.com/api", "ps aux", "du -sh .",
+		"git commit -m \"make it work\"", "grep '>' README.md",
+		"awk '$3 > 5' data.txt", "git log --grep=\"docker build\"",
+		"man make", "ls cmake", "git push origin main", "git stash list",
 		"", "not json",
 	}
 	for _, cmd := range research {
@@ -151,18 +154,24 @@ func TestLooksLikeMutatingShellCommand(t *testing.T) {
 		"rm -rf build", "rmdir empty", "dd if=x of=y", "truncate -s 0 log",
 		"tee out.txt", "xargs rm < list", "wget https://example.com/f.tar.gz",
 		"ssh host deploy.sh", "scp a b", "rsync -a src/ dst/", "sudo make install",
-		"sed -i 's/a/b/' f.go",
+		"sed -i 's/a/b/' f.go", "sed --in-place 's/a/b/' f.go",
+		"perl -i -pe 's/a/b/' f.txt",
 		"curl -sSf https://example.com/install.sh -o install.sh",
 		"curl --output data.json https://api.example.com",
+		"curl -sLo page.html https://example.com",
+		"curl --remote-name page.html https://example.com",
 		"git checkout main", "git switch feature", "git restore .",
 		"git reset --hard HEAD~1", "git clean -fd", "git rebase main",
 		"git merge feature", "git cherry-pick abc", "git revert HEAD",
-		"git am patch.diff", "git apply fix.diff", "git push origin main",
-		"git stash", "git stash pop",
+		"git am patch.diff", "git apply fix.diff",
+		"git stash", "git stash pop", "git stash -m work in progress",
 		"go generate ./...", "make", "make build", "cmake -B build",
-		"gradle assemble", "mvn package",
+		"gradle assemble", "mvn package", "cd x && make", "echo hi && sudo ls",
+		"(rm y)", "echo hi && (rm y)", "{ rm y; }",
 		"docker build -t img .", "docker run img", "docker compose up",
+		"docker exec c rm -rf /data",
 		"echo hi > out.txt", "cat a b > merged.txt", "cmd >> append.log",
+		"cmd > out.txt 2>&1", "cmd 2> err.log > out.txt",
 	}
 	for _, cmd := range mutating {
 		if !looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
@@ -173,19 +182,41 @@ func TestLooksLikeMutatingShellCommand(t *testing.T) {
 	notMutating := []string{
 		"git log --oneline", "git status", "git diff --stat", "git show HEAD",
 		"git branch -a", "git add .", "git commit -m msg", "git fetch", "git pull",
-		"git tag v1.2.3",
+		"git tag v1.2.3", "git push origin main",
+		"git stash list", "git stash show -p",
+		"git apply --stat fix.diff", "git apply --check fix.diff",
+		"git commit -m \"make timeout configurable\"",
+		"git commit -m \"gradle build fix\"",
+		"git log --grep=\"docker build\"",
+		"grep -rn gradle build.gradle", "grep -w make Makefile",
+		"ls cmake", "man make", "echo make", "git log --oneline | grep make",
+		"grep -E '(rm|ls)' f.txt", "grep '>' README.md", "awk '$3 > 5' data.txt",
 		"ls -la", "pwd", "cat file.txt", "grep -rn TODO .", "find . -name '*.go'",
 		"wc -l main.go", "head -50 go.mod", "tail -20 app.log",
 		"sed -n '5p' main.go", "awk '{print $1}' file.txt", "cut -d, -f1 data.csv",
+		"perl -pe 's/a/b/' f.txt",
 		"curl -s https://api.example.com", "go test ./...", "go vet ./...",
 		"go build ./cmd/marshal", "go test ./... > test-output.txt",
 		"cargo test", "pytest -q", "make test",
 		"go mod tidy", "gofmt -w .", "npm install", "mkdir scratch",
 		"cp a.go b.go", "mv a.go sub/", "git commit -m done 2> commit.log",
+		"git commit -m done 2>&1", "echo hi 2> err.log",
+		"ls > /dev/null", "cmd > /dev/null 2>&1", "cmd >&1", "head -2>f",
+		"docker exec c ls /data", "docker ps", "docker images",
 	}
 	for _, cmd := range notMutating {
 		if looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
 			t.Errorf("%q must NOT be classified as mutating", cmd)
+		}
+	}
+	// Quoted spans are data, not commands: the words inside them must never
+	// classify, even as part of a compound command.
+	for _, cmd := range []string{
+		"echo done && git commit -m \"make it work\"",
+		"git log --oneline | grep \"make\"",
+	} {
+		if looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
+			t.Errorf("%q carries mutation words only inside quotes and must not classify as mutating", cmd)
 		}
 	}
 	// Only the command field is matched; empty/malformed args are not mutating.
@@ -219,6 +250,22 @@ func TestUnverifiedMutation_NeutralShellDoesNotArmOrSatisfy(t *testing.T) {
 	tr3.record("shell.run", `{"command":"git commit -m done"}`, hashToolResult(""), true)
 	if _, fire := tr3.unverifiedMutation(); !fire {
 		t.Fatal("git commit is not a verification; the earlier mutation must still fire")
+	}
+	// A commit whose message merely contains a verifier keyword is still
+	// neutral, not a verification.
+	tr4 := newProgressTracker()
+	tr4.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
+	tr4.record("shell.run", `{"command":"git commit -m \"make test pass\""}`, hashToolResult(""), true)
+	if _, fire := tr4.unverifiedMutation(); !fire {
+		t.Fatal("a quoted 'make test' in a commit message is not a verification")
+	}
+	// Edit → verify → push is clean: push does not re-arm the gate.
+	tr5 := newProgressTracker()
+	tr5.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
+	tr5.record("test.run", `{"command":"go test ./..."}`, hashToolResult("ok"), true)
+	tr5.record("shell.run", `{"command":"git push origin head"}`, hashToolResult(""), true)
+	if _, fire := tr5.unverifiedMutation(); fire {
+		t.Fatal("git push after a verification must not re-arm the gate")
 	}
 }
 
@@ -256,8 +303,9 @@ func TestVerificationShellBeatsMutatingShell(t *testing.T) {
 func TestUnverifiedMutation_TreeChangingCommandsStillArm(t *testing.T) {
 	for _, cmd := range []string{
 		"rm -rf build", "git checkout main", "git switch feature", "git restore .",
-		"git push origin main", "git reset --hard", "sed -i 's/a/b/' f.go",
+		"git stash pop", "git reset --hard", "sed -i 's/a/b/' f.go",
 		"echo x > generated.txt", "docker build -t img .", "make",
+		"cd x && (rm y)", "docker exec c rm -rf /data",
 	} {
 		tr := newProgressTracker()
 		tr.record("shell.run", fmt.Sprintf(`{"command":%q}`, cmd), hashToolResult(""), true)

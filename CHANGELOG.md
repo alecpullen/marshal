@@ -12,13 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The verification reminder no longer treats every `shell.run` as an edit.
   Classification is now an explicit allowlist: only file-deletion commands,
   git state changes (`checkout`/`switch`/`restore`/`reset`/`clean`/`rebase`/
-  `merge`/`push`/`stash`/…), code generators, docker/container mutations,
-  remote execution, `sudo`, and redirection into files arm the gate. Research
-  commands (`git log`, `grep`, `find`, plain `curl`, read-only `sed`/`awk`)
-  and unrecognized commands are neutral — models answering questions or doing
-  research no longer get the "you made changes but have not verified them"
-  nudge. The same allowlist drives repeat-loop detection, so read-only shell
-  loops now keep their repeat streak and trip stall detection again.
+  `merge`/`cherry-pick`/`revert`/`am`/`apply` and the state-changing `stash`
+  forms — `git push`, `git commit`, and read-only forms like
+  `git stash list`/`git apply --stat` stay neutral), code generators, docker
+  mutations (`exec` only when the command it runs is destructive), remote
+  execution, `sudo`, and redirection into files (except `/dev/null` sinks)
+  arm the gate. Patterns anchor to command-segment starts, and quoted spans
+  are stripped before matching, so `git commit -m "make it work"`,
+  `grep make Makefile`, `grep '>' README.md`, and `awk '$3 > 5'` can never
+  arm. Research commands (`git log`, `grep`, `find`, plain `curl`, read-only
+  `sed`/`awk`) and unrecognized commands are neutral — models answering
+  questions or doing research no longer get the "you made changes but have
+  not verified them" nudge. The same allowlist drives repeat-loop detection,
+  so read-only shell loops keep their repeat streak and trip stall detection
+  again. The nudge now says "made changes" instead of "edited files" (shell
+  mutators like `rm` are not edits). Unlike v0.0.3-alpha, git `push` and
+  state-changing `stash` invocations now arm the gate once per turn; commit
+  and push still never re-arm after a verification.
 
 ## [0.0.3-alpha] - 2026-09-02
 

@@ -72,15 +72,11 @@ func mutationOf(cat toolCategory, args string) mutationKind {
 // streaks nor arms the verification gate. Verification-shaped commands
 // (go test, make test, …) are checked first and are never mutations, so
 // a build that happens to write artifacts keeps its verification role.
+// Both checks run on the quote-stripped command, so a keyword inside
+// quotes ("make test" in a commit message) is inert in both directions.
 func shellMutationKind(args string) mutationKind {
-	cmd, ok := shellCommandField(args)
-	if !ok {
+	if looksLikeVerificationCommand(args) {
 		return mutNone
-	}
-	for _, p := range verificationCommandPatterns {
-		if p.MatchString(cmd) {
-			return mutNone
-		}
 	}
 	if looksLikeMutatingShellCommand(args) {
 		return mutKnown
@@ -243,79 +239,132 @@ func shellCommandField(args string) (string, bool) {
 //
 // The list covers: file deletion and in-place rewrites, git state changes
 // (checkout/switch/restore/reset/clean/rebase/merge/cherry-pick/revert/
-// am/apply/push/stash), build and code generators writing outputs,
-// docker/container mutations, remote execution and downloads that land in
-// files, sudo, and redirection into files. It does NOT need to cover file
-// creation via file.write/file.write_patch (classified by tool name),
-// verification commands (checked earlier), or housekeeping (git add/commit,
-// mkdir/cp/mv, gofmt, installs) — those stay neutral by not being on any
-// list.
+// am/apply and the state-changing stash forms), build and code generators
+// writing outputs, docker/container mutations, remote execution and
+// downloads that land in files, sudo, and redirection into files (except
+// /dev/null). It does NOT need to cover file creation via
+// file.write/file.write_patch (classified by tool name), verification
+// commands (checked earlier), or housekeeping (git add/commit/push, mkdir/
+// cp/mv, gofmt, installs) — those stay neutral by not being on any list.
+// Commit and push are deliberately absent even though they change state:
+// they do not invalidate a verification of the working tree, and push is
+// separately guarded by the approval policy.
+//
+// Generator and destructive patterns anchor to a command-segment start
+// (start of command, or after ; | & and the (/{ subshell-group openers), so
+// `cd x && make` arms while `grep make Makefile` and
+// `git commit -m "make timeout configurable"` do not — quoted spans are
+// stripped before matching, so words inside quotes are always data.
+// segStart anchors a pattern to the start of a shell command segment: the
+// start of the payload, a [;|&] boundary, optionally followed by ONE
+// subshell/brace group opener that begins the segment (`&& (rm y)`,
+// `; { make; }`). A mid-segment ( or { — e.g. the group in
+// `grep -E '(rm|ls)' f` (whose quotes were stripped before matching) — is
+// a plain token, not a segment boundary, and does not anchor.
+const segStart = `(?:^|[;|&])\s*(?:[({]\s*)?`
+
 var mutatingCommandPatterns = []*regexp.Regexp{
-	// Destructive file operations, as the first word of a command segment
-	// (start of command, or after ; | &). Bare sed/awk are deliberately
-	// absent: `sed -n '5p' f` and `awk '{print $1}' f` are read-only
+	// Destructive file operations, as the first word of a command segment.
+	// Bare sed/awk are deliberately absent: `sed -n '5p' f` and
+	// `awk '{print $1}' f` are read-only
 	// research; their writing forms are covered by sed -i and the
 	// redirection rule below. Bare xargs is absent too — `find | xargs grep`
 	// is research — only xargs feeding a destructive command counts.
-	regexp.MustCompile(`(?:^|[;|&])\s*(rm|rmdir|dd|truncate|tee|wget|ssh|scp|rsync|sudo)\b`),
+	regexp.MustCompile(segStart + `(rm|rmdir|dd|truncate|tee|wget|ssh|scp|rsync|sudo)\b`),
 	regexp.MustCompile(`\bxargs\s+(rm|tee|dd|truncate)\b`),
-	// sed -i rewrites files in place.
-	regexp.MustCompile(`\bsed\b[^;|&]*\s-i\b`),
-	// curl writing to a file (-o/--output/-O); a plain curl is research.
-	regexp.MustCompile(`\bcurl\b[^;|&]*\s(-o|--output|-O)\b`),
+	// sed -i / --in-place and perl -i rewrite files in place.
+	regexp.MustCompile(`\bsed\b[^;|&]*\s(-i|--in-place)\b`),
+	regexp.MustCompile(`\bperl\b[^;|&]*\s-i\b`),
+	// curl writing to a file: -o or -O standalone or inside a short-flag
+	// cluster (-sLo), --output, --remote-name. A plain curl is research.
+	regexp.MustCompile(segStart + `curl\b[^;|&]*\s(-[A-Za-z]*[oO][A-Za-z]*|--output|--remote-name)\b`),
 	// Git state changes: checkout/switch/restore/reset/clean change the
 	// working tree; rebase/merge/cherry-pick/revert/am/apply change history
-	// or the tree; push/stash change remote or stash state. Commit, add,
-	// tag, fetch, pull, status, log, show, diff, and branch are deliberately
-	// absent (housekeeping or read-only).
-	regexp.MustCompile(`\bgit\s+(checkout|switch|restore|reset|clean|rebase|merge|cherry-pick|revert|am|apply|push|stash)\b`),
-	// Build and code generators that write artifacts into the workspace.
+	// or the tree. Only the state-changing stash forms arm — bare
+	// `git stash`, the flag form `git stash -m msg`, and
+	// push/pop/apply/drop/clear/branch/save — while `git stash list`/`show`
+	// are read-only research. Commit, add, tag, fetch, pull, push, status,
+	// log, show, diff, and branch are deliberately absent (housekeeping or
+	// read-only).
+	regexp.MustCompile(segStart + `git\s+(checkout|switch|restore|reset|clean|rebase|merge|cherry-pick|revert|am|apply)\b`),
+	regexp.MustCompile(`\bgit\s+stash\s+(push|pop|apply|drop|clear|branch|save)\b`),
+	regexp.MustCompile(`\bgit\s+stash\s*(?:$|[;|&])`),
+	regexp.MustCompile(`\bgit\s+stash\s+-`),
+	// Build and code generators that write artifacts into the workspace,
+	// anchored to a segment start so the names match as commands, not as
+	// arguments or quoted text (`grep make Makefile` stays neutral).
 	// cargo build is absent: it is already verification-classified, and
 	// verification wins (see shellMutationKind).
-	regexp.MustCompile(`\bgo\s+generate\b`),
-	regexp.MustCompile(`\bmake\b`),
-	regexp.MustCompile(`\bcmake\b`),
-	regexp.MustCompile(`\bgradle\b`),
-	regexp.MustCompile(`\bmvn\b`),
-	// Docker/container mutations.
-	regexp.MustCompile(`\bdocker\s+(build|run|rm|rmi|kill|stop|compose)\b`),
+	regexp.MustCompile(segStart + `go\s+generate\b`),
+	regexp.MustCompile(segStart + `(make|cmake|gradle|mvn)\b`),
+	// Docker/container mutations; exec arms only when the command it runs
+	// is itself destructive (`docker exec c ls` stays neutral).
+	regexp.MustCompile(segStart + `docker\s+(build|run|rm|rmi|kill|stop|compose)\b`),
+	regexp.MustCompile(segStart + `docker\s+exec\s+\S+\s+(rm|dd|truncate|tee)\b`),
 	// Redirection into a file covers the open-ended cases the named
-	// commands miss: `echo hi > out.txt`, `go test ./... > out.txt`,
-	// `cmd >> append.log`. It anchors to a word followed by a redirect
-	// operator and a target. fd-numbered redirects (`2> err.log`,
-	// `2>&1`) are stripped first in looksLikeMutatingShellCommand, so
-	// redirecting diagnostics is never classified as an edit.
-	regexp.MustCompile(`(?:^|[;|&])\s*[A-Za-z0-9_./"'-]+[^;|&]*[^0-9]\s*>+\s*\S`),
+	// commands miss: `echo hi > out.txt`, `cmd >> append.log`. It anchors
+	// to a word followed by a redirect operator and a target. Quoted spans,
+	// fd-numbered redirects (`2> err.log`, `2>&1`, `>&1`) and /dev/null
+	// sinks are stripped first in looksLikeMutatingShellCommand, so
+	// redirecting diagnostics or discarding output is never an edit.
+	regexp.MustCompile(segStart + `[A-Za-z0-9_./"'-]+[^;|&]*[^0-9]\s*>+\s*\S`),
 }
 
 // fdRedirectStrip removes fd-numbered redirect operators (`2>`, `2>>`,
-// `2>&1`) from a command before classification. These redirect
-// diagnostics, not files, and would otherwise trip the redirection rule
-// (`git commit -m msg 2> err.log`). A digit followed by whitespace before
-// `>` (e.g. `sleep 2 > f`) is left alone — that form is lexically
+// `2>&1`) and descriptor dups (`>&1`, `>&2`) from a command before
+// classification. These redirect diagnostics or duplicate existing
+// descriptors, not files, and would otherwise trip the redirection rule
+// (`git commit -m msg 2> err.log`, `cmd >&1`). The fd number must start its
+// token (command start or after whitespace), so `head -2>f` — where the 2
+// is a flag value — is left alone. A digit followed by whitespace before
+// `>` (e.g. `sleep 2 > f`) is likewise left alone — that form is lexically
 // ambiguous and stays classified as mutating, the safe direction.
-var fdRedirectStrip = regexp.MustCompile(`\b[0-9]+>>?(?:&[0-9]+)?`)
+var fdRedirectStrip = regexp.MustCompile(`(?:^|\s)[0-9]+>>?(?:&[0-9]+)?|>&[0-9]+`)
+
+// quotedSpanStrip removes single- and double-quoted spans before
+// classification. Words inside quotes are data, not commands: commit
+// messages ("make timeout configurable"), grep patterns (">"), and awk
+// predicates ('$3 > 5') must never arm the gate. Unclosed quotes match
+// nothing and leave the command untouched.
+var quotedSpanStrip = regexp.MustCompile(`'[^']*'|"[^"]*"`)
+
+// readOnlyGitStrip removes read-only invocations of otherwise mutating git
+// subcommands before matching: `git apply --stat/--check` inspect a patch
+// without touching the tree, unlike a bare `git apply`.
+var readOnlyGitStrip = regexp.MustCompile(`\bgit\s+apply\s+--(?:stat|check)\b`)
+
+// devNullStrip removes redirects targeting /dev/null before classification.
+// Discarding output mutates nothing; without this, `ls > /dev/null` armed
+// the gate while the already-stripped `cmd 2>/dev/null` did not.
+var devNullStrip = regexp.MustCompile(`(?:>>?)\s*/dev/null\b`)
 
 // looksLikeMutatingShellCommand reports whether a shell.run args payload is
-// on the explicit mutating-command allowlist. Verification-shaped commands
-// are excluded first (the two lists overlap: \bmake\b matches "make test"),
-// then fd-numbered redirects are stripped, then the mutating list is
+// on the explicit mutating-command allowlist. Quoted spans are stripped
+// first — words inside quotes are data, not commands — then
+// verification-shaped commands are excluded (the two lists overlap:
+// \bmake\b matches "make test"), then fd-numbered redirects, read-only git
+// forms, and /dev/null sinks are stripped, and the mutating list is
 // checked.
 func looksLikeMutatingShellCommand(args string) bool {
 	cmd, ok := shellCommandField(args)
 	if !ok {
 		return false
 	}
+	cmd = quotedSpanStrip.ReplaceAllString(cmd, "")
 	// Verification-shaped commands are never mutations, even where the
 	// two lists overlap (\bmake\b matches "make test"; go/cargo builds
-	// write artifacts). Keeping the check here as well as in
-	// shellMutationKind means the raw classifier and the gate agree.
+	// write artifacts). Checked here as well as in shellMutationKind so
+	// the raw classifier and the gate agree. An unbalanced quote leaves
+	// its tail intact, so `go test ./...` in a mangled command still
+	// reads as verification — the safe direction.
 	for _, p := range verificationCommandPatterns {
 		if p.MatchString(cmd) {
 			return false
 		}
 	}
 	cmd = fdRedirectStrip.ReplaceAllString(cmd, "")
+	cmd = readOnlyGitStrip.ReplaceAllString(cmd, "")
+	cmd = devNullStrip.ReplaceAllString(cmd, "")
 	for _, p := range mutatingCommandPatterns {
 		if p.MatchString(cmd) {
 			return true
@@ -349,6 +398,11 @@ func looksLikeVerificationCommand(args string) bool {
 	if !ok {
 		return false
 	}
+	// Quoted spans are stripped before matching: `git commit -m "make
+	// test pass"` carries the keyword as data and must not satisfy the
+	// gate. An unbalanced quote leaves its tail intact, so a mangled
+	// verifier still reads as one — the safe direction.
+	cmd = quotedSpanStrip.ReplaceAllString(cmd, "")
 	for _, p := range verificationCommandPatterns {
 		if p.MatchString(cmd) {
 			return true

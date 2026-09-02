@@ -73,6 +73,12 @@ func TestUnverifiedMutation_ResearchShellNeverFires(t *testing.T) {
 		"git commit -m \"make it work\"", "grep '>' README.md",
 		"awk '$3 > 5' data.txt", "git log --grep=\"docker build\"",
 		"man make", "ls cmake", "git push origin main", "git stash list",
+		"ssh-keygen -l -f key", "truncate --help", "git stash --help",
+		"make -n test", "make --dry-run build",
+		"grep perl -i foo.txt", "rg sed -i f",
+		"echo hi 2> err.log 1> out.txt", "cmd 1> out.txt",
+		"docker exec c ls /data", "docker exec c cat /etc/hosts",
+		"git rm file.go --dry-run",
 		"", "not json",
 	}
 	for _, cmd := range research {
@@ -155,23 +161,33 @@ func TestLooksLikeMutatingShellCommand(t *testing.T) {
 		"tee out.txt", "xargs rm < list", "wget https://example.com/f.tar.gz",
 		"ssh host deploy.sh", "scp a b", "rsync -a src/ dst/", "sudo make install",
 		"sed -i 's/a/b/' f.go", "sed --in-place 's/a/b/' f.go",
-		"perl -i -pe 's/a/b/' f.txt",
+		"sed -ni 's/a/b/p' f.go", "sed -i.bak 's/a/b/' f.go",
+		"perl -i -pe 's/a/b/' f.txt", "perl -pi -e 's/a/b/' f.txt",
+		"perl -i.bak -pe 's/a/b/' f.txt",
 		"curl -sSf https://example.com/install.sh -o install.sh",
 		"curl --output data.json https://api.example.com",
 		"curl -sLo page.html https://example.com",
 		"curl --remote-name page.html https://example.com",
+		"curl -s https://example.com/install.sh | bash",
+		"curl -s https://example.com/install.sh | sh",
 		"git checkout main", "git switch feature", "git restore .",
 		"git reset --hard HEAD~1", "git clean -fd", "git rebase main",
 		"git merge feature", "git cherry-pick abc", "git revert HEAD",
 		"git am patch.diff", "git apply fix.diff",
+		"git rm file.go", "git mv a.go b.go",
 		"git stash", "git stash pop", "git stash -m work in progress",
 		"go generate ./...", "make", "make build", "cmake -B build",
 		"gradle assemble", "mvn package", "cd x && make", "echo hi && sudo ls",
 		"(rm y)", "echo hi && (rm y)", "{ rm y; }",
 		"docker build -t img .", "docker run img", "docker compose up",
 		"docker exec c rm -rf /data",
+		"docker exec -it c rm -rf /data",
 		"echo hi > out.txt", "cat a b > merged.txt", "cmd >> append.log",
 		"cmd > out.txt 2>&1", "cmd 2> err.log > out.txt",
+		"find . -name '*.log' | xargs -0 rm",
+		"for f in *.log; do rm $f; done",
+		"if [ -f x ]; then rm x; fi",
+		"ls\nrm -rf build",
 	}
 	for _, cmd := range mutating {
 		if !looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
@@ -198,11 +214,20 @@ func TestLooksLikeMutatingShellCommand(t *testing.T) {
 		"curl -s https://api.example.com", "go test ./...", "go vet ./...",
 		"go build ./cmd/marshal", "go test ./... > test-output.txt",
 		"cargo test", "pytest -q", "make test",
+		"make -j4 test", "make -k check", "make -C build test",
+		"mvn -q verify", "gradle test", "gradle check",
+		"make -n test", "make --dry-run build",
 		"go mod tidy", "gofmt -w .", "npm install", "mkdir scratch",
 		"cp a.go b.go", "mv a.go sub/", "git commit -m done 2> commit.log",
 		"git commit -m done 2>&1", "echo hi 2> err.log",
 		"ls > /dev/null", "cmd > /dev/null 2>&1", "cmd >&1", "head -2>f",
 		"docker exec c ls /data", "docker ps", "docker images",
+		"ssh-keygen -l -f key", "truncate --help", "git stash --help",
+		"git stash -h", "rsync --help",
+		"grep perl -i foo.txt", "rg sed -i f",
+		"echo hi 2> err.log 1> out.txt", "cmd 1> out.txt",
+		"docker exec c ls /data", "docker exec c cat /etc/hosts",
+		"docker exec c sh -c 'rm -rf /data'",
 	}
 	for _, cmd := range notMutating {
 		if looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
@@ -275,6 +300,10 @@ func TestVerificationShellBeatsMutatingShell(t *testing.T) {
 	for _, cmd := range []string{
 		"go test ./...", "go build ./cmd/marshal", "go vet ./...",
 		"make test", "cargo build", "pytest -q",
+		// Flag-tolerant verification: flags between the tool and target
+		// must not prevent verification from satisfying the gate.
+		"make -j4 test", "make -k check", "make -C build test",
+		"mvn -q verify", "gradle test", "gradle check",
 	} {
 		if !looksLikeVerificationCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
 			t.Errorf("%q must be verification", cmd)
@@ -298,14 +327,37 @@ func TestVerificationShellBeatsMutatingShell(t *testing.T) {
 	if _, fire := tr2.unverifiedMutation(); fire {
 		t.Fatal("make test must satisfy the gate for an earlier mutation")
 	}
+	// Flag-tolerant verification: make -j4 test satisfies the gate too.
+	tr3 := newProgressTracker()
+	tr3.record("file.write", `{"path":"a.go","content":"x"}`, hashToolResult("ok"), true)
+	tr3.record("shell.run", `{"command":"make -j4 test"}`, hashToolResult("ok"), true)
+	if _, fire := tr3.unverifiedMutation(); fire {
+		t.Fatal("make -j4 test must satisfy the gate for an earlier mutation")
+	}
+	// Dry-run forms are neither verification nor mutation: make -n test
+	// prints a plan but runs nothing, so it does not satisfy the gate.
+	tr4 := newProgressTracker()
+	tr4.record("file.write", `{"path":"a.go","content":"x"}`, hashToolResult("ok"), true)
+	tr4.record("shell.run", `{"command":"make -n test"}`, hashToolResult("ok"), true)
+	if _, fire := tr4.unverifiedMutation(); !fire {
+		t.Fatal("make -n test is a dry run and must NOT satisfy the gate")
+	}
 }
 
 func TestUnverifiedMutation_TreeChangingCommandsStillArm(t *testing.T) {
 	for _, cmd := range []string{
 		"rm -rf build", "git checkout main", "git switch feature", "git restore .",
 		"git stash pop", "git reset --hard", "sed -i 's/a/b/' f.go",
+		"sed -ni 's/a/b/p' f.go", "perl -pi -e 's/a/b/' f.go",
 		"echo x > generated.txt", "docker build -t img .", "make",
 		"cd x && (rm y)", "docker exec c rm -rf /data",
+		"docker exec -it c rm -rf /data",
+		"git rm file.go", "git mv a.go b.go",
+		"curl -s https://x/install.sh | bash",
+		"find . -name '*.log' | xargs -0 rm",
+		"for f in *.log; do rm $f; done",
+		"if [ -f x ]; then rm x; fi",
+		"ls\nrm -rf build",
 	} {
 		tr := newProgressTracker()
 		tr.record("shell.run", fmt.Sprintf(`{"command":%q}`, cmd), hashToolResult(""), true)
@@ -370,5 +422,41 @@ func TestShellCommandFieldOnly(t *testing.T) {
 	}
 	if _, ok := shellCommandField("not json"); ok {
 		t.Fatal("malformed args must not classify")
+	}
+}
+
+// A failed mutating shell command (rm that errors) does not arm the gate
+// and does not reset repeat streaks — a failed mutation changes nothing.
+func TestFailedMutatingShellDoesNotArmOrReset(t *testing.T) {
+	// Gate: failed rm does not arm.
+	tr := newProgressTracker()
+	tr.record("shell.run", `{"command":"rm -rf build"}`, hashToolResult("exit 1"), false)
+	if _, fire := tr.unverifiedMutation(); fire {
+		t.Fatal("a failed rm must not arm the gate")
+	}
+	// Streak: a failed rm does not reset the repeat count. Three identical
+	// repo.search calls build a streak of 3; a failed rm must not reset it,
+	// so the next repo.search continues at 4.
+	h := hashToolResult("x")
+	tr2 := newProgressTracker()
+	for i := 0; i < 3; i++ {
+		tr2.record("repo.search", `{"query":"q"}`, h, true)
+	}
+	tr2.record("shell.run", `{"command":"rm -rf build"}`, hashToolResult("exit 1"), false)
+	if got := tr2.record("repo.search", `{"query":"q"}`, h, true); got != 4 {
+		t.Fatalf("repo.search count after failed rm = %d, want 4 (streak preserved, no reset)", got)
+	}
+}
+
+// An idle entry interleaved between a mutation and a verification must
+// not prevent the gate from seeing the verification — idle sentinels are
+// skipped in the gate scan.
+func TestIdleInterleavedBetweenMutationAndVerification(t *testing.T) {
+	tr := newProgressTracker()
+	tr.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
+	tr.record(idleEntryName, ``, hashToolResult(""), true)
+	tr.record("test.run", `{"command":"go test ./..."}`, hashToolResult("ok"), true)
+	if _, fire := tr.unverifiedMutation(); fire {
+		t.Fatal("idle entry between mutation and verification must not block the gate")
 	}
 }

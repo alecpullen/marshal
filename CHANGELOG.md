@@ -10,25 +10,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The verification reminder no longer treats every `shell.run` as an edit.
-  Classification is now an explicit allowlist: only file-deletion commands,
-  git state changes (`checkout`/`switch`/`restore`/`reset`/`clean`/`rebase`/
-  `merge`/`cherry-pick`/`revert`/`am`/`apply` and the state-changing `stash`
-  forms — `git push`, `git commit`, and read-only forms like
-  `git stash list`/`git apply --stat` stay neutral), code generators, docker
-  mutations (`exec` only when the command it runs is destructive), remote
-  execution, `sudo`, and redirection into files (except `/dev/null` sinks)
-  arm the gate. Patterns anchor to command-segment starts, and quoted spans
-  are stripped before matching, so `git commit -m "make it work"`,
-  `grep make Makefile`, `grep '>' README.md`, and `awk '$3 > 5'` can never
-  arm. Research commands (`git log`, `grep`, `find`, plain `curl`, read-only
-  `sed`/`awk`) and unrecognized commands are neutral — models answering
-  questions or doing research no longer get the "you made changes but have
-  not verified them" nudge. The same allowlist drives repeat-loop detection,
-  so read-only shell loops keep their repeat streak and trip stall detection
-  again. The nudge now says "made changes" instead of "edited files" (shell
-  mutators like `rm` are not edits). Unlike v0.0.3-alpha, git `push` and
-  state-changing `stash` invocations now arm the gate once per turn; commit
-  and push still never re-arm after a verification.
+  Classification is now an explicit allowlist with two structural rules:
+  patterns anchor to command-segment starts (`^`, `;`, `|`, `&`, newline,
+  and the `(`/`{` group opener at a segment boundary), and quoted spans are
+  stripped before both classifications — words in quotes are data in both
+  directions (a "make" in a commit message can neither arm the gate nor
+  satisfy it as a phantom verification).
+  Mutating list (arms the gate, resets repeat streaks): `rm`-class
+  destructive commands and `sudo`, `xargs` feeding destructive commands
+  (flags tolerated: `xargs -0 rm`), `sed -i`/`--in-place` and `perl -i`
+  (clustered flags tolerated: `sed -ni`, `perl -pi`), `curl` writing to a
+  file (`-o`/`-O` in a flag cluster, `--output`, `--remote-name`) and
+  `curl | bash`/`| sh`, git state changes (`checkout`/`switch`/`restore`/
+  `reset`/`clean`/`rebase`/`merge`/`cherry-pick`/`revert`/`am`/`apply`/
+  `rm`/`mv` and state-changing `stash` forms — `git stash list`/`show` and
+  `git apply --stat`/`--check` stay neutral), `go generate`,
+  `make`/`cmake`/`gradle`/`mvn` (dry-run forms like `make -n` and
+  `--dry-run` are stripped first), docker `build`/`run`/`rm`/`rmi`/`kill`/
+  `stop`/`compose` and `docker exec` only when the inner command is
+  destructive (`docker exec -it c rm -rf /data` arms), `ssh` (not
+  `ssh-keygen`), and redirection into files after stripping quoted spans,
+  fd-numbered redirects (`2>`, `2>&1`, `>&1`), and `/dev/null` sinks.
+  Verification list (checked first, always wins): `go test`/`vet`/`build`,
+  `npm`/`pnpm`/`yarn test`, `pytest`, `cargo test`/`check`/`clippy`/`build`,
+  `make test`/`check` and `gradle`/`mvn test`/`check`/`verify` — all with
+  flag-tolerant patterns so `make -j4 test` and `mvn -q verify` satisfy the
+  gate. Everything else — `git log`/`status`/`diff`, `grep`, `find`, plain
+  `curl`, read-only `sed`/`awk`, `git commit`/`push`, `go mod tidy`,
+  `gofmt`, installs, and unrecognized commands — is neutral: it neither
+  arms nor satisfies the gate. `--help`/`-h` forms of mutating commands
+  (`truncate --help`, `git stash --help`) are stripped and stay neutral.
+  Models answering questions or doing research no longer get the "you
+  made changes but have not verified them" nudge. The nudge text says
+  "made changes".
+  Known limitations (missed gate once is the cheap failure direction):
+  prefix wrappers (`env`, `nohup`, `time`, `timeout`, `nice`, `FOO=bar`)
+  and quoted code payloads (`bash -c 'echo hi > f'`, `eval 'rm x'`) stay
+  neutral because the quote-stripper cannot distinguish data-quotes from
+  code-quotes; `find -delete`/`-exec rm` and archive extraction (`tar`,
+  `unzip`) stay neutral as unrecognized commands.
 
 ## [0.0.3-alpha] - 2026-09-02
 

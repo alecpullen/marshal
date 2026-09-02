@@ -1,0 +1,26 @@
+[profile]
+default = 'single'
+active_preset = 'ollama-cloud-2/glm-5.3-flash'
+
+[agent]
+approval_mode = 'copilot'
+
+[privacy]
+remote_providers_allowed = true
+
+[models]
+[models.presets.'ollama-cloud-2/glm-5.3-flash']
+provider = 'ollama-cloud-2'
+model = 'glm-5.3-flash'
+context_window = 1048576
+max_output_tokens = 131072
+tool_calling = 'native'
+local_only = false
+
+[models.presets.'ollama-cloud-2/glm-5.3']
+provider = 'ollama-cloud-2'
+model = 'glm-5.3'
+context_window = 1048576
+max_output_tokens = 131072
+tool_calling = 'native'
+local_only = false

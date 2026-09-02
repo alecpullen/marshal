@@ -1,0 +1,9 @@
+marshal.db
+marshal.db-*
+marshal.log
+tool-results/
+pipeline/
+worktrees/
+plugins/
+plugins-lock.json
+skills/

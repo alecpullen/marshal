@@ -315,9 +315,16 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 
 	// Gate the thinking effort on the provider's reasoning capability: a
 	// preset thinking value must not be sent to a backend that does not
-	// accept it.
+	// accept it. The drop is logged at warn — a preset configured for a
+	// backend that cannot honor it is exactly the silent-failure class the
+	// footer's reasoning indicator exists to surface, so it must leave a
+	// trace in the session log.
 	thinking := r.turnRequestOptions.thinking
 	if thinking != "" && !p.Capabilities(ctx).Reasoning {
+		r.State.Logger().Warn("thinking effort dropped: provider reports no reasoning capability",
+			"provider", p.Name(),
+			"model", model,
+			"effort", thinking)
 		thinking = ""
 	}
 	events, err := p.Chat(ctx, schema.ChatRequest{

@@ -271,6 +271,8 @@ func (p *OllamaNative) Chat(ctx context.Context, req schema.ChatRequest) (<-chan
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}
+	writeRequestCapture(p.name, body)
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: build chat request: %w", p.name, err)

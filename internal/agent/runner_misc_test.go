@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -1262,7 +1264,7 @@ func TestMaxTurnContextTokensUsesSmallerOfConfiguredAndDerived(t *testing.T) {
 		Preset: routing.ModelPreset{Name: "test", Model: "tiny", ContextWindow: 32_000, MaxOutputTokens: 4096},
 	}}
 
-	_, _, route := r.resolveRoute(&Task{Class: ClassQuestion})
+	_, _, route := r.resolveRoute(context.Background(), &Task{Class: ClassQuestion})
 	got, _, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
 	// 0.85 * 32000 - 4096 = 23104; the configured ceiling (100000) wins
 	// because configured > 0 is a hard ceiling that never exceeds user config.
@@ -1279,7 +1281,7 @@ func TestMaxTurnContextTokensUsesConfiguredWhenLarger(t *testing.T) {
 		Preset: routing.ModelPreset{Name: "test", Model: "huge", ContextWindow: 200_000, MaxOutputTokens: 8192},
 	}}
 
-	_, _, route := r.resolveRoute(&Task{Class: ClassQuestion})
+	_, _, route := r.resolveRoute(context.Background(), &Task{Class: ClassQuestion})
 	got, _, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
 	// 0.85 * 200000 - 8192 = 161808; ceiling keeps the user's 100000.
 	if got != 100_000 {
@@ -1394,6 +1396,57 @@ func TestThinkingGatedOnProviderCapability(t *testing.T) {
 	}
 	if p2.Requests[0].Thinking != "" {
 		t.Fatalf("request Thinking = %q, want empty (provider lacks reasoning capability)", p2.Requests[0].Thinking)
+	}
+}
+
+// TestChatOnceLogsDroppedThinkingEffort pins the observability contract for
+// the capability gate: when a preset effort is dropped because the provider
+// reports no reasoning support, the session log must say so. This is the
+// "silent failure" audit trail — a misconfigured preset on a non-reasoning
+// backend must be diagnosable from the log file alone.
+func TestChatOnceLogsDroppedThinkingEffort(t *testing.T) {
+	var logBuf bytes.Buffer
+	p := &agenttest.ScriptedProvider{
+		Responses:    []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+		ProviderCaps: schema.ProviderCapabilities{},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{Logger: logger})
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "plain", Thinking: "high"},
+	}}
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "thinking effort dropped") {
+		t.Fatalf("expected a 'thinking effort dropped' log line, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "effort=high") || !strings.Contains(logs, "provider=scripted") {
+		t.Fatalf("drop log must name the effort and provider, got:\n%s", logs)
+	}
+
+	// No drop when the provider supports reasoning: no log line.
+	logBuf.Reset()
+	p2 := &agenttest.ScriptedProvider{
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+		ProviderCaps: schema.ProviderCapabilities{
+			Reasoning: true,
+		},
+	}
+	runner2 := NewRunner(p2, reg, pol, newTestState(t), "test-model")
+	runner2.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "reasoning", Thinking: "high"},
+	}}
+	if err := runner2.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(logBuf.String(), "thinking effort dropped") {
+		t.Fatalf("supported effort must not be logged as dropped:\n%s", logBuf.String())
 	}
 }
 

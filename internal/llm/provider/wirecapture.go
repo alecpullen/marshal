@@ -23,6 +23,16 @@ import (
 // feature is a debugging aid, not a persistent log.
 const wireCaptureEnvVar = "MARSHAL_WIRE_CAPTURE"
 
+// wireCaptureRequestsEnvVar enables outbound request-body capture. Set it to
+// a directory and every Chat request body is written as
+// <provider>-<timestamp>.request.json there. Off by default and kept
+// separate from the response capture: request bodies carry conversation
+// content (user messages, file contents, tool results), so an
+// always-on request tee would be a data-leak footgun. This is the knob to
+// reach for when you need to see exactly what a backend received — e.g.
+// whether a thinking effort value made it onto the wire.
+const wireCaptureRequestsEnvVar = "MARSHAL_WIRE_CAPTURE_REQUESTS"
+
 // wireCapture tees one Chat response body into a file and accepts marker
 // annotations from the decode loop. Marker lines ([unrecognized-chunk] …)
 // are interleaved into the teed byte stream, so a capture file is a debug
@@ -48,6 +58,25 @@ func newWireCapture(providerName string) *wireCapture {
 		return nil
 	}
 	return &wireCapture{f: f}
+}
+
+// writeRequestCapture records one outbound request body when request
+// capture is enabled via MARSHAL_WIRE_CAPTURE_REQUESTS. Any failure is
+// swallowed: like the response capture, this is a debugging aid and must
+// never fail or slow a request. Bodies are captured verbatim as
+// buildChatRequestBody produced them — the exact JSON the backend sees.
+func writeRequestCapture(providerName string, body []byte) {
+	dir := os.Getenv(wireCaptureRequestsEnvVar)
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	name := fmt.Sprintf("%s-%s.request.json", sanitizeCaptureName(providerName), time.Now().UTC().Format("20060102T150405.000000000"))
+	// 0o600: request bodies carry conversation content, so the file must
+	// not be world-readable even though the directory is 0o755.
+	_ = os.WriteFile(filepath.Join(dir, name), body, 0o600)
 }
 
 // sanitizeCaptureName makes a provider name safe for use in a filename.

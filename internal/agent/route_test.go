@@ -1,13 +1,54 @@
 package agent
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
+
+// TestResolveRouteMirrorsReasoningCapability pins the TUI contract: the
+// route snapshot carries the same reasoning verdict the chat path gates on
+// (chat.go), so display surfaces never advertise an effort value the wire
+// would never send (e.g. native Ollama presets).
+func TestResolveRouteMirrorsReasoningCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		caps schema.ProviderCapabilities
+		want bool
+	}{
+		{"reasoning capable", schema.ProviderCapabilities{Reasoning: true}, true},
+		{"effort dropped", schema.ProviderCapabilities{Reasoning: false}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := newTestState(t)
+			p := &agenttest.ScriptedProvider{ProviderCaps: tc.caps}
+			r := &Runner{
+				State: state,
+				Now:   func() time.Time { return time.Unix(100, 0) },
+				RouteResolver: &staticResolver{
+					route: routing.Route{
+						Preset: routing.ModelPreset{Provider: "p", Model: "m", Thinking: "high"},
+					},
+					provider: p,
+				},
+			}
+			r.resolveRoute(context.Background(), NewTask("understand this repo", time.Now()))
+			got := state.ActiveRoute()
+			if got.ReasoningCapable != tc.want {
+				t.Fatalf("ReasoningCapable = %v, want %v (caps.Reasoning=%v)", got.ReasoningCapable, tc.want, tc.caps.Reasoning)
+			}
+			if got.Thinking != "high" {
+				t.Fatalf("Thinking = %q, want high", got.Thinking)
+			}
+		})
+	}
+}
 
 // TestResolveRouteRebuildsPackBudgetToWindow verifies that resolveRoute
 // rebudgets the context pack from the resolved model window even when the
@@ -48,7 +89,7 @@ func TestResolveRouteRebuildsPackBudgetToWindow(t *testing.T) {
 	}
 
 	task := NewTask("understand this repo", time.Now())
-	r.resolveRoute(task)
+	r.resolveRoute(context.Background(), task)
 
 	got := state.ContextPack().TokenUsage.MaxTokens
 	if want := contextpack.BudgetForWindow(200000); got != want {

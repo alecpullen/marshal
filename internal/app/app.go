@@ -828,14 +828,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 
 	state.SetActiveRoute(session.RouteInfo{
-		Role:      route.Role,
-		Profile:   route.Profile,
-		Preset:    route.Preset.Name,
-		Provider:  route.Preset.Provider,
-		Model:     route.Preset.Model,
-		LocalOnly: route.Preset.LocalOnly,
-		Thinking:  route.Preset.Thinking,
-		Active:    true,
+		Role:             route.Role,
+		Profile:          route.Profile,
+		Preset:           route.Preset.Name,
+		Provider:         route.Preset.Provider,
+		Model:            route.Preset.Model,
+		LocalOnly:        route.Preset.LocalOnly,
+		Thinking:         route.Preset.Thinking,
+		ReasoningCapable: resolvedProvider.Capabilities(ctx).Reasoning,
+		Active:           true,
 	})
 
 	// F13: wire the fire-and-forget title generator. Route through the title
@@ -2206,16 +2207,17 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// immediately, without waiting for the next turn to call resolveRoute.
 	// This mirrors the startup wiring in buildAgentRunner.
 	resolver := newRoutedProviderResolver(cfg, rt.DataDir)
-	if route, _, rErr := resolver.Resolve("edit"); rErr == nil {
+	if route, rp, rErr := resolver.Resolve("edit"); rErr == nil {
 		rt.State.SetActiveRoute(session.RouteInfo{
-			Role:      route.Role,
-			Profile:   route.Profile,
-			Preset:    route.Preset.Name,
-			Provider:  route.Preset.Provider,
-			Model:     route.Preset.Model,
-			LocalOnly: route.Preset.LocalOnly,
-			Thinking:  route.Preset.Thinking,
-			Active:    true,
+			Role:             route.Role,
+			Profile:          route.Profile,
+			Preset:           route.Preset.Name,
+			Provider:         route.Preset.Provider,
+			Model:            route.Preset.Model,
+			LocalOnly:        route.Preset.LocalOnly,
+			Thinking:         route.Preset.Thinking,
+			ReasoningCapable: rp != nil && rp.Capabilities(ctx).Reasoning,
+			Active:           true,
 		})
 	}
 

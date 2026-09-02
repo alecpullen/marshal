@@ -344,6 +344,8 @@ func (p *Anthropic) Chat(ctx context.Context, req schema.ChatRequest) (<-chan sc
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}
+	writeRequestCapture(p.name, body)
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: build chat request: %w", p.name, err)

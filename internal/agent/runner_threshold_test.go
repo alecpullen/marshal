@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"marshal/internal/llm/routing"
@@ -55,12 +56,12 @@ func TestThresholdNotStickyAcrossTurns(t *testing.T) {
 	r.RouteResolver = &staticResolver{route: routing.Route{
 		Preset: routing.ModelPreset{Name: "small", Model: "small-32k", ContextWindow: 32000, MaxOutputTokens: 2048},
 	}}
-	_, _, routeSmall := r.resolveRoute(&Task{Class: ClassQuestion})
+	_, _, routeSmall := r.resolveRoute(context.Background(), &Task{Class: ClassQuestion})
 	small, _, _ := r.effectiveTurnThreshold(routeSmall.Window, routeSmall.MaxOutput, r.MaxTurnContextTokens)
 	r.RouteResolver = &staticResolver{route: routing.Route{
 		Preset: routing.ModelPreset{Name: "large", Model: "large-200k", ContextWindow: 200000, MaxOutputTokens: 4096},
 	}}
-	_, _, routeLarge := r.resolveRoute(&Task{Class: ClassQuestion})
+	_, _, routeLarge := r.resolveRoute(context.Background(), &Task{Class: ClassQuestion})
 	large, _, _ := r.effectiveTurnThreshold(routeLarge.Window, routeLarge.MaxOutput, r.MaxTurnContextTokens)
 
 	if small <= 0 {

@@ -116,7 +116,7 @@ func thresholdSource(window, configured int, derivedCollapsed bool) string {
 	}
 }
 
-func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
+func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provider, string, routing.Route) {
 	turnProvider := r.Provider
 	turnModel := r.Model
 	if r.RouteResolver == nil {
@@ -140,15 +140,23 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 	if route.Preset.Model != "" {
 		turnModel = route.Preset.Model
 	}
+	// Mirror the chat path's capability gate (chat.go): the preset effort is
+	// only sent when the provider reports reasoning support, so the route
+	// snapshot display surfaces consume must carry the same verdict.
+	reasoningCapable := false
+	if turnProvider != nil {
+		reasoningCapable = turnProvider.Capabilities(ctx).Reasoning
+	}
 	r.State.SetActiveRoute(session.RouteInfo{
-		Role:      route.Role,
-		Profile:   route.Profile,
-		Preset:    route.Preset.Name,
-		Provider:  route.Preset.Provider,
-		Model:     route.Preset.Model,
-		LocalOnly: route.Preset.LocalOnly,
-		Thinking:  route.Preset.Thinking,
-		Active:    true,
+		Role:             route.Role,
+		Profile:          route.Profile,
+		Preset:           route.Preset.Name,
+		Provider:         route.Preset.Provider,
+		Model:            route.Preset.Model,
+		LocalOnly:        route.Preset.LocalOnly,
+		Thinking:         route.Preset.Thinking,
+		ReasoningCapable: reasoningCapable,
+		Active:           true,
 	})
 	// F12: resolve the model's context window, preferring explicit config on
 	// the preset, then the fetched limits table, then the curated local

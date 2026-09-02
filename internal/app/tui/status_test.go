@@ -44,19 +44,45 @@ func TestStatusLineShowsRouteAndContext(t *testing.T) {
 
 func TestStatusLineShowsThinkingEffort(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high"})
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high", ReasoningCapable: true})
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, "think high") {
 		t.Fatalf("status line missing thinking flag:\n%s", line)
 	}
 }
 
-func TestStatusLineOmitsThinkingWhenUnset(t *testing.T) {
+// An effort-capable route must always show the thinking segment so the
+// footer answers "is thinking on, and at what level?" — including when the
+// preset leaves the effort unset and the backend default applies.
+func TestStatusLineShowsThinkingDefaultWhenUnset(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p"})
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", ReasoningCapable: true})
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, "think default") {
+		t.Fatalf("status line missing 'think default' for unset effort:\n%s", line)
+	}
+}
+
+// "off" is a real knob position (Anthropic maps it to no thinking block),
+// so it must be visible rather than collapsed into the unset case.
+func TestStatusLineShowsThinkingOff(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "off", ReasoningCapable: true})
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, "think off") {
+		t.Fatalf("status line missing 'think off':\n%s", line)
+	}
+}
+
+// When the provider cannot accept an effort control (e.g. native Ollama,
+// whose think toggle is a separate mechanism), the chat path drops the
+// field entirely. The footer must not show a value that is never sent.
+func TestStatusLineHidesThinkingWhenRouteNotReasoningCapable(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high"})
 	line := stripANSI(m.renderStatusLine(100))
 	if strings.Contains(line, "think ") {
-		t.Fatalf("status line must omit the thinking flag when unset:\n%s", line)
+		t.Fatalf("status line shows thinking effort the wire would never send:\n%s", line)
 	}
 }
 

@@ -174,11 +174,22 @@ func (m Model) statusLeftSegments() []statusSeg {
 		if route.LocalOnly {
 			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
 		}
-		// The reasoning-effort flag rides next to the model identity: it is
+		// The thinking-effort flag rides next to the model identity: it is
 		// route-shaped config (like local/remote), not a consumable counter,
 		// so it collapses before branch/dir (priority 4) rather than after.
-		if route.Thinking != "" {
-			segs = append(segs, statusSeg{text: dimStyle().Render("think " + route.Thinking), priority: 4})
+		// It renders for every effort-capable route — "think default" when
+		// the preset leaves the effort unset — so the footer always answers
+		// whether thinking is configured and at what level. When the provider
+		// cannot accept an effort control (e.g. native Ollama, whose think
+		// toggle is a separate wire mechanism), the chat path drops the field
+		// (chat.go gates on Capabilities().Reasoning) and the segment is
+		// omitted rather than advertising a value that is never sent.
+		if route.ReasoningCapable {
+			effort := route.Thinking
+			if effort == "" {
+				effort = "default"
+			}
+			segs = append(segs, statusSeg{text: dimStyle().Render("think " + effort), priority: 4})
 		}
 	} else {
 		segs = append(segs, statusSeg{text: identityStyle().Render("no model"), priority: 1})

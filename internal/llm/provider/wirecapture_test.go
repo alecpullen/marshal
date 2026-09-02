@@ -42,11 +42,11 @@ func drainEvents(t *testing.T, events <-chan schema.ChatEvent) string {
 	return sb.String()
 }
 
-func readCaptureFile(t *testing.T, dir, providerName string) string {
+func readCaptureFile(t *testing.T, dir, providerName, suffix string) string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, providerName+"-*.stream"))
+	matches, err := filepath.Glob(filepath.Join(dir, providerName+"-*."+suffix))
 	if err != nil || len(matches) != 1 {
-		t.Fatalf("expected one capture file for %q, got %v (err=%v)", providerName, matches, err)
+		t.Fatalf("expected one %s capture file for %q, got %v (err=%v)", suffix, providerName, matches, err)
 	}
 	data, err := os.ReadFile(matches[0])
 	if err != nil {
@@ -76,7 +76,7 @@ func TestWireCaptureTeesStreamAndMarksUnrecognizedChunks(t *testing.T) {
 		t.Fatalf("streamed content = %q, want %q", got, "hi")
 	}
 
-	capture := readCaptureFile(t, dir, "wiretest")
+	capture := readCaptureFile(t, dir, "wiretest", "stream")
 	if !strings.Contains(capture, "\"content\":\"hi\"") {
 		t.Fatalf("capture missing raw stream bytes:\n%s", capture)
 	}
@@ -86,6 +86,64 @@ func TestWireCaptureTeesStreamAndMarksUnrecognizedChunks(t *testing.T) {
 	// The usage-only chunk is recognized: it must not be flagged.
 	if strings.Contains(capture, "[unrecognized-chunk] {\"usage\"") {
 		t.Fatalf("usage-only chunk wrongly flagged:\n%s", capture)
+	}
+}
+
+func TestWireCaptureRequestBodiesRecordThinkingEffort(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(wireCaptureRequestsEnvVar, dir)
+
+	server := startCaptureTestServer(t)
+	p, err := NewOpenAICompatible(Options{Name: "wiretest", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible: %v", err)
+	}
+	events, err := p.Chat(context.Background(), schema.ChatRequest{
+		Model:    "m",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		Stream:   true,
+		Thinking: "high",
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := drainEvents(t, events); got != "hi" {
+		t.Fatalf("streamed content = %q, want %q", got, "hi")
+	}
+
+	reqBody := readCaptureFile(t, dir, "wiretest", "request.json")
+	if !strings.Contains(reqBody, `"reasoning_effort":"high"`) {
+		t.Fatalf("request capture missing reasoning_effort:\n%s", reqBody)
+	}
+}
+
+func TestWireCaptureRequestsDisabledByDefault(t *testing.T) {
+	dir := t.TempDir()
+	// Deliberately leave MARSHAL_WIRE_CAPTURE_REQUESTS unset.
+	t.Setenv(wireCaptureRequestsEnvVar, "")
+
+	server := startCaptureTestServer(t)
+	p, err := NewOpenAICompatible(Options{Name: "wiretest", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible: %v", err)
+	}
+	events, err := p.Chat(context.Background(), schema.ChatRequest{
+		Model:    "m",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		Stream:   true,
+		Thinking: "high",
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	drainEvents(t, events)
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*.request.json"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("request capture wrote files with the env var disabled: %v", matches)
 	}
 }
 

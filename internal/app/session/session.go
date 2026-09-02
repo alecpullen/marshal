@@ -151,7 +151,13 @@ type RouteInfo struct {
 	// ("" = provider default). Mirrored from Route.Preset.Thinking so the
 	// TUI can show the effort flag without reaching into routing.
 	Thinking string
-	Active   bool
+	// ReasoningCapable mirrors the serving provider's Capabilities().Reasoning
+	// bit — the same gate the chat path applies before putting the effort
+	// field on the wire (chat.go). False means the preset effort is inert
+	// (e.g. native Ollama, whose think toggle is a separate mechanism), so
+	// display surfaces must not present it as active.
+	ReasoningCapable bool
+	Active           bool
 }
 
 type ToolBudget struct {

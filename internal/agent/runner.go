@@ -714,7 +714,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 		}
 	}
-	turnProvider, turnModel, route := r.resolveRoute(task)
+	turnProvider, turnModel, route := r.resolveRoute(ctx, task)
 	if route.MaxOutput > 0 {
 		r.turnRequestOptions.maxTokens = intPtr(route.MaxOutput)
 	} else {

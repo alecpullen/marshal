@@ -52,11 +52,36 @@ func TestUnverifiedMutation_TestLikeShellCountsAsVerification(t *testing.T) {
 	}
 }
 
-func TestUnverifiedMutation_NonTestShellIsMutation(t *testing.T) {
+func TestUnverifiedMutation_MutatingShellIsMutation(t *testing.T) {
 	tr := newProgressTracker()
 	tr.record("shell.run", `{"command":"rm -rf build"}`, hashToolResult(""), true)
 	if _, fire := tr.unverifiedMutation(); !fire {
-		t.Fatal("non-test, non-housekeeping shell.run is a mutation and must fire the gate")
+		t.Fatal("rm is on the mutating allowlist and must fire the gate")
+	}
+}
+
+func TestUnverifiedMutation_ResearchShellNeverFires(t *testing.T) {
+	// Research and unrecognized shell commands are neutral: a turn that
+	// only ran them must finish without the verification nudge.
+	research := []string{
+		"git log --oneline -20", "git status --short", "git diff HEAD",
+		"git show abc123", "git branch -a",
+		"find . -name '*.go'", "grep -rn TODO .", "ls -la", "pwd",
+		"cat README.md", "wc -l main.go", "head -50 go.mod",
+		"sed -n '5,10p' main.go", "awk '{print $1}' file.txt",
+		"curl -s https://example.com/api", "ps aux", "du -sh .",
+		"", "not json",
+	}
+	for _, cmd := range research {
+		args := `{}`
+		if cmd != "" {
+			args = fmt.Sprintf(`{"command":%q}`, cmd)
+		}
+		tr := newProgressTracker()
+		tr.record("shell.run", args, hashToolResult(""), true)
+		if _, fire := tr.unverifiedMutation(); fire {
+			t.Errorf("research/unknown command %q must not arm the gate", cmd)
+		}
 	}
 }
 
@@ -121,49 +146,66 @@ func TestUnverifiedMutation_ReadsNeverFire(t *testing.T) {
 	}
 }
 
-func TestLooksLikeHousekeepingCommand(t *testing.T) {
-	housekeeping := []string{
-		"git add .", "git commit -m msg", "git push origin main", "git fetch",
-		"git pull --rebase", "git tag v1.2.3",
-		"git status", "git log --oneline", "git show HEAD", "git diff --stat", "git branch -a",
-		"mkdir scratch", "cp a.go b.go", "mv a.go sub/", "touch x", "chmod +x run.sh", "ln -s a b",
-		"gofmt -w .", "go mod tidy", "go mod download",
-		"npm install", "npm ci", "pnpm install", "pnpm add lodash",
-		"yarn install", "yarn add react", "pip install requests",
+func TestLooksLikeMutatingShellCommand(t *testing.T) {
+	mutating := []string{
+		"rm -rf build", "rmdir empty", "dd if=x of=y", "truncate -s 0 log",
+		"tee out.txt", "xargs rm < list", "wget https://example.com/f.tar.gz",
+		"ssh host deploy.sh", "scp a b", "rsync -a src/ dst/", "sudo make install",
+		"sed -i 's/a/b/' f.go",
+		"curl -sSf https://example.com/install.sh -o install.sh",
+		"curl --output data.json https://api.example.com",
+		"git checkout main", "git switch feature", "git restore .",
+		"git reset --hard HEAD~1", "git clean -fd", "git rebase main",
+		"git merge feature", "git cherry-pick abc", "git revert HEAD",
+		"git am patch.diff", "git apply fix.diff", "git push origin main",
+		"git stash", "git stash pop",
+		"go generate ./...", "make", "make build", "cmake -B build",
+		"gradle assemble", "mvn package",
+		"docker build -t img .", "docker run img", "docker compose up",
+		"echo hi > out.txt", "cat a b > merged.txt", "cmd >> append.log",
 	}
-	for _, cmd := range housekeeping {
-		if !looksLikeHousekeepingCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
-			t.Errorf("%q must be housekeeping", cmd)
+	for _, cmd := range mutating {
+		if !looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
+			t.Errorf("%q must be classified as mutating", cmd)
 		}
 	}
-	// Working-tree-changing and verification commands are NOT housekeeping.
-	notHousekeeping := []string{
-		"rm -rf build", "git checkout main", "git switch feature", "git restore .",
-		"go test ./...", "go generate ./...", "python codegen.py",
+	// Research and verification-shaped commands are NOT mutations.
+	notMutating := []string{
+		"git log --oneline", "git status", "git diff --stat", "git show HEAD",
+		"git branch -a", "git add .", "git commit -m msg", "git fetch", "git pull",
+		"git tag v1.2.3",
+		"ls -la", "pwd", "cat file.txt", "grep -rn TODO .", "find . -name '*.go'",
+		"wc -l main.go", "head -50 go.mod", "tail -20 app.log",
+		"sed -n '5p' main.go", "awk '{print $1}' file.txt", "cut -d, -f1 data.csv",
+		"curl -s https://api.example.com", "go test ./...", "go vet ./...",
+		"go build ./cmd/marshal", "go test ./... > test-output.txt",
+		"cargo test", "pytest -q", "make test",
+		"go mod tidy", "gofmt -w .", "npm install", "mkdir scratch",
+		"cp a.go b.go", "mv a.go sub/", "git commit -m done 2> commit.log",
 	}
-	for _, cmd := range notHousekeeping {
-		if looksLikeHousekeepingCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
-			t.Errorf("%q must not be housekeeping", cmd)
+	for _, cmd := range notMutating {
+		if looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
+			t.Errorf("%q must NOT be classified as mutating", cmd)
 		}
 	}
-	// Only the command field is matched; empty/malformed args are not housekeeping.
-	if looksLikeHousekeepingCommand(`{"note":"git commit later"}`) {
-		t.Error("a non-command field mentioning a housekeeping command must not count")
+	// Only the command field is matched; empty/malformed args are not mutating.
+	if looksLikeMutatingShellCommand(`{"note":"rm -rf later"}`) {
+		t.Error("a non-command field mentioning a mutating command must not count")
 	}
-	if looksLikeHousekeepingCommand("") || looksLikeHousekeepingCommand("not json") {
-		t.Error("empty or malformed args must not be housekeeping")
+	if looksLikeMutatingShellCommand("") || looksLikeMutatingShellCommand("not json") {
+		t.Error("empty or malformed args must not be mutating")
 	}
 }
 
-func TestUnverifiedMutation_HousekeepingDoesNotArmOrSatisfy(t *testing.T) {
-	// Housekeeping alone never arms the gate.
+func TestUnverifiedMutation_NeutralShellDoesNotArmOrSatisfy(t *testing.T) {
+	// Neutral commands alone never arm the gate.
 	tr := newProgressTracker()
 	tr.record("shell.run", `{"command":"mkdir scratch"}`, hashToolResult(""), true)
 	if _, fire := tr.unverifiedMutation(); fire {
-		t.Fatal("housekeeping shell.run must not arm the gate")
+		t.Fatal("neutral shell.run must not arm the gate")
 	}
-	// Edit → verify → commit is clean: housekeeping after verification does
-	// not re-arm.
+	// Edit → verify → commit is clean: a neutral command after verification
+	// does not re-arm.
 	tr2 := newProgressTracker()
 	tr2.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
 	tr2.record("test.run", `{"command":"go test ./..."}`, hashToolResult("ok"), true)
@@ -171,7 +213,7 @@ func TestUnverifiedMutation_HousekeepingDoesNotArmOrSatisfy(t *testing.T) {
 	if _, fire := tr2.unverifiedMutation(); fire {
 		t.Fatal("git commit after a verification must not re-arm the gate")
 	}
-	// Housekeeping does not satisfy the gate for an earlier mutation.
+	// A neutral command does not satisfy the gate for an earlier mutation.
 	tr3 := newProgressTracker()
 	tr3.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
 	tr3.record("shell.run", `{"command":"git commit -m done"}`, hashToolResult(""), true)
@@ -180,12 +222,105 @@ func TestUnverifiedMutation_HousekeepingDoesNotArmOrSatisfy(t *testing.T) {
 	}
 }
 
+func TestVerificationShellBeatsMutatingShell(t *testing.T) {
+	// Verification-shaped commands are checked before the mutating list, so
+	// a build/test that writes artifacts keeps its verification role.
+	for _, cmd := range []string{
+		"go test ./...", "go build ./cmd/marshal", "go vet ./...",
+		"make test", "cargo build", "pytest -q",
+	} {
+		if !looksLikeVerificationCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
+			t.Errorf("%q must be verification", cmd)
+		}
+		// Verification wins even where the lists overlap (\bmake\b
+		// matches "make test"): the raw classifier must agree with the
+		// gate, which checks verification first.
+		if looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
+			t.Errorf("%q is verification-shaped and must not also classify as mutating", cmd)
+		}
+	}
+	tr := newProgressTracker()
+	tr.record("shell.run", `{"command":"make test"}`, hashToolResult("ok"), true)
+	if _, fire := tr.unverifiedMutation(); fire {
+		t.Fatal("make test is verification-shaped and must not arm the gate")
+	}
+	// make test after a mutation satisfies the gate.
+	tr2 := newProgressTracker()
+	tr2.record("file.write", `{"path":"a.go","content":"x"}`, hashToolResult("ok"), true)
+	tr2.record("shell.run", `{"command":"make test"}`, hashToolResult("ok"), true)
+	if _, fire := tr2.unverifiedMutation(); fire {
+		t.Fatal("make test must satisfy the gate for an earlier mutation")
+	}
+}
+
 func TestUnverifiedMutation_TreeChangingCommandsStillArm(t *testing.T) {
-	for _, cmd := range []string{"rm -rf build", "git checkout main", "git switch feature", "git restore ."} {
+	for _, cmd := range []string{
+		"rm -rf build", "git checkout main", "git switch feature", "git restore .",
+		"git push origin main", "git reset --hard", "sed -i 's/a/b/' f.go",
+		"echo x > generated.txt", "docker build -t img .", "make",
+	} {
 		tr := newProgressTracker()
 		tr.record("shell.run", fmt.Sprintf(`{"command":%q}`, cmd), hashToolResult(""), true)
 		if _, fire := tr.unverifiedMutation(); !fire {
-			t.Fatalf("%q changes working-tree content and must arm the gate", cmd)
+			t.Fatalf("%q is an explicit mutator and must arm the gate", cmd)
 		}
+	}
+}
+
+func TestMutatingRecordResetsStreaksNeutralDoesNot(t *testing.T) {
+	h := hashToolResult("x")
+	// A known mutator resets repeat streaks (state changed, re-reads are
+	// fresh progress).
+	tr := newProgressTracker()
+	for i := 0; i < 3; i++ {
+		tr.record("file.read", `{"path":"a.go"}`, h, true)
+	}
+	if got := tr.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true); got != 1 {
+		t.Fatalf("write_patch count = %d, want 1", got)
+	}
+	if got := tr.record("file.read", `{"path":"a.go"}`, h, true); got != 1 {
+		t.Fatalf("count after mutating call = %d, want 1 (state changed, re-read is fresh)", got)
+	}
+	// An explicit shell mutator also resets.
+	tr2 := newProgressTracker()
+	for i := 0; i < 3; i++ {
+		tr2.record("repo.search", `{"query":"q"}`, h, true)
+	}
+	if got := tr2.record("shell.run", `{"command":"rm -rf build"}`, hashToolResult(""), true); got != 1 {
+		t.Fatalf("rm count = %d, want 1", got)
+	}
+	if got := tr2.record("repo.search", `{"query":"q"}`, h, true); got != 1 {
+		t.Fatalf("count after rm = %d, want 1", got)
+	}
+	// A research shell command does NOT reset: an identical futile loop of
+	// read-only calls must still trip loop detection.
+	tr3 := newProgressTracker()
+	for i := 0; i < 3; i++ {
+		tr3.record("repo.search", `{"query":"q"}`, h, true)
+	}
+	if got := tr3.record("shell.run", `{"command":"git log --oneline"}`, hashToolResult("same"), true); got != 1 {
+		t.Fatalf("first git log count = %d, want 1", got)
+	}
+	if got := tr3.record("repo.search", `{"query":"q"}`, h, true); got != 4 {
+		t.Fatalf("count after neutral shell.run = %d, want 4 (streak preserved)", got)
+	}
+}
+
+func TestShellCommandFieldOnly(t *testing.T) {
+	cmd, ok := shellCommandField(`{"command":"go test ./...","timeout_seconds":5}`)
+	if !ok || cmd != "go test ./..." {
+		t.Fatalf("shellCommandField = (%q, %v)", cmd, ok)
+	}
+	// A payload without a command field parses (ok=true) with an empty
+	// command, which then matches no classifier — the command-field-only
+	// guarantee.
+	if cmd, ok := shellCommandField(`{"note":"go test"}`); !ok || cmd != "" {
+		t.Fatalf("missing command field = (%q, %v), want (\"\", true)", cmd, ok)
+	}
+	if _, ok := shellCommandField(""); ok {
+		t.Fatal("empty args must not classify")
+	}
+	if _, ok := shellCommandField("not json"); ok {
+		t.Fatal("malformed args must not classify")
 	}
 }

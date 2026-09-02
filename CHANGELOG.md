@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The verification reminder no longer treats every `shell.run` as an edit.
+  Classification is now an explicit allowlist: only file-deletion commands,
+  git state changes (`checkout`/`switch`/`restore`/`reset`/`clean`/`rebase`/
+  `merge`/`push`/`stash`/…), code generators, docker/container mutations,
+  remote execution, `sudo`, and redirection into files arm the gate. Research
+  commands (`git log`, `grep`, `find`, plain `curl`, read-only `sed`/`awk`)
+  and unrecognized commands are neutral — models answering questions or doing
+  research no longer get the "you made changes but have not verified them"
+  nudge. The same allowlist drives repeat-loop detection, so read-only shell
+  loops now keep their repeat streak and trip stall detection again.
+
 ## [0.0.3-alpha] - 2026-09-02
 
 ### Added

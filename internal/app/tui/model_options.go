@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 
 	tea "charm.land/bubbletea/v2"
@@ -114,9 +113,9 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	if m.pendingModelOptions != nil && m.pendingModelOptions.presetName == msg.PresetName {
 		m.pendingModelOptions.retry = false
 	}
-	home, homeErr := os.UserHomeDir()
-	if homeErr != nil || home == "" {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: locate home directory: %v", msg.FieldID, homeErr), session.ContentTypePlain)
+	home, homeErr := m.userHome()
+	if homeErr != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: %v", msg.FieldID, homeErr), session.ContentTypePlain)
 		return nil
 	}
 	userPath := config.UserConfigPath(home)

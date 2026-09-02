@@ -93,6 +93,7 @@ type options struct {
 	deferTrustPrompt  bool
 	sessionTrusted    bool
 	workingDir        string
+	homeDir           string
 	sessionID         string
 	existingSessionID string
 	additionalDirs    []string
@@ -201,6 +202,16 @@ type namedWorker struct {
 
 func (w namedWorker) Name() string                  { return w.name }
 func (w namedWorker) Run(ctx context.Context) error { return w.run(ctx) }
+
+// WithHomeDir overrides the home directory used to resolve the user config
+// and data directories. When empty, the process's real home directory is
+// used. Intended for tests so config loads (and the project→user hoist) do
+// not touch the developer's real user config.
+func WithHomeDir(dir string) Option {
+	return func(opts *options) {
+		opts.homeDir = dir
+	}
+}
 
 // WithSessionID pins the session identifier used when the runtime creates a
 // new database session. When empty, StartRuntime generates a sess_<unixnano>
@@ -1765,9 +1776,13 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	runOpts.configReloader = configReloader
 
 	var reloadForTrust bool
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return err
+	homeDir := runOpts.homeDir
+	if homeDir == "" {
+		var err error
+		homeDir, err = os.UserHomeDir()
+		if err != nil {
+			return err
+		}
 	}
 
 	// First-run detection: when no config exists yet, open the connect

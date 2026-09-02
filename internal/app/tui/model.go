@@ -911,6 +911,21 @@ func (m *Model) refreshDiagnostics() {
 	m.diagnosticCount = n
 }
 
+// userHome returns the home directory used to locate the user-global
+// config: the injected home (WithHomeDir) when set, else the OS home.
+// Tests inject a temp home; deriving paths from os.UserHomeDir() directly
+// would let test runs write the developer's real ~/.config/marshal.
+func (m *Model) userHome() (string, error) {
+	if m.homeDir != "" {
+		return m.homeDir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("locate home directory: %w", err)
+	}
+	return home, nil
+}
+
 // persistAndReload saves cfg to the project config file, asks the runtime
 // to reload it, and applies the outcome to TUI state. It returns the save
 // error or, when saving succeeded, the reload error (nil on full success).
@@ -1073,8 +1088,8 @@ func (m *Model) handleSetCommand(args []string) {
 				sys(fmt.Sprintf("✗ %s: cannot look up value at %s", key, tomlPath))
 				return
 			}
-			home, err := os.UserHomeDir()
-			if err != nil || home == "" {
+			home, err := m.userHome()
+			if err != nil {
 				// Fall back to persistAndReload if home is unavailable.
 				saveErr, reloadErr := m.persistAndReload(reg.Config())
 				m.reportSetResult(key, change, saveErr, reloadErr)
@@ -1151,12 +1166,18 @@ func (m *Model) provenanceForPath(tomlPath string) string {
 }
 
 func (m *Model) openSettingsBrowser(query string) {
+	opts := []settings.BrowserOption{
+		settings.WithProvenance(m.provenanceForPath),
+		settings.WithDataDir(m.modelCacheDir),
+	}
+	if home, err := m.userHome(); err == nil {
+		opts = append(opts, settings.WithUserConfigPath(config.UserConfigPath(home)))
+	}
 	browser := settings.NewBrowser(
 		m.state.Config,
 		projectConfigPath(m.state.WorkingDir),
 		query,
-		settings.WithProvenance(m.provenanceForPath),
-		settings.WithDataDir(m.modelCacheDir),
+		opts...,
 	)
 	// m.state.Config may already hold an unsaved change left behind by a
 	// previous failed save (browser or /set) — applyNewConfig keeps it
@@ -1699,7 +1720,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cfgPath := projectConfigPath(m.state.WorkingDir)
 			base := m.state.WorkingDir
 			if msg.GlobalTarget {
-				if home, err := os.UserHomeDir(); err == nil && home != "" {
+				if home, err := m.userHome(); err == nil {
 					cfgPath = config.UserConfigPath(home)
 					base = home
 				}
@@ -1719,7 +1740,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = true
 			userPath := ""
-			if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if home, err := m.userHome(); err == nil {
 				userPath = config.UserConfigPath(home)
 			}
 			m.state.AddMessage(session.RoleSystem,
@@ -4474,7 +4495,7 @@ func (m *Model) openConnect(_ string) {
 	}
 	// Providers are saved to the user-global config; the summary screen's
 	// "save to:" line should name that file.
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
+	if home, err := m.userHome(); err == nil {
 		opts.CfgPath = config.UserConfigPath(home)
 	}
 	m.connectModel = connect.New(opts)
@@ -4877,7 +4898,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// If that fails, configure nothing rather than leaving a provider entry
 	// pointing at a key that was never saved. The in-memory config keeps the
 	// key so the reloaded runtime can use it.
-	home, err := os.UserHomeDir()
+	home, err := m.userHome()
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem,
 			fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
@@ -4951,7 +4972,7 @@ func (m *Model) switchModelPreset(presetName string) {
 	// Presets are user-global; persist a newly created override to the user
 	// config before the project save ([profile] lives there).
 	if presetCreated {
-		home, err := os.UserHomeDir()
+		home, err := m.userHome()
 		if err != nil {
 			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
 			return

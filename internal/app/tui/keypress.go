@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -29,7 +28,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		case "enter":
 			value := strings.TrimSpace(m.input.Value())
 			if value != "" {
-				home, err := os.UserHomeDir()
+				home, err := m.userHome()
 				if err != nil {
 					m.state.AddMessage(session.RoleSystem,
 						fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)

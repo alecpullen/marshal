@@ -100,7 +100,8 @@ func TestBrowserRetriesFailedSaveOnRepeatedCommit(t *testing.T) {
 	}
 	cfgPath := filepath.Join(blockingPath, "config.toml")
 
-	b := NewBrowser(config.Default(), cfgPath, "agent.max_retries")
+	b := NewBrowser(config.Default(), cfgPath, "agent.max_retries",
+		WithUserConfigPath(filepath.Join(dir, "user-config.toml")))
 	if got := b.list.CursorRow().ID; got != "agent.max_retries" {
 		t.Fatalf("filtered cursor = %q, want agent.max_retries", got)
 	}
@@ -255,7 +256,8 @@ func TestBrowserPasteRoutesToConfirmLimitInput(t *testing.T) {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"coding": {Name: "coding", Roles: map[routing.AgentRole]routing.RoleBinding{}},
 	}
-	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "",
+		WithUserConfigPath(filepath.Join(t.TempDir(), "user-config.toml")))
 	b.confirm = presetflow.NewConfirmState(presetflow.Limits{ContextSource: presetflow.SourceUnknown})
 	b.confirmTarget = &pendingMaterialization{
 		Profile: "coding", Role: routing.RoleImplementer,

@@ -85,7 +85,7 @@ reviewer = "mock/mock-model"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithHomeDir(t.TempDir()), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
@@ -618,6 +618,7 @@ reviewer = "mock/mock-model"
 
 	ctx := context.Background()
 	rt, err := StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("StartRuntime: %v", err)
@@ -1887,6 +1888,7 @@ security_reviewer = "mock/mock-model"
 	called := false
 	err = Run(context.Background(), stdout,
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithHomeDir(t.TempDir()),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			called = true
@@ -2232,6 +2234,7 @@ reviewer = "mock/mock-model"
 
 	ctx := context.Background()
 	_, err = StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithExistingSession("nonexistent-session-id"),
 	)
@@ -2308,6 +2311,7 @@ reviewer = "mock/mock-model"
 
 	ctx := context.Background()
 	_, err = StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithExistingSession("mismatch-session"),
 	)
@@ -2344,6 +2348,7 @@ reviewer = "mock/mock-model"
 
 	ctx := context.Background()
 	_, err := StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithSessionID("new-session"),
 		WithExistingSession("old-session"),
@@ -3860,7 +3865,7 @@ command = "` + stub + `"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithHomeDir(t.TempDir()), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}

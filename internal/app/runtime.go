@@ -406,9 +406,12 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		return nil, fmt.Errorf("app: WithSessionID and WithExistingSession are mutually exclusive")
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("find home directory: %w", err)
+	homeDir := runOpts.homeDir
+	if homeDir == "" {
+		homeDir, err = os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("find home directory: %w", err)
+		}
 	}
 	dataDir := config.DataDir(homeDir)
 
@@ -429,6 +432,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		projectTrusted = decision == trust.DecisionTrustPermanent || decision == trust.DecisionTrustSession
 		loadOpts := config.LoadOptions{
 			WorkingDir:        workingDir,
+			HomeDir:           homeDir,
 			SkipProjectConfig: needsPrompt,
 		}
 		cfg, layers, err = runOpts.configWithLayersLoader(loadOpts)
@@ -441,7 +445,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 			lo.TrustResolver = resolver
 			return runOpts.configWithLayersLoader(lo)
 		}
-		loadOpts := config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted}
+		loadOpts := config.LoadOptions{WorkingDir: workingDir, HomeDir: homeDir, Trusted: &projectTrusted}
 		cfg, layers, err = loader(loadOpts)
 	}
 	if err != nil {

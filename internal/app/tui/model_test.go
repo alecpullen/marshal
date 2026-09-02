@@ -5649,7 +5649,7 @@ func newTestModel(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg))
+	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -5665,7 +5665,7 @@ func newTestModelInRepo(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg))
+	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -7448,9 +7448,7 @@ func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 }
 
 func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
-	home := t.TempDir()
 	work := t.TempDir()
-	t.Setenv("HOME", home)
 	m := newTestModel(t)
 	m.state.WorkingDir = work
 	m.workDir = work
@@ -7481,7 +7479,7 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 		t.Fatal("expected doctor fix mode to exit")
 	}
 	// Verify the key was saved to the user config.
-	cfg, err := config.LoadLayers(config.LoadOptions{HomeDir: home, WorkingDir: work})
+	cfg, err := config.LoadLayers(config.LoadOptions{HomeDir: m.homeDir, WorkingDir: work})
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}

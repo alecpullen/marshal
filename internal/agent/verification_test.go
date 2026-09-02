@@ -188,6 +188,15 @@ func TestLooksLikeMutatingShellCommand(t *testing.T) {
 		"for f in *.log; do rm $f; done",
 		"if [ -f x ]; then rm x; fi",
 		"ls\nrm -rf build",
+		// -n as a count/args/stdin flag (not dry-run) must not mask
+		// mutations in compound commands.
+		"rm -rf build && git log -n 5",
+		"sed -i 's/a/b/' f.go && head -n 5 f.go",
+		"xargs -n 2 rm",
+		"find . -name '*.log' | xargs -n 2 rm",
+		"ssh -n host deploy.sh",
+		// git stash anchored to segStart: as a real command it arms.
+		"true && git stash",
 	}
 	for _, cmd := range mutating {
 		if !looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
@@ -228,6 +237,13 @@ func TestLooksLikeMutatingShellCommand(t *testing.T) {
 		"echo hi 2> err.log 1> out.txt", "cmd 1> out.txt",
 		"docker exec c ls /data", "docker exec c cat /etc/hosts",
 		"docker exec c sh -c 'rm -rf /data'",
+		// -n is not a dry-run flag outside make/git clean: count flags,
+		// parallelism, and stdin redirects must not mask classification.
+		"git log -n 5", "head -n 5 f.go", "pytest -n auto", "pytest -n 4",
+		"mvn -n test", "go test ./... && git log -n 5",
+		// git stash as an argument (not a command) must not arm.
+		"man git stash", "echo git stash", "echo git stash pop",
+		"history | grep git stash",
 	}
 	for _, cmd := range notMutating {
 		if looksLikeMutatingShellCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
@@ -304,6 +320,9 @@ func TestVerificationShellBeatsMutatingShell(t *testing.T) {
 		// must not prevent verification from satisfying the gate.
 		"make -j4 test", "make -k check", "make -C build test",
 		"mvn -q verify", "gradle test", "gradle check",
+		// -n is not a dry-run flag for pytest (parallelism) or mvn
+		// (--no-snapshot-updates): these must still count as verification.
+		"pytest -n auto", "pytest -n 4", "mvn -n test",
 	} {
 		if !looksLikeVerificationCommand(fmt.Sprintf(`{"command":%q}`, cmd)) {
 			t.Errorf("%q must be verification", cmd)

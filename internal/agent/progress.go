@@ -290,8 +290,15 @@ var mutatingCommandPatterns = []*regexp.Regexp{
 	// fingerprint check) does not false-arm. `--help`/`-h` forms of
 	// otherwise-mutating commands (truncate --help, git stash --help) are
 	// excluded by helpFlagStrip before matching.
-	regexp.MustCompile(segStart + `(rm|rmdir|dd|truncate|tee|wget|ssh(?:\s|$)|scp|rsync|sudo)\b`),
-	regexp.MustCompile(`\bxargs\s+(?:-[A-Za-z0-9]+\s+)*(rm|tee|dd|truncate)\b`),
+	// ssh anchors with a following whitespace or end-of-string so
+	// `ssh-keygen` (read-only fingerprint check) does not false-arm. The
+	// \b is on each alternative individually because ssh(?:\s|$) consumes
+	// the space, leaving a non-word char next (e.g. `-n`) where \b would
+	// fail.
+	regexp.MustCompile(segStart + `(?:rm\b|rmdir\b|dd\b|truncate\b|tee\b|wget\b|ssh(?:\s|$)|scp\b|rsync\b|sudo\b)`),
+	// xargs feeding a destructive command: flags with values (-n 2) are
+	// tolerated alongside bare flags (-0).
+	regexp.MustCompile(`\bxargs\s+(?:-[A-Za-z0-9]+(?:\s+\S+)?\s+)*(rm|tee|dd|truncate)\b`),
 	// sed -i / --in-place and perl -i rewrite files in place. The -i flag
 	// is matched inside a short-flag cluster so `sed -ni`, `perl -pi`,
 	// `perl -i.bak` all arm. Anchored to segStart so `grep sed -i f`
@@ -312,9 +319,9 @@ var mutatingCommandPatterns = []*regexp.Regexp{
 	// tag, fetch, pull, push, status, log, show, diff, and branch are
 	// deliberately absent (housekeeping or read-only).
 	regexp.MustCompile(segStart + `git\s+(checkout|switch|restore|reset|clean|rebase|merge|cherry-pick|revert|am|apply|rm|mv)\b`),
-	regexp.MustCompile(`\bgit\s+stash\s+(push|pop|apply|drop|clear|branch|save)\b`),
-	regexp.MustCompile(`\bgit\s+stash\s*(?:$|[;|&\n])`),
-	regexp.MustCompile(`\bgit\s+stash\s+-`),
+	regexp.MustCompile(segStart + `git\s+stash\s+(push|pop|apply|drop|clear|branch|save)\b`),
+	regexp.MustCompile(segStart + `git\s+stash\s*(?:$|[;|&\n])`),
+	regexp.MustCompile(segStart + `git\s+stash\s+-`),
 	// Build and code generators that write artifacts into the workspace,
 	// anchored to a segment start so the names match as commands, not as
 	// arguments or quoted text (`grep make Makefile` stays neutral).
@@ -375,18 +382,30 @@ var readOnlyGitStrip = regexp.MustCompile(`\bgit\s+apply\s+--(?:stat|check)\b`)
 // the gate while the already-stripped `cmd 2>/dev/null` did not.
 var devNullStrip = regexp.MustCompile(`(?:>>?)\s*/dev/null\b`)
 
-// isDryRun reports whether a command contains a dry-run flag (`-n`,
-// `--dry-run`, `--just-print`, `--no-run`, `--recon`). A dry run writes
-// nothing: it must neither arm the gate nor satisfy it. Checked early in
-// both directions so the remaining command is never classified after a
-// dry-run flag is present.
-var isDryRun = regexp.MustCompile(`(?:^|\s)--?(?:dry-run|just-print|no-run|recon)\b|(?:^|\s)-n\b`)
+// isDryRun reports whether a command contains a dry-run flag
+// (`--dry-run`, `--just-print`, `--no-run`, `--recon`, or `-n` for make
+// and git clean specifically). A dry run writes nothing: it must neither
+// arm the gate nor satisfy it. Checked early in both directions so the
+// remaining command is never classified after a dry-run flag is present.
+// The bare `-n` is scoped to make and git clean — the only tools on the
+// mutating list where `-n` means dry-run. Elsewhere `-n` is a count flag
+// (git log -n 5, head -n 5), parallelism (pytest -n auto), max-args
+// (xargs -n 2 rm), or stdin-from-/dev/null (ssh -n host); a bare `-n`
+// there would mask real mutations and suppress real verifications.
+var isDryRun = regexp.MustCompile(
+	`(?:^|\s)--?(?:dry-run|just-print|no-run|recon)\b` +
+		`|(?:^|\s)make\s+(?:-\w+\s+)*-n\b` +
+		`|(?:^|\s)git\s+clean\s+(?:-\w+\s+)*-n\b`)
 
 // isHelpFlag reports whether a command contains a `--help` or `-h` flag.
 // Help flags print documentation and change nothing, so a command with
 // `--help` must never arm the gate. Checked early, like isDryRun, because
 // stripping the flag would leave the bare command name (e.g. `truncate`)
-// which then matches the mutating list.
+// which then matches the mutating list. The bare `-h` is kept unscoped:
+// it is `--human-readable` for some tools (ls, du, df), but masking a
+// mutation (`rm -rf build && ls -h`) is the cheap failure direction (a
+// missed nudge, not a false one), and scoping it to a segment start would
+// regress `git stash -h` (help) back to arming via the stash pattern.
 var isHelpFlag = regexp.MustCompile(`(?:^|\s)--help\b|(?:^|\s)-h\b`)
 
 // looksLikeMutatingShellCommand reports whether a shell.run args payload is

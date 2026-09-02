@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rm`/`mv` and state-changing `stash` forms — `git stash list`/`show` and
   `git apply --stat`/`--check` stay neutral), `go generate`,
   `make`/`cmake`/`gradle`/`mvn` (dry-run forms like `make -n` and
-  `--dry-run` are stripped first), docker `build`/`run`/`rm`/`rmi`/`kill`/
+  `--dry-run` trigger an early neutral return), docker `build`/`run`/`rm`/`rmi`/`kill`/
   `stop`/`compose` and `docker exec` only when the inner command is
   destructive (`docker exec -it c rm -rf /data` arms), `ssh` (not
   `ssh-keygen`), and redirection into files after stripping quoted spans,
@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `curl`, read-only `sed`/`awk`, `git commit`/`push`, `go mod tidy`,
   `gofmt`, installs, and unrecognized commands — is neutral: it neither
   arms nor satisfies the gate. `--help`/`-h` forms of mutating commands
-  (`truncate --help`, `git stash --help`) are stripped and stay neutral.
+  (`truncate --help`, `git stash --help`) trigger an early neutral return.
   Models answering questions or doing research no longer get the "you
   made changes but have not verified them" nudge. The nudge text says
   "made changes".

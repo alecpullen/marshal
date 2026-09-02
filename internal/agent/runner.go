@@ -51,7 +51,7 @@ const (
 	// autonomous runs are the point of configuring them.
 	LocalDefaultMaxToolIterations = 25
 	groundingNudgeMessage         = "You have not made any tool calls this turn, but this task requires code changes or commands. If the work is already done from an earlier turn, verify it now with a tool call (for example, re-read the changed file or re-run the test command) before declaring completion. Otherwise, use the appropriate tool to make the change now."
-	verificationNudgeMessage      = "You made changes this session (last: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
+	verificationNudgeMessage      = "You made changes this session (last change: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
 	// emptyModelResponsePlaceholder stands in for a truly empty model
 	// response when recording the assistant's turn in the conversation.
 	// Some providers reject the next request outright if any assistant

@@ -282,3 +282,40 @@ func TestNativeVerificationThenCommitIsClean(t *testing.T) {
 		t.Fatal("gate must not fire when verification ran before a housekeeping commit")
 	}
 }
+
+// A mutating shell.run (sed -i) at the runner level must trigger the
+// verification nudge — the runner-level gate must not only cover
+// file.write_patch (the existing tests) but also shell mutators that
+// arm through the allowlist.
+func TestNativeMutatingShellRunTriggersNudge(t *testing.T) {
+	state := newTestState(t)
+	reg := regPatchAndTest(t)
+	if err := reg.Register(registry.Tool{Name: "shell.run", Risk: registry.RiskCommand, Handler: nopHandler}); err != nil {
+		t.Fatalf("register shell.run: %v", err)
+	}
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"edited file", "Done.", "Still done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "shell.run", Args: json.RawMessage(`{"command":"sed -i 's/a/b/' f.go"}`)}},
+			nil, // final attempt 1: unverified — nudge
+			nil, // final attempt 2: accepted
+		},
+	}
+	r := NewRunner(p, reg, gatePolicy(), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+
+	task, err := r.RunTask(context.Background(), "fix the file with sed")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if p.Calls != 3 {
+		t.Fatalf("Calls = %d, want 3 (rm, nudge, accept)", p.Calls)
+	}
+	if task.Summary != "Still done." {
+		t.Fatalf("Summary = %q", task.Summary)
+	}
+	if !transcriptContains(state, "have not verified") {
+		t.Fatal("sed -i via shell.run must trigger the verification nudge at runner level")
+	}
+}

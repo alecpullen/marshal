@@ -3,6 +3,11 @@ package agent
 import (
 	"context"
 	"testing"
+
+	"marshal/internal/agent/agenttest"
+	"marshal/internal/app/config"
+	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 // TestCopyFromRefreshesHooks guards the reload path: app.reloadAgentRuntime
@@ -53,28 +58,32 @@ type fakeTitleGenerator struct{}
 
 func (fakeTitleGenerator) Generate(context.Context, string) {}
 
-// TestCopyFromCopiesDecodingDegradedNotGuards guards the reload path:
+// TestCopyFromCopiesDecodingDegraded guards the reload path:
 // DecodingDegraded is copied so a rebuilt runner keeps advertising the
-// degraded provider state, but the per-instance decoding notice guards are
-// NOT copied, so a rebuilt runner re-arms them and re-emits the notice once
-// on its own first turn (intentionally — the reload produces a fresh runner
-// instance whose notices should fire again).
-func TestCopyFromCopiesDecodingDegradedNotGuards(t *testing.T) {
-	source := &Runner{
-		DecodingDegraded:             true,
-		decodingStartupNoticeSent:    true,
-		decodingEscalationNoticeSent: true,
-	}
+// degraded provider state. The notice lifecycle has no per-instance state
+// left to reset — the startup notice re-emits every turn and the escalation
+// re-fires on every tally — so the reload path needs no guard re-arming.
+func TestCopyFromCopiesDecodingDegraded(t *testing.T) {
+	source := &Runner{DecodingDegraded: true}
 	target := &Runner{}
 	target.CopyFrom(source)
 
 	if !target.DecodingDegraded {
 		t.Fatal("CopyFrom did not transfer DecodingDegraded")
 	}
-	if target.decodingStartupNoticeSent {
-		t.Fatal("CopyFrom transferred the per-instance startup notice guard")
+
+	// Behavioral pin on the reload path: a rebuilt degraded runner re-emits
+	// the startup notice on its own first turn. Field-transfer assertions
+	// alone cannot catch a regression where the rebuilt runner stays silent.
+	live := NewRunner(&agenttest.ScriptedProvider{Responses: []string{finalActionJSON}},
+		registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	live.DecodingDegraded = true
+	target2 := NewRunner(nil, nil, nil, nil, "")
+	target2.CopyFrom(live)
+	if err := target2.Run(context.Background(), "reload turn"); err != nil {
+		t.Fatalf("rebuilt runner Run: %v", err)
 	}
-	if target.decodingEscalationNoticeSent {
-		t.Fatal("CopyFrom transferred the per-instance escalation notice guard")
+	if _, ok := live.State.Notice(); !ok {
+		t.Fatal("rebuilt degraded runner emitted no startup notice on its first turn")
 	}
 }

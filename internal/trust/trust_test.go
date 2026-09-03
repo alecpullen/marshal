@@ -415,6 +415,11 @@ func TestEvaluateTrustedHashMatchSkipsPrompt(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectConfig(t, dir, "[project]\nname = \"x\"\n")
 	store := NewStore(t.TempDir())
+	// Seed via Canonicalize: Evaluate canonicalizes the working dir
+	// (filepath.EvalSymlinks — /var/folders/... → /private/var/... on macOS)
+	// before store lookups, so an Abs-keyed record never matches and the
+	// test silently exercises the no-record path (see
+	// internal/app/runtime_test.go for precedent).
 	abs := Canonicalize(dir)
 	hash, err := ConfigHashFor(dir)
 	if err != nil {
@@ -436,6 +441,8 @@ func TestEvaluateStaleHashRePrompts(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectConfig(t, dir, "[project]\nname = \"x\"\n")
 	store := NewStore(t.TempDir())
+	// Canonicalize for the same symlink-resolution reason as above: the
+	// store key must match what Evaluate looks up.
 	abs := Canonicalize(dir)
 	hash, _ := ConfigHashFor(dir)
 	if err := store.SetTrust(abs, true, hash); err != nil {
@@ -473,6 +480,8 @@ func TestTerminalResolverRePromptsOnConfigChange(t *testing.T) {
 	// stdin is empty so we get DontTrust. Record the trust via the
 	// store directly to simulate a prior trust-grant.
 	abs := Canonicalize(dir)
+	// Canonicalize for the same symlink-resolution reason as the tests above:
+	// resolver/Evaluate lookups use canonical keys; an Abs key never matches.
 	currentHash, _ := ConfigHashFor(dir)
 	if err := store.SetTrust(abs, true, currentHash); err != nil {
 		t.Fatal(err)

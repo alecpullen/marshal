@@ -134,6 +134,28 @@ func TestStartAgentRunKeepsUnrelatedNotice(t *testing.T) {
 	}
 }
 
+// A degraded-decoding notice uses NoticeConfig so a successful turn cannot
+// wipe it: the TUI clears NoticeProvider on the success path (a completed
+// turn proves the provider is reachable), but a degraded configuration is
+// not fixed by a successful turn — it persists until the config changes.
+// NoticeConfig is cleared on runtime reload and model switch, the moments
+// the condition can genuinely change.
+func TestSuccessfulTurnKeepsDecodingNotice(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.state.SetNotice(session.Notice{Category: session.NoticeConfig, Message: "provider advertises no structured-output support"})
+
+	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = mm
+	n, ok := m.state.Notice()
+	if !ok {
+		t.Fatal("NoticeConfig decoding notice must survive a successful turn")
+	}
+	if n.Category != session.NoticeConfig {
+		t.Fatalf("notice category = %v, want NoticeConfig", n.Category)
+	}
+}
+
 // A cancelled turn clears a stale provider notice (the user retried);
 // the cancellation itself never sets one.
 func TestCancelledTurnClearsProviderNotice(t *testing.T) {

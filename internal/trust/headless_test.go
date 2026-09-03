@@ -72,7 +72,7 @@ func TestHeadlessResolverPermanentTrustHashMatch(t *testing.T) {
 	}
 
 	// Record permanent trust with the current hash.
-	abs, _ := filepath.Abs(dir)
+	abs := Canonicalize(dir)
 	currentHash, err := ConfigHashFor(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestHeadlessResolverHashMismatchDegrades(t *testing.T) {
 	}
 
 	// Record permanent trust with the v1 hash.
-	abs, _ := filepath.Abs(dir)
+	abs := Canonicalize(dir)
 	v1Hash, err := ConfigHashFor(dir)
 	if err != nil {
 		t.Fatal(err)

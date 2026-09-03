@@ -415,7 +415,7 @@ func TestEvaluateTrustedHashMatchSkipsPrompt(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectConfig(t, dir, "[project]\nname = \"x\"\n")
 	store := NewStore(t.TempDir())
-	abs, _ := filepath.Abs(dir)
+	abs := Canonicalize(dir)
 	hash, err := ConfigHashFor(dir)
 	if err != nil {
 		t.Fatalf("ConfigHashFor: %v", err)
@@ -436,7 +436,7 @@ func TestEvaluateStaleHashRePrompts(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectConfig(t, dir, "[project]\nname = \"x\"\n")
 	store := NewStore(t.TempDir())
-	abs, _ := filepath.Abs(dir)
+	abs := Canonicalize(dir)
 	hash, _ := ConfigHashFor(dir)
 	if err := store.SetTrust(abs, true, hash); err != nil {
 		t.Fatalf("SetTrust: %v", err)
@@ -472,7 +472,7 @@ func TestTerminalResolverRePromptsOnConfigChange(t *testing.T) {
 	// First resolution: no record exists, the prompt is needed but
 	// stdin is empty so we get DontTrust. Record the trust via the
 	// store directly to simulate a prior trust-grant.
-	abs, _ := filepath.Abs(dir)
+	abs := Canonicalize(dir)
 	currentHash, _ := ConfigHashFor(dir)
 	if err := store.SetTrust(abs, true, currentHash); err != nil {
 		t.Fatal(err)

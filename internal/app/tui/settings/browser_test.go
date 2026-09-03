@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -381,6 +382,66 @@ func TestBrowserDrillsIntoCollectionAndBack(t *testing.T) {
 	if b.stack != nil {
 		t.Fatal("esc at a collection root should leave drill mode")
 	}
+}
+
+func TestProvidersCollectionIncludesStructuredOutputToggle(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+	}
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "providers")
+
+	// Drill into the Providers collection.
+	for index, row := range b.list.Rows() {
+		if row.ID == "section.providers" {
+			b.list.SetCursor(index)
+			break
+		}
+	}
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if b.stack == nil {
+		t.Fatal("enter on provider collection should open its frame")
+	}
+
+	// Drill into the single provider entry.
+	for index, row := range b.activeList().Rows() {
+		if row.ID == "providers.ollama" {
+			b.activeList().SetCursor(index)
+			break
+		}
+	}
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if b.stack == nil || len(b.stack.Stack) < 2 {
+		t.Fatal("enter on a provider entry should open its detail frame")
+	}
+
+	rows := b.activeList().Rows()
+	var toolCalling, structuredOutput *field
+	for i := range rows {
+		switch rows[i].ID {
+		case "providers.ollama.tool_calling":
+			toolCalling = rows[i]
+		case "providers.ollama.structured_output":
+			structuredOutput = rows[i]
+		}
+	}
+	if toolCalling == nil || toolCalling.Kind != kindToggle {
+		t.Fatalf("tool_calling row missing or wrong kind, got:\n%s", fieldRowDebug(rows))
+	}
+	if structuredOutput == nil || structuredOutput.Kind != kindToggle {
+		t.Fatalf("structured_output row missing or wrong kind, got:\n%s", fieldRowDebug(rows))
+	}
+}
+
+func fieldRowDebug(rows []*field) string {
+	var sb strings.Builder
+	for _, r := range rows {
+		sb.WriteString(r.ID)
+		sb.WriteString(" kind=")
+		sb.WriteString(fmt.Sprintf("%d", r.Kind))
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 func TestBrowserEscEmitsClosed(t *testing.T) {

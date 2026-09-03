@@ -59,6 +59,14 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		}
 		caps := DefaultCapabilities()
 		caps.ToolCalling = pc.ToolCalling
+		// Structured output (format / response_format enforcement) is a
+		// per-provider opt-in mirroring tool_calling: ollama.com cloud
+		// silently ignores format constraints (verified 2026-09-03), and
+		// /api/show cannot distinguish enforcing from non-enforcing
+		// endpoints, so default false and let the config opt in where
+		// format is proven enforced (e.g. a local Ollama server).
+		caps.JSONMode = pc.StructuredOutput
+		caps.StructuredOutput = pc.StructuredOutput
 		// Ollama's think toggle is a different mechanism than the
 		// reasoning_effort/budget_tokens control; report no reasoning
 		// capability so the thinking preset field is not sent on the wire.

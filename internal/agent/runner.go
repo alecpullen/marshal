@@ -41,6 +41,11 @@ const (
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 	maxConsecutiveParseFailures = 3
 
+	// decodingNoticeSource is the Source stamped on both degraded-decoding
+	// notices (startup and escalation) so the two emission sites cannot
+	// drift apart.
+	decodingNoticeSource = "decoding"
+
 	// LocalDefaultMaxToolIterations is the tool ceiling applied per turn
 	// when the route is local (preset local_only) and the user has not set
 	// agent.max_tool_iterations. An aimless local model is pure wall time —
@@ -180,7 +185,17 @@ type MemoryProvider interface {
 //     MaxTurnContextTokens (never raise it) when the route-resolved model's
 //     context window is smaller than the configured value — the configured
 //     value is a ceiling, and a reduction persists into later RunTask
-//     calls. The seed persists across RunTask calls.
+//     calls. The seed persists across RunTask calls. DecodingDegraded also
+//     persists. The degraded-decoding notices are deliberately re-emitted:
+//     the startup notice re-fires at the start of every degraded
+//     RoleGeneral turn and the escalation notice re-fires on every
+//     parse-failure tally, because the session notice store holds one slot
+//     and the TUI auto-dismisses banners (TTL) and clears NoticeProvider on
+//     a successful turn — a persistent misconfiguration must stay visible
+//     (notice.go / model.go handleAgentFinished). They use NoticeConfig so
+//     the success-path clear (NoticeProvider only) leaves them alone while
+//     runtime reload and model switch (the moments the condition can change)
+//     still clear them.
 //
 //   - Per-turn state (tracker, stats, route, pressureMessageSent,
 //     consecutiveParseFailures, consecutiveEmpty, turnFinishReason,
@@ -226,9 +241,18 @@ type Runner struct {
 	// ReconnectMaxWait bounds the total time waitForConnectivity will
 	// spend resending a dropped chat request before failing the turn.
 	// Zero uses defaultReconnectMaxWait.
-	ReconnectMaxWait   time.Duration
-	ResponseFormat     *schema.ResponseFormat
-	NativeTools        bool
+	ReconnectMaxWait time.Duration
+	ResponseFormat   *schema.ResponseFormat
+	NativeTools      bool
+	// DecodingDegraded records that the provider advertises neither
+	// structured output nor JSON mode, so envelope actions are sent as
+	// plain text and the model may reply freeform. Drives the startup and
+	// escalation notices; emission is gated to the main runner's
+	// RoleGeneral. Both notices target NoticeConfig so the TUI's
+	// success-path clear (NoticeProvider-scoped) cannot wipe them, and are
+	// re-emitted every turn (startup) / every parse-failure tally
+	// (escalation) — see the lifecycle comment on RunTask.
+	DecodingDegraded   bool
 	MaxParallelActions int
 	MaxToolResultChars int
 	ForceClass         string // if set, overrides Classify() in Run()
@@ -525,6 +549,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.ReconnectMaxWait = other.ReconnectMaxWait
 	r.ResponseFormat = other.ResponseFormat
 	r.NativeTools = other.NativeTools
+	r.DecodingDegraded = other.DecodingDegraded
 	r.MaxParallelActions = other.MaxParallelActions
 	r.MaxToolResultChars = other.MaxToolResultChars
 	r.ForceClass = other.ForceClass
@@ -565,6 +590,28 @@ func (r *Runner) role() AgentRole {
 func (r *Runner) Run(ctx context.Context, goal string) error {
 	_, err := r.RunTask(ctx, goal)
 	return err
+}
+
+// emitDecodingEscalationNotice surfaces the degraded-decoding escalation on
+// a parse-failure tally. Called from all three tally sites (unparseable
+// output, truncated payload, non-read-only actions array) so degradation
+// tripped via any path escalates identically. Re-fires on every tally: the
+// TUI auto-dismisses banners (TTL), so once-per-session is not durable.
+func (r *Runner) emitDecodingEscalationNotice() {
+	if !r.DecodingDegraded || r.role() != RoleGeneral {
+		return
+	}
+	name := ""
+	if r.Provider != nil {
+		name = r.Provider.Name()
+	}
+	r.State.SetNotice(session.Notice{
+		Category: session.NoticeConfig,
+		Severity: session.SeverityWarn,
+		Source:   decodingNoticeSource,
+		Message:  "Model output couldn't be parsed as an action — expected with plain-text envelope mode on this provider; consider tool_calling = true or structured_output = true.",
+		Hint:     fmt.Sprintf("Set structured_output = true in [providers.%s] if the endpoint enforces format, or tool_calling = true for native tools.", name),
+	})
 }
 
 // recordInterruptMarker documents where an interrupted (Esc-cancelled) turn
@@ -636,6 +683,23 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.TitleGenerator.Generate(context.Background(), g)
 			}
 		}(goal)
+	}
+	// Re-emit on every degraded general turn, not just the first: the TUI
+	// auto-dismisses banners (TTL) and a persistent misconfiguration must
+	// stay visible. Cheap — a struct write — and the banner repaints in
+	// place rather than appending to the transcript.
+	if r.DecodingDegraded && r.role() == RoleGeneral {
+		name := ""
+		if r.Provider != nil {
+			name = r.Provider.Name()
+		}
+		r.State.SetNotice(session.Notice{
+			Category: session.NoticeConfig,
+			Severity: session.SeverityWarn,
+			Source:   decodingNoticeSource,
+			Message:  fmt.Sprintf("Provider %s advertises no structured-output support — actions are sent as plain text; expect freeform replies.", name),
+			Hint:     fmt.Sprintf("Set structured_output = true in [providers.%s] if the endpoint enforces format, or tool_calling = true for native tools.", name),
+		})
 	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	// If the previous turn was interrupted (Esc), surface a one-line note in
@@ -1231,6 +1295,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		if parseErr != nil {
 			consecutiveParseFailures++
+			r.emitDecodingEscalationNotice()
 			// Logged, not just counted: a parse failure that escalates to a
 			// failed turn is otherwise undiagnosable after the fact — the
 			// malformed output is gone and only a ParseFailures tally remains.
@@ -1278,6 +1343,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			countIterations()
 			consecutiveParseFailures++
 			r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
+			r.emitDecodingEscalationNotice()
 			assistantContent := raw
 			if strings.TrimSpace(assistantContent) == "" {
 				assistantContent = emptyModelResponsePlaceholder
@@ -1321,6 +1387,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				budget.overhead++
 				consecutiveParseFailures++
 				r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
+				r.emitDecodingEscalationNotice()
 				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}

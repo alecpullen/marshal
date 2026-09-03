@@ -267,11 +267,12 @@ func TestRoleToolIterationsFallsBack(t *testing.T) {
 
 func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 	tests := []struct {
-		name        string
-		toolCalling string
-		caps        schema.ProviderCapabilities
-		wantNative  bool
-		wantRF      string
+		name         string
+		toolCalling  string
+		caps         schema.ProviderCapabilities
+		wantNative   bool
+		wantRF       string
+		wantDegraded bool
 	}{
 		{
 			name:        "native when provider supports tool calling",
@@ -292,9 +293,10 @@ func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 			wantRF:      "json_object",
 		},
 		{
-			name:        "native falls back to nil",
-			toolCalling: "native",
-			caps:        schema.ProviderCapabilities{},
+			name:         "native falls back to nil",
+			toolCalling:  "native",
+			caps:         schema.ProviderCapabilities{},
+			wantDegraded: true,
 		},
 		{
 			name:        "json_schema preferred",
@@ -307,6 +309,12 @@ func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 			toolCalling: "json_schema",
 			caps:        schema.ProviderCapabilities{JSONMode: true},
 			wantRF:      "json_object",
+		},
+		{
+			name:         "json_schema falls back to nil when provider advertises nothing",
+			toolCalling:  "json_schema",
+			caps:         schema.ProviderCapabilities{},
+			wantDegraded: true,
 		},
 		{
 			name:        "json leaves decoding unconstrained",
@@ -332,9 +340,16 @@ func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 			wantRF:      "json_object",
 		},
 		{
-			name:        "empty falls back to nil when provider advertises nothing",
+			name:        "empty falls back to json_schema when only StructuredOutput advertised",
 			toolCalling: "",
-			caps:        schema.ProviderCapabilities{},
+			caps:        schema.ProviderCapabilities{StructuredOutput: true},
+			wantRF:      "json_schema",
+		},
+		{
+			name:         "empty falls back to nil when provider advertises nothing",
+			toolCalling:  "",
+			caps:         schema.ProviderCapabilities{},
+			wantDegraded: true,
 		},
 		{
 			name:        "none explicitly blocks tools regardless of provider capability",
@@ -348,6 +363,9 @@ func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 			got := resolveActionDecoding(tt.toolCalling, tt.caps)
 			if got.Native != tt.wantNative {
 				t.Fatalf("Native = %v, want %v", got.Native, tt.wantNative)
+			}
+			if got.Degraded != tt.wantDegraded {
+				t.Fatalf("Degraded = %v, want %v", got.Degraded, tt.wantDegraded)
 			}
 			if tt.wantRF == "" {
 				if got.ResponseFormat != nil {

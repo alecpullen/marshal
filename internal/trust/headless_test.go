@@ -71,8 +71,12 @@ func TestHeadlessResolverPermanentTrustHashMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Record permanent trust with the current hash.
-	abs, _ := filepath.Abs(dir)
+	// Record permanent trust with the current hash. Seed via Canonicalize:
+	// the resolver canonicalizes the working dir (filepath.EvalSymlinks —
+	// /var/folders/... → /private/var/... on macOS) before store lookups, so
+	// an Abs-keyed record never matches and the test silently exercises the
+	// no-record path instead (see internal/app/runtime_test.go for precedent).
+	abs := Canonicalize(dir)
 	currentHash, err := ConfigHashFor(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -109,8 +113,11 @@ func TestHeadlessResolverHashMismatchDegrades(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Record permanent trust with the v1 hash.
-	abs, _ := filepath.Abs(dir)
+	// Record permanent trust with the v1 hash. Canonicalize for the same
+	// symlink-resolution reason as above: the store key must match what
+	// HeadlessResolver.Resolve looks up, or the test silently passes on the
+	// no-record path.
+	abs := Canonicalize(dir)
 	v1Hash, err := ConfigHashFor(dir)
 	if err != nil {
 		t.Fatal(err)

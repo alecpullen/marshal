@@ -528,6 +528,15 @@ type ProviderConfig struct {
 	// request fields are ignored by compatible servers, so enabling this
 	// against a backend that does not support it fails open.
 	ReasoningSummary bool `toml:"reasoning_summary"`
+	// StructuredOutput opts this provider in to JSON-schema/JSON-mode
+	// response constraints (response_format / format on the wire). Default
+	// false: ollama.com cloud silently ignores format and response_format
+	// (verified 2026-09-03), and /api/show cannot distinguish enforcing
+	// endpoints, so Marshal refuses to claim structured output unless it
+	// is configured explicitly. Enable only against endpoints proven to
+	// enforce format (e.g. a local Ollama server). Honored only by the
+	// ollama native backend today.
+	StructuredOutput bool `toml:"structured_output"`
 }
 
 type LoadOptions struct {

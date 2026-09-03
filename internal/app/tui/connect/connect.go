@@ -695,7 +695,7 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		return m, nil
 	}
 	m.template = tpl
-	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling, Template: tpl.ID}
+	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling, StructuredOutput: tpl.StructuredOutput, Template: tpl.ID}
 	if tpl.BaseURL == "" {
 		enterBaseURLStep(m)
 		return m, nil

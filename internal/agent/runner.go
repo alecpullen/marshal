@@ -180,7 +180,12 @@ type MemoryProvider interface {
 //     MaxTurnContextTokens (never raise it) when the route-resolved model's
 //     context window is smaller than the configured value — the configured
 //     value is a ceiling, and a reduction persists into later RunTask
-//     calls. The seed persists across RunTask calls.
+//     calls. The seed persists across RunTask calls. DecodingDegraded also
+//     persists. The decoding notice guards (decodingStartupNoticeSent,
+//     decodingEscalationNoticeSent) are per-instance: they are NOT reset
+//     per turn and NOT copied by CopyFrom — a rebuilt runner re-arms them
+//     intentionally, and the startup guard additionally self-limits because
+//     it only fires when firstTurn.
 //
 //   - Per-turn state (tracker, stats, route, pressureMessageSent,
 //     consecutiveParseFailures, consecutiveEmpty, turnFinishReason,
@@ -226,13 +231,21 @@ type Runner struct {
 	// ReconnectMaxWait bounds the total time waitForConnectivity will
 	// spend resending a dropped chat request before failing the turn.
 	// Zero uses defaultReconnectMaxWait.
-	ReconnectMaxWait   time.Duration
-	ResponseFormat     *schema.ResponseFormat
-	NativeTools        bool
-	MaxParallelActions int
-	MaxToolResultChars int
-	ForceClass         string // if set, overrides Classify() in Run()
-	SkillIndex         *skills.Index
+	ReconnectMaxWait time.Duration
+	ResponseFormat   *schema.ResponseFormat
+	NativeTools      bool
+	// DecodingDegraded records that the provider advertises neither
+	// structured output nor JSON mode, so envelope actions are sent as
+	// plain text and the model may reply freeform. Drives the startup and
+	// escalation notices; emission is gated to the main runner's
+	// RoleGeneral.
+	DecodingDegraded             bool
+	decodingStartupNoticeSent    bool
+	decodingEscalationNoticeSent bool
+	MaxParallelActions           int
+	MaxToolResultChars           int
+	ForceClass                   string // if set, overrides Classify() in Run()
+	SkillIndex                   *skills.Index
 
 	// SkillEmbedder overrides embedder resolution for computeSkillHints.
 	// Nil means resolve from config (unconfigured = hints silently off).
@@ -525,6 +538,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.ReconnectMaxWait = other.ReconnectMaxWait
 	r.ResponseFormat = other.ResponseFormat
 	r.NativeTools = other.NativeTools
+	r.DecodingDegraded = other.DecodingDegraded
 	r.MaxParallelActions = other.MaxParallelActions
 	r.MaxToolResultChars = other.MaxToolResultChars
 	r.ForceClass = other.ForceClass
@@ -636,6 +650,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.TitleGenerator.Generate(context.Background(), g)
 			}
 		}(goal)
+	}
+	if firstTurn && r.DecodingDegraded && r.role() == RoleGeneral && !r.decodingStartupNoticeSent {
+		r.decodingStartupNoticeSent = true
+		name := ""
+		if r.Provider != nil {
+			name = r.Provider.Name()
+		}
+		r.State.SetNotice(session.Notice{
+			Category: session.NoticeProvider,
+			Severity: session.SeverityWarn,
+			Source:   "decoding",
+			Message:  fmt.Sprintf("Provider %s advertises no structured-output support — actions are sent as plain text; expect freeform replies.", name),
+			Hint:     fmt.Sprintf("Set structured_output = true in [providers.%s] if the endpoint enforces format, or tool_calling = true for native tools.", name),
+		})
 	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	// If the previous turn was interrupted (Esc), surface a one-line note in
@@ -1231,6 +1259,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		if parseErr != nil {
 			consecutiveParseFailures++
+			if r.DecodingDegraded && r.role() == RoleGeneral && !r.decodingEscalationNoticeSent {
+				r.decodingEscalationNoticeSent = true
+				r.State.SetNotice(session.Notice{
+					Category: session.NoticeProvider,
+					Severity: session.SeverityWarn,
+					Source:   "decoding",
+					Message:  "Model output couldn't be parsed as an action — expected with plain-text envelope mode on this provider; consider tool_calling = true or structured_output = true.",
+				})
+			}
 			// Logged, not just counted: a parse failure that escalates to a
 			// failed turn is otherwise undiagnosable after the fact — the
 			// malformed output is gone and only a ParseFailures tally remains.

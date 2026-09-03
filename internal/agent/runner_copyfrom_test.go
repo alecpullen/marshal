@@ -52,3 +52,29 @@ func TestCopyFromRefreshesHooks(t *testing.T) {
 type fakeTitleGenerator struct{}
 
 func (fakeTitleGenerator) Generate(context.Context, string) {}
+
+// TestCopyFromCopiesDecodingDegradedNotGuards guards the reload path:
+// DecodingDegraded is copied so a rebuilt runner keeps advertising the
+// degraded provider state, but the per-instance decoding notice guards are
+// NOT copied, so a rebuilt runner re-arms them and re-emits the notice once
+// on its own first turn (intentionally — the reload produces a fresh runner
+// instance whose notices should fire again).
+func TestCopyFromCopiesDecodingDegradedNotGuards(t *testing.T) {
+	source := &Runner{
+		DecodingDegraded:             true,
+		decodingStartupNoticeSent:    true,
+		decodingEscalationNoticeSent: true,
+	}
+	target := &Runner{}
+	target.CopyFrom(source)
+
+	if !target.DecodingDegraded {
+		t.Fatal("CopyFrom did not transfer DecodingDegraded")
+	}
+	if target.decodingStartupNoticeSent {
+		t.Fatal("CopyFrom transferred the per-instance startup notice guard")
+	}
+	if target.decodingEscalationNoticeSent {
+		t.Fatal("CopyFrom transferred the per-instance escalation notice guard")
+	}
+}

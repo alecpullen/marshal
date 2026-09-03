@@ -758,6 +758,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	decoding := resolveActionDecoding(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
 	runner.NativeTools = decoding.Native
 	runner.ResponseFormat = decoding.ResponseFormat
+	runner.DecodingDegraded = decoding.Degraded
 	// 0 means unlimited (the default); budget.go honors base <= 0 as no
 	// ceiling. Pass it through unconditionally so the config can also
 	// re-disable a cap after one was set.
@@ -1027,6 +1028,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(context.Background()))
 	r.NativeTools = decoding.Native
 	r.ResponseFormat = decoding.ResponseFormat
+	r.DecodingDegraded = decoding.Degraded
 	if cap := roleToolIterations(s.cfg, role); cap > 0 {
 		r.MaxToolIterations = cap
 	}
@@ -1268,6 +1270,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(context.Background()))
 		childRunner.NativeTools = decoding.Native
 		childRunner.ResponseFormat = decoding.ResponseFormat
+		childRunner.DecodingDegraded = decoding.Degraded
 		if cap := roleToolIterations(cfg, agent.RoleSDDPlanAuthor); cap > 0 {
 			childRunner.MaxToolIterations = cap
 		}
@@ -1597,6 +1600,7 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		child.ThinkingOverride = thinkOverride
 		child.NativeTools = decoding.Native
 		child.ResponseFormat = decoding.ResponseFormat
+		child.DecodingDegraded = decoding.Degraded
 		// Set a route resolver so the child's RunTask can derive the
 		// correct context window and max output from the resolved route.
 		// Without this, resolveRoute returns an empty Route with
@@ -1655,6 +1659,12 @@ func (s *staticRouteResolver) Resolve(string) (routing.Route, provider.Provider,
 type actionDecodingConfig struct {
 	Native         bool
 	ResponseFormat *schema.ResponseFormat
+	// Degraded is true when an envelope mode was selected (native falling
+	// back to the envelope path, or json_schema) but no response format
+	// could be advertised, so actions are sent as plain text and the model
+	// may reply freeform. Explicit opt-out ("none") or an unknown
+	// preference is not degradation.
+	Degraded bool
 }
 
 // resolveActionDecoding builds the opt-in decoding mode for a model preset.
@@ -1666,15 +1676,22 @@ type actionDecodingConfig struct {
 // it degrades to the JSON-envelope path (json_schema → json_object → nil),
 // matching the "native" preference's fallback. "none" explicitly opts out of
 // tool-calling entirely (text-only, no envelope).
+//
+// Degraded reports true only when an envelope mode was selected and no
+// response format could be advertised (plain-text actions): the provider
+// advertises neither structured output nor JSON mode, so the model may reply
+// freeform instead of emitting the action envelope.
 func resolveActionDecoding(toolCalling string, caps schema.ProviderCapabilities) actionDecodingConfig {
 	switch toolCalling {
 	case "native", "":
 		if caps.ToolCalling {
 			return actionDecodingConfig{Native: true}
 		}
-		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
+		rf := fallbackResponseFormat(caps)
+		return actionDecodingConfig{ResponseFormat: rf, Degraded: rf == nil}
 	case "json_schema":
-		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
+		rf := fallbackResponseFormat(caps)
+		return actionDecodingConfig{ResponseFormat: rf, Degraded: rf == nil}
 	case "none":
 		return actionDecodingConfig{}
 	}

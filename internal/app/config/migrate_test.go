@@ -36,6 +36,29 @@ func TestMigrateLegacyAgentModel(t *testing.T) {
 	}
 }
 
+// A project config that has already moved to the new [profile] format and
+// named an active preset must not be clobbered by a legacy [agent]
+// provider/model pair lingering in the user config.
+func TestMigrateNoOpWhenActivePresetAlreadySet(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "single"
+	cfg.Profile.ActivePreset = "ollama/qwen3-coder:7b"
+	cfg.AgentProfiles = nil // the "single" profile does not exist yet
+
+	if MigrateLegacyAgentModel(&cfg, "openai", "gpt-4o") {
+		t.Error("migrated a config that already names an active preset")
+	}
+	if cfg.Profile.Default != "single" {
+		t.Errorf("Profile.Default = %q, want %q", cfg.Profile.Default, "single")
+	}
+	if cfg.Profile.ActivePreset != "ollama/qwen3-coder:7b" {
+		t.Errorf("Profile.ActivePreset = %q, want %q", cfg.Profile.ActivePreset, "ollama/qwen3-coder:7b")
+	}
+	if _, ok := cfg.Models.Presets["openai/gpt-4o"]; ok {
+		t.Error("migration created a preset even though active_preset was already set")
+	}
+}
+
 func TestMigrateNoOpWhenProfileAlreadySet(t *testing.T) {
 	cfg := Default()
 	cfg.Profile.Default = "mine"

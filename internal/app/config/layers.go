@@ -49,7 +49,7 @@ type Layers struct {
 // provenance. Load is a thin wrapper over this.
 func LoadLayers(opts LoadOptions) (Layers, error) {
 	cfg := Default()
-	def := cfg
+	def := deepCopyConfig(cfg)
 
 	home := opts.HomeDir
 	if home == "" {
@@ -77,7 +77,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	if err := merge(&cfg, userFile); err != nil {
 		return Layers{}, fmt.Errorf("merge config %s: %w", userPath, err)
 	}
-	user := cfg
+	user := deepCopyConfig(cfg)
 
 	projectPath := ProjectConfigPath(work)
 	hasProject := trust.HasProjectConfig(work)

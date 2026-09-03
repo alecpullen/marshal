@@ -1,9 +1,8 @@
 [profile]
-default = 'single'
-active_preset = 'ollama-cloud-2/glm-5.3-flash'
+default = 'stress'
+active_preset = 'ollama-cloud/glm-5.3-flash'
 
 [agent]
+max_tool_iterations = 100
+max_retries = 3
 approval_mode = 'copilot'
-
-[privacy]
-remote_providers_allowed = true

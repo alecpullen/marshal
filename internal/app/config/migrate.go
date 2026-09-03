@@ -26,6 +26,12 @@ func MigrateLegacyAgentModel(cfg *Config, provider, model string) bool {
 	if _, ok := cfg.AgentProfiles[cfg.Profile.Default]; ok {
 		return false
 	}
+	// If the config already names an active preset (e.g. from a project config
+	// that has moved to the new [profile] active_preset format), don't let the
+	// legacy [agent] provider/model pair override it. The active preset wins.
+	if cfg.Profile.ActivePreset != "" {
+		return false
+	}
 
 	presetName := provider + "/" + model
 

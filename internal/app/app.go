@@ -51,6 +51,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/watch"
 	"marshal/internal/worker"
 	"marshal/internal/worktree"
 )
@@ -474,7 +475,11 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 // every agent.run child share the runtime's stable WriteLock across config
 // reloads. (Keeping this wrapper avoids churning the ~25 test call sites.)
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
-	return buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, configReloader, homeDir, &swarm.WriteLock{})
+	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
+	// this wrapper discards it so the ~25 test call sites that use
+	// buildAgentRunner directly do not need to change.
+	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, configReloader, homeDir, &swarm.WriteLock{})
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err
 }
 
 // buildAgentRunnerWithLock is the production form of buildAgentRunner. It
@@ -483,11 +488,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // (which rebuilds the runner and the subagent factory) reuses the same lock
 // that in-flight background children from the pre-reload generation already
 // hold.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Resolve rollover enablement against the route once, up front: when
@@ -516,7 +521,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -570,6 +575,61 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		jobManager.Shutdown(sc)
 	})
 
+	// Milestone W: construct the watch manager from the sandboxed command
+	// runner and the job broker. Command samples run through the same
+	// sandboxed runner as background jobs; job watches subscribe to the job
+	// event stream; fired reports are pushed to the session's watch-report
+	// queue (task 5 refines the formatting). OnEvent publishes watch events
+	// to the TUI lane broker.
+	watchManager := watch.NewManager(ctx, watch.Deps{
+		RunSample: func(c context.Context, command, dir string) (string, int, error) {
+			res, err := commandRunner.Run(c, native.CommandRequest{
+				Command:        command,
+				Dir:            dir,
+				MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+			})
+			return res.Stdout, res.ExitCode, err
+		},
+		SubscribeJobs: func(c context.Context) (<-chan pubsub.Event[native.JobEvent], func()) {
+			if jobBroker == nil {
+				return nil, nil
+			}
+			// The broker auto-unsubscribes on ctx cancellation; the returned
+			// func is a no-op that relies on the watch's context to clean up.
+			sub := jobBroker.Subscribe(c, pubsub.WithTerminal[native.JobEvent]())
+			return sub, func() {}
+		},
+		JobLookup: func(id string) (native.JobInfo, bool) {
+			info, _, err := jobManager.Output(id, 0)
+			return info, err == nil
+		},
+		DirFn: func() string { return state.Workspace().ActiveRoot },
+		OnFire: func(r watch.Report) {
+			// Format the report and push it to the in-memory watch-report
+			// queue, coalesced by watch ID (a watch that fires repeatedly
+			// while idle folds into one pending entry carrying the cumulative
+			// FiredCount). The runner persists each drained report as a
+			// RoleUser message at the next loop-top — the durable copy that
+			// buildHistoryMessages replays across restart. Persisting at drain
+			// time (rather than at push) is what bounds the persisted
+			// transcript the same way the queue is bounded.
+			state.PushWatchReport(r.WatchID, watch.Format(r))
+		},
+		OnEvent: func(ev watch.Event) {
+			if watchBroker != nil {
+				watchBroker.Publish("watch", ev)
+			}
+		},
+	})
+	// Shut the watch manager down BEFORE the job manager (watches may depend
+	// on jobs). The cleanup slice runs in reverse order, so appending the
+	// watch cleanup after the job cleanup achieves this.
+	cleanup = append(cleanup, func() {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		watchManager.Close(sc)
+	})
+
 	var fileTracker native.FileTracker
 	if database != nil {
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
@@ -618,7 +678,14 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+	}
+	// Register the watch.* tools. They live in the watch package (which
+	// imports internal/tools/native for JobEvent/JobInfo), so they cannot be
+	// part of the native toolset without an import cycle.
+	if err := watch.RegisterTools(reg, watchManager); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register watch tools: %w", err)
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -628,12 +695,12 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -643,7 +710,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// writes must serialize on the same gate. The lock is the caller's
 	// (buildAgentRunnerWithLock passes the runtime's stable lock so a config
 	// reload reuses the same gate in-flight children already hold).
-	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts)
+	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts, watchManager)
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
 		subagentResolver,
@@ -653,22 +720,26 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		agent.WithSubagentParentProvider(resolvedProvider.Name()),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	if err := reg.Register(agent.NewSubagentAwaitTool(state)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
 	}
 	if err := reg.Register(agent.NewSubagentOutputTool(state)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
 	}
 	if err := reg.Register(agent.NewSubagentKillTool(state)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
+	// Wire the watch manager as the runner's WatchTransferrer so a
+	// subagent's once watches re-parent to the parent and its repeat
+	// watches stop when the subagent finishes or is killed.
+	runner.WatchTransferrer = watchManager
 	repoInstructions, _ := loadRepoInstructions(state.WorkingDir)
 	runner.SystemPromptAddendum = composeAddendum(repoInstructions, "")
 	runner.SkillIndex = skillIndex
@@ -812,7 +883,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, route.Preset.LocalOnly, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -821,7 +892,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -913,17 +984,17 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
 
-	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts)
+	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts, watchManager)
 	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable, overrides)
 	}
 	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, watchManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
 // loadLimitsTable loads the merged model-limits table so presets without an
@@ -1361,7 +1432,7 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 // runner and every agent.run child share one gate. (Keeping this wrapper
 // avoids churning the ~25 test call sites.)
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
-	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{}, native.Options{})
+	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{}, native.Options{}, nil)
 }
 
 // buildSubagentFactoryWithLock returns a closure that constructs a fresh
@@ -1385,7 +1456,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 // writeLock is the shared swarm.WriteLock every child runner serializes its
 // writes on. Production passes the parent runner's own gate so parent and
 // background children (which outlive the spawning turn) serialize together.
-func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock, baseNativeOpts native.Options) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
+func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock, baseNativeOpts native.Options, watchTransferrer agent.WatchTransferrer) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
 	// A child tool ceiling is opt-in. An unset value, like an explicit zero,
 	// leaves the child unlimited. Negative values are treated as unset.
 	subtaskIters := cfg.Agent.SubtaskIterations
@@ -1614,6 +1685,10 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
 		child.WriteGate = writeLock
+		// Wire the watch manager onto the child runner so its completion
+		// goroutine can re-parent the child's once watches and stop its
+		// repeat watches when the subagent ends.
+		child.WatchTransferrer = watchTransferrer
 		// C-1: wire the snapshot service onto the child runner so its
 		// pre-write snapshots are recorded against the child's own session
 		// ID. Without this, a background child can clobber files with no
@@ -1836,6 +1911,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		swarmRunner := rt.SwarmRunner
 		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
+		watchBroker := must[*pubsub.Broker[watch.Event]](rt.WatchBroker)
 		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
 		workspaceBroker := must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker)
 		subagentBroker := must[*pubsub.Broker[session.SubagentEvent]](rt.SubagentBroker)
@@ -1893,6 +1969,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
+			tuiOpts = append(tuiOpts, tui.WithWatchBroker(ctx, watchBroker))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
@@ -2122,7 +2199,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.ConfigReloader, rt.HomeDir, lock)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -2139,6 +2216,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	rt.mu.Lock()
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager
+	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
 	oldLSP := rt.LSPManager
 
@@ -2187,6 +2265,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		rt.LSPManager = nil
 	}
 	rt.JobManager = newJobMgr
+	rt.WatchManager = newWatchMgr
 	rt.DesktopCloser = newDesktopCloser
 	rt.CustomAgentFactory = newSubagentFactory
 	rt.mu.Unlock()
@@ -2203,6 +2282,13 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if err := oldJobMgr.Shutdown(sc); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	if oldWatchMgr != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := oldWatchMgr.Close(sc); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}

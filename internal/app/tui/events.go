@@ -3,6 +3,7 @@ package tui
 import (
 	"marshal/internal/app/session"
 	"marshal/internal/tools/native"
+	"marshal/internal/watch"
 )
 
 // jobCountMsg is the tea.Msg the job broker pump emits when a JobEvent
@@ -35,6 +36,13 @@ type workspaceMsg struct {
 // transcript viewport so card state re-renders without polling.
 type subagentMsg struct {
 	view session.SubagentView
+}
+
+// watchMsg is the tea.Msg the watch broker pump emits when a watch.Event
+// arrives. Handling it updates the model's cached watch snapshot so the
+// activity lane can render watch rows without polling.
+type watchMsg struct {
+	event watch.Event
 }
 
 // railBaseRefMsg carries a freshly-read HEAD SHA for the changed-files rail.

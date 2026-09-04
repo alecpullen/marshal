@@ -62,6 +62,20 @@ const (
 	// Same split as ContentTypeSkillBody: reaches the model, invisible to
 	// the reader.
 	ContentTypeSubagentReport ContentType = "subagent_report"
+	// ContentTypeWatchReport marks a background watch's completion report,
+	// persisted under RoleUser so buildHistoryMessages replays it and it
+	// survives restart. Restart durability applies to drained reports and
+	// turn-end-persisted residuals only: a report is written to the
+	// transcript at drain time (or at turn-end residual handling), not at
+	// push, so a fire that is never drained and never reaches a turn end
+	// (e.g. process exit) is not persisted. It renders nothing: the user
+	// already gets a RoleSystem notice from the same completion path, and
+	// rendering the RoleUser copy put a turn separator and a ❯ prompt in
+	// the transcript for something the user never typed.
+	//
+	// Same split as ContentTypeSkillBody: reaches the model, invisible to
+	// the reader.
+	ContentTypeWatchReport ContentType = "watch_report"
 	// ContentTypeSkillAuto records the skills the ranker auto-loaded at the
 	// start of one turn. Content is the newline-separated skill names.
 	//

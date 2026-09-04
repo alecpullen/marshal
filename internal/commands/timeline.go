@@ -42,7 +42,7 @@ func BuildTimeline(msgs []session.Message, snaps []db.SnapshotRow, leafID int64)
 		}
 		// A subagent completion report is stored under RoleUser so history
 		// replays it, but it is not a turn the user took.
-		if m.ContentType == session.ContentTypeSubagentReport {
+		if m.ContentType == session.ContentTypeSubagentReport || m.ContentType == session.ContentTypeWatchReport {
 			continue
 		}
 		// Advance through the snapshot series to the last one at or before

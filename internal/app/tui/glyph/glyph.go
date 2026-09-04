@@ -79,4 +79,10 @@ const (
 	// region, so the actor class reads from the left two columns.
 	// U+2506, Box Drawing — single-cell, broad terminal-font coverage.
 	Job = "┆"
+
+	// Watch marks a registered watch: a background monitor that samples a
+	// source and fires when a condition trips. Distinct from Job (┆) — a
+	// watch is a monitor, not a running process. U+25CB (○, White Circle,
+	// Geometric Shapes) — single-cell, broad terminal-font coverage.
+	Watch = "○"
 )

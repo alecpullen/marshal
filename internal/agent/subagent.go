@@ -12,7 +12,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
-	"marshal/internal/watch"
+	"marshal/internal/watch/watchctx"
 )
 
 // SubagentRequest carries the caller's explicit choices for one agent.run
@@ -288,7 +288,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		// watch.start call the child makes is attributed to it (the
 		// watch.start handler reads it via watch.OwnerFromContext). The
 		// tag is "subagent-<id>" matching the view ID assigned above.
-		childCtx = watch.WithOwner(childCtx, fmt.Sprintf("subagent-%d", view.ID))
+		childCtx = watchctx.WithOwner(childCtx, fmt.Sprintf("subagent-%d", view.ID))
 		state.SetSubagentCancel(view.ID, cancel)
 		prev := child.UsageObserver
 		child.UsageObserver = func(u schema.TokenUsage) {

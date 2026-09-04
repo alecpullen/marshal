@@ -1,26 +1,23 @@
 package watch
 
-import "context"
+import (
+	"context"
 
-// ownerCtxKey is the context key carrying the subagent owner tag for
-// watch.start calls made from a subagent. The agent.run handler sets it on
-// the child's context after registration; the watch.start handler reads it
-// at call time to stamp Spec.Owner.
-type ownerCtxKey struct{}
+	"marshal/internal/watch/watchctx"
+)
 
 // WithOwner returns a context carrying the subagent owner tag. Set by the
 // agent.run handler on the child's context so watch.start calls made by a
-// subagent are attributed to it.
+// subagent are attributed to it. Re-exported from watchctx so existing
+// callers (and watch's own tests) keep working.
 func WithOwner(ctx context.Context, owner string) context.Context {
-	return context.WithValue(ctx, ownerCtxKey{}, owner)
+	return watchctx.WithOwner(ctx, owner)
 }
 
 // OwnerFromContext returns the subagent owner tag carried in ctx, or "".
+// Re-exported from watchctx.
 func OwnerFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(ownerCtxKey{}).(string); ok {
-		return v
-	}
-	return ""
+	return watchctx.OwnerFromContext(ctx)
 }
 
 // TransferFromSubagent re-parents the owner's once watches to the parent

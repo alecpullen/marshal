@@ -525,6 +525,7 @@ func normalizedPresets(presets map[string]routing.ModelPreset) map[string]routin
 			ToolCalling:     p.ToolCalling,
 			LocalOnly:       p.LocalOnly,
 			Thinking:        p.Thinking,
+			Temperature:     p.Temperature,
 			Pricing:         p.Pricing,
 		}
 		preset.Name = name

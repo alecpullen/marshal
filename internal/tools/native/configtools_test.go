@@ -680,6 +680,28 @@ func TestModelsPresetSetRoundTrip(t *testing.T) {
 	})
 }
 
+func TestModelsPresetSetTemperatureRoundTrip(t *testing.T) {
+	tool, home, projectPath, approved, reloaded := setupGlobalOnlyTool(t, config.Default(), "config.models.preset.set", (*toolSet).configModelsPresetSetTool)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.models.preset.set", Args: json.RawMessage(`{"name":"kimi/k3-256k","provider":"kimi","model":"k3-256k","temperature":1.0}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !*approved {
+		t.Fatal("preset writes must force an approval request")
+	}
+	p, ok := (*reloaded).Models.Presets["kimi/k3-256k"]
+	if !ok {
+		t.Fatalf("preset not applied: %+v", (*reloaded).Models.Presets)
+	}
+	if p.Temperature == nil || *p.Temperature != 1.0 {
+		t.Fatalf("preset temperature = %v, want 1.0", p.Temperature)
+	}
+	assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
+		p, ok := c.Models.Presets["kimi/k3-256k"]
+		return ok && p.Temperature != nil && *p.Temperature == 1.0
+	})
+}
+
 func TestModelsPresetSetRejectsNonCanonicalName(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")

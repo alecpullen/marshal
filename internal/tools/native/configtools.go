@@ -1193,19 +1193,20 @@ func (t *toolSet) configModelsPresetSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.models.preset.set",
 		Description: "Set or add a model preset in the [models.presets] section of the user-global config (presets are user-global only; the write always requires approval). Omitted fields are preserved.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Preset name key"},"provider":{"type":"string"},"model":{"type":"string"},"context_window":{"type":"integer"},"max_output_tokens":{"type":"integer"},"tool_calling":{"type":"string"},"local_only":{"type":"boolean"}},"required":["name"],"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Preset name key"},"provider":{"type":"string"},"model":{"type":"string"},"context_window":{"type":"integer"},"max_output_tokens":{"type":"integer"},"tool_calling":{"type":"string"},"local_only":{"type":"boolean"},"temperature":{"type":"number","description":"Sampling temperature override; set to a provider-required value when the preset default would be rejected"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		var args struct {
 			configWriteEnvelope
-			Name            string  `json:"name"`
-			Provider        *string `json:"provider"`
-			Model           *string `json:"model"`
-			ContextWindow   *int    `json:"context_window"`
-			MaxOutputTokens *int    `json:"max_output_tokens"`
-			ToolCalling     *string `json:"tool_calling"`
-			LocalOnly       *bool   `json:"local_only"`
+			Name            string   `json:"name"`
+			Provider        *string  `json:"provider"`
+			Model           *string  `json:"model"`
+			ContextWindow   *int     `json:"context_window"`
+			MaxOutputTokens *int     `json:"max_output_tokens"`
+			ToolCalling     *string  `json:"tool_calling"`
+			LocalOnly       *bool    `json:"local_only"`
+			Temperature     *float64 `json:"temperature"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.models.preset.set args: %w", err)
@@ -1228,6 +1229,7 @@ func (t *toolSet) configModelsPresetSetTool() registry.Tool {
 				MaxOutputTokens: existing.MaxOutputTokens,
 				ToolCalling:     existing.ToolCalling,
 				LocalOnly:       existing.LocalOnly,
+				Temperature:     existing.Temperature,
 			}
 			if args.Provider != nil {
 				preset.Provider = *args.Provider
@@ -1246,6 +1248,10 @@ func (t *toolSet) configModelsPresetSetTool() registry.Tool {
 			}
 			if args.LocalOnly != nil {
 				preset.LocalOnly = *args.LocalOnly
+			}
+			if args.Temperature != nil {
+				temp := *args.Temperature
+				preset.Temperature = &temp
 			}
 			if cfg.Models.Presets == nil {
 				cfg.Models.Presets = map[string]routing.ModelPreset{}

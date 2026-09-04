@@ -65,6 +65,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/watch"
 )
 
 // AgentRunner is the one thing the TUI knows about the agent loop: how to
@@ -302,6 +303,16 @@ type Model struct {
 	// jobs is the cached JobInfo snapshot from the latest JobEvent, used by
 	// the job lane above the input. Nil/empty when no broker is wired.
 	jobs []native.JobInfo
+
+	// watchBroker is the watch-event broker; the pump cmd returned from Init
+	// (and re-armed from Update on each watchMsg) bridges it into watchMsg
+	// values. watchEvents is the persistent subscription channel. When
+	// watchBroker is nil (tests, fallback), the lane renders no watch rows.
+	watchBroker *pubsub.Broker[watch.Event]
+	watchEvents <-chan pubsub.Event[watch.Event]
+	// watches is the cached watch snapshot from the latest watch.Event, used
+	// by the activity lane above the input. Nil/empty when no broker is wired.
+	watches []watch.Event
 
 	// F16: steering broker pump. steeringBroker is the F16 message broker;
 	// the pump cmd returned from Init (and re-armed from Update on each
@@ -765,6 +776,17 @@ func WithJobBroker(ctx context.Context, broker *pubsub.Broker[native.JobEvent]) 
 	return func(m *Model) {
 		m.ctx = ctx
 		m.jobBroker = broker
+	}
+}
+
+// WithWatchBroker wires the pub/sub broker for watch events. The model
+// subscribes via pumpWatchEvents from Init and re-arms the pump on each
+// watchMsg. When broker is nil the lane renders no watch rows (tests,
+// fallback).
+func WithWatchBroker(ctx context.Context, broker *pubsub.Broker[watch.Event]) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.watchBroker = broker
 	}
 }
 
@@ -1390,6 +1412,9 @@ func New(state *session.State, opts ...Option) Model {
 	if m.jobBroker != nil && m.jobEvents == nil {
 		m.jobEvents = m.jobBroker.Subscribe(m.ctx, pubsub.WithTerminal[native.JobEvent]())
 	}
+	if m.watchBroker != nil && m.watchEvents == nil {
+		m.watchEvents = m.watchBroker.Subscribe(m.ctx, pubsub.WithTerminal[watch.Event]())
+	}
 	if m.steeringBroker != nil && m.steeringEvents == nil {
 		m.steeringEvents = m.steeringBroker.Subscribe(m.ctx)
 	}
@@ -1458,6 +1483,9 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{blinkCmd()}
 	if m.jobEvents != nil {
 		cmds = append(cmds, pumpJobEvents(m.jobEvents))
+	}
+	if m.watchEvents != nil {
+		cmds = append(cmds, pumpWatchEvents(m.watchEvents))
 	}
 	if m.steeringEvents != nil {
 		cmds = append(cmds, pumpSteeringEvents(m.steeringEvents))
@@ -1838,7 +1866,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -4231,6 +4259,33 @@ func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 	return m, tea.Sequence(pumpJobEvents(m.jobEvents), flushCmd)
 }
 
+// handleWatchMsg handles a watchMsg, shared by Update and
+// handleRuntimeMessage. It updates the cached watch snapshot so the
+// activity lane can render watch rows, then re-arms the pump.
+func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
+	// Update the cached snapshot: replace any existing entry with the same
+	// WatchID, append new ones. Terminal states (fired/stopped/error) are
+	// kept so the lane can show the last known state until the watch is
+	// removed from the manager's list.
+	updated := false
+	for i, w := range m.watches {
+		if w.WatchID == msg.event.WatchID {
+			m.watches[i] = msg.event
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		m.watches = append(m.watches, msg.event)
+	}
+	m.refreshViewport()
+	flushCmd := m.flushPendingModelOptions()
+	if m.watchEvents == nil {
+		return m, flushCmd
+	}
+	return m, tea.Sequence(pumpWatchEvents(m.watchEvents), flushCmd)
+}
+
 // handleSteering handles a steeringMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
@@ -4359,6 +4414,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePlanAuthorFinished(msg)
 	case jobCountMsg:
 		return m.handleJobCount(msg)
+	case watchMsg:
+		return m.handleWatchMsg(msg)
 	case steeringMsg:
 		return m.handleSteering(msg)
 	case workspaceMsg:

@@ -86,6 +86,7 @@ type Runtime struct {
 	ProjectID         int64
 	SessionID         string
 	JobBroker         BrokerCloser
+	WatchBroker       BrokerCloser
 	SteeringBroker    BrokerCloser
 	EventBroker       BrokerCloser
 	WorkspaceBroker   BrokerCloser
@@ -307,6 +308,11 @@ func (rt *Runtime) Close(ctx context.Context) error {
 		// 3. job broker — close pump and broker.
 		if rt.JobBroker != nil {
 			rt.JobBroker.Close()
+		}
+
+		// 3.5. watch broker.
+		if rt.WatchBroker != nil {
+			rt.WatchBroker.Close()
 		}
 
 		// 4. steering broker.
@@ -599,6 +605,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 
 	workCtx, workCancel := context.WithCancel(ctx)
 	jobBroker := pubsub.NewBroker[native.JobEvent]()
+	watchBroker := pubsub.NewBroker[watch.Event]()
 	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
 	eventBroker := pubsub.NewBroker[session.Event]()
 	workspaceBroker := pubsub.NewBroker[session.WorkspaceEvent]()
@@ -613,7 +620,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// every agent.run child serialize writes on it, and config reloads reuse
 	// it so in-flight background children keep sharing the same gate.
 	writeLock := &swarm.WriteLock{}
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir, writeLock)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, runOpts.configReloader, homeDir, writeLock)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -661,6 +668,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		ProjectID:            projectID,
 		SessionID:            sessionID,
 		JobBroker:            jobBroker,
+		WatchBroker:          watchBroker,
 		SteeringBroker:       steeringBroker,
 		EventBroker:          eventBroker,
 		WorkspaceBroker:      workspaceBroker,
@@ -828,7 +836,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		lock = &swarm.WriteLock{}
 	}
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock,
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.ConfigReloader, rt.HomeDir, lock,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.

@@ -510,7 +510,15 @@ func TestOnEventPublished(t *testing.T) {
 	if eventCount == 0 {
 		t.Fatal("expected at least one event")
 	}
-	if events[0].WatchID != id || events[0].State != StateFired {
-		t.Fatalf("event = %+v, want fired for %s", events[0], id)
+	// The first event is the registration (StateWatching) publish; the fired
+	// event follows the sample.
+	if events[0].WatchID != id || events[0].State != StateWatching {
+		t.Fatalf("first event = %+v, want watching for %s", events[0], id)
+	}
+	if eventCount < 2 {
+		t.Fatalf("expected a fired event after registration, got %d events", eventCount)
+	}
+	if events[1].WatchID != id || events[1].State != StateFired {
+		t.Fatalf("second event = %+v, want fired for %s", events[1], id)
 	}
 }

@@ -478,7 +478,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
 	// this wrapper discards it so the ~25 test call sites that use
 	// buildAgentRunner directly do not need to change.
-	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, configReloader, homeDir, &swarm.WriteLock{})
+	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, configReloader, homeDir, &swarm.WriteLock{})
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err
 }
 
@@ -488,7 +488,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // (which rebuilds the runner and the subagent factory) reuses the same lock
 // that in-flight background children from the pre-reload generation already
 // hold.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -579,8 +579,8 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// runner and the job broker. Command samples run through the same
 	// sandboxed runner as background jobs; job watches subscribe to the job
 	// event stream; fired reports are pushed to the session's watch-report
-	// queue (task 5 refines the formatting). The OnEvent lane is wired by
-	// task 5; it is nil here.
+	// queue (task 5 refines the formatting). OnEvent publishes watch events
+	// to the TUI lane broker.
 	watchManager := watch.NewManager(ctx, watch.Deps{
 		RunSample: func(c context.Context, command, dir string) (string, int, error) {
 			res, err := commandRunner.Run(c, native.CommandRequest{
@@ -608,6 +608,11 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			// Task 4: push a minimal representation to the workspace-state
 			// queue. Task 5 refines the formatting.
 			state.PushWatchReport(fmt.Sprintf("[watch %s] %s kind=%s state=fired fires=%d", r.WatchID, r.Name, r.Kind, r.FiredCount))
+		},
+		OnEvent: func(ev watch.Event) {
+			if watchBroker != nil {
+				watchBroker.Publish("watch", ev)
+			}
 		},
 	})
 	// Shut the watch manager down BEFORE the job manager (watches may depend
@@ -1892,6 +1897,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		swarmRunner := rt.SwarmRunner
 		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
+		watchBroker := must[*pubsub.Broker[watch.Event]](rt.WatchBroker)
 		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
 		workspaceBroker := must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker)
 		subagentBroker := must[*pubsub.Broker[session.SubagentEvent]](rt.SubagentBroker)
@@ -1949,6 +1955,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
+			tuiOpts = append(tuiOpts, tui.WithWatchBroker(ctx, watchBroker))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
@@ -2178,7 +2185,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.ConfigReloader, rt.HomeDir, lock)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)

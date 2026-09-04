@@ -328,6 +328,10 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 	m.mu.Unlock()
 
 	go m.runWatch(w)
+	// Publish the initial StateWatching event so the TUI lane can synthesize
+	// the row from registration (the manager owns the publish path; the lane
+	// has no other way to learn about a watch before its first transition).
+	m.publishEvent(w, StateWatching, "")
 	return id, note, nil
 }
 

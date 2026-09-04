@@ -37,10 +37,11 @@ human — executes task-by-task.
    or commit it was authored against, and a link to the spec file.
 7. Tail the plan with a final full-suite verification (`go test ./...`,
    `gofmt`, `go vet` per AGENTS.md) and integration notes.
-8. Write the plan to `docs/plans/YYYY-MM-DD-<topic>-plan.md`. Commit it if
-   the repo's ignore rules permit (check `.gitignore` first; if the path is
-   ignored, note it in the plan and move on — never `git add -f`). A plan
-   that lives only in chat dies with the context.
+8. Write the plan to `docs/plans/YYYY-MM-DD-<topic>-plan.md`. By default,
+   do NOT commit it — the plan is a durable local artifact. Only commit it
+   if the repo's own conventions (AGENTS.md, `.gitignore`) explicitly say
+   such artifacts are committed; check those conventions first, and never
+   `git add -f`. A plan that lives only in chat dies with the context.
 9. Self-review the plan against the checklist below, then present it for
    user approval before any execution.
 
@@ -64,9 +65,9 @@ adapted to the actual file contents.
 
 This is the difference from `marshal-sdd-plan-authoring`, which encodes
 exact `marshal.patch` / `marshal.run` operations for the `/sdd` pipeline.
-If the change is so mechanical it could be encoded as exact patches,
-consider `/sdd` instead; if it needs model judgment, prose steps are the
-point.
+Choose the pipeline up-front: if the whole plan is exact-patch mechanical,
+route to `marshal-sdd-plan-authoring`; if it needs model judgment, prose
+steps are the point.
 
 ## Plan self-review
 

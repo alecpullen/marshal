@@ -22,6 +22,8 @@ When torn between two, take the heavier one.
 
 ### Phase 1 — Scope assessment
 
+Before classifying, read the current state: the relevant files, `AGENTS.md`, and recent commits.
+
 Classify the request as spike, bounded, or architectural (table above).
 
 - **Spike** — stop here. Discuss the question verbally; produce no spec.
@@ -66,8 +68,6 @@ Write the approved design to `docs/specs/YYYY-MM-DD-<topic>-design.md`, containi
 - Explicit non-goals
 - Open questions
 
-Commit the spec if the repo's ignore rules permit — check `.gitignore` first. If the path is ignored, note that in the spec and move on; never `git add -f`.
-
 Then run an inline spec self-review:
 
 - No placeholders or TBDs
@@ -76,6 +76,8 @@ Then run an inline spec self-review:
 - Scope matches what was approved
 
 Fix any finding before proceeding.
+
+By default, do NOT commit the spec — it is a durable local artifact. Only commit it if the repo's own conventions (AGENTS.md, `.gitignore`) explicitly say such artifacts are committed; check those conventions first, and never `git add -f`.
 
 ### Phase 6 — User review gate & handoff
 

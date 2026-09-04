@@ -3283,7 +3283,8 @@ func isUserTurn(item session.TranscriptItem) bool {
 		// A subagent report is stored under RoleUser for history replay but
 		// is not a turn the user took; treating it as one emits a turn
 		// separator above a block that renders nothing.
-		item.Message.ContentType != session.ContentTypeSubagentReport
+		item.Message.ContentType != session.ContentTypeSubagentReport &&
+		item.Message.ContentType != session.ContentTypeWatchReport
 }
 
 // hasConversationTurns reports whether the transcript holds any real

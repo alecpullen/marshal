@@ -326,7 +326,9 @@ type State struct {
 	// human steering queue: ClearSteering (turn-cancel, Ctrl+X) and
 	// PopSteering (blank-Enter follow-up) must never drop a background
 	// child's report. The runner drains it at loop-top alongside steering.
-	watchReports []string
+	// Entries are coalesced by watch ID (see watch_reports.go) so a watch
+	// that fires repeatedly while idle folds into one pending entry.
+	watchReports []watchReportEntry
 
 	// F21: session event surface. Publishes message, streaming/thinking,
 	// activity, tool lifecycle, audit, approval, and question events to

@@ -13,7 +13,7 @@ import (
 // drop it.
 func TestWatchReportQueueSeparateFromSteering(t *testing.T) {
 	state := newTestState()
-	state.PushWatchReport("[watch 1 finished] the report")
+	state.PushWatchReport("w1", "[watch 1 finished] the report")
 	state.PushSteering("human steering")
 
 	// ClearSteering drops only the human steering, not the report.
@@ -46,11 +46,12 @@ func TestWatchReportQueueSeparateFromSteering(t *testing.T) {
 
 // TestWatchReportQueueRoundTrip guards the push/drain/peek round-trip:
 // a pushed report is visible via WatchReports (peek copy), survives a
-// second push, and is fully drained by DrainWatchReports.
+// second push from a distinct watch, and is fully drained by
+// DrainWatchReports.
 func TestWatchReportQueueRoundTrip(t *testing.T) {
 	state := newTestState()
-	state.PushWatchReport("one")
-	state.PushWatchReport("two")
+	state.PushWatchReport("w1", "one")
+	state.PushWatchReport("w2", "two")
 
 	// Peek returns a copy, not the live slice.
 	peek := state.WatchReports()
@@ -72,11 +73,64 @@ func TestWatchReportQueueRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWatchReportQueueCoalescesByWatchID guards I-3: two fires from the
+// same watch before a drain fold into one pending entry, with the later
+// text (carrying the cumulative FiredCount) replacing the earlier one.
+func TestWatchReportQueueCoalescesByWatchID(t *testing.T) {
+	state := newTestState()
+	state.PushWatchReport("w1", "[watch build fired] kind=command")
+	state.PushWatchReport("w1", "[watch build fired] kind=command (fired 2 times)")
+
+	if got := state.WatchReports(); len(got) != 1 {
+		t.Fatalf("WatchReports() = %v, want one coalesced entry", got)
+	}
+	if got := state.WatchReports(); got[0] != "[watch build fired] kind=command (fired 2 times)" {
+		t.Fatalf("coalesced entry = %q, want the later (fired 2 times) text", got[0])
+	}
+
+	drained := state.DrainWatchReports()
+	if len(drained) != 1 || drained[0] != "[watch build fired] kind=command (fired 2 times)" {
+		t.Fatalf("DrainWatchReports() = %v, want one coalesced message", drained)
+	}
+}
+
+// TestWatchReportQueueDistinctWatchesDoNotFold guards I-3: reports from
+// different watches stay separate even when pushed back-to-back.
+func TestWatchReportQueueDistinctWatchesDoNotFold(t *testing.T) {
+	state := newTestState()
+	state.PushWatchReport("w1", "one")
+	state.PushWatchReport("w2", "two")
+	state.PushWatchReport("w1", "one again")
+
+	// w1 folds into one entry; w2 stays separate -> two entries total.
+	if got := state.WatchReports(); len(got) != 2 {
+		t.Fatalf("WatchReports() = %v, want two entries (w1 folded, w2 separate)", got)
+	}
+	drained := state.DrainWatchReports()
+	if len(drained) != 2 || drained[0] != "one again" || drained[1] != "two" {
+		t.Fatalf("DrainWatchReports() = %v, want [one again two]", drained)
+	}
+}
+
+// TestWatchReportQueueFreshAfterDrain guards I-3: after a drain, a new
+// fire for the same watch starts a fresh message rather than folding into
+// the already-drained one.
+func TestWatchReportQueueFreshAfterDrain(t *testing.T) {
+	state := newTestState()
+	state.PushWatchReport("w1", "first")
+	state.DrainWatchReports()
+
+	state.PushWatchReport("w1", "second")
+	if got := state.WatchReports(); len(got) != 1 || got[0] != "second" {
+		t.Fatalf("WatchReports() after drain+push = %v, want [second]", got)
+	}
+}
+
 // TestWatchReportQueueClearDiscards guards ClearWatchReports: it drops
 // the queue without delivering it.
 func TestWatchReportQueueClearDiscards(t *testing.T) {
 	state := newTestState()
-	state.PushWatchReport("stale")
+	state.PushWatchReport("w1", "stale")
 	state.ClearWatchReports()
 	if got := state.WatchReports(); len(got) != 0 {
 		t.Fatalf("WatchReports() after clear = %v, want empty", got)
@@ -88,7 +142,7 @@ func TestWatchReportQueueClearDiscards(t *testing.T) {
 // transcript.
 func TestShutdownClearsWatchReports(t *testing.T) {
 	state := newTestState()
-	state.PushWatchReport("[watch 1 finished] stale report")
+	state.PushWatchReport("w1", "[watch 1 finished] stale report")
 
 	state.Shutdown()
 
@@ -113,15 +167,16 @@ func TestWatchReportQueueConcurrent(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < n; i++ {
-			state.PushWatchReport("report")
+			state.PushWatchReport("w1", "report")
 		}
 	}()
 	for i := 0; i < n; i++ {
-		state.PushWatchReport("report")
+		state.PushWatchReport("w2", "report")
 	}
 	<-done
-	if got := len(state.WatchReports()); got != 2*n {
-		t.Fatalf("WatchReports() len = %d, want %d", got, 2*n)
+	// w1 folds into one entry; w2 stays separate -> 2 entries.
+	if got := len(state.WatchReports()); got != 2 {
+		t.Fatalf("WatchReports() len = %d, want 2 (w1 folded, w2 separate)", got)
 	}
 }
 
@@ -129,7 +184,7 @@ func TestWatchReportQueueConcurrent(t *testing.T) {
 // the config (a zero config still works).
 func TestWatchReportQueueUsesConfig(t *testing.T) {
 	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
-	state.PushWatchReport("report")
+	state.PushWatchReport("w1", "report")
 	if got := state.WatchReports(); len(got) != 1 {
 		t.Fatalf("WatchReports() = %v, want [report]", got)
 	}

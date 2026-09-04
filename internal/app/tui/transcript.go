@@ -488,6 +488,8 @@ func renderMessage(msg session.Message, width int) string {
 		return renderCompactionMarker(msg.Content, width)
 	case session.ContentTypeSubagentReport:
 		return ""
+	case session.ContentTypeWatchReport:
+		return ""
 	}
 	if msg.Final {
 		return renderFinalAnswer(msg, width)

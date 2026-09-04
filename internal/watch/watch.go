@@ -406,6 +406,7 @@ func (m *Manager) autoStop(w *watch, reason string) {
 	}
 	w.state = StateStopped
 	w.lastError = reason
+	owner := w.owner
 	w.mu.Unlock()
 	m.removeWatch(w.id)
 	m.publishEvent(w, StateStopped, "")
@@ -417,7 +418,7 @@ func (m *Manager) autoStop(w *watch, reason string) {
 			Condition:   w.condRaw,
 			Mode:        w.mode,
 			Interval:    w.interval,
-			Owner:       w.owner,
+			Owner:       owner,
 			AutoRemoved: true,
 			IsError:     true,
 		})
@@ -446,6 +447,8 @@ func (m *Manager) fire(w *watch, sample Sample) {
 	}
 	notify := w.notify && !alreadyNotified
 	mode := w.mode
+	owner := w.owner
+	firedCount := w.fireCount
 	w.mu.Unlock()
 
 	m.publishEvent(w, StateFired, sample.Stdout)
@@ -461,9 +464,9 @@ func (m *Manager) fire(w *watch, sample Sample) {
 			Mode:        mode,
 			Interval:    w.interval,
 			Sample:      tailCap(sample.Stdout),
-			FiredCount:  1,
+			FiredCount:  firedCount,
 			AutoRemoved: removed,
-			Owner:       w.owner,
+			Owner:       owner,
 		})
 	}
 }

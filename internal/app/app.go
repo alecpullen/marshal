@@ -605,17 +605,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		},
 		DirFn: func() string { return state.Workspace().ActiveRoot },
 		OnFire: func(r watch.Report) {
-			// Task 5: format the report and deliver it two-channel, mirroring
-			// the subagent completion path (subagent.go): persist a RoleUser
-			// message (the durable copy that buildHistoryMessages replays
-			// across restart) AND push to the in-memory watch-report queue
-			// (live delivery, drained at the next loop-top). The queue drain
-			// and the persisted message do not double-deliver: the queue is
-			// cleared on drain, and buildHistoryMessages only replays
-			// prior-turn messages.
-			text := watch.Format(r)
-			state.AddMessage(session.RoleUser, text, session.ContentTypeWatchReport)
-			state.PushWatchReport(text)
+			// Format the report and push it to the in-memory watch-report
+			// queue, coalesced by watch ID (a watch that fires repeatedly
+			// while idle folds into one pending entry carrying the cumulative
+			// FiredCount). The runner persists each drained report as a
+			// RoleUser message at the next loop-top — the durable copy that
+			// buildHistoryMessages replays across restart. Persisting at drain
+			// time (rather than at push) is what bounds the persisted
+			// transcript the same way the queue is bounded.
+			state.PushWatchReport(r.WatchID, watch.Format(r))
 		},
 		OnEvent: func(ev watch.Event) {
 			if watchBroker != nil {

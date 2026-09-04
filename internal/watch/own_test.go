@@ -102,3 +102,36 @@ func TestTransferFromSubagentIgnoresOtherOwners(t *testing.T) {
 		t.Fatalf("state = %v, want watching (other owner's watch must survive)", info.State)
 	}
 }
+
+// TestFireOwnerRaceWithTransfer is a -race-visible regression test for the
+// owner data race: fire reads w.owner while building the Report, and
+// TransferFromSubagent writes w.owner under w.mu. Running them concurrently
+// on the same watch must not race. The race detector (go test -race) is what
+// catches the unsynchronized read; this test just drives both paths at once.
+func TestFireOwnerRaceWithTransfer(t *testing.T) {
+	m := newTestManager(t, Deps{OnFire: func(r Report) {}})
+	id, _, err := m.Start(Spec{Name: "race", Kind: KindCommand, Condition: "change", Mode: ModeRepeat, Owner: "subagent-7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := m.getWatch(id)
+	if w == nil {
+		t.Fatal("watch not found")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			m.fire(w, Sample{Stdout: "x"})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			m.TransferFromSubagent("subagent-7")
+		}
+	}()
+	wg.Wait()
+}

@@ -18,7 +18,7 @@ import (
 func TestRunPromptDrainsWatchReportsAtLoopTop(t *testing.T) {
 	state := newTestState(t)
 	// Simulate a watch that fired before the turn started.
-	state.PushWatchReport("[watch build fired] kind=command interval=5s")
+	state.PushWatchReport("w1", "[watch build fired] kind=command interval=5s")
 
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
@@ -53,12 +53,13 @@ func TestRunPromptDrainsWatchReportsAtLoopTop(t *testing.T) {
 
 // TestWatchReportQueueClearedAtTurnEnd guards the turn-end clear: a watch
 // report pushed after the final loop-top drain is discarded so it is not
-// double-delivered in the next turn (the persisted RoleUser message is the
-// durable copy).
+// double-delivered in the next turn. Persistence happens at drain time, so
+// a report discarded here is also not persisted — the accepted durability
+// trade-off of coalescing.
 func TestWatchReportQueueClearedAtTurnEnd(t *testing.T) {
 	state := newTestState(t)
 	// Simulate a report pushed after the turn's final loop-top drain.
-	state.PushWatchReport("[watch build fired] late report")
+	state.PushWatchReport("w1", "[watch build fired] late report")
 	if got := state.WatchReports(); len(got) != 1 {
 		t.Fatalf("queue before clear = %v, want 1", got)
 	}

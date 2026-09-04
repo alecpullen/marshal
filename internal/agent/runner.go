@@ -140,11 +140,12 @@ type WriteGate interface {
 // WatchTransferrer re-parents a subagent's once watches to the parent and
 // stops its repeat watches when the subagent ends. It is a small interface
 // so the runner can reach the watch manager without importing internal/watch
-// (which would create an import cycle: internal/watch imports
-// internal/tools/native, and native's test-only import of internal/agent is
-// not the issue — the cycle is that internal/agent would need to import
-// internal/watch while internal/watch already depends on the native toolset
-// that the agent package orchestrates). app.go wires the concrete manager.
+// directly. The real reason for the leaf watchctx package (and this
+// interface) is a TEST-only cycle: internal/tools/native's test package
+// imports internal/agent, and internal/watch imports internal/tools/native,
+// so internal/agent importing internal/watch would pull the agent package
+// into the native test build and create a cycle. app.go wires the concrete
+// manager.
 type WatchTransferrer interface {
 	// TransferFromSubagent re-parents the owner's once watches to the
 	// parent (owner "") and stops its repeat watches.
@@ -649,12 +650,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// the durable copy.
 	defer r.State.ClearSubagentReports()
 	// The same reasoning applies to the watch report queue: a watch that
-	// fires after the final loop-top drain pushes its report to the queue
-	// AND persists it as a RoleUser message (the push site in app.go does
-	// both). Without this clear, the next turn would double-deliver: once
-	// from the queue drain and once from buildHistoryMessages replaying the
-	// persisted message. Discarding the queue here is safe because the
-	// persisted message is the durable copy.
+	// fires after the final loop-top drain pushes its report to the queue.
+	// Without this clear, the next turn would deliver it again (the queue
+	// is drained at every loop-top). Persistence happens at drain time, so
+	// a report discarded here is also not persisted — the accepted
+	// durability trade-off of coalescing (see watch_reports.go).
 	defer r.State.ClearWatchReports()
 
 	priorTranscript := r.State.Messages()
@@ -984,8 +984,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// they must reach the model wire the same way: injected as user
 		// messages at the next loop-top. They live in a separate queue so a
 		// turn-cancel (ClearSteering) cannot drop them. The strings are
-		// already fully formatted by the push site (watch.Format).
+		// already fully formatted by the push site (watch.Format). Each
+		// drained report is also persisted as a RoleUser message here — the
+		// durable copy that buildHistoryMessages replays across restart.
+		// Persisting at drain time (not at push) is what bounds the
+		// persisted transcript: a watch that fires repeatedly while idle
+		// coalesces into one pending entry, so one drain persists one
+		// message per watch.
 		for _, msg := range r.State.DrainWatchReports() {
+			r.State.AddMessage(session.RoleUser, msg, session.ContentTypeWatchReport)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 		}
 		if len(steeringPins) > 0 {

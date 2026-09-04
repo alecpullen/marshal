@@ -93,16 +93,17 @@ type Info struct {
 // Report is the payload enqueued to the session queue when a watch fires.
 // Task 3 wires OnFire to the session's WatchReports queue.
 type Report struct {
-	WatchID   string
-	Name      string
-	Kind      Kind
-	Condition string
-	Mode      Mode
-	Interval  time.Duration
-	Sample    string // tail-capped
-	Fired     int
-	Owner     string
-	Removed   bool // once-mode auto-removal
+	WatchID     string
+	Name        string
+	Kind        Kind
+	Condition   string
+	Mode        Mode
+	Interval    time.Duration
+	Sample      string // tail-capped
+	FiredCount  int
+	AutoRemoved bool
+	IsError     bool
+	Owner       string // "" parent, else subagent tag
 }
 
 // Event is the pubsub payload for the TUI lane. Task 5 wires OnEvent to the
@@ -123,6 +124,10 @@ type Deps struct {
 	// runner; tests inject a fake. dir is the working directory for the
 	// command (captured by the caller's closure).
 	RunSample func(ctx context.Context, command string, dir string) (stdout string, exitCode int, err error)
+	// DirFn resolves the working directory for command source samples at
+	// sample time (the session's active root), mirroring
+	// JobManager.SetDirFunc. Until set, command samples run in "".
+	DirFn func() string
 	// SubscribeJobs subscribes to the job event stream. It returns a receive
 	// channel and a cleanup func. Task 2's job source consumes it.
 	SubscribeJobs func(ctx context.Context) (<-chan pubsub.Event[native.JobEvent], func())
@@ -142,15 +147,6 @@ type Deps struct {
 // drive the loop by injecting a fake sampler.
 type sampler interface {
 	Sample(ctx context.Context, w *watch) (Sample, error)
-}
-
-// stubSampler is the task-1 placeholder. It returns a parse-level error so
-// the loop runs but no real sampling occurs. Task 2 replaces it with real
-// source samplers.
-type stubSampler struct{}
-
-func (stubSampler) Sample(ctx context.Context, w *watch) (Sample, error) {
-	return Sample{}, fmt.Errorf("watch source %q not implemented until task 2", w.kind)
 }
 
 // Manager tracks registered watches, enforces caps, and runs one goroutine
@@ -191,6 +187,7 @@ type watch struct {
 	createdAt         time.Time
 	lastFiredAt       time.Time
 	consecutiveErrors int
+	firedThisInterval bool
 	ctx               context.Context
 	cancel            context.CancelFunc
 }
@@ -206,7 +203,7 @@ func NewManager(ctx context.Context, deps Deps) *Manager {
 		managerCtx:    managerCtx,
 		managerCancel: managerCancel,
 		deps:          deps,
-		sampler:       stubSampler{},
+		sampler:       sourceSampler{deps: deps},
 	}
 }
 
@@ -290,6 +287,9 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 	if mode == "" {
 		mode = ModeOnce
 	}
+	if spec.Kind == KindJob && mode == ModeRepeat {
+		return "", "", fmt.Errorf("job watch %q: repeat mode not allowed (job source is terminal-once)", spec.Name)
+	}
 	notify := true
 	if spec.Notify != nil {
 		notify = *spec.Notify
@@ -331,59 +331,29 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 	return id, note, nil
 }
 
-// runWatch dispatches to the source-specific loop.
-func (m *Manager) runWatch(w *watch) {
-	defer m.wg.Done()
-	if w.kind == KindJob {
-		m.runJobWatch(w)
-		return
-	}
-	m.runPollWatch(w)
-}
-
-// runPollWatch is the interval-poll loop for command/file sources.
-func (m *Manager) runPollWatch(w *watch) {
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.managerCtx.Done():
-			return
-		case <-w.ctx.Done():
-			return
-		case <-ticker.C:
-			m.sampleOnce(w)
-		}
-	}
-}
-
-// runJobWatch is the event-driven loop for job sources. Task 1 does not wire
-// the job source: it samples once through the sampler (the stub returns a
-// parse-level error) and then waits for shutdown. Task 2 replaces this with a
-// real loop over SubscribeJobs.
-func (m *Manager) runJobWatch(w *watch) {
-	m.sampleOnce(w)
-	select {
-	case <-m.managerCtx.Done():
-	case <-w.ctx.Done():
-	}
-}
-
 // sampleOnce performs one evaluation: sample the source, record the result,
 // and fire if the condition trips. It is the loop's core and is directly
 // testable.
 func (m *Manager) sampleOnce(w *watch) {
+	// Reset the per-interval notification latch at the start of each tick.
+	w.mu.Lock()
+	w.firedThisInterval = false
+	w.mu.Unlock()
+
 	sample, err := m.sampler.Sample(m.managerCtx, w)
 	if err != nil {
 		m.handleSampleError(w, err)
 		return
 	}
+	// Cap the sample before storing and before condition evaluation so
+	// regex/json conditions see the same normalized tail the report shows.
+	sample.Stdout = tailCap(sample.Stdout)
 	w.mu.Lock()
 	prev := w.prev
 	hasPrev := w.hasPrev
 	w.prev = sample
 	w.hasPrev = true
-	w.lastSample = tailCap(sample.Stdout)
+	w.lastSample = sample.Stdout
 	// A successful sample resets the consecutive-error budget and, if the
 	// watch was in the error state, returns it to watching. Fired/stopped
 	// watches are never resurrected.
@@ -437,14 +407,15 @@ func (m *Manager) autoStop(w *watch, reason string) {
 	m.publishEvent(w, StateStopped, "")
 	if m.deps.OnFire != nil {
 		m.deps.OnFire(Report{
-			WatchID:   w.id,
-			Name:      w.name,
-			Kind:      w.kind,
-			Condition: w.condRaw,
-			Mode:      w.mode,
-			Interval:  w.interval,
-			Owner:     w.owner,
-			Removed:   true,
+			WatchID:     w.id,
+			Name:        w.name,
+			Kind:        w.kind,
+			Condition:   w.condRaw,
+			Mode:        w.mode,
+			Interval:    w.interval,
+			Owner:       w.owner,
+			AutoRemoved: true,
+			IsError:     true,
 		})
 	}
 }
@@ -453,15 +424,23 @@ func (m *Manager) autoStop(w *watch, reason string) {
 // auto-removes the watch.
 func (m *Manager) fire(w *watch, sample Sample) {
 	w.mu.Lock()
+	// State guard: a sample in flight when Stop (or auto-stop) is called must
+	// not fire after the watch is stopped.
+	if w.state == StateStopped || w.state == StateFired {
+		w.mu.Unlock()
+		return
+	}
 	w.fireCount++
 	w.lastFiredAt = time.Now()
 	w.lastSample = tailCap(sample.Stdout)
+	alreadyNotified := w.firedThisInterval
+	w.firedThisInterval = true
 	removed := false
 	if w.mode == ModeOnce {
 		w.state = StateFired
 		removed = true
 	}
-	notify := w.notify
+	notify := w.notify && !alreadyNotified
 	mode := w.mode
 	w.mu.Unlock()
 
@@ -471,16 +450,16 @@ func (m *Manager) fire(w *watch, sample Sample) {
 	}
 	if notify && m.deps.OnFire != nil {
 		m.deps.OnFire(Report{
-			WatchID:   w.id,
-			Name:      w.name,
-			Kind:      w.kind,
-			Condition: w.condRaw,
-			Mode:      mode,
-			Interval:  w.interval,
-			Sample:    tailCap(sample.Stdout),
-			Fired:     1,
-			Owner:     w.owner,
-			Removed:   removed,
+			WatchID:     w.id,
+			Name:        w.name,
+			Kind:        w.kind,
+			Condition:   w.condRaw,
+			Mode:        mode,
+			Interval:    w.interval,
+			Sample:      tailCap(sample.Stdout),
+			FiredCount:  1,
+			AutoRemoved: removed,
+			Owner:       w.owner,
 		})
 	}
 }

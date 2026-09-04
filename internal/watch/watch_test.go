@@ -272,8 +272,8 @@ func TestFireOnceAutoRemoves(t *testing.T) {
 	if reportCount != 1 {
 		t.Fatalf("reports = %d, want 1", reportCount)
 	}
-	if !reports[0].Removed {
-		t.Error("once-mode report should mark Removed")
+	if !reports[0].AutoRemoved {
+		t.Error("once-mode report should mark AutoRemoved")
 	}
 	// Once mode auto-removes: Status should now fail.
 	if _, err := m.Status(id); err == nil {
@@ -390,8 +390,8 @@ func TestErrorBudgetAutoStops(t *testing.T) {
 	if reportCount != 1 {
 		t.Fatalf("error reports = %d, want 1", reportCount)
 	}
-	if !reports[0].Removed {
-		t.Error("error auto-stop report should mark Removed")
+	if !reports[0].AutoRemoved {
+		t.Error("error auto-stop report should mark AutoRemoved")
 	}
 	// Auto-stopped watch is removed.
 	if _, err := m.Status(id); err == nil {

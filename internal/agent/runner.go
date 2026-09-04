@@ -651,11 +651,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer r.State.ClearSubagentReports()
 	// The same reasoning applies to the watch report queue: a watch that
 	// fires after the final loop-top drain pushes its report to the queue.
-	// Without this clear, the next turn would deliver it again (the queue
-	// is drained at every loop-top). Persistence happens at drain time, so
-	// a report discarded here is also not persisted — the accepted
-	// durability trade-off of coalescing (see watch_reports.go).
-	defer r.State.ClearWatchReports()
+	// Without clearing, the next turn would deliver it again (the queue is
+	// drained at every loop-top). Unlike subagent reports (which persist at
+	// push), a watch report's durable copy is written at drain time, so a
+	// report discarded here would also be lost from the persisted
+	// transcript. Instead of discarding, drain-and-persist the residuals:
+	// each still-pending watch becomes one RoleUser watch_report message,
+	// exactly as it would have been at the next drain. This keeps the
+	// persisted copy bounded at one message per watch per drain/clear while
+	// preserving late fires as replayable messages (see watch_reports.go).
+	defer func() {
+		for _, msg := range r.State.DrainWatchReports() {
+			r.State.AddMessage(session.RoleUser, msg, session.ContentTypeWatchReport)
+		}
+	}()
 
 	priorTranscript := r.State.Messages()
 	firstTurn := len(priorTranscript) <= 1

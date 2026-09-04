@@ -41,8 +41,9 @@ func TestFormatSubagentOwnerLabel(t *testing.T) {
 		Kind:  KindCommand,
 		Owner: "subagent-7",
 	})
-	if !strings.Contains(got, " (from subagent subagent-7)") {
-		t.Fatalf("Format missing subagent owner label: %q", got)
+	want := "[watch build fired] kind=command (from subagent subagent-7)"
+	if got != want {
+		t.Fatalf("Format = %q, want %q", got, want)
 	}
 }
 

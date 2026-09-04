@@ -108,30 +108,35 @@ func TestTransferFromSubagentIgnoresOtherOwners(t *testing.T) {
 // TransferFromSubagent writes w.owner under w.mu. Running them concurrently
 // on the same watch must not race. The race detector (go test -race) is what
 // catches the unsynchronized read; this test just drives both paths at once.
+//
+// A ONCE-mode watch is required: TransferFromSubagent sends repeat watches
+// down the stop path (which never writes w.owner), but re-parents once
+// watches via the reparent loop that executes w.owner = "". Each iteration
+// uses a fresh once watch because a once watch auto-removes on fire, so the
+// reparent write path is exercised whenever transfer finds the watch before
+// fire removes it — which, over many iterations, is guaranteed.
 func TestFireOwnerRaceWithTransfer(t *testing.T) {
 	m := newTestManager(t, Deps{OnFire: func(r Report) {}})
-	id, _, err := m.Start(Spec{Name: "race", Kind: KindCommand, Condition: "change", Mode: ModeRepeat, Owner: "subagent-7"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := m.getWatch(id)
-	if w == nil {
-		t.Fatal("watch not found")
-	}
+	for i := 0; i < 500; i++ {
+		id, _, err := m.Start(Spec{Name: "race", Kind: KindCommand, Condition: "change", Mode: ModeOnce, Owner: "subagent-7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := m.getWatch(id)
+		if w == nil {
+			t.Fatal("watch not found")
+		}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
-			m.fire(w, Sample{Stdout: "x"})
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
 			m.TransferFromSubagent("subagent-7")
-		}
-	}()
-	wg.Wait()
+		}()
+		go func() {
+			defer wg.Done()
+			m.fire(w, Sample{Stdout: "x"})
+		}()
+		wg.Wait()
+	}
 }

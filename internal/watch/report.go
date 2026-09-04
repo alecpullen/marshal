@@ -4,8 +4,9 @@ import "fmt"
 
 // Format renders a fired watch Report as the human/model-facing text that
 // the runner drains into the model wire. It is pure presentation: the
-// manager's OnFire closure in app.go calls it and does the two-channel
-// delivery (persist + queue).
+// manager's OnFire closure in app.go calls it and pushes the formatted
+// text to the session's watch-report queue. Persistence happens later, at
+// drain time (and at turn-end residual handling) in the runner, not here.
 //
 // The shape is:
 //

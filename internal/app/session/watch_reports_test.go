@@ -151,6 +151,31 @@ func TestShutdownClearsWatchReports(t *testing.T) {
 	}
 }
 
+// TestShutdownPersistsWatchReports guards the Shutdown-time residual
+// handling: still-pending watch reports are persisted as RoleUser
+// ContentTypeWatchReport messages before the session ends, so they survive
+// restart rather than being lost at process exit.
+func TestShutdownPersistsWatchReports(t *testing.T) {
+	state := newTestState()
+	state.PushWatchReport("w1", "[watch 1 finished] pending report")
+
+	state.Shutdown()
+
+	var persisted bool
+	for _, m := range state.Messages() {
+		if m.Role == RoleUser && m.ContentType == ContentTypeWatchReport &&
+			m.Content == "[watch 1 finished] pending report" {
+			persisted = true
+		}
+	}
+	if !persisted {
+		t.Fatalf("pending watch report not persisted at Shutdown: %#v", state.Messages())
+	}
+	if got := state.WatchReports(); len(got) != 0 {
+		t.Fatalf("watch report queue after shutdown = %v, want empty", got)
+	}
+}
+
 // TestWatchReportContentType guards the persisted content type value.
 func TestWatchReportContentType(t *testing.T) {
 	if ContentTypeWatchReport != "watch_report" {

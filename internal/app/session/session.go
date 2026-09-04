@@ -1022,18 +1022,30 @@ func (s *State) SetSubagentConcurrency(n int) {
 func (s *State) Shutdown() {
 	// M-5: cancel all running subagents before cancelling the session
 	// context so their completion goroutines exit promptly and don't
-	// push reports into the old session's garbage queue. Also clear the
-	// report queue so any late reports are discarded rather than ending
-	// up in a transcript nobody drains.
+	// push reports into the old session's garbage queue.
 	s.mu.Lock()
 	for _, v := range s.subagents {
 		if v.Status == SubagentRunning && v.Cancel != nil {
 			v.Cancel()
 		}
 	}
-	s.subagentReports = nil
+	// Drain the watch report queue so any still-pending reports are
+	// persisted as RoleUser messages before the session ends, rather than
+	// being lost at process exit. This restores restart durability for
+	// reports that never reached a loop-top drain or turn-end residual
+	// handling. The DB is still open at Shutdown (Quiesce keeps it open
+	// for downstream consumers), so AddMessage can persist safely. The
+	// subagent report queue is cleared without persisting because subagent
+	// reports are already persisted at push time.
+	residuals := s.watchReports
 	s.watchReports = nil
+	s.subagentReports = nil
 	s.mu.Unlock()
+
+	for _, e := range residuals {
+		s.AddMessage(RoleUser, e.text, ContentTypeWatchReport)
+	}
+
 	s.cancel()
 }
 

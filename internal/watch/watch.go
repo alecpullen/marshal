@@ -363,7 +363,10 @@ func (m *Manager) runPollWatch(w *watch) {
 // real loop over SubscribeJobs.
 func (m *Manager) runJobWatch(w *watch) {
 	m.sampleOnce(w)
-	<-m.managerCtx.Done()
+	select {
+	case <-m.managerCtx.Done():
+	case <-w.ctx.Done():
+	}
 }
 
 // sampleOnce performs one evaluation: sample the source, record the result,
@@ -381,6 +384,13 @@ func (m *Manager) sampleOnce(w *watch) {
 	w.prev = sample
 	w.hasPrev = true
 	w.lastSample = tailCap(sample.Stdout)
+	// A successful sample resets the consecutive-error budget and, if the
+	// watch was in the error state, returns it to watching. Fired/stopped
+	// watches are never resurrected.
+	w.consecutiveErrors = 0
+	if w.state == StateError {
+		w.state = StateWatching
+	}
 	w.mu.Unlock()
 	if w.cond == nil {
 		return

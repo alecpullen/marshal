@@ -399,6 +399,95 @@ func TestErrorBudgetAutoStops(t *testing.T) {
 	}
 }
 
+func TestErrorBudgetIsConsecutive(t *testing.T) {
+	var mu sync.Mutex
+	var reports []Report
+	m := newTestManager(t, Deps{OnFire: func(r Report) {
+		mu.Lock()
+		reports = append(reports, r)
+		mu.Unlock()
+	}})
+	// Two errors, a success, then two more errors. The budget is consecutive,
+	// so the success resets it and the watch must NOT auto-stop.
+	m.setSampler(&fakeSampler{
+		errs:    []error{errors.New("e1"), errors.New("e2"), nil, errors.New("e3"), errors.New("e4")},
+		samples: []Sample{{Stdout: "ok", ExitCode: 0}},
+	})
+	id, _, err := m.Start(Spec{Name: "x", Kind: KindCommand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := m.getWatch(id)
+	m.sampleOnce(w) // e1
+	m.sampleOnce(w) // e2
+	m.sampleOnce(w) // success -> resets budget
+	m.sampleOnce(w) // e3
+	m.sampleOnce(w) // e4
+
+	mu.Lock()
+	reportCount := len(reports)
+	mu.Unlock()
+	if reportCount != 0 {
+		t.Fatalf("error reports = %d, want 0 (budget is consecutive)", reportCount)
+	}
+	// The watch must still be registered (not auto-stopped).
+	if _, err := m.Status(id); err != nil {
+		t.Fatalf("watch should remain registered: %v", err)
+	}
+}
+
+func TestSuccessRestoresStateFromError(t *testing.T) {
+	m := newTestManager(t, Deps{})
+	m.setSampler(&fakeSampler{
+		errs:    []error{errors.New("e1"), nil},
+		samples: []Sample{{Stdout: "ok", ExitCode: 0}},
+	})
+	id, _, err := m.Start(Spec{Name: "x", Kind: KindCommand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := m.getWatch(id)
+	m.sampleOnce(w) // e1 -> StateError
+	info, _ := m.Status(id)
+	if info.State != StateError {
+		t.Fatalf("state after error = %q, want %q", info.State, StateError)
+	}
+	m.sampleOnce(w) // success -> back to watching
+	info, _ = m.Status(id)
+	if info.State != StateWatching {
+		t.Fatalf("state after success = %q, want %q", info.State, StateWatching)
+	}
+}
+
+func TestStopJobWatchTerminatesGoroutine(t *testing.T) {
+	m := newTestManager(t, Deps{JobLookup: func(id string) (native.JobInfo, bool) {
+		return native.JobInfo{ID: id}, true
+	}})
+	id, _, err := m.Start(Spec{Name: "job", Kind: KindJob, JobID: "job-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stop the job watch. This cancels the watch context; the job goroutine
+	// must exit promptly (it must not wait for the manager to close).
+	if _, err := m.Stop(id); err != nil {
+		t.Fatal(err)
+	}
+	// With only this one goroutine registered, wg.Wait() returning means the
+	// job watch goroutine has exited. Bounded wait keeps the test
+	// deterministic (no sleep).
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// goroutine exited promptly
+	case <-time.After(2 * time.Second):
+		t.Fatal("job watch goroutine did not exit after Stop (leak)")
+	}
+}
+
 func TestOnEventPublished(t *testing.T) {
 	var mu sync.Mutex
 	var events []Event

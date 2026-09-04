@@ -137,6 +137,20 @@ type WriteGate interface {
 	Acquire() (release func())
 }
 
+// WatchTransferrer re-parents a subagent's once watches to the parent and
+// stops its repeat watches when the subagent ends. It is a small interface
+// so the runner can reach the watch manager without importing internal/watch
+// (which would create an import cycle: internal/watch imports
+// internal/tools/native, and native's test-only import of internal/agent is
+// not the issue — the cycle is that internal/agent would need to import
+// internal/watch while internal/watch already depends on the native toolset
+// that the agent package orchestrates). app.go wires the concrete manager.
+type WatchTransferrer interface {
+	// TransferFromSubagent re-parents the owner's once watches to the
+	// parent (owner "") and stops its repeat watches.
+	TransferFromSubagent(owner string)
+}
+
 // HookRunner executes user-configured pre_tool_use and turn_end lifecycle
 // hooks. The interface is declared package-local so unit tests can supply a
 // fake without depending on internal/hooks. A nil HookRunner on a Runner
@@ -280,6 +294,12 @@ type Runner struct {
 	// WriteGate serialises non-read-only tool execution. When nil, no
 	// serialisation is performed (default single-agent behaviour).
 	WriteGate WriteGate
+
+	// WatchTransferrer, when set, is invoked when a subagent finishes or is
+	// killed so its once watches re-parent to the parent and its repeat
+	// watches stop. Wired in app.go to the watch manager. Nil disables
+	// ownership transfer (tests, or no watch manager).
+	WatchTransferrer WatchTransferrer
 
 	// CacheInvalidator, when non-nil, runs after every non-read-only tool
 	// completes, in addition to clearing this runner's own session tool
@@ -532,6 +552,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.LimitsTable = other.LimitsTable
 	r.Role = other.Role
 	r.WriteGate = other.WriteGate
+	r.WatchTransferrer = other.WatchTransferrer
 	r.UsageObserver = other.UsageObserver
 	r.CalibrationObserver = other.CalibrationObserver
 	r.MetricsObserver = other.MetricsObserver
@@ -627,6 +648,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// Discarding the queue here is safe because the persisted message is
 	// the durable copy.
 	defer r.State.ClearSubagentReports()
+	// The same reasoning applies to the watch report queue: a watch that
+	// fires after the final loop-top drain pushes its report to the queue
+	// AND persists it as a RoleUser message (the push site in app.go does
+	// both). Without this clear, the next turn would double-deliver: once
+	// from the queue drain and once from buildHistoryMessages replaying the
+	// persisted message. Discarding the queue here is safe because the
+	// persisted message is the durable copy.
+	defer r.State.ClearWatchReports()
 
 	priorTranscript := r.State.Messages()
 	firstTurn := len(priorTranscript) <= 1
@@ -947,6 +976,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// at the next loop-top. They live in a separate queue so a
 		// turn-cancel (ClearSteering) cannot drop them.
 		for _, msg := range r.State.DrainSubagentReports() {
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+		}
+		// Drain background watch completion reports alongside subagent
+		// reports. These are machine-generated (never user-typed), so they
+		// do not count as a user intervention for the doom-loop guard, but
+		// they must reach the model wire the same way: injected as user
+		// messages at the next loop-top. They live in a separate queue so a
+		// turn-cancel (ClearSteering) cannot drop them. The strings are
+		// already fully formatted by the push site (watch.Format).
+		for _, msg := range r.State.DrainWatchReports() {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 		}
 		if len(steeringPins) > 0 {

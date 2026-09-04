@@ -12,6 +12,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
+	"marshal/internal/watch"
 )
 
 // SubagentRequest carries the caller's explicit choices for one agent.run
@@ -283,6 +284,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		// and turn-cancel (Esc) must not kill it. Session Shutdown still
 		// cancels it (State.Context is cancelled by Shutdown).
 		childCtx, cancel := context.WithCancel(state.Context())
+		// Stamp the subagent owner tag on the child's context so any
+		// watch.start call the child makes is attributed to it (the
+		// watch.start handler reads it via watch.OwnerFromContext). The
+		// tag is "subagent-<id>" matching the view ID assigned above.
+		childCtx = watch.WithOwner(childCtx, fmt.Sprintf("subagent-%d", view.ID))
 		state.SetSubagentCancel(view.ID, cancel)
 		prev := child.UsageObserver
 		child.UsageObserver = func(u schema.TokenUsage) {
@@ -312,6 +318,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					state.PushSubagentReport(panicReport)
 					state.ExitSubagent()
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
+					// Re-parent the panicked child's once watches and stop its
+					// repeat watches, mirroring the normal completion path.
+					if child != nil && child.WatchTransferrer != nil {
+						child.WatchTransferrer.TransferFromSubagent(fmt.Sprintf("subagent-%d", view.ID))
+					}
 				}
 			}()
 			summary, salvagedReason, runErr := cfg.exec(childCtx, child, args.Prompt)
@@ -366,6 +377,14 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			state.PushSubagentReport(report)
 			state.ExitSubagent()
 			state.FinishSubagent(view.ID, summary, runErr)
+			// Re-parent the child's once watches to the parent and stop its
+			// repeat watches now that the subagent has ended. The child's
+			// runner carries the WatchTransferrer (wired in app.go to the
+			// watch manager); the owner tag matches the one stamped on the
+			// child's context at dispatch.
+			if child != nil && child.WatchTransferrer != nil {
+				child.WatchTransferrer.TransferFromSubagent(fmt.Sprintf("subagent-%d", view.ID))
+			}
 		}()
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("started as subagent %d — %s", view.ID, args.Description),

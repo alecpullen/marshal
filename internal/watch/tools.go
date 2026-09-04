@@ -122,6 +122,10 @@ func watchStartTool(m *Manager) registry.Tool {
 			Mode:      mode,
 			Notify:    args.Notify,
 			Interval:  interval,
+			// A subagent's watch.start calls carry the owner tag on the
+			// context (set by the agent.run handler via watch.WithOwner);
+			// the parent's calls carry none and stay owner "".
+			Owner: OwnerFromContext(ctx),
 		}
 		id, note, err := m.Start(spec)
 		if err != nil {

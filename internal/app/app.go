@@ -605,9 +605,17 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		},
 		DirFn: func() string { return state.Workspace().ActiveRoot },
 		OnFire: func(r watch.Report) {
-			// Task 4: push a minimal representation to the workspace-state
-			// queue. Task 5 refines the formatting.
-			state.PushWatchReport(fmt.Sprintf("[watch %s] %s kind=%s state=fired fires=%d", r.WatchID, r.Name, r.Kind, r.FiredCount))
+			// Task 5: format the report and deliver it two-channel, mirroring
+			// the subagent completion path (subagent.go): persist a RoleUser
+			// message (the durable copy that buildHistoryMessages replays
+			// across restart) AND push to the in-memory watch-report queue
+			// (live delivery, drained at the next loop-top). The queue drain
+			// and the persisted message do not double-deliver: the queue is
+			// cleared on drain, and buildHistoryMessages only replays
+			// prior-turn messages.
+			text := watch.Format(r)
+			state.AddMessage(session.RoleUser, text, session.ContentTypeWatchReport)
+			state.PushWatchReport(text)
 		},
 		OnEvent: func(ev watch.Event) {
 			if watchBroker != nil {
@@ -704,7 +712,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// writes must serialize on the same gate. The lock is the caller's
 	// (buildAgentRunnerWithLock passes the runtime's stable lock so a config
 	// reload reuses the same gate in-flight children already hold).
-	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts)
+	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts, watchManager)
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
 		subagentResolver,
@@ -730,6 +738,10 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
+	// Wire the watch manager as the runner's WatchTransferrer so a
+	// subagent's once watches re-parent to the parent and its repeat
+	// watches stop when the subagent finishes or is killed.
+	runner.WatchTransferrer = watchManager
 	repoInstructions, _ := loadRepoInstructions(state.WorkingDir)
 	runner.SystemPromptAddendum = composeAddendum(repoInstructions, "")
 	runner.SkillIndex = skillIndex
@@ -979,7 +991,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		desktopCloser = closer
 	}
 
-	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts)
+	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts, watchManager)
 	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable, overrides)
 	}
@@ -1422,7 +1434,7 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 // runner and every agent.run child share one gate. (Keeping this wrapper
 // avoids churning the ~25 test call sites.)
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
-	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{}, native.Options{})
+	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{}, native.Options{}, nil)
 }
 
 // buildSubagentFactoryWithLock returns a closure that constructs a fresh
@@ -1446,7 +1458,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 // writeLock is the shared swarm.WriteLock every child runner serializes its
 // writes on. Production passes the parent runner's own gate so parent and
 // background children (which outlive the spawning turn) serialize together.
-func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock, baseNativeOpts native.Options) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
+func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock, baseNativeOpts native.Options, watchTransferrer agent.WatchTransferrer) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
 	// A child tool ceiling is opt-in. An unset value, like an explicit zero,
 	// leaves the child unlimited. Negative values are treated as unset.
 	subtaskIters := cfg.Agent.SubtaskIterations
@@ -1675,6 +1687,10 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		child.Pricing = pricingRates
 		child.MetricsObserver = metricsObserver
 		child.WriteGate = writeLock
+		// Wire the watch manager onto the child runner so its completion
+		// goroutine can re-parent the child's once watches and stop its
+		// repeat watches when the subagent ends.
+		child.WatchTransferrer = watchTransferrer
 		// C-1: wire the snapshot service onto the child runner so its
 		// pre-write snapshots are recorded against the child's own session
 		// ID. Without this, a background child can clobber files with no

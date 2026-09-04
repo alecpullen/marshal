@@ -321,6 +321,13 @@ type State struct {
 	// child's report. The runner drains it at loop-top alongside steering.
 	subagentReports []string
 
+	// watchReports is the machine-generated completion queue for
+	// background watch children. It is deliberately separate from the
+	// human steering queue: ClearSteering (turn-cancel, Ctrl+X) and
+	// PopSteering (blank-Enter follow-up) must never drop a background
+	// child's report. The runner drains it at loop-top alongside steering.
+	watchReports []string
+
 	// F21: session event surface. Publishes message, streaming/thinking,
 	// activity, tool lifecycle, audit, approval, and question events to
 	// external subscribers (e.g. the ACP transport in a later task).
@@ -1023,6 +1030,7 @@ func (s *State) Shutdown() {
 		}
 	}
 	s.subagentReports = nil
+	s.watchReports = nil
 	s.mu.Unlock()
 	s.cancel()
 }

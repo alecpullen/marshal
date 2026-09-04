@@ -140,3 +140,67 @@ func TestUserSkillOverridesBuiltIn(t *testing.T) {
 		t.Error("user-installed skill must override the built-in")
 	}
 }
+
+// TestBuiltInSkillWorkflowContracts pins the workflow contracts of the
+// rewritten builtin skills so future edits can't silently drop the artifact
+// paths, the interrogation/approval gates, or the verbatim-encoding rule.
+// Substrings are matched case-insensitively against the embedded skill bodies.
+func TestBuiltInSkillWorkflowContracts(t *testing.T) {
+	idx := NewIndex()
+	if err := loadBuiltIns(idx); err != nil {
+		t.Fatalf("loadBuiltIns: %v", err)
+	}
+
+	body := func(name string) string {
+		sk, ok := idx.Load(name)
+		if !ok {
+			t.Fatalf("built-in %q not registered", name)
+		}
+		return strings.ToLower(sk.Body)
+	}
+
+	// brainstorming: interrogation, spec artifact, review gates.
+	brainstorming := body("brainstorming")
+	for _, want := range []string{
+		"docs/specs/",
+		"question.ask",
+		"one question per call",
+		"user review",
+		"self-review",
+	} {
+		if !strings.Contains(brainstorming, want) {
+			t.Errorf("brainstorming body missing %q", want)
+		}
+	}
+
+	// marshal-writing-plans: plan artifact, hybrid encoding, approval gate.
+	writingPlans := body("marshal-writing-plans")
+	for _, want := range []string{
+		"docs/plans/",
+		"verbatim",
+		"anchor",
+		"approval",
+	} {
+		if !strings.Contains(writingPlans, want) {
+			t.Errorf("marshal-writing-plans body missing %q", want)
+		}
+	}
+
+	// marshal-executing-plans: verbatim application rule.
+	executingPlans := body("marshal-executing-plans")
+	if !strings.Contains(executingPlans, "verbatim") {
+		t.Error("marshal-executing-plans body missing \"verbatim\"")
+	}
+
+	// using-skills: chain description references the artifacts and encoding.
+	usingSkills := body("using-skills")
+	for _, want := range []string{
+		"docs/specs/",
+		"docs/plans/",
+		"verbatim",
+	} {
+		if !strings.Contains(usingSkills, want) {
+			t.Errorf("using-skills body missing %q", want)
+		}
+	}
+}

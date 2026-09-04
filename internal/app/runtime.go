@@ -32,6 +32,7 @@ import (
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/watch"
 )
 
 // jobShutdownTimeout controls how long Quiesce waits for background jobs to
@@ -106,6 +107,7 @@ type Runtime struct {
 	// so there is a single source of truth for command registration.
 	CommandRegistry *commands.Registry
 	JobManager      *native.JobManager
+	WatchManager    *watch.Manager
 	DesktopCloser   func()
 
 	// TrustPromptPending reports that a project config exists but was not
@@ -230,11 +232,22 @@ func (rt *Runtime) Quiesce(ctx context.Context) error {
 		rt.State.ResolvePendingForShutdown()
 		rt.State.Shutdown()
 
-		// Snapshot JobManager under the pointer mutex so a concurrent
-		// reloadAgentRuntime can swap the pointer without a data race.
+		// Snapshot JobManager and WatchManager under the pointer mutex so a
+		// concurrent reloadAgentRuntime can swap the pointers without a data
+		// race.
 		rt.mu.Lock()
 		jm := rt.JobManager
+		wm := rt.WatchManager
 		rt.mu.Unlock()
+
+		// Shut the watch manager down BEFORE the job manager: watches may
+		// depend on jobs, so their goroutines must be joined first.
+		var watchErr error
+		if wm != nil {
+			watchCtx, watchCancel := context.WithTimeout(context.Background(), jobShutdownTimeout)
+			watchErr = wm.Close(watchCtx)
+			watchCancel()
+		}
 
 		var jobErr error
 		if jm != nil {
@@ -258,7 +271,7 @@ func (rt *Runtime) Quiesce(ctx context.Context) error {
 		}
 
 		workErr := rt.State.WaitForWork(ctx)
-		rt.quiesceErr = errors.Join(jobErr, workErr)
+		rt.quiesceErr = errors.Join(watchErr, jobErr, workErr)
 	})
 	return rt.quiesceErr
 }
@@ -600,7 +613,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// every agent.run child serialize writes on it, and config reloads reuse
 	// it so in-flight background children keep sharing the same gate.
 	writeLock := &swarm.WriteLock{}
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir, writeLock)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir, writeLock)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -654,6 +667,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		SubagentBroker:       subagentBroker,
 		IndexBroker:          indexBroker,
 		JobManager:           jobMgr,
+		WatchManager:         watchMgr,
 		DesktopCloser:        desktopCloser,
 		CustomAgentFactory:   subagentFactory,
 		WriteLock:            writeLock,
@@ -813,7 +827,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
 		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir, lock,
 	)
 	if err != nil {
@@ -836,6 +850,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	oldRunner := rt.Runner
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager
+	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
 	oldLSP := rt.LSPManager
 
@@ -848,6 +863,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	rt.PlanAuthorFactory = newPlanAuthorFactory
 	rt.CustomAgentFactory = newSubagentFactory
 	rt.JobManager = newJobMgr
+	rt.WatchManager = newWatchMgr
 	rt.DesktopCloser = newDesktopCloser
 	if newMCP != nil {
 		rt.MCPManager = newMCP
@@ -871,6 +887,11 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = oldJobMgr.Shutdown(sc)
+	}
+	if oldWatchMgr != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = oldWatchMgr.Close(sc)
 	}
 	if oldDesktopCloser != nil {
 		oldDesktopCloser()

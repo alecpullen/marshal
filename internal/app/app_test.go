@@ -41,6 +41,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/watch"
 )
 
 type fakeTrustResolver struct {
@@ -647,6 +648,78 @@ reviewer = "mock/mock-model"
 	}
 	if !strings.Contains(result.Content, id) {
 		t.Fatalf("job.list output %q does not contain job id %q", result.Content, id)
+	}
+}
+
+func TestStartRuntimeOwnsWatchManager(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "wm-test"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+tool_calling = true
+
+[models.presets."mock/mock-model"]
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx := context.Background()
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.WatchManager == nil {
+		t.Fatal("Runtime.WatchManager is nil")
+	}
+
+	// Prove the manager works: register a file watch on a temp path.
+	watchPath := filepath.Join(tmp, "watch-target.txt")
+	if err := os.WriteFile(watchPath, []byte("initial"), 0644); err != nil {
+		t.Fatalf("write watch target: %v", err)
+	}
+	id, _, err := rt.WatchManager.Start(watch.Spec{
+		Name: "wm-test-watch",
+		Kind: watch.KindFile,
+		Path: watchPath,
+	})
+	if err != nil {
+		t.Fatalf("WatchManager.Start: %v", err)
+	}
+
+	// The watch.list tool must see the same watch (proving pointer identity
+	// between Runtime.WatchManager and the toolset's watch manager).
+	tool, ok := rt.ToolRegistry.Lookup("watch.list")
+	if !ok {
+		t.Fatal("watch.list not registered in ToolRegistry")
+	}
+	result, err := tool.Handler(ctx, registry.ToolCall{Args: json.RawMessage("{}")})
+	if err != nil {
+		t.Fatalf("watch.list handler: %v", err)
+	}
+	if !strings.Contains(result.Content, id) {
+		t.Fatalf("watch.list output %q does not contain watch id %q", result.Content, id)
 	}
 }
 

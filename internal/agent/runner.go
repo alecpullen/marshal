@@ -569,6 +569,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.DigestModel = other.DigestModel
 	r.Pricing = other.Pricing
 	r.SystemPromptAddendum = other.SystemPromptAddendum
+	r.VerificationGate = other.VerificationGate
 
 	// Refresh session-scoped hooks from the rebuilt runner so a config
 	// reload picks up routing/role changes. CopyFrom is the only path that

@@ -24,6 +24,7 @@ func TestNativeQuestionTaskWithUnverifiedMutationIsAcceptedAfterNudge(t *testing
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.NativeTools = true
 	r.SetForceClass(string(ClassQuestion))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "answer the question by editing a.go")
 	if err != nil {
@@ -53,6 +54,7 @@ func TestJSONQuestionFinalWithUnverifiedMutationIsAcceptedAfterNudge(t *testing.
 	}
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.SetForceClass(string(ClassQuestion))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "answer the bug by editing a.go")
 	if err != nil {

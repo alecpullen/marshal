@@ -266,6 +266,13 @@ type Runner struct {
 	// the tokens back. Set from agent.parse_repair_feedback = false.
 	SuppressParseRepairFeedback bool
 
+	// VerificationGate is the global fallback for the verification nudge
+	// (agent.verification_gate). A per-preset verification_gate overrides
+	// it per turn; the per-turn effective value is computed after
+	// resolveRoute and consulted at the two gate sites. Default false:
+	// the gate is opt-in.
+	VerificationGate bool
+
 	// LimitsTable is the merged OpenRouter/LiteLLM limit table used to
 	// resolve a preset's context window and max output when the preset does
 	// not state them. Nil means "not loaded" — resolution degrades to the
@@ -917,6 +924,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
 	verificationNudgeSent := false
+	gateOn := r.verificationGateOn(route)
 	budget := newTurnBudget(r.effectiveMaxToolIterations(route), task.Class, len(task.Plan))
 	r.turnBudget = budget
 	defer func() { r.turnBudget = nil }()
@@ -1171,8 +1179,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				}
 				// Verification gate: a turn that changed something should have
 				// verified those changes before finishing. One nudge per turn;
-				// a repeat final is accepted normally below.
-				lastMutation, needsVerification := r.unverifiedMutation()
+				// a repeat final is accepted normally below. Opt-in: skipped
+				// entirely unless enabled globally or for this preset.
+				needsVerification := false
+				var lastMutation callEntry
+				if gateOn {
+					lastMutation, needsVerification = r.unverifiedMutation()
+				}
 				if needsVerification && !verificationNudgeSent {
 					verificationNudgeSent = true
 					budget.overhead++
@@ -1412,8 +1425,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
 				continue
 			}
-			// Verification gate, same rule as the native path.
-			lastMutation, needsVerification := r.unverifiedMutation()
+			// Verification gate, same rule as the native path. Opt-in: skipped
+			// entirely unless enabled globally or for this preset.
+			needsVerification := false
+			var lastMutation callEntry
+			if gateOn {
+				lastMutation, needsVerification = r.unverifiedMutation()
+			}
 			if needsVerification && !verificationNudgeSent {
 				verificationNudgeSent = true
 				budget.overhead++
@@ -1733,4 +1751,14 @@ func (r *Runner) unverifiedMutation() (callEntry, bool) {
 	r.trackerMu.Lock()
 	defer r.trackerMu.Unlock()
 	return r.tracker.unverifiedMutation()
+}
+
+// verificationGateOn resolves the per-turn gate toggle: an explicit
+// per-preset verification_gate wins; otherwise the global
+// agent.verification_gate fallback applies. Default off.
+func (r *Runner) verificationGateOn(route routing.Route) bool {
+	if route.Preset.VerificationGate != nil {
+		return *route.Preset.VerificationGate
+	}
+	return r.VerificationGate
 }

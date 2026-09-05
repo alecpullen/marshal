@@ -76,6 +76,19 @@ const (
 	// Same split as ContentTypeSkillBody: reaches the model, invisible to
 	// the reader.
 	ContentTypeWatchReport ContentType = "watch_report"
+	// ContentTypeSteering marks a user-typed mid-turn steering message,
+	// persisted under RoleUser at the runner's loop-top drain so
+	// buildHistoryMessages replays it and it survives restart. Content is
+	// the enveloped wire form ("[user steering, mid-turn]: ...") so restart
+	// replay matches the live turn byte-for-byte.
+	//
+	// Unlike ContentTypeSubagentReport/ContentTypeWatchReport (which render
+	// nothing — the user never typed them), steering renders as a compact
+	// dim one-line marker in the transcript: the user DID type it, so an
+	// honest transcript shows it, but visually distinct from a real ❯
+	// prompt. It is excluded from turn boundaries (isUserTurn, /rewind,
+	// timeline) for the same reason reports are: it is not a turn.
+	ContentTypeSteering ContentType = "steering"
 	// ContentTypeSkillAuto records the skills the ranker auto-loaded at the
 	// start of one turn. Content is the newline-separated skill names.
 	//

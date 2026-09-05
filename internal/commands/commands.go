@@ -553,7 +553,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				msgs := state.Messages()
 				var turns []session.Message
 				for _, m := range msgs {
-					if m.Role == session.RoleUser && m.ContentType != session.ContentTypeSubagentReport && m.ContentType != session.ContentTypeWatchReport {
+					if m.Role == session.RoleUser && m.ContentType != session.ContentTypeSubagentReport && m.ContentType != session.ContentTypeWatchReport && m.ContentType != session.ContentTypeSteering {
 						turns = append(turns, m)
 					}
 				}

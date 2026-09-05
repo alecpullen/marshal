@@ -7,6 +7,9 @@ import (
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
+	"marshal/internal/db"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -41,9 +44,10 @@ func TestRunTaskInjectsSteeringBeforeNextModelCall(t *testing.T) {
 		t.Fatalf("RunTask: %v", err)
 	}
 	// Steering is injected into the live model context (the request sent
-	// to the provider) but is not persisted into the session transcript —
-	// it's an ephemeral mid-turn nudge. The second chat call must see it
-	// appended after the original user message.
+	// to the provider) AND persisted into the session transcript as a
+	// RoleUser ContentTypeSteering message — the durable copy that
+	// buildHistoryMessages replays across restart. The second chat call
+	// must see it appended after the original user message.
 	if len(p.Requests) < 2 {
 		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.Requests))
 	}
@@ -59,6 +63,33 @@ func TestRunTaskInjectsSteeringBeforeNextModelCall(t *testing.T) {
 	}
 	if task == nil || task.Summary == "" {
 		t.Fatal("no task summary")
+	}
+
+	// The drained steering message must be persisted with the envelope
+	// prefix, so restart replay matches the live wire byte-for-byte.
+	var persisted int
+	for _, m := range state.Messages() {
+		if m.Role == session.RoleUser && m.ContentType == session.ContentTypeSteering {
+			persisted++
+			if m.Content != "[user steering, mid-turn]: also update the README" {
+				t.Fatalf("persisted steering content = %q, want enveloped form", m.Content)
+			}
+		}
+	}
+	if persisted != 1 {
+		t.Fatalf("persisted steering messages = %d, want exactly 1: %#v", persisted, state.Messages())
+	}
+
+	// And it must replay via buildHistoryMessages.
+	replayed := buildHistoryMessages(state.Messages(), 0, state.Generation(), map[int64][]db.ToolAuditEntry{})
+	var sawReplay bool
+	for _, m := range replayed {
+		if m.Role == schema.RoleUser && m.Content == "[user steering, mid-turn]: also update the README" {
+			sawReplay = true
+		}
+	}
+	if !sawReplay {
+		t.Fatal("persisted steering message not replayed by buildHistoryMessages")
 	}
 }
 

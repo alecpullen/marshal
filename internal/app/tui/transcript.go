@@ -490,6 +490,8 @@ func renderMessage(msg session.Message, width int) string {
 		return ""
 	case session.ContentTypeWatchReport:
 		return ""
+	case session.ContentTypeSteering:
+		return renderSteeringMarker(msg.Content, width)
 	}
 	if msg.Final {
 		return renderFinalAnswer(msg, width)
@@ -789,6 +791,30 @@ func subagentTailLines(child *session.State, n int) []string {
 func renderSkillTag(name string, width int) string {
 	cw := contentWidth(width)
 	wrapped := ansi.Wrap("skill.load: "+name, cw, WrapBreakpoints)
+	var b strings.Builder
+	for i, line := range strings.Split(wrapped, "\n") {
+		if i == 0 {
+			b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
+		} else {
+			b.WriteString(continuation())
+		}
+		b.WriteString(mutedStyle().Render(line))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// renderSteeringMarker renders a user-typed mid-turn steering message as a
+// compact dim one-line marker. The user DID type it, so an honest transcript
+// shows it — but visually distinct from a real ❯ prompt (no userColor, no
+// turn separator; isUserTurn excludes it) so a long turn's interventions
+// read as asides, not new turns. Content is the enveloped form
+// ("[user steering, mid-turn]: ..."); the envelope prefix is stripped here
+// because the gutter + "steering:" label already say what it is.
+func renderSteeringMarker(content string, width int) string {
+	text := strings.TrimPrefix(content, "[user steering, mid-turn]: ")
+	cw := contentWidth(width)
+	wrapped := ansi.Wrap("steering: "+text, cw, WrapBreakpoints)
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {

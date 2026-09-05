@@ -975,7 +975,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// Envelope the wire content so the model can tell a mid-turn
 			// steering message apart from a fresh user goal. extractPinnedFiles
 			// still runs on the RAW msg above so @file pins keep working.
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "[user steering, mid-turn]: " + msg})
+			// The enveloped form is ALSO what gets persisted (RoleUser,
+			// ContentTypeSteering) so restart replay via buildHistoryMessages
+			// matches the live wire byte-for-byte — before this, drained
+			// steering lived only in the in-memory slice and vanished from
+			// the transcript.
+			enveloped := "[user steering, mid-turn]: " + msg
+			r.State.AddMessage(session.RoleUser, enveloped, session.ContentTypeSteering)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: enveloped})
 			steeringArrived = true
 		}
 		// Drain background subagent completion reports alongside steering.

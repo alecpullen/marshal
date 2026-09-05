@@ -3284,7 +3284,10 @@ func isUserTurn(item session.TranscriptItem) bool {
 		// is not a turn the user took; treating it as one emits a turn
 		// separator above a block that renders nothing.
 		item.Message.ContentType != session.ContentTypeSubagentReport &&
-		item.Message.ContentType != session.ContentTypeWatchReport
+		item.Message.ContentType != session.ContentTypeWatchReport &&
+		// A mid-turn steering message renders (compact dim marker) but is
+		// not a turn boundary either — no separator above an aside.
+		item.Message.ContentType != session.ContentTypeSteering
 }
 
 // hasConversationTurns reports whether the transcript holds any real

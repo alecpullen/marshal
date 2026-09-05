@@ -130,6 +130,12 @@ type ModelPreset struct {
 	// temperature for this preset. Nil sends nothing on the wire — the
 	// provider default applies.
 	Temperature *float64 `toml:"temperature,omitempty"`
+	// VerificationGate optionally overrides the global
+	// [agent] verification_gate setting for this preset. Nil means "fall
+	// back to the global config". Set true for weak models that benefit
+	// from the verify-before-finishing reminder; set false to silence it
+	// for a strong model when the gate is enabled globally.
+	VerificationGate *bool `toml:"verification_gate,omitempty"`
 	// Pricing is an optional per-preset override for the built-in pricing
 	// table in the pricing package. Nil means "use the built-in table by
 	// Model name (or zero if the model is unpriced)". Set to a non-nil

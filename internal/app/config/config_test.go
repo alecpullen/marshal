@@ -526,6 +526,16 @@ func TestDefaultPlanFirstIsFalse(t *testing.T) {
 	}
 }
 
+func TestDefaultVerificationGateIsOff(t *testing.T) {
+	cfg := Default()
+	if cfg.Agent.VerificationGate != nil {
+		t.Fatalf("Agent.VerificationGate = %v, want nil by default", *cfg.Agent.VerificationGate)
+	}
+	if cfg.Agent.VerificationGateEnabled() {
+		t.Error("VerificationGateEnabled = true, want false by default")
+	}
+}
+
 func TestParseRepairFeedbackLoadable(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
@@ -549,6 +559,32 @@ parse_repair_feedback = false
 	}
 	if cfg.Agent.ParseRepairFeedbackEnabled() {
 		t.Error("ParseRepairFeedbackEnabled = true, want false")
+	}
+}
+
+func TestVerificationGateLoadable(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := `[agent]
+verification_gate = true
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Agent.VerificationGate == nil || !*cfg.Agent.VerificationGate {
+		t.Errorf("Agent.VerificationGate = %v, want pointer to true", cfg.Agent.VerificationGate)
+	}
+	if !cfg.Agent.VerificationGateEnabled() {
+		t.Error("VerificationGateEnabled = false, want true")
 	}
 }
 
@@ -987,6 +1023,42 @@ max_repo_context_tokens = 48000
 	budget := cfg.Agents[routing.RoleImplementer].Context
 	if budget.MaxRepoContextTokens != 48000 {
 		t.Fatalf("budget = %#v", budget)
+	}
+}
+
+func TestPresetVerificationGateLoadable(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[models.presets.coder]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+verification_gate = true
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	preset := cfg.Models.Presets["ollama/qwen2.5-coder:14b"]
+	if preset.VerificationGate == nil || !*preset.VerificationGate {
+		t.Fatalf("preset verification_gate = %v, want pointer to true", preset.VerificationGate)
+	}
+	// A preset that omits the key must stay nil (falls back to global).
+	home2 := t.TempDir()
+	work2 := t.TempDir()
+	writeFile(t, work2+"/.marshal/config.toml", `
+[models.presets.coder]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+`)
+	cfg2, err := Load(LoadOptions{HomeDir: home2, WorkingDir: work2})
+	if err != nil {
+		t.Fatalf("Load (no key) returned error: %v", err)
+	}
+	if p2 := cfg2.Models.Presets["ollama/qwen2.5-coder:14b"]; p2.VerificationGate != nil {
+		t.Fatalf("preset verification_gate = %v, want nil when key is absent", *p2.VerificationGate)
 	}
 }
 

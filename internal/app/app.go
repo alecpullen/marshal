@@ -844,6 +844,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	runner.PlanFirst = cfg.Agent.PlanFirst
 	runner.SuppressParseRepairFeedback = !cfg.Agent.ParseRepairFeedbackEnabled()
+	runner.VerificationGate = cfg.Agent.VerificationGateEnabled()
 	if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 		runner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
 	}

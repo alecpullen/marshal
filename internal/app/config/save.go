@@ -201,6 +201,11 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	if fileField[bool](file.Agent, "ParseRepairFeedback") != nil || cfg.Agent.ParseRepairFeedback != nil {
 		agent.ParseRepairFeedback = cfg.Agent.ParseRepairFeedback
 	}
+	// VerificationGate is a *bool (tri-state, default off) — same manual
+	// putKey treatment as ParseRepairFeedback above.
+	if fileField[bool](file.Agent, "VerificationGate") != nil || cfg.Agent.VerificationGate != nil {
+		agent.VerificationGate = cfg.Agent.VerificationGate
+	}
 	putKey(&agent.MaxTouchedFileBytes, fileField[int](file.Agent, "MaxTouchedFileBytes"), cfg.Agent.MaxTouchedFileBytes, def.Agent.MaxTouchedFileBytes)
 	putKey(&agent.ThinkingBudgetMargin, fileField[int](file.Agent, "ThinkingBudgetMargin"), cfg.Agent.ThinkingBudgetMargin, def.Agent.ThinkingBudgetMargin)
 	putKey(&agent.MaxConcurrentSubagents, fileField[int](file.Agent, "MaxConcurrentSubagents"), cfg.Agent.MaxConcurrentSubagents, def.Agent.MaxConcurrentSubagents)

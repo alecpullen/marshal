@@ -526,6 +526,16 @@ func TestDefaultPlanFirstIsFalse(t *testing.T) {
 	}
 }
 
+func TestDefaultVerificationGateIsOff(t *testing.T) {
+	cfg := Default()
+	if cfg.Agent.VerificationGate != nil {
+		t.Fatalf("Agent.VerificationGate = %v, want nil by default", *cfg.Agent.VerificationGate)
+	}
+	if cfg.Agent.VerificationGateEnabled() {
+		t.Error("VerificationGateEnabled = true, want false by default")
+	}
+}
+
 func TestParseRepairFeedbackLoadable(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
@@ -549,6 +559,32 @@ parse_repair_feedback = false
 	}
 	if cfg.Agent.ParseRepairFeedbackEnabled() {
 		t.Error("ParseRepairFeedbackEnabled = true, want false")
+	}
+}
+
+func TestVerificationGateLoadable(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := `[agent]
+verification_gate = true
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Agent.VerificationGate == nil || !*cfg.Agent.VerificationGate {
+		t.Errorf("Agent.VerificationGate = %v, want pointer to true", cfg.Agent.VerificationGate)
+	}
+	if !cfg.Agent.VerificationGateEnabled() {
+		t.Error("VerificationGateEnabled = false, want true")
 	}
 }
 

@@ -427,6 +427,13 @@ type AgentConfig struct {
 	// of relying on the repair. Default true. Set false to save the tokens
 	// — repairs still happen either way, they just go unmentioned.
 	ParseRepairFeedback *bool `toml:"parse_repair_feedback,omitempty"`
+	// VerificationGate enables the agent-loop verification nudge: at turn
+	// end, if the session mutated files without a later test/build check,
+	// the runner injects one reminder before accepting the final answer.
+	// Default false (opt-in) — enable it for models that benefit from the
+	// reminder. A per-preset verification_gate in [models.presets.<name>]
+	// overrides this global value for that model.
+	VerificationGate *bool `toml:"verification_gate,omitempty"`
 	// MaxTouchedFileBytes caps how much of each file readTouchedFiles
 	// loads during the knowledge pass. Files larger than this are
 	// truncated with a marker. 0 = 65536 (64 KiB default).
@@ -442,6 +449,12 @@ type AgentConfig struct {
 // ParseRepairFeedbackEnabled resolves the tri-state toggle: unset means on.
 func (a AgentConfig) ParseRepairFeedbackEnabled() bool {
 	return a.ParseRepairFeedback == nil || *a.ParseRepairFeedback
+}
+
+// VerificationGateEnabled resolves the tri-state toggle: unset means OFF.
+// Unlike ParseRepairFeedback, the verification gate is opt-in.
+func (a AgentConfig) VerificationGateEnabled() bool {
+	return a.VerificationGate != nil && *a.VerificationGate
 }
 
 type PrivacyConfig struct {

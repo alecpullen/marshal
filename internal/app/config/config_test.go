@@ -1026,6 +1026,42 @@ max_repo_context_tokens = 48000
 	}
 }
 
+func TestPresetVerificationGateLoadable(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[models.presets.coder]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+verification_gate = true
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	preset := cfg.Models.Presets["ollama/qwen2.5-coder:14b"]
+	if preset.VerificationGate == nil || !*preset.VerificationGate {
+		t.Fatalf("preset verification_gate = %v, want pointer to true", preset.VerificationGate)
+	}
+	// A preset that omits the key must stay nil (falls back to global).
+	home2 := t.TempDir()
+	work2 := t.TempDir()
+	writeFile(t, work2+"/.marshal/config.toml", `
+[models.presets.coder]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+`)
+	cfg2, err := Load(LoadOptions{HomeDir: home2, WorkingDir: work2})
+	if err != nil {
+		t.Fatalf("Load (no key) returned error: %v", err)
+	}
+	if p2 := cfg2.Models.Presets["ollama/qwen2.5-coder:14b"]; p2.VerificationGate != nil {
+		t.Fatalf("preset verification_gate = %v, want nil when key is absent", *p2.VerificationGate)
+	}
+}
+
 func TestLoadRoutingConfigProjectOverridesGlobalByKey(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

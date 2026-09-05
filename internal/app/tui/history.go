@@ -47,9 +47,22 @@ func (m *Model) recallOlder() bool {
 	}
 	// Edits to a recalled entry are transient: navigating re-reads the slice.
 	m.input.SetValue(m.history[m.histIdx])
-	m.input.CursorEnd()
+	m.cursorToInputStart()
 	m.resetCompletionStateAfterRecall()
 	return true
+}
+
+// cursorToInputStart moves the input cursor to the very beginning of the
+// value (row 0, column 0). After a recall, the first line of a multi-line
+// entry stays visible — a cursor parked at the end would scroll the
+// textarea to the entry's last line — and Line() == 0 keeps the up/down
+// recall guards consistent, so the next up-arrow steps to the previous
+// entry instead of moving within this one.
+func (m *Model) cursorToInputStart() {
+	for m.input.Line() > 0 {
+		m.input.CursorUp()
+	}
+	m.input.CursorStart() // column 0 of the current line
 }
 
 // resetCompletionStateAfterRecall clears popup state after a history
@@ -81,7 +94,7 @@ func (m *Model) recallNewer() bool {
 		m.input.SetValue(m.draft)
 		m.draft = ""
 	}
-	m.input.CursorEnd()
+	m.cursorToInputStart()
 	m.resetCompletionStateAfterRecall()
 	return true
 }

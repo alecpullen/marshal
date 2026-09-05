@@ -45,6 +45,35 @@ func TestNewScopedProviderStartsAtPickModel(t *testing.T) {
 	}
 }
 
+// TestPickTemplatePinsNewCustomProviderOnTop verifies the template list
+// opens with a pinned "New custom provider…" row on top (so users don't
+// have to scroll to the buried catalog entry), that the catalog's plain
+// openai_compatible entry is not duplicated, and that picking the pinned
+// row enters the base-URL step.
+func TestPickTemplatePinsNewCustomProviderOnTop(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	items := m.picker.Items()
+	if len(items) == 0 || !items[0].Pinned {
+		t.Fatalf("first template item should be the pinned custom row: %+v", items[0])
+	}
+	if items[0].Value != "openai_compatible" {
+		t.Fatalf("pinned row Value = %q, want openai_compatible", items[0].Value)
+	}
+	count := 0
+	for _, it := range items {
+		if it.Value == "openai_compatible" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("openai_compatible should appear exactly once, got %d", count)
+	}
+	updated, _ := m.Update(pickerPicked("openai_compatible"))
+	if updated.step != stepBaseURL {
+		t.Fatalf("picking the pinned custom row should enter baseURL, got %v", updated.step)
+	}
+}
+
 func TestEscAtPickTemplateEmitsCancelled(t *testing.T) {
 	m := New(Opts{Cfg: config.Default()})
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 27})

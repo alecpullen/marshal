@@ -34,6 +34,10 @@ type Item struct {
 	Badge  string // optional tag; "●" prefix marks the current item
 	Group  string // optional group header (unfiltered view only)
 	Value  string // opaque result delivered in PickedMsg
+	// Pinned keeps the item at the top of the list regardless of filter
+	// score (group headers are suppressed for pinned rows). Use for
+	// "new X" affordances that must stay discoverable while filtering.
+	Pinned bool
 }
 
 // PickedMsg is emitted when the user selects an item.
@@ -110,11 +114,28 @@ func (m *Model) ErrMsg() string {
 }
 
 func (m *Model) refilter() {
-	hay := make([]string, len(m.items))
+	pinnedSet := make(map[int]bool)
+	var pinnedOrder []int
+	var rest []int
 	for i, it := range m.items {
+		if it.Pinned {
+			pinnedSet[i] = true
+			pinnedOrder = append(pinnedOrder, i)
+		} else {
+			rest = append(rest, i)
+		}
+	}
+	hay := make([]string, len(rest))
+	for i, idx := range rest {
+		it := m.items[idx]
 		hay[i] = it.Group + " " + it.Label + " " + it.Detail
 	}
-	m.matches = fuzzy.Rank(m.filter.Value(), hay)
+	rankedRest := fuzzy.Rank(m.filter.Value(), hay)
+	m.matches = make([]int, 0, len(pinnedOrder)+len(rankedRest)+1)
+	m.matches = append(m.matches, pinnedOrder...)
+	for _, r := range rankedRest {
+		m.matches = append(m.matches, rest[r])
+	}
 	if m.allowCustom && strings.TrimSpace(m.filter.Value()) != "" {
 		exact := false
 		for _, idx := range m.matches {
@@ -206,7 +227,7 @@ func (m *Model) View(maxW, maxH int) string {
 		} else {
 			it = m.items[idx]
 		}
-		if !filtering && it.Group != "" && it.Group != lastGroup {
+		if !filtering && !it.Pinned && it.Group != "" && it.Group != lastGroup {
 			rows = append(rows, groupStyle().Render(it.Group))
 			lastGroup = it.Group
 		}
@@ -216,7 +237,11 @@ func (m *Model) View(maxW, maxH int) string {
 			focusLine = len(rows)
 		}
 		if pos == m.cursor {
-			line := chrome.Row(marker, it.Label, it.Detail, it.Badge, inner)
+			label := it.Label
+			if it.Pinned {
+				label = groupStyle().Render(it.Label)
+			}
+			line := chrome.Row(marker, label, it.Detail, it.Badge, inner)
 			rows = append(rows, chrome.SelectionStyle().Width(inner).Render(line))
 			continue
 		}
@@ -232,7 +257,11 @@ func (m *Model) View(maxW, maxH int) string {
 			}
 			badge = bs.Render(it.Badge)
 		}
-		rows = append(rows, chrome.Row(marker, it.Label, detail, badge, inner))
+		label := it.Label
+		if it.Pinned {
+			label = groupStyle().Render(it.Label)
+		}
+		rows = append(rows, chrome.Row(marker, label, detail, badge, inner))
 	}
 	if len(m.matches) == 0 {
 		rows = append(rows, mutedStyle().Render("  no matches"))

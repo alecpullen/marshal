@@ -525,13 +525,14 @@ func normalizedPresets(presets map[string]routing.ModelPreset) map[string]routin
 	out := make(map[string]routing.ModelPreset, len(presets))
 	for name, p := range presets {
 		preset := routing.ModelPreset{
-			ContextWindow:   p.ContextWindow,
-			MaxOutputTokens: p.MaxOutputTokens,
-			ToolCalling:     p.ToolCalling,
-			LocalOnly:       p.LocalOnly,
-			Thinking:        p.Thinking,
-			Temperature:     p.Temperature,
-			Pricing:         p.Pricing,
+			ContextWindow:    p.ContextWindow,
+			MaxOutputTokens:  p.MaxOutputTokens,
+			ToolCalling:      p.ToolCalling,
+			LocalOnly:        p.LocalOnly,
+			Thinking:         p.Thinking,
+			Temperature:      p.Temperature,
+			Pricing:          p.Pricing,
+			VerificationGate: p.VerificationGate,
 		}
 		preset.Name = name
 		preset.Provider, preset.Model, _ = strings.Cut(name, "/")

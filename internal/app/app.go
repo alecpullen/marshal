@@ -1114,6 +1114,10 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		}
 		r.PlanFirst = s.cfg.Agent.PlanFirst
 	}
+	// Global verification-gate fallback: pipeline/swarm role runners get the
+	// same [agent] verification_gate default as the parent runner; a preset
+	// override still wins per-route (Runner.verificationGateOn).
+	r.VerificationGate = s.cfg.Agent.VerificationGateEnabled()
 	r.Pricing = pricing.Lookup(route.Preset, s.state.Logger()) // closes role-runner pricing gap
 	// AI-03: per-runner rollover for pipeline (child-session) runners only.
 	// Each child gets a minted session ID with its own agent_sessions row
@@ -1336,6 +1340,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 			childRunner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
 		}
+		childRunner.VerificationGate = cfg.Agent.VerificationGateEnabled()
 		childRunner.SetForceClass("question")
 		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(context.Background()))
 		childRunner.NativeTools = decoding.Native
@@ -1667,6 +1672,10 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		child.MaxToolIterations = iters
 		child.TemperatureOverride = tempOverride
 		child.ThinkingOverride = thinkOverride
+		// Global verification-gate fallback, matching the parent runner's
+		// wiring; a preset override still wins per-route via the child's
+		// RouteResolver (Runner.verificationGateOn).
+		child.VerificationGate = cfg.Agent.VerificationGateEnabled()
 		child.NativeTools = decoding.Native
 		child.ResponseFormat = decoding.ResponseFormat
 		// Set a route resolver so the child's RunTask can derive the

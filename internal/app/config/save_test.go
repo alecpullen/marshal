@@ -334,6 +334,44 @@ func TestSaveProjectConfigRoundTripsParseRepairFeedback(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsVerificationGate(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	// true persists (the load default is nil/off).
+	cfg := Default()
+	cfg.Profile.Default = ""
+	cfg.AgentProfiles = nil
+	cfg.Agent.VerificationGate = strutil.Ptr(true)
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Agent.VerificationGate == nil || !*loaded.Agent.VerificationGate {
+		t.Fatalf("Agent.VerificationGate = %v, want pointer to true (persisted)", loaded.Agent.VerificationGate)
+	}
+
+	// Explicit false persists too (tri-state: false != absent).
+	cfg2 := Default()
+	cfg2.Profile.Default = ""
+	cfg2.AgentProfiles = nil
+	cfg2.Agent.VerificationGate = strutil.Ptr(false)
+	if err := SaveProjectConfig(path, cfg2, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig (false) failed: %v", err)
+	}
+	loaded2, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load (false) failed: %v", err)
+	}
+	if loaded2.Agent.VerificationGate == nil || *loaded2.Agent.VerificationGate {
+		t.Fatalf("Agent.VerificationGate = %v, want pointer to false (persisted)", loaded2.Agent.VerificationGate)
+	}
+}
+
 func TestRemoteLimitDiscoveryConfigurable(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")
@@ -1023,6 +1061,44 @@ func TestPresetThinkingRoundTrip(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte("thinking")) {
 		t.Fatalf("saved TOML contains thinking for empty value:\n%s", raw)
+	}
+}
+
+func TestPresetVerificationGateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	// [models.presets] is user-global only, so the round trip goes through
+	// the user config writer.
+	path := UserConfigPath(dir)
+	gate := true
+	cfg := Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "ollama", Model: "qwen3", VerificationGate: &gate},
+	}
+	if err := SaveUserConfigPresets(path, cfg.Models.Presets); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := loaded.Models.Presets["ollama/qwen3"].VerificationGate; got == nil || !*got {
+		t.Fatalf("preset verification_gate = %v, want pointer to true (persisted)", got)
+	}
+
+	// Nil must be omitted from the saved TOML (omitempty) so the global
+	// fallback applies after a save of an override-free preset.
+	p := cfg.Models.Presets["ollama/qwen3"]
+	p.VerificationGate = nil
+	cfg.Models.Presets["ollama/qwen3"] = p
+	if err := SaveUserConfigPresets(path, cfg.Models.Presets); err != nil {
+		t.Fatalf("save (nil): %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if bytes.Contains(raw, []byte("verification_gate")) {
+		t.Fatalf("saved TOML contains verification_gate for nil value:\n%s", raw)
 	}
 }
 

@@ -1,6 +1,6 @@
 [profile]
-default = 'stress'
-active_preset = 'ollama-cloud/glm-5.3-flash'
+default = 'single'
+active_preset = 'kimi.ai/k3-256k'
 
 [agent]
 max_tool_iterations = 100

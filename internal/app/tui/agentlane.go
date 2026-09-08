@@ -39,13 +39,16 @@ func (m Model) renderActivityLane() string {
 	if plan.nJobs > 0 {
 		parts = append(parts, laneItem(plan.nJobs, "job", "jobs"))
 	}
+	if plan.nWatches > 0 {
+		parts = append(parts, laneItem(plan.nWatches, "watch", "watches"))
+	}
 	caption := strings.Join(parts, dimSeparator)
 	// Built at width-1: chromeRailWidth below truncates every line to
 	// width-1 and then prefixes the one-cell rail, so a header built at
 	// the full width loses its last cell to an ellipsis.
 	header := chrome.Header(caption, "", max(width-1, 1))
 
-	rows := make([]string, 0, len(plan.agents)+len(plan.jobTexts)+1)
+	rows := make([]string, 0, len(plan.agents)+len(plan.jobTexts)+len(plan.watchTexts)+1)
 	for _, v := range plan.agents {
 		label := fmt.Sprintf("#%d  %s", v.ID, v.Label)
 		if v.Model != "" {
@@ -59,6 +62,7 @@ func (m Model) renderActivityLane() string {
 			dimStyle().Render(strutil.Truncate(line, max(width-4, 1), true)))
 	}
 	rows = append(rows, plan.jobTexts...)
+	rows = append(rows, plan.watchTexts...)
 	if plan.overflow > 0 {
 		rows = append(rows, dimStyle().Render(fmt.Sprintf("… %d more", plan.overflow)))
 	}
@@ -87,7 +91,7 @@ func (m Model) laneRows() int {
 	if plan.total == 0 {
 		return 0
 	}
-	rows := 2 + len(plan.agents) + len(plan.jobTexts)
+	rows := 2 + len(plan.agents) + len(plan.jobTexts) + len(plan.watchTexts)
 	if plan.overflow > 0 {
 		rows++
 	}

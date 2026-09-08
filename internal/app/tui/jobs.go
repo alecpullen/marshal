@@ -2,6 +2,7 @@ package tui
 
 import (
 	"marshal/internal/tools/native"
+	"marshal/internal/watch"
 )
 
 // runningJobs returns the currently running background jobs in the order
@@ -16,4 +17,14 @@ func (m Model) runningJobs() []native.JobInfo {
 		}
 	}
 	return running
+}
+
+// runningWatches returns the watches in the order the lane renders them.
+// Watches in the watching state are shown; terminal states (fired/stopped/
+// error) are kept so the lane can show the last known state. The manager
+// never publishes a removal event, so terminal rows persist for the session
+// (the lane keeps showing the last known state rather than dropping the
+// row).
+func (m Model) runningWatches() []watch.Event {
+	return m.watches
 }

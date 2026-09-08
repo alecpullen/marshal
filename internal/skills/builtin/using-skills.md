@@ -20,8 +20,12 @@ task but is never loaded might as well not exist.
 
 ## Known chains
 
-- New feature or behaviour change: brainstorming → marshal-writing-plans →
-  marshal-executing-plans.
+- New feature or behaviour change: brainstorming (interrogate → design
+  sections → spec at `docs/specs/` → user review) → marshal-writing-plans
+  (consumes the approved spec, plan at `docs/plans/` with verbatim code for
+  mechanical edits and prose + verified anchors for judgment edits, then
+  self-reviews and waits for user approval) → marshal-executing-plans
+  (executes the approved plan task-by-task, applying embedded code verbatim).
 - Anything misbehaving: systematic-debugging before any fix, even for
   open-ended investigations with no fix requested.
 - Code changes: test-driven-development, then verification-before-completion

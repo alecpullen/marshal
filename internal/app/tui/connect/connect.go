@@ -350,8 +350,19 @@ func (m *Model) enterPickTemplate() {
 	m.footer = "[↑↓] move [↵] pick [Esc] cancel"
 	m.err = ""
 	all := provider.All()
-	items := make([]picker.Item, 0, len(all))
+	items := make([]picker.Item, 0, len(all)+1)
+	items = append(items, picker.Item{
+		Label:  "New custom provider…",
+		Detail: "OpenAI-compatible endpoint",
+		Value:  "openai_compatible",
+		Pinned: true,
+	})
 	for _, tpl := range all {
+		// The "New custom provider…" row above replaces the catalog's
+		// openai_compatible entry; keep both out of the scrollable list.
+		if tpl.ID == "openai_compatible" {
+			continue
+		}
 		items = append(items, picker.Item{
 			Label:  tpl.Label,
 			Detail: tpl.BaseURL,
@@ -695,7 +706,7 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		return m, nil
 	}
 	m.template = tpl
-	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling, Template: tpl.ID}
+	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling, StructuredOutput: tpl.StructuredOutput, Template: tpl.ID}
 	if tpl.BaseURL == "" {
 		enterBaseURLStep(m)
 		return m, nil

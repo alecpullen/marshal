@@ -321,6 +321,15 @@ type State struct {
 	// child's report. The runner drains it at loop-top alongside steering.
 	subagentReports []string
 
+	// watchReports is the machine-generated completion queue for
+	// background watch children. It is deliberately separate from the
+	// human steering queue: ClearSteering (turn-cancel, Ctrl+X) and
+	// PopSteering (blank-Enter follow-up) must never drop a background
+	// child's report. The runner drains it at loop-top alongside steering.
+	// Entries are coalesced by watch ID (see watch_reports.go) so a watch
+	// that fires repeatedly while idle folds into one pending entry.
+	watchReports []watchReportEntry
+
 	// F21: session event surface. Publishes message, streaming/thinking,
 	// activity, tool lifecycle, audit, approval, and question events to
 	// external subscribers (e.g. the ACP transport in a later task).
@@ -1013,17 +1022,30 @@ func (s *State) SetSubagentConcurrency(n int) {
 func (s *State) Shutdown() {
 	// M-5: cancel all running subagents before cancelling the session
 	// context so their completion goroutines exit promptly and don't
-	// push reports into the old session's garbage queue. Also clear the
-	// report queue so any late reports are discarded rather than ending
-	// up in a transcript nobody drains.
+	// push reports into the old session's garbage queue.
 	s.mu.Lock()
 	for _, v := range s.subagents {
 		if v.Status == SubagentRunning && v.Cancel != nil {
 			v.Cancel()
 		}
 	}
+	// Drain the watch report queue so any still-pending reports are
+	// persisted as RoleUser messages before the session ends, rather than
+	// being lost at process exit. This restores restart durability for
+	// reports that never reached a loop-top drain or turn-end residual
+	// handling. The DB is still open at Shutdown (Quiesce keeps it open
+	// for downstream consumers), so AddMessage can persist safely. The
+	// subagent report queue is cleared without persisting because subagent
+	// reports are already persisted at push time.
+	residuals := s.watchReports
+	s.watchReports = nil
 	s.subagentReports = nil
 	s.mu.Unlock()
+
+	for _, e := range residuals {
+		s.AddMessage(RoleUser, e.text, ContentTypeWatchReport)
+	}
+
 	s.cancel()
 }
 

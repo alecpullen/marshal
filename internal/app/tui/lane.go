@@ -72,22 +72,26 @@ const (
 // lanePlan is the consolidated lane's rendered content, computed once so
 // the renderer and laneRows cannot disagree (M-2 pattern, agentlane.go:115).
 // agents are the visible running subagents in click order; jobTexts are the
-// rendered job rows aligned 1:1 with the shown jobs; overflow counts the
-// running agents+jobs not shown; total is the running count of both. nAgents
-// and nJobs are the full running counts (including overflow) for the caption.
+// rendered job rows aligned 1:1 with the shown jobs; watchTexts are the
+// rendered watch rows aligned 1:1 with the shown watches; overflow counts
+// the running agents+jobs+watches not shown; total is the running count of
+// all three. nAgents, nJobs, and nWatches are the full counts (including
+// overflow) for the caption.
 type lanePlan struct {
-	agents   []session.SubagentView // visible, click-order
-	jobTexts []string               // rendered job rows, aligned 1:1 with shown jobs
-	overflow int                    // running agents+jobs not shown
-	total    int
-	nAgents  int // full running agent count (for the caption)
-	nJobs    int // full running job count (for the caption)
+	agents     []session.SubagentView // visible, click-order
+	jobTexts   []string               // rendered job rows, aligned 1:1 with shown jobs
+	watchTexts []string               // rendered watch rows, aligned 1:1 with shown watches
+	overflow   int                    // running agents+jobs+watches not shown
+	total      int
+	nAgents    int // full running agent count (for the caption)
+	nJobs      int // full running job count (for the caption)
+	nWatches   int // full watch count (for the caption)
 }
 
 // lanePlan computes the consolidated lane's content. Agents come first
-// (they are click-drillable; jobs are ambient), then jobs fill the remaining
-// shown slots from runningJobs(). When total exceeds laneMaxItems, one slot
-// is surrendered to the shared overflow row.
+// (they are click-drillable; jobs are ambient), then jobs, then watches fill
+// the remaining shown slots. When total exceeds laneMaxItems, one slot is
+// surrendered to the shared overflow row.
 func (m Model) lanePlan() lanePlan {
 	var agents []session.SubagentView
 	for _, v := range m.state.Subagents() {
@@ -96,7 +100,8 @@ func (m Model) lanePlan() lanePlan {
 		}
 	}
 	jobs := m.runningJobs()
-	total := len(agents) + len(jobs)
+	watches := m.runningWatches()
+	total := len(agents) + len(jobs) + len(watches)
 	if total == 0 {
 		return lanePlan{}
 	}
@@ -106,7 +111,7 @@ func (m Model) lanePlan() lanePlan {
 		shown = laneMaxItems - 1
 		overflow = total - shown
 	}
-	// Agents take priority; jobs fill the remaining shown slots.
+	// Agents take priority; jobs then watches fill the remaining shown slots.
 	nAgents := min(len(agents), shown)
 	visibleAgents := agents[:nAgents]
 	remaining := shown - nAgents
@@ -121,12 +126,24 @@ func (m Model) lanePlan() lanePlan {
 			formatElapsed(max(time.Since(j.StartedAt), 0)))
 		jobTexts = append(jobTexts, dimStyle().Render(glyph.Job+" "+line))
 	}
+	remaining -= len(jobTexts)
+	var watchTexts []string
+	for i := 0; i < remaining && i < len(watches); i++ {
+		w := watches[i]
+		line := fmt.Sprintf("%s  %s  %s",
+			w.Name,
+			w.Kind,
+			w.State)
+		watchTexts = append(watchTexts, dimStyle().Render(glyph.Watch+" "+line))
+	}
 	return lanePlan{
-		agents:   visibleAgents,
-		jobTexts: jobTexts,
-		overflow: overflow,
-		total:    total,
-		nAgents:  len(agents),
-		nJobs:    len(jobs),
+		agents:     visibleAgents,
+		jobTexts:   jobTexts,
+		watchTexts: watchTexts,
+		overflow:   overflow,
+		total:      total,
+		nAgents:    len(agents),
+		nJobs:      len(jobs),
+		nWatches:   len(watches),
 	}
 }

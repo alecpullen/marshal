@@ -6,6 +6,7 @@ import (
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
+	"marshal/internal/watch"
 )
 
 // pumpJobEvents reads from the model's persistent job subscription and returns a tea.Cmd that
@@ -22,6 +23,24 @@ func pumpJobEvents(ch <-chan pubsub.Event[native.JobEvent]) tea.Cmd {
 			return nil // broker closed / ctx cancelled → pump stops
 		}
 		return jobCountMsg{count: ev.Payload.Count, jobs: ev.Payload.Jobs}
+	}
+}
+
+// pumpWatchEvents reads from the model's persistent watch subscription and
+// returns a tea.Cmd that blocks until the next watch.Event arrives (or ctx
+// is cancelled), then returns a watchMsg. The model calls this repeatedly
+// from Update to keep the pump alive without creating a new broker
+// subscription per event.
+func pumpWatchEvents(ch <-chan pubsub.Event[watch.Event]) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil // broker closed / ctx cancelled → pump stops
+		}
+		return watchMsg{event: ev.Payload}
 	}
 }
 

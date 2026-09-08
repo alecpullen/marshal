@@ -188,6 +188,50 @@ func TestViewHonorsMaxHeight(t *testing.T) {
 	}
 }
 
+// TestPinnedItemStaysFirstWhileFiltering verifies a pinned item is always
+// the first match regardless of filter text, so "new X" affordances stay
+// discoverable while the user types.
+func TestPinnedItemStaysFirstWhileFiltering(t *testing.T) {
+	items := []Item{
+		{Label: "New custom provider…", Detail: "OpenAI-compatible endpoint", Value: "new-custom", Pinned: true},
+		{Label: "Ollama", Value: "ollama"},
+		{Label: "OpenAI", Value: "openai"},
+	}
+	m := New("Pick", "", items)
+	if got := m.items[m.matches[0]].Value; got != "new-custom" {
+		t.Fatalf("pinned item should be first unfiltered, got %q", got)
+	}
+	// Filter matches the pinned label: it stays first and is not duplicated.
+	for _, r := range "custom" {
+		m.Update(key(r))
+	}
+	count := 0
+	for pos, idx := range m.matches {
+		if m.items[idx].Value == "new-custom" {
+			count++
+			if pos != 0 {
+				t.Fatalf("pinned item should stay at top while filtering, at pos %d", pos)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("pinned item must appear exactly once, got %d", count)
+	}
+	// Filter that excludes the pinned label: it still stays on top.
+	m2 := New("Pick", "", items)
+	for _, r := range "openai" {
+		m2.Update(key(r))
+	}
+	if got := m2.items[m2.matches[0]].Value; got != "new-custom" {
+		t.Fatalf("pinned item should stay first even when the filter excludes it, got %q", got)
+	}
+	// Enter picks the pinned row.
+	cmd := m2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if picked, ok := cmd().(PickedMsg); !ok || picked.Value != "new-custom" {
+		t.Fatalf("enter should pick the pinned row, got %#v", cmd())
+	}
+}
+
 func TestAllowCustomDisabledNoSentinel(t *testing.T) {
 	items := []Item{{Label: "Ollama", Value: "ollama"}}
 	m := New("Pick", "", items)

@@ -50,6 +50,16 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 	// reasoning_effort/budget_tokens control; report no reasoning capability
 	// so the thinking preset field is not sent on the wire.
 	caps.Reasoning = false
+	// Structured output (format / response_format) is NOT advertised by
+	// default: ollama.com cloud silently ignores format and format:"json"
+	// (verified 2026-09-03), and /api/show offers no way to tell an
+	// enforcing endpoint from a non-enforcing one. Envelope-mode sessions
+	// built on a silently-ignored format constraint degrade to freeform
+	// text and fail action parsing. Endpoints proven to enforce format
+	// (a local Ollama server) opt in via [providers.<name>]
+	// structured_output = true, or by passing explicit Capabilities.
+	caps.JSONMode = false
+	caps.StructuredOutput = false
 	if opts.Capabilities != nil {
 		caps = *opts.Capabilities
 	}

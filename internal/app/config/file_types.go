@@ -51,6 +51,7 @@ type fileAgent struct {
 	ApprovalMode             *string `toml:"approval_mode"`
 	HistoryBudgetTokens      *int    `toml:"history_budget_tokens"`
 	ParseRepairFeedback      *bool   `toml:"parse_repair_feedback"`
+	VerificationGate         *bool   `toml:"verification_gate"`
 	MaxTouchedFileBytes      *int    `toml:"max_touched_file_bytes"`
 	ThinkingBudgetMargin     *int    `toml:"thinking_budget_margin"`
 	MaxConcurrentSubagents   *int    `toml:"max_concurrent_subagents"`

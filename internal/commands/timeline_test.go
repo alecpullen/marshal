@@ -109,6 +109,21 @@ func TestBuildTimelineIgnoresSubagentReports(t *testing.T) {
 	}
 }
 
+// Watch reports are stored under RoleUser for history replay but are not
+// user turns; they must not become timeline stations (mirrors the subagent
+// report behavior).
+func TestBuildTimelineIgnoresWatchReports(t *testing.T) {
+	msgs := []session.Message{
+		userMsg(1, 1, "real turn"),
+		{ID: 2, Role: session.RoleUser, Content: "[watch build fired]",
+			ContentType: session.ContentTypeWatchReport, CreatedAt: tAt(2)},
+	}
+	got := BuildTimeline(msgs, nil, 2)
+	if len(got) != 1 {
+		t.Fatalf("a watch report is not a user turn, got %+v", got)
+	}
+}
+
 func TestTimelineDocHasARowPerTurn(t *testing.T) {
 	state := newTestState()
 	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)

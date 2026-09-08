@@ -29,6 +29,24 @@ func newTestOllama(t *testing.T, baseURL string) *OllamaNative {
 	return p
 }
 
+// TestNewOllamaNativeDefaultsDisclaimStructuredOutput pins the capability
+// honesty contract: without an explicit capability override, the native
+// backend must not claim JSONMode/StructuredOutput. ollama.com cloud
+// silently ignores both format constraints (verified 2026-09-03: schema
+// format and format:"json" both came back as freeform markdown), and
+// /api/show offers no signal that distinguishes enforcing endpoints, so
+// the backend may not advertise structured output it cannot verify.
+func TestNewOllamaNativeDefaultsDisclaimStructuredOutput(t *testing.T) {
+	p, err := NewOllamaNative(Options{Name: "test-ollama", BaseURL: "http://localhost:11434"})
+	if err != nil {
+		t.Fatalf("NewOllamaNative: %v", err)
+	}
+	caps := p.Capabilities(t.Context())
+	if caps.JSONMode || caps.StructuredOutput {
+		t.Fatalf("JSONMode=%v StructuredOutput=%v, want both false: native backend must not claim format enforcement it cannot verify", caps.JSONMode, caps.StructuredOutput)
+	}
+}
+
 func TestOllamaChatRequestBody(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

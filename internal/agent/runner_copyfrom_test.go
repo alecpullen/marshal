@@ -49,6 +49,24 @@ func TestCopyFromRefreshesHooks(t *testing.T) {
 	}
 }
 
+// TestCopyFromTransfersVerificationGate guards the reload path for the
+// verification-gate fallback: app.reloadAgentRuntime rebuilds the runner and
+// mutates the live one in place via CopyFrom, so the global gate flag must
+// transfer, and a gate-off source must clear a stale on-value.
+func TestCopyFromTransfersVerificationGate(t *testing.T) {
+	target := &Runner{}
+	target.CopyFrom(&Runner{VerificationGate: true})
+	if !target.VerificationGate {
+		t.Fatal("CopyFrom did not transfer VerificationGate")
+	}
+
+	target2 := &Runner{VerificationGate: true}
+	target2.CopyFrom(&Runner{})
+	if target2.VerificationGate {
+		t.Fatal("CopyFrom preserved a stale VerificationGate when source had false")
+	}
+}
+
 type fakeTitleGenerator struct{}
 
 func (fakeTitleGenerator) Generate(context.Context, string) {}

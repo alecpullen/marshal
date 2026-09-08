@@ -46,6 +46,9 @@ func merge(cfg *Config, file configFile) error {
 		if file.Agent.ParseRepairFeedback != nil {
 			cfg.Agent.ParseRepairFeedback = file.Agent.ParseRepairFeedback
 		}
+		if file.Agent.VerificationGate != nil {
+			cfg.Agent.VerificationGate = file.Agent.VerificationGate
+		}
 		set(&cfg.Agent.MaxTouchedFileBytes, file.Agent.MaxTouchedFileBytes)
 		set(&cfg.Agent.ThinkingBudgetMargin, file.Agent.ThinkingBudgetMargin)
 		set(&cfg.Agent.MaxConcurrentSubagents, file.Agent.MaxConcurrentSubagents)

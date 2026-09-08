@@ -137,6 +137,21 @@ type WriteGate interface {
 	Acquire() (release func())
 }
 
+// WatchTransferrer re-parents a subagent's once watches to the parent and
+// stops its repeat watches when the subagent ends. It is a small interface
+// so the runner can reach the watch manager without importing internal/watch
+// directly. The real reason for the leaf watchctx package (and this
+// interface) is a TEST-only cycle: internal/tools/native's test package
+// imports internal/agent, and internal/watch imports internal/tools/native,
+// so internal/agent importing internal/watch would pull the agent package
+// into the native test build and create a cycle. app.go wires the concrete
+// manager.
+type WatchTransferrer interface {
+	// TransferFromSubagent re-parents the owner's once watches to the
+	// parent (owner "") and stops its repeat watches.
+	TransferFromSubagent(owner string)
+}
+
 // HookRunner executes user-configured pre_tool_use and turn_end lifecycle
 // hooks. The interface is declared package-local so unit tests can supply a
 // fake without depending on internal/hooks. A nil HookRunner on a Runner
@@ -251,6 +266,13 @@ type Runner struct {
 	// the tokens back. Set from agent.parse_repair_feedback = false.
 	SuppressParseRepairFeedback bool
 
+	// VerificationGate is the global fallback for the verification nudge
+	// (agent.verification_gate). A per-preset verification_gate overrides
+	// it per turn; the per-turn effective value is computed after
+	// resolveRoute and consulted at the two gate sites. Default false:
+	// the gate is opt-in.
+	VerificationGate bool
+
 	// LimitsTable is the merged OpenRouter/LiteLLM limit table used to
 	// resolve a preset's context window and max output when the preset does
 	// not state them. Nil means "not loaded" — resolution degrades to the
@@ -280,6 +302,12 @@ type Runner struct {
 	// WriteGate serialises non-read-only tool execution. When nil, no
 	// serialisation is performed (default single-agent behaviour).
 	WriteGate WriteGate
+
+	// WatchTransferrer, when set, is invoked when a subagent finishes or is
+	// killed so its once watches re-parent to the parent and its repeat
+	// watches stop. Wired in app.go to the watch manager. Nil disables
+	// ownership transfer (tests, or no watch manager).
+	WatchTransferrer WatchTransferrer
 
 	// CacheInvalidator, when non-nil, runs after every non-read-only tool
 	// completes, in addition to clearing this runner's own session tool
@@ -532,6 +560,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.LimitsTable = other.LimitsTable
 	r.Role = other.Role
 	r.WriteGate = other.WriteGate
+	r.WatchTransferrer = other.WatchTransferrer
 	r.UsageObserver = other.UsageObserver
 	r.CalibrationObserver = other.CalibrationObserver
 	r.MetricsObserver = other.MetricsObserver
@@ -540,6 +569,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.DigestModel = other.DigestModel
 	r.Pricing = other.Pricing
 	r.SystemPromptAddendum = other.SystemPromptAddendum
+	r.VerificationGate = other.VerificationGate
 
 	// Refresh session-scoped hooks from the rebuilt runner so a config
 	// reload picks up routing/role changes. CopyFrom is the only path that
@@ -627,6 +657,22 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// Discarding the queue here is safe because the persisted message is
 	// the durable copy.
 	defer r.State.ClearSubagentReports()
+	// The same reasoning applies to the watch report queue: a watch that
+	// fires after the final loop-top drain pushes its report to the queue.
+	// Without clearing, the next turn would deliver it again (the queue is
+	// drained at every loop-top). Unlike subagent reports (which persist at
+	// push), a watch report's durable copy is written at drain time, so a
+	// report discarded here would also be lost from the persisted
+	// transcript. Instead of discarding, drain-and-persist the residuals:
+	// each still-pending watch becomes one RoleUser watch_report message,
+	// exactly as it would have been at the next drain. This keeps the
+	// persisted copy bounded at one message per watch per drain/clear while
+	// preserving late fires as replayable messages (see watch_reports.go).
+	defer func() {
+		for _, msg := range r.State.DrainWatchReports() {
+			r.State.AddMessage(session.RoleUser, msg, session.ContentTypeWatchReport)
+		}
+	}()
 
 	priorTranscript := r.State.Messages()
 	firstTurn := len(priorTranscript) <= 1
@@ -879,6 +925,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
 	verificationNudgeSent := false
+	gateOn := r.verificationGateOn(route)
 	budget := newTurnBudget(r.effectiveMaxToolIterations(route), task.Class, len(task.Plan))
 	r.turnBudget = budget
 	defer func() { r.turnBudget = nil }()
@@ -937,7 +984,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// Envelope the wire content so the model can tell a mid-turn
 			// steering message apart from a fresh user goal. extractPinnedFiles
 			// still runs on the RAW msg above so @file pins keep working.
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "[user steering, mid-turn]: " + msg})
+			// The enveloped form is ALSO what gets persisted (RoleUser,
+			// ContentTypeSteering) so restart replay via buildHistoryMessages
+			// matches the live wire byte-for-byte — before this, drained
+			// steering lived only in the in-memory slice and vanished from
+			// the transcript.
+			enveloped := "[user steering, mid-turn]: " + msg
+			r.State.AddMessage(session.RoleUser, enveloped, session.ContentTypeSteering)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: enveloped})
 			steeringArrived = true
 		}
 		// Drain background subagent completion reports alongside steering.
@@ -947,6 +1001,23 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// at the next loop-top. They live in a separate queue so a
 		// turn-cancel (ClearSteering) cannot drop them.
 		for _, msg := range r.State.DrainSubagentReports() {
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+		}
+		// Drain background watch completion reports alongside subagent
+		// reports. These are machine-generated (never user-typed), so they
+		// do not count as a user intervention for the doom-loop guard, but
+		// they must reach the model wire the same way: injected as user
+		// messages at the next loop-top. They live in a separate queue so a
+		// turn-cancel (ClearSteering) cannot drop them. The strings are
+		// already fully formatted by the push site (watch.Format). Each
+		// drained report is also persisted as a RoleUser message here — the
+		// durable copy that buildHistoryMessages replays across restart.
+		// Persisting at drain time (not at push) is what bounds the
+		// persisted transcript: a watch that fires repeatedly while idle
+		// coalesces into one pending entry, so one drain persists one
+		// message per watch.
+		for _, msg := range r.State.DrainWatchReports() {
+			r.State.AddMessage(session.RoleUser, msg, session.ContentTypeWatchReport)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 		}
 		if len(steeringPins) > 0 {
@@ -1109,8 +1180,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				}
 				// Verification gate: a turn that changed something should have
 				// verified those changes before finishing. One nudge per turn;
-				// a repeat final is accepted normally below.
-				lastMutation, needsVerification := r.unverifiedMutation()
+				// a repeat final is accepted normally below. Opt-in: skipped
+				// entirely unless enabled globally or for this preset.
+				needsVerification := false
+				var lastMutation callEntry
+				if gateOn {
+					lastMutation, needsVerification = r.unverifiedMutation()
+				}
 				if needsVerification && !verificationNudgeSent {
 					verificationNudgeSent = true
 					budget.overhead++
@@ -1350,8 +1426,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
 				continue
 			}
-			// Verification gate, same rule as the native path.
-			lastMutation, needsVerification := r.unverifiedMutation()
+			// Verification gate, same rule as the native path. Opt-in: skipped
+			// entirely unless enabled globally or for this preset.
+			needsVerification := false
+			var lastMutation callEntry
+			if gateOn {
+				lastMutation, needsVerification = r.unverifiedMutation()
+			}
 			if needsVerification && !verificationNudgeSent {
 				verificationNudgeSent = true
 				budget.overhead++
@@ -1671,4 +1752,14 @@ func (r *Runner) unverifiedMutation() (callEntry, bool) {
 	r.trackerMu.Lock()
 	defer r.trackerMu.Unlock()
 	return r.tracker.unverifiedMutation()
+}
+
+// verificationGateOn resolves the per-turn gate toggle: an explicit
+// per-preset verification_gate wins; otherwise the global
+// agent.verification_gate fallback applies. Default off.
+func (r *Runner) verificationGateOn(route routing.Route) bool {
+	if route.Preset.VerificationGate != nil {
+		return *route.Preset.VerificationGate
+	}
+	return r.VerificationGate
 }

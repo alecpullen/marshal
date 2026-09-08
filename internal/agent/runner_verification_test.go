@@ -9,6 +9,7 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -77,6 +78,7 @@ func TestNativeFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.NativeTools = true
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
 	if err != nil {
@@ -110,6 +112,7 @@ func TestNativeFinalAfterVerifiedPatchIsClean(t *testing.T) {
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.NativeTools = true
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
 	if err != nil {
@@ -139,6 +142,7 @@ func TestNativeReadOnlyTurnIsClean(t *testing.T) {
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.NativeTools = true
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
 	if err != nil {
@@ -162,6 +166,7 @@ func TestJSONFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
 	}
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
 	if err != nil {
@@ -199,6 +204,7 @@ func TestNativeSecondMutationAfterNudgeStaysCapped(t *testing.T) {
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.NativeTools = true
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
 	if err != nil {
@@ -228,6 +234,7 @@ func TestJSONEditTaskRequiresToolCallBeforeCompletion(t *testing.T) {
 	}
 	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
 	if err != nil {
@@ -267,6 +274,7 @@ func TestNativeVerificationThenCommitIsClean(t *testing.T) {
 	r := NewRunner(p, reg, gatePolicy(), state, "test-model")
 	r.NativeTools = true
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix, test, and commit")
 	if err != nil {
@@ -304,6 +312,7 @@ func TestNativeMutatingShellRunTriggersNudge(t *testing.T) {
 	r := NewRunner(p, reg, gatePolicy(), state, "test-model")
 	r.NativeTools = true
 	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true
 
 	task, err := r.RunTask(context.Background(), "fix the file with sed")
 	if err != nil {
@@ -317,5 +326,101 @@ func TestNativeMutatingShellRunTriggersNudge(t *testing.T) {
 	}
 	if !transcriptContains(state, "have not verified") {
 		t.Fatal("sed -i via shell.run must trigger the verification nudge at runner level")
+	}
+}
+
+// Default-off: an unverified mutation followed by a final answer is
+// accepted immediately with no nudge when the gate is not enabled.
+func TestNativeFinalAfterUnverifiedPatchAcceptedSilentlyWhenGateOff(t *testing.T) {
+	state := newTestState(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"patched", "Done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"File: a.go\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"}`)}},
+			nil, // final: accepted immediately — no nudge
+		},
+	}
+	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+	// No r.VerificationGate = true: default must be off.
+
+	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if p.Calls != 2 {
+		t.Fatalf("Calls = %d, want 2 (patch, accept) — a nudge would add a third", p.Calls)
+	}
+	if task.Summary != "Done." {
+		t.Fatalf("Summary = %q, want the second response", task.Summary)
+	}
+	if transcriptContains(state, "have not verified") {
+		t.Fatal("no verification-nudge message expected when the gate is off")
+	}
+}
+
+// Per-preset override: an explicit verification_gate on the resolved
+// preset enables the nudge even when the global fallback is off.
+func TestPresetVerificationGateEnablesNudge(t *testing.T) {
+	state := newTestState(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"patched", "Done.", "Still done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"p"}`)}},
+			nil,
+			nil,
+		},
+	}
+	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+	gate := true
+	r.RouteResolver = &staticResolver{
+		route: routing.Route{Preset: routing.ModelPreset{VerificationGate: &gate}},
+	}
+
+	task, err := r.RunTask(context.Background(), "fix the bug in a.go")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if p.Calls != 3 {
+		t.Fatalf("Calls = %d, want 3 (patch, nudge, accept)", p.Calls)
+	}
+	if !transcriptContains(state, "have not verified") {
+		t.Fatal("expected a verification-nudge message when the preset enables the gate")
+	}
+	if task.Summary != "Still done." {
+		t.Fatalf("Summary = %q, want the third response", task.Summary)
+	}
+}
+
+// Per-preset explicit false beats a globally-enabled gate.
+func TestPresetVerificationGateFalseOverridesGlobal(t *testing.T) {
+	state := newTestState(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"patched", "Done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"p"}`)}},
+			nil,
+		},
+	}
+	r := NewRunner(p, regPatchAndTest(t), gatePolicy(), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+	r.VerificationGate = true // global on…
+	gate := false
+	r.RouteResolver = &staticResolver{
+		route: routing.Route{Preset: routing.ModelPreset{VerificationGate: &gate}},
+	}
+
+	if _, err := r.RunTask(context.Background(), "fix the bug in a.go"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if p.Calls != 2 {
+		t.Fatalf("Calls = %d, want 2 — preset false must silence the nudge", p.Calls)
+	}
+	if transcriptContains(state, "have not verified") {
+		t.Fatal("preset verification_gate=false must override the global gate")
 	}
 }

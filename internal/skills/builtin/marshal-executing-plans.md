@@ -28,3 +28,12 @@ conflict, follow this skill.
 
 Never commit failing work "to fix later". If a task cannot be verified,
 stop and report instead of committing.
+
+## Applying task content
+
+- Embedded code blocks in a task are applied **verbatim** — do not reformat,
+  reorder, or "improve" them.
+- Prose steps may be adapted to the actual file contents, but every anchor
+  (symbol name, file:line, distinctive string) must be re-verified before
+  editing; if an anchor no longer matches, stop and report rather than
+  guessing.

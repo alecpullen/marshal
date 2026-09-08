@@ -41,6 +41,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/watch"
 )
 
 type fakeTrustResolver struct {
@@ -647,6 +648,78 @@ reviewer = "mock/mock-model"
 	}
 	if !strings.Contains(result.Content, id) {
 		t.Fatalf("job.list output %q does not contain job id %q", result.Content, id)
+	}
+}
+
+func TestStartRuntimeOwnsWatchManager(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "wm-test"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+tool_calling = true
+
+[models.presets."mock/mock-model"]
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx := context.Background()
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.WatchManager == nil {
+		t.Fatal("Runtime.WatchManager is nil")
+	}
+
+	// Prove the manager works: register a file watch on a temp path.
+	watchPath := filepath.Join(tmp, "watch-target.txt")
+	if err := os.WriteFile(watchPath, []byte("initial"), 0644); err != nil {
+		t.Fatalf("write watch target: %v", err)
+	}
+	id, _, err := rt.WatchManager.Start(watch.Spec{
+		Name: "wm-test-watch",
+		Kind: watch.KindFile,
+		Path: watchPath,
+	})
+	if err != nil {
+		t.Fatalf("WatchManager.Start: %v", err)
+	}
+
+	// The watch.list tool must see the same watch (proving pointer identity
+	// between Runtime.WatchManager and the toolset's watch manager).
+	tool, ok := rt.ToolRegistry.Lookup("watch.list")
+	if !ok {
+		t.Fatal("watch.list not registered in ToolRegistry")
+	}
+	result, err := tool.Handler(ctx, registry.ToolCall{Args: json.RawMessage("{}")})
+	if err != nil {
+		t.Fatalf("watch.list handler: %v", err)
+	}
+	if !strings.Contains(result.Content, id) {
+		t.Fatalf("watch.list output %q does not contain watch id %q", result.Content, id)
 	}
 }
 
@@ -2770,6 +2843,88 @@ func TestBuildSubagentFactorySubtaskIterationsCap(t *testing.T) {
 	}
 	if child.MaxToolIterations != 99 {
 		t.Fatalf("MaxToolIterations = %d, want 99 (custom agent override)", child.MaxToolIterations)
+	}
+}
+
+// TestBuildSubagentFactoryVerificationGate pins the global fallback: with
+// [agent] verification_gate=true, every agent.run child inherits the gate so
+// subagents verify before finishing just like the parent runner. The default
+// must stay off.
+func TestBuildSubagentFactoryVerificationGate(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	gate := true
+	cfg.Agent.VerificationGate = &gate
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	factory, _ := buildSubagentFactory(cfg, state, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	child, _, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if !child.VerificationGate {
+		t.Fatal("child.VerificationGate = false, want true (global fallback)")
+	}
+
+	cfgDefault := config.Default()
+	cfgDefault.Privacy.RemoteProvidersAllowed = true
+	cfgDefault.Providers = cfg.Providers
+	cfgDefault.Models.Presets = cfg.Models.Presets
+	stateDefault := session.New(cfgDefault, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	factoryDefault, _ := buildSubagentFactory(cfgDefault, stateDefault, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	childDefault, _, err := factoryDefault(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory (default): %v", err)
+	}
+	if childDefault.VerificationGate {
+		t.Fatal("child.VerificationGate = true, want false by default")
+	}
+}
+
+// TestRoleRunnerVerificationGateFallback pins the same global fallback for
+// pipeline/swarm role runners built via roleRunnerSpec.newRunner.
+func TestRoleRunnerVerificationGateFallback(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleSDDImplementer: {Preset: "ollama/gpt-4o-mini"},
+		}},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+	}
+	gate := true
+	cfg.Agent.VerificationGate = &gate
+
+	resolver := newRoutedProviderResolver(cfg, "")
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	spec := roleRunnerSpec{
+		cfg:         cfg,
+		resolver:    resolver,
+		reg:         reg,
+		readOnlyReg: registry.ReadOnlyView(reg),
+		pol:         policy.NewEngine(&cfg, nil),
+		state:       session.New(cfg, t.TempDir(), time.Now(), session.Persistence{}),
+	}
+	runner, err := spec.newRunner(agent.RoleSDDImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	if !runner.VerificationGate {
+		t.Fatal("role runner VerificationGate = false, want true (global fallback)")
 	}
 }
 

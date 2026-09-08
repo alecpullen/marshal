@@ -70,6 +70,36 @@ func TestUpOnNonFirstLineDoesNotRecall(t *testing.T) {
 	}
 }
 
+func TestRecallPutsCursorAtStartOfEntry(t *testing.T) {
+	m := newHistoryTestModel(t, "newest", "older one\nolder two\nolder three")
+	m, handled := pressKey(m, tea.KeyUp)
+	if !handled || m.input.Value() != "newest" || m.input.Line() != 0 {
+		t.Fatalf("first up: handled=%v value=%q line=%d, want true/newest/0", handled, m.input.Value(), m.input.Line())
+	}
+	m, _ = pressKey(m, tea.KeyUp)
+	if m.input.Value() != "older one\nolder two\nolder three" || m.input.Line() != 0 {
+		t.Fatalf("second up should land on the first line of the multi-line entry: value=%q line=%d",
+			m.input.Value(), m.input.Line())
+	}
+	// The next up-arrow is consumed as history recall (cursor on line 0),
+	// not as within-entry cursor movement.
+	m, handled = pressKey(m, tea.KeyUp)
+	if !handled || m.input.Value() != "older one\nolder two\nolder three" {
+		t.Fatalf("third up should recall/clamp in history, not move within the entry: handled=%v value=%q",
+			handled, m.input.Value())
+	}
+	// Stepping back down through history also starts each entry (and the
+	// restored draft) at line 0.
+	m.input.SetValue("draft one\ndraft two")
+	m.histIdx = 0 // as if we recalled "newest" with a draft stashed
+	m.draft = "draft one\ndraft two"
+	m, handled = pressKey(m, tea.KeyDown)
+	if !handled || m.input.Value() != "draft one\ndraft two" || m.input.Line() != 0 {
+		t.Fatalf("down past newest should restore the draft at line 0: handled=%v value=%q line=%d",
+			handled, m.input.Value(), m.input.Line())
+	}
+}
+
 func TestCompletionPopupKeepsArrowPrecedence(t *testing.T) {
 	m := newViewTestModelWithRegistry(t, 80, 24)
 	m.history = []string{"newest"}

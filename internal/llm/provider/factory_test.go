@@ -219,6 +219,44 @@ func TestNewFromConfigOllamaNativeExplicitKeepAlive(t *testing.T) {
 	}
 }
 
+// The factory must not let the native ollama backend claim structured
+// output by default: ollama.com cloud ignores format/response_format
+// constraints entirely (verified live 2026-09-03), so an envelope-mode
+// session would get freeform text and fail action parsing. Structured
+// output stays an explicit per-provider opt-in, mirroring tool_calling.
+func TestNewFromConfigOllamaNativeDisclaimsStructuredOutput(t *testing.T) {
+	p, err := NewFromConfig("cloud", config.ProviderConfig{
+		Type:    "ollama",
+		BaseURL: "https://ollama.com",
+	}, "", false, 0)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	caps := p.Capabilities(t.Context())
+	if caps.JSONMode || caps.StructuredOutput {
+		t.Fatalf("JSONMode=%v StructuredOutput=%v, want both false by default for type=ollama", caps.JSONMode, caps.StructuredOutput)
+	}
+	if caps.ToolCalling {
+		t.Fatalf("ToolCalling = true, want false; the config did not enable it")
+	}
+}
+
+func TestNewFromConfigOllamaNativeOptInStructuredOutput(t *testing.T) {
+	p, err := NewFromConfig("local", config.ProviderConfig{
+		Type:             "ollama",
+		BaseURL:          "http://localhost:11434",
+		ToolCalling:      true,
+		StructuredOutput: true,
+	}, "", false, 0)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	caps := p.Capabilities(t.Context())
+	if !caps.ToolCalling || !caps.JSONMode || !caps.StructuredOutput {
+		t.Fatalf("ToolCalling=%v JSONMode=%v StructuredOutput=%v, want all true after explicit opt-in", caps.ToolCalling, caps.JSONMode, caps.StructuredOutput)
+	}
+}
+
 func TestNewFromConfigAnthropic(t *testing.T) {
 	t.Setenv("MARSHAL_TEST_FACTORY_ANTHROPIC_KEY", "sk-test")
 	p, err := NewFromConfig("claude", config.ProviderConfig{

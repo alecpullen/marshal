@@ -12,20 +12,26 @@ type ProviderTemplate struct {
 	BaseURL     string
 	Local       bool
 	ToolCalling bool
-	KeyEnv      string
-	KeyHint     string
-	Models      []string
+	// StructuredOutput defaults the provider's structured_output flag
+	// (format / response_format enforcement). True only for templates
+	// known to enforce format: ollama.com cloud silently ignores format
+	// constraints, so its template leaves this off.
+	StructuredOutput bool
+	KeyEnv           string
+	KeyHint          string
+	Models           []string
 }
 
 var templates = map[string]ProviderTemplate{
 	"ollama": {
-		ID:          "ollama",
-		Label:       "Ollama (local)",
-		Type:        "ollama",
-		BaseURL:     "http://localhost:11434",
-		Local:       true,
-		ToolCalling: true,
-		Models:      []string{"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5:7b", "llama3.1:8b"},
+		ID:               "ollama",
+		Label:            "Ollama (local)",
+		Type:             "ollama",
+		BaseURL:          "http://localhost:11434",
+		Local:            true,
+		ToolCalling:      true,
+		StructuredOutput: true,
+		Models:           []string{"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5:7b", "llama3.1:8b"},
 	},
 	"ollama-cloud": {
 		ID:          "ollama-cloud",

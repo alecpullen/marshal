@@ -117,6 +117,35 @@ type Child struct {
 	stderr   bytes.Buffer // bounded tail of the child's stderr
 }
 
+// keepaliveInterval is how often the bridge pings a quiet child so the
+// agent's idle deadline (internal/acp idleDeadlineConn, 10 min) never
+// fires on a healthy connection. A ping is an unknown-method
+// notification the child silently discards; its only job is to be
+// bytes on the wire. It is a var so tests can shrink the interval.
+var keepaliveInterval = 5 * time.Minute
+
+// startKeepalive pings the child periodically until it is stopped. The
+// agent's listen path closes connections idle for acpIdleTimeout
+// without traffic in either direction (follow-ups doc item #2); a
+// child waiting on a human approval for longer than that must not be
+// churned through a reattach cycle, so the bridge keeps the wire warm.
+func (c *Child) startKeepalive() {
+	go func() {
+		t := time.NewTicker(keepaliveInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-c.done:
+				return
+			case <-t.C:
+				if err := c.Notify("ping", nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
+}
+
 // Start spawns the child process and its read and supervision
 // goroutines. It is not idempotent; call it once per Child.
 func (c *Child) Start() error {
@@ -141,6 +170,7 @@ func (c *Child) Start() error {
 		return err
 	}
 	go c.supervise()
+	c.startKeepalive()
 	return nil
 }
 

@@ -95,10 +95,23 @@ func listenAndServeWithConfig(ctx context.Context, ln net.Listener, cfg runConfi
 			serveErr = fmt.Errorf("acp: accept: %w", err)
 			break
 		}
+		// A silent client must not hold the single-connection accept
+		// loop hostage (follow-ups doc item #2): wrap the conn so the
+		// read side times out after acpIdleTimeout without traffic in
+		// either direction. Outbound writes refresh the deadline too,
+		// so a mid-turn connection kept alive by session/update
+		// notifications is never cut. Tests shrink the window via
+		// runConfig.idleTimeout.
+		idle := cfg.idleTimeout
+		if idle <= 0 {
+			idle = acpIdleTimeout
+		}
+		wrapped := &idleDeadlineConn{Conn: conn, idle: idle}
+
 		// A connection error ends that connection, never the host.
 		// Use the host's resolved logger (nil-guarded by newAgentHost)
 		// rather than the raw cfg.logger, which may be nil.
-		if err := host.serveConn(ctx, conn, conn); err != nil && ctx.Err() == nil {
+		if err := host.serveConn(ctx, wrapped, wrapped); err != nil && ctx.Err() == nil {
 			host.log.Warn("acp connection ended with error", "err", err)
 		}
 		_ = conn.Close()

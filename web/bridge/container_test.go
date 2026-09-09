@@ -140,17 +140,11 @@ func TestReattachHonoursInjectedTimeout(t *testing.T) {
 	}
 }
 
-func TestAgentIDRoundTripsThroughContainerName(t *testing.T) {
-	for _, id := range []string{"7f3a", "abc-123", "x"} {
-		got, ok := agentIDFromContainer(containerNameFor(id))
-		if !ok || got != id {
-			t.Errorf("round trip %q = (%q, %v), want (%q, true)", id, got, ok, id)
-		}
-	}
-	if _, ok := agentIDFromContainer("some-other-container"); ok {
-		t.Error("agentIDFromContainer claimed a foreign container")
-	}
-}
+// agentIDFromContainer and its round-trip test were removed with the
+// function: reattach is persisted-record-based, so the inverse of
+// containerNameFor had no production caller (followups doc item #6).
+// containerNameFor itself is covered by the transport tests that rely
+// on generated names being prefixed with containerNamePrefix.
 
 func TestContainerUsesInjectedRunner(t *testing.T) {
 	var calls [][]string

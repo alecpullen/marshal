@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -76,6 +77,12 @@ type containerTransport struct {
 
 	mu   sync.Mutex
 	conn net.Conn
+	// lost is closed when this generation's read half observes the
+	// agent hang up (read error or EOF). Wait selects on it so a lost
+	// connection is observed as a generation boundary even while the
+	// container keeps running. Replaced on every Open/start/Reattach
+	// alongside conn.
+	lost chan struct{}
 
 	// run executes one runtime command. Nil means the real runner.
 	// Tests inject a fake so the docker-shelling paths are exercisable
@@ -208,9 +215,11 @@ func (c *containerTransport) start() (io.WriteCloser, io.ReadCloser, io.ReadClos
 
 	c.mu.Lock()
 	c.conn = conn
+	c.lost = make(chan struct{})
+	lost := c.lost
 	c.mu.Unlock()
 
-	return writeHalf{conn}, readHalf{conn}, io.NopCloser(emptyReader{}), nil
+	return writeHalf{conn}, &readHalf{c: conn, lost: lost}, io.NopCloser(emptyReader{}), nil
 }
 
 // dialSocket polls until the container binds its socket or the timeout
@@ -229,10 +238,40 @@ func (c *containerTransport) dialSocket() (net.Conn, error) {
 	}
 }
 
-// Wait blocks until the container exits.
+// Wait blocks until the container exits OR the agent hangs up on the
+// control connection. The agent deliberately closes idle connections
+// (follow-ups doc item #2: the ACP listen path arms a read deadline),
+// so a hangup is a generation boundary even though the container lives
+// on: returning here lets Child.supervise reap this generation and
+// reattach to the still-running container (Open reattaches by name),
+// rather than parking forever in `docker wait` on a container whose
+// control connection just closed. The hangup is observed through the
+// lost channel, closed by this generation's readHalf on read error or
+// EOF — the same reads Child.readLoop is blocked in, so no extra
+// consumer races for the conn's bytes.
 func (c *containerTransport) Wait() error {
-	_, err := c.exec("wait", c.cfg.Name)
-	return err
+	c.mu.Lock()
+	lost := c.lost
+	c.mu.Unlock()
+
+	waitErr := make(chan error, 1)
+	go func() {
+		_, err := c.exec("wait", c.cfg.Name)
+		waitErr <- err
+	}()
+
+	if lost == nil {
+		return <-waitErr
+	}
+
+	select {
+	case err := <-waitErr:
+		return err
+	case <-lost:
+		// errLostConn lets supervise's caller distinguish an
+		// intentional hangup from an unexpected exit in logs.
+		return errLostConn
+	}
 }
 
 // Signal terminates the container. Docker has no general signal verb
@@ -270,6 +309,12 @@ func (c *containerTransport) Kill() error {
 	return err
 }
 
+// errLostConn reports that the agent hung up on the control connection
+// while its container kept running (the ACP idle deadline closing an
+// idle conn). It is a generation boundary, not a crash: Child.supervise
+// reattaches to the still-running container.
+var errLostConn = errors.New("bridge: agent hung up on the control connection")
+
 // writeHalf and readHalf expose one duplex conn as the two independent
 // closers Child expects. Closing either shuts down only its direction.
 type writeHalf struct{ c net.Conn }
@@ -282,10 +327,23 @@ func (w writeHalf) Close() error {
 	return nil
 }
 
-type readHalf struct{ c net.Conn }
+// readHalf closes lost once its reads observe the agent hang up, so
+// containerTransport.Wait can treat a lost connection as a generation
+// boundary without racing this reader for the conn's bytes.
+type readHalf struct {
+	c    net.Conn
+	lost chan struct{}
+	once sync.Once
+}
 
-func (r readHalf) Read(p []byte) (int, error) { return r.c.Read(p) }
-func (r readHalf) Close() error {
+func (r *readHalf) Read(p []byte) (int, error) {
+	n, err := r.c.Read(p)
+	if err != nil {
+		r.once.Do(func() { close(r.lost) })
+	}
+	return n, err
+}
+func (r *readHalf) Close() error {
 	if cr, ok := r.c.(interface{ CloseRead() error }); ok {
 		return cr.CloseRead()
 	}
@@ -328,8 +386,10 @@ func (c *containerTransport) Reattach() (io.WriteCloser, io.ReadCloser, io.ReadC
 		if err == nil {
 			c.mu.Lock()
 			c.conn = conn
+			c.lost = make(chan struct{})
+			lost := c.lost
 			c.mu.Unlock()
-			return writeHalf{conn}, readHalf{conn}, io.NopCloser(emptyReader{}), nil
+			return writeHalf{conn}, &readHalf{c: conn, lost: lost}, io.NopCloser(emptyReader{}), nil
 		}
 		if time.Now().After(deadline) {
 			return nil, nil, nil, fmt.Errorf("bridge: reattach to %s: %w", c.cfg.Name, err)
@@ -363,11 +423,7 @@ func (c *containerTransport) listAgentContainers() ([]string, error) {
 	return names, nil
 }
 
-// agentIDFromContainer is the inverse of containerNameFor. The second
-// return is false for a name that is not ours.
-func agentIDFromContainer(name string) (string, bool) {
-	if !strings.HasPrefix(name, containerNamePrefix) {
-		return "", false
-	}
-	return strings.TrimPrefix(name, containerNamePrefix), true
-}
+// agentIDFromContainer was removed: reattach is persisted-record-based
+// (ReattachAll reads workspace records, not a container scan), so the
+// inverse of containerNameFor had no production caller. See
+// docs/containerized-agent-runtime-followups.md item #6.

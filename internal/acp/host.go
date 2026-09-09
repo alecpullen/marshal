@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -72,6 +73,17 @@ type agentHost struct {
 	sink     *notifySink
 	log      *slog.Logger
 	shutdown time.Duration
+
+	// cancellersMu guards cancellers, the append-only chain of
+	// per-connection turn cancellers (follow-ups doc item #5).
+	// SetTurnCanceller used to be overwritten by each connection, so a
+	// turn that outlived its connection's waitHandlers timeout became
+	// uncancellable through the manager. The manager's canceller is now
+	// registered once in newAgentHost and fans out to every connection
+	// canceller ever registered — including connections whose turns
+	// outlived them, which is the point.
+	cancellersMu sync.Mutex
+	cancellers   []TurnCanceller
 }
 
 // newAgentHost constructs the session manager and turn manager in
@@ -100,12 +112,53 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 		Notify:       sink.Notify,
 	}, WithSessionManagerLogger(log))
 
-	return &agentHost{
+	h := &agentHost{
 		manager:  manager,
 		sink:     sink,
 		log:      log,
 		shutdown: cfg.shutdown,
-	}, nil
+	}
+	// Register the manager's canceller exactly once: it fans out to
+	// every live connection's TurnManager (see addTurnCanceller).
+	manager.SetTurnCanceller(h.chainedCancel)
+	return h, nil
+}
+
+// addTurnCanceller appends c to the connection canceller chain. It is
+// deliberately append-only with no removal: an orphaned turn (a turn
+// still running after its connection's bounded waitHandlers timeout
+// expired) lives in its connection's TurnManager, and releasing that
+// connection's chain entry would strand it — the exact bug this chain
+// exists to fix. Entries are cheap to retain: CancelAndWait on a
+// TurnManager with no active turn for the session is a nil-returning
+// map lookup, and the chain grows only when a new connection attaches
+// (the listen loop serves connections one at a time, and the stdio
+// path serves exactly one).
+func (h *agentHost) addTurnCanceller(c TurnCanceller) {
+	h.cancellersMu.Lock()
+	h.cancellers = append(h.cancellers, c)
+	h.cancellersMu.Unlock()
+}
+
+// chainedCancel is the host-level canceller registered once with the
+// SessionManager. It fans a cancel request out to every live
+// connection's TurnManager in registration order and joins their
+// errors. A connection's canceller reports "no active turn" as nil
+// (CancelAndWait semantics), so cancelling through the chain reaches
+// whichever connection's TurnManager owns the session's active turn.
+func (h *agentHost) chainedCancel(ctx context.Context, sessionID string) error {
+	h.cancellersMu.Lock()
+	chain := append([]TurnCanceller(nil), h.cancellers...)
+	h.cancellersMu.Unlock()
+
+	var errs []error
+	for _, c := range chain {
+		if c == nil {
+			continue
+		}
+		errs = append(errs, c(ctx, sessionID))
+	}
+	return errors.Join(errs...)
 }
 
 // newTurnManagerFor constructs the TurnManager for a connection, capturing
@@ -351,7 +404,12 @@ func (h *agentHost) registerHandlers(srv *Server) {
 	srv.Handle("session/plugins_install_discard", pluginsMgr.PluginsInstallDiscard)
 	srv.Handle("session/plugins_remove", pluginsMgr.PluginsRemove)
 
-	manager.SetTurnCanceller(func(ctx context.Context, sessionID string) error {
+	// Follow-ups doc item #5: this used to overwrite the manager's
+	// single canceller on every connection, so a turn that outlived a
+	// previous connection's bounded shutdown wait became uncancellable
+	// through the manager. The host-level canceller (registered once)
+	// fans out to this chain entry instead.
+	h.addTurnCanceller(func(ctx context.Context, sessionID string) error {
 		err := turns.CancelAndWait(ctx, sessionID)
 		skillsMgr.CloseSession(sessionID)
 		pluginsMgr.CloseSession(sessionID)
@@ -362,7 +420,9 @@ func (h *agentHost) registerHandlers(srv *Server) {
 // serveConn serves a single connection. It creates a fresh Server, wires
 // the host's managers to it, attaches the sink, and serves until the
 // connection closes or ctx is cancelled. On return the sink is detached
-// so notifications are dropped until the next connection attaches.
+// so notifications are dropped until the next connection attaches. The
+// connection's canceller stays in the host chain: a turn that outlives
+// the connection must remain cancellable (follow-ups doc item #5).
 func (h *agentHost) serveConn(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	srv := NewServer(stdin, stdout, WithLogger(h.log))
 	h.registerHandlers(srv)

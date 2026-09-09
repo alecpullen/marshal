@@ -55,6 +55,57 @@ func testRunConfig(t *testing.T) runConfig {
 	}
 }
 
+func TestListenAndServeCutsIdleConnections(t *testing.T) {
+	// Unix socket paths are limited to ~104 bytes on macOS, so use a short
+	// directory rather than t.TempDir() (whose path is far longer).
+	dir, err := os.MkdirTemp("", "acp")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	addr := filepath.Join(dir, "agent.sock")
+	ln, err := net.Listen("unix", addr)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	cfg := testRunConfig(t)
+	cfg.idleTimeout = 100 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- listenAndServeWithConfig(ctx, ln, cfg)
+	}()
+
+	// A client that connects and then goes silent must not hold the
+	// accept loop hostage: the idle deadline closes its connection.
+	silent, err := net.Dial("unix", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer silent.Close()
+	_ = silent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := silent.Read(buf); err == nil {
+		t.Fatal("silent connection stayed open past the idle deadline")
+	}
+
+	// The accept loop must be free again: a fresh, chatty client is
+	// served immediately.
+	if got := dialAndInitialize(t, addr); got["protocolVersion"] == nil {
+		t.Fatalf("post-idle connection: no protocolVersion in %v", got)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("listenAndServeWithConfig did not return after cancel")
+	}
+}
+
 func TestListenAndServeAcceptsSuccessiveConnections(t *testing.T) {
 	// Unix socket paths are limited to ~104 bytes on macOS, so use a short
 	// directory rather than t.TempDir() (whose path is far longer).

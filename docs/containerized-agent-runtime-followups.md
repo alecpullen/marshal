@@ -4,8 +4,8 @@ The following items were identified during branch review and
 deliberately deferred from the initial S1 implementation. Each is
 documented here so it can be tracked and addressed in subsequent work.
 
-Items marked **✅ Resolved** were addressed by the S1 completion plan
-and are kept here for historical context.
+Items marked **✅ Resolved** were addressed either by the S1 completion
+plan or the follow-ups pass, and are kept here for historical context.
 
 ## 1. ~~Container environment is never populated~~ ✅ Resolved
 
@@ -18,17 +18,25 @@ receives only explicitly-supplied provider keys, not `HOME`/`PATH`/
 general host env (those come from the image). An agent image that
 expects ambient env vars beyond provider credentials won't find them.
 
-## 2. No idle/read timeout on hung connections
+## 2. ~~No idle/read timeout on hung connections~~ ✅ Resolved
 
-`listenAndServeWithConfig` serves one connection at a time. A client
-that opens the socket and then goes silent (never sends EOF, never
-closes) blocks `Serve` indefinitely — the accept loop is stuck and no
-new dialer can be served until the hung client hangs up or the whole
-listener is cancelled.
+**Resolved by the follow-ups pass.** The listen path wraps every
+accepted connection in an `idleDeadlineConn` (`internal/acp/idle.go`):
+the read deadline is refreshed by traffic in *either* direction, and a
+connection silent for `acpIdleTimeout` (10 minutes) is closed so the
+single-connection accept loop is never held hostage. Mid-turn
+connections stay alive because outbound session/update notifications
+extend the deadline. `runConfig.idleTimeout` lets tests shrink the
+window (`TestListenAndServeCutsIdleConnections`).
 
-**Action:** Wrap each accepted connection with an idle deadline (e.g.
-`conn.SetReadDeadline` refreshed per frame, or a per-connection context
-with timeout) so a stuck peer cannot hold the host hostage.
+Because a healthy idle agent would now be churned through a reattach
+cycle every 10 minutes, the webbridge complements this with a keepalive
+ping (`Child.startKeepalive` in `web/bridge/child.go`, every 5 minutes)
+so quiet-but-healthy connections are never cut, and
+`containerTransport.Wait` now returns on agent hangup (`lost` channel,
+`errLostConn`) instead of wedging on `docker wait` for a container whose
+control connection closed — supervise reattaches to the still-running
+container.
 
 ## 3. ~~Reattach-preference and cleanup tests need an injectable seam~~ ✅ Resolved
 
@@ -45,23 +53,23 @@ persisted (`workspace.go`), and `Resume` calls `restoreSession` which
 calls `reg.Load` with the persisted session id. `ReattachAll` and
 `RuntimeForSession` also use `restoreSession`.
 
-## 5. `SetTurnCanceller` overwritten per connection
+## 5. ~~`SetTurnCanceller` overwritten per connection~~ ✅ Resolved
 
-`registerHandlers` (called per connection) invokes
-`manager.SetTurnCanceller(...)` with a closure capturing that
-connection's `TurnManager`. When connection 2 attaches, the canceller is
-replaced. If a turn outlives the bounded `waitHandlers` shutdown
-timeout, that orphaned turn is uncancellable through the manager.
+**Resolved by the follow-ups pass.** The host-level canceller is now
+registered once in `newAgentHost` (`internal/acp/host.go`): it fans a
+cancel request out to an append-only chain of per-connection cancellers
+(`addTurnCanceller`), so a turn that outlived its connection's bounded
+`waitHandlers` timeout remains cancellable through the manager
+(`TestChainedCancellerReachesOrphanedTurns`). Entries are deliberately
+never removed: releasing a connection's entry would strand its
+orphaned turn — the exact bug the chain fixes — and cancellation of a
+TurnManager with no active turn for the session is a nil-returning map
+lookup.
 
-**Action:** Document the trade-off with a comment, or retain the
-previous canceller and chain it so orphaned turns remain cancellable.
+## 6. ~~`agentIDFromContainer` is unused in production~~ ✅ Resolved
 
-## 6. `agentIDFromContainer` is unused in production
-
-`agentIDFromContainer` is only referenced by tests. `ReattachAll`
-discovers agents to reattach from persisted workspace records, not by
-scanning running containers, so the function is dead code in
-production.
-
-**Action:** Either wire it into a container-scan-based reattach path,
-or remove it if persisted-record-based reattach is the final design.
+**Removed by the follow-ups pass.** Reattach is persisted-record-based
+(`ReattachAll` reads workspace records, not a container scan), so the
+inverse of `containerNameFor` had no production caller. The function
+and its round-trip test were deleted from `web/bridge/container.go`;
+`containerNameFor` itself remains in production use.

@@ -43,6 +43,11 @@ type runConfig struct {
 	lister       SessionLister
 	shutdown     time.Duration
 	logger       *slog.Logger
+
+	// idleTimeout overrides the accepted-connection idle deadline for
+	// tests. Zero means acpIdleTimeout. Only the listen path uses it
+	// (stdio has no peer that can go silently idle).
+	idleTimeout time.Duration
 }
 
 // runWithConfig constructs the agentHost, serves a single connection, then

@@ -280,9 +280,10 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 	if !reflect.DeepEqual(cfg.Skills, def.Skills) {
 		file.Skills = &fileSkills{
-			Autoload:      cfg.Skills.Autoload,
-			MaxActive:     strutil.Ptr(cfg.Skills.MaxActive),
-			BodyFullTurns: strutil.Ptr(cfg.Skills.BodyFullTurns),
+			Autoload:                cfg.Skills.Autoload,
+			MaxActive:               strutil.Ptr(cfg.Skills.MaxActive),
+			BodyFullTurns:           strutil.Ptr(cfg.Skills.BodyFullTurns),
+			LoadGateThresholdTokens: strutil.Ptr(cfg.Skills.LoadGateThresholdTokens),
 		}
 	}
 	if cfg.Web != def.Web {

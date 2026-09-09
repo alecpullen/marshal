@@ -36,9 +36,10 @@ func Default() Config {
 			IncludeGitignoredFiles: false,
 		},
 		Skills: SkillsConfig{
-			Autoload:      []string{"using-skills"},
-			MaxActive:     8,
-			BodyFullTurns: 3,
+			Autoload:                []string{"using-skills"},
+			MaxActive:               8,
+			BodyFullTurns:           3,
+			LoadGateThresholdTokens: 131072,
 		},
 		Indexing: IndexingConfig{
 			UseTreesitter:          false,

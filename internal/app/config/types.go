@@ -497,6 +497,15 @@ type SkillsConfig struct {
 	// A repeat skill.load resets the counter and re-sends the full text.
 	// 0 = always send the full body.
 	BodyFullTurns int `toml:"body_full_turns"`
+	// LoadGateThresholdTokens is the context-window size at or under which
+	// every skill.load call — including re-fetches of an already-active
+	// skill — prompts the user for approval before loading. The gate also
+	// fires when the turn's window is unknown (0), so an unresolved route
+	// is treated as small. 0 disables the gate entirely. The default ships
+	// enabled at 128k because small-context models demonstrably waste
+	// their window loading skills they do not need; raise it or set 0 to
+	// opt out.
+	LoadGateThresholdTokens int `toml:"load_gate_threshold_tokens"`
 }
 
 type IndexingConfig struct {

@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -175,5 +176,138 @@ func TestPromptTurnBridgesPendingApprovalToPermissionClient(t *testing.T) {
 	}
 	if client.gotReq.ToolCallID != "tool-1" || client.gotReq.ToolName != "shell.run" || client.gotReq.Command != "rm tmp" {
 		t.Fatalf("client.gotReq = %+v", client.gotReq)
+	}
+}
+
+func TestRequestSkillGateMapsApproveToAllowOnce(t *testing.T) {
+	response := make(chan session.SkillGateChoice, 1)
+	pending := &session.PendingSkillGate{
+		Skill:        "go-testing",
+		Description:  "Load the go-testing skill",
+		Reason:       "small-context model",
+		ResponseChan: response,
+	}
+	client := &fakePermissionClient{decision: PermissionDecision{Approved: true}}
+	bridge := NewPermissionBridge(client)
+	got, err := bridge.RequestSkillGate(context.Background(), "sess_test", pending)
+	if err != nil {
+		t.Fatalf("RequestSkillGate() error = %v", err)
+	}
+	if got != session.SkillGateAllowOnce {
+		t.Fatalf("RequestSkillGate() = %v, want SkillGateAllowOnce", got)
+	}
+	select {
+	case delivered := <-response:
+		if delivered != session.SkillGateAllowOnce {
+			t.Fatalf("ResponseChan delivered %v, want SkillGateAllowOnce", delivered)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for skill-gate choice")
+	}
+	if client.calls != 1 {
+		t.Fatalf("client.calls = %d, want 1", client.calls)
+	}
+	if client.gotReq.SessionID != "sess_test" {
+		t.Fatalf("client.gotReq.SessionID = %q, want sess_test", client.gotReq.SessionID)
+	}
+	if !client.gotReq.SkillGate {
+		t.Fatalf("client.gotReq.SkillGate = false, want true")
+	}
+	if client.gotReq.ToolName != "skill.load" {
+		t.Fatalf("client.gotReq.ToolName = %q, want skill.load", client.gotReq.ToolName)
+	}
+	if client.gotReq.Command != "go-testing" {
+		t.Fatalf("client.gotReq.Command = %q, want go-testing", client.gotReq.Command)
+	}
+	if client.gotReq.ToolCallID != "skillgate-go-testing" {
+		t.Fatalf("client.gotReq.ToolCallID = %q, want skillgate-go-testing", client.gotReq.ToolCallID)
+	}
+	if client.gotReq.Reason != "small-context model" {
+		t.Fatalf("client.gotReq.Reason = %q, want small-context model", client.gotReq.Reason)
+	}
+}
+
+func TestRequestSkillGateMapsDenyToDeny(t *testing.T) {
+	response := make(chan session.SkillGateChoice, 1)
+	pending := &session.PendingSkillGate{
+		Skill:        "go-testing",
+		Description:  "Load the go-testing skill",
+		ResponseChan: response,
+	}
+	client := &fakePermissionClient{decision: PermissionDecision{Approved: false}}
+	bridge := NewPermissionBridge(client)
+	got, err := bridge.RequestSkillGate(context.Background(), "sess_test", pending)
+	if err != nil {
+		t.Fatalf("RequestSkillGate() error = %v", err)
+	}
+	if got != session.SkillGateDeny {
+		t.Fatalf("RequestSkillGate() = %v, want SkillGateDeny", got)
+	}
+	select {
+	case delivered := <-response:
+		if delivered != session.SkillGateDeny {
+			t.Fatalf("ResponseChan delivered %v, want SkillGateDeny", delivered)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for skill-gate choice")
+	}
+}
+
+func TestRequestSkillGateContextCancelLeavesChannel(t *testing.T) {
+	response := make(chan session.SkillGateChoice)
+	pending := &session.PendingSkillGate{
+		Skill:        "go-testing",
+		Description:  "Load the go-testing skill",
+		ResponseChan: response,
+	}
+	// blocking client — never returns
+	client := blockingPermissionClient{}
+	bridge := NewPermissionBridge(client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- func() error {
+			_, err := bridge.RequestSkillGate(ctx, "sess_test", pending)
+			return err
+		}()
+	}()
+
+	// Give the bridge a moment to enter RequestSkillGate.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-response:
+		t.Fatal("ResponseChan was written to after context cancel")
+	case err := <-done:
+		if err == nil {
+			t.Fatal("RequestSkillGate() error = nil, want context error")
+		}
+	}
+	// Even after RequestSkillGate returns, ResponseChan must not have been
+	// written or closed.
+	select {
+	case got, ok := <-response:
+		if ok {
+			t.Fatalf("ResponseChan was written to after cancel: got %v", got)
+		}
+		t.Fatal("ResponseChan was closed after cancel")
+	default:
+	}
+}
+
+func TestRequestSkillGateNilPending(t *testing.T) {
+	bridge := NewPermissionBridge(&fakePermissionClient{})
+	if _, err := bridge.RequestSkillGate(context.Background(), "sess_test", nil); !errors.Is(err, ErrNilPending) {
+		t.Fatalf("RequestSkillGate(nil) error = %v, want ErrNilPending", err)
+	}
+}
+
+func TestRequestSkillGateNilResponseChan(t *testing.T) {
+	bridge := NewPermissionBridge(&fakePermissionClient{})
+	pending := &session.PendingSkillGate{Skill: "go-testing"}
+	if _, err := bridge.RequestSkillGate(context.Background(), "sess_test", pending); !errors.Is(err, ErrPendingMissingResponseChan) {
+		t.Fatalf("RequestSkillGate(no ResponseChan) error = %v, want ErrPendingMissingResponseChan", err)
 	}
 }

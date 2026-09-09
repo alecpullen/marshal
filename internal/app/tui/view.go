@@ -230,7 +230,15 @@ func (m Model) renderInputArea() string {
 	inputInnerWidth := max(m.leftWidth-4, 1)
 	rows := make([]string, 0, 4)
 
-	if q := m.state.PendingQuestion(); q != nil {
+	if sg := m.state.PendingSkillGate(); sg != nil {
+		if m.skillGateModel != nil {
+			rows = append(rows, m.skillGateModel.View())
+		} else {
+			rows = append(rows, renderSkillGatePanel(sg, inputInnerWidth))
+		}
+		// The textarea is deliberately not rendered: every keypress routes
+		// to the gate dialog while it is pending.
+	} else if q := m.state.PendingQuestion(); q != nil {
 		if m.questionModel != nil {
 			rows = append(rows, m.questionModel.View())
 		} else {
@@ -272,6 +280,8 @@ func (m Model) inputBarColor() color.Color {
 	switch {
 	case m.successPulse:
 		return successColor
+	case m.state.PendingSkillGate() != nil:
+		return violetColor
 	case m.state.PendingQuestion() != nil:
 		return violetColor
 	case m.hasPendingApproval():
@@ -320,9 +330,9 @@ func (m Model) suggestionGhost() string {
 	if m.suggestion == "" || m.suggestionDismissed || m.busy {
 		return ""
 	}
-	// The completion popup, approval, and question panels all hide the
-	// textarea; a ghost would be a visual conflict, so suppress it.
-	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil {
+	// The completion popup, approval, question, and skill-gate panels all
+	// hide the textarea; a ghost would be a visual conflict, so suppress it.
+	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSkillGate() != nil {
 		return ""
 	}
 	// The ghost is spliced into a single rendered row. A newline would add

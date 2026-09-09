@@ -49,6 +49,10 @@ type PermissionRequest struct {
 	Risk       string `json:"risk,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 	Diff       string `json:"diff,omitempty"`
+	// SkillGate tags the request as a skill-load gate (not a tool
+	// permission), so client UIs can label it. Approve = allow once;
+	// deny = sticky session deny.
+	SkillGate bool `json:"skillGate,omitempty"`
 }
 
 // PermissionDecision is the JSON-RPC result for `session/request_permission`.
@@ -113,6 +117,45 @@ func (b *PermissionBridge) Request(ctx context.Context, sessionID string, pendin
 		// Turn cancelled before we could deliver the decision; the runner
 		// will see ctx.Err() and abandon the pending call.
 		return session.UserApprovalDecision{}, ctx.Err()
+	}
+	return out, nil
+}
+
+// RequestSkillGate sends a skill-load gate request for the given pending
+// gate prompt and blocks until a decision arrives, the context is
+// cancelled, or the client errors. ACP clients cannot express the four
+// TUI choices, so the decision maps: approved → SkillGateAllowOnce, denied
+// → SkillGateDeny (sticky). On context cancel the ResponseChan is left
+// untouched (the runner's own select decides what to do with the
+// abandoned pending prompt).
+func (b *PermissionBridge) RequestSkillGate(ctx context.Context, sessionID string, pending *session.PendingSkillGate) (session.SkillGateChoice, error) {
+	if pending == nil {
+		return 0, ErrNilPending
+	}
+	if pending.ResponseChan == nil {
+		return 0, ErrPendingMissingResponseChan
+	}
+	req := PermissionRequest{
+		SessionID:  sessionID,
+		ToolCallID: "skillgate-" + pending.Skill,
+		ToolName:   "skill.load",
+		Command:    pending.Skill,
+		Risk:       "read_only",
+		Reason:     pending.Reason,
+		SkillGate:  true,
+	}
+	decision, err := b.client.RequestPermission(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+	out := session.SkillGateDeny
+	if decision.Approved {
+		out = session.SkillGateAllowOnce
+	}
+	select {
+	case pending.ResponseChan <- out:
+	case <-ctx.Done():
+		return 0, ctx.Err()
 	}
 	return out, nil
 }

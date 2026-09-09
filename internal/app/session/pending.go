@@ -223,3 +223,67 @@ func (s *State) SetActiveToolCallArgs(args string) {
 	s.mu.Unlock()
 	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: &copy})
 }
+
+// SkillGateChoice is the user's response to a pending skill-gate prompt.
+type SkillGateChoice int
+
+const (
+	SkillGateAllowOnce  SkillGateChoice = iota
+	SkillGateAllowSkill                 // allow always: this skill, this session
+	SkillGateAllowAll                   // allow always: all skills this session (gate off)
+	SkillGateDeny
+)
+
+// PendingSkillGate carries one skill-load gate prompt from the agent
+// awaiting user response. The runner blocks on ResponseChan; the TUI (or
+// the ACP permission bridge) sends exactly one choice. Mirrors
+// PendingToolCall's once-only Respond protocol.
+type PendingSkillGate struct {
+	Skill        string
+	Description  string
+	Reason       string
+	ResponseChan chan SkillGateChoice
+	responded    sync.Once
+}
+
+// Respond sends a choice to the response channel exactly once (guarded by
+// sync.Once). It is safe to call multiple times; only the first call
+// produces a send. The send is non-blocking so unbuffered channels with no
+// receiver don't deadlock. The channel is closed after the send so the
+// runner can detect that no more responses are coming.
+func (p *PendingSkillGate) Respond(c SkillGateChoice) {
+	if p == nil {
+		return
+	}
+	p.responded.Do(func() {
+		if p.ResponseChan != nil {
+			select {
+			case p.ResponseChan <- c:
+			default:
+			}
+			close(p.ResponseChan)
+		}
+	})
+}
+
+func (s *State) SetPendingSkillGate(sg *PendingSkillGate) {
+	s.mu.Lock()
+	s.pendingSkillGate = sg
+	var snap *PendingSkillGate
+	if sg != nil {
+		snap = &PendingSkillGate{
+			Skill:        sg.Skill,
+			Description:  sg.Description,
+			Reason:       sg.Reason,
+			ResponseChan: sg.ResponseChan,
+		}
+	}
+	s.mu.Unlock()
+	s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: snap})
+}
+
+func (s *State) PendingSkillGate() *PendingSkillGate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingSkillGate
+}

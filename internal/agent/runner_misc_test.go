@@ -1128,6 +1128,10 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 
 	reg := registry.New()
 	state := newTestState(t)
+	// The skill load gate would block this test's unattended skill.load on
+	// the pending prompt (default threshold 131072, unknown window); this
+	// test covers loading mechanics, not gating — disable the gate.
+	state.Config.Skills.LoadGateThresholdTokens = 0
 
 	pol := policy.NewEngine(&config.Config{}, nil)
 	skills.RegisterTool(reg, idx, state)
@@ -1198,6 +1202,10 @@ func TestRunSendsSkillBodyToProviderAfterLoad(t *testing.T) {
 
 	reg := registry.New()
 	state := newTestState(t)
+	// The skill load gate would block this test's unattended skill.load on
+	// the pending prompt (default threshold 131072, unknown window); this
+	// test covers loading mechanics, not gating — disable the gate.
+	state.Config.Skills.LoadGateThresholdTokens = 0
 	pol := policy.NewEngine(&config.Config{}, nil)
 	skills.RegisterTool(reg, idx, state)
 

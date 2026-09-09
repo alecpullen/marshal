@@ -32,14 +32,15 @@ const (
 )
 
 const (
-	EventMessageAdded           = "message_added"
-	EventThinkingChanged        = "thinking_changed"
-	EventActivityChanged        = "activity_changed"
-	EventActiveToolChanged      = "active_tool_changed"
-	EventAuditAdded             = "audit_added"
-	EventPendingApprovalChanged = "pending_approval_changed"
-	EventPendingQuestionChanged = "pending_question_changed"
-	EventBrowserChanged         = "browser_changed"
+	EventMessageAdded            = "message_added"
+	EventThinkingChanged         = "thinking_changed"
+	EventActivityChanged         = "activity_changed"
+	EventActiveToolChanged       = "active_tool_changed"
+	EventAuditAdded              = "audit_added"
+	EventPendingApprovalChanged  = "pending_approval_changed"
+	EventPendingQuestionChanged  = "pending_question_changed"
+	EventPendingSkillGateChanged = "pending_skill_gate_changed"
+	EventBrowserChanged          = "browser_changed"
 )
 
 // Event is the union payload published on the session event broker
@@ -51,14 +52,15 @@ const (
 // ResponseChan) for subscribers that need to respond (e.g., the ACP
 // permission bridge).
 type Event struct {
-	Message         *Message
-	Thinking        *InProgressMessage
-	Activity        *Activity
-	ActiveTool      *ActiveToolCall
-	Audit           *registry.AuditEvent
-	PendingApproval *PendingToolCall
-	PendingQuestion *PendingQuestion
-	Browser         *BrowserInfo
+	Message          *Message
+	Thinking         *InProgressMessage
+	Activity         *Activity
+	ActiveTool       *ActiveToolCall
+	Audit            *registry.AuditEvent
+	PendingApproval  *PendingToolCall
+	PendingQuestion  *PendingQuestion
+	PendingSkillGate *PendingSkillGate
+	Browser          *BrowserInfo
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -203,28 +205,32 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu              sync.Mutex
-	messages        []Message
-	inProgress      InProgressMessage
-	notice          Notice
-	noticeSet       bool
-	pendingApproval *PendingToolCall
-	pendingQuestion *PendingQuestion
-	activeToolCall  *ActiveToolCall
-	sessionRules    []string
-	auditLog        []registry.AuditEvent
-	thinkingLog     []ThinkingEntry
-	lastBackup      []BackupFile
-	contextPack     contextpack.Pack
-	activeRoute     RouteInfo
-	turnToolCache   map[string]registry.ToolResult
-	toolCacheOrder  []string
-	toolCacheBytes  int
-	activity        Activity
-	plan            []string
-	todos           []db.TodoItem
-	scratchpad      map[string]db.ScratchpadEntry
-	activeSkills    map[string]bool
+	mu                sync.Mutex
+	messages          []Message
+	inProgress        InProgressMessage
+	notice            Notice
+	noticeSet         bool
+	pendingApproval   *PendingToolCall
+	pendingQuestion   *PendingQuestion
+	pendingSkillGate  *PendingSkillGate
+	skillGateDisabled bool
+	skillGateAllowed  map[string]bool
+	skillGateDenied   map[string]int
+	activeToolCall    *ActiveToolCall
+	sessionRules      []string
+	auditLog          []registry.AuditEvent
+	thinkingLog       []ThinkingEntry
+	lastBackup        []BackupFile
+	contextPack       contextpack.Pack
+	activeRoute       RouteInfo
+	turnToolCache     map[string]registry.ToolResult
+	toolCacheOrder    []string
+	toolCacheBytes    int
+	activity          Activity
+	plan              []string
+	todos             []db.TodoItem
+	scratchpad        map[string]db.ScratchpadEntry
+	activeSkills      map[string]bool
 	// skillOrder records activation sequence per skill so eviction can pick
 	// the least-recently-activated. Kept separate from activeSkills because
 	// ActiveSkills() must stay alphabetically sorted for prefix caching —
@@ -955,6 +961,8 @@ func (s *State) ResolvePendingForShutdown() {
 	s.pendingApproval = nil
 	question := s.pendingQuestion
 	s.pendingQuestion = nil
+	skillGate := s.pendingSkillGate
+	s.pendingSkillGate = nil
 	s.steeringQueue = nil
 	s.mu.Unlock()
 
@@ -963,6 +971,7 @@ func (s *State) ResolvePendingForShutdown() {
 	// are unaffected, and those that did get the cleared value.
 	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
 	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: nil})
+	s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: nil})
 	broker := func() *pubsub.Broker[SteeringEvent] {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -982,6 +991,12 @@ func (s *State) ResolvePendingForShutdown() {
 	// nil channel and once-only guarantee).
 	if question != nil {
 		question.Respond(UnansweredAnswers(question.Questions))
+	}
+
+	// Deny any pending skill gate (Respond handles nil channel and
+	// once-only guarantee).
+	if skillGate != nil {
+		skillGate.Respond(SkillGateDeny)
 	}
 }
 

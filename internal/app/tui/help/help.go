@@ -49,6 +49,9 @@ type FooterHints struct {
 	// DrilledRunActive is true when the user is drilled into a running
 	// subagent, so the Ctrl+X stop-agent hint is actionable.
 	DrilledRunActive bool
+	// SkillGatePending is true while a skill-load gate dialog is up, so
+	// the footer shows the gate's navigation keys instead of the chat keys.
+	SkillGatePending bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -59,9 +62,9 @@ func pair(k, label string) string { return keyStyle.Render(k) + " " + label }
 // Footer returns the single-row keybinding bar.
 func Footer(h FooterHints) string {
 	// ? is only appended when it actually triggers /help (which prints the
-	// cheatsheet to the transcript). During approval/question/popup/edit
-	// forms ? is consumed by the form itself.
-	showHelpHint := !h.QuestionPending && !h.ApprovalPending && !h.PopupOpen && !h.EditingCommand
+	// cheatsheet to the transcript). During approval/question/skill-gate/
+	// popup/edit forms ? is consumed by the form itself.
+	showHelpHint := !h.QuestionPending && !h.ApprovalPending && !h.PopupOpen && !h.EditingCommand && !h.SkillGatePending
 
 	// The mouse hint is only actionable while idle, but it is appended after
 	// the queue hint rather than inside the idle branch: the footer is
@@ -72,6 +75,8 @@ func Footer(h FooterHints) string {
 	var segs []string
 	if h.QuestionPending {
 		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
+	} else if h.SkillGatePending {
+		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
 	} else if h.ApprovalPending && !h.EditingCommand {
 		// One hint per key: this used to emit Enter twice, labelled "arm" and
 		// "submit", in the same row.

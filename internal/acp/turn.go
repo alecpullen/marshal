@@ -313,6 +313,10 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 				"output":     capToolText(output),
 			}, true
 		}
+	case session.EventPendingSkillGateChanged:
+		// The gate reaches the client through the permission request
+		// bridge, not as a transcript update.
+		return nil, false
 	}
 	return nil, false
 }
@@ -472,6 +476,11 @@ func (m *TurnManager) runTurn(
 	// answer is delivered at most once per question identity (F-BUG-51).
 	var turnAnswered sync.Map
 
+	// turnGateAnswered guards the skill-gate permission request so a
+	// duplicate pending publish cannot double-request the client (same
+	// identity pattern as turnAnswered).
+	var turnGateAnswered sync.Map
+
 	// forward dispatches one session event to the ACP client. Defined
 	// once and used in both the main loop and the post-run drain.
 	forward := func(ev pubsub.Event[session.Event]) {
@@ -558,6 +567,32 @@ func (m *TurnManager) runTurn(
 						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
 							"session", sessionID, "err", err)
 						pending.Respond(session.UnansweredAnswers(pending.Questions))
+					}
+				}()
+			}
+		}
+
+		// Drive skill-gate prompts through the permission bridge in a
+		// goroutine so the forwarder never blocks on the bridge (mirrors
+		// the approval/question bridges, F-CON-54). ACP clients see an
+		// approve/deny pair: approve = allow once, deny = sticky deny.
+		if ev.Type == session.EventPendingSkillGateChanged &&
+			ev.Payload.PendingSkillGate != nil {
+			sg := ev.Payload.PendingSkillGate
+			if _, loaded := turnGateAnswered.LoadOrStore(sg.ResponseChan, true); loaded {
+				return
+			}
+			if m.bridge == nil {
+				// Without a bridge the runner is blocked on ResponseChan.
+				// Deny so the turn proceeds; log the misconfig (F-SEC-13).
+				sg.Respond(session.SkillGateDeny)
+				slog.Default().Warn("acp: skill gate prompt arrived but no permission bridge; denied",
+					"session", sessionID, "skill", sg.Skill)
+			} else {
+				go func() {
+					if _, err := m.bridge.RequestSkillGate(turnCtx, sessionID, sg); err != nil {
+						slotCancel()
+						subCancel()
 					}
 				}()
 			}

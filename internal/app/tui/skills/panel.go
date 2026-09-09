@@ -305,6 +305,32 @@ func (p *Panel) buildFields() []*settings.Field {
 		settings.NewField("header.installed", "Installed skills", settings.KindHeader),
 	}
 
+	// The gate is a session-scope control: flipping it here never edits the
+	// config, it only overrides this session (and re-enabling clears the
+	// sticky decisions with it). Guarded on state so nil-state tests and
+	// stateless panels still render.
+	if p.state != nil {
+		gate := settings.NewField("action.gate", "Skill load gate", settings.KindAction)
+		if p.state.SkillGateEnabled() {
+			if p.state.Config.Skills.LoadGateThresholdTokens <= 0 {
+				// Threshold 0 disables the gate in the runner even while
+				// the session switch is on; say so instead of "≤ 0 tokens".
+				settings.SetFieldDesc(gate, "on (inert — load_gate_threshold_tokens is 0, which disables the gate) · enter to turn off")
+			} else {
+				settings.SetFieldDesc(gate, fmt.Sprintf("on — prompts when the context window is ≤ %d tokens · enter to turn off", p.state.Config.Skills.LoadGateThresholdTokens))
+			}
+		} else {
+			settings.SetFieldDesc(gate, "off — skill.load runs without prompting · enter to turn on (clears decisions)")
+		}
+		settings.SetFieldAct(gate, func() tea.Cmd {
+			p.state.SkillGateSetEnabled(!p.state.SkillGateEnabled())
+			p.status = "skill load gate " + map[bool]string{true: "on", false: "off"}[p.state.SkillGateEnabled()]
+			p.list.Refresh()
+			return nil
+		})
+		fields = append(fields, gate)
+	}
+
 	for _, s := range scoped {
 		s := s
 		name := s.Skill.Name
@@ -326,6 +352,28 @@ func (p *Panel) buildFields() []*settings.Field {
 		none := settings.NewField("none", "No skills installed", settings.KindHeader)
 		settings.SetFieldTitle(none, "(none)")
 		fields = append(fields, none)
+	}
+
+	// One row per sticky session-scope decision, so a deny that has gone
+	// stale (or an allow that outlived its welcome) can be flipped without
+	// restarting the session. Clearing never edits the config either.
+	if p.state != nil {
+		for _, d := range p.state.SkillGateDecisions() {
+			d := d
+			title := "✓ " + d.Skill + " (allowed)"
+			if !d.Allowed {
+				title = fmt.Sprintf("✕ %s (denied ×%d)", d.Skill, d.Count)
+			}
+			dec := settings.NewField("gate."+d.Skill, title, settings.KindAction)
+			settings.SetFieldDesc(dec, "enter to clear — the next load re-prompts")
+			settings.SetFieldAct(dec, func() tea.Cmd {
+				p.state.SkillGateClearDecision(d.Skill)
+				p.status = "cleared " + d.Skill + " — next load re-prompts"
+				p.list.Refresh()
+				return nil
+			})
+			fields = append(fields, dec)
+		}
 	}
 
 	install := settings.NewField("action.install", "＋ Install skill", settings.KindAction)

@@ -119,7 +119,9 @@ func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 	state := session.New(config.Config{}, work, time.Now(), session.Persistence{})
 	p := NewPanel(home, work, true, state, nil)
 
-	// With no skills installed, the only selectable row is "＋ Install skill".
+	// With no skills installed, the selectable rows are the gate toggle and
+	// "＋ Install skill"; move down to the install row before pressing Enter.
+	p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(p.stack) == 0 {
 		t.Fatalf("expected install frame pushed onto stack")
@@ -315,5 +317,115 @@ func TestFooterCountTracksFilter(t *testing.T) {
 	p.list.Refresh()
 	if got := p.countLabel(); got != "1 skill" {
 		t.Fatalf("filtered count = %q, want %q", got, "1 skill")
+	}
+}
+
+// The gate status row is the panel's live control for the session-scope
+// skill-load gate: it must exist whenever the panel has a session, describe
+// the configured threshold, and toggle the session state (never the config)
+// through the same act closure Enter drives.
+func TestGateStatusFieldTogglesSessionState(t *testing.T) {
+	p, _ := newAutoloadPanel(t)
+	p.list.Refresh()
+
+	gate := fieldByID(t, settings.FieldListRows(p.list), "action.gate")
+	if !p.state.SkillGateEnabled() {
+		t.Fatal("gate should start enabled for a fresh session")
+	}
+	if got := settings.FieldDesc(gate); !strings.Contains(got, "131072") {
+		t.Fatalf("gate desc = %q, want it to mention the default threshold", got)
+	}
+
+	gate.Act()
+	if p.state.SkillGateEnabled() {
+		t.Fatal("gate still enabled after act")
+	}
+	if p.status != "skill load gate off" {
+		t.Fatalf("status = %q, want %q", p.status, "skill load gate off")
+	}
+	if got := settings.FieldDesc(fieldByID(t, settings.FieldListRows(p.list), "action.gate")); !strings.Contains(got, "off") {
+		t.Fatalf("gate desc = %q, want the off wording after toggling", got)
+	}
+
+	// Re-enabling clears every sticky decision with it.
+	p.state.SkillGateRecordDeny("debug")
+	gate.Act()
+	if !p.state.SkillGateEnabled() {
+		t.Fatal("gate not re-enabled after second act")
+	}
+	if got := p.status; got != "skill load gate on" {
+		t.Fatalf("status = %q, want %q", got, "skill load gate on")
+	}
+	if n := len(p.state.SkillGateDecisions()); n != 0 {
+		t.Fatalf("decisions after re-enable = %d, want 0", n)
+	}
+}
+
+// Sticky decisions render as one clearable row each: ✕ for a deny (with its
+// counter), ✓ for an allow. Clearing drops only that decision so the next
+// load re-prompts.
+func TestGateDecisionRowsRenderAndClear(t *testing.T) {
+	p, _ := newAutoloadPanel(t)
+
+	p.state.SkillGateRecordDeny("debug")
+	p.state.SkillGateRecordDeny("debug")
+	p.state.SkillGateRecordAllow("other", false)
+	p.list.Refresh()
+
+	rows := settings.FieldListRows(p.list)
+	if got, want := settings.FieldTitle(fieldByID(t, rows, "gate.debug")), "✕ debug (denied ×2)"; got != want {
+		t.Fatalf("deny title = %q, want %q", got, want)
+	}
+	if got, want := settings.FieldTitle(fieldByID(t, rows, "gate.other")), "✓ other (allowed)"; got != want {
+		t.Fatalf("allow title = %q, want %q", got, want)
+	}
+
+	fieldByID(t, rows, "gate.debug").Act()
+	if p.status != "cleared debug — next load re-prompts" {
+		t.Fatalf("status = %q, want the cleared message", p.status)
+	}
+	p.list.Refresh()
+	for _, f := range settings.FieldListRows(p.list) {
+		if settings.FieldID(f) == "gate.debug" {
+			t.Fatal("gate.debug row still present after clear")
+		}
+	}
+	// Clearing one decision must not disturb the others.
+	foundOther := false
+	for _, f := range settings.FieldListRows(p.list) {
+		if settings.FieldID(f) == "gate.other" {
+			foundOther = true
+		}
+	}
+	if !foundOther {
+		t.Fatal("gate.other row vanished after clearing debug")
+	}
+}
+
+// Re-enabling the gate wipes the sticky decisions (the session
+// SkillGateSetEnabled contract), so the panel's decision rows must
+// disappear with them.
+func TestGateDecisionRowsVanishAfterReEnable(t *testing.T) {
+	p, _ := newAutoloadPanel(t)
+	p.state.SkillGateRecordDeny("debug")
+	p.state.SkillGateSetEnabled(false)
+	p.state.SkillGateSetEnabled(true)
+	p.list.Refresh()
+
+	for _, f := range settings.FieldListRows(p.list) {
+		if strings.HasPrefix(settings.FieldID(f), "gate.") {
+			t.Fatalf("decision row %q survived a gate re-enable", settings.FieldID(f))
+		}
+	}
+}
+
+// Panels without a session (nil state) must still build their field list —
+// the gate rows are simply absent rather than a nil dereference.
+func TestGateRowsOmittedWithoutState(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil, nil)
+	for _, f := range settings.FieldListRows(p.list) {
+		if id := settings.FieldID(f); id == "action.gate" || strings.HasPrefix(id, "gate.") {
+			t.Fatalf("gate row %q rendered without a session state", id)
+		}
 	}
 }

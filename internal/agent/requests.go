@@ -135,3 +135,44 @@ func recordQuestionAnswers(state *session.State, answers []session.Answer) {
 		state.AddMessage(session.RoleUser, strings.Join(lines, "\n"), session.ContentTypePlain)
 	}
 }
+
+// requestSkillGate blocks until the TUI (or the ACP permission bridge)
+// resolves the pending skill-gate prompt, or ctx is cancelled. Mirrors
+// requestApproval's protocol with the dedicated PendingSkillGate slot:
+// set PendingSkillGate, wait on ResponseChan, clear PendingSkillGate.
+// There is no wall-clock timeout; the wait ends on a choice, ctx
+// cancellation (turn cancel/shutdown), or State.ResolvePendingForShutdown
+// (which answers with SkillGateDeny).
+func (r *Runner) requestSkillGate(ctx context.Context, name string) (session.SkillGateChoice, error) {
+	description := ""
+	if r.SkillIndex != nil {
+		if skill, ok := r.SkillIndex.Load(name); ok {
+			description = skill.Description
+		}
+	}
+	_, window := r.State.TurnUsage()
+	windowLabel := "unknown"
+	if window > 0 {
+		windowLabel = "≤ " + strutil.CompactTokens(window) + " tokens"
+	}
+	sg := &session.PendingSkillGate{
+		Skill:        name,
+		Description:  description,
+		Reason:       fmt.Sprintf("Context window is %s; loading skills consumes context. Allow this load?", windowLabel),
+		ResponseChan: make(chan session.SkillGateChoice, 1),
+	}
+	r.State.SetPendingSkillGate(sg)
+	label := fmt.Sprintf("waiting for skill gate decision: %s", name)
+	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
+
+	select {
+	case choice := <-sg.ResponseChan:
+		r.State.SetPendingSkillGate(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return choice, nil
+	case <-ctx.Done():
+		r.State.SetPendingSkillGate(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return session.SkillGateDeny, ctx.Err()
+	}
+}

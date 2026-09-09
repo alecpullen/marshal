@@ -214,18 +214,19 @@ type Model struct {
 	// trustRefresh, when set, advances the permanent-trust config hash after
 	// an interactive project-config save succeeds: the user approved the new
 	// config from a trusted session, so the next launch must not re-prompt.
-	trustRefresh  func(workingDir string)
-	memoryDB      *db.DB
-	memoryProject int64
-	homeDir       string
-	dataDir       string
-	workDir       string
-	skillIndex    *skills.Index
-	cmdRegistry   *commands.Registry
-	agentCancel   context.CancelFunc
-	approvalMode  policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
-	approvalModel *approvalModel
-	questionModel *questionModel
+	trustRefresh   func(workingDir string)
+	memoryDB       *db.DB
+	memoryProject  int64
+	homeDir        string
+	dataDir        string
+	workDir        string
+	skillIndex     *skills.Index
+	cmdRegistry    *commands.Registry
+	agentCancel    context.CancelFunc
+	approvalMode   policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
+	approvalModel  *approvalModel
+	questionModel  *questionModel
+	skillGateModel *skillGateModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -1434,6 +1435,9 @@ func New(state *session.State, opts ...Option) Model {
 	if q := m.state.PendingQuestion(); q != nil {
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
 	}
+	if sg := m.state.PendingSkillGate(); sg != nil {
+		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
+	}
 
 	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
@@ -1697,6 +1701,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.questionModel != nil {
 			m.questionModel.SetSize(max(m.leftWidth-4, 30))
+		}
+		if m.skillGateModel != nil {
+			m.skillGateModel.SetSize(max(m.leftWidth-4, 30))
 		}
 		// Refresh git state on focus/resize: a fresh view should reflect
 		// current branch even if it changed in another tool.
@@ -2212,7 +2219,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
 	// tool decision is pending. These must be intercepted before the
 	// approval/question routing below, which would otherwise swallow them.
-	if m.hasPendingApproval() || m.state.PendingQuestion() != nil {
+	if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSkillGate() != nil {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
@@ -2229,6 +2236,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+	}
+
+	// Inline skill-gate dialog: while a skill load gate is pending, route
+	// messages to it (scroll gestures first, mirroring the approval and
+	// question forms).
+	if sg := m.state.PendingSkillGate(); sg != nil {
+		if updated, cmd, handled := m.scrollTranscript(msg); handled {
+			return updated, cmd
+		}
+		return m.handleSkillGate(msg, sg)
 	}
 
 	// Inline approval chooser: when a tool call is pending, route every
@@ -2639,6 +2656,42 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 	return m, nil
 }
 
+// handleSkillGate routes messages to the inline skill-gate dialog while a
+// skill load gate is pending. The decision is responded on the original
+// pending struct; per-skill and allow-all decisions are recorded on the
+// session state here so the runner's gate sees them on the next attempt.
+func (m Model) handleSkillGate(msg tea.Msg, sg *session.PendingSkillGate) (tea.Model, tea.Cmd) {
+	if m.skillGateModel == nil || m.skillGateModel.sg != sg {
+		// Build lazily — and rebuild when the open dialog is bound to a
+		// pending struct that was superseded while it was up (parity with
+		// the approval/question pending-identity guards, F-BUG-51 class).
+		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
+		return m, nil
+	}
+	gm, cmd := m.skillGateModel.Update(msg)
+	m.skillGateModel = gm
+	if !gm.IsDone() {
+		return m, cmd
+	}
+	choice := gm.Choice()
+	m.skillGateModel = nil
+	switch choice {
+	case session.SkillGateAllowSkill:
+		m.state.SkillGateRecordAllow(sg.Skill, false)
+	case session.SkillGateAllowAll:
+		m.state.SkillGateRecordAllow(sg.Skill, true)
+	}
+	// Respond only if the slot still holds this prompt: a pending that
+	// was resolved out-from-under the dialog (shutdown race) must not
+	// have its replacement cleared without a response.
+	if cur := m.state.PendingSkillGate(); cur == sg {
+		sg.Respond(choice)
+		m.state.SetPendingSkillGate(nil)
+	}
+	m.refreshViewport()
+	return m, nil
+}
+
 // scrollTranscript routes viewport scroll gestures to the transcript
 // viewport so the user can review history while an approval or question
 // panel is open. It returns (model, cmd, true) when the message was handled.
@@ -2721,7 +2774,15 @@ func (m Model) inputChromeRows() int {
 	if sd := m.state.SDDProgress(); sd.Active {
 		rows++ // SDD hint row
 	}
-	if q := m.state.PendingQuestion(); q != nil {
+	if sg := m.state.PendingSkillGate(); sg != nil {
+		content := ""
+		if m.skillGateModel != nil {
+			content = m.skillGateModel.View()
+		} else {
+			content = renderSkillGatePanel(sg, max(m.leftWidth-4, 1))
+		}
+		rows += lipgloss.Height(content)
+	} else if q := m.state.PendingQuestion(); q != nil {
 		content := ""
 		if m.questionModel != nil {
 			content = m.questionModel.View()
@@ -2757,7 +2818,7 @@ func (m Model) inputChromeRows() int {
 
 func (m Model) inputAreaRows() int {
 	rows := m.inputChromeRows()
-	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() {
+	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)

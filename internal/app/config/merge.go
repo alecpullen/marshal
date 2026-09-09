@@ -65,6 +65,7 @@ func merge(cfg *Config, file configFile) error {
 		}
 		set(&cfg.Skills.MaxActive, file.Skills.MaxActive)
 		set(&cfg.Skills.BodyFullTurns, file.Skills.BodyFullTurns)
+		set(&cfg.Skills.LoadGateThresholdTokens, file.Skills.LoadGateThresholdTokens)
 	}
 	if file.Indexing != nil {
 		set(&cfg.Indexing.UseTreesitter, file.Indexing.UseTreesitter)

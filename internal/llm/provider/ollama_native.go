@@ -273,7 +273,60 @@ func ollamaUsageFrom(chunk ollamaChatChunk) *schema.TokenUsage {
 // Chat posts to /api/chat. HTTP-level failures return synchronously; once
 // the channel is handed back, failures arrive as one ChatEventError followed
 // by channel close (same contract as OpenAICompatible.Chat).
+//
+// One transparent retry exists, mirroring OpenAICompatible.Chat: when the
+// server's chat template demands the system message first (stock qwen3
+// templates on Ollama reject mid-conversation system messages with a 500),
+// the request is retried once with trailing system messages demoted to user
+// messages. marshal's wire legitimately carries mid-turn system messages
+// (skill hints, correction nudges), and demotion is the only way strict
+// templates can serve them at all. The rejection can arrive as a
+// synchronous HTTP 500 or as an embedded {"error":...} line inside an
+// HTTP-200 NDJSON stream, which is why the first stream event is peeked at
+// before the channel is handed back.
 func (p *OllamaNative) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	events, err := p.chat(ctx, req)
+	if err != nil {
+		if isStrictSystemPositionError(err) && hasTrailingSystemMessage(req.Messages) {
+			req.Messages = demoteTrailingSystemMessages(req.Messages)
+			return p.chat(ctx, req)
+		}
+		return nil, err
+	}
+
+	// Peek at the first event so an embedded strict-template rejection can
+	// still trigger the demote-and-retry path.
+	var first schema.ChatEvent
+	var ok bool
+	select {
+	case first, ok = <-events:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if !ok {
+		closed := make(chan schema.ChatEvent)
+		close(closed)
+		return closed, nil
+	}
+	if first.Type == schema.ChatEventError && first.Err != nil &&
+		isStrictSystemPositionError(first.Err) && hasTrailingSystemMessage(req.Messages) {
+		req.Messages = demoteTrailingSystemMessages(req.Messages)
+		return p.chat(ctx, req)
+	}
+
+	out := make(chan schema.ChatEvent, 1)
+	out <- first
+	go func() {
+		defer close(out)
+		for ev := range events {
+			out <- ev
+		}
+	}()
+	return out, nil
+}
+
+// chat performs one /api/chat round-trip without any retry logic.
+func (p *OllamaNative) chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
 	if len(req.Tools) > 0 && !p.modelSupportsTools(ctx, req.Model) {
 		req.Tools = nil
 	}

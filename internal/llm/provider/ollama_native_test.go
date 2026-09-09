@@ -614,3 +614,139 @@ func TestOllamaProbeCapabilitiesReasoning(t *testing.T) {
 		t.Fatalf("ToolCalling = %v, want true", caps.ToolCalling)
 	}
 }
+
+// A server whose chat template demands the system message first (stock
+// qwen3 templates on Ollama) rejects marshal's mid-wire system messages
+// with a 500. Chat must retry once with trailing system messages demoted
+// to user, transparently — the same contract the OpenAI-compatible
+// backend implements.
+func TestOllamaChatRetriesWithDemotedSystemMessagesOnStrictTemplate(t *testing.T) {
+	type seenMsg struct {
+		Role string `json:"role"`
+	}
+	var requests [][]seenMsg
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []seenMsg `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requests = append(requests, body.Messages)
+		strict := false
+		for i, m := range body.Messages {
+			if i > 0 && m.Role == "system" {
+				strict = true
+			}
+		}
+		if strict {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"Error: Jinja Exception: System message must be at the beginning."}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	req := chatReq(false)
+	req.Messages = []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "you are an agent"},
+		{Role: schema.RoleUser, Content: "hi"},
+		{Role: schema.RoleSystem, Content: "call a tool or answer"},
+	}
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Delta != "ok" {
+		t.Fatalf("first event = %+v ok=%v, want delta %q", ev, ok, "ok")
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("server saw %d requests, want 2 (original + demoted retry)", len(requests))
+	}
+	if requests[0][2].Role != "system" {
+		t.Fatalf("first attempt should be sent unmodified, got role %q", requests[0][2].Role)
+	}
+	if requests[1][2].Role != "user" {
+		t.Fatalf("retry should demote trailing system to user, got role %q", requests[1][2].Role)
+	}
+	if requests[1][0].Role != "system" {
+		t.Fatalf("leading system message must stay system, got role %q", requests[1][0].Role)
+	}
+}
+
+// No trailing system message means no retry — the 500 surfaces as-is.
+func TestOllamaChatDoesNotRetryStrictTemplateWhenNoTrailingSystem(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"Error: Jinja Exception: System message must be at the beginning."}`))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	_, err := p.Chat(t.Context(), chatReq(false))
+	if err == nil {
+		t.Fatal("Chat() err = nil, want the provider error")
+	}
+	if calls != 1 {
+		t.Fatalf("server saw %d requests, want 1 (no retry without trailing system)", calls)
+	}
+}
+
+// Ollama can also surface the strict-template rejection inside an
+// HTTP-200 NDJSON stream (an {"error":...} line) rather than as a status
+// code. The demote-and-retry path must trigger on embedded stream errors
+// too.
+func TestOllamaChatRetriesOnEmbeddedStrictTemplateError(t *testing.T) {
+	type seenMsg struct {
+		Role string `json:"role"`
+	}
+	var requests [][]seenMsg
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []seenMsg `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requests = append(requests, body.Messages)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		for i, m := range body.Messages {
+			if i > 0 && m.Role == "system" {
+				_, _ = w.Write([]byte(`{"error":"Error: Jinja Exception: System message must be at the beginning."}` + "\n"))
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":false}` + "\n"))
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant"},"done":true,"done_reason":"stop"}` + "\n"))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	req := chatReq(true)
+	req.Messages = []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "you are an agent"},
+		{Role: schema.RoleUser, Content: "hi"},
+		{Role: schema.RoleSystem, Content: "call a tool or answer"},
+	}
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Delta != "ok" {
+		t.Fatalf("first event = %+v ok=%v, want delta %q", ev, ok, "ok")
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("server saw %d requests, want 2 (original + demoted retry)", len(requests))
+	}
+	if requests[1][2].Role != "user" {
+		t.Fatalf("retry should demote trailing system to user, got role %q", requests[1][2].Role)
+	}
+	if requests[1][0].Role != "system" {
+		t.Fatalf("leading system message must stay system, got role %q", requests[1][0].Role)
+	}
+}

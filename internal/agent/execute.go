@@ -224,6 +224,19 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, err.Error(), toolCallID)}, nil
 	}
 
+	// Skill load gate: at small (or unknown) context windows every
+	// skill.load — including re-fetches of an active skill — prompts the
+	// user before loading, so a small model cannot burn its window on
+	// unneeded skill bodies. Sits after ValidateArgs (a call that cannot
+	// parse never prompts) and before the policy loop, so the copilot-mode
+	// Confirm→Allow transform can never auto-approve it. Subagent/swarm
+	// runners never gate (role != general); auto mode auto-allows.
+	if toolName == "skill.load" && r.role() == RoleGeneral {
+		if msgs, handled := r.skillLoadGate(ctx, tool, args, argsMap, toolCallID); handled {
+			return msgs, nil
+		}
+	}
+
 	// Cacheable read-only cache lookup.
 	if tool.Cacheable {
 		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
@@ -697,10 +710,12 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 }
 
 // requiresSerialTool is the deny list of tools that share a single
-// process-wide slot (today: State.PendingQuestion). They must never run
-// concurrently inside executeActions, or two calls will clobber each
-// other and leak the inner ResponseChan. They are still admitted by
-// allReadOnly; executeActions is responsible for ordering them.
+// process-wide slot (today: State.PendingQuestion, and skill.load shares
+// State.PendingSkillGate the same way question tools share
+// PendingQuestion). They must never run concurrently inside
+// executeActions, or two calls will clobber each other and leak the inner
+// ResponseChan. They are still admitted by allReadOnly; executeActions is
+// responsible for ordering them.
 //
 // If future question tool aliases are added (for example a renamed
 // "question.ask.v2"), every spelling must be added to this switch.
@@ -708,7 +723,7 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 // parallel-batch race on the single PendingQuestion slot.
 func requiresSerialTool(name string) bool {
 	switch name {
-	case "question.ask", "ask_user":
+	case "question.ask", "ask_user", "skill.load":
 		return true
 	}
 	return false
@@ -774,4 +789,76 @@ func (r *Runner) logToolCall(event registry.AuditEvent) {
 		event.FinishReason = r.getTurnFinishReason()
 	}
 	r.State.LogToolCall(event)
+}
+
+// skillLoadGate implements the skill-load gate for one skill.load call.
+// Returns (messages, true) when the gate fully handled the call (sticky
+// deny, cancelled prompt, or a deny chosen in the prompt); (nil, false)
+// means proceed with normal dispatch. The prompt path serializes on
+// approvalMu because State.PendingSkillGate is a single slot, exactly like
+// requestApproval serializes on State.PendingApproval.
+func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args json.RawMessage, argsMap map[string]interface{}, toolCallID string) ([]schema.ChatMessage, bool) {
+	threshold := r.State.Config.Skills.LoadGateThresholdTokens
+	if threshold <= 0 {
+		return nil, false
+	}
+	name, _ := argsMap["name"].(string)
+	if name == "" {
+		return nil, false // unparseable name: the loader's own error path handles it
+	}
+	if r.SkillIndex != nil {
+		if _, ok := r.SkillIndex.Load(name); !ok {
+			return nil, false // unknown skill: the loader's "unknown skill" error is more useful than a prompt
+		}
+	}
+	_, window := r.State.TurnUsage()
+	switch r.State.SkillGateApplies(name, threshold, window) {
+	case session.SkillGateProceed:
+		return nil, false
+	case session.SkillGateDenied:
+		r.State.SkillGateRecordDeny(name)
+		return r.skillGateDenyMessages(name, args, toolCallID), true
+	}
+	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+		r.State.SkillGateRecordAllow(name, false)
+		return nil, false
+	}
+	r.approvalMu.Lock()
+	choice, waitErr := r.requestSkillGate(ctx, name)
+	r.approvalMu.Unlock()
+	if waitErr != nil {
+		return []schema.ChatMessage{r.buildToolErrorMessage("skill.load", "skill load was not approved (prompt cancelled)", toolCallID)}, true
+	}
+	switch choice {
+	case session.SkillGateAllowOnce:
+		return nil, false
+	case session.SkillGateAllowSkill:
+		r.State.SkillGateRecordAllow(name, false)
+		return nil, false
+	case session.SkillGateAllowAll:
+		r.State.SkillGateRecordAllow(name, true)
+		return nil, false
+	default:
+		if ctx.Err() != nil {
+			// A shutdown-sent deny is a cancellation, not a user decision:
+			// record nothing (a cancelled prompt is not a deny).
+			return []schema.ChatMessage{r.buildToolErrorMessage("skill.load", "skill load was not approved (prompt cancelled)", toolCallID)}, true
+		}
+		r.State.SkillGateRecordDeny(name)
+		return r.skillGateDenyMessages(name, args, toolCallID), true
+	}
+}
+
+// skillGateDenyMessages builds the model-facing denial: the audit event
+// (with the call's args and the refused skill's name, so the audit log
+// can distinguish which load was denied), the tool-call counter, and the
+// guidance message verbatim from the spec.
+func (r *Runner) skillGateDenyMessages(name string, args json.RawMessage, toolCallID string) []schema.ChatMessage {
+	tool, _ := r.Registry.Lookup("skill.load")
+	event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: "skill.load", Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied by skill load gate: %s", name))
+	r.logToolCall(event)
+	r.countToolCall(true, false)
+	return []schema.ChatMessage{r.buildToolErrorMessage("skill.load",
+		fmt.Sprintf("Skill load denied: you do not need the skill %q at this point. You may attempt to load it again later if the situation changes.", name),
+		toolCallID)}
 }

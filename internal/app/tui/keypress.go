@@ -136,9 +136,10 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "?":
 		// ? on an empty textarea prints the help cheatsheet to the
 		// transcript, same as typing /help. With input already present
-		// (or mid approval/question/command-edit), ? falls through to
-		// the trailing m.input.Update(msg) below and is typed literally.
-		if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && !m.hasPendingApproval() {
+		// (or mid approval/question/skill-gate/command-edit), ? falls
+		// through to the trailing m.input.Update(msg) below and is typed
+		// literally.
+		if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil {
 			mm, cmd := m.dispatchCommand("/help")
 			return mm, cmd, true
 		}

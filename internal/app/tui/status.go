@@ -144,6 +144,9 @@ func (m Model) modeSegment() string {
 	if m.hasPendingApproval() {
 		return "approval"
 	}
+	if m.state.PendingSkillGate() != nil {
+		return "skill gate"
+	}
 	if m.state.PendingQuestion() != nil {
 		return "answering"
 	}
@@ -337,6 +340,7 @@ func (m Model) footerHints() help.FooterHints {
 		EditingCommand:       m.editingCommand,
 		ApprovalPending:      m.hasPendingApproval(),
 		QuestionPending:      m.state.PendingQuestion() != nil,
+		SkillGatePending:     m.state.PendingSkillGate() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,

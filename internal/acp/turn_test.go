@@ -2576,3 +2576,116 @@ func TestFinishTurnSkipsTelemetryWhenStateIsNil(t *testing.T) {
 		t.Fatal("finishTurn emitted telemetry despite rt.State being nil")
 	}
 }
+
+// TestPromptTurnBridgesSkillGateToPermissionClient mirrors the
+// broker-publish pattern of TestPromptTurnBridgesPendingApprovalToPermissionClient
+// for the skill-load gate: the runner publishes
+// session.EventPendingSkillGateChanged and blocks on the pending's
+// ResponseChan; the forwarder must route the gate through the permission
+// bridge, and the client's approve decision must resolve the pending as
+// SkillGateAllowOnce.
+func TestPromptTurnBridgesSkillGateToPermissionClient(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	pendingCh := make(chan session.SkillGateChoice, 1)
+	// The runner consumes the delivered choice and forwards it here so the
+	// test can assert the mapped value after PromptTurn returns.
+	gotChoice := make(chan session.SkillGateChoice, 1)
+	pending := &session.PendingSkillGate{
+		Skill:        "go-testing",
+		Description:  "Load the go-testing skill",
+		Reason:       "small-context model",
+		ResponseChan: pendingCh,
+	}
+	client := &fakePermissionClient{decision: PermissionDecision{Approved: true}}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingSkillGateChanged, session.Event{PendingSkillGate: pending})
+					// Wait for the bridge to deliver the mapped choice.
+					select {
+					case got := <-pendingCh:
+						gotChoice <- got
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+		Perms:  client,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("client.calls = %d, want 1", client.calls)
+	}
+	if !client.gotReq.SkillGate {
+		t.Fatalf("client.gotReq.SkillGate = false, want true")
+	}
+	if client.gotReq.ToolName != "skill.load" {
+		t.Fatalf("client.gotReq.ToolName = %q, want skill.load", client.gotReq.ToolName)
+	}
+	if client.gotReq.Command != "go-testing" {
+		t.Fatalf("client.gotReq.Command = %q, want go-testing", client.gotReq.Command)
+	}
+	select {
+	case got := <-gotChoice:
+		if got != session.SkillGateAllowOnce {
+			t.Fatalf("pending resolved with %v, want SkillGateAllowOnce", got)
+		}
+	default:
+		t.Fatal("pending was not resolved with a choice")
+	}
+}
+
+// TestForwarderDeniesSkillGateWhenBridgeNil mirrors
+// TestForwarderDeniesPendingApprovalWhenBridgeNil for the skill-load gate
+// (F-SEC-13): when the permission bridge is nil and a pending skill gate
+// arrives, the forwarder sends a deny on the ResponseChan instead of
+// leaving the runner blocked forever.
+func TestForwarderDeniesSkillGateWhenBridgeNil(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	response := make(chan session.SkillGateChoice, 1)
+	pending := &session.PendingSkillGate{
+		Skill:        "go-testing",
+		Description:  "Load the go-testing skill",
+		ResponseChan: response,
+	}
+
+	// No Perms → bridge is nil.
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingSkillGateChanged, session.Event{PendingSkillGate: pending})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+		// Perms is nil → bridge stays nil.
+	})
+
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("PromptTurn() error = %v (expected nil, deny should unblock runner)", err)
+	}
+
+	select {
+	case got := <-response:
+		if got != session.SkillGateDeny {
+			t.Fatalf("expected SkillGateDeny, got %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no response on ResponseChan; forwarder is stuck (F-SEC-13)")
+	}
+}

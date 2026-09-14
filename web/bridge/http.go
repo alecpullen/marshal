@@ -129,6 +129,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/pending/{id}/deny", s.denyPending)
 	s.mux.HandleFunc("GET /api/repos/{id}/issues", s.listRepoIssues)
 	s.mux.HandleFunc("POST /api/repos/{id}/issues/{number}/spawn", s.spawnFromIssue)
+	s.mux.HandleFunc("GET /api/disk", s.diskStatus)
+	s.mux.HandleFunc("POST /api/prune", s.pruneDisk)
 	s.mux.HandleFunc("GET /api/audit", s.listAudit)
 	// NOTE: with a token configured this stream requires an
 	// Authorization header, which the browser-native EventSource API

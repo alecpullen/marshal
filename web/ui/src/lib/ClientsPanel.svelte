@@ -9,6 +9,11 @@
   let error = $state<string | null>(null)
   let newName = $state('')
   let newAutonomous = $state(false)
+  // An emptied number input binds to null (Svelte's to_number), which —
+  // like 0 — means "no quota" when the payload is built in create().
+  let newMaxConcurrent = $state<number | null>(null)
+  let newMaxPerDay = $state<number | null>(null)
+  let newAllowedRepos = $state('')
   let created = $state<CreateClientResult | null>(null)
   let copied = $state(false)
 
@@ -27,9 +32,23 @@
   async function create() {
     error = null
     try {
-      created = await createClient({ name: newName, autonomous: newAutonomous })
+      // 0 or empty means "no quota": the API treats an absent field as
+      // unlimited, so the keys are dropped rather than sent as 0.
+      const maxConcurrent = newMaxConcurrent && newMaxConcurrent > 0 ? newMaxConcurrent : undefined
+      const maxPerDay = newMaxPerDay && newMaxPerDay > 0 ? newMaxPerDay : undefined
+      const allowedRepos = newAllowedRepos.split(',').map((r) => r.trim()).filter((r) => r !== '')
+      created = await createClient({
+        name: newName,
+        autonomous: newAutonomous,
+        ...(maxConcurrent ? { maxConcurrent } : {}),
+        ...(maxPerDay ? { maxPerDay } : {}),
+        ...(allowedRepos.length > 0 ? { allowedRepos } : {}),
+      })
       newName = ''
       newAutonomous = false
+      newMaxConcurrent = null
+      newMaxPerDay = null
+      newAllowedRepos = ''
       await refresh()
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -97,6 +116,29 @@
       <input type="checkbox" bind:checked={newAutonomous} />
       Autonomous (skip confirmation)
     </label>
+    <div class="flex gap-2">
+      <input
+        type="number"
+        min="0"
+        class="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm"
+        placeholder="Max concurrent"
+        bind:value={newMaxConcurrent}
+      />
+      <input
+        type="number"
+        min="0"
+        class="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm"
+        placeholder="Max per day"
+        bind:value={newMaxPerDay}
+      />
+    </div>
+    <p class="text-xs text-muted">Quotas are optional — 0 or empty means unlimited.</p>
+    <input
+      type="text"
+      class="rounded-md border border-border bg-bg px-3 py-2 text-sm"
+      placeholder="Allowed repos (owner/repo, comma-separated)"
+      bind:value={newAllowedRepos}
+    />
     <Button onclick={create} disabled={!newName.trim()}>Create client</Button>
   </div>
 

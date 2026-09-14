@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Worktree is the isolated checkout a run works in. The user's main
@@ -79,15 +80,38 @@ type FakeGitOps struct {
 	Pruned    bool
 	RemoveErr error
 	// Merges records Merge calls by branch; MergeErr, when set, is returned
-	// by Merge so tests can drive the conflict path.
-	Merges   []string
-	MergeErr error
-	Aborts   int
-	Deleted  []string
+	// by Merge so tests can drive the conflict path. MergeFunc, when set,
+	// runs after the call is recorded and overrides MergeErr — tests use it
+	// to move HEAD the way a real merge does.
+	Merges    []string
+	MergeErr  error
+	MergeFunc func(dir, branch string) error
+	Aborts    int
+	Deleted   []string
 	// DiffStatOut backs DiffNumstat; DiffOut backs Diff and DiffPath.
 	DiffStatOut string
 	// AbbrevRef is returned by RevParse for "--abbrev-ref HEAD".
 	AbbrevRef string
+	// SquashMerges records SquashMerge calls by branch; SquashMergeErr, when
+	// set, is returned by SquashMerge so tests can drive the conflict path.
+	SquashMerges    []string
+	SquashMergeErr  error
+	SquashMergeFunc func(dir, branch string) error
+	// AheadBehindFunc, BranchAgeFunc, ListWorktreesFunc and CheckIgnoreFunc
+	// back the newer GitOps methods. Nil falls back to a zero-value success
+	// default, matching the fake's nil-func convention: ListWorktrees
+	// derives from Worktrees/WorktreeBranches, the rest return zeros.
+	AheadBehindFunc   func(dir, base, branch string) (ahead, behind int, err error)
+	BranchAgeFunc     func(dir, branch string) (time.Time, error)
+	ListWorktreesFunc func(dir string) ([]WorktreeInfo, error)
+	CheckIgnoreFunc   func(dir, path string) (bool, error)
+	// DeleteBranchFunc, when set, is returned by BranchDelete after the
+	// call is recorded — tests use it to prove cleanup failures stay
+	// best-effort.
+	DeleteBranchFunc func(dir, branch string, force bool) error
+	// DeletedForce parallels Deleted, recording the force flag of each
+	// BranchDelete call.
+	DeletedForce []bool
 	// Calls records every method invocation in order, so tests can assert
 	// a consumer only ever reads (e.g. only Diff, never WorktreeAdd).
 	calls []string
@@ -230,6 +254,9 @@ func (f *FakeGitOps) Diff(dir, rng string, contextLines int) (string, error) {
 func (f *FakeGitOps) Merge(dir, branch string) error {
 	f.record("Merge")
 	f.Merges = append(f.Merges, branch)
+	if f.MergeFunc != nil {
+		return f.MergeFunc(dir, branch)
+	}
 	return f.MergeErr
 }
 
@@ -242,6 +269,10 @@ func (f *FakeGitOps) MergeAbort(dir string) error {
 func (f *FakeGitOps) BranchDelete(dir, branch string, force bool) error {
 	f.record("BranchDelete")
 	f.Deleted = append(f.Deleted, branch)
+	f.DeletedForce = append(f.DeletedForce, force)
+	if f.DeleteBranchFunc != nil {
+		return f.DeleteBranchFunc(dir, branch, force)
+	}
 	return nil
 }
 
@@ -253,4 +284,49 @@ func (f *FakeGitOps) DiffNumstat(dir, rng string) (string, error) {
 func (f *FakeGitOps) DiffPath(dir, rng, path string, contextLines int) (string, error) {
 	f.record("DiffPath")
 	return f.DiffOut, nil
+}
+
+func (f *FakeGitOps) SquashMerge(dir, branch string) error {
+	f.record("SquashMerge")
+	if f.SquashMergeFunc != nil {
+		return f.SquashMergeFunc(dir, branch)
+	}
+	f.SquashMerges = append(f.SquashMerges, branch)
+	return f.SquashMergeErr
+}
+
+func (f *FakeGitOps) AheadBehind(dir, base, branch string) (int, int, error) {
+	f.record("AheadBehind")
+	if f.AheadBehindFunc != nil {
+		return f.AheadBehindFunc(dir, base, branch)
+	}
+	return 0, 0, nil
+}
+
+func (f *FakeGitOps) BranchAge(dir, branch string) (time.Time, error) {
+	f.record("BranchAge")
+	if f.BranchAgeFunc != nil {
+		return f.BranchAgeFunc(dir, branch)
+	}
+	return time.Time{}, nil
+}
+
+func (f *FakeGitOps) ListWorktrees(dir string) ([]WorktreeInfo, error) {
+	f.record("ListWorktrees")
+	if f.ListWorktreesFunc != nil {
+		return f.ListWorktreesFunc(dir)
+	}
+	infos := make([]WorktreeInfo, 0, len(f.Worktrees))
+	for _, p := range f.Worktrees {
+		infos = append(infos, WorktreeInfo{Path: p, Branch: f.WorktreeBranches[p]})
+	}
+	return infos, nil
+}
+
+func (f *FakeGitOps) CheckIgnore(dir, path string) (bool, error) {
+	f.record("CheckIgnore")
+	if f.CheckIgnoreFunc != nil {
+		return f.CheckIgnoreFunc(dir, path)
+	}
+	return false, nil
 }

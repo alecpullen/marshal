@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"marshal/internal/app/config"
 )
 
 // Worktree is the isolated checkout a run works in. The user's main
@@ -13,13 +15,41 @@ type Worktree struct {
 	Path   string
 	Branch string
 	Base   string
+	// Fresh is true when this call created the worktree (the branch did not
+	// exist and WorktreeAdd ran). Callers execute SetupPlan hooks only when
+	// Fresh is set; a resumed worktree is already set up.
+	Fresh bool
+	// SeedWarnings holds non-fatal problems from seeding git-ignored paths
+	// into a fresh worktree. Empty when Fresh is false or seeding was clean.
+	SeedWarnings []string
+	// SetupPlan lists the setup hooks the caller must run inside the
+	// worktree when Fresh is true. Zero when Fresh is false.
+	SetupPlan SetupPlan
+}
+
+// WorktreeSetup carries what happens to a worktree at creation time.
+// Seeding runs inside EnsureWorktree; hooks are planned here but executed
+// by the caller (hook execution needs a CommandRunner, which worktree
+// cannot import).
+type WorktreeSetup struct {
+	Config config.WorktreeConfig
+}
+
+// SetupPlan is what a caller must execute after EnsureWorktree reports a
+// fresh worktree.
+type SetupPlan struct {
+	Hooks []config.WorktreeSetupHook
 }
 
 // EnsureWorktree returns the run's worktree, creating it on the first call
 // and reusing it on resume. A branch that exists without its worktree is an
 // error the human must resolve: silently reusing the branch would append a
 // resumed run's commits to an unrelated one.
-func EnsureWorktree(git GitOps, repoRoot, worktreesDir, branch, startRef string) (Worktree, error) {
+//
+// On the creation branch the worktree is seeded from setup.Config and the
+// configured hooks are returned in Worktree.SetupPlan for the caller to
+// execute (hook execution needs a CommandRunner this package cannot import).
+func EnsureWorktree(git GitOps, repoRoot, worktreesDir, branch, startRef string, setup WorktreeSetup) (Worktree, error) {
 	path := filepath.Join(worktreesDir, strings.ReplaceAll(branch, "/", "-"))
 	if git.BranchExists(repoRoot, branch) {
 		existing, err := git.WorktreeList(repoRoot)
@@ -44,7 +74,15 @@ func EnsureWorktree(git GitOps, repoRoot, worktreesDir, branch, startRef string)
 	if err := git.WorktreeAdd(repoRoot, path, branch, base); err != nil {
 		return Worktree{}, fmt.Errorf("worktree: add %s: %w", path, err)
 	}
-	return Worktree{Path: path, Branch: branch, Base: base}, nil
+	seedWarnings := SeedIntoWorktree(setup.Config, git, repoRoot, path)
+	return Worktree{
+		Path:         path,
+		Branch:       branch,
+		Base:         base,
+		Fresh:        true,
+		SeedWarnings: seedWarnings,
+		SetupPlan:    SetupPlan{Hooks: setup.Config.SetupHooks},
+	}, nil
 }
 
 // FakeGitOps is the in-memory GitOps used by every test in this package

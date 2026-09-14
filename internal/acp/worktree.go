@@ -87,7 +87,7 @@ func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, 
 	if err != nil {
 		return WorkspaceInfo{}, err
 	}
-	wt, err := worktree.EnsureWorktree(git, projectRoot, dir, branch, baseRef)
+	wt, err := worktree.EnsureWorktree(git, projectRoot, dir, branch, baseRef, worktree.WorktreeSetup{})
 	if err != nil {
 		return WorkspaceInfo{}, err
 	}

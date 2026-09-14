@@ -1040,7 +1040,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		if _, err := c.ResolveTargetBranch(); err != nil {
 			return err
 		}
-		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
+		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch, worktree.WorktreeSetup{})
 		if err != nil {
 			return err
 		}

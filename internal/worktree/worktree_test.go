@@ -3,14 +3,17 @@ package worktree
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"marshal/internal/app/config"
 )
 
 func TestEnsureWorktreeCreates(t *testing.T) {
 	g := NewFakeGitOps()
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 
-	wt, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main")
+	wt, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main", WorktreeSetup{})
 	if err != nil {
 		t.Fatalf("EnsureWorktree: %v", err)
 	}
@@ -36,7 +39,7 @@ func TestEnsureWorktreeReusesExistingBranch(t *testing.T) {
 	g.Worktrees = append(g.Worktrees, filepath.Join("/run/worktrees", "pipeline-my-plan"))
 	g.Refs[branch] = "2222222222222222222222222222222222222222"
 
-	wt, err := EnsureWorktree(g, "/repo", "/run/worktrees", branch, "main")
+	wt, err := EnsureWorktree(g, "/repo", "/run/worktrees", branch, "main", WorktreeSetup{})
 	if err != nil {
 		t.Fatalf("EnsureWorktree: %v", err)
 	}
@@ -53,7 +56,7 @@ func TestEnsureWorktreeBranchWithoutWorktree(t *testing.T) {
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 	g.Branches["pipeline/my-plan"] = true
 
-	if _, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main"); err == nil {
+	if _, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main", WorktreeSetup{}); err == nil {
 		t.Fatal("branch exists but no worktree: want error, got nil")
 	}
 }
@@ -93,7 +96,7 @@ func TestFakeGitOpsRecordsCalls(t *testing.T) {
 	g := NewFakeGitOps()
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 
-	if _, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main"); err != nil {
+	if _, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main", WorktreeSetup{}); err != nil {
 		t.Fatalf("EnsureWorktree: %v", err)
 	}
 	got := g.Calls()
@@ -105,5 +108,53 @@ func TestFakeGitOpsRecordsCalls(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("Calls()[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// A non-local seed path short-circuits in SeedIntoWorktree with a warning
+// before touching disk, so it proves the fresh branch seeds from setup.Config
+// without needing a real checkout.
+func TestEnsureWorktreeFreshCarriesSetup(t *testing.T) {
+	g := NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+
+	setup := WorktreeSetup{Config: config.WorktreeConfig{
+		Seed:       []config.WorktreeSeed{{Path: "/etc/passwd", Mode: "copy"}},
+		SetupHooks: []config.WorktreeSetupHook{{Command: "npm install"}, {Command: "go generate ./..."}},
+	}}
+	wt, err := EnsureWorktree(g, "/repo", "/run/worktrees", "feat/x", "main", setup)
+	if err != nil {
+		t.Fatalf("EnsureWorktree: %v", err)
+	}
+	if !wt.Fresh {
+		t.Fatal("Fresh = false on the creation branch")
+	}
+	if len(wt.SeedWarnings) != 1 || !strings.Contains(wt.SeedWarnings[0], "not a repo-relative path") {
+		t.Fatalf("SeedWarnings = %v, want exactly the non-local-path warning", wt.SeedWarnings)
+	}
+	if len(wt.SetupPlan.Hooks) != 2 || wt.SetupPlan.Hooks[0].Command != "npm install" || wt.SetupPlan.Hooks[1].Command != "go generate ./..." {
+		t.Fatalf("SetupPlan.Hooks = %+v, want the configured hooks in order", wt.SetupPlan.Hooks)
+	}
+}
+
+func TestEnsureWorktreeReuseHasNoSetup(t *testing.T) {
+	g := NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+	branch := "feat/x"
+	g.Branches[branch] = true
+	g.Worktrees = append(g.Worktrees, filepath.Join("/run/worktrees", "feat-x"))
+	g.Refs[branch] = "2222222222222222222222222222222222222222"
+
+	wt, err := EnsureWorktree(g, "/repo", "/run/worktrees", branch, "main", WorktreeSetup{Config: config.WorktreeConfig{
+		SetupHooks: []config.WorktreeSetupHook{{Command: "npm install"}},
+	}})
+	if err != nil {
+		t.Fatalf("EnsureWorktree: %v", err)
+	}
+	if wt.Fresh {
+		t.Error("Fresh = true on the resume branch")
+	}
+	if len(wt.SeedWarnings) != 0 || len(wt.SetupPlan.Hooks) != 0 {
+		t.Errorf("resume carried setup state: SeedWarnings=%v SetupPlan=%+v", wt.SeedWarnings, wt.SetupPlan)
 	}
 }

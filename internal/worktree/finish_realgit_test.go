@@ -69,7 +69,7 @@ func realWorktree(t *testing.T, repo string) Worktree {
 	if err != nil {
 		t.Fatalf("AgentDir: %v", err)
 	}
-	wt, err := EnsureWorktree(CLIGitOps{}, repo, dir, "feat/x", "HEAD")
+	wt, err := EnsureWorktree(CLIGitOps{}, repo, dir, "feat/x", "HEAD", WorktreeSetup{})
 	if err != nil {
 		t.Fatalf("EnsureWorktree: %v", err)
 	}

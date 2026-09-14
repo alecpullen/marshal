@@ -67,17 +67,17 @@ func (s *Server) diskStatus(w http.ResponseWriter, r *http.Request) {
 // work directories and reports the fresh total.
 //
 // Audit is not the HTTP layer's to write: Fleet.Prune records the
-// AuditPrune event, with the reclaimed byte count, itself.
+// AuditPrune event, with the reclaimed byte count, on every exit
+// path — partial failures included, not only clean runs.
 func (s *Server) pruneDisk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFleet(w) {
 		return
 	}
 	reclaimed, err := s.fleet.Prune()
-	// Prune invalidates the disk cache only on the path that runs to
-	// completion; a partial failure returns before its own
-	// invalidateDisk call. Invalidating here keeps the reported total
-	// honest in both cases — the call is idempotent, so the happy path
-	// (where Prune already invalidated) is unaffected.
+	// Prune now invalidates the disk cache itself on every exit path,
+	// partial failures included. Invalidating here too is idempotent
+	// belt-and-braces: it keeps the reported total honest even if
+	// Prune's own invalidation is ever narrowed.
 	s.fleet.invalidateDisk()
 	total := s.fleet.diskUsage().Total
 	if err != nil {

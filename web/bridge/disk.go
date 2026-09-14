@@ -119,14 +119,31 @@ func (f *Fleet) liveMirrors() map[string]bool {
 // and work directories whose agent is gone from the workspace. It never
 // stops an agent and never removes a live agent's workspace — reclaiming
 // a gigabyte is not worth destroying an hour of work.
-func (f *Fleet) Prune() (int64, error) {
+//
+// The AuditPrune record and the disk-cache invalidation happen on every
+// exit path, partial failures included: a prune that reclaimed bytes
+// and then hit an error is still a destructive action worth recording,
+// and the cached total must not outlive the bytes that actually left.
+// Callers are serialized by pruneMu, so two prunes never race each
+// other through the same tree.
+func (f *Fleet) Prune() (reclaimed int64, err error) {
+	f.pruneMu.Lock()
+	defer f.pruneMu.Unlock()
+
+	// A prune that reclaims some bytes and then fails is still a
+	// destructive action worth recording, and the cached disk total
+	// must not outlive the bytes that actually left. The defer covers
+	// the early error returns, which previously skipped both.
+	defer func() {
+		f.invalidateDisk()
+		f.auditf(AuditEvent{Event: AuditPrune, Bytes: reclaimed})
+	}()
+
 	live := f.liveMirrors()
 	liveAgents := make(map[string]bool)
 	for _, a := range f.ws.Agents() {
 		liveAgents[a.ID] = true
 	}
-
-	var reclaimed int64
 
 	// Prune unreferenced mirrors.
 	reposDir := filepath.Join(f.stateDir, "repos")
@@ -167,8 +184,6 @@ func (f *Fleet) Prune() (int64, error) {
 		}
 	}
 
-	f.invalidateDisk()
-	f.auditf(AuditEvent{Event: AuditPrune, Bytes: reclaimed})
 	return reclaimed, nil
 }
 

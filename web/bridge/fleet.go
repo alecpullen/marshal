@@ -163,6 +163,15 @@ type Fleet struct {
 	diskCache   diskUsage
 	diskCacheMu sync.Mutex
 	diskCacheOK bool
+
+	// pruneMu serializes prune callers against each other: the HTTP
+	// prune endpoint and the spawn-path enforceDisk prune both call
+	// Prune, and a removeTree racing itself on an already-vanished
+	// directory surfaces as a spurious walk error. No caller holds
+	// f.mu when it reaches Prune today; if one ever must, acquire
+	// f.mu BEFORE pruneMu and never the reverse — nothing in Prune's
+	// body takes f.mu, and nothing may while holding pruneMu.
+	pruneMu sync.Mutex
 }
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {

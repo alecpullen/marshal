@@ -1263,6 +1263,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		MaxDispatchRetries: cfg.SDD.DispatchRetries,
 		AutoEscalate:       parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
 		MaxTokensCfg:       cfg.SDD.MaxTotalTokens,
+		Setup:              cfg.Worktree,
 	})
 	if err != nil {
 		state.Logger().Warn("pipeline: controller construction failed", "error", err)

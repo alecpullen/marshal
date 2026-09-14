@@ -19,6 +19,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
+	"marshal/internal/worktree"
 )
 
 const (
@@ -99,6 +100,10 @@ type Options struct {
 	// config.* write tools are not registered. Mirrors the configReloader seam
 	// wired in app.go.
 	ConfigReloader func(config.Config) error
+
+	// GitOps is the git seam behind workspace.finish. nil defaults to
+	// worktree.CLIGitOps; tests inject worktree.FakeGitOps.
+	GitOps worktree.GitOps
 }
 
 type CommandRunner interface {
@@ -174,6 +179,10 @@ type toolSet struct {
 	configPath     string
 	userConfigPath string
 	configReloader func(config.Config) error
+
+	// gitOps is the git seam behind workspace.finish. Defaults to
+	// worktree.CLIGitOps; tests inject worktree.FakeGitOps.
+	gitOps worktree.GitOps
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -210,6 +219,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.toolsSelectTool(),
 		tools.codebaseSearchTool(),
 		tools.workspaceWorktreeTool(),
+		tools.workspaceFinishTool(),
 	}
 	// csv.inspect and json.query are low-use; defer them behind tools.select
 	// alongside the config.* tools so they don't occupy the prompt each turn.
@@ -352,7 +362,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		jobManager.SetBroker(opts.JobBroker)
 	}
 
-	return &toolSet{
+	ts := &toolSet{
 		root:            root,
 		additionalRoots: additionalRoots,
 		namedRoots:      opts.NamedRoots,
@@ -389,5 +399,10 @@ func newToolSet(opts Options) (*toolSet, error) {
 		configPath:     opts.ConfigPath,
 		userConfigPath: opts.UserConfigPath,
 		configReloader: opts.ConfigReloader,
-	}, nil
+		gitOps:         opts.GitOps,
+	}
+	if ts.gitOps == nil {
+		ts.gitOps = worktree.CLIGitOps{}
+	}
+	return ts, nil
 }

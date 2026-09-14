@@ -12,6 +12,7 @@
   import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
+  import { sessionsProjectFromHash, isScopedSessions } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -81,7 +82,7 @@
     // sync, ahead of the next SSE delta.
     const update = () => {
       hash = window.location.hash || '#'
-      if (hash === '#projects' || hash === '#sessions') actions.refresh()
+      if (hash === '#projects' || isScopedSessions(hash) || hash === '#sessions') actions.refresh()
     }
     window.addEventListener('hashchange', update)
     update()
@@ -116,6 +117,14 @@
 
   const chatMatch = $derived(/^#chat\/(.+)$/.exec(hash))
   const chatSessionId = $derived(chatMatch?.[1] ?? null)
+
+  /*
+    Sessions open either unscoped (#sessions — the project picker) or
+    scoped to one project (#sessions/<encoded root>), which is where the
+    sidebar's per-project sessions affordance links. The parse rule and
+    its malformed-escape degradation live in lib/routes, tested there.
+  */
+  const sessionsProject = $derived(sessionsProjectFromHash(hash))
 
   const titles: Record<string, string> = {
     '#pending': 'Pending',
@@ -156,18 +165,27 @@
       <div class="h-full overflow-y-auto">
         <NewAgent onDone={(id) => navigate(id ? `#chat/${id}` : '#')} />
       </div>
-    {:else if titles[hash]}
+    {:else if titles[hash] || sessionsProject !== null}
       <div class="h-full overflow-y-auto">
         <div class="mx-auto flex max-w-4xl flex-col gap-4 p-6">
-          <h1 class="text-lg font-semibold">{titles[hash]}</h1>
+          <h1 class="text-lg font-semibold">{sessionsProject !== null ? 'Sessions' : titles[hash]}</h1>
           {#if hash === '#pending'}
             <PendingList {pending} onResolved={refreshPending} />
           {:else if hash === '#clients'}
             <ClientsPanel />
           {:else if hash === '#projects'}
             <ProjectsPanel />
-          {:else if hash === '#sessions'}
-            <SessionsPanel />
+          {:else if hash === '#sessions' || sessionsProject !== null}
+            <!--
+              Keyed on the scope so moving between the picker and a
+              project — or between projects — builds a fresh panel. The
+              in-panel picker choice must not survive a scope change made
+              in the hash, and remounting leaves the mount effect as the
+              only load path.
+            -->
+            {#key sessionsProject ?? ''}
+              <SessionsPanel project={sessionsProject ?? undefined} onUnscope={() => navigate('#sessions')} />
+            {/key}
           {:else if hash === '#disk'}
             <DiskPanel />
           {:else}

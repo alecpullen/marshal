@@ -3,6 +3,7 @@
   import type { ProjectStatus } from './api'
   import { sortAttentionFirst } from './fleet'
   import { shortName } from './utils'
+  import { isScopedSessions } from './routes'
 
   interface Props {
     open: boolean
@@ -51,6 +52,14 @@
 
   let collapsed = $state<Record<string, boolean>>({})
   const toggle = (root: string) => (collapsed = { ...collapsed, [root]: !collapsed[root] })
+
+  /*
+    The Sessions item stays highlighted on its scoped route
+    (#sessions/<root>) as well as on the picker, so the nav reflects the
+    panel the user is actually looking at.
+  */
+  const navActive = (navHash: string) =>
+    route === navHash || (navHash === '#sessions' && isScopedSessions(route))
 </script>
 
 {#if !open}
@@ -130,16 +139,26 @@
   <div class="flex-1 px-2">
     {#each groups as g (g.root)}
       <div class="mb-1">
-        <button
-          class="flex w-full cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-left text-[0.6875rem] tracking-wide text-muted uppercase hover:bg-bg"
-          onclick={() => toggle(g.root)}
-          title={g.root}
-        >
-          <span class="w-3 shrink-0">{collapsed[g.root] ? '▸' : '▾'}</span>
-          <span class="truncate">{g.label}</span>
-          {#if g.unavailable}<span class="text-danger">!</span>{/if}
-          <span class="ml-auto tabular-nums">{g.agents.length}</span>
-        </button>
+        <div class="flex w-full items-center">
+          <button
+            class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-left text-[0.6875rem] tracking-wide text-muted uppercase hover:bg-bg"
+            onclick={() => toggle(g.root)}
+            title={g.root}
+          >
+            <span class="w-3 shrink-0">{collapsed[g.root] ? '▸' : '▾'}</span>
+            <span class="truncate">{g.label}</span>
+            {#if g.unavailable}<span class="text-danger">!</span>{/if}
+            <span class="ml-auto shrink-0 tabular-nums">{g.agents.length}</span>
+          </button>
+          <button
+            class="shrink-0 cursor-pointer rounded-md px-1.5 py-1 text-[0.6875rem] text-muted uppercase hover:bg-bg hover:text-accent"
+            onclick={() => onNavigate(`#sessions/${encodeURIComponent(g.root)}`)}
+            title="Sessions for {g.root}"
+            aria-label="Sessions for {g.root}"
+          >
+            ≣
+          </button>
+        </div>
 
         {#if !collapsed[g.root]}
           {#each g.agents as a (a.id)}
@@ -181,7 +200,7 @@
     {#each [['#pending', 'Pending', pendingCount], ['#clients', 'Clients', clientCount], ['#projects', 'Projects', projects.length], ['#sessions', 'Sessions', 0], ['#disk', 'Disk', 0], ['#activity', 'Activity', 0]] as [hash, label, count] (hash)}
       <button
         class="flex w-full cursor-pointer items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-bg
-               {route === hash ? 'bg-bg font-medium' : ''}"
+               {navActive(hash as string) ? 'bg-bg font-medium' : ''}"
         onclick={() => onNavigate(hash as string)}
       >
         <span>{label}</span>

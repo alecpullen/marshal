@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
-import { render, cleanup, screen } from '@testing-library/svelte'
+import { render, cleanup, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import SessionsPanel from './SessionsPanel.svelte'
 import * as api from './api.js'
@@ -67,6 +67,56 @@ describe('SessionsPanel', () => {
     // s-3 has no updated at all: nothing renders for it.
     expect(screen.getByText('1 message')).toBeTruthy()
     expect(screen.getByText('12 messages')).toBeTruthy()
+  })
+
+  it('uses the local back button, not onUnscope, when the panel picked its own project', async () => {
+    // Load-bearing branch order: on the unscoped picker route App still
+    // passes onUnscope, so if the {#if !project} branch ever lost its
+    // priority the picker's back would route through it and stick.
+    const onUnscope = vi.fn()
+    render(SessionsPanel, { project: '', onUnscope })
+    await screen.findByText('alpha')
+    await userEvent.click(screen.getByTitle('/home/u/alpha'))
+    expect(await screen.findByText('Fix the build')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: '← All projects' }))
+    expect(onUnscope).not.toHaveBeenCalled()
+    expect(await screen.findByText('beta')).toBeTruthy()
+  })
+
+  it('re-loads when the project prop changes without a remount', async () => {
+    // Pins the $effect fallback for the scoped→scoped transition: the
+    // router's {#key} normally remounts, but the panel must stay correct
+    // on its own if the key is ever dropped.
+    const { rerender } = render(SessionsPanel, { project: '/home/u/alpha' })
+    await screen.findByText('Fix the build')
+    rerender({ project: '/home/u/beta' })
+    await waitFor(() => expect(api.listSessions).toHaveBeenCalledWith('/home/u/beta'))
+    expect(screen.getByText('Sessions — beta')).toBeTruthy()
+  })
+
+  it('returns to the picker when the project prop clears without a remount', async () => {
+    // The scoped→unscoped transition the old guard missed: project
+    // becomes falsy, so the effect must fall through to the else branch.
+    const { rerender } = render(SessionsPanel, { project: '/home/u/alpha' })
+    await screen.findByText('Fix the build')
+    rerender({ project: '' })
+    expect(await screen.findByText('beta')).toBeTruthy()
+    expect(api.listProjects).toHaveBeenCalled()
+  })
+
+  it('routes the back button through onUnscope when the scope comes from the route', async () => {
+    const onUnscope = vi.fn()
+    render(SessionsPanel, { project: '/home/u/alpha', onUnscope })
+    await screen.findByText('Fix the build')
+    await userEvent.click(screen.getByRole('button', { name: '← All projects' }))
+    expect(onUnscope).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the local clear when a project prop arrives without onUnscope', async () => {
+    render(SessionsPanel, { project: '/home/u/alpha' })
+    await screen.findByText('Fix the build')
+    await userEvent.click(screen.getByRole('button', { name: '← All projects' }))
+    expect(await screen.findByText('beta')).toBeTruthy()
   })
 
   it('resumes by navigating to #chat/<id>', async () => {

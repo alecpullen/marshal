@@ -13,8 +13,11 @@
   */
   interface Props {
     project?: string
+    /* When the scope comes from the route, back is navigation the
+       router owns — local state alone cannot leave the scope. */
+    onUnscope?: () => void
   }
-  let { project = '' }: Props = $props()
+  let { project = '', onUnscope }: Props = $props()
 
   let projects = $state<ProjectStatus[]>([])
   /* root seeds from the prop but is then owned by the picker — picking
@@ -93,12 +96,27 @@
     else loadProjects()
   })
 
-  /* A parent (routing unit) may set the project prop after mount. */
+  /*
+    Prop-driven scope changes without a remount. Only `project` is a
+    reactive dependency: comparing against a plain shadow of the last
+    applied prop, never against root — the panel's own pick() writes
+    root, and an effect that watched it would instantly undo the pick.
+    Covers every transition (scoped→scoped, scoped→unscoped) so the
+    router's {#key} remount is an optimization, not a correctness
+    requirement.
+  */
+  // svelte-ignore state_referenced_locally
+  let appliedProject = project
   $effect(() => {
-    if (project && project !== root) {
-      root = project
-      confirmingId = null
+    if (project === appliedProject) return
+    appliedProject = project
+    root = project
+    confirmingId = null
+    if (project) {
       loadSessions()
+    } else {
+      sessions = []
+      loadProjects()
     }
   })
 </script>
@@ -150,6 +168,24 @@
     {#if !project}
       <div class="mb-4">
         <Button variant="ghost" onclick={() => { root = ''; sessions = []; confirmingId = null }}>← All projects</Button>
+      </div>
+    {:else}
+      <div class="mb-4">
+        <Button
+          variant="ghost"
+          onclick={() => {
+            /* Router-owned navigation when the scope came from the route;
+               otherwise fall back to the same local clear. */
+            if (onUnscope) onUnscope()
+            else {
+              root = ''
+              sessions = []
+              confirmingId = null
+              /* A panel scoped from mount never loaded the picker's list —
+                 without this the clear lands on an empty picker. */
+              if (projects.length === 0) loadProjects()
+            }
+          }}>← All projects</Button>
       </div>
     {/if}
 

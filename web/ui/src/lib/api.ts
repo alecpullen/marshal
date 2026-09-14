@@ -1,3 +1,5 @@
+import type { AuditEvent } from './audit'
+
 const TOKEN_KEY = 'marshal:token'
 
 let memoryToken: string | null = null
@@ -353,7 +355,7 @@ export async function spawnFromIssue(repoId: string, number: number): Promise<Su
   return request('POST', `/api/repos/${encodeURIComponent(repoId)}/issues/${number}/spawn`)
 }
 
-export type { AuditEvent } from './audit'
+export type { AuditEvent }
 
 export async function listAudit(limit = 50): Promise<AuditEvent[]> {
   return request('GET', `/api/audit?limit=${limit}`)

@@ -1,21 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { describeAuditEvent, type AuditEvent } from './audit'
+  import { listAudit } from './api'
 
   let events = $state<AuditEvent[]>([])
   let loading = $state(true)
 
   async function refresh() {
     try {
-      const token = sessionStorage.getItem('marshal:token') ?? ''
-      const res = await fetch('/api/audit?limit=50', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (res.ok) {
-        events = await res.json()
-      }
+      events = await listAudit()
     } catch {
-      // ignore — the feed is best-effort
+      // ignore — the feed is best-effort. A 401 here has already cleared
+      // the stored token via the api wrapper, so the next poll re-prompts
+      // instead of hammering a dead session.
     } finally {
       loading = false
     }

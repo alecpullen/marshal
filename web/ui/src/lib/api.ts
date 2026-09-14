@@ -360,3 +360,8 @@ export type { AuditEvent }
 export async function listAudit(limit = 50): Promise<AuditEvent[]> {
   return request('GET', `/api/audit?limit=${limit}`)
 }
+
+export interface DiskStatus { repos: number; work: number; total: number; measuredAt: string; budgetMB: number }
+export interface PruneResult { reclaimed: number; total: number; warning?: string }
+export async function getDiskUsage(): Promise<DiskStatus> { return request('GET', '/api/disk') }
+export async function pruneDisk(): Promise<PruneResult> { return request('POST', '/api/prune') }

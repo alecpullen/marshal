@@ -181,7 +181,7 @@
   </div>
 
   <div class="border-t border-border p-2">
-    {#each [['#pending', 'Pending', pendingCount], ['#clients', 'Clients', clientCount], ['#activity', 'Activity', 0]] as [hash, label, count] (hash)}
+    {#each [['#pending', 'Pending', pendingCount], ['#clients', 'Clients', clientCount], ['#projects', 'Projects', projects.length], ['#sessions', 'Sessions', 0], ['#disk', 'Disk', 0], ['#activity', 'Activity', 0]] as [hash, label, count] (hash)}
       <button
         class="flex w-full cursor-pointer items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-bg
                {route === hash ? 'bg-bg font-medium' : ''}"

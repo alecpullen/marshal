@@ -7,6 +7,9 @@
   import PendingList from './lib/PendingList.svelte'
   import ClientsPanel from './lib/ClientsPanel.svelte'
   import ActivityFeed from './lib/ActivityFeed.svelte'
+  import ProjectsPanel from './lib/ProjectsPanel.svelte'
+  import SessionsPanel from './lib/SessionsPanel.svelte'
+  import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
@@ -110,6 +113,9 @@
   const titles: Record<string, string> = {
     '#pending': 'Pending',
     '#clients': 'MCP Clients',
+    '#projects': 'Projects',
+    '#sessions': 'Sessions',
+    '#disk': 'Disk',
     '#activity': 'Activity',
   }
 </script>
@@ -151,6 +157,12 @@
             <PendingList {pending} onResolved={refreshPending} />
           {:else if hash === '#clients'}
             <ClientsPanel />
+          {:else if hash === '#projects'}
+            <ProjectsPanel />
+          {:else if hash === '#sessions'}
+            <SessionsPanel />
+          {:else if hash === '#disk'}
+            <DiskPanel />
           {:else}
             <ActivityFeed />
           {/if}

@@ -42,7 +42,7 @@ func TestIsolateSessionCreatesWorktreeAndSwitchesRoot(t *testing.T) {
 	root := t.TempDir()
 	st := newWorktreeTestState(t, root)
 
-	got, err := isolateSession(git, st, root, IsolationParams{Branch: "feat/x"}, "ignored")
+	got, err := isolateSession(git, st, root, IsolationParams{Branch: "feat/x"}, "ignored", config.WorktreeConfig{})
 	if err != nil {
 		t.Fatalf("isolateSession: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestIsolateSessionDerivesBranchFromName(t *testing.T) {
 	root := t.TempDir()
 	st := newWorktreeTestState(t, root)
 
-	got, err := isolateSession(git, st, root, IsolationParams{}, "Fix the Login Bug!")
+	got, err := isolateSession(git, st, root, IsolationParams{}, "Fix the Login Bug!", config.WorktreeConfig{})
 	if err != nil {
 		t.Fatalf("isolateSession: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestIsolateSessionHonoursBaseRef(t *testing.T) {
 	root := t.TempDir()
 	st := newWorktreeTestState(t, root)
 
-	got, err := isolateSession(git, st, root, IsolationParams{Branch: "f", BaseRef: "release"}, "n")
+	got, err := isolateSession(git, st, root, IsolationParams{Branch: "f", BaseRef: "release"}, "n", config.WorktreeConfig{})
 	if err != nil {
 		t.Fatalf("isolateSession: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestIsolateSessionRefusesDetachedHead(t *testing.T) {
 	root := t.TempDir()
 	st := newWorktreeTestState(t, root)
 
-	if _, err := isolateSession(git, st, root, IsolationParams{Branch: "feat/x"}, "n"); err == nil {
+	if _, err := isolateSession(git, st, root, IsolationParams{Branch: "feat/x"}, "n", config.WorktreeConfig{}); err == nil {
 		t.Fatal("expected isolation to be refused on a detached HEAD")
 	}
 	// The session must not have been switched into a worktree.

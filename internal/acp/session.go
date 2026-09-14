@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"marshal/internal/app"
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/worktree"
@@ -359,7 +360,17 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 	}
 	resp := SessionResponse{SessionID: rt.SessionID}
 	if p.Isolation != nil {
-		ws, ierr := isolateSession(worktree.CLIGitOps{}, rt.State, p.Cwd, *p.Isolation, p.Name)
+		// Worktree setup is resolved per session from the session's loaded
+		// config: the ACP host never holds a config.Config (config is per-cwd,
+		// loaded inside app.StartRuntime and carried on session.State), so
+		// this call site — not the host wiring — is where Setup comes from.
+		// A nil State (possible in embedded/test runtimes) falls back to a
+		// zero config; isolation itself still fails cleanly on a non-git cwd.
+		var setup config.WorktreeConfig
+		if rt.State != nil {
+			setup = rt.State.Config.Worktree
+		}
+		ws, ierr := isolateSession(worktree.CLIGitOps{}, rt.State, p.Cwd, *p.Isolation, p.Name, setup)
 		if ierr != nil {
 			// The runtime was started but isolation failed. Tear it down
 			// rather than publishing a live session at the project root with

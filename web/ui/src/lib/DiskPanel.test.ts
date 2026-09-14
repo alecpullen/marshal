@@ -6,24 +6,19 @@ import * as api from './api.js'
 
 /*
   The panel calls the api module on mount and on prune; the mock keeps
-  those off fetch (and off ensureToken's prompt) under jsdom. APIError is
-  part of the surface under test — the 503 fleet-mode case throws it — so
-  it is a real class with a status field, matching api.ts.
+  those off fetch (and off ensureToken's prompt) under jsdom. Everything
+  else — APIError and errMessage especially — comes from the real module,
+  so the prune-failure case below exercises the actual body unwrapping
+  the component ships with, not a copy of it.
 */
-vi.mock('./api.js', () => ({
-  AuthError: class extends Error {},
-  APIError: class extends Error {
-    status: number
-    body: unknown
-    constructor(status: number, body: unknown) {
-      super('API error')
-      this.status = status
-      this.body = body
-    }
-  },
-  getDiskUsage: vi.fn(),
-  pruneDisk: vi.fn(),
-}))
+vi.mock('./api.js', async (importActual) => {
+  const actual = await importActual<typeof import('./api.js')>()
+  return {
+    ...actual,
+    getDiskUsage: vi.fn(),
+    pruneDisk: vi.fn(),
+  }
+})
 
 afterEach(cleanup)
 
@@ -121,5 +116,35 @@ describe('DiskPanel', () => {
     expect(await screen.findByText('Disk tracking requires fleet mode.')).toBeTruthy()
     // The 503 is an expected absence, not a failure: no raw error banner.
     expect(document.querySelector('.text-danger')).toBeNull()
+  })
+
+  it('unwraps the bridge reason in the error banner when a prune fails', async () => {
+    ;(api.pruneDisk as Mock).mockRejectedValue(new api.APIError(502, { error: 'prune failed' }))
+    render(DiskPanel)
+    await screen.findByText('2.0 GB')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Prune' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm prune' }))
+
+    // errMessage unwraps the body's error; the generic status text never shows.
+    expect(await screen.findByText('prune failed')).toBeTruthy()
+    expect(screen.queryByText('API error 502')).toBeNull()
+  })
+
+  it('shows the raw error banner, not the fleet-mode note, when a prune hits a 503', async () => {
+    ;(api.pruneDisk as Mock).mockRejectedValue(new api.APIError(503, undefined))
+    render(DiskPanel)
+    await screen.findByText('2.0 GB')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Prune' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm prune' }))
+
+    /*
+      Pinning current behavior: only refresh() special-cases a 503, so a
+      fleet-missing prune lands in the raw banner. A muted note here would
+      be a reasonable follow-up, but is beyond this change.
+    */
+    expect(await screen.findByText('API error 503')).toBeTruthy()
+    expect(screen.queryByText('Disk tracking requires fleet mode.')).toBeNull()
   })
 })

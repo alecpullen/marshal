@@ -50,6 +50,16 @@ export class APIError extends Error {
   }
 }
 
+// The bridge returns its reasons as {"error": ...}; this unwraps them for display.
+export function errMessage(e: unknown): string {
+  if (e instanceof APIError) {
+    const b = e.body as { error?: string } | undefined
+    if (b && typeof b.error === 'string' && b.error) return b.error
+    return e.message
+  }
+  return e instanceof Error ? e.message : String(e)
+}
+
 async function request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const token = ensureToken()
   const init: RequestInit = {

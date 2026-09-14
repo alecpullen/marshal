@@ -2,7 +2,7 @@
   import Card from './ui/Card.svelte'
   import Button from './ui/Button.svelte'
   import Badge from './ui/Badge.svelte'
-  import { listClients, createClient, deleteClient, type MCPClient, type CreateClientResult } from './api'
+  import { listClients, createClient, deleteClient, errMessage, type MCPClient, type CreateClientResult } from './api'
 
   let clients = $state<MCPClient[]>([])
   let loading = $state(false)
@@ -23,7 +23,7 @@
     try {
       clients = await listClients()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     } finally {
       loading = false
     }
@@ -51,7 +51,7 @@
       newAllowedRepos = ''
       await refresh()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     }
   }
 
@@ -61,7 +61,7 @@
       await deleteClient(id)
       await refresh()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     }
   }
 

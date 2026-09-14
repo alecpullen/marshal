@@ -75,7 +75,14 @@
       navOpen = window.innerWidth >= 1024
     }
 
-    const update = () => (hash = window.location.hash || '#')
+    // A project added or removed in ProjectsPanel is already reflected in
+    // that panel's own list, but the sidebar badge reads the fleet store —
+    // so returning from these routes is the moment to bring it back in
+    // sync, ahead of the next SSE delta.
+    const update = () => {
+      hash = window.location.hash || '#'
+      if (hash === '#projects' || hash === '#sessions') actions.refresh()
+    }
     window.addEventListener('hashchange', update)
     update()
 

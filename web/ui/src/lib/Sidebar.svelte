@@ -2,6 +2,7 @@
   import type { AgentRow } from './fleet'
   import type { ProjectStatus } from './api'
   import { sortAttentionFirst } from './fleet'
+  import { shortName } from './utils'
 
   interface Props {
     open: boolean
@@ -28,10 +29,6 @@
     idle: 'bg-muted/50',
   }
 
-  function shortProject(root: string): string {
-    return root.split('/').filter(Boolean).pop() ?? root
-  }
-
   /*
     Projects come from /api/projects, agents from /api/agents. Grouping by
     the project list rather than by the agents' own project field keeps a
@@ -41,7 +38,7 @@
   const groups = $derived(
     projects.map((p) => ({
       root: p.root,
-      label: shortProject(p.root),
+      label: shortName(p.root),
       unavailable: !p.available,
       agents: sortAttentionFirst(agents.filter((a) => a.project === p.root)),
     })),

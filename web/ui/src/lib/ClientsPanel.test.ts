@@ -9,11 +9,15 @@ import * as api from './api.js'
   and the bridge defaults an absent field to unlimited — so the form must
   drop 0/empty fields from the payload rather than send them as zeros.
 */
-vi.mock('./api.js', () => ({
-  listClients: vi.fn(),
-  createClient: vi.fn(),
-  deleteClient: vi.fn(),
-}))
+vi.mock('./api.js', async (importActual) => {
+  const actual = await importActual<typeof import('./api.js')>()
+  return {
+    ...actual,
+    listClients: vi.fn(),
+    createClient: vi.fn(),
+    deleteClient: vi.fn(),
+  }
+})
 
 function client(over: Partial<api.MCPClient> = {}): api.MCPClient {
   return {
@@ -80,6 +84,41 @@ describe('ClientsPanel', () => {
       maxPerDay: 10,
       allowedRepos: ['a/b', 'c/d'],
     })
+  })
+
+  it('omits maxConcurrent when 0 is typed, even though the input allows it', async () => {
+    ;(api.listClients as Mock).mockResolvedValue([])
+    seedCreate()
+
+    render(ClientsPanel)
+
+    const user = userEvent.setup()
+    await user.type(screen.getByPlaceholderText('Client name (e.g. claude-code)'), 'x')
+    await user.type(screen.getByPlaceholderText('Max concurrent'), '0')
+    await user.click(screen.getByRole('button', { name: 'Create client' }))
+
+    expect(api.createClient).toHaveBeenCalledTimes(1)
+    const payload = (api.createClient as Mock).mock.calls[0][0] as Record<string, unknown>
+    // 0 means unlimited to the bridge; sending it would silently cap the
+    // client at zero, so the key must be absent rather than falsy.
+    expect(payload).not.toHaveProperty('maxConcurrent')
+  })
+
+  it('omits maxConcurrent when a negative value is typed', async () => {
+    ;(api.listClients as Mock).mockResolvedValue([])
+    seedCreate()
+
+    render(ClientsPanel)
+
+    const user = userEvent.setup()
+    await user.type(screen.getByPlaceholderText('Client name (e.g. claude-code)'), 'x')
+    await user.type(screen.getByPlaceholderText('Max concurrent'), '-5')
+    await user.click(screen.getByRole('button', { name: 'Create client' }))
+
+    expect(api.createClient).toHaveBeenCalledTimes(1)
+    const payload = (api.createClient as Mock).mock.calls[0][0] as Record<string, unknown>
+    // The min attribute does not stop typing; the payload builder must.
+    expect(payload).not.toHaveProperty('maxConcurrent')
   })
 
   it('omits quota fields when only a name is given', async () => {

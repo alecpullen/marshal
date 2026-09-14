@@ -1,7 +1,7 @@
 <script lang="ts">
   import Card from './ui/Card.svelte'
   import Button from './ui/Button.svelte'
-  import { getDiskUsage, pruneDisk, APIError, type DiskStatus, type PruneResult } from './api'
+  import { getDiskUsage, pruneDisk, APIError, errMessage, type DiskStatus, type PruneResult } from './api'
 
   let disk = $state<DiskStatus | null>(null)
   let loading = $state(false)
@@ -54,7 +54,7 @@
       if (e instanceof APIError && e.status === 503) {
         fleetMissing = true
       } else {
-        error = e instanceof Error ? e.message : String(e)
+        error = errMessage(e)
       }
     } finally {
       loading = false
@@ -70,7 +70,7 @@
       // Refetch so the bar reflects the post-prune total.
       await refresh()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     } finally {
       pruning = false
     }

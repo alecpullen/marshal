@@ -6,23 +6,19 @@ import * as api from './api.js'
 
 /*
   The panel calls the api module on mount and on every action; the mock
-  keeps those off fetch (and off ensureToken's prompt) under jsdom.
+  keeps those off fetch (and off ensureToken's prompt) under jsdom. The
+  real errMessage comes along, so the banner case below exercises the
+  unwrapping the component actually ships with.
 */
-vi.mock('./api.js', () => ({
-  AuthError: class extends Error {},
-  APIError: class extends Error {
-    status: number
-    body: unknown
-    constructor(status: number, body: unknown) {
-      super('API error')
-      this.status = status
-      this.body = body
-    }
-  },
-  listProjects: vi.fn(),
-  addProject: vi.fn(),
-  removeProject: vi.fn(),
-}))
+vi.mock('./api.js', async (importActual) => {
+  const actual = await importActual<typeof import('./api.js')>()
+  return {
+    ...actual,
+    listProjects: vi.fn(),
+    addProject: vi.fn(),
+    removeProject: vi.fn(),
+  }
+})
 
 const seeded = [
   { root: '/home/u/alpha', available: true, trust: 'trusted' },

@@ -4,21 +4,20 @@ import userEvent from '@testing-library/user-event'
 import SessionsPanel from './SessionsPanel.svelte'
 import * as api from './api.js'
 
-vi.mock('./api.js', () => ({
-  AuthError: class extends Error {},
-  APIError: class extends Error {
-    status: number
-    body: unknown
-    constructor(status: number, body: unknown) {
-      super('API error')
-      this.status = status
-      this.body = body
-    }
-  },
-  listProjects: vi.fn(),
-  listSessions: vi.fn(),
-  deleteSession: vi.fn(),
-}))
+/*
+  The api mock keeps the panel off fetch under jsdom while the real
+  errMessage (which the catch paths route through) comes along from the
+  actual module.
+*/
+vi.mock('./api.js', async (importActual) => {
+  const actual = await importActual<typeof import('./api.js')>()
+  return {
+    ...actual,
+    listProjects: vi.fn(),
+    listSessions: vi.fn(),
+    deleteSession: vi.fn(),
+  }
+})
 
 const projects = [
   { root: '/home/u/alpha', available: true, trust: 'trusted' },

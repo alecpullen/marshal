@@ -3,7 +3,8 @@
   import Card from './ui/Card.svelte'
   import Button from './ui/Button.svelte'
   import Badge from './ui/Badge.svelte'
-  import { listProjects, listSessions, deleteSession, type ProjectStatus, type SessionSummary } from './api'
+  import { listProjects, listSessions, deleteSession, errMessage, type ProjectStatus, type SessionSummary } from './api'
+  import { shortName } from './utils'
 
   /*
     Resume is pure navigation: the SPA already routes `#chat/<id>`, and
@@ -28,10 +29,6 @@
      time, and Cancel disarms without a round-trip. */
   let confirmingId = $state<string | null>(null)
 
-  function shortName(p: string): string {
-    return p.split('/').filter(Boolean).pop() ?? p
-  }
-
   /* The bridge passes the child agent's session/list JSON through
      verbatim, so every field but sessionId is read defensively. A
      non-parseable `updated` renders as the raw string; a missing one
@@ -49,7 +46,7 @@
     try {
       projects = await listProjects()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     } finally {
       loading = false
     }
@@ -61,7 +58,7 @@
     try {
       sessions = await listSessions(root)
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     } finally {
       loading = false
     }
@@ -74,7 +71,7 @@
   }
 
   function resume(id: string) {
-    window.location.hash = '#chat/' + id
+    window.location.hash = '#chat/' + encodeURIComponent(id)
   }
 
   async function remove(id: string) {
@@ -84,7 +81,7 @@
       await deleteSession(id)
       await loadSessions()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     }
   }
 
@@ -148,7 +145,7 @@
       <div class="mb-3 rounded-md border border-danger bg-danger/10 p-3 text-sm text-danger">{error}</div>
     {/if}
 
-    <p class="mb-3 text-xs text-muted">Resume requires the session's agent runtime to be running.</p>
+    <p class="mb-3 text-xs text-muted">Only the project's live agent session can be resumed; other sessions are historical.</p>
 
     {#if !project}
       <div class="mb-4">

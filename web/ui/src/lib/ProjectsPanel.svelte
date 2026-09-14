@@ -2,7 +2,8 @@
   import Card from './ui/Card.svelte'
   import Button from './ui/Button.svelte'
   import Badge from './ui/Badge.svelte'
-  import { listProjects, addProject, removeProject, type ProjectStatus } from './api'
+  import { listProjects, addProject, removeProject, errMessage, type ProjectStatus } from './api'
+  import { shortName } from './utils'
 
   let projects = $state<ProjectStatus[]>([])
   let loading = $state(false)
@@ -13,17 +14,13 @@
      row's Remove) must disarm without any server round-trip. */
   let confirmingRoot = $state<string | null>(null)
 
-  function shortName(root: string): string {
-    return root.split('/').filter(Boolean).pop() ?? root
-  }
-
   async function refresh() {
     loading = true
     error = null
     try {
       projects = await listProjects()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     } finally {
       loading = false
     }
@@ -39,7 +36,7 @@
       projects = await addProject(root)
       newRoot = ''
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     }
   }
 
@@ -51,7 +48,7 @@
     try {
       projects = await removeProject(root)
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = errMessage(e)
     }
   }
 

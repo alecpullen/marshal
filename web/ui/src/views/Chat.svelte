@@ -8,7 +8,7 @@
   import QuestionModal from '../lib/QuestionModal.svelte'
   import ExitPanel from '../lib/ExitPanel.svelte'
   import { renderMarkdown, initHighlighter } from '../lib/markdown'
-  import { listAgents } from '../lib/api'
+  import { listAgents, APIError } from '../lib/api'
 
   interface Props {
     sessionId: string
@@ -26,6 +26,12 @@
   // until it is ready, then `ready` flips and the transcript re-renders —
   // rather than withholding the transcript behind a loading state.
   let ready = $state(false)
+
+  /* A 404 from load() means the bridge no longer maps this session to a
+     live agent — resuming it is impossible, so the transcript is replaced
+     with an honest note rather than an empty room that implies the session
+     never had content. */
+  let missing = $state(false)
 
   /*
     The route carries the agent id, which is also the key the bridge maps
@@ -94,9 +100,13 @@
       // as escaped plain blocks, which is still readable.
     })
     actions.connect()
-    actions.load().catch(() => {
-      // load failures are surfaced via the session error if severe; the SSE
-      // stream will still deliver live events.
+    actions.load().catch((e) => {
+      if (e instanceof APIError && e.status === 404) {
+        missing = true
+        return
+      }
+      // other load failures are surfaced via the session error if severe;
+      // the SSE stream will still deliver live events.
     })
   })
 
@@ -131,6 +141,11 @@
   </header>
 
   <div class="transcript" bind:this={transcriptEl} onscroll={onScroll}>
+    {#if missing}
+      <div class="empty">
+        <p>This session could not be resumed — its agent is no longer tracked by the bridge.</p>
+      </div>
+    {:else}
     {#each entries as entry (entry.key)}
       {#if entry.kind === 'message'}
         {@const message = entry.value}
@@ -174,6 +189,7 @@
         {$session.error}
         <button onclick={() => actions.dismissError()}>Dismiss</button>
       </div>
+    {/if}
     {/if}
   </div>
 

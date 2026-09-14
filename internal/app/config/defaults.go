@@ -123,6 +123,7 @@ func Default() Config {
 			CleanupAtStart:  true,
 			MaxTotalTokens:  0,
 		},
+		Worktree: WorktreeConfig{},
 		Web: WebConfig{
 			Enabled:      false,
 			FetchTimeout: 30 * time.Second,

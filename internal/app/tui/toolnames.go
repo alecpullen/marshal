@@ -26,6 +26,9 @@ var toolDisplayNames = map[string]string{
 	"question.ask":     "Ask question",
 	"ask_user":         "Ask user",
 	"agent.run":        "Run subagent",
+	// agent.await is multipurpose (subagents, background jobs, watches), so
+	// the transcript row describes the action, not the target class.
+	"agent.await": "Waiting…",
 }
 
 // toolCategoryGlyphs maps a tool-name prefix to the gutter glyph for its
@@ -92,6 +95,8 @@ var toolPluralNames = map[string]string{
 	"git.status":       "Git status",
 	"symbols.find":     "Find symbols",
 	"todos":            "Update todos",
+	// Self-plural: grouped headings must not render "Waiting…s".
+	"agent.await": "Waiting…",
 }
 
 // pluralizeToolName returns the display name for a tool in plural form,

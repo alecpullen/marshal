@@ -28,11 +28,30 @@ func TestToolCategoryGlyph(t *testing.T) {
 	}
 }
 
+func TestDisplayToolName(t *testing.T) {
+	cases := map[string]string{
+		"file.read": "Read file",
+		"agent.run": "Run subagent",
+		// agent.await is multipurpose (subagents, jobs, watches): the row
+		// describes the action, not the target class.
+		"agent.await": "Waiting…",
+		// Unknown tools still fall through to the title-case fallback.
+		"custom.box": "Custom box",
+	}
+	for name, want := range cases {
+		if got := DisplayToolName(name); got != want {
+			t.Errorf("DisplayToolName(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 // Grouped tool headings read as English. The old rule ("append s, unless it
 // ends in s/x, then append es") produced "Run testses", "Find symbolses",
 // "Apply patchs" and "Codebase searchs".
 func TestPluralizeToolName(t *testing.T) {
 	cases := map[string]string{
+		// Self-plural: a grouped heading must not render "Waiting…s".
+		"agent.await":      "Waiting…",
 		"file.read":        "Read files",
 		"file.write_patch": "Edit files",
 		"patch.apply":      "Apply patches",

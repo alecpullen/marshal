@@ -369,6 +369,12 @@ func (m *Manager) sampleOnce(w *watch) {
 	w.consecutiveErrors = 0
 	if w.state == StateError {
 		w.state = StateWatching
+		// Release waiters on the recovery edge too: StateError is not a
+		// WaitFire fast-path, so a waiter may be parked on an errored
+		// watch. Callers re-scan after every wake — a recovered watch is
+		// outstanding again and fresh waiters re-register on the healthy
+		// watch.
+		w.signalWaitersLocked()
 	}
 	w.mu.Unlock()
 	if w.cond == nil {

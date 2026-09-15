@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/strutil"
@@ -12,19 +14,46 @@ import (
 )
 
 type agentAwaitArgs struct {
-	ID  int64 `json:"id"`
-	All bool  `json:"all"`
-	Any bool  `json:"any"`
+	ID             int64  `json:"id"`
+	All            bool   `json:"all"`
+	Any            bool   `json:"any"`
+	JobID          string `json:"job_id"`
+	WatchID        string `json:"watch_id"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+type awaitOptions struct {
+	jobs    JobAwaitSource
+	watches WatchAwaitSource
+}
+
+// AwaitOption customizes the agent.await tool's awaitable classes.
+type AwaitOption func(*awaitOptions)
+
+// WithAwaitJobs wires the background-job await source. Nil (the default)
+// disables job awaiting: job_id errors clearly and any/all skip jobs.
+func WithAwaitJobs(src JobAwaitSource) AwaitOption {
+	return func(o *awaitOptions) { o.jobs = src }
+}
+
+// WithAwaitWatches wires the watch await source. Nil (the default) disables
+// watch awaiting: watch_id errors clearly and any/all skip watches.
+func WithAwaitWatches(src WatchAwaitSource) AwaitOption {
+	return func(o *awaitOptions) { o.watches = src }
 }
 
 // NewSubagentAwaitTool returns the registry.Tool entry for agent.await, the
 // blocking half of the async subagent contract: the model calls it when it
 // genuinely needs a background child's result before continuing.
-func NewSubagentAwaitTool(state *session.State) registry.Tool {
+func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.Tool {
+	var cfg awaitOptions
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	tool := registry.Tool{
 		Name:        "agent.await",
-		Description: `Wait for background subagents started by agent.run. Pass "id" to wait for one specific subagent, "any": true to return as soon as the first outstanding subagent finishes, or "all": true to wait for every outstanding subagent. Exactly one of the three. Prefer "any" when you are at the concurrency cap and want to start more work as soon as a slot frees — "all" blocks until the slowest child finishes. Blocks until the target(s) finish or the turn is cancelled — there is no timeout. Each subagent's report is also delivered to you automatically when it finishes.`,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"any":{"type":"boolean","description":"Return as soon as the first outstanding subagent finishes."},"all":{"type":"boolean","description":"Wait for all outstanding subagents."}},"additionalProperties":false}`),
+		Description: `Wait for background work started earlier: subagents (agent.run), background jobs (shell.run with background: true), or watches (watch.start). Pass "id" for one subagent, "job_id" for one background job, or "watch_id" for one watch; "any": true returns as soon as the first outstanding subagent/job/watch finishes; "all": true waits for everything outstanding. Exactly one selection. Repeat-mode watches never finish, so "any"/"all" skip them — await a repeat watch with its watch_id ("next fire"). "timeout_seconds" (default 0 = no timeout) bounds the whole wait; on expiry you get a normal result listing what is still running, so you can re-await or move on. Blocks until the target(s) finish or the turn is cancelled. Subagent reports are also delivered automatically when they finish.`,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Subagent ID from the agent.run start message."},"any":{"type":"boolean","description":"Return as soon as the first outstanding subagent, job, or watch finishes."},"all":{"type":"boolean","description":"Wait for all outstanding subagents, jobs, and once-mode watches."},"job_id":{"type":"string","description":"Background job ID from the shell.run start message."},"watch_id":{"type":"string","description":"Watch ID from the watch.start result."},"timeout_seconds":{"type":"integer","description":"Optional bound on the whole wait; on expiry returns a normal result listing what is still running."}},"additionalProperties":false}`),
 		// MUST stay read-only: a blocking handler that held the write gate
 		// would deadlock the very child it is waiting for, once the parent
 		// runner carries a WriteGate.
@@ -47,34 +76,114 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 		if args.Any {
 			modes++
 		}
+		if args.JobID != "" {
+			modes++
+		}
+		if args.WatchID != "" {
+			modes++
+		}
 		if modes != 1 {
-			return registry.ToolResult{}, fmt.Errorf("%s requires exactly one of \"id\", \"any\": true, or \"all\": true", tool.Name)
+			return registry.ToolResult{}, fmt.Errorf("%s requires exactly one of \"id\", \"any\": true, \"all\": true, \"job_id\", or \"watch_id\"", tool.Name)
+		}
+		if args.TimeoutSeconds < 0 {
+			return registry.ToolResult{}, fmt.Errorf("%s: timeout_seconds must be >= 0", tool.Name)
+		}
+		if args.TimeoutSeconds > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSeconds)*time.Second)
+			defer cancel()
 		}
 		if args.Any {
-			alreadyFinished := make(map[int64]bool)
-			for _, v := range state.Subagents() {
-				if v.Child != nil && v.Status != session.SubagentRunning {
-					alreadyFinished[v.ID] = true
+			p := cfg.scanPending(state)
+			if p.count() == 0 {
+				return noOutstandingResult(), nil
+			}
+			state.SetActiveToolCallArgs(awaitActiveLabel("any", p))
+			// Fan out one goroutine per pending target; the channel is
+			// buffered to the target count so no loser blocks on send and
+			// the deferred cancel releases the rest — the same released-loser
+			// shape WaitAnySubagent uses for subagents alone.
+			type awaitArrival struct {
+				class string
+				sub   session.SubagentView
+				job   AwaitJobInfo
+				watch AwaitWatchInfo
+				err   error
+			}
+			waitCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			arrivals := make(chan awaitArrival, p.count())
+			for _, id := range p.subIDs {
+				id := id
+				go func() {
+					v, err := state.WaitSubagent(waitCtx, id)
+					arrivals <- awaitArrival{class: "subagent", sub: v, err: err}
+				}()
+			}
+			for _, job := range p.jobs {
+				job := job
+				go func() {
+					info, err := cfg.jobs.AwaitJob(waitCtx, job.ID)
+					arrivals <- awaitArrival{class: "job", job: info, err: err}
+				}()
+			}
+			for _, w := range p.watches {
+				w := w
+				go func() {
+					info, err := cfg.watches.AwaitWatch(waitCtx, w.ID)
+					arrivals <- awaitArrival{class: "watch", watch: info, err: err}
+				}()
+			}
+			select {
+			case arr := <-arrivals:
+				if arr.err != nil {
+					return registry.ToolResult{}, arr.err
 				}
-			}
-			var pending []int64
-			for _, v := range state.Subagents() {
-				if v.Child != nil && !alreadyFinished[v.ID] {
-					pending = append(pending, v.ID)
+				var line, content string
+				switch arr.class {
+				case "job":
+					line, content = jobResultText(arr.job, cfg.jobs.JobOutputTail(arr.job.ID, jobAwaitTailLines))
+				case "watch":
+					line, content = watchResultText(arr.watch)
+				default:
+					v := arr.sub
+					line, content = subagentResultText(v.ID, v.Label, v.Summary, v.SalvagedReason, v.Error)
 				}
-			}
-			if len(pending) == 0 {
-				return registry.ToolResult{
-					Summary: "no running subagents",
-					Content: "No background subagents are currently running.",
-				}, nil
-			}
-			state.SetActiveToolCallArgs(fmt.Sprintf("any (%d running)", len(pending)))
-			v, err := state.WaitAnySubagent(ctx, pending)
-			if err != nil {
+				return registry.ToolResult{Summary: line, Content: content}, nil
+			case <-ctx.Done():
+				err := ctx.Err()
+				if errors.Is(err, context.DeadlineExceeded) {
+					return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, nil), nil
+				}
 				return registry.ToolResult{}, err
 			}
-			line, content := subagentResultText(v.ID, v.Label, v.Summary, v.SalvagedReason, v.Error)
+		}
+		if args.JobID != "" {
+			if cfg.jobs == nil {
+				return registry.ToolResult{}, fmt.Errorf("agent.await: no background-job source is wired in this session")
+			}
+			info, err := cfg.jobs.AwaitJob(ctx, args.JobID)
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, nil), nil
+				}
+				return registry.ToolResult{}, err
+			}
+			line, content := jobResultText(info, cfg.jobs.JobOutputTail(info.ID, jobAwaitTailLines))
+			return registry.ToolResult{Summary: line, Content: content}, nil
+		}
+		if args.WatchID != "" {
+			if cfg.watches == nil {
+				return registry.ToolResult{}, fmt.Errorf("agent.await: no watch source is wired in this session")
+			}
+			info, err := cfg.watches.AwaitWatch(ctx, args.WatchID)
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, nil), nil
+				}
+				return registry.ToolResult{}, err
+			}
+			line, content := watchResultText(info)
 			return registry.ToolResult{Summary: line, Content: content}, nil
 		}
 		if !args.All {
@@ -97,6 +206,9 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 			// Single-ID wait.
 			v, err := state.WaitSubagent(ctx, args.ID)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, nil), nil
+				}
 				return registry.ToolResult{}, err
 			}
 			line, content := subagentResultText(v.ID, v.Label, v.Summary, v.SalvagedReason, v.Error)
@@ -121,6 +233,8 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 		// is picked up because it was in the initial pending set.
 		var lines, bodies []string
 		waited := make(map[int64]bool)
+		jobSeen := make(map[string]bool)
+		watchSeen := make(map[string]bool)
 		alreadyFinished := make(map[int64]bool)
 		for _, v := range state.Subagents() {
 			if v.Child != nil && v.Status != session.SubagentRunning {
@@ -134,15 +248,31 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 					pending = append(pending, v.ID)
 				}
 			}
-			if len(pending) == 0 {
+			p := cfg.scanPending(state)
+			var jobs []AwaitJobInfo
+			for _, job := range p.jobs {
+				if !jobSeen[job.ID] {
+					jobs = append(jobs, job)
+				}
+			}
+			var watches []AwaitWatchInfo
+			for _, w := range p.watches {
+				if !watchSeen[w.ID] {
+					watches = append(watches, w)
+				}
+			}
+			if len(pending) == 0 && len(jobs) == 0 && len(watches) == 0 {
 				break
 			}
-			for i, id := range pending {
-				state.SetActiveToolCallArgs(fmt.Sprintf("all (%d running)", len(pending)-i))
+			for _, id := range pending {
+				state.SetActiveToolCallArgs(awaitActiveLabel("all", cfg.scanPending(state)))
 				v, err := state.WaitSubagent(ctx, id)
 				if err != nil {
 					// Preserve partial results: a cancelled batch must not
 					// discard the siblings that already finished.
+					if errors.Is(err, context.DeadlineExceeded) {
+						return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, lines), nil
+					}
 					if len(lines) > 0 {
 						return registry.ToolResult{
 							Summary: strings.Join(lines, "\n"),
@@ -156,12 +286,49 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 				lines = append(lines, line)
 				bodies = append(bodies, content)
 			}
+			for _, job := range jobs {
+				state.SetActiveToolCallArgs(awaitActiveLabel("all", cfg.scanPending(state)))
+				info, err := cfg.jobs.AwaitJob(ctx, job.ID)
+				if err != nil {
+					if errors.Is(err, context.DeadlineExceeded) {
+						return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, lines), nil
+					}
+					if len(lines) > 0 {
+						return registry.ToolResult{
+							Summary: strings.Join(lines, "\n"),
+							Content: strings.Join(bodies, "\n\n"),
+						}, err
+					}
+					return registry.ToolResult{}, err
+				}
+				jobSeen[job.ID] = true
+				line, content := jobResultText(info, cfg.jobs.JobOutputTail(info.ID, jobAwaitTailLines))
+				lines = append(lines, line)
+				bodies = append(bodies, content)
+			}
+			for _, w := range watches {
+				state.SetActiveToolCallArgs(awaitActiveLabel("all", cfg.scanPending(state)))
+				info, err := cfg.watches.AwaitWatch(ctx, w.ID)
+				if err != nil {
+					if errors.Is(err, context.DeadlineExceeded) {
+						return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, lines), nil
+					}
+					if len(lines) > 0 {
+						return registry.ToolResult{
+							Summary: strings.Join(lines, "\n"),
+							Content: strings.Join(bodies, "\n\n"),
+						}, err
+					}
+					return registry.ToolResult{}, err
+				}
+				watchSeen[w.ID] = true
+				line, content := watchResultText(info)
+				lines = append(lines, line)
+				bodies = append(bodies, content)
+			}
 		}
 		if len(lines) == 0 {
-			return registry.ToolResult{
-				Summary: "no running subagents",
-				Content: "No background subagents are currently running.",
-			}, nil
+			return noOutstandingResult(), nil
 		}
 		return registry.ToolResult{
 			Summary: strings.Join(lines, "\n"),
@@ -169,6 +336,127 @@ func NewSubagentAwaitTool(state *session.State) registry.Tool {
 		}, nil
 	}
 	return tool
+}
+
+// awaitPending is one scan of everything outstanding across the three
+// awaitable classes. Subagents use the same alreadyFinished snapshot rule as
+// today; jobs and watches come from their sources when wired.
+type awaitPending struct {
+	subIDs  []int64
+	jobs    []AwaitJobInfo
+	watches []AwaitWatchInfo
+}
+
+func (a awaitOptions) scanPending(state *session.State) awaitPending {
+	p := awaitPending{}
+	// Subagents: the existing two-pass alreadyFinished/pending pattern
+	// (Child != nil, pipeline cards excluded).
+	alreadyFinished := make(map[int64]bool)
+	for _, v := range state.Subagents() {
+		if v.Child != nil && v.Status != session.SubagentRunning {
+			alreadyFinished[v.ID] = true
+		}
+	}
+	for _, v := range state.Subagents() {
+		if v.Child != nil && !alreadyFinished[v.ID] {
+			p.subIDs = append(p.subIDs, v.ID)
+		}
+	}
+	if a.jobs != nil {
+		p.jobs = a.jobs.OutstandingJobs()
+	}
+	if a.watches != nil {
+		p.watches = a.watches.OutstandingWatches()
+	}
+	return p
+}
+
+// count totals the outstanding targets across classes.
+func (p awaitPending) count() int { return len(p.subIDs) + len(p.jobs) + len(p.watches) }
+
+// awaitActiveLabel builds the active-tool label for an await call. With only
+// subagents pending it produces today's exact strings ("any (2 running)" /
+// "all (2 running)"), which TestAwaitAllUpdatesActiveToolCallArgs pins; with
+// other classes pending it appends their counts.
+func awaitActiveLabel(mode string, p awaitPending) string {
+	if len(p.jobs) == 0 && len(p.watches) == 0 {
+		return fmt.Sprintf("%s (%d running)", mode, len(p.subIDs))
+	}
+	parts := make([]string, 0, 3)
+	if len(p.subIDs) > 0 {
+		parts = append(parts, fmt.Sprintf("%d subagents", len(p.subIDs)))
+	}
+	if len(p.jobs) > 0 {
+		parts = append(parts, fmt.Sprintf("%d job(s) running", len(p.jobs)))
+	}
+	if len(p.watches) > 0 {
+		parts = append(parts, fmt.Sprintf("%d watch(es) pending", len(p.watches)))
+	}
+	return fmt.Sprintf("%s (%s)", mode, strings.Join(parts, ", "))
+}
+
+// noOutstandingResult is the empty-scan result shared by any and all.
+func noOutstandingResult() registry.ToolResult {
+	return registry.ToolResult{
+		Summary: "no outstanding background work",
+		Content: "No background subagents, jobs, or once-mode watches are currently outstanding.",
+	}
+}
+
+// awaitTimeoutResult renders the normal (non-error) result for an await that
+// expired via timeout_seconds. It rescans pending so the "still running"
+// count is current; partial lines collected by an all-wait are appended.
+func (a awaitOptions) awaitTimeoutResult(state *session.State, timeoutSeconds int, partial []string) registry.ToolResult {
+	p := a.scanPending(state)
+	summary := fmt.Sprintf("timed out after %ds; %d target(s) still running", timeoutSeconds, p.count())
+	content := summary
+	if len(partial) > 0 {
+		content += "\n\n" + strings.Join(partial, "\n")
+	}
+	return registry.ToolResult{Summary: summary, Content: content}
+}
+
+// jobAwaitTailLines bounds the output tail included in job await results.
+const jobAwaitTailLines = 40
+
+// jobResultText renders a finished job's await result. exit renders as
+// "n/a" when the job died without an exit code (killed/timeout).
+func jobResultText(info AwaitJobInfo, tail string) (summaryLine, content string) {
+	exit := "n/a"
+	if info.ExitCode != nil {
+		exit = fmt.Sprintf("%d", *info.ExitCode)
+	}
+	summaryLine = fmt.Sprintf("job %s %s (exit %s): %s", info.ID, info.Status, exit, info.Command)
+	content = summaryLine
+	if tail != "" {
+		content += "\n\noutput tail:\n" + tail
+	}
+	return summaryLine, content
+}
+
+// watchResultText renders a watch await result: fired/stopped/error per the
+// watch's terminal transition, with the same fields watch.status shows.
+func watchResultText(info AwaitWatchInfo) (summaryLine, content string) {
+	switch info.State {
+	case "fired":
+		summaryLine = fmt.Sprintf("watch %s fired (fire %d)", info.Name, info.FireCount)
+	case "stopped":
+		summaryLine = fmt.Sprintf("watch %s stopped", info.Name)
+	default:
+		summaryLine = fmt.Sprintf("watch %s is %s", info.Name, info.State)
+	}
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "watch_id: %s\nname: %s\nkind: %s\nstate: %s\nfires: %d\n", info.ID, info.Name, info.Kind, info.State, info.FireCount)
+	if info.Condition != "" {
+		fmt.Fprintf(b, "condition: %s\n", info.Condition)
+	}
+	if info.LastSample != "" {
+		fmt.Fprintf(b, "last_sample: %s\n", strutil.Truncate(info.LastSample, 800, true))
+	}
+	if info.LastError != "" {
+		fmt.Fprintf(b, "last_error: %s\n", info.LastError)
+	}
+	return summaryLine, strings.TrimRight(b.String(), "\n")
 }
 
 type agentOutputArgs struct {

@@ -185,8 +185,8 @@ func TestAgentAwaitAllSkipsPipelineCards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("await all: %v", err)
 	}
-	if !strings.Contains(res.Summary, "no running subagents") {
-		t.Fatalf("await all summary = %q, want no-running (pipeline card skipped)", res.Summary)
+	if !strings.Contains(res.Summary, "no outstanding background work") {
+		t.Fatalf("await all summary = %q, want no-outstanding (pipeline card skipped)", res.Summary)
 	}
 }
 
@@ -233,8 +233,8 @@ func TestAgentAwaitNoRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("await: %v", err)
 	}
-	if !strings.Contains(res.Summary, "no running subagents") {
-		t.Fatalf("summary = %q, want no-running notice", res.Summary)
+	if !strings.Contains(res.Summary, "no outstanding background work") {
+		t.Fatalf("summary = %q, want no-outstanding notice", res.Summary)
 	}
 }
 
@@ -697,8 +697,8 @@ func TestAgentAwaitAllSkipsAlreadyFinished(t *testing.T) {
 	if err != nil {
 		t.Fatalf("await all: %v", err)
 	}
-	if !strings.Contains(res.Summary, "no running subagents") {
-		t.Fatalf("await all summary = %q, want no-running (finished child skipped)", res.Summary)
+	if !strings.Contains(res.Summary, "no outstanding background work") {
+		t.Fatalf("await all summary = %q, want no-outstanding (finished child skipped)", res.Summary)
 	}
 }
 

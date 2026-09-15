@@ -188,8 +188,13 @@ type watch struct {
 	lastFiredAt       time.Time
 	consecutiveErrors int
 	firedThisInterval bool
-	ctx               context.Context
-	cancel            context.CancelFunc
+
+	// waiters are signaled (channel closed) whenever the watch reaches a
+	// terminal state or fires. Guarded by w.mu; closed-and-cleared, never
+	// reused.
+	waiters []chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // NewManager creates a watch manager. The manager derives its lifetime from
@@ -387,6 +392,7 @@ func (m *Manager) handleSampleError(w *watch, err error) {
 	w.consecutiveErrors++
 	w.lastError = err.Error()
 	w.state = StateError
+	w.signalWaitersLocked()
 	consecutive := w.consecutiveErrors
 	w.mu.Unlock()
 	m.publishEvent(w, StateError, "")
@@ -405,6 +411,7 @@ func (m *Manager) autoStop(w *watch, reason string) {
 		return
 	}
 	w.state = StateStopped
+	w.signalWaitersLocked()
 	w.lastError = reason
 	owner := w.owner
 	w.mu.Unlock()
@@ -449,6 +456,7 @@ func (m *Manager) fire(w *watch, sample Sample) {
 	mode := w.mode
 	owner := w.owner
 	firedCount := w.fireCount
+	w.signalWaitersLocked()
 	w.mu.Unlock()
 
 	m.publishEvent(w, StateFired, sample.Stdout)
@@ -486,6 +494,7 @@ func (m *Manager) Stop(id string) (string, error) {
 		return "was already gone", nil
 	}
 	w.state = StateStopped
+	w.signalWaitersLocked()
 	w.mu.Unlock()
 	m.removeWatch(id)
 	m.publishEvent(w, StateStopped, "")
@@ -519,6 +528,50 @@ func (m *Manager) Status(id string) (Info, error) {
 		return Info{}, fmt.Errorf("watch %q not found", id)
 	}
 	return w.snapshot(), nil
+}
+
+// WaitFire blocks until the watch with the given ID fires, stops, errors, or
+// ctx ends, and returns its final snapshot. A watch that is already terminal
+// returns immediately. An unknown ID (including a once-mode watch that fired
+// earlier and was auto-removed) returns an error naming that fact —
+// watch.status remains the non-blocking peek.
+func (m *Manager) WaitFire(ctx context.Context, id string) (Info, error) {
+	m.mu.Lock()
+	w, ok := m.watches[id]
+	m.mu.Unlock()
+	if !ok {
+		return Info{}, fmt.Errorf("watch %q not found (already fired or stopped)", id)
+	}
+
+	w.mu.Lock()
+	switch w.state {
+	case StateFired, StateStopped:
+		w.mu.Unlock()
+		return w.snapshot(), nil
+	}
+	ch := make(chan struct{})
+	w.waiters = append(w.waiters, ch)
+	w.mu.Unlock()
+
+	select {
+	case <-ch:
+		return w.snapshot(), nil
+	case <-w.ctx.Done():
+		// removeWatch cancelled the goroutine (Stop/auto-stop/close raced
+		// the registration); the final snapshot still reads correctly —
+		// the watch struct outlives the map.
+		return w.snapshot(), nil
+	case <-ctx.Done():
+		w.mu.Lock()
+		for i, waiter := range w.waiters {
+			if waiter == ch {
+				w.waiters = append(w.waiters[:i], w.waiters[i+1:]...)
+				break
+			}
+		}
+		w.mu.Unlock()
+		return Info{}, ctx.Err()
+	}
 }
 
 // Close cancels all watch goroutines and waits for them to finish, respecting
@@ -606,6 +659,14 @@ func (m *Manager) capError() error {
 	sort.Strings(ids)
 	sort.Strings(names)
 	return fmt.Errorf("watch cap reached (max %d); active: %s (%s)", MaxWatches, strings.Join(ids, ", "), strings.Join(names, ", "))
+}
+
+// signalWaitersLocked wakes every WaitFire waiter. Called with w.mu held.
+func (w *watch) signalWaitersLocked() {
+	for _, ch := range w.waiters {
+		close(ch)
+	}
+	w.waiters = nil
 }
 
 // snapshot returns a copy of the watch's public state.

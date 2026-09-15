@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/strutil"
 )
 
 // renderActivityLane renders the consolidated lane above the input: a
-// separator rule row, one count-first chrome.Header caption ("2 agents · 1
+// separator rule row, one count-first plain-label caption ("2 agents · 1
 // job"), then agent rows followed by job rows sharing one overflow budget
 // capped at laneMaxRows. Agents render before jobs (agents are
 // click-drillable; jobs are ambient), and the overflow row is a single
@@ -43,10 +42,12 @@ func (m Model) renderActivityLane() string {
 		parts = append(parts, laneItem(plan.nWatches, "watch", "watches"))
 	}
 	caption := strings.Join(parts, dimSeparator)
-	// Built at width-1: chromeRailWidth below truncates every line to
-	// width-1 and then prefixes the one-cell rail, so a header built at
-	// the full width loses its last cell to an ellipsis.
-	header := chrome.Header(caption, "", max(width-1, 1))
+	// The caption is a plain muted label, NOT a chrome.Header: renderLane
+	// already opens with a full-width laneSeparator, and a ruled Header
+	// directly beneath it reads as a messy double line. This matches the
+	// todo panel's plain "✓ N tasks done" summary. Truncate to width-1 so
+	// chromeRailWidth's one-cell rail prefix never ellipsizes the tail.
+	header := dimStyle().Render(strutil.Truncate(caption, max(width-1, 1), true))
 
 	rows := make([]string, 0, len(plan.agents)+len(plan.jobTexts)+len(plan.watchTexts)+1)
 	for _, v := range plan.agents {

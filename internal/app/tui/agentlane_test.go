@@ -107,8 +107,11 @@ func TestAgentLaneHasSeparatorAndRail(t *testing.T) {
 	if !strings.Contains(caption, "1 agent") {
 		t.Fatalf("caption must be count-first, got %q", caption)
 	}
-	if !strings.Contains(caption, "─") {
-		t.Fatalf("caption must carry the divider rule on the same line, got %q", caption)
+	// The caption sits directly beneath the separator's full-width rule, so
+	// it must be a plain label: a second ruled line here reads as a messy
+	// double line. Matches the todo panel's plain "✓ N tasks done" summary.
+	if strings.Contains(caption, "─") {
+		t.Fatalf("caption must be a plain label without a rule (double line), got %q", caption)
 	}
 	// Every row (including the separator and caption) carries the vertical rail.
 	for i, r := range rows {
@@ -343,11 +346,16 @@ func TestLaneCursorDisarmsOnTyping(t *testing.T) {
 	}
 }
 
-// The lane's separator and caption rows are built at full width and then
-// re-truncated by chromeRailWidth to width-1, which ate the last cell of the
-// rule and replaced it with an ellipsis. Assert the width arithmetic, not
+// The lane's separator row is built at full width and then re-truncated by
+// chromeRailWidth to width-1, which ate the last cell of the rule and
+// replaced it with an ellipsis. Assert the separator's width arithmetic, not
 // just the absence of "…", so this stays a guard against the off-by-one
 // itself.
+//
+// Only the separator is asserted to fill the row. The caption is now a
+// short plain label (no rule), so it does not fill the width in the
+// no-background test renderer; padding the caption band to width is
+// PaintBand's job in production.
 func TestAgentLaneHeaderFillsExactlyOneRow(t *testing.T) {
 	for _, w := range []int{40, 60, 80, 100} {
 		m := newTestModel(t)
@@ -359,14 +367,16 @@ func TestAgentLaneHeaderFillsExactlyOneRow(t *testing.T) {
 			t.Fatalf("w=%d: lane rendered nothing", w)
 		}
 		rows := strings.Split(out, "\n")
-		// Row 0 is the separator, row 1 the caption.
-		for i := 0; i < 2; i++ {
-			if strings.Contains(rows[i], "…") {
-				t.Errorf("w=%d: row %d truncated: %q", w, i, rows[i])
-			}
-			if got := ansi.StringWidth(rows[i]); got != m.leftWidth {
-				t.Errorf("w=%d: row %d width = %d, want leftWidth %d", w, i, got, m.leftWidth)
-			}
+		// Row 0 is the separator (full-width rule); row 1 is the caption.
+		if strings.Contains(rows[0], "…") {
+			t.Errorf("w=%d: separator truncated: %q", w, rows[0])
+		}
+		if got := ansi.StringWidth(rows[0]); got != m.leftWidth {
+			t.Errorf("w=%d: separator width = %d, want leftWidth %d", w, got, m.leftWidth)
+		}
+		// The caption must still fit on its one row without truncation.
+		if strings.Contains(rows[1], "…") {
+			t.Errorf("w=%d: caption truncated: %q", w, rows[1])
 		}
 	}
 }

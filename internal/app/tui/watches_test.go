@@ -83,6 +83,15 @@ func TestWatchLaneHasSeparatorAndRail(t *testing.T) {
 	if !strings.Contains(ansi.Strip(rows[0]), "─") {
 		t.Fatalf("lane must open with a separator rule, got %q", ansi.Strip(rows[0]))
 	}
+	// The caption row directly beneath the separator must NOT draw a second
+	// rule: a full-width separator immediately followed by a ruled header
+	// reads as a messy double line. The caption is a plain label.
+	if strings.Contains(ansi.Strip(rows[1]), "─") {
+		t.Fatalf("caption row must be a plain label without a rule (double line), got %q", ansi.Strip(rows[1]))
+	}
+	if !strings.Contains(ansi.Strip(rows[1]), "1 watch") {
+		t.Fatalf("caption row missing the count label, got %q", ansi.Strip(rows[1]))
+	}
 	// The caption row carries the rail but no watch marker; the marker lives in
 	// the body rows, so check those (rows[2:] after the separator and caption).
 	for i, r := range rows[2:] {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/worktree"
 )
@@ -59,8 +60,10 @@ func slugifyBranch(s string) string {
 // isolateSession creates the session's worktree and moves the session's
 // active root into it. It performs exactly the two steps the
 // workspace.worktree agent tool performs, so there is one mechanism with
-// three entry points (agent tool, TUI, ACP).
-func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, p IsolationParams, fallbackName string) (WorkspaceInfo, error) {
+// three entry points (agent tool, TUI, ACP). setup is the project's worktree
+// config, resolved per session from the loaded config (State.Config.Worktree)
+// — the ACP host never holds a config itself.
+func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, p IsolationParams, fallbackName string, setup config.WorktreeConfig) (WorkspaceInfo, error) {
 	branch := strings.TrimSpace(p.Branch)
 	if branch == "" {
 		branch = "marshal/" + slugifyBranch(fallbackName)
@@ -87,7 +90,13 @@ func isolateSession(git worktree.GitOps, st *session.State, projectRoot string, 
 	if err != nil {
 		return WorkspaceInfo{}, err
 	}
-	wt, err := worktree.EnsureWorktree(git, projectRoot, dir, branch, baseRef)
+	// ACP v1 seeds git-ignored paths into a fresh worktree but does NOT run
+	// setup hooks: hooks execute commands, and a headless ACP transport has
+	// no approval channel to consent to them at isolation time. Strip
+	// SetupHooks so the returned SetupPlan is empty — nothing downstream can
+	// mistake it for "hooks already ran" and execute them unapproved.
+	seedOnly := worktree.WorktreeSetup{Config: config.WorktreeConfig{Seed: setup.Seed}}
+	wt, err := worktree.EnsureWorktree(git, projectRoot, dir, branch, baseRef, seedOnly)
 	if err != nil {
 		return WorkspaceInfo{}, err
 	}
@@ -306,21 +315,40 @@ type mergeParams struct {
 	CommitMessage string `json:"commitMessage,omitempty"`
 }
 
-// conflictFiles pulls file names out of git's CONFLICT lines. Best-effort:
-// the reason is what drives the UI, the list is detail.
-func conflictFiles(msg string) []string {
-	var out []string
-	for _, line := range strings.Split(msg, "\n") {
-		if !strings.Contains(line, "CONFLICT") {
-			continue
-		}
-		if i := strings.LastIndex(line, " in "); i >= 0 {
-			if f := strings.TrimSpace(line[i+4:]); f != "" {
-				out = append(out, f)
-			}
-		}
+// finishGitOps adapts a GitOps for worktree.FinishBranch. FinishBranch
+// compares its target against RevParse(repoRoot, "HEAD") — a SHA — but ACP
+// pins the merge target by branch name, and the behaviour tests drive a
+// FakeGitOps that only answers --abbrev-ref HEAD, so HEAD is answered with
+// the abbreviated ref. It also records the cleanup errors FinishBranch
+// swallows (its worktree/branch cleanup is best-effort) so session/merge can
+// keep surfacing them.
+type finishGitOps struct {
+	worktree.GitOps
+	removeErr error
+	deleteErr error
+}
+
+func (g *finishGitOps) RevParse(dir, ref string) (string, error) {
+	if ref == "HEAD" {
+		return g.GitOps.RevParse(dir, "--abbrev-ref HEAD")
 	}
-	return out
+	return g.GitOps.RevParse(dir, ref)
+}
+
+func (g *finishGitOps) WorktreeRemove(dir, path string) error {
+	err := g.GitOps.WorktreeRemove(dir, path)
+	if err != nil {
+		g.removeErr = err
+	}
+	return err
+}
+
+func (g *finishGitOps) BranchDelete(dir, branch string, force bool) error {
+	err := g.GitOps.BranchDelete(dir, branch, force)
+	if err != nil {
+		g.deleteErr = err
+	}
+	return err
 }
 
 // Merge handles session/merge: merge the agent's branch into the branch the
@@ -353,63 +381,50 @@ func (w *WorktreeManager) Merge(_ context.Context, params json.RawMessage) (any,
 		return res, nil
 	}
 
-	// 1. The worktree must be committed, or we must be told to commit it.
-	dirty, err := w.git.IsDirty(ws.ActiveRoot)
-	if err != nil {
-		return nil, serverErrorf("check worktree: %v", err)
+	// Steps 1-4 of the old inline sequence — commit-or-refuse a dirty
+	// worktree, refuse a dirty project, refuse a moved target, merge with
+	// abort-on-conflict — plus the worktree/branch cleanup are delegated to
+	// worktree.FinishBranch, the shared exit path also used by the agent
+	// tool and the pipeline controller.
+	//
+	// ACP pins the merge target by branch name (the persisted
+	// WorkspaceInfo.TargetBranch), while FinishBranch compares its target
+	// against RevParse(repoRoot, "HEAD"): finishGitOps adapts RevParse to
+	// answer HEAD with the abbreviated ref, making FinishBranch's guard the
+	// same "project must still be on the recorded branch" check as before.
+	// finishGitOps also records the cleanup errors FinishBranch swallows so
+	// the failure results below keep surfacing them.
+	//
+	// DeleteBranch is true: the old path deleted the merged branch after a
+	// successful merge (BranchDelete with force=false — the merge makes the
+	// branch merged, so a plain -d suffices), and the behaviour tests pin
+	// that deletion.
+	fg := &finishGitOps{GitOps: w.git}
+	fr, ferr := worktree.FinishBranch(fg, rt.ProjectRoot, p.TargetBranch,
+		worktree.Worktree{Path: ws.ActiveRoot, Branch: ws.Branch},
+		worktree.FinishOptions{CommitMessage: p.CommitMessage, DeleteBranch: true})
+	if ferr != nil {
+		return nil, serverErrorf("merge: %v", ferr)
 	}
-	if dirty {
-		if p.CommitMessage == "" {
-			res.Reason = ReasonDirty
-			return res, nil
-		}
-		if _, cerr := w.git.CommitAll(ws.ActiveRoot, p.CommitMessage); cerr != nil {
-			return nil, serverErrorf("commit worktree: %v", cerr)
-		}
-	}
-
-	// 2. Never merge into a dirty project checkout.
-	projectDirty, err := w.git.IsDirty(rt.ProjectRoot)
-	if err != nil {
-		return nil, serverErrorf("check project: %v", err)
-	}
-	if projectDirty {
-		res.Reason = ReasonProjectDirty
-		return res, nil
-	}
-
-	// 3. The project must still be on the branch we recorded at isolation.
-	current, err := w.git.RevParse(rt.ProjectRoot, "--abbrev-ref HEAD")
-	if err != nil {
-		return nil, serverErrorf("resolve project branch: %v", err)
-	}
-	if strings.TrimSpace(current) != p.TargetBranch {
-		res.Reason = ReasonTargetMoved
-		return res, nil
-	}
-
-	// 4. Attempt the merge. On failure abort before returning, so a refused
-	// merge never leaves the project mid-merge.
-	if merr := w.git.Merge(rt.ProjectRoot, ws.Branch); merr != nil {
-		_ = w.git.MergeAbort(rt.ProjectRoot)
-		res.Reason = ReasonConflicts
-		res.Conflicts = conflictFiles(merr.Error())
+	if !fr.Merged {
+		res.Reason = fr.Reason
+		res.Conflicts = fr.Conflicted
 		return res, nil
 	}
 
 	// Success: the merge is done. Return the session to the project root
-	// FIRST, so a cleanup failure below never leaves the session claiming
-	// isolation in a worktree that is already merged away. The worktree and
-	// branch are then best-effort cleanup; a failure is reported but the
-	// session is already consistent and the operator can remove the stale
-	// worktree/branch by hand.
+	// before reporting any cleanup failure, so the session is never left
+	// claiming isolation in a worktree that is already merged away. The
+	// worktree and branch removal inside FinishBranch is best-effort; a
+	// failure is reported but the session is already consistent and the
+	// operator can remove the stale worktree/branch by hand.
 	rt.State.SetWorkspace(session.Workspace{ProjectRoot: rt.ProjectRoot, ActiveRoot: rt.ProjectRoot})
 	res.Merged = true
-	if rerr := w.git.WorktreeRemove(rt.ProjectRoot, ws.ActiveRoot); rerr != nil {
-		return res, serverErrorf("merged, but removing the worktree failed: %v", rerr)
+	if fg.removeErr != nil {
+		return res, serverErrorf("merged, but removing the worktree failed: %v", fg.removeErr)
 	}
-	if derr := w.git.BranchDelete(rt.ProjectRoot, ws.Branch, false); derr != nil {
-		return res, serverErrorf("merged, but deleting branch %s failed: %v", ws.Branch, derr)
+	if fg.deleteErr != nil {
+		return res, serverErrorf("merged, but deleting branch %s failed: %v", ws.Branch, fg.deleteErr)
 	}
 	return res, nil
 }
@@ -424,19 +439,15 @@ type discardParams struct {
 // recorded. A stale or corrupt record must never delete an unrelated
 // worktree or branch.
 func (w *WorktreeManager) verifyOwnership(rt *WorktreeRuntime, ws session.Workspace) error {
-	// Compute the agent worktree dir without AgentDir's mkdir side effect:
-	// this is a verification, not a creation, and must not touch the
+	// Containment is delegated to worktree.OwnedByAgentDir, the shared
+	// implementation: it canonicalizes both sides before the check (a purely
+	// lexical filepath.Rel would let a symlink inside the agent dir, e.g.
+	// .marshal/worktrees/link → /elsewhere, pass containment, and
+	// WorktreeRemove would then remove the symlink's target). Like the old
+	// inline check it is a verification, not a creation: it never touches the
 	// filesystem beyond reading git's worktree list.
 	agentDir := filepath.Join(rt.ProjectRoot, ".marshal", "worktrees")
-	// Canonicalize both sides before the containment check. A purely lexical
-	// filepath.Rel would let a symlink inside the agent dir (e.g.
-	// .marshal/worktrees/link → /elsewhere) pass containment, and
-	// WorktreeRemove would then remove the symlink's target. Reject any
-	// recorded path whose canonical form escapes the canonical agent dir.
-	canonAgent := worktree.CanonicalPath(agentDir)
-	canonActive := worktree.CanonicalPath(ws.ActiveRoot)
-	rel, err := filepath.Rel(canonAgent, canonActive)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !worktree.OwnedByAgentDir(rt.ProjectRoot, ws.ActiveRoot) {
 		return serverErrorf("refusing to remove %s: not under the agent worktree dir %s", ws.ActiveRoot, agentDir)
 	}
 	attached, err := w.git.WorktreeBranch(rt.ProjectRoot, ws.ActiveRoot)

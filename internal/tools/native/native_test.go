@@ -48,6 +48,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"json.query":         registry.RiskReadOnly,
 		"csv.inspect":        registry.RiskReadOnly,
 		"workspace.worktree": registry.RiskWorkspaceWrite,
+		"workspace.finish":   registry.RiskWorkspaceWrite,
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))

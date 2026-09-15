@@ -1768,3 +1768,81 @@ func TestSkillsBodyFullTurnsMergesFromFile(t *testing.T) {
 		t.Fatalf("merged BodyFullTurns = %d, want 7", cfg.Skills.BodyFullTurns)
 	}
 }
+
+func TestWorktreeDefaultsEmpty(t *testing.T) {
+	cfg := Default()
+	if len(cfg.Worktree.Seed) != 0 || len(cfg.Worktree.SetupHooks) != 0 {
+		t.Fatalf("default Worktree = %#v, want empty", cfg.Worktree)
+	}
+}
+
+func TestWorktreeMergesFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[[worktree.seed]]
+path = ".env"
+mode = "symlink"
+
+[[worktree.seed]]
+path = "node_modules"
+
+[[worktree.setup_hook]]
+command = "npm install"
+timeout_seconds = 600
+
+[[worktree.setup_hook]]
+command = "make generate"
+
+[[worktree.setup_hook]]
+command = ""
+
+[[worktree.seed]]
+path = ""
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&cfg, file); err != nil {
+		t.Fatal(err)
+	}
+	wantSeeds := []WorktreeSeed{
+		{Path: ".env", Mode: "symlink"},
+		{Path: "node_modules", Mode: "copy"},
+	}
+	if !reflect.DeepEqual(cfg.Worktree.Seed, wantSeeds) {
+		t.Fatalf("Seed = %#v, want %#v", cfg.Worktree.Seed, wantSeeds)
+	}
+	wantHooks := []WorktreeSetupHook{
+		{Command: "npm install", TimeoutSeconds: 600},
+		{Command: "make generate", TimeoutSeconds: 300},
+	}
+	if !reflect.DeepEqual(cfg.Worktree.SetupHooks, wantHooks) {
+		t.Fatalf("SetupHooks = %#v, want %#v", cfg.Worktree.SetupHooks, wantHooks)
+	}
+}
+
+func TestWorktreeSeedReplacesWholesale(t *testing.T) {
+	cfg := Default()
+	path1, mode1 := ".env", "symlink"
+	first := configFile{Worktree: &fileWorktree{
+		Seed: []fileWorktreeSeed{{Path: &path1, Mode: &mode1}},
+	}}
+	if err := merge(&cfg, first); err != nil {
+		t.Fatal(err)
+	}
+	path2 := "vendor"
+	second := configFile{Worktree: &fileWorktree{
+		Seed: []fileWorktreeSeed{{Path: &path2}},
+	}}
+	if err := merge(&cfg, second); err != nil {
+		t.Fatal(err)
+	}
+	want := []WorktreeSeed{{Path: "vendor", Mode: "copy"}}
+	if !reflect.DeepEqual(cfg.Worktree.Seed, want) {
+		t.Fatalf("Seed = %#v, want %#v (later layer replaces the slice wholesale)", cfg.Worktree.Seed, want)
+	}
+}

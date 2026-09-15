@@ -4,7 +4,10 @@
 // semantics.
 package strutil
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Truncate returns s shortened to at most max runes. When ellipsis is true
 // and truncation occurred, "…" is appended (so the result may be max+1
@@ -31,6 +34,24 @@ func CompactTokens(n int) string {
 		return fmt.Sprintf("%dk", n/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+// HumanAge renders a duration compactly: "30m", "3h", "2d", "5w". A
+// non-positive duration (unknown age) renders as "?".
+func HumanAge(d time.Duration) string {
+	if d <= 0 {
+		return "?"
+	}
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dw", int(d.Hours()/(24*7)))
+	}
 }
 
 // TruncateMiddle returns s shortened to at most max runes by replacing the

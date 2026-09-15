@@ -249,6 +249,36 @@ func merge(cfg *Config, file configFile) error {
 			set(&cfg.SDD.Verify.Test, file.SDD.Verify.Test)
 		}
 	}
+	if file.Worktree != nil {
+		if file.Worktree.Seed != nil {
+			seeds := make([]WorktreeSeed, 0, len(file.Worktree.Seed))
+			for _, s := range file.Worktree.Seed {
+				if s.Path == nil || *s.Path == "" {
+					continue
+				}
+				mode := "copy"
+				if s.Mode != nil {
+					mode = *s.Mode
+				}
+				seeds = append(seeds, WorktreeSeed{Path: *s.Path, Mode: mode})
+			}
+			cfg.Worktree.Seed = seeds
+		}
+		if file.Worktree.SetupHooks != nil {
+			hooks := make([]WorktreeSetupHook, 0, len(file.Worktree.SetupHooks))
+			for _, h := range file.Worktree.SetupHooks {
+				if h.Command == nil || *h.Command == "" {
+					continue
+				}
+				timeout := 300
+				if h.TimeoutSeconds != nil {
+					timeout = *h.TimeoutSeconds
+				}
+				hooks = append(hooks, WorktreeSetupHook{Command: *h.Command, TimeoutSeconds: timeout})
+			}
+			cfg.Worktree.SetupHooks = hooks
+		}
+	}
 	if file.MCP != nil {
 		for name, srv := range file.MCP.Servers {
 			if cfg.MCP.Servers == nil {

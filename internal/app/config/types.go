@@ -24,6 +24,7 @@ type Config struct {
 	Desktop       DesktopConfig                         `toml:"desktop"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	SDD           SDDConfig                             `toml:"sdd"`
+	Worktree      WorktreeConfig                        `toml:"worktree"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
 	History       HistoryConfig                         `toml:"history"`
@@ -104,6 +105,28 @@ type SDDConfig struct {
 type SDDVerifyConfig struct {
 	Build string `toml:"build"`
 	Test  string `toml:"test"`
+}
+
+// WorktreeConfig holds agent-worktree setup settings: which git-ignored
+// files are seeded into fresh worktrees and which setup hooks run inside
+// them.
+type WorktreeConfig struct {
+	Seed       []WorktreeSeed      `toml:"seed"`
+	SetupHooks []WorktreeSetupHook `toml:"setup_hook"`
+}
+
+// WorktreeSeed is one git-ignored path copied or symlinked from the
+// project root into a fresh worktree.
+type WorktreeSeed struct {
+	Path string `toml:"path"`
+	Mode string `toml:"mode"` // "symlink" | "copy"
+}
+
+// WorktreeSetupHook is a shell command run inside a fresh worktree after
+// seeding, through the configured sandbox backend.
+type WorktreeSetupHook struct {
+	Command        string `toml:"command"`
+	TimeoutSeconds int    `toml:"timeout_seconds"`
 }
 
 type MCPConfig struct {

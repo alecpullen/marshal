@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"marshal/internal/app/config"
 	"marshal/internal/worktree"
 )
 
@@ -62,7 +63,7 @@ func gitCommitAll(t *testing.T, dir, msg string) {
 func realManager(t *testing.T, repo string) *WorktreeManager {
 	t.Helper()
 	st := newWorktreeTestState(t, repo)
-	if _, err := isolateSession(worktree.CLIGitOps{}, st, repo, IsolationParams{Branch: "feat/x"}, "n"); err != nil {
+	if _, err := isolateSession(worktree.CLIGitOps{}, st, repo, IsolationParams{Branch: "feat/x"}, "n", config.WorktreeConfig{}); err != nil {
 		t.Fatalf("isolateSession: %v", err)
 	}
 	return NewWorktreeManager(WorktreeManagerConfig{
@@ -93,6 +94,34 @@ func TestRealGitCleanMergeLandsCommits(t *testing.T) {
 	}
 	if _, err := os.Stat(wt); !os.IsNotExist(err) {
 		t.Errorf("worktree should be gone, stat err = %v", err)
+	}
+}
+
+// Isolation must seed the configured git-ignored paths into a fresh
+// worktree: a toolchain that expects .env (or node_modules, caches) at the
+// project root finds nothing in a fresh checkout, and seeding is what makes
+// the worktree immediately usable. The source must be git-ignored — the
+// seeder refuses tracked paths, which would shadow the real checkout.
+func TestRealGitIsolateSessionSeedsIgnoredPath(t *testing.T) {
+	repo := initTestRepo(t)
+	// Ignore .env in the test repo, then produce it at the project root.
+	writeFile(t, repo, ".gitignore", ".env\n")
+	gitCommitAll(t, repo, "ignore .env")
+	writeFile(t, repo, ".env", "SECRET=1\n")
+
+	st := newWorktreeTestState(t, repo)
+	ws, err := isolateSession(worktree.CLIGitOps{}, st, repo,
+		IsolationParams{Branch: "feat/x"}, "n",
+		config.WorktreeConfig{Seed: []config.WorktreeSeed{{Path: ".env", Mode: "copy"}}})
+	if err != nil {
+		t.Fatalf("isolateSession: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(ws.ActiveRoot, ".env"))
+	if err != nil {
+		t.Fatalf("seeded .env missing from the worktree: %v", err)
+	}
+	if string(b) != "SECRET=1\n" {
+		t.Errorf("seeded .env = %q, want the source content", b)
 	}
 }
 

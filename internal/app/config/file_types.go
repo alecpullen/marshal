@@ -146,6 +146,21 @@ type fileSDDVerify struct {
 	Test  *string `toml:"test"`
 }
 
+type fileWorktreeSeed struct {
+	Path *string `toml:"path"`
+	Mode *string `toml:"mode"`
+}
+
+type fileWorktreeSetupHook struct {
+	Command        *string `toml:"command"`
+	TimeoutSeconds *int    `toml:"timeout_seconds"`
+}
+
+type fileWorktree struct {
+	Seed       []fileWorktreeSeed      `toml:"seed"`
+	SetupHooks []fileWorktreeSetupHook `toml:"setup_hook"`
+}
+
 type fileMCPServer struct {
 	Command *string           `toml:"command"`
 	Args    []string          `toml:"args"`
@@ -268,6 +283,7 @@ type configFile struct {
 	Desktop     *fileDesktop     `toml:"desktop"`
 	Swarm       *fileSwarm       `toml:"swarm"`
 	SDD         *fileSDD         `toml:"sdd"`
+	Worktree    *fileWorktree    `toml:"worktree"`
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
 	History     *fileHistory     `toml:"history"`

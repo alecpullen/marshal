@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
@@ -19,12 +20,13 @@ type workspaceWorktreeArgs struct {
 // skill covers judgment. There is deliberately no removal path (spec §7).
 func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 	tool := registry.Tool{
-		Name:        "workspace.worktree",
-		Description: "Isolate the session in a git worktree for a branch, or return to the project root.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"branch":{"type":"string","minLength":1}},"additionalProperties":false}`),
-		Risk:        registry.RiskWorkspaceWrite,
+		Name: "workspace.worktree",
+		Description: "Isolate the session in a git worktree for a branch, or return to the project root. " +
+			"Configured setup hooks run automatically in fresh worktrees (sandboxed, from trusted project config).",
+		Schema: json.RawMessage(`{"type":"object","properties":{"branch":{"type":"string","minLength":1}},"additionalProperties":false}`),
+		Risk:   registry.RiskWorkspaceWrite,
 	}
-	tool.Handler = func(_ context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[workspaceWorktreeArgs](tool, call.Args)
 		if err != nil {
 			return registry.ToolResult{}, err
@@ -57,15 +59,39 @@ func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		wt, err := worktree.EnsureWorktree(worktree.CLIGitOps{}, ws.ProjectRoot, dir, args.Branch, "HEAD")
+		wt, err := worktree.EnsureWorktree(worktree.CLIGitOps{}, ws.ProjectRoot, dir, args.Branch, "HEAD", worktree.WorktreeSetup{Config: t.config.Worktree})
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		st.SetWorkspace(session.Workspace{ProjectRoot: ws.ProjectRoot, ActiveRoot: wt.Path, Branch: wt.Branch})
+		// Record BaseSha so workspace.finish can default its merge target to
+		// the commit the branch started from (it cannot be recomputed inside
+		// the worktree, where HEAD is the branch tip). The project branch is
+		// resolved best-effort for TargetBranch; a detached HEAD just leaves
+		// it empty.
+		targetBranch, _ := worktree.CLIGitOps{}.RevParse(ws.ProjectRoot, "--abbrev-ref HEAD")
+		st.SetWorkspace(session.Workspace{
+			ProjectRoot:  ws.ProjectRoot,
+			ActiveRoot:   wt.Path,
+			Branch:       wt.Branch,
+			BaseSha:      wt.Base,
+			TargetBranch: strings.TrimSpace(targetBranch),
+		})
+		content := fmt.Sprintf("Worktree for branch %q (base %s) at %s. The session root moved there: file and shell tools now operate inside the worktree. Commit before returning to the project root; returning does not carry changes.",
+			wt.Branch, wt.Base, wt.Path)
+		// A fresh worktree was seeded and has hooks pending: run them now
+		// through the sandboxed runner and surface every warning. Failures
+		// never abort — the worktree is still usable.
+		var warnings []string
+		if wt.Fresh {
+			warnings = append(warnings, wt.SeedWarnings...)
+			warnings = append(warnings, t.runSetupHooks(ctx, wt.Path, wt.SetupPlan)...)
+		}
+		if len(warnings) > 0 {
+			content += "\n\nSetup warnings:\n" + strings.Join(warnings, "\n")
+		}
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("worktree %s", wt.Branch),
-			Content: fmt.Sprintf("Worktree for branch %q (base %s) at %s. The session root moved there: file and shell tools now operate inside the worktree. Commit before returning to the project root; returning does not carry changes.",
-				wt.Branch, wt.Base, wt.Path),
+			Content: content,
 		}, nil
 	}
 	return tool

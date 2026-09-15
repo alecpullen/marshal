@@ -1,10 +1,13 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // GitOps is the seam over git. Every worktree consumer (the pipeline
@@ -55,6 +58,38 @@ type GitOps interface {
 	// DiffPath is Diff scoped to one path. Diff passes rng as a single argv
 	// element, so a caller cannot append "-- path" to it.
 	DiffPath(dir, rng, path string, contextLines int) (string, error)
+	// SquashMerge squashes branch into the current HEAD of dir without
+	// committing (git merge --squash): the index and working tree carry the
+	// merged result while HEAD stays put. Callers commit separately. On
+	// failure callers must call ResetMerge — NOT MergeAbort: --squash never
+	// writes MERGE_HEAD, so git merge --abort exits 128 and leaves the
+	// conflicted index and .git/SQUASH_MSG behind.
+	SquashMerge(dir, branch string) error
+	// ResetMerge undoes a merge attempt (git reset --merge): it resets the
+	// index and restores conflicted working-tree files, and — unlike
+	// merge --abort — also clears the staged state and SQUASH_MSG a failed
+	// --squash leaves behind. Only safe on a checkout known to be clean
+	// before the merge (it discards working-tree changes).
+	ResetMerge(dir string) error
+	// AheadBehind reports how many commits branch is ahead of and behind
+	// base (git rev-list --left-right --count base...branch).
+	AheadBehind(dir, base, branch string) (ahead, behind int, err error)
+	// BranchAge reports branch's tip commit time.
+	BranchAge(dir, branch string) (time.Time, error)
+	// ListWorktrees lists every worktree as a (path, branch) pair (git
+	// worktree list --porcelain). Branch is "" for detached and bare
+	// worktrees. WorktreeList remains for consumers that only need paths.
+	ListWorktrees(dir string) ([]WorktreeInfo, error)
+	// CheckIgnore reports whether path is git-ignored in dir (git
+	// check-ignore). Tracked paths report as not ignored — check-ignore
+	// consults the index — which is exactly what the seeder needs to know.
+	CheckIgnore(dir, path string) (bool, error)
+}
+
+// WorktreeInfo is one entry of `git worktree list --porcelain`.
+type WorktreeInfo struct {
+	Path   string
+	Branch string // "" for detached and bare worktrees
 }
 
 // CLIGitOps shells out to the git CLI.
@@ -194,6 +229,11 @@ func (g CLIGitOps) MergeAbort(dir string) error {
 	return err
 }
 
+func (g CLIGitOps) ResetMerge(dir string) error {
+	_, err := g.run(dir, "reset", "--merge")
+	return err
+}
+
 func (g CLIGitOps) BranchDelete(dir, branch string, force bool) error {
 	flag := "-d"
 	if force {
@@ -209,4 +249,86 @@ func (g CLIGitOps) DiffNumstat(dir, rng string) (string, error) {
 
 func (g CLIGitOps) DiffPath(dir, rng, path string, contextLines int) (string, error) {
 	return g.run(dir, "diff", fmt.Sprintf("-U%d", contextLines), rng, "--", path)
+}
+
+// SquashMerge stages the merged result without committing. No editor can
+// appear: --squash never creates a merge commit.
+func (g CLIGitOps) SquashMerge(dir, branch string) error {
+	_, err := g.run(dir, "merge", "--squash", branch)
+	return err
+}
+
+// AheadBehind parses `git rev-list --left-right --count base...branch`.
+// The left count is what only base has (how far branch is behind), the
+// right count what only branch has (how far ahead it is).
+func (g CLIGitOps) AheadBehind(dir, base, branch string) (int, int, error) {
+	out, err := g.run(dir, "rev-list", "--left-right", "--count", base+"..."+branch)
+	if err != nil {
+		return 0, 0, err
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("worktree git: rev-list --count: unexpected output %q", out)
+	}
+	behind, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("worktree git: rev-list --count: unexpected output %q", out)
+	}
+	ahead, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("worktree git: rev-list --count: unexpected output %q", out)
+	}
+	return ahead, behind, nil
+}
+
+func (g CLIGitOps) BranchAge(dir, branch string) (time.Time, error) {
+	out, err := g.run(dir, "log", "-1", "--format=%ct", branch)
+	if err != nil {
+		return time.Time{}, err
+	}
+	sec, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("worktree git: log --format=%%ct: unexpected output %q", out)
+	}
+	return time.Unix(sec, 0), nil
+}
+
+// ListWorktrees parses porcelain blocks: each block starts with a
+// "worktree <path>" line and may carry "branch refs/heads/<name>"; detached
+// and bare worktrees have no branch line and report Branch "".
+func (g CLIGitOps) ListWorktrees(dir string) ([]WorktreeInfo, error) {
+	out, err := g.run(dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var infos []WorktreeInfo
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			infos = append(infos, WorktreeInfo{Path: strings.TrimPrefix(line, "worktree ")})
+		case strings.HasPrefix(line, "branch refs/heads/"):
+			if len(infos) > 0 {
+				infos[len(infos)-1].Branch = strings.TrimPrefix(line, "branch refs/heads/")
+			}
+		}
+	}
+	return infos, nil
+}
+
+// CheckIgnore reads the answer from git's exit code — 0 ignored, 1 not
+// ignored (tracked paths included), anything else a real failure — so it
+// runs the command directly instead of through run, which collapses all
+// non-zero exits into one error.
+func (g CLIGitOps) CheckIgnore(dir, path string) (bool, error) {
+	cmd := exec.Command("git", "-C", dir, "check-ignore", path)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("worktree git: check-ignore %s: %w: %s", path, err, strings.TrimSpace(string(out)))
 }

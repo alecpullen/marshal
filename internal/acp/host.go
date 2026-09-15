@@ -333,6 +333,11 @@ func (h *agentHost) registerHandlers(srv *Server) {
 	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
 	srv.Handle("session/agents_roster", mem.AgentsRoster)
 
+	// Worktree setup is resolved per session, not here: the host never holds
+	// a loaded config.Config (config is per-cwd, loaded inside app.StartRuntime
+	// and carried on session.State), so isolateSession reads
+	// State.Config.Worktree at the session/new call site in session.go. Setup
+	// stays zero in this wiring.
 	wtMgr := NewWorktreeManager(WorktreeManagerConfig{
 		Lookup: func(sessionID string) (*WorktreeRuntime, bool) {
 			rt, ok := manager.Get(sessionID)

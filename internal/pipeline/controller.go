@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"marshal/internal/agent"
+	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
 	"marshal/internal/worktree"
 )
@@ -57,6 +58,11 @@ type ControllerOpts struct {
 	Strategy     Strategy
 	MaxTokensCfg int
 
+	// Setup is the worktree setup configuration (seeded git-ignored files,
+	// setup hooks) applied when the run's worktree is created. Zero value
+	// means no seeding.
+	Setup config.WorktreeConfig
+
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
 	Sleep func(context.Context, time.Duration) error
@@ -84,6 +90,9 @@ type Controller struct {
 
 	// Strategy controls deterministic vs agent execution.
 	Strategy Strategy
+	// Setup mirrors ControllerOpts.Setup: the worktree seeding config used
+	// when Run creates the worktree.
+	Setup config.WorktreeConfig
 	// PlanIR is the compiled plan, populated when marshal.* blocks are
 	// present. Nil for legacy prose-only plans.
 	PlanIR *PlanIR
@@ -177,6 +186,7 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 		TargetBranch:       opts.TargetBranch,
 		Strategy:           opts.Strategy,
 		MaxTokensCfg:       opts.MaxTokensCfg,
+		Setup:              opts.Setup,
 	}, nil
 }
 
@@ -1040,12 +1050,19 @@ func (c *Controller) Run(ctx context.Context) error {
 		if _, err := c.ResolveTargetBranch(); err != nil {
 			return err
 		}
-		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
+		// Seeding only: SetupPlan.Hooks are deliberately ignored because the
+		// pipeline has no approval or shell-policy channel through which to
+		// run them (unlike the interactive workspace.worktree tool, which
+		// executes hooks through the sandboxed runner).
+		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch, worktree.WorktreeSetup{Config: c.Setup})
 		if err != nil {
 			return err
 		}
 		c.Worktree = wt
 		c.noteLedger("Run started on branch %s at %s", wt.Branch, wt.Path)
+		for _, w := range wt.SeedWarnings {
+			c.noteLedger("worktree seed warning: %s", w)
+		}
 	}
 	// Bind the dispatcher to the run's isolation context now that the
 	// worktree is known: each dispatch builds a fresh registry rooted at the

@@ -70,7 +70,13 @@
       // Refetch so the bar reflects the post-prune total.
       await refresh()
     } catch (e) {
-      error = errMessage(e)
+      /* Same 503 special-case as refresh(): a fleet-missing prune is an
+         expected absence, not a failure, so it renders as the muted note. */
+      if (e instanceof APIError && e.status === 503) {
+        fleetMissing = true
+      } else {
+        error = errMessage(e)
+      }
     } finally {
       pruning = false
     }

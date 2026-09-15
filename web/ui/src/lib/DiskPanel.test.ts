@@ -131,7 +131,7 @@ describe('DiskPanel', () => {
     expect(screen.queryByText('API error 502')).toBeNull()
   })
 
-  it('shows the raw error banner, not the fleet-mode note, when a prune hits a 503', async () => {
+  it('renders the fleet-mode note instead of an error banner when a prune hits a 503', async () => {
     ;(api.pruneDisk as Mock).mockRejectedValue(new api.APIError(503, undefined))
     render(DiskPanel)
     await screen.findByText('2.0 GB')
@@ -139,12 +139,8 @@ describe('DiskPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Prune' }))
     await userEvent.click(screen.getByRole('button', { name: 'Confirm prune' }))
 
-    /*
-      Pinning current behavior: only refresh() special-cases a 503, so a
-      fleet-missing prune lands in the raw banner. A muted note here would
-      be a reasonable follow-up, but is beyond this change.
-    */
-    expect(await screen.findByText('API error 503')).toBeTruthy()
-    expect(screen.queryByText('Disk tracking requires fleet mode.')).toBeNull()
+    // Same 503 special-case as refresh(): an expected absence, not a failure.
+    expect(await screen.findByText('Disk tracking requires fleet mode.')).toBeTruthy()
+    expect(document.querySelector('.text-danger')).toBeNull()
   })
 })

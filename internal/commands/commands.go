@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -15,7 +16,40 @@ import (
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/worktree"
 )
+
+// listFleet and listFleetBase are package-level seams so tests can fake
+// the git-backed fleet listing without a real repository.
+var listFleet = worktree.ListFleet
+var listFleetBase = func(root string) (string, error) {
+	// The fleet's comparison base is the project root's HEAD SHA. A
+	// literal "HEAD" would resolve inside each worktree to its own tip,
+	// making ahead/behind always 0/0.
+	base, err := worktree.CLIGitOps{}.RevParse(root, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve HEAD: %w", err)
+	}
+	return base, nil
+}
+
+// humanAge renders a branch-tip age compactly for the /worktrees panel:
+// "3h", "2d", "5w". Zero (unknown age, degraded row) renders as "?".
+func humanAge(d time.Duration) string {
+	if d <= 0 {
+		return "?"
+	}
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dw", int(d.Hours()/(24*7)))
+	}
+}
 
 // snapshotContext returns the snapshot service and database, or a
 // user-facing error message when either is unavailable.
@@ -690,6 +724,46 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					})
 				}
 				return Panel("Generations", true, rows)
+			},
+		},
+		{
+			Name:        "worktrees",
+			Description: "List agent worktrees and their status vs the project root",
+			Group:       groupChat,
+			Handler: func(state *session.State, args []string) Result {
+				root := state.Workspace().ProjectRoot
+				if root == "" {
+					root = state.WorkingDir
+				}
+				// Ahead/behind is against the project root's HEAD. A literal
+				// "HEAD" would resolve inside each worktree to its own tip and
+				// always read 0/0, so resolve the SHA once here.
+				base, err := listFleetBase(root)
+				if err != nil {
+					return Text(fmt.Sprintf("worktrees: %v", err))
+				}
+				rows, err := listFleet(worktree.CLIGitOps{}, root, base)
+				if err != nil {
+					return Text(fmt.Sprintf("worktrees: worktree list failed: %v", err))
+				}
+				if len(rows) == 0 {
+					return Text("No agent worktrees.")
+				}
+				var docRows []Row
+				for _, r := range rows {
+					r := r
+					dirty := "clean"
+					if r.Dirty {
+						dirty = "dirty"
+					}
+					docRows = append(docRows, Row{
+						Text:   r.Branch,
+						Detail: fmt.Sprintf("↑%d ↓%d · %s · %s", r.Ahead, r.Behind, dirty, humanAge(r.Age)),
+						Desc:   r.Path,
+						// Read-only listing: no row Actions.
+					})
+				}
+				return Panel("Worktrees", false, docRows)
 			},
 		},
 		{

@@ -8,6 +8,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
+	"marshal/internal/worktree"
 )
 
 // RepoStats is the indexed-repository summary the repo section renders.
@@ -48,7 +49,12 @@ type Data struct {
 	// count a session's turns.
 	Totals  db.UsageTotals
 	Changed []ChangedFile
-	Now     time.Time // injected so elapsed-time rendering is deterministic
+	// Fleet is the agent-worktree listing, cached on turn boundaries like
+	// Changed: ListFleet shells out to git per worktree, so it must never
+	// be computed during render. Ahead/Behind are against the project
+	// root's HEAD.
+	Fleet []worktree.FleetRow
+	Now   time.Time // injected so elapsed-time rendering is deterministic
 
 	// Pack is the context pack snapshot. Held directly rather than read
 	// from State so tests can build one without a session.

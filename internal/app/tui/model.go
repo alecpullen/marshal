@@ -66,6 +66,7 @@ import (
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/watch"
+	"marshal/internal/worktree"
 )
 
 // AgentRunner is the one thing the TUI knows about the agent loop: how to
@@ -379,7 +380,11 @@ type Model struct {
 	railBaseRef string
 	// railChanged is the changed-files cache, refreshed on turn boundaries.
 	railChanged []sidepanel.ChangedFile
-	viewport    viewport.Model
+	// railFleet is the agent-worktree cache, refreshed on turn boundaries
+	// (ListFleet shells out to git per worktree). Ahead/behind is against
+	// the project root's HEAD.
+	railFleet []worktree.FleetRow
+	viewport  viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -1561,6 +1566,32 @@ func (m *Model) refreshRailChanged() {
 	m.railChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.railBaseRef)
 }
 
+// refreshRailFleet reloads the agent-worktree cache the side panel reads.
+// Shells out to git (ListFleet runs several subprocesses per worktree), so
+// it runs on turn boundaries only — never from View. Ahead/behind is
+// against the project root's HEAD, not the active root: the fleet describes
+// the whole project's agent worktrees, not the checked-out one.
+func (m *Model) refreshRailFleet() {
+	if !m.railEnabled() {
+		return
+	}
+	root := m.state.Workspace().ProjectRoot
+	if root == "" {
+		root = m.state.WorkingDir
+	}
+	base, err := worktree.CLIGitOps{}.RevParse(root, "HEAD")
+	if err != nil {
+		m.railFleet = nil
+		return
+	}
+	rows, err := worktree.ListFleet(worktree.CLIGitOps{}, root, base)
+	if err != nil {
+		m.railFleet = nil
+		return
+	}
+	m.railFleet = rows
+}
+
 // rebuildRail constructs the side rail from the full section list, filtering
 // out any section whose ID appears in the config's hidden list. Both the
 // constructor and tests call this so there is a single code path.
@@ -1570,6 +1601,7 @@ func (m *Model) rebuildRail() {
 		sidepanel.SDDSection{},
 		sidepanel.ContextSection{},
 		sidepanel.ChangedSection{},
+		sidepanel.WorktreesSection{},
 		sidepanel.WorkingSetSection{},
 		sidepanel.ToolsSection{},
 		sidepanel.RulesSection{},
@@ -1601,6 +1633,7 @@ func (m Model) railData() sidepanel.Data {
 		Turns:   m.railTurns,
 		Totals:  m.railTotals,
 		Changed: m.railChanged,
+		Fleet:   m.railFleet,
 		Pack:    m.state.ContextPack(),
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
@@ -1635,12 +1668,15 @@ func (m Model) drilledRailState() *session.State {
 // per-child meaning and nothing per-child is cached at turn boundaries yet.
 func (m Model) childRailData(child *session.State) sidepanel.Data {
 	return sidepanel.Data{
-		State:   child,
-		Audit:   child.AuditLog(),
-		Rules:   child.SessionRules(),
-		Skills:  child.ActiveSkills(),
-		Git:     m.gitInfo,
-		Repo:    m.railRepoStats,
+		State:  child,
+		Audit:  child.AuditLog(),
+		Rules:  child.SessionRules(),
+		Skills: child.ActiveSkills(),
+		Git:    m.gitInfo,
+		Repo:   m.railRepoStats,
+		// Fleet stays parent-sourced like Git/Repo: the agent worktrees
+		// describe the project's workspace, not the drilled-in conversation.
+		Fleet:   m.railFleet,
 		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
@@ -1715,6 +1751,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// most once per disabled→enabled transition.
 		if !wasRailEnabled && m.railEnabled() {
 			m.refreshRailChanged()
+			m.refreshRailFleet()
 		}
 		m.refreshViewport()
 		return m, nil
@@ -4131,6 +4168,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	}
 	m.refreshRailTurns()
 	m.refreshRailChanged()
+	m.refreshRailFleet()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {

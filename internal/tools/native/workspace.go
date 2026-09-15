@@ -63,7 +63,19 @@ func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		st.SetWorkspace(session.Workspace{ProjectRoot: ws.ProjectRoot, ActiveRoot: wt.Path, Branch: wt.Branch})
+		// Record BaseSha so workspace.finish can default its merge target to
+		// the commit the branch started from (it cannot be recomputed inside
+		// the worktree, where HEAD is the branch tip). The project branch is
+		// resolved best-effort for TargetBranch; a detached HEAD just leaves
+		// it empty.
+		targetBranch, _ := worktree.CLIGitOps{}.RevParse(ws.ProjectRoot, "--abbrev-ref HEAD")
+		st.SetWorkspace(session.Workspace{
+			ProjectRoot:  ws.ProjectRoot,
+			ActiveRoot:   wt.Path,
+			Branch:       wt.Branch,
+			BaseSha:      wt.Base,
+			TargetBranch: strings.TrimSpace(targetBranch),
+		})
 		content := fmt.Sprintf("Worktree for branch %q (base %s) at %s. The session root moved there: file and shell tools now operate inside the worktree. Commit before returning to the project root; returning does not carry changes.",
 			wt.Branch, wt.Base, wt.Path)
 		// A fresh worktree was seeded and has hooks pending: run them now

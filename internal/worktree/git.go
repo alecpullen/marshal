@@ -60,9 +60,17 @@ type GitOps interface {
 	DiffPath(dir, rng, path string, contextLines int) (string, error)
 	// SquashMerge squashes branch into the current HEAD of dir without
 	// committing (git merge --squash): the index and working tree carry the
-	// merged result while HEAD stays put. Callers commit separately and
-	// must MergeAbort on failure, as with Merge.
+	// merged result while HEAD stays put. Callers commit separately. On
+	// failure callers must call ResetMerge — NOT MergeAbort: --squash never
+	// writes MERGE_HEAD, so git merge --abort exits 128 and leaves the
+	// conflicted index and .git/SQUASH_MSG behind.
 	SquashMerge(dir, branch string) error
+	// ResetMerge undoes a merge attempt (git reset --merge): it resets the
+	// index and restores conflicted working-tree files, and — unlike
+	// merge --abort — also clears the staged state and SQUASH_MSG a failed
+	// --squash leaves behind. Only safe on a checkout known to be clean
+	// before the merge (it discards working-tree changes).
+	ResetMerge(dir string) error
 	// AheadBehind reports how many commits branch is ahead of and behind
 	// base (git rev-list --left-right --count base...branch).
 	AheadBehind(dir, base, branch string) (ahead, behind int, err error)
@@ -218,6 +226,11 @@ func (g CLIGitOps) Merge(dir, branch string) error {
 
 func (g CLIGitOps) MergeAbort(dir string) error {
 	_, err := g.run(dir, "merge", "--abort")
+	return err
+}
+
+func (g CLIGitOps) ResetMerge(dir string) error {
+	_, err := g.run(dir, "reset", "--merge")
 	return err
 }
 

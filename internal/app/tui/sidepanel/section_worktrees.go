@@ -2,9 +2,10 @@ package sidepanel
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/strutil"
 )
 
 // WorktreesSection lists the agent-owned worktrees under
@@ -28,7 +29,7 @@ func (WorktreesSection) Render(d Data, width, maxRows int) []string {
 		// budget depends on its visible width, and styling must not affect
 		// that math. The age rides in the right column too — it is the
 		// row's third fact after direction and dirty state.
-		counts := fmt.Sprintf("↑%d ↓%d · %s", w.Ahead, w.Behind, humanAge(w.Age))
+		counts := fmt.Sprintf("↑%d ↓%d · %s", w.Ahead, w.Behind, strutil.HumanAge(w.Age))
 
 		marker := ""
 		if w.Dirty {
@@ -49,7 +50,7 @@ func (WorktreesSection) Render(d Data, width, maxRows int) []string {
 		case w.Behind > 0:
 			styled = styleError(fmt.Sprintf("↓%d", w.Behind))
 		}
-		styled += " · " + humanAge(w.Age)
+		styled += " · " + strutil.HumanAge(w.Age)
 
 		rows = append(rows, railRow(marker, branch, styled, width))
 	}
@@ -67,22 +68,4 @@ func (WorktreesSection) OneLine(d Data, width int) string {
 		}
 	}
 	return ansi.Truncate(fmt.Sprintf("%d worktrees · %d dirty", len(d.Fleet), dirty), width, "…")
-}
-
-// humanAge renders a branch-tip age compactly: "3h", "2d", "5w". Zero
-// (unknown age, degraded row) renders as "?".
-func humanAge(d time.Duration) string {
-	if d <= 0 {
-		return "?"
-	}
-	switch {
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	default:
-		return fmt.Sprintf("%dw", int(d.Hours()/(24*7)))
-	}
 }

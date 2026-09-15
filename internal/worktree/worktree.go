@@ -121,11 +121,12 @@ type FakeGitOps struct {
 	// by Merge so tests can drive the conflict path. MergeFunc, when set,
 	// runs after the call is recorded and overrides MergeErr — tests use it
 	// to move HEAD the way a real merge does.
-	Merges    []string
-	MergeErr  error
-	MergeFunc func(dir, branch string) error
-	Aborts    int
-	Deleted   []string
+	Merges      []string
+	MergeErr    error
+	MergeFunc   func(dir, branch string) error
+	Aborts      int
+	ResetMerges int
+	Deleted     []string
 	// DiffStatOut backs DiffNumstat; DiffOut backs Diff and DiffPath.
 	DiffStatOut string
 	// AbbrevRef is returned by RevParse for "--abbrev-ref HEAD".
@@ -301,6 +302,12 @@ func (f *FakeGitOps) Merge(dir, branch string) error {
 func (f *FakeGitOps) MergeAbort(dir string) error {
 	f.record("MergeAbort")
 	f.Aborts++
+	return nil
+}
+
+func (f *FakeGitOps) ResetMerge(dir string) error {
+	f.record("ResetMerge")
+	f.ResetMerges++
 	return nil
 }
 

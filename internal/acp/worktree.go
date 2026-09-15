@@ -135,14 +135,6 @@ type WorktreeManagerConfig struct {
 	Lookup func(sessionID string) (*WorktreeRuntime, bool)
 	// Git defaults to CLIGitOps when nil. Tests inject FakeGitOps.
 	Git worktree.GitOps
-	// Setup is the worktree config (seeding) applied when a session is
-	// isolated. The production host wiring leaves it zero: the ACP host
-	// never holds a loaded config.Config — config is per-cwd, loaded inside
-	// app.StartRuntime and carried on session.State — so isolation resolves
-	// setup per session at the isolateSession call site in session.go, from
-	// State.Config.Worktree. Direct constructions (tests, embedders) may set
-	// it and pass it to isolateSession themselves.
-	Setup config.WorktreeConfig
 	// KnownWorktrees returns the worktrees a project's live sessions claim.
 	// Used by Prune to distinguish orphans from in-use worktrees.
 	KnownWorktrees func(projectRoot string) []string

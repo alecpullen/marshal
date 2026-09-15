@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -31,24 +30,6 @@ var listFleetBase = func(root string) (string, error) {
 		return "", fmt.Errorf("resolve HEAD: %w", err)
 	}
 	return base, nil
-}
-
-// humanAge renders a branch-tip age compactly for the /worktrees panel:
-// "3h", "2d", "5w". Zero (unknown age, degraded row) renders as "?".
-func humanAge(d time.Duration) string {
-	if d <= 0 {
-		return "?"
-	}
-	switch {
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	default:
-		return fmt.Sprintf("%dw", int(d.Hours()/(24*7)))
-	}
 }
 
 // snapshotContext returns the snapshot service and database, or a
@@ -758,7 +739,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					}
 					docRows = append(docRows, Row{
 						Text:   r.Branch,
-						Detail: fmt.Sprintf("↑%d ↓%d · %s · %s", r.Ahead, r.Behind, dirty, humanAge(r.Age)),
+						Detail: fmt.Sprintf("↑%d ↓%d · %s · %s", r.Ahead, r.Behind, dirty, strutil.HumanAge(r.Age)),
 						Desc:   r.Path,
 						// Read-only listing: no row Actions.
 					})

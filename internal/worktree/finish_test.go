@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,31 @@ func newFinishFake() *FakeGitOps {
 	g.Worktrees = append(g.Worktrees, finishWT.Path)
 	g.WorktreeBranches[finishWT.Path] = finishWT.Branch
 	return g
+}
+
+func TestFinishSquashConflictResetsMerge(t *testing.T) {
+	g := newFinishFake()
+	g.SquashMergeErr = fmt.Errorf("CONFLICT (content): Merge conflict in a.txt")
+
+	res, err := FinishBranch(g, "/repo", "sha-target", finishWT, FinishOptions{Squash: true})
+	if err != nil {
+		t.Fatalf("FinishBranch: %v", err)
+	}
+	if res.Merged || res.Reason != ReasonConflicts {
+		t.Fatalf("res = %+v, want refused with %s", res, ReasonConflicts)
+	}
+	if len(res.Conflicted) != 1 || res.Conflicted[0] != "a.txt" {
+		t.Fatalf("Conflicted = %v, want [a.txt]", res.Conflicted)
+	}
+	// A squash conflict must undo with reset --merge, never merge --abort
+	// (--squash writes no MERGE_HEAD, so --abort fails and leaves the
+	// conflicted index and SQUASH_MSG behind).
+	if g.ResetMerges != 1 {
+		t.Fatalf("ResetMerges = %d, want 1", g.ResetMerges)
+	}
+	if g.Aborts != 0 {
+		t.Fatalf("Aborts = %d, want 0 on the squash path", g.Aborts)
+	}
 }
 
 func TestFinishRefusesDirtyWorktreeWithoutMessage(t *testing.T) {
@@ -204,8 +230,14 @@ func TestFinishSquashConflictAborts(t *testing.T) {
 	if res.Merged || res.Reason != ReasonConflicts || len(res.Conflicted) != 1 {
 		t.Fatalf("res = %+v, want conflicts with one file", res)
 	}
-	if g.Aborts != 1 {
-		t.Fatalf("Aborts = %d, want the merge aborted", g.Aborts)
+	// A squash conflict undoes with reset --merge: merge --abort has no
+	// MERGE_HEAD to act on (--squash never writes one) and would leave
+	// the conflicted index and SQUASH_MSG behind.
+	if g.ResetMerges != 1 {
+		t.Fatalf("ResetMerges = %d, want the squash attempt reset", g.ResetMerges)
+	}
+	if g.Aborts != 0 {
+		t.Fatalf("Aborts = %d, want none on the squash path", g.Aborts)
 	}
 }
 

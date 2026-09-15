@@ -64,6 +64,9 @@ func TestWorkspaceWorktreeCreatesAndRebinds(t *testing.T) {
 	if ws.ActiveRoot != wt || ws.Branch != "feat/x" || ws.ProjectRoot != root {
 		t.Fatalf("Workspace() = %+v, want worktree %q on feat/x", ws, wt)
 	}
+	if ws.BaseSha == "" {
+		t.Fatal("Workspace().BaseSha is empty — workspace.finish relies on it as the default merge target")
+	}
 	if info, err := os.Stat(wt); err != nil || !info.IsDir() {
 		t.Fatalf("worktree dir missing: %v", err)
 	}

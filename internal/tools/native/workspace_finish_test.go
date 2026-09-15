@@ -1,6 +1,8 @@
 package native
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,61 @@ import (
 	"marshal/internal/tools/registry"
 	"marshal/internal/worktree"
 )
+
+// TestWorkspaceFinishEndToEndThroughIsolation drives the full production
+// flow with real git: workspace.worktree isolates the session (recording
+// BaseSha), a file is committed inside the worktree, and workspace.finish
+// with NO arguments must merge it back via the recorded base — the path
+// that broke when isolation never recorded BaseSha.
+func TestWorkspaceFinishEndToEndThroughIsolation(t *testing.T) {
+	reg, state, root := newWorktreeTestEnv(t)
+
+	if _, err := invokeTool(t, reg, "workspace.worktree", `{"branch":"feat/x"}`); err != nil {
+		t.Fatalf("workspace.worktree: %v", err)
+	}
+	ws := state.Workspace()
+	if ws.BaseSha == "" {
+		t.Fatal("workspace.worktree did not record BaseSha — workspace.finish would have no default target")
+	}
+	if ws.TargetBranch == "" {
+		t.Fatal("workspace.worktree did not record TargetBranch")
+	}
+
+	// Commit real work inside the worktree.
+	wtPath := ws.ActiveRoot
+	if err := os.WriteFile(filepath.Join(wtPath, "feat.txt"), []byte("from agent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "agent work")
+
+	res, err := invokeTool(t, reg, "workspace.finish", `{}`)
+	if err != nil {
+		t.Fatalf("workspace.finish: %v", err)
+	}
+	if !strings.Contains(res.Content, "squash commit") {
+		t.Fatalf("content = %q, want a squash commit report", res.Content)
+	}
+	// The project carries the agent's file, the worktree and branch are
+	// gone, and the session is back at the root.
+	if _, err := os.Stat(filepath.Join(root, "feat.txt")); err != nil {
+		t.Errorf("feat.txt not merged into the project: %v", err)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("worktree still present: %v", err)
+	}
+	if ws := state.Workspace(); ws.ActiveRoot != root || ws.Branch != "" {
+		t.Errorf("workspace after finish = %+v, want back at project root", ws)
+	}
+}
 
 // finishWorktreePath is the agent-owned worktree path the fixtures isolate
 // the session in.

@@ -42,16 +42,10 @@ const (
 	ReasonDirtyProject  = "project_dirty"
 	ReasonTargetMoved   = "target_moved"
 	ReasonConflicts     = "conflicts"
-	// ReasonMergeFailed is reserved for merge failures that are neither
-	// conflicts nor one of the guards above. The current paths mirror
-	// ACP's Merge — every merge error is reported as ReasonConflicts with
-	// whatever files git named — so nothing produces it yet.
-	ReasonMergeFailed = "merge_failed"
 )
 
 // conflictFiles pulls file names out of git's CONFLICT lines. Best-effort:
-// the reason is what drives the UI, the list is detail. Mirrors the
-// identically-named helper in internal/acp/worktree.go.
+// the reason is what drives the UI, the list is detail.
 func conflictFiles(msg string) []string {
 	var out []string
 	for _, line := range strings.Split(msg, "\n") {
@@ -116,7 +110,11 @@ func FinishBranch(git GitOps, repoRoot, target string, wt Worktree, opts FinishO
 	// refused merge never leaves the project mid-merge.
 	if opts.Squash {
 		if merr := git.SquashMerge(repoRoot, wt.Branch); merr != nil {
-			_ = git.MergeAbort(repoRoot)
+			// merge --abort does not apply here: --squash never writes
+			// MERGE_HEAD, so --abort fails and leaves the conflicted index
+			// and SQUASH_MSG behind. reset --merge is the correct undo, and
+			// is safe because guard 2 verified the project was clean.
+			_ = git.ResetMerge(repoRoot)
 			return FinishResult{Reason: ReasonConflicts, Conflicted: conflictFiles(merr.Error())}, nil
 		}
 		msg := opts.CommitMessage

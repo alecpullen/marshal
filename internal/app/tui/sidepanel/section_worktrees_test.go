@@ -90,22 +90,3 @@ func TestWorktreesSectionOneLine(t *testing.T) {
 		t.Errorf("OneLine = %q, want the dirty count", got)
 	}
 }
-
-func TestHumanAge(t *testing.T) {
-	cases := []struct {
-		d    time.Duration
-		want string
-	}{
-		{0, "?"},
-		{-time.Minute, "?"},
-		{30 * time.Minute, "30m"},
-		{2 * time.Hour, "2h"},
-		{3 * 24 * time.Hour, "3d"},
-		{10 * 24 * time.Hour, "1w"},
-	}
-	for _, c := range cases {
-		if got := humanAge(c.d); got != c.want {
-			t.Errorf("humanAge(%v) = %q, want %q", c.d, got, c.want)
-		}
-	}
-}

@@ -99,16 +99,20 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				return noOutstandingResult(), nil
 			}
 			state.SetActiveToolCallArgs(awaitActiveLabel("any", p))
-			// Fan out one goroutine per pending target; the channel is
-			// buffered to the target count so no loser blocks on send and
-			// the deferred cancel releases the rest — the same released-loser
-			// shape WaitAnySubagent uses for subagents alone.
+			// Fan out one goroutine per pending target. The arrivals channel
+			// is buffered to the target count, so no loser ever blocks on
+			// send; once the first arrival is consumed, the deferred cancel
+			// stops the wait context and releases the remaining goroutines.
 			type awaitArrival struct {
 				class string
 				sub   session.SubagentView
 				job   AwaitJobInfo
 				watch AwaitWatchInfo
-				err   error
+				// watchScan is the outstanding-scan snapshot for a watch
+				// arrival, kept so a raced watch-gone error can synthesize a
+				// terminal entry from fields the error result lacks.
+				watchScan AwaitWatchInfo
+				err       error
 			}
 			waitCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
@@ -131,12 +135,23 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				w := w
 				go func() {
 					info, err := cfg.watches.AwaitWatch(waitCtx, w.ID)
-					arrivals <- awaitArrival{class: "watch", watch: info, err: err}
+					arrivals <- awaitArrival{class: "watch", watch: info, watchScan: w, err: err}
 				}()
 			}
 			select {
 			case arr := <-arrivals:
 				if arr.err != nil {
+					// A once-mode watch can fire (or be stopped) between the
+					// outstanding scan and this goroutine's WaitFire
+					// registration; WaitFire then reports the watch gone.
+					// That arrival IS the event this await was waiting for, so
+					// synthesize a terminal finisher from the scan snapshot and
+					// return it like any other winner. Job-class unknown-job
+					// errors are genuine and keep the hard-error path.
+					if arr.class == "watch" && isRacedWatchGone(arr.err) {
+						line, content := watchResultText(synthesizeRacedWatch(arr.watchScan))
+						return registry.ToolResult{Summary: line, Content: content}, nil
+					}
 					return registry.ToolResult{}, arr.err
 				}
 				var line, content string
@@ -313,6 +328,18 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 					if errors.Is(err, context.DeadlineExceeded) {
 						return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, lines), nil
 					}
+					// Raced once-watch: it fired or stopped during the
+					// scan-to-wait window, so WaitFire reports it gone.
+					// Synthesize an honest terminal line (exact transition
+					// unavailable) and keep collecting the remaining targets
+					// instead of failing the whole call.
+					if isRacedWatchGone(err) {
+						watchSeen[w.ID] = true
+						line, content := watchResultText(synthesizeRacedWatch(w))
+						lines = append(lines, line)
+						bodies = append(bodies, content)
+						continue
+					}
 					if len(lines) > 0 {
 						return registry.ToolResult{
 							Summary: strings.Join(lines, "\n"),
@@ -434,19 +461,57 @@ func jobResultText(info AwaitJobInfo, tail string) (summaryLine, content string)
 	return summaryLine, content
 }
 
+// watchGoneSentinel is the stable substring of the error watch.Manager.WaitFire
+// returns for a watch that is no longer registered ("already fired or
+// stopped") — the shape a once-mode watch produces when it fires between
+// agent.await's outstanding scan and the WaitFire registration. internal/agent
+// cannot import internal/watch (the app package wires both; importing would
+// close a cycle), so the match is textual and MUST stay in sync with the
+// not-found message in watch.go.
+const watchGoneSentinel = "not found (already fired or stopped)"
+
+// racedWatchState is the synthesized State of a raced watch-gone finisher:
+// the watch left the outstanding set (fired or stopped) during the
+// scan-to-wait window, so its exact terminal transition is unavailable.
+// WatchAwaitSource adapters never produce it; watchResultText renders it.
+const racedWatchState = "raced"
+
+// isRacedWatchGone reports whether err is watch.Manager.WaitFire's not-found
+// error for a watch that reached a terminal state during the scan window.
+func isRacedWatchGone(err error) bool {
+	return err != nil && strings.Contains(err.Error(), watchGoneSentinel)
+}
+
+// synthesizeRacedWatch builds the terminal entry for a raced watch-gone
+// arrival from the outstanding-scan snapshot: Name/Kind/Condition/Mode are
+// real, the terminal state is unknown (racedWatchState), and the fire count
+// stays zero because it is unknowable here.
+func synthesizeRacedWatch(scan AwaitWatchInfo) AwaitWatchInfo {
+	scan.State = racedWatchState
+	return scan
+}
+
 // watchResultText renders a watch await result: fired/stopped/error per the
 // watch's terminal transition, with the same fields watch.status shows.
+// racedWatchState entries are raced finishers synthesized by agent.await.
 func watchResultText(info AwaitWatchInfo) (summaryLine, content string) {
 	switch info.State {
 	case "fired":
 		summaryLine = fmt.Sprintf("watch %s fired (fire %d)", info.Name, info.FireCount)
 	case "stopped":
 		summaryLine = fmt.Sprintf("watch %s stopped", info.Name)
+	case racedWatchState:
+		summaryLine = fmt.Sprintf("watch %s raced to a finish: fired or stopped during the await scan window (terminal state unavailable)", info.Name)
 	default:
 		summaryLine = fmt.Sprintf("watch %s is %s", info.Name, info.State)
 	}
 	b := &strings.Builder{}
-	fmt.Fprintf(b, "watch_id: %s\nname: %s\nkind: %s\nstate: %s\nfires: %d\n", info.ID, info.Name, info.Kind, info.State, info.FireCount)
+	fmt.Fprintf(b, "watch_id: %s\nname: %s\nkind: %s\n", info.ID, info.Name, info.Kind)
+	if info.State == racedWatchState {
+		fmt.Fprintf(b, "state: raced (fired or stopped; exact terminal state unavailable)\nfires: unknown\n")
+	} else {
+		fmt.Fprintf(b, "state: %s\nfires: %d\n", info.State, info.FireCount)
+	}
 	if info.Condition != "" {
 		fmt.Fprintf(b, "condition: %s\n", info.Condition)
 	}

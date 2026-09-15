@@ -43,6 +43,9 @@ func (a jobAwaitAdapter) AwaitJob(ctx context.Context, id string) (agent.AwaitJo
 }
 
 func (a jobAwaitAdapter) JobOutputTail(id string, maxLines int) string {
+	// The Output error is swallowed deliberately: an unknown job already
+	// errors the await itself via AwaitJob, and an empty tail simply means
+	// the await result omits its output-tail section.
 	_, out, err := a.m.Output(id, maxLines)
 	if err != nil {
 		return ""

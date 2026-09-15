@@ -393,6 +393,69 @@ func (m *JobManager) RunningCount() int {
 	return count
 }
 
+// Outstanding returns snapshots of every job currently in the running state,
+// sorted oldest-first (the same ordering notifyChange uses). Completed jobs
+// remain in the map for retention but are not outstanding. It backs the
+// agent.await tool's pending scan.
+func (m *JobManager) Outstanding() []JobInfo {
+	m.evictCompleted()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]JobInfo, 0, len(m.jobs))
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		if j.info.Status == StatusRunning {
+			out = append(out, j.info)
+		}
+		j.mu.Unlock()
+	}
+	sort.Slice(out, func(i, k int) bool {
+		if !out[i].StartedAt.Equal(out[k].StartedAt) {
+			return out[i].StartedAt.Before(out[k].StartedAt)
+		}
+		return out[i].ID < out[k].ID
+	})
+	return out
+}
+
+// Wait blocks until the job with the given ID reaches a terminal state (or
+// ctx ends) and returns its final snapshot. A job that has already finished
+// returns immediately. Unknown IDs return an error; finished jobs are swept
+// after the configured retention, so "unknown" also covers long-finished
+// jobs.
+func (m *JobManager) Wait(ctx context.Context, id string) (JobInfo, error) {
+	m.evictCompleted()
+
+	m.mu.Lock()
+	j, ok := m.jobs[id]
+	m.mu.Unlock()
+	if !ok {
+		return JobInfo{}, fmt.Errorf("unknown job %q (finished jobs are swept after retention)", id)
+	}
+
+	j.mu.Lock()
+	info := j.info
+	done := j.done
+	j.mu.Unlock()
+	if info.Status != StatusRunning || done == nil {
+		return info, nil
+	}
+
+	select {
+	case <-done:
+		// runJob stores the final info under j.mu before closing done, so
+		// the snapshot is now immutable. The job pointer outlives the map.
+		j.mu.Lock()
+		info = j.info
+		j.mu.Unlock()
+		return info, nil
+	case <-ctx.Done():
+		return JobInfo{}, ctx.Err()
+	}
+}
+
 // evictCompleted removes terminal jobs whose completion timestamp is older
 // than the configured retention duration.
 func (m *JobManager) evictCompleted() {

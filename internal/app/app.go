@@ -722,7 +722,10 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
-	if err := reg.Register(agent.NewSubagentAwaitTool(state)); err != nil {
+	if err := reg.Register(agent.NewSubagentAwaitTool(state,
+		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
+		agent.WithAwaitWatches(watchAwaitAdapter{m: watchManager}),
+	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
 	}

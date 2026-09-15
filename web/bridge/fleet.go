@@ -164,13 +164,34 @@ type Fleet struct {
 	diskCacheMu sync.Mutex
 	diskCacheOK bool
 
+	// provMu guards provisioning. It is a leaf lock by design: Prune
+	// copies the map under it and lets go before walking, and the
+	// begin/end helpers take it alone, so nothing ever waits on another
+	// lock while holding it. The one nesting that exists is Prune's
+	// pruneMu -> provMu, which is why provMu must stay a leaf — taking
+	// pruneMu or f.mu under it would close a cycle.
+	provMu sync.Mutex
+	// provisioning tracks spawns that have state on disk but no
+	// persisted record yet: agent id -> the mirror the spawn's source
+	// resolves to. Prune treats every entry as live, so the tree and
+	// mirror a spawn is still building cannot be reclaimed — not by a
+	// concurrent request, and not by the spawn's own enforceDisk prune.
+	// The map is never persisted: it dies with the process, so a bridge
+	// crash mid-spawn leaves the half-prepared tree for the next prune
+	// to reclaim as an orphan, which is the only sane recovery for
+	// state nothing references.
+	provisioning map[string]string
+
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
 	// Prune, and a removeTree racing itself on an already-vanished
 	// directory surfaces as a spurious walk error. No caller holds
 	// f.mu when it reaches Prune today; if one ever must, acquire
 	// f.mu BEFORE pruneMu and never the reverse — nothing in Prune's
-	// body takes f.mu, and nothing may while holding pruneMu.
+	// body takes f.mu, and nothing may while holding pruneMu. Prune
+	// snapshots provisioning under provMu while already holding
+	// pruneMu; provMu is a leaf, so that is the only order it is ever
+	// taken in.
 	pruneMu sync.Mutex
 }
 
@@ -200,6 +221,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		projectMounts: projectMounts,
 		done:          make(chan struct{}),
 		rateLimits:    make(map[string]time.Time),
+		provisioning:  make(map[string]string),
 	}
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
@@ -294,6 +316,41 @@ func (f *Fleet) enforceDisk() error {
 			used>>20, f.limits.MaxDiskMB)
 	}
 	return nil
+}
+
+// beginProvisioning marks a spawn as in-flight: its mirror and working
+// tree exist on disk before its record does, and a concurrent Prune —
+// including the spawn's own enforceDisk prune — must treat both as
+// live until the record lands.
+func (f *Fleet) beginProvisioning(id, mirror string) {
+	f.provMu.Lock()
+	f.provisioning[id] = mirror
+	f.provMu.Unlock()
+}
+
+// endProvisioning drops a spawn's in-flight marker. Spawn clears it
+// from a single defer, so every early return and every panic is
+// covered. The defer runs after PutAgent, so the record protects the
+// agent before the marker stops; the reverse order would reopen the
+// very window the marker exists to close.
+func (f *Fleet) endProvisioning(id string) {
+	f.provMu.Lock()
+	delete(f.provisioning, id)
+	f.provMu.Unlock()
+}
+
+// provisioningSnapshot copies the in-flight set. Prune consults the
+// copy rather than the map so it never holds provMu across a walk: a
+// spawn registering before the snapshot is protected for the whole
+// prune, and one registering after it has created no state yet.
+func (f *Fleet) provisioningSnapshot() map[string]string {
+	f.provMu.Lock()
+	defer f.provMu.Unlock()
+	out := make(map[string]string, len(f.provisioning))
+	for id, mirror := range f.provisioning {
+		out[id] = mirror
+	}
+	return out
 }
 
 // newAgentID mints the bridge-side identifier for an agent. It is
@@ -701,6 +758,15 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 				}
 			}
 		}
+		// Register the spawn as in-flight before anything touches the
+		// state directory. The mirror is derived exactly as Prune
+		// derives it from a persisted record, so it is protected from
+		// the first byte of EnsureMirrorCapped and the working tree
+		// from PrepareTree onward — the whole span in which state
+		// exists that no record yet explains. One defer clears the
+		// marker on every exit from Spawn, panic included.
+		f.beginProvisioning(a.ID, f.mirrorDirForSource(src.ref))
+		defer f.endProvisioning(a.ID)
 		mirror, err := f.git.EnsureMirrorCapped(ctx, f.stateDir, src.url, cred, f.limits.MaxCloneMB<<20)
 		if err != nil {
 			return "", err

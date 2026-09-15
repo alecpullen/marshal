@@ -91,23 +91,38 @@ func (f *Fleet) invalidateDisk() {
 	f.diskCacheMu.Unlock()
 }
 
+// mirrorDirForSource resolves the mirror directory a git source maps
+// to: a registered repo's URL when the ref names one, else the ref
+// itself (a raw URL). Prune, for a persisted record, and Spawn, before
+// the record exists, both go through here, so the two can never
+// disagree about which directory protects a spawn.
+func (f *Fleet) mirrorDirForSource(sourceRef string) string {
+	url := sourceRef
+	if r, ok := f.ws.Repo(sourceRef); ok {
+		url = r.URL
+	}
+	return mirrorDir(f.stateDir, url)
+}
+
 // liveMirrors is the set of mirror directories some agent still depends
 // on.
 //
 // Membership is by PERSISTED agent, not by live runtime: a paused agent
 // has no runtime but its workspace and its history are still there, and
-// pruning its mirror would strand it.
-func (f *Fleet) liveMirrors() map[string]bool {
+// pruning its mirror would strand it. A spawn mid-preparation has no
+// record yet, so inFlight — the provisioning snapshot Prune took — is
+// unioned in; its mirror would otherwise be reclaimable for the whole
+// clone.
+func (f *Fleet) liveMirrors(inFlight map[string]string) map[string]bool {
 	live := make(map[string]bool)
 	for _, a := range f.ws.Agents() {
 		if a.SourceKind != "git" {
 			continue
 		}
-		url := a.SourceRef
-		if r, ok := f.ws.Repo(a.SourceRef); ok {
-			url = r.URL
-		}
-		live[mirrorDir(f.stateDir, url)] = true
+		live[f.mirrorDirForSource(a.SourceRef)] = true
+	}
+	for _, mirror := range inFlight {
+		live[mirror] = true
 	}
 	return live
 }
@@ -118,7 +133,9 @@ func (f *Fleet) liveMirrors() map[string]bool {
 // It removes only two things: mirrors no persisted agent resolves to,
 // and work directories whose agent is gone from the workspace. It never
 // stops an agent and never removes a live agent's workspace — reclaiming
-// a gigabyte is not worth destroying an hour of work.
+// a gigabyte is not worth destroying an hour of work. A spawn still
+// provisioning counts as live for both: its mirror and its tree are on
+// disk before its record is, and the in-flight set covers that span.
 //
 // The AuditPrune record and the disk-cache invalidation happen on every
 // exit path, partial failures included: a prune that reclaimed bytes
@@ -139,10 +156,20 @@ func (f *Fleet) Prune() (reclaimed int64, err error) {
 		f.auditf(AuditEvent{Event: AuditPrune, Bytes: reclaimed})
 	}()
 
-	live := f.liveMirrors()
+	// In-flight spawns hold state no record explains yet; union them
+	// into both liveness sets so this prune — which may be the spawn's
+	// own, via enforceDisk — cannot reclaim what it is still building.
+	// The snapshot is copied under provMu and released before any walk:
+	// provMu is a leaf, so taking it while already holding pruneMu is
+	// the only nesting it ever appears in.
+	inFlight := f.provisioningSnapshot()
+	live := f.liveMirrors(inFlight)
 	liveAgents := make(map[string]bool)
 	for _, a := range f.ws.Agents() {
 		liveAgents[a.ID] = true
+	}
+	for id := range inFlight {
+		liveAgents[id] = true
 	}
 
 	// Prune unreferenced mirrors.

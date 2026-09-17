@@ -80,14 +80,14 @@ func TestOllamaCloudIsRemoteWithKeyEnv(t *testing.T) {
 
 func TestAllReturnsAll(t *testing.T) {
 	all := All()
-	if len(all) < 17 {
-		t.Fatalf("All() returned %d templates, want >= 17", len(all))
+	if len(all) < 18 {
+		t.Fatalf("All() returned %d templates, want >= 18", len(all))
 	}
 	ids := map[string]bool{}
 	for _, tpl := range all {
 		ids[tpl.ID] = true
 	}
-	for _, id := range []string{"ollama", "ollama-cloud", "lmstudio", "openrouter", "groq", "openai", "openai_compatible"} {
+	for _, id := range []string{"ollama", "ollama-cloud", "lmstudio", "openrouter", "groq", "openai", "openai_compatible", "kimi"} {
 		if !ids[id] {
 			t.Fatalf("All() missing template %q", id)
 		}
@@ -198,5 +198,27 @@ func TestOpencodeGoTemplate(t *testing.T) {
 	}
 	if tmpl.KeyEnv != "OPENCODE_API_KEY" {
 		t.Fatalf("key env = %q", tmpl.KeyEnv)
+	}
+}
+
+func TestKimiTemplateLocksTemperature(t *testing.T) {
+	tpl, ok := Lookup("kimi")
+	if !ok {
+		t.Fatal("Lookup(kimi) should succeed")
+	}
+	if !tpl.TemperatureLocked {
+		t.Fatal("kimi template must set TemperatureLocked")
+	}
+	if !tpl.ToolCalling {
+		t.Fatal("kimi template must set ToolCalling")
+	}
+	if tpl.Type != "openai_compatible" {
+		t.Fatalf("kimi template type = %q, want openai_compatible", tpl.Type)
+	}
+	if tpl.BaseURL != "https://api.kimi.com/coding/v1" {
+		t.Fatalf("kimi BaseURL = %q", tpl.BaseURL)
+	}
+	if tpl.KeyEnv != "KIMI_API_KEY" {
+		t.Fatalf("kimi KeyEnv = %q", tpl.KeyEnv)
 	}
 }

@@ -319,14 +319,28 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	// backend that cannot honor it is exactly the silent-failure class the
 	// footer's reasoning indicator exists to surface, so it must leave a
 	// trace in the session log.
+	caps := p.Capabilities(ctx)
 	thinking := r.turnRequestOptions.thinking
-	if thinking != "" && !p.Capabilities(ctx).Reasoning {
+	if thinking != "" && !caps.Reasoning {
 		r.State.Logger().Warn("thinking effort dropped: provider reports no reasoning capability",
 			"provider", p.Name(),
 			"model", model,
 			"effort", thinking)
 		thinking = ""
 	}
+	// Gate the temperature on the provider's temperature-locked capability:
+	// a backend that only accepts its own fixed sampling temperature (e.g.
+	// Kimi's coding endpoint accepts only 1.0) must not receive the routed
+	// role default, a preset value, or a per-agent override. Like the
+	// thinking drop above, the suppression is logged — once per provider —
+	// so it is diagnosable from the session log. turnRequestOptions is left
+	// untouched: only the wire request sees the nil.
+	requestTemperature := r.turnRequestOptions.temperature
+	if requestTemperature != nil && caps.TemperatureLocked {
+		r.warnTemperatureLockedOnce(p.Name(), model, *requestTemperature)
+		requestTemperature = nil
+	}
+
 	events, err := p.Chat(ctx, schema.ChatRequest{
 		Model:          model,
 		Messages:       messages,
@@ -336,7 +350,7 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		ResponseFormat: responseFormat,
 		Tools:          tools,
 		Thinking:       thinking,
-		Temperature:    r.turnRequestOptions.temperature,
+		Temperature:    requestTemperature,
 	})
 	if err != nil {
 		return chatResult{}, err
@@ -494,4 +508,23 @@ func lastCompleteLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// warnTemperatureLockedOnce logs the temperature suppression for a provider
+// at most once per runner (a fresh session re-warns once, which keeps the
+// warning visible without spamming it every turn).
+func (r *Runner) warnTemperatureLockedOnce(providerName, model string, temperature float64) {
+	r.temperatureLockedMu.Lock()
+	defer r.temperatureLockedMu.Unlock()
+	if r.temperatureLockedWarned == nil {
+		r.temperatureLockedWarned = map[string]bool{}
+	}
+	if r.temperatureLockedWarned[providerName] {
+		return
+	}
+	r.temperatureLockedWarned[providerName] = true
+	r.State.Logger().Warn("temperature dropped: provider reports temperature is locked",
+		"provider", providerName,
+		"model", model,
+		"temperature", temperature)
 }

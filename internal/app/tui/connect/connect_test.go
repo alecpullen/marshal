@@ -368,6 +368,25 @@ func TestPasteMsgIntoBaseURLInput(t *testing.T) {
 	}
 }
 
+func TestPickKimiPropagatesTemperatureLocked(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("kimi"))
+	if updated.step != stepAPIKey {
+		t.Fatalf("kimi (remote, KeyEnv set) should enter apiKey, got step = %v", updated.step)
+	}
+	if updated.template.ID != "kimi" {
+		t.Fatalf("template ID = %q", updated.template.ID)
+	}
+	if !updated.providerCfg.TemperatureLocked {
+		t.Fatal("kimi template must propagate TemperatureLocked into the provider config")
+	}
+	if updated.providerCfg.APIKeyEnv != "KIMI_API_KEY" {
+		t.Fatalf("APIKeyEnv = %q", updated.providerCfg.APIKeyEnv)
+	}
+}
+
 func TestPasteMsgIntoConfirmLimitInput(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))

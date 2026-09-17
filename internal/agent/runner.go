@@ -232,6 +232,15 @@ type Runner struct {
 	// ThinkingOverride, when non-empty, wins over the resolved route's
 	// preset thinking/reasoning-effort setting.
 	ThinkingOverride string
+
+	// temperatureLockedWarned records providers whose temperature-locked
+	// drop has already been warned about, so the warning fires once per
+	// provider per runner instead of on every turn. Guarded by
+	// temperatureLockedMu; the nil zero value is safe (NewRunner needs no
+	// change) and a fresh session re-warns once, which matches the
+	// one-time-warning intent without cross-session package state.
+	temperatureLockedWarned map[string]bool
+	temperatureLockedMu     sync.Mutex
 	// ChatTimeout bounds chatOnce's per-request context deadline for the
 	// model call itself. It is deliberately separate from approvals and
 	// questions, which carry no wall-clock timeout: a short chat ceiling

@@ -644,6 +644,37 @@ func TestProvidersSetAllowsAPIKeyEnv(t *testing.T) {
 	})
 }
 
+func TestProvidersSetPreservesCapabilityFlags(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{"kimi": {
+		BaseURL:           "https://api.kimi.com/coding/v1",
+		APIKeyEnv:         "KIMI_API_KEY",
+		ToolCalling:       true,
+		TemperatureLocked: true,
+	}}
+	tool, home, projectPath, approved, reloaded := setupGlobalOnlyTool(t, cfg, "config.providers.set", (*toolSet).configProvidersSetTool)
+	// Rewrite only base_url: every field not exposed as a tool arg must
+	// survive the write instead of being silently reset.
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.providers.set", Args: json.RawMessage(`{"name":"kimi","base_url":"https://api.kimi.com/coding/v2"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !*approved {
+		t.Fatal("provider writes must force an approval request")
+	}
+	got := (*reloaded).Providers["kimi"]
+	if got.BaseURL != "https://api.kimi.com/coding/v2" {
+		t.Fatalf("base_url not updated: %+v", got)
+	}
+	if !got.TemperatureLocked || !got.ToolCalling || got.APIKeyEnv != "KIMI_API_KEY" {
+		t.Fatalf("capability fields dropped by config.providers.set: %+v", got)
+	}
+	assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
+		p := c.Providers["kimi"]
+		return p.TemperatureLocked && p.ToolCalling && p.APIKeyEnv == "KIMI_API_KEY" && p.BaseURL == "https://api.kimi.com/coding/v2"
+	})
+}
+
 func TestProvidersDeleteRemovesKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{"openai": {BaseURL: "https://api.openai.com"}}

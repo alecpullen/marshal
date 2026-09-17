@@ -387,3 +387,51 @@ func TestDiagnoseReportsHoistOutcome(t *testing.T) {
 		t.Errorf("empty hoist state produced %v", diagPaths(ds))
 	}
 }
+
+// Entries differing only in a capability flag are materially different:
+// hoisting must flag them as conflicts and keep them project-local, not
+// silently drop the project's flag. Covers structured_output (previously
+// omitted from the comparison) and the new temperature_locked.
+func TestHoistConflictsWhenCapabilityFlagsDiffer(t *testing.T) {
+	home, work, userPath, projectPath := hoistPaths(t)
+	writeFile(t, userPath, `
+[providers.kimi]
+type = "openai_compatible"
+base_url = "https://api.kimi.com/coding/v1"
+api_key = "user-key"
+
+[providers.local]
+type = "ollama"
+base_url = "http://localhost:11434"
+`)
+	writeFile(t, projectPath, `
+[providers.kimi]
+type = "openai_compatible"
+base_url = "https://api.kimi.com/coding/v1"
+temperature_locked = true
+
+[providers.local]
+type = "ollama"
+base_url = "http://localhost:11434"
+structured_output = true
+`)
+
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if !slices.Contains(l.HoistConflicts, "providers.kimi") || !slices.Contains(l.HoistConflicts, "providers.local") {
+		t.Fatalf("HoistConflicts = %v, want providers.kimi and providers.local (flag-only differences must conflict)", l.HoistConflicts)
+	}
+	// Conflicting entries stay project-local, so merged config keeps the flags.
+	if !l.Merged.Providers["kimi"].TemperatureLocked {
+		t.Error("merged kimi lost temperature_locked = true")
+	}
+	if !l.Merged.Providers["local"].StructuredOutput {
+		t.Error("merged local lost structured_output = true")
+	}
+	project := readFile(t, projectPath)
+	if !strings.Contains(project, "temperature_locked") || !strings.Contains(project, "structured_output") {
+		t.Errorf("project config should keep the conflicting entries:\n%s", project)
+	}
+}

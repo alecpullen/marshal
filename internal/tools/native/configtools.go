@@ -1137,10 +1137,11 @@ func (t *toolSet) configProvidersSetTool() registry.Tool {
 		}
 		reason := fmt.Sprintf("config.providers.set (%s scope): set provider %q", scope, args.Name)
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
-			existing := cfg.Providers[args.Name]
-			pc := config.ProviderConfig{
-				APIKey: existing.APIKey, // carry forward literal key from disk
-			}
+			// Start from the existing entry so fields not exposed as tool
+			// args (api_key, template, keep_alive, thinking_budget, and the
+			// capability flags) are preserved rather than silently reset,
+			// matching the tool's "omitted fields are preserved" contract.
+			pc := cfg.Providers[args.Name]
 			if args.BaseURL != nil {
 				pc.BaseURL = *args.BaseURL
 			}

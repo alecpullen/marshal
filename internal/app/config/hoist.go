@@ -156,7 +156,8 @@ func hoistProjectGlobals(userPath, projectPath string, userFile, projectFile *co
 func providerFieldsEqual(a, b ProviderConfig) bool {
 	return a.Type == b.Type && a.BaseURL == b.BaseURL && a.Template == b.Template &&
 		a.ToolCalling == b.ToolCalling && a.KeepAlive == b.KeepAlive &&
-		a.ThinkingBudget == b.ThinkingBudget && a.ReasoningSummary == b.ReasoningSummary
+		a.ThinkingBudget == b.ThinkingBudget && a.ReasoningSummary == b.ReasoningSummary &&
+		a.StructuredOutput == b.StructuredOutput && a.TemperatureLocked == b.TemperatureLocked
 }
 
 // hoistNormalizedPreset derives the preset's identity from its map key the

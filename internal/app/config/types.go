@@ -582,6 +582,15 @@ type ProviderConfig struct {
 	// enforce format (e.g. a local Ollama server). Honored only by the
 	// ollama native backend today.
 	StructuredOutput bool `toml:"structured_output"`
+	// TemperatureLocked marks a provider whose endpoint only accepts its own
+	// fixed sampling temperature (e.g. Kimi's coding endpoint accepts only
+	// temperature = 1.0). When set, Marshal suppresses any requested
+	// temperature at request-build time (role defaults, preset values, and
+	// per-agent overrides alike) and logs a warning once per provider.
+	// Note: [providers.<name>] entries merge by whole-entry overwrite with
+	// credential-only inheritance, so a project-level entry that redefines a
+	// global provider without this flag resets it to false.
+	TemperatureLocked bool `toml:"temperature_locked"`
 }
 
 type LoadOptions struct {

@@ -41,6 +41,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		}
 		caps := DefaultCapabilities()
 		caps.ToolCalling = pc.ToolCalling
+		caps.TemperatureLocked = pc.TemperatureLocked
 
 		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
 
@@ -67,6 +68,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		// format is proven enforced (e.g. a local Ollama server).
 		caps.JSONMode = pc.StructuredOutput
 		caps.StructuredOutput = pc.StructuredOutput
+		caps.TemperatureLocked = pc.TemperatureLocked
 		// Ollama's think toggle is a different mechanism than the
 		// reasoning_effort/budget_tokens control; report no reasoning
 		// capability so the thinking preset field is not sent on the wire.
@@ -92,7 +94,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		if apiKey == "" {
 			return nil, fmt.Errorf("provider %q: anthropic providers require api_key or api_key_env", name)
 		}
-		caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false, Reasoning: true}
+		caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false, Reasoning: true, TemperatureLocked: pc.TemperatureLocked}
 		return NewAnthropic(Options{
 			Name:                 name,
 			BaseURL:              pc.BaseURL,

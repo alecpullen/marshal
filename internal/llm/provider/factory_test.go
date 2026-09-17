@@ -377,3 +377,49 @@ func TestNewFromConfigAnthropicReportsReasoning(t *testing.T) {
 		t.Fatal("anthropic provider must report Reasoning capability; NewFromConfig currently strips it")
 	}
 }
+
+func TestNewFromConfigPropagatesTemperatureLockedCapability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	openaiPC := config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL, APIKey: "literal-key", TemperatureLocked: true}
+	p, err := NewFromConfig("test", openaiPC, "", false, 0)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if !p.Capabilities(t.Context()).TemperatureLocked {
+		t.Fatal("openai_compatible: Capabilities().TemperatureLocked = false, want true")
+	}
+
+	ollamaPC := config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434", TemperatureLocked: true}
+	p, err = NewFromConfig("test", ollamaPC, "", false, 0)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if !p.Capabilities(t.Context()).TemperatureLocked {
+		t.Fatal("ollama: Capabilities().TemperatureLocked = false, want true")
+	}
+
+	anthropicPC := config.ProviderConfig{Type: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "literal-key", TemperatureLocked: true}
+	p, err = NewFromConfig("test", anthropicPC, "", false, 0)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if !p.Capabilities(t.Context()).TemperatureLocked {
+		t.Fatal("anthropic: Capabilities().TemperatureLocked = false, want true")
+	}
+
+	// Without the flag the capability stays false (no template/default leak).
+	plainPC := config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL, APIKey: "literal-key"}
+	p, err = NewFromConfig("test", plainPC, "", false, 0)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if p.Capabilities(t.Context()).TemperatureLocked {
+		t.Fatal("openai_compatible: TemperatureLocked = true, want false when unset")
+	}
+}

@@ -17,9 +17,13 @@ type ProviderTemplate struct {
 	// known to enforce format: ollama.com cloud silently ignores format
 	// constraints, so its template leaves this off.
 	StructuredOutput bool
-	KeyEnv           string
-	KeyHint          string
-	Models           []string
+	// TemperatureLocked defaults the provider's temperature_locked flag for
+	// endpoints that only accept their own fixed sampling temperature
+	// (e.g. Kimi's coding endpoint accepts only temperature = 1.0).
+	TemperatureLocked bool
+	KeyEnv            string
+	KeyHint           string
+	Models            []string
 }
 
 var templates = map[string]ProviderTemplate{
@@ -124,6 +128,16 @@ var templates = map[string]ProviderTemplate{
 		KeyEnv:      "DEEPSEEK_API_KEY",
 		KeyHint:     "Get a key at https://platform.deepseek.com/api_keys",
 		Models:      []string{"deepseek-chat", "deepseek-reasoner"},
+	},
+	"kimi": {
+		ID:                "kimi",
+		Label:             "Kimi (Moonshot AI)",
+		Type:              "openai_compatible",
+		BaseURL:           "https://api.kimi.com/coding/v1",
+		ToolCalling:       true,
+		TemperatureLocked: true,
+		KeyEnv:            "KIMI_API_KEY",
+		KeyHint:           "Get a key at https://platform.moonshot.ai/console/api-keys",
 	},
 	"mistral": {
 		ID:          "mistral",

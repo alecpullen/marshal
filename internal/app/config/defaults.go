@@ -76,20 +76,18 @@ func Default() Config {
 					MemoryLimitMB:   0,
 					CPUSeconds:      0,
 					FileSizeLimitMB: 0,
-					// A process cap is the exception, and is on by default.
-					// With every limit unset, restrictedWrapCommand emitted no
-					// ulimit at all, leaving a fork bomb entirely unguarded —
-					// the guardrails do not classify one, and `restricted`
-					// provides no filesystem or process isolation.
-					//
-					// 2048 is deliberately generous. `ulimit -u` is per-UID on
-					// unix, not per-process-tree, so it is shared with every
-					// other process the user is already running; a tight cap
-					// would fail in ways that look nothing like their cause. A
-					// fork bomb spawns without bound and hits this immediately,
-					// while no ordinary build or parallel test run approaches
-					// it.
-					MaxProcesses:     2048,
+					// The process cap is opt-in too. `ulimit -u` is per-UID on
+					// unix, not per-process-tree, so a fixed cap is shared with
+					// every other process the user is already running, and
+					// RLIMIT_NPROC counts threads as processes on Linux — a
+					// static default throttles ordinary builds and parallel test
+					// runs below ambient levels long before any fork bomb is in
+					// sight. With the cap unset (0), restrictedWrapCommand emits
+					// no `ulimit -u` at all; runaway process trees are still
+					// reaped by the process-group kill on timeout, and users who
+					// want a hard fork-bomb guard can set max_processes
+					// explicitly.
+					MaxProcesses:     0,
 					ContainerRuntime: "auto",
 					// ContainerImage intentionally empty here: the single
 					// source of truth for the default image lives in

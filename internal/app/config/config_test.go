@@ -894,12 +894,14 @@ func TestDefaultSandboxBackendIsRestricted(t *testing.T) {
 	if sb.MemoryLimitMB != 0 {
 		t.Fatalf("default memory limit = %d, want 0 (opt-in)", sb.MemoryLimitMB)
 	}
-	// Memory/CPU/file-size stay opt-in (a cap that kills a legitimate build
-	// trains users to disable the sandbox), but the process cap is on by
-	// default: with every limit unset the restricted backend emitted no
-	// ulimit at all, leaving a fork bomb unguarded.
-	if sb.MaxProcesses != 2048 {
-		t.Fatalf("default max processes = %d, want 2048", sb.MaxProcesses)
+	// Every resource cap, including the process cap, stays opt-in (a cap
+	// that kills a legitimate build trains users to disable the sandbox):
+	// `ulimit -u` is per-UID on unix, so a fixed default is shared with
+	// every other process the user runs and throttles ordinary builds
+	// below ambient. Runaway trees are still reaped by the process-group
+	// kill.
+	if sb.MaxProcesses != 0 {
+		t.Fatalf("default max processes = %d, want 0 (opt-in)", sb.MaxProcesses)
 	}
 	if sb.CPUSeconds != 0 {
 		t.Fatalf("default cpu seconds = %d, want 0 (opt-in)", sb.CPUSeconds)

@@ -326,16 +326,17 @@ func TestRestrictedWrapCommandAppliesUlimitsOnUnix(t *testing.T) {
 }
 
 // TestRestrictedRunsCompoundCommands is a regression test for the `exec`
-// prefix the ulimit wrapper used to emit. Because config.Default() sets
-// MaxProcesses = 2048, the wrapper is active out of the box, so `exec`
-// silently truncated ordinary compound commands: `echo one; echo two`
+// prefix the ulimit wrapper used to emit. While the wrapper was engaged,
+// `exec` silently truncated ordinary compound commands: `echo one; echo two`
 // returned only "one" with exit 0, and any command opening with a shell
-// builtin died with "exec: cd: not found".
+// builtin died with "exec: cd: not found". The bug was in the wrapper's
+// shape, not the cap value, so any positive max_processes reproduces it.
 func TestRestrictedRunsCompoundCommands(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("ulimit wrapper is unix-only")
 	}
-	// Mirror the shipped default so the ulimit wrapper is engaged.
+	// The shipped default no longer emits ulimit -u (the process cap is
+	// opt-in), so engage the wrapper explicitly.
 	sb := newTestSandbox(t, Config{Backend: "restricted", MaxProcesses: 2048})
 	dir := t.TempDir()
 

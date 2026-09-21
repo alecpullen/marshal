@@ -411,10 +411,16 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	var finishReason string
 	for event := range events {
 		if loopSnippet != "" {
-			// Drain rather than break: the provider's forwarder goroutine
-			// sends into a buffered channel and only exits once the stream
-			// closes, which cancel() has already caused. Breaking here would
-			// leak that goroutine on every detected loop.
+			// Drain rather than break. No backend selects on ctx.Done() in
+			// its stream loop, so the channel closes transitively instead:
+			// each request body is bound to the attempt context by
+			// http.NewRequestWithContext (openai_compatible.go:250,
+			// ollama_native.go:339, anthropic.go:349), so cancel() fails the
+			// body read, the decode loop ends, and the goroutine makes one
+			// last unconditional send on its unbuffered channel
+			// (openai_compatible.go:266, ollama_native.go:355,
+			// anthropic.go:365) before its deferred close(events) runs.
+			// Breaking instead would leave it blocked on that send forever.
 			continue
 		}
 		switch event.Type {
@@ -428,12 +434,14 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 						r.State.Logger().Warn("thinking loop detected; aborting stream",
 							"provider", p.Name(),
 							"model", model,
-							"thinking_chars", thinkingBuf.Len(),
+							"thinking_bytes", thinkingBuf.Len(),
 							"snippet", truncateForLog(repeated))
 						r.noteThinkingLoopAbort(p.Name(), model)
-						// Cancelling the attempt context is the whole abort: both
-						// streaming backends select on ctx.Done() and close their
-						// event channel, which ends the range below.
+						// Cancelling the attempt context is the whole abort. It does
+						// not reach the stream loop directly — see the drain
+						// comment below for the real chain — but the ctx-bound
+						// request body fails on the next read, which closes the
+						// channel and ends the range.
 						cancel()
 					}
 				}

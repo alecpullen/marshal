@@ -69,6 +69,12 @@ func (d *loopDetector) feed(delta string) (bool, string) {
 // appendNormalized appends delta to buf with runs of whitespace collapsed to a
 // single space. The trailing-space state is derived from buf rather than
 // tracked across calls so the function stays pure.
+//
+// It walks delta by rune, so invalid UTF-8 is rewritten as U+FFFD and the
+// result is not byte-faithful to its input — it can even be longer than
+// len(buf)+len(delta). Detection is unaffected: identical byte sequences
+// normalize identically, and both the window and the reported block are only
+// ever compared against themselves.
 func appendNormalized(buf, delta string) string {
 	if delta == "" {
 		return buf
@@ -116,6 +122,11 @@ func appendNormalized(buf, delta string) string {
 // block as close to the repetition as possible. Detection does not depend on
 // the whole window being periodic, so reasoning that only *ends* in a loop is
 // still caught.
+//
+// The sharpest false positive the rule allows is p = 1: 600 identical
+// non-whitespace bytes — a long decorative divider inside a thinking block,
+// say — confirm as a loop. That is the verbatim rule at its limit, and the
+// cost is one cancelled attempt plus one nudge retry, not a failed turn.
 func (d *loopDetector) detect() (bool, string) {
 	s := d.buf
 	n := len(s)
@@ -124,10 +135,9 @@ func (d *loopDetector) detect() (bool, string) {
 	}
 	pi := d.suffixFn(s)
 	for length := loopMinBlock * loopMinRepeats; length <= n; length++ {
+		// p >= 1 always: the prefix function satisfies pi[i] <= i, so
+		// length-pi[length-1] >= 1. No guard needed.
 		p := length - pi[length-1]
-		if p <= 0 {
-			continue
-		}
 		m := (loopMinBlock + p - 1) / p
 		block := p * m
 		if length < loopMinRepeats*block {

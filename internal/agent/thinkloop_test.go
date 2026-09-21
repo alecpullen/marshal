@@ -114,6 +114,30 @@ func TestLoopDetectorIgnoresShortRepeatedPhrase(t *testing.T) {
 	}
 }
 
+// TestLoopDetectorFiresOnGrownShortPhrase pins the period-growth rule on real
+// prose. For a 19-byte phrase m = ceil(loopMinBlock/19) = 11, so the grown block
+// is 209 bytes and confirmation needs loopMinRepeats*209 = 627 bytes = 33 copies:
+// three copies of the *phrase* is nowhere near enough. 608 bytes is also a
+// multiple of the period, so the short case isolates the threshold rather than
+// the period rule.
+func TestLoopDetectorFiresOnGrownShortPhrase(t *testing.T) {
+	const phrase = "let me check that. "
+	if len(phrase) != 19 {
+		t.Fatalf("test setup: phrase is %d bytes, want 19", len(phrase))
+	}
+	short := newLoopDetector()
+	if looped, _ := short.feed(strings.Repeat(phrase, 32)); looped {
+		t.Fatal("32 copies (608 bytes) is below the grown 627-byte threshold and must stay silent")
+	}
+	looped, repeated := newLoopDetector().feed(strings.Repeat(phrase, 33))
+	if !looped {
+		t.Fatal("33 copies (627 bytes) must fire")
+	}
+	if len(repeated) < loopMinBlock {
+		t.Fatalf("repeated block = %d bytes, want >= %d", len(repeated), loopMinBlock)
+	}
+}
+
 func TestLoopDetectorIgnoresPeriodLongerThanAThirdOfWindow(t *testing.T) {
 	// The window is kept as a tail, so a repetition whose period exceeds
 	// loopWindow/loopMinRepeats cannot be confirmed. This is an accepted loss,

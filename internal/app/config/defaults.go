@@ -141,6 +141,10 @@ func Default() Config {
 		Diagnostics: DiagnosticsConfig{
 			Commands: map[string]string{"go": "go vet {package}"},
 		},
+		Titling: TitlingConfig{
+			Enabled:   true,
+			TimeoutMs: 10000,
+		},
 		Snapshots: SnapshotsConfig{
 			Enabled:       true,
 			RetentionDays: 7,

@@ -925,22 +925,23 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		Active:           true,
 	})
 
-	// F13: wire the fire-and-forget title generator. Route through the title
-	// role (falls back to implementer preset when unconfigured), but skip the
-	// generator if it would target the same provider+model as the active turn
-	// route — a single-model local backend cannot serve two concurrent calls.
-	if titleRoute, titleProvider, titleErr := resolver.ResolveRole(routing.RoleTitle); titleErr == nil && titleRoute.Preset.Model != "" {
-		if titleRoute.Preset.Provider == route.Preset.Provider && titleRoute.Preset.Model == route.Preset.Model {
-			runner.TitleGenerator = nil
-		} else if titleProvider != nil {
-			runner.TitleGenerator = agent.NewTitleGenerator(titleProvider, titleRoute.Preset.Model, state)
+	// F13 + drift re-titling: wire the turn-start title manager. The call is
+	// sequential (runs before the main request), so it is safe even when the
+	// title role resolves to the same provider+model as the active turn
+	// route. With no resolvable title route the manager stays nil: sessions
+	// remain untitled and /rename still works.
+	if cfg.Titling.Enabled {
+		if titleRoute, titleProvider, titleErr := resolver.ResolveRole(routing.RoleTitle); titleErr == nil && titleRoute.Preset.Model != "" && titleProvider != nil {
+			runner.TitleManager = agent.NewTitleManager(titleProvider, titleRoute.Preset.Model, state, time.Duration(cfg.Titling.TimeoutMs)*time.Millisecond)
 		}
 	}
 
-	// AI-07: wire the router-role classifier for keyword-miss goals. Skip when
-	// the router role resolves to the same provider+model as the active turn
-	// route — a single-model local backend cannot interleave two calls (same
-	// rule as the title generator above).
+	// AI-07: wire the router-role classifier for keyword-miss goals. Unlike
+	// the title manager above, this call runs inside the turn, so it must be
+	// skipped when the router role resolves to the same provider+model as the
+	// active turn route — a single-model local backend cannot interleave two
+	// calls. The title manager needs no such skip: its call is sequential and
+	// completes before the turn's first request.
 	if routerRoute, routerProvider, routerErr := resolver.ResolveRole(routing.RoleRouter); routerErr == nil && routerRoute.Preset.Model != "" {
 		if routerRoute.Preset.Provider == route.Preset.Provider && routerRoute.Preset.Model == route.Preset.Model {
 			runner.Classifier = nil

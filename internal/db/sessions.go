@@ -22,12 +22,13 @@ type Message struct {
 }
 
 type Session struct {
-	ID        string
-	ProjectID int64
-	Title     string
-	StartedAt time.Time
-	EndedAt   *time.Time
-	Summary   string
+	ID          string
+	ProjectID   int64
+	Title       string
+	TitleManual bool
+	StartedAt   time.Time
+	EndedAt     *time.Time
+	Summary     string
 	// ActiveRoot and WorktreeBranch record the session's worktree rebind.
 	// Both empty when the session operates at the project root.
 	ActiveRoot     string
@@ -62,17 +63,19 @@ func (db *DB) CreateSession(sessionID string, projectID int64, title string, sta
 func (db *DB) GetSession(sessionID string) (Session, error) {
 	var s Session
 	var startedAt string
+	var titleManual int
 	var endedAt, summary, activeRoot, worktreeBranch, worktreeTargetBranch, worktreeBaseSha sql.NullString
 	row := db.sqlDB.QueryRow(
-		`SELECT id, project_id, title, started_at, ended_at, summary, active_root, worktree_branch, worktree_target_branch, worktree_base_sha FROM agent_sessions WHERE id = ?`,
+		`SELECT id, project_id, title, title_manual, started_at, ended_at, summary, active_root, worktree_branch, worktree_target_branch, worktree_base_sha FROM agent_sessions WHERE id = ?`,
 		sessionID,
 	)
-	if err := row.Scan(&s.ID, &s.ProjectID, &s.Title, &startedAt, &endedAt, &summary, &activeRoot, &worktreeBranch, &worktreeTargetBranch, &worktreeBaseSha); err != nil {
+	if err := row.Scan(&s.ID, &s.ProjectID, &s.Title, &titleManual, &startedAt, &endedAt, &summary, &activeRoot, &worktreeBranch, &worktreeTargetBranch, &worktreeBaseSha); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, fmt.Errorf("session not found: %s", sessionID)
 		}
 		return Session{}, fmt.Errorf("load session: %w", err)
 	}
+	s.TitleManual = titleManual != 0
 	parsedStarted, err := time.Parse(time.RFC3339, startedAt)
 	if err != nil {
 		return Session{}, fmt.Errorf("parse started_at: %w", err)
@@ -104,11 +107,17 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 	return s, nil
 }
 
-// UpdateSessionTitle sets the title on an existing session row (F13).
-func (db *DB) UpdateSessionTitle(sessionID string, title string) error {
+// UpdateSessionTitle sets the title on an existing session row (F13) and
+// records whether the title was set manually, so drift re-titling treats
+// manual names as authoritative across restarts.
+func (db *DB) UpdateSessionTitle(sessionID string, title string, manual bool) error {
+	manualInt := 0
+	if manual {
+		manualInt = 1
+	}
 	_, err := db.sqlDB.Exec(
-		`UPDATE agent_sessions SET title = ? WHERE id = ?`,
-		title, sessionID,
+		`UPDATE agent_sessions SET title = ?, title_manual = ? WHERE id = ?`,
+		title, manualInt, sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session title: %w", err)

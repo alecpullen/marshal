@@ -140,6 +140,41 @@ func TestSetWorkspacePersists(t *testing.T) {
 	}
 }
 
+func TestRestoreTitlePersistsManualFlag(t *testing.T) {
+	t.Run("manual", func(t *testing.T) {
+		s, d, sid, root := newPersistedState(t)
+		s.SetTitleManual("my name")
+		if err := d.UpdateSessionTitle(sid, "my name", true); err != nil {
+			t.Fatalf("UpdateSessionTitle: %v", err)
+		}
+
+		// A second State over the same row simulates resume.
+		resumed := New(config.Default(), root, time.Unix(100, 0), Persistence{DB: d, SessionID: sid, Logger: slog.Default()})
+		if got := resumed.Title(); got != "my name" {
+			t.Fatalf("resumed Title() = %q, want %q", got, "my name")
+		}
+		if !resumed.TitleManuallySet() {
+			t.Fatal("resumed TitleManuallySet() = false, want true")
+		}
+	})
+
+	t.Run("auto", func(t *testing.T) {
+		s, d, sid, root := newPersistedState(t)
+		s.SetTitle("auto")
+		if err := d.UpdateSessionTitle(sid, "auto", false); err != nil {
+			t.Fatalf("UpdateSessionTitle: %v", err)
+		}
+
+		resumed := New(config.Default(), root, time.Unix(100, 0), Persistence{DB: d, SessionID: sid, Logger: slog.Default()})
+		if got := resumed.Title(); got != "auto" {
+			t.Fatalf("resumed Title() = %q, want %q", got, "auto")
+		}
+		if resumed.TitleManuallySet() {
+			t.Fatal("resumed TitleManuallySet() = true, want false")
+		}
+	})
+}
+
 func TestResumeRestoresWorkspace(t *testing.T) {
 	s, d, sid, root := newPersistedState(t)
 	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")

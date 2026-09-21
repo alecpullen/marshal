@@ -309,6 +309,10 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Snapshots.RetentionDays, file.Snapshots.RetentionDays)
 		set(&cfg.Snapshots.MaxFileBytes, file.Snapshots.MaxFileBytes)
 	}
+	if file.Titling != nil {
+		set(&cfg.Titling.Enabled, file.Titling.Enabled)
+		set(&cfg.Titling.TimeoutMs, file.Titling.TimeoutMs)
+	}
 	if file.TUI != nil {
 		set(&cfg.TUI.Theme, file.TUI.Theme)
 		set(&cfg.TUI.Depth, file.TUI.Depth)

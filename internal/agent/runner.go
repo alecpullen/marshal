@@ -189,7 +189,7 @@ type MemoryProvider interface {
 //     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, ChatTimeout,
 //     ReconnectMaxWait, ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
 //     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
-//     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
+//     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleManager,
 //     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
 //     fileIndexCache) are initialised once; resolveRoute may lower
 //     MaxTurnContextTokens (never raise it) when the route-resolved model's
@@ -360,9 +360,10 @@ type Runner struct {
 	// nil disables hook execution.
 	HookRunner HookRunner
 
-	// TitleGenerator, when set, is invoked once per session at the end of the
-	// first user turn to produce a short session title (F13). Fire-and-forget.
-	TitleGenerator TitleGenerator
+	// TitleManager, when set, is invoked at the start of every user turn to
+	// generate the initial title or re-title on task drift. Synchronous and
+	// best-effort: failures never block the turn.
+	TitleManager TitleManager
 
 	// Classifier, when set, is consulted once per Run when keyword
 	// classification falls through to ClassQuestion. Intended as a cheap
@@ -590,10 +591,10 @@ func (r *Runner) CopyFrom(other *Runner) {
 	// Refresh session-scoped hooks from the rebuilt runner so a config
 	// reload picks up routing/role changes. CopyFrom is the only path that
 	// mutates a live runner in place (app.reloadAgentRuntime) — without
-	// these, reloads keep stale TitleGenerator/Classifier closures bound to
+	// these, reloads keep stale TitleManager/Classifier closures bound to
 	// the old route.
 	r.HookRunner = other.HookRunner
-	r.TitleGenerator = other.TitleGenerator
+	r.TitleManager = other.TitleManager
 	r.Classifier = other.Classifier
 }
 
@@ -691,13 +692,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}()
 
 	priorTranscript := r.State.Messages()
-	firstTurn := len(priorTranscript) <= 1
-	if r.TitleGenerator != nil && firstTurn {
-		defer func(g string) {
-			if r.State.Title() == "" && !r.State.TitleManuallySet() {
-				r.TitleGenerator.Generate(context.Background(), g)
-			}
-		}(goal)
+	// Turn-start titling: initial title on the first turn, drift check on
+	// later turns. Synchronous by design (single-model safe); failures and
+	// timeouts keep the current title. Top-level sessions only.
+	if r.TitleManager != nil && r.State.SubagentDepth() == 0 {
+		r.TitleManager.OnUserTurn(ctx, goal)
 	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	// If the previous turn was interrupted (Esc), surface a one-line note in

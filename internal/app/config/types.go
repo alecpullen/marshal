@@ -27,6 +27,7 @@ type Config struct {
 	Worktree      WorktreeConfig                        `toml:"worktree"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
+	Titling       TitlingConfig                         `toml:"titling"`
 	History       HistoryConfig                         `toml:"history"`
 	TUI           TUIConfig                             `toml:"tui"`
 	Permissions   PermissionsConfig                     `toml:"permissions"`
@@ -140,6 +141,11 @@ type MCPServerConfig struct {
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
 	Trust   string            `toml:"trust"` // "" | "unrestricted" — see F-SEC-06
+}
+
+type TitlingConfig struct {
+	Enabled   bool `toml:"enabled"`
+	TimeoutMs int  `toml:"timeout_ms"`
 }
 
 type SnapshotsConfig struct {

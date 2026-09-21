@@ -1229,6 +1229,94 @@ func TestGenerationTurnRowsTruncatesUTF8Safely(t *testing.T) {
 	}
 }
 
+func TestRenameClearsManualFlag(t *testing.T) {
+	reg := New()
+	RegisterAll(reg, registry.New())
+	cmd, ok := reg.Lookup("rename")
+	if !ok {
+		t.Fatal("rename command not registered")
+	}
+
+	state := newTestState()
+	state.SetTitleManual("my title")
+
+	res := cmd.Handler(state, nil)
+	if state.TitleManuallySet() {
+		t.Fatal("TitleManuallySet() = true after /rename with no args, want false")
+	}
+	if got := state.Title(); got != "my title" {
+		t.Fatalf("Title() = %q after clearing manual flag, want %q (text must be retained)", got, "my title")
+	}
+	if !strings.Contains(res.Text, "auto-titling") {
+		t.Fatalf("result text = %q, want it to mention auto-titling", res.Text)
+	}
+
+	// A session that was never manually named reports that auto-titling is
+	// already active and leaves the flag clear.
+	plain := newTestState()
+	res = cmd.Handler(plain, nil)
+	if plain.TitleManuallySet() {
+		t.Fatal("TitleManuallySet() = true for a session with no manual title")
+	}
+	if !strings.Contains(res.Text, "auto-titling") {
+		t.Fatalf("result text = %q, want it to mention auto-titling", res.Text)
+	}
+}
+
+// TestRenameNoArgsClearsManualFlagInDB proves the /rename no-args persistence
+// glue against a real database: the command must call
+// db.UpdateSessionTitle(sid, title, false) so the cleared manual flag
+// survives a restart, while retaining the title text.
+// TestRenameClearsManualFlag runs on a DB-less state, which skips this step.
+func TestRenameNoArgsClearsManualFlagInDB(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/test/repo", "test-repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sessionID := "test-session-" + t.Name()
+	if err := database.CreateSession(sessionID, projectID, "my title", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Seed the manual flag as an earlier /rename <title> would have.
+	if err := database.UpdateSessionTitle(sessionID, "my title", true); err != nil {
+		t.Fatalf("UpdateSessionTitle: %v", err)
+	}
+
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{
+		DB: database, SessionID: sessionID,
+	})
+	state.SetTitleManual("my title")
+
+	reg := New()
+	RegisterAll(reg, registry.New())
+	cmd, ok := reg.Lookup("rename")
+	if !ok {
+		t.Fatal("rename command not registered")
+	}
+	if res := cmd.Handler(state, nil); !strings.Contains(res.Text, "auto-titling") {
+		t.Fatalf("result text = %q, want it to mention auto-titling", res.Text)
+	}
+
+	row, err := database.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if row.TitleManual {
+		t.Fatal("persisted TitleManual = true after no-args /rename, want false")
+	}
+	if row.Title != "my title" {
+		t.Fatalf("persisted Title = %q, want %q (text must be retained)", row.Title, "my title")
+	}
+}
+
 func TestListAllIncludesHiddenCommands(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

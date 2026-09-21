@@ -17,29 +17,13 @@ const (
 	titleDirectiveText = `Generate a concise title for this conversation, at most 50 characters. No quotes, no markdown, no trailing punctuation. Respond with the title text only.`
 )
 
-// TitleGenerator forks a background one-shot LLM call to name a session
-// (crush's title prompt / opencode session/prompt.ts fork, docs/12 F13). It is
-// fire-and-forget: failures and timeouts leave the existing fallback name and
-// never block the turn.
-type TitleGenerator interface {
-	Generate(ctx context.Context, firstUserMessage string)
-}
-
 // titleGenerator is the default implementation. generate() is the synchronous
-// core; the runner wraps it in a goroutine with its own timeout.
+// core driven by TitleManager at turn start.
 type titleGenerator struct {
 	provider provider.Provider
 	model    string
 	state    *session.State
 	timeout  time.Duration
-}
-
-func NewTitleGenerator(p provider.Provider, model string, state *session.State) TitleGenerator {
-	return &titleGenerator{provider: p, model: model, state: state, timeout: titleCallTimeout}
-}
-
-func (t *titleGenerator) Generate(ctx context.Context, firstUserMessage string) {
-	go t.generate(ctx, firstUserMessage)
 }
 
 func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) {
@@ -72,6 +56,6 @@ func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) 
 		return
 	}
 	if db := t.state.DB(); db != nil {
-		_ = db.UpdateSessionTitle(t.state.SessionID(), title)
+		_ = db.UpdateSessionTitle(t.state.SessionID(), title, false)
 	}
 }

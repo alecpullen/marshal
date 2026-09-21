@@ -367,6 +367,9 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			MaxFileBytes:  strutil.Ptr(cfg.Snapshots.MaxFileBytes),
 		}
 	}
+	if cfg.Titling != def.Titling {
+		file.Titling = &fileTitling{Enabled: strutil.Ptr(cfg.Titling.Enabled), TimeoutMs: strutil.Ptr(cfg.Titling.TimeoutMs)}
+	}
 	if len(cfg.Permissions.Rules) > 0 {
 		file.Permissions = &filePermissions{Rules: cfg.Permissions.Rules}
 	}

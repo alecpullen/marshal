@@ -58,6 +58,26 @@ func snapshotsFrame(s *state) *frame {
 	})
 }
 
+func titlingFrame(s *state) *frame {
+	return newFrame("Titling", func() []*field {
+		return []*field{
+			{ID: "titling.enabled", Title: "Enabled", Kind: kindToggle,
+				TomlPath: "titling.enabled",
+				Desc:     "turn-start session titling and drift re-titling",
+				GetBool:  func() bool { return s.cfg.Titling.Enabled },
+				SetBool:  func(v bool) { s.cfg.Titling.Enabled = v }},
+			func() *field {
+				f := intField("titling.timeout_ms", "Timeout (ms)",
+					func() int { return s.cfg.Titling.TimeoutMs }, 0,
+					func(v int) { s.cfg.Titling.TimeoutMs = v })
+				f.TomlPath = "titling.timeout_ms"
+				f.Desc = "hard cap for the turn-start title LLM call"
+				return f
+			}(),
+		}
+	})
+}
+
 func projectFrame(s *state) *frame {
 	return newFrame("Project", func() []*field {
 		return []*field{

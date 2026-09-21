@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     id TEXT PRIMARY KEY,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT,
+    title_manual INTEGER DEFAULT 0,
     started_at TEXT NOT NULL,
     ended_at TEXT,
     summary TEXT,

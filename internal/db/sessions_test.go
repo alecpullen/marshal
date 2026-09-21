@@ -373,7 +373,7 @@ func TestUpdateSessionTitle(t *testing.T) {
 	if err := db.CreateSession(sid, projectID, "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.UpdateSessionTitle(sid, "Fix parser bug"); err != nil {
+	if err := db.UpdateSessionTitle(sid, "Fix parser bug", false); err != nil {
 		t.Fatalf("UpdateSessionTitle: %v", err)
 	}
 	s, err := db.GetSession(sid)
@@ -382,6 +382,24 @@ func TestUpdateSessionTitle(t *testing.T) {
 	}
 	if s.Title != "Fix parser bug" {
 		t.Fatalf("title = %q, want %q", s.Title, "Fix parser bug")
+	}
+	if s.TitleManual {
+		t.Fatalf("TitleManual = true, want false for manual=false")
+	}
+
+	// Manual title is persisted and readable again.
+	if err := db.UpdateSessionTitle(sid, "Manually named", true); err != nil {
+		t.Fatalf("UpdateSessionTitle manual: %v", err)
+	}
+	s, err = db.GetSession(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Title != "Manually named" {
+		t.Fatalf("title = %q, want %q", s.Title, "Manually named")
+	}
+	if !s.TitleManual {
+		t.Fatalf("TitleManual = false, want true for manual=true")
 	}
 }
 

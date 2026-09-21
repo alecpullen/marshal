@@ -796,6 +796,10 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, session.WithSubagentMaxConcurrency(rt.Config.Agent.MaxConcurrentSubagents))
 	if name != "" {
 		newState.SetTitleManual(name)
+		// Persist the manual flag; the title itself was written by
+		// CreateSession above. Keeps drift re-titling treating the name as
+		// manual across restarts.
+		_ = db.UpdateSessionTitle(sessionID, name, true)
 	}
 	newState.SetTrusted(rt.State.Trusted())
 	// rt.Layers is a startup snapshot: the TUI refreshes its own layer

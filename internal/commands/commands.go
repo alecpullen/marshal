@@ -539,20 +539,29 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "rename",
-			Description: "Rename the current session (overrides auto-title)",
-			Args:        "<title>",
+			Description: "Rename the current session (no args re-enables auto-titling)",
+			Args:        "[<title>]",
 			Group:       groupChat,
 			Handler: func(state *session.State, args []string) Result {
 				title := strings.Join(args, " ")
 				if title == "" {
-					return Text("Usage: /rename <title>")
+					if !state.TitleManuallySet() {
+						return Text("No manual title set — auto-titling is active.")
+					}
+					state.ClearTitleManual()
+					if db := state.DB(); db != nil {
+						if err := db.UpdateSessionTitle(state.SessionID(), state.Title(), false); err != nil {
+							return Text(fmt.Sprintf("Cleared locally, but failed to persist: %v", err))
+						}
+					}
+					return Text("Manual title cleared — auto-titling re-enabled.")
 				}
 				if len(title) > 200 {
 					title = title[:200]
 				}
 				state.SetTitleManual(title)
 				if db := state.DB(); db != nil {
-					if err := db.UpdateSessionTitle(state.SessionID(), title); err != nil {
+					if err := db.UpdateSessionTitle(state.SessionID(), title, true); err != nil {
 						return Text(fmt.Sprintf("Renamed locally, but failed to persist: %v", err))
 					}
 				}

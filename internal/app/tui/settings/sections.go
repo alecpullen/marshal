@@ -24,6 +24,7 @@ func sectionList() []sectionSpec {
 		{ID: "skills", Title: "Skills", Root: skillsFrame},
 		{ID: "mcp", Title: "MCP", Root: mcpFrame},
 		{ID: "snapshots", Title: "Snapshots", Root: snapshotsFrame},
+		{ID: "titling", Title: "Titling", Root: titlingFrame},
 		{ID: "hooks", Title: "Hooks", Root: hooksFrame},
 		{ID: "permissions", Title: "Permissions", Root: permissionsFrame},
 		{ID: "diagnostics", Title: "Diagnostics", Root: diagnosticsFrame},

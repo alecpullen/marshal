@@ -261,9 +261,14 @@ func isReconnectEligible(ctx context.Context, err error) bool {
 //   - context cancellation/timeout (the user asked to stop or we ran out of time)
 //   - provider 4xx responses, except 429 Too Many Requests which is a rate-limit
 //     signal worth retrying.
+//   - confirmed thinking-loop aborts, which chatOnce has already handled with
+//     its own nudge-retry: resending the same messages reproduces the loop.
 func isRetryableChatError(err error) bool {
 	if err == nil {
 		return true
+	}
+	if errors.Is(err, errThinkingLoop) {
+		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -298,10 +303,41 @@ func (r *Runner) effectiveReconnectMaxWait() time.Duration {
 	return defaultReconnectMaxWait
 }
 
+// chatOnce runs one request, and — when that request was aborted because the
+// model looped inside a thinking block — resends once with a system nudge
+// appended. The nudge goes on a copy of messages: the conversation record and
+// every other caller keep the unmodified slice. A second loop propagates
+// errThinkingLoop, which isRetryableChatError refuses to retry, so the turn
+// fails with a clear error rather than burning the full chat timeout again.
 func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxThinkingLoopRetries; attempt++ {
+		attemptMessages := messages
+		if attempt > 0 {
+			attemptMessages = withThinkingLoopNudge(messages)
+		}
+		res, err := r.chatOnceAttempt(ctx, p, model, attemptMessages, responseFormat, includeNativeTools)
+		if err == nil || !errors.Is(err, errThinkingLoop) {
+			return res, err
+		}
+		lastErr = err
+	}
+	return chatResult{}, lastErr
+}
+
+// chatOnceAttempt is a single request/stream cycle. It owns the per-request
+// timeout context, the streaming status activity, and a fresh loop detector;
+// everything here is torn down when the attempt ends, including when the
+// attempt is cut short by a detected loop.
+func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, r.effectiveChatTimeout())
 	defer cancel()
+
+	// A fresh detector per attempt: the first attempt's verdict says nothing
+	// about whether the nudge worked.
+	det := newLoopDetector()
+	var loopSnippet string
 
 	var tools []schema.ToolDefinition
 	if r.NativeTools {
@@ -374,11 +410,33 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	var toolCalls []schema.ToolCall
 	var finishReason string
 	for event := range events {
+		if loopSnippet != "" {
+			// Drain rather than break: the provider's forwarder goroutine
+			// sends into a buffered channel and only exits once the stream
+			// closes, which cancel() has already caused. Breaking here would
+			// leak that goroutine on every detected loop.
+			continue
+		}
 		switch event.Type {
 		case schema.ChatEventDelta:
 			if event.Kind == schema.DeltaThinking {
 				r.State.AppendThinking(event.Delta)
 				thinkingBuf.WriteString(event.Delta)
+				if loopSnippet == "" {
+					if looped, repeated := det.feed(event.Delta); looped {
+						loopSnippet = repeated
+						r.State.Logger().Warn("thinking loop detected; aborting stream",
+							"provider", p.Name(),
+							"model", model,
+							"thinking_chars", thinkingBuf.Len(),
+							"snippet", truncateForLog(repeated))
+						r.noteThinkingLoopAbort(p.Name(), model)
+						// Cancelling the attempt context is the whole abort: both
+						// streaming backends select on ctx.Done() and close their
+						// event channel, which ends the range below.
+						cancel()
+					}
+				}
 				// Update the status label only at newline boundaries: a
 				// completed line is stable, while the in-progress line would
 				// flicker and flood the event broker with a publish per
@@ -402,6 +460,9 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 			toolCalls = event.ToolCalls
 			finishReason = event.FinishReason
 		}
+	}
+	if loopSnippet != "" {
+		return chatResult{}, fmt.Errorf("%w: %q", errThinkingLoop, truncateForLog(loopSnippet))
 	}
 	if r.UsageObserver != nil && usage != nil {
 		r.UsageObserver(*usage)

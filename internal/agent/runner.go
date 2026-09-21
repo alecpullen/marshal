@@ -241,6 +241,13 @@ type Runner struct {
 	// one-time-warning intent without cross-session package state.
 	temperatureLockedWarned map[string]bool
 	temperatureLockedMu     sync.Mutex
+	// thinkingLoopCounts records confirmed mid-stream thinking-loop aborts
+	// per provider|model, so a model that loops repeatedly gets exactly one
+	// escalation warning per runner lifetime. Guarded by thinkingLoopMu; the
+	// nil zero value is safe (NewRunner needs no change) and nothing is ever
+	// persisted, so a fresh session starts counting from zero.
+	thinkingLoopCounts map[string]int
+	thinkingLoopMu     sync.Mutex
 	// ChatTimeout bounds chatOnce's per-request context deadline for the
 	// model call itself. It is deliberately separate from approvals and
 	// questions, which carry no wall-clock timeout: a short chat ceiling

@@ -925,7 +925,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		Active:           true,
 	})
 
-	// F13 + drift re-titling: wire the turn-start title manager. The call is
+	// F13 + re-titling: wire the turn-start title manager. The call is
 	// sequential (runs before the main request), so it is safe even when the
 	// title role resolves to the same provider+model as the active turn
 	// route. With no resolvable title route the manager stays nil: sessions

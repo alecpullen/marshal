@@ -361,8 +361,8 @@ type Runner struct {
 	HookRunner HookRunner
 
 	// TitleManager, when set, is invoked at the start of every user turn to
-	// generate the initial title or re-title on task drift. Synchronous and
-	// best-effort: failures never block the turn.
+	// generate the initial title or re-title when the user explicitly starts
+	// a new task. Synchronous and best-effort: failures never block the turn.
 	TitleManager TitleManager
 
 	// Classifier, when set, is consulted once per Run when keyword
@@ -692,9 +692,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}()
 
 	priorTranscript := r.State.Messages()
-	// Turn-start titling: initial title on the first turn, drift check on
-	// later turns. Synchronous by design (single-model safe); failures and
-	// timeouts keep the current title. Top-level sessions only.
+	// Turn-start titling: initial title on the first turn; later turns
+	// re-title only when the user explicitly starts a new task. Synchronous
+	// by design (single-model safe); failures and timeouts keep the current
+	// title. Top-level sessions only.
 	if r.TitleManager != nil && r.State.SubagentDepth() == 0 {
 		r.TitleManager.OnUserTurn(ctx, goal)
 	}

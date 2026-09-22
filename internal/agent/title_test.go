@@ -65,6 +65,27 @@ func TestGenerateTitleStoresNonEmptyTitle(t *testing.T) {
 	}
 }
 
+// The title request must follow the same {system, user} convention as the
+// task classifier (classify_model.go): directive first, content second.
+func TestGenerateTitleRequestOrdering(t *testing.T) {
+	var got schema.ChatRequest
+	p := &requestCaptureProvider{recordingProvider: recordingProvider{responses: []string{"Fix parser bug"}}, capture: &got}
+	state := newTestState(t)
+	tg := &titleGenerator{provider: p, model: "tiny", state: state, timeout: time.Second}
+
+	tg.generate(context.Background(), "where is the parser?")
+
+	if len(got.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(got.Messages))
+	}
+	if got.Messages[0].Role != schema.RoleSystem || got.Messages[0].Content != titleDirectiveText {
+		t.Fatalf("messages[0] = role %v content %q, want {system, titleDirectiveText}", got.Messages[0].Role, got.Messages[0].Content)
+	}
+	if got.Messages[1].Role != schema.RoleUser || got.Messages[1].Content != "where is the parser?" {
+		t.Fatalf("messages[1] = role %v content %q, want {user, first message}", got.Messages[1].Role, got.Messages[1].Content)
+	}
+}
+
 func TestGenerateTitleSkipsWhenTitleAlreadySetManually(t *testing.T) {
 	p := &recordingProvider{responses: []string{"auto"}}
 	state := newTestState(t)

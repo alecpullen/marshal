@@ -63,7 +63,7 @@ func titlingFrame(s *state) *frame {
 		return []*field{
 			{ID: "titling.enabled", Title: "Enabled", Kind: kindToggle,
 				TomlPath: "titling.enabled",
-				Desc:     "turn-start session titling and drift re-titling",
+				Desc:     "turn-start session titling and new-task re-titling",
 				GetBool:  func() bool { return s.cfg.Titling.Enabled },
 				SetBool:  func(v bool) { s.cfg.Titling.Enabled = v }},
 			func() *field {

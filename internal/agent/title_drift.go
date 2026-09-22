@@ -8,106 +8,87 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/schema"
-	"marshal/internal/strutil"
 )
 
-// driftDirectiveText drives the turn-start drift classification.
-const driftDirectiveText = `You manage this session's title. Given the current session title and the user's new message, decide whether the message continues the current task or starts a new task.
-Reply with exactly CONTINUES if the message continues the current task.
-Reply with exactly NEW_TASK: followed by a new title of at most 50 characters if the message starts a new task.
-No quotes, no markdown, no trailing punctuation. Respond with nothing else.`
+// newTaskPrefix is the deterministic re-titling trigger: a user message that
+// begins with it (case-insensitive, followed by whitespace, ":", or "-")
+// asks for a fresh session title.
+const newTaskPrefix = "new task"
 
-// TitleManager runs one small LLM call at the start of every user turn,
-// before the main request: turn 1 generates the initial title; turn 2+
-// classifies task drift and proposes a replacement title on drift. The call
-// is synchronous (safe on single-model backends) and never fails the turn:
-// errors, timeouts, and unrecognized replies keep the existing title.
+// TitleManager runs at most one small LLM call at the start of a user turn,
+// before the main request: turn 1 generates the initial title; later turns
+// re-title only when the user explicitly starts a new task (see
+// newTaskPrefix). Ordinary turns make no call at all, so titling never adds
+// turn-start latency. The call is synchronous (safe on single-model backends)
+// and never fails the turn: errors and timeouts keep the current title.
 type TitleManager interface {
 	OnUserTurn(ctx context.Context, goal string)
 }
 
 type titleManager struct {
-	provider provider.Provider
-	model    string
-	state    *session.State
-	gen      *titleGenerator
-	timeout  time.Duration
+	state *session.State
+	gen   *titleGenerator
 }
 
-// NewTitleManager wires the turn-start titler. timeout caps the drift call;
+// NewTitleManager wires the turn-start titler. timeout caps the title call;
 // values <= 0 fall back to the title-call default.
 func NewTitleManager(p provider.Provider, model string, state *session.State, timeout time.Duration) TitleManager {
 	if timeout <= 0 {
 		timeout = titleCallTimeout
 	}
 	return &titleManager{
-		provider: p,
-		model:    model,
-		state:    state,
-		gen:      &titleGenerator{provider: p, model: model, state: state, timeout: timeout},
-		timeout:  timeout,
+		state: state,
+		gen:   &titleGenerator{provider: p, model: model, state: state, timeout: timeout},
 	}
 }
 
-// OnUserTurn runs the turn-start call. Untitled sessions get the initial
+// OnUserTurn runs the turn-start titling. Untitled sessions get the initial
 // title (titleGenerator.generate already derives it from the user message
-// alone); titled sessions get the drift check.
+// alone); titled sessions keep their title unless the message explicitly
+// starts a new task.
 func (m *titleManager) OnUserTurn(ctx context.Context, goal string) {
-	if m.state.Title() != "" || m.state.TitleManuallySet() {
-		m.classifyDrift(ctx, goal)
+	if m.state.Title() == "" && !m.state.TitleManuallySet() {
+		m.gen.generate(ctx, goal)
 		return
 	}
-	m.gen.generate(ctx, goal)
+	if _, isNew := parseNewTaskMessage(goal); !isNew {
+		return
+	}
+	m.regenerate(ctx, goal)
 }
 
-func (m *titleManager) classifyDrift(ctx context.Context, goal string) {
-	ctx, cancel := context.WithTimeout(ctx, m.timeout)
-	defer cancel()
-	req := []schema.ChatMessage{
-		{Role: schema.RoleUser, Content: fmt.Sprintf("Current title: %s\n\nNew user message:\n%s", m.state.Title(), goal)},
-		{Role: schema.RoleSystem, Content: driftDirectiveText},
-	}
-	res, err := provider.ChatText(ctx, m.provider, schema.ChatRequest{Model: m.model, Messages: req})
-	if err != nil {
-		m.state.Logger().Warn("title drift check failed; keeping current title", "error", err)
-		return
-	}
-	candidate, drifted := parseDriftReply(res)
-	if !drifted {
-		return
-	}
-	m.applyDrift(candidate)
-}
-
-// parseDriftReply strictly parses the classifier reply: CONTINUES keeps the
-// current title, "NEW_TASK: <title>" proposes a candidate, and anything else
-// (including an empty candidate) is treated as CONTINUES.
-func parseDriftReply(reply string) (candidate string, drifted bool) {
-	s := strings.TrimSpace(reply)
-	if s == "CONTINUES" {
+// parseNewTaskMessage reports whether the user message explicitly starts a
+// new task and returns the candidate title text following the prefix. The
+// prefix must start the message (case-insensitive) and be followed by
+// whitespace, ":", or "-", so ordinary mentions of "a new task" and
+// words like "new taskforce" never trigger.
+func parseNewTaskMessage(goal string) (candidate string, isNew bool) {
+	s := strings.ToLower(strings.TrimSpace(goal))
+	rest, ok := strings.CutPrefix(s, newTaskPrefix)
+	if !ok || rest == "" {
 		return "", false
 	}
-	if rest, ok := strings.CutPrefix(s, "NEW_TASK:"); ok {
-		rest = cleanTitleCandidate(rest)
-		if rest == "" {
-			return "", false
-		}
-		return rest, true
+	if c := rest[0]; c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != ':' && c != '-' {
+		return "", false
 	}
-	return "", false
+	rest = strings.TrimSpace(strings.TrimLeft(rest, " \t\n\r:-"))
+	if rest == "" {
+		return "", false
+	}
+	return rest, true
 }
 
-// cleanTitleCandidate normalises a model-proposed title the same way the
-// initial title path does (whitespace collapse, quote/punct trim, 50-char cap).
-func cleanTitleCandidate(raw string) string {
-	s := strings.TrimSpace(raw)
-	s = strings.Join(strings.Fields(s), " ")
-	s = strings.Trim(s, "\"'`.,;:!?")
-	return strutil.Truncate(s, titleMaxChars, false)
+// regenerate asks the title model for a fresh title from the new-task
+// message and applies it. Failures keep the current title silently.
+func (m *titleManager) regenerate(ctx context.Context, goal string) {
+	title, ok := m.gen.request(ctx, goal)
+	if !ok {
+		return
+	}
+	m.applyDrift(title)
 }
 
-// applyDrift applies a drift candidate: auto-named sessions update silently;
+// applyDrift applies a new title: auto-named sessions update silently;
 // manually named sessions get a proposal note instead of an overwrite.
 func (m *titleManager) applyDrift(candidate string) {
 	if m.state.TitleManuallySet() {

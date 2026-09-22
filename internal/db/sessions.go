@@ -108,7 +108,7 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 }
 
 // UpdateSessionTitle sets the title on an existing session row (F13) and
-// records whether the title was set manually, so drift re-titling treats
+// records whether the title was set manually, so re-titling treats
 // manual names as authoritative across restarts.
 func (db *DB) UpdateSessionTitle(sessionID string, title string, manual bool) error {
 	manualInt := 0

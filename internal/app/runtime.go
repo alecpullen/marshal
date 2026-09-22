@@ -797,7 +797,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	if name != "" {
 		newState.SetTitleManual(name)
 		// Persist the manual flag; the title itself was written by
-		// CreateSession above. Keeps drift re-titling treating the name as
+		// CreateSession above. Keeps re-titling treating the name as
 		// manual across restarts.
 		_ = db.UpdateSessionTitle(sessionID, name, true)
 	}

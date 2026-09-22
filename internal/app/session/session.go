@@ -611,7 +611,7 @@ func (s *State) TitleManuallySet() bool {
 }
 
 // ClearTitleManual clears the manual-title flag so auto-titling (turn-start
-// titling and drift re-titling) may update the title again. The current
+// titling and new-task re-titling) may update the title again. The current
 // title text is kept.
 func (s *State) ClearTitleManual() {
 	s.mu.Lock()
@@ -620,7 +620,7 @@ func (s *State) ClearTitleManual() {
 }
 
 // restoreTitle re-applies the persisted title and its manual flag when a
-// session is loaded, so drift logic treats previously manual names as
+// session is loaded, so re-titling treats previously manual names as
 // manual across restarts. Best-effort: a missing row or DB error leaves the
 // in-memory title untouched.
 func (s *State) restoreTitle() {

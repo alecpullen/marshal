@@ -141,8 +141,8 @@ func (p *seqProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan 
 // TestRunnerInvokesTitleManagerOnTurnStart proves the runner drives the
 // turn-start titler on a real RunTask turn: the manager is invoked with the
 // user's goal before the turn's first provider Chat, and again on a second
-// turn (the manager itself decides generate-vs-drift; the runner just calls
-// it at every turn start).
+// turn (the manager itself decides when to call the title model; the runner
+// just calls it at every turn start).
 func TestRunnerInvokesTitleManagerOnTurnStart(t *testing.T) {
 	state := newTestState(t)
 	seq := &seqCounter{}

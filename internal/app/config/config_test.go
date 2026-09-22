@@ -1690,6 +1690,49 @@ func TestSkillsMaxActiveRoundTripsThroughSave(t *testing.T) {
 	}
 }
 
+func TestPostmortemConfigRoundTrip(t *testing.T) {
+	// Default is "prompt".
+	if got := Default().Postmortem.OnExit; got != "prompt" {
+		t.Fatalf("default OnExit = %q, want prompt", got)
+	}
+
+	// A TOML file loads its configured value.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[postmortem]\non_exit = \"never\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&cfg, file); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Postmortem.OnExit != "never" {
+		t.Fatalf("merged OnExit = %q, want never", cfg.Postmortem.OnExit)
+	}
+
+	// Saving a non-default value round-trips.
+	savePath := filepath.Join(t.TempDir(), "config.toml")
+	toSave := Default()
+	toSave.Postmortem.OnExit = "always"
+	if err := SaveProjectConfig(savePath, toSave, Layers{}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := Default()
+	saved, err := loadFile(savePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&reloaded, saved); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Postmortem.OnExit != "always" {
+		t.Fatalf("reloaded OnExit = %q, want always", reloaded.Postmortem.OnExit)
+	}
+}
+
 func TestLoadLegacyKeyMigrationRewritesProfileBindings(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

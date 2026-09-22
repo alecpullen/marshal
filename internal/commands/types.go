@@ -21,6 +21,11 @@ type Handler func(state *session.State, args []string) Result
 type Result struct {
 	Text string
 	Doc  *Doc
+	// AgentGoal, when non-empty, is a user turn the TUI submits to the agent
+	// after it has rendered Text. Handlers use it to hand a follow-up task
+	// (for example "annotate the artifact you just wrote") back to the agent
+	// without making the user retype it.
+	AgentGoal string
 }
 
 // Text builds a plain-text Result.

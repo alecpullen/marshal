@@ -179,6 +179,10 @@ type fileTitling struct {
 	TimeoutMs *int  `toml:"timeout_ms"`
 }
 
+type filePostmortem struct {
+	OnExit *string `toml:"on_exit"`
+}
+
 type fileSnapshots struct {
 	Enabled       *bool `toml:"enabled"`
 	RetentionDays *int  `toml:"retention_days"`
@@ -292,6 +296,7 @@ type configFile struct {
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
 	Titling     *fileTitling     `toml:"titling"`
+	Postmortem  *filePostmortem  `toml:"postmortem"`
 	History     *fileHistory     `toml:"history"`
 	TUI         *fileTUI         `toml:"tui"`
 	Permissions *filePermissions `toml:"permissions"`

@@ -145,6 +145,9 @@ func Default() Config {
 			Enabled:   true,
 			TimeoutMs: 10000,
 		},
+		Postmortem: PostmortemConfig{
+			OnExit: "prompt",
+		},
 		Snapshots: SnapshotsConfig{
 			Enabled:       true,
 			RetentionDays: 7,

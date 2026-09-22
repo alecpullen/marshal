@@ -40,6 +40,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
@@ -55,6 +56,7 @@ import (
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
+	"marshal/internal/postmortem"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
@@ -326,6 +328,11 @@ type Model struct {
 	steeringEvents <-chan pubsub.Event[session.SteeringEvent]
 	queuedCount    int
 	cancelling     bool
+
+	// postmortemAgentPending is set when the exit flow starts the agent
+	// analysis pass as a real turn; handleAgentFinished reads it to quit once
+	// that turn completes.
+	postmortemAgentPending bool
 
 	// workspaceBroker, when non-nil, delivers WorkspaceEvents so the
 	// status line's git info follows the session's active root without
@@ -1231,7 +1238,7 @@ func (m *Model) openAgentsRoster(arg string) {
 			m.refreshViewport()
 			return nil
 		}
-		_, cmd := m.startAgentRun(runner, goal)
+		_, cmd, _ := m.startAgentRun(runner, goal)
 		return cmd
 	}
 	roster := agents.NewRosterPanelWithRegistry(
@@ -1720,7 +1727,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 				return m, nil
 			}
-			return m, m.beginShutdown()
+			return m, m.beginShutdown(true)
 		}
 		// Any other keypress clears the armed quit, so Ctrl+C never quits
 		// on a press the user has mentally separated from the interrupt.
@@ -1905,6 +1912,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Placeholder = "Enter API key for " + msg.Provider
 		m.refreshViewport()
 		return m, nil
+	case postmortempanel.DoneMsg:
+		m.dock.CloseNow()
+		switch msg.Result {
+		case postmortempanel.ResultDeclined:
+			m.refreshViewport()
+			return m, m.finishQuit()
+		case postmortempanel.ResultExtractOnly:
+			m.reportPostmortem()
+			m.refreshViewport()
+			return m, m.finishQuit()
+		default: // ResultWithAgent
+			path := m.reportPostmortem()
+			if path == "" || m.runner == nil {
+				// Extraction failed, or there is no runner to run the pass:
+				// quit rather than leave the session hanging at the prompt.
+				m.refreshViewport()
+				return m, m.finishQuit()
+			}
+			// Set the flag before the start so the model startAgentRun hands
+			// back carries it; clear it again if the start was refused.
+			m.postmortemAgentPending = true
+			mm, agentCmd, started := m.startAgentRun(m.runner, postmortemAgentGoal(path))
+			if !started {
+				// BeginWork was refused, so no turn is in flight and no
+				// agentFinishedMsg will ever arrive to quit. Drop the flag and
+				// quit here rather than strand the exit at the prompt.
+				m.postmortemAgentPending = false
+				return m, m.finishQuit()
+			}
+			m.refreshViewport()
+			return mm, agentCmd
+		}
 	}
 
 	// Runtime messages always stay with the parent model so background state
@@ -2105,7 +2144,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pipelineRunner.AnswerGate(pm.Text)
 		goal := m.state.SDDProgress().PlanPath
-		return m.startAgentRun(m.pipelineRunner, goal)
+		mm, sddCmd, _ := m.startAgentRun(m.pipelineRunner, goal)
+		return mm, sddCmd
 
 	case gatepanel.StopMsg:
 		m.dock.CloseNow()
@@ -2170,7 +2210,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ror.SetRunnerFactory(factory)
 			m.restoreRunner = ror.RestoreRunner
 		}
-		return m.startAgentRun(run.runner, run.goal)
+		mm, runCmd, _ := m.startAgentRun(run.runner, run.goal)
+		return mm, runCmd
 	case castlist.CancelMsg:
 		m.dock.CloseNow()
 		m.pendingRun = nil
@@ -3811,12 +3852,15 @@ func verifyGateRow(cfg config.Config, repoRoot string) castlist.Row {
 
 // startAgentRun begins a turn on runner with goal, wiring cancellation and
 // the busy/spinner commands. On BeginWork failure it reports and stays idle.
-func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.Cmd) {
+// The bool reports whether the turn actually started: a refused start means
+// no run is in flight and no agentFinishedMsg will arrive, which the exit
+// postmortem's agent pass has to tell apart from a live turn.
+func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.Cmd, bool) {
 	if err := m.state.BeginWork(); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
 		m.busy = false
 		m.refreshViewport()
-		return *m, nil
+		return *m, nil, false
 	}
 	// Optimistic dismissal: a fresh prompt means the user is trying again, so
 	// clear any stale provider notice from an earlier failed turn. If this
@@ -3833,7 +3877,7 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	m.suggestionGen++
 	agentCtx, cancel := context.WithCancel(m.ctx)
 	m.agentCancel = cancel
-	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
+	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd()), true
 }
 
 // startSDDAuthoring begins an authoring turn for /sdd new. It builds the
@@ -4101,7 +4145,40 @@ func (m *Model) cancelTurn() bool {
 // m.busy is intentionally not reset here — tea.Quit is returned immediately
 // and the program is exiting, so the agentFinishedMsg path that normally
 // clears busy via state.EndWork() will not run.
-func (m *Model) beginShutdown() tea.Cmd {
+func (m *Model) beginShutdown(promptPostmortem bool) tea.Cmd {
+	if promptPostmortem {
+		switch m.postmortemOnExit() {
+		case "always":
+			m.reportPostmortem()
+			return m.finishQuit()
+		case "prompt":
+			// Already asking: a repeated quit request must not stack a second
+			// panel. Ctrl+C bypasses the dock, so it can land here while the
+			// prompt is open. The dock's current panel is the latch, so a
+			// prompt replaced by another panel (human gate, review cancel)
+			// cannot make quitting impossible.
+			if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+				return nil
+			}
+			// A session the user never typed into has nothing to postmortem.
+			if m.sessionHasUserTurn() {
+				m.dock.Open(postmortempanel.New())
+				m.refreshViewport()
+				return nil
+			}
+		}
+	}
+	return m.finishQuit()
+}
+
+// finishQuit is the shared terminal shutdown body: cancel the in-flight turn,
+// clear pending state, and return tea.Quit. Both the direct exit paths and the
+// exit-postmortem panel resolve here.
+//
+// m.busy is intentionally not reset here — tea.Quit is returned immediately
+// and the program is exiting, so the agentFinishedMsg path that normally
+// clears busy via state.EndWork() will not run.
+func (m *Model) finishQuit() tea.Cmd {
 	if m.agentCancel != nil {
 		m.agentCancel()
 		m.agentCancel = nil
@@ -4114,6 +4191,65 @@ func (m *Model) beginShutdown() tea.Cmd {
 	m.state.ResolvePendingForShutdown()
 	m.state.Shutdown()
 	return tea.Quit
+}
+
+// postmortemOnExit returns the configured exit postmortem policy. The config
+// loader deliberately does not reject bad values, so any unrecognised value
+// falls back to "prompt" here at use time.
+func (m *Model) postmortemOnExit() string {
+	switch m.state.Config.Postmortem.OnExit {
+	case "always", "never":
+		return m.state.Config.Postmortem.OnExit
+	default:
+		return "prompt"
+	}
+}
+
+// sessionHasUserTurn reports whether the session holds any user-role message.
+// The exit prompt is skipped for a session the user never typed into.
+func (m *Model) sessionHasUserTurn() bool {
+	for _, msg := range m.state.Messages() {
+		if msg.Role == session.RoleUser {
+			return true
+		}
+	}
+	return false
+}
+
+// writePostmortem extracts a report from the live session and writes it to the
+// user config dir, returning the path written. Extraction at exit is
+// best-effort: the caller reports the error and exits anyway.
+func (m *Model) writePostmortem() (string, error) {
+	report, err := postmortem.Build(m.state, m.state.DB())
+	if err != nil {
+		return "", err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("locate home directory: %w", err)
+	}
+	slug := postmortem.ProjectSlug(m.state.WorkingDir)
+	return postmortem.Write(report, home, slug, m.state.SessionID())
+}
+
+// reportPostmortem runs the extraction+write step and reports the outcome as a
+// transcript line, swallowing the error so a postmortem failure can never
+// block exit. It returns the path written, or "" on failure.
+func (m *Model) reportPostmortem() string {
+	path, err := m.writePostmortem()
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, "Postmortem failed: "+err.Error(), session.ContentTypePlain)
+		return ""
+	}
+	m.state.AddMessage(session.RoleSystem, "Postmortem written to "+path, session.ContentTypePlain)
+	return path
+}
+
+// postmortemAgentGoal mirrors the AgentGoal the /postmortem --agent command
+// hands back to the agent. The exit panel's "include agent analysis" path
+// never goes through that command handler, so it builds the same goal here.
+func postmortemAgentGoal(path string) string {
+	return "Run the postmortem skill: review this session's transcript and append semantic observations into the agent_observations field of " + path + ". Extraction only — record observations, do not summarize or rank."
 }
 
 // settingsBlockReason returns a message when runtime work, a pending
@@ -4140,6 +4276,13 @@ func (m Model) settingsBlockReason() string {
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
+	// The exit postmortem's agent pass runs as a real turn; quit when it ends,
+	// whatever the outcome — the extraction already landed before the turn
+	// started, so a failed annotation must not strand the user at the prompt.
+	if m.postmortemAgentPending {
+		m.postmortemAgentPending = false
+		return m, m.finishQuit()
+	}
 	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
 	// on the success path; nil otherwise.
 	var suggestionCmd tea.Cmd
@@ -4620,7 +4763,8 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		return m.startAgentRun(m.runner, goal)
+		mm, promptCmd, _ := m.startAgentRun(m.runner, goal)
+		return mm, promptCmd
 	}
 
 	if cmd.Handler != nil {
@@ -4629,6 +4773,20 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			m.openDocPanel(res.Doc)
 		} else if res.Text != "" {
 			m.state.AddMessage(session.RoleSystem, res.Text, session.ContentTypePlain)
+		}
+		// AgentGoal hands a follow-up turn back to the agent after Text is
+		// rendered (see commands.Result.AgentGoal). Mirror the PromptBody
+		// branch's busy/steering/runner idiom exactly.
+		if res.AgentGoal != "" {
+			if m.busy {
+				m.state.PushSteering(res.AgentGoal)
+				m.refreshViewport()
+				return m, nil
+			}
+			if m.runner != nil {
+				mm, goalCmd, _ := m.startAgentRun(m.runner, res.AgentGoal)
+				return mm, goalCmd
+			}
 		}
 	}
 
@@ -4782,7 +4940,8 @@ func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
 	}
 	m.resumeSession = id
 	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Resuming session %s...", id), session.ContentTypePlain)
-	return m, m.beginShutdown()
+	// A session swap is not a quit: never offer the exit postmortem here.
+	return m, m.beginShutdown(false)
 }
 
 // openSessionPicker opens a picker listing previous sessions for this

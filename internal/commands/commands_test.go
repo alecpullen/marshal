@@ -19,6 +19,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/history"
+	"marshal/internal/postmortem"
 	"marshal/internal/tools/registry"
 )
 
@@ -809,6 +810,112 @@ func TestExportRejectsSymlinkEscape(t *testing.T) {
 	out := cmd.Handler(state, []string{"escape.html"}).Text
 	if !strings.Contains(out, "symlink") && !strings.Contains(out, "escapes") && !strings.Contains(out, "failed") {
 		t.Fatalf("export should reject symlink escape, got: %q", out)
+	}
+}
+
+// postmortemTestEnv points the postmortems tree at a temp dir via
+// MARSHAL_CONFIG_DIR (which config.UserDir checks first, ahead of
+// XDG_CONFIG_HOME) and returns that base dir.
+func postmortemTestEnv(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	t.Setenv("MARSHAL_CONFIG_DIR", base)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	return base
+}
+
+// postmortemReportPath is the path the command is expected to write: the
+// session id as the file name inside the project slug's directory. The file
+// name comes from postmortem.SessionSlug so the expectation tracks the
+// sanitiser Write applies rather than duplicating it.
+func postmortemReportPath(t *testing.T, state *session.State) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	dir := postmortem.Dir(home, postmortem.ProjectSlug(state.WorkingDir))
+	return filepath.Join(dir, postmortem.SessionSlug(state.SessionID())+".json")
+}
+
+func TestPostmortemCommandWritesReport(t *testing.T) {
+	base := postmortemTestEnv(t)
+
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	// One failed tool call is enough to make the report non-trivial, so the
+	// test asserts the seeded event actually made it into the file.
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp: time.Unix(2000, 0),
+		ToolName:  "shell.run",
+		Error:     "exit status 1",
+	})
+
+	cmd, ok := cmdReg.Lookup("postmortem")
+	if !ok {
+		t.Fatal("postmortem command not registered")
+	}
+	result := cmd.Handler(state, nil)
+
+	if !strings.Contains(result.Text, "Postmortem written") {
+		t.Fatalf("postmortem output = %q, want the summary", result.Text)
+	}
+	if !strings.Contains(result.Text, "tool failure") {
+		t.Errorf("postmortem output = %q, want it to count the seeded tool failure", result.Text)
+	}
+	if result.AgentGoal != "" {
+		t.Errorf("AgentGoal = %q, want empty without --agent", result.AgentGoal)
+	}
+
+	path := postmortemReportPath(t, state)
+	dir := filepath.Dir(path)
+	if want := filepath.Join(base, "postmortems", "repo"); dir != want {
+		t.Fatalf("report dir = %q, want %q", dir, want)
+	}
+	if !strings.Contains(result.Text, path) {
+		t.Errorf("output %q should contain the report path %q", result.Text, path)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("report not written at %s: %v", path, err)
+	}
+	if !strings.Contains(string(data), "exit status 1") {
+		t.Errorf("report does not contain the seeded failure:\n%s", data)
+	}
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		t.Error("temp file left behind after the atomic write")
+	}
+}
+
+func TestPostmortemCommandAgentFlagSetsAgentGoal(t *testing.T) {
+	postmortemTestEnv(t)
+
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	cmd, ok := cmdReg.Lookup("postmortem")
+	if !ok {
+		t.Fatal("postmortem command not registered")
+	}
+
+	result := cmd.Handler(state, []string{"--agent"})
+	if result.AgentGoal == "" {
+		t.Fatal("AgentGoal = \"\", want the agent pass goal")
+	}
+	if !strings.Contains(result.Text, "Postmortem written") {
+		t.Errorf("Text = %q, want the summary", result.Text)
+	}
+	if path := postmortemReportPath(t, state); !strings.Contains(result.AgentGoal, path) {
+		t.Errorf("AgentGoal = %q, want it to mention %q", result.AgentGoal, path)
+	}
+	if _, err := os.Stat(postmortemReportPath(t, state)); err != nil {
+		t.Errorf("report not written: %v", err)
 	}
 }
 

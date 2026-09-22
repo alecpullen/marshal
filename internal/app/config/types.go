@@ -28,6 +28,7 @@ type Config struct {
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
 	Titling       TitlingConfig                         `toml:"titling"`
+	Postmortem    PostmortemConfig                      `toml:"postmortem"`
 	History       HistoryConfig                         `toml:"history"`
 	TUI           TUIConfig                             `toml:"tui"`
 	Permissions   PermissionsConfig                     `toml:"permissions"`
@@ -146,6 +147,13 @@ type MCPServerConfig struct {
 type TitlingConfig struct {
 	Enabled   bool `toml:"enabled"`
 	TimeoutMs int  `toml:"timeout_ms"`
+}
+
+// PostmortemConfig controls the session exit post-mortem flow. OnExit is one
+// of "prompt" (default), "always", or "never". Invalid values are NOT
+// rejected at load time; they fall back to "prompt" at use time.
+type PostmortemConfig struct {
+	OnExit string `toml:"on_exit"`
 }
 
 type SnapshotsConfig struct {

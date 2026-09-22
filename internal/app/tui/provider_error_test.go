@@ -109,7 +109,7 @@ func TestStartAgentRunClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider unreachable"})
 
-	_, cmd := m.startAgentRun(&testAgentRunner{}, "retry")
+	_, cmd, _ := m.startAgentRun(&testAgentRunner{}, "retry")
 	if cmd == nil {
 		t.Fatal("startAgentRun returned no command")
 	}
@@ -124,7 +124,7 @@ func TestStartAgentRunKeepsUnrelatedNotice(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetNotice(session.Notice{Category: session.NoticeInternal, Message: "command registration failed"})
 
-	_, cmd := m.startAgentRun(&testAgentRunner{}, "retry")
+	_, cmd, _ := m.startAgentRun(&testAgentRunner{}, "retry")
 	if cmd == nil {
 		t.Fatal("startAgentRun returned no command")
 	}

@@ -503,7 +503,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.refreshViewport()
 			return *m, nil, true
 		}
-		mm, cmd := m.startAgentRun(m.runner, value)
+		mm, cmd, _ := m.startAgentRun(m.runner, value)
 		return mm, cmd, true
 	}
 	return *m, nil, false

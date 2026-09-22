@@ -313,6 +313,9 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Titling.Enabled, file.Titling.Enabled)
 		set(&cfg.Titling.TimeoutMs, file.Titling.TimeoutMs)
 	}
+	if file.Postmortem != nil {
+		set(&cfg.Postmortem.OnExit, file.Postmortem.OnExit)
+	}
 	if file.TUI != nil {
 		set(&cfg.TUI.Theme, file.TUI.Theme)
 		set(&cfg.TUI.Depth, file.TUI.Depth)

@@ -131,11 +131,11 @@ func init() {
 	tuiCommandEffects = map[string]func(m *Model, args []string) (tea.Model, tea.Cmd){
 		"exit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.state.AddMessage(session.RoleSystem, "Goodbye!", session.ContentTypePlain)
-			return m, m.beginShutdown()
+			return m, m.beginShutdown(true)
 		},
 		"quit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.state.AddMessage(session.RoleSystem, "Goodbye!", session.ContentTypePlain)
-			return m, m.beginShutdown()
+			return m, m.beginShutdown(true)
 		},
 		"set": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.handleSetCommand(args)

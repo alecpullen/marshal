@@ -186,6 +186,65 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 	return out, nil
 }
 
+// RecentTurnMetricsForSession returns the newest turn_metrics rows for one
+// session, newest first. Unlike RecentTurnMetrics the session filter is
+// applied in SQL, so a long session is never truncated by other sessions'
+// rows competing for the same LIMIT window.
+func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, limit int) ([]TurnMetricsRow, error) {
+	if limit <= 0 {
+		limit = recentTurnMetricsDefaultLimit
+	}
+	if limit > recentTurnMetricsMaxLimit {
+		limit = recentTurnMetricsMaxLimit
+	}
+	rows, err := db.sqlDB.Query(
+		`SELECT id, project_id, session_id, started_at, duration_ms, class,
+			role, provider, model, goal, iterations, tool_calls, tool_errors,
+			cache_hits, parse_failures, hard_stalls, outcome,
+			salvage_reason, prompt_tokens, completion_tokens,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents
+		 FROM turn_metrics
+		 WHERE project_id = ? AND session_id = ?
+		 ORDER BY id DESC
+		 LIMIT ?`,
+		projectID, sessionID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query turn metrics: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TurnMetricsRow
+	for rows.Next() {
+		var r TurnMetricsRow
+		var sessionID sql.NullString
+		var started string
+		if err := rows.Scan(
+			&r.ID, &r.ProjectID, &sessionID, &started, &r.DurationMs, &r.Class,
+			&r.Role, &r.Provider, &r.Model, &r.Goal, &r.Iterations, &r.ToolCalls,
+			&r.ToolErrors, &r.CacheHits, &r.ParseFailures,
+			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
+			&r.CompletionTokens,
+			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
+		); err != nil {
+			return nil, fmt.Errorf("scan turn metrics row: %w", err)
+		}
+		if sessionID.Valid {
+			r.SessionID = sessionID.String
+		}
+		parsed, err := time.Parse(time.RFC3339, started)
+		if err != nil {
+			return nil, fmt.Errorf("parse started_at: %w", err)
+		}
+		r.StartedAt = parsed.UTC()
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate turn metrics rows: %w", err)
+	}
+	return out, nil
+}
+
 // AggregateTurnMetrics returns grand totals and per-model breakdowns for a project.
 func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdown, error) {
 	rows, err := db.sqlDB.Query(

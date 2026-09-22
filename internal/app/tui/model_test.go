@@ -29,6 +29,7 @@ import (
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
@@ -43,6 +44,7 @@ import (
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
+	"marshal/internal/postmortem"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -2009,7 +2011,7 @@ func TestSuggestionClearedOnTurnStart(t *testing.T) {
 	m.suggestion = "yes"
 	m.suggestionDismissed = false
 
-	mm, _ := m.startAgentRun(m.runner, "continue")
+	mm, _, _ := m.startAgentRun(m.runner, "continue")
 	m = asModel(t, mm)
 	if m.suggestion != "" {
 		t.Fatalf("suggestion = %q, want empty when a new turn starts", m.suggestion)
@@ -8462,5 +8464,368 @@ func TestSuggestionOffAtEveryConfidence(t *testing.T) {
 		if m.suggestion != "" || cmd != nil || fp.called {
 			t.Fatalf("suggestions off: got suggestion %q, cmd != nil = %v, called = %v; want empty, false, false", m.suggestion, cmd != nil, fp.called)
 		}
+	}
+}
+
+// ── Task 5: exit postmortem prompt ──────────────────────────────────────
+
+// postmortemReportPath returns the path the exit flow writes for state. The
+// caller must set MARSHAL_CONFIG_DIR to a temp dir: config.UserDir honours it
+// ahead of the home directory, so the real ~/.config is never touched.
+func postmortemReportPath(t *testing.T, state *session.State) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	slug := postmortem.ProjectSlug(state.WorkingDir)
+	return filepath.Join(postmortem.Dir(home, slug), state.SessionID()+".json")
+}
+
+func postmortemTestState(t *testing.T, sessionID string) *session.State {
+	t.Helper()
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: sessionID})
+}
+
+func TestExitPromptsPostmortemPerConfig(t *testing.T) {
+	state := postmortemTestState(t, "sess-prompt")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "prompt"
+	m := New(state)
+
+	cmd := m.beginShutdown(true)
+
+	if cmd != nil {
+		t.Fatalf("prompt path returned a cmd (%T), want nil so the program stays open", cmd)
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want *postmortempanel.Panel", m.dock.Panel())
+	}
+	select {
+	case <-state.Done():
+		t.Fatal("state must not be shut down while the prompt is open")
+	default:
+	}
+}
+
+func TestExitAlwaysRunsPostmortem(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := postmortemTestState(t, "sess-always")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "always"
+	m := New(state)
+
+	cmd := m.beginShutdown(true)
+
+	if cmd == nil {
+		t.Fatal("always path must quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+	path := postmortemReportPath(t, state)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("postmortem report not written at %s: %v", path, err)
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+		t.Fatal("always path must not open the exit panel")
+	}
+}
+
+func TestExitNeverSkipsPostmortem(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := postmortemTestState(t, "sess-never")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "never"
+	m := New(state)
+
+	cmd := m.beginShutdown(true)
+
+	if cmd == nil {
+		t.Fatal("never path must quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+	if _, err := os.Stat(postmortemReportPath(t, state)); !os.IsNotExist(err) {
+		t.Fatalf("never path wrote a report (stat err = %v), want none", err)
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+		t.Fatal("never path must not open the exit panel")
+	}
+}
+
+func TestExitSkipsPromptOnEmptySession(t *testing.T) {
+	state := postmortemTestState(t, "sess-empty")
+	state.Config.Postmortem.OnExit = "prompt"
+	m := New(state)
+
+	cmd := m.beginShutdown(true)
+
+	if cmd == nil {
+		t.Fatal("empty session must quit, not prompt")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+		t.Fatal("empty session must not open the exit panel")
+	}
+}
+
+func TestResumeShutdownDoesNotPrompt(t *testing.T) {
+	state := postmortemTestState(t, "sess-resume")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "prompt"
+	m := New(state)
+
+	cmd := m.beginShutdown(false)
+
+	if cmd == nil {
+		t.Fatal("session swap must quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+		t.Fatal("session-swap exit must never open the exit panel")
+	}
+}
+
+func TestAgentGoalDispatchStartsRun(t *testing.T) {
+	reg := commands.New()
+	err := reg.Register(commands.Command{
+		Name:        "pmtest",
+		Description: "Postmortem test",
+		Group:       "plugins",
+		Handler: func(_ *session.State, _ []string) commands.Result {
+			return commands.Result{Text: "report written", AgentGoal: "annotate the report"}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := New(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m.resize(80, 24)
+
+	updated, cmd := m.dispatchCommand("/pmtest")
+	m = asModel(t, updated)
+
+	if !m.busy {
+		t.Fatal("AgentGoal should start an agent run")
+	}
+	if cmd == nil {
+		t.Fatal("dispatchCommand should return a cmd")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
+	}
+	for _, sub := range batch {
+		sub()
+	}
+
+	select {
+	case goal := <-runner.called:
+		if goal != "annotate the report" {
+			t.Fatalf("runner goal = %q, want %q", goal, "annotate the report")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner was not invoked for AgentGoal")
+	}
+}
+
+// TestPostmortemAgentTurnQuitsOnFinish pins the flag-storage decision for the
+// exit postmortem's agent pass: the flag lives on the Model, and the
+// value-receiver Update round-trip preserves it because the done-case sets it
+// before startAgentRun returns the mutated model. When the turn finishes,
+// handleAgentFinished must clear it and quit.
+func TestPostmortemAgentTurnQuitsOnFinish(t *testing.T) {
+	state := postmortemTestState(t, "sess-agentpass")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	m := New(state)
+	m.resize(80, 24)
+	m.postmortemAgentPending = true
+
+	// Route the finish through Update (the value-receiver path the live
+	// program uses) rather than calling handleAgentFinished directly.
+	updated, cmd := m.Update(agentFinishedMsg{err: nil})
+	m = asModel(t, updated)
+
+	if m.postmortemAgentPending {
+		t.Fatal("postmortemAgentPending should be cleared once the turn finishes")
+	}
+	if cmd == nil {
+		t.Fatal("expected a quit cmd after the postmortem agent turn")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+	select {
+	case <-state.Done():
+	case <-time.After(time.Second):
+		t.Fatal("state was not closed after the postmortem agent turn")
+	}
+}
+
+// TestPostmortemPanelDoneWithAgentStartsRun pins the WRITE half of the
+// postmortem agent-pass flag: a ResultWithAgent DoneMsg through Update must
+// close the panel, write the report, set postmortemAgentPending on the model
+// it returns, and start the pass on the wired runner.
+func TestPostmortemPanelDoneWithAgentStartsRun(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := postmortemTestState(t, "sess-write-path")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "prompt"
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := New(state, WithRunner(context.Background(), runner))
+	m.resize(80, 24)
+
+	if cmd := m.beginShutdown(true); cmd != nil {
+		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want *postmortempanel.Panel", m.dock.Panel())
+	}
+
+	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
+	m = asModel(t, updated)
+
+	if m.dock.IsOpen() {
+		t.Fatalf("dock still open after the panel answered (%T)", m.dock.Panel())
+	}
+	if !m.postmortemAgentPending {
+		t.Fatal("postmortemAgentPending = false on the returned model, want true")
+	}
+	if !m.busy {
+		t.Fatal("busy = false after starting the postmortem agent pass, want true")
+	}
+	if _, err := os.Stat(postmortemReportPath(t, state)); err != nil {
+		t.Fatalf("postmortem report not written: %v", err)
+	}
+	if cmd == nil {
+		t.Fatal("ResultWithAgent should return the agent-turn cmd")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
+	}
+	for _, sub := range batch {
+		sub()
+	}
+	select {
+	case goal := <-runner.called:
+		if !strings.Contains(goal, postmortemReportPath(t, state)) {
+			t.Fatalf("runner goal = %q, want it to name the report path", goal)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner was not invoked for the postmortem agent pass")
+	}
+}
+
+// TestPostmortemAgentStartRefusedQuits: when BeginWork is refused there is no
+// turn in flight and no agentFinishedMsg will ever arrive. The exit flow must
+// quit itself instead of hanging at the prompt with the flag set.
+func TestPostmortemAgentStartRefusedQuits(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := postmortemTestState(t, "sess-refused")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "prompt"
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := New(state, WithRunner(context.Background(), runner))
+	m.resize(80, 24)
+
+	if cmd := m.beginShutdown(true); cmd != nil {
+		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
+	}
+	// Refuse any work registration from here on, so startAgentRun fails the
+	// way it does during a session quiesce.
+	state.BeginQuiesce()
+
+	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
+	m = asModel(t, updated)
+
+	if m.postmortemAgentPending {
+		t.Fatal("postmortemAgentPending = true after a refused start, want false")
+	}
+	if m.busy {
+		t.Fatal("busy = true after a refused start, want false")
+	}
+	if cmd == nil {
+		t.Fatal("a refused agent-pass start must still quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+	select {
+	case <-state.Done():
+	case <-time.After(time.Second):
+		t.Fatal("state was not closed after the refused postmortem agent pass")
+	}
+}
+
+// TestExitPostmortemUnknownPolicyPrompts pins the on_exit fallback: an
+// unrecognised value takes the prompt path rather than skipping the
+// postmortem or quitting.
+func TestExitPostmortemUnknownPolicyPrompts(t *testing.T) {
+	state := postmortemTestState(t, "sess-bogus-policy")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "bogus"
+	m := New(state)
+
+	cmd := m.beginShutdown(true)
+
+	if cmd != nil {
+		t.Fatalf("unknown on_exit returned a cmd (%T), want nil so the prompt stays open", cmd)
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want *postmortempanel.Panel for an unknown on_exit", m.dock.Panel())
+	}
+	select {
+	case <-state.Done():
+		t.Fatal("state must not be shut down while the fallback prompt is open")
+	default:
+	}
+}
+
+// TestExitPromptGuardFollowsThePanel: the repeated-quit guard must key off the
+// dock's current panel, not a latch. When another panel replaces the
+// postmortem prompt (here the SDD human gate), the next quit request must open
+// a fresh prompt instead of becoming a silent no-op.
+func TestExitPromptGuardFollowsThePanel(t *testing.T) {
+	state := postmortemTestState(t, "sess-replaced-panel")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "prompt"
+	m := New(state)
+	m.resize(80, 24)
+
+	if cmd := m.beginShutdown(true); cmd != nil {
+		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
+	}
+	// A repeated request while the prompt is up must not stack a panel.
+	if cmd := m.beginShutdown(true); cmd != nil {
+		t.Fatalf("repeated prompt request returned a cmd (%T), want nil", cmd)
+	}
+
+	// The human gate takes the dock, replacing the prompt.
+	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "Ship it?"})
+	updated, _ := m.Update(agentFinishedMsg{err: pipeline.ErrHumanGateRequired})
+	m = asModel(t, updated)
+	if _, ok := m.dock.Panel().(*gatepanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want *gatepanel.Panel", m.dock.Panel())
+	}
+
+	// Quitting must still work: the guard no longer latches on the old panel.
+	cmd := m.beginShutdown(true)
+	if cmd != nil {
+		t.Fatalf("quit after the prompt was replaced returned a cmd (%T), want nil so a fresh prompt opens", cmd)
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want a fresh *postmortempanel.Panel", m.dock.Panel())
 	}
 }

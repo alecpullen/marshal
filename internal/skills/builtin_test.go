@@ -48,6 +48,25 @@ func TestLoadSkillsIncludesBuiltInExecutingPlansSkill(t *testing.T) {
 	}
 }
 
+func TestLoadSkillsIncludesBuiltInPostmortemSkill(t *testing.T) {
+	idx, err := LoadSkills(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	skill, ok := idx.Load("postmortem")
+	if !ok {
+		t.Fatal("built-in postmortem skill is missing")
+	}
+	if skill.Description == "" {
+		t.Fatalf("built-in postmortem skill has no description: %+v", skill)
+	}
+	for _, want := range []string{"agent_observations", "do not summarize"} {
+		if !strings.Contains(skill.Body, want) {
+			t.Errorf("postmortem body missing %q", want)
+		}
+	}
+}
+
 func TestLoadSkillsIncludesBuiltInWritingPlansSkill(t *testing.T) {
 	idx, err := LoadSkills(t.TempDir(), t.TempDir())
 	if err != nil {
@@ -103,6 +122,7 @@ func TestBuiltInSkillsAllLoad(t *testing.T) {
 		"marshal-executing-plans",
 		"marshal-sdd-plan-authoring",
 		"marshal-writing-plans",
+		"postmortem",
 		"systematic-debugging",
 		"test-driven-development",
 		"using-skills",

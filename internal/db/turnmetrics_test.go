@@ -133,6 +133,84 @@ func TestRecentTurnMetricsNewestFirstAndLimited(t *testing.T) {
 	}
 }
 
+func TestRecentTurnMetricsForSessionNotCrowdedOut(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	if err := database.CreateSession("session-a", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession(session-a): %v", err)
+	}
+	if err := database.CreateSession("session-b", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession(session-b): %v", err)
+	}
+
+	// Session A's rows are inserted first, so they are the oldest ids in the
+	// table. Session B then gets more than `limit` newer rows on top of them.
+	// The project-scoped RecentTurnMetrics window (limit) sees only session B;
+	// the session-scoped query must still return every session A row.
+	const limit = 5
+	for i := 0; i < 3; i++ {
+		row := sampleRow(projectID, "session-a")
+		row.Iterations = i + 1
+		if _, err := database.InsertTurnMetrics(row); err != nil {
+			t.Fatalf("InsertTurnMetrics(session-a, %d): %v", i, err)
+		}
+	}
+	for i := 0; i < limit+2; i++ {
+		row := sampleRow(projectID, "session-b")
+		row.Iterations = i + 1
+		if _, err := database.InsertTurnMetrics(row); err != nil {
+			t.Fatalf("InsertTurnMetrics(session-b, %d): %v", i, err)
+		}
+	}
+
+	// Sanity check the crowding premise: the project-scoped window is fully
+	// occupied by session B.
+	projectRows, err := database.RecentTurnMetrics(projectID, limit)
+	if err != nil {
+		t.Fatalf("RecentTurnMetrics: %v", err)
+	}
+	for _, r := range projectRows {
+		if r.SessionID == "session-a" {
+			t.Fatalf("premise failed: project window unexpectedly contains a session-a row: %+v", r)
+		}
+	}
+
+	rows, err := database.RecentTurnMetricsForSession(projectID, "session-a", limit)
+	if err != nil {
+		t.Fatalf("RecentTurnMetricsForSession: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("len(rows) = %d, want 3 (session-a's rows must not be crowded out)", len(rows))
+	}
+	for _, r := range rows {
+		if r.SessionID != "session-a" {
+			t.Errorf("row session_id = %q, want session-a", r.SessionID)
+		}
+	}
+	// Newest first within the session: iterations 3, 2, 1.
+	if rows[0].Iterations != 3 || rows[2].Iterations != 1 {
+		t.Errorf("order = %d..%d, want newest first (3..1)", rows[0].Iterations, rows[2].Iterations)
+	}
+}
+
+func TestRecentTurnMetricsForSessionClampsLimit(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	if err := database.CreateSession("sess-1", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := database.InsertTurnMetrics(sampleRow(projectID, "sess-1")); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	for _, limit := range []int{0, -1, -100} {
+		rows, err := database.RecentTurnMetricsForSession(projectID, "sess-1", limit)
+		if err != nil {
+			t.Fatalf("limit=%d: %v", limit, err)
+		}
+		if len(rows) != 1 {
+			t.Errorf("limit=%d: expected 1 row, got %d", limit, len(rows))
+		}
+	}
+}
+
 func TestInsertAndRecentTurnMetricsWithNewFields(t *testing.T) {
 	database, projectID := openMetricsTestDB(t)
 	if err := database.CreateSession("sess_newfields", projectID, "", time.Now()); err != nil {

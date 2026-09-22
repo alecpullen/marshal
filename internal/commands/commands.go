@@ -12,6 +12,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/export"
 	"marshal/internal/history"
+	"marshal/internal/postmortem"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
@@ -804,6 +805,41 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					return Text("Export failed: " + err.Error())
 				}
 				return Text("Exported to " + path)
+			},
+		},
+		{
+			Name:        "postmortem",
+			Description: "Write a session postmortem report (harness-usage issues) to the user config dir",
+			Args:        "[--agent]",
+			Group:       groupWorkflow,
+			Handler: func(state *session.State, args []string) Result {
+				agent := false
+				for _, a := range args {
+					if a == "--agent" {
+						agent = true
+					}
+				}
+				report, err := postmortem.Build(state, state.DB())
+				if err != nil {
+					return Text("Postmortem failed: " + err.Error())
+				}
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return Text("Postmortem failed: " + err.Error())
+				}
+				slug := postmortem.ProjectSlug(state.WorkingDir)
+				path, err := postmortem.Write(report, home, slug, state.SessionID())
+				if err != nil {
+					return Text("Postmortem failed: " + err.Error())
+				}
+				summary := postmortem.Summarize(report)
+				if agent {
+					return Result{
+						Text:      summary + " — " + path,
+						AgentGoal: "Run the postmortem skill: review this session's transcript and append semantic observations into the agent_observations field of " + path + ". Extraction only — record observations, do not summarize or rank.",
+					}
+				}
+				return Text(summary + " — " + path)
 			},
 		},
 	}

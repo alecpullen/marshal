@@ -46,6 +46,27 @@ func TestChatTextAccumulatesDeltas(t *testing.T) {
 	}
 }
 
+// Reasoning models stream their chain-of-thought as DeltaThinking events
+// ahead of the answer. ChatText feeds single-shot consumers (title
+// generator, drift/task classifiers, knowledge extractor) whose outputs
+// must contain the answer only — thinking text leaking in produced
+// titles like "The user is asking me to name this session…".
+func TestChatTextSkipsThinkingDeltas(t *testing.T) {
+	p := &scriptedStub{events: []schema.ChatEvent{
+		{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: "The user is asking me to name this session"},
+		{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: ", so I will pick a concise label."},
+		{Type: schema.ChatEventDelta, Delta: "Fix parser bug"},
+		{Type: schema.ChatEventDone},
+	}}
+	got, err := ChatText(context.Background(), p, schema.ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("ChatText err = %v", err)
+	}
+	if got != "Fix parser bug" {
+		t.Fatalf("ChatText = %q, want %q (thinking deltas must not leak into the text)", got, "Fix parser bug")
+	}
+}
+
 func TestChatTextReturnsErrorEvent(t *testing.T) {
 	boom := errors.New("boom")
 	p := &scriptedStub{events: []schema.ChatEvent{

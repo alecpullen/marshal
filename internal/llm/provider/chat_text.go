@@ -11,7 +11,9 @@ import (
 // ChatText issues a one-shot Chat request and drains the stream to a single
 // string. It passes no tools and returns the first error event as a Go
 // error. Shared by the title generator and the knowledge extractor, which
-// previously each carried their own copy of this loop.
+// previously each carried their own copy of this loop. Thinking deltas
+// (reasoning models' chain-of-thought) are skipped: consumers want the
+// model's answer, not its narration.
 func ChatText(ctx context.Context, p Provider, req schema.ChatRequest) (string, error) {
 	ch, err := p.Chat(ctx, req)
 	if err != nil {
@@ -22,6 +24,9 @@ func ChatText(ctx context.Context, p Provider, req schema.ChatRequest) (string, 
 	for ev := range ch {
 		switch ev.Type {
 		case schema.ChatEventDelta:
+			if ev.Kind == schema.DeltaThinking {
+				continue
+			}
 			b.WriteString(ev.Delta)
 		case schema.ChatEventError:
 			return b.String(), ev.Err

@@ -129,3 +129,83 @@ func TestSystemFloorFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestGitPushFloorBypassShapes pins that the wrapper/payload shapes from
+// docs/system-access-mode-followups.md items 1 & 2 cannot bypass the
+// non-bypassable push floor. Each entry previously reached Allow under auto
+// mode with no human gate.
+func TestGitPushFloorBypassShapes(t *testing.T) {
+	cmds := []string{
+		"sh -c 'git push'",
+		"bash -c 'git push'",
+		"su -c 'git push'",
+		"su root -c 'git push'",
+		"exec git push",
+		"command git push",
+		"builtin git push",
+		"nohup git push",
+		"setsid git push",
+		"timeout 5 git push",
+		"watch -n 5 git push",
+		"xargs git push <<< 'origin main'",
+		"eval 'git push origin main'",
+		"exec sh -c 'git push'",
+		"nohup bash -c 'git push origin main'",
+		"timeout 5 su -c 'git push'",
+	}
+	for _, cmd := range cmds {
+		t.Run(cmd, func(t *testing.T) {
+			pe := NewEngine(&config.Config{}, []string{})
+			pe.SetApprovalMode(ModeAuto)
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec != DecisionConfirm {
+				t.Fatalf("Evaluate(%q, system) = %v (%s), want Confirm (non-bypassable floor)", cmd, dec, reason)
+			}
+			if !strings.Contains(reason, "non-bypassable floor") {
+				t.Fatalf("Evaluate(%q) reason = %q, want the floor reason", cmd, reason)
+			}
+		})
+	}
+}
+
+// TestGitPushFloorBypassShapesFlagOff pins the flag-off half of the same
+// contract: without system access the floor must still never auto-approve a
+// wrapped push. Some shapes (sudo/su) are caught earlier by the flag-off
+// guardrail and come back Deny; the contract is only that none of them is
+// silently allowed.
+func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
+	cmds := []string{
+		"sh -c 'git push'",
+		"bash -c 'git push'",
+		"su -c 'git push'",
+		"su root -c 'git push'",
+		"exec git push",
+		"command git push",
+		"builtin git push",
+		"nohup git push",
+		"setsid git push",
+		"timeout 5 git push",
+		"watch -n 5 git push",
+		"xargs git push <<< 'origin main'",
+		"eval 'git push origin main'",
+		"exec sh -c 'git push'",
+		"nohup bash -c 'git push origin main'",
+		"timeout 5 su -c 'git push'",
+	}
+	for _, cmd := range cmds {
+		t.Run(cmd, func(t *testing.T) {
+			pe := NewEngine(&config.Config{}, []string{})
+			pe.SetApprovalMode(ModeAuto)
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd})
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec == DecisionAllow {
+				t.Fatalf("Evaluate(%q, flag off) = Allow (%s), want a human gate", cmd, reason)
+			}
+		})
+	}
+}

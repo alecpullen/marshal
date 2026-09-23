@@ -894,7 +894,12 @@ func provablyRelativeOperand(op string) bool {
 // the outer parse sees only the shell name and cannot inspect the commands
 // inside it.
 func shellInlinePayload(st stage) (string, bool) {
-	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+	return shellPayloadFromArgv(skipFloorWrappers(append([]string{st.argv0}, st.args...)))
+}
+
+// shellPayloadFromArgv extracts the `-c` payload from an already
+// wrapper-stripped argv whose argv0 is a shell.
+func shellPayloadFromArgv(argv []string) (string, bool) {
 	if len(argv) == 0 {
 		return "", false
 	}
@@ -920,7 +925,12 @@ func shellInlinePayload(st stage) (string, bool) {
 // argument the outer parse cannot inspect. su may take an optional leading
 // user operand (and `-`/`--login` flags) before `-c`.
 func suInlinePayload(st stage) (string, bool) {
-	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+	return suPayloadFromArgv(skipFloorWrappers(append([]string{st.argv0}, st.args...)))
+}
+
+// suPayloadFromArgv extracts the `-c` payload from an already
+// wrapper-stripped argv whose argv0 is su.
+func suPayloadFromArgv(argv []string) (string, bool) {
 	if len(argv) == 0 || lastSegment(argv[0]) != "su" {
 		return "", false
 	}
@@ -1089,10 +1099,7 @@ func isGitPushFloorWithSystem(cmd string, system bool) bool {
 	if isGitPushFloor(cmd) {
 		return true
 	}
-	if !system {
-		return false
-	}
-	return floorHitStages(cmd, 0)
+	return floorHitStages(cmd, 0, system)
 }
 
 // floorHitStages reports whether cmd invokes a floored command, seeing
@@ -1100,40 +1107,58 @@ func isGitPushFloorWithSystem(cmd string, system bool) bool {
 // (`sh -c '…'`, `su -c '…'`, `xargs …`, `eval …`). Recursion is bounded by
 // maxGuardrailDepth so a self-referential command cannot loop.
 //
+// system controls only whether a privilege wrapper (sudo) is stripped: with
+// the flag off, `sudo git push` must stay a guardrail Deny rather than be
+// downgraded to the floor's Confirm. Every other wrapper is stripped in both
+// modes, because the floor's "non-bypassable in every mode" contract is
+// falsified flag-off too (follow-ups doc item 2).
+//
 // On a parse error it falls back to isGitPushFloor's legacy words check: an
 // unparseable command is not provably a push, and the guardrail path still
 // fails closed on it.
-func floorHitStages(cmd string, depth int) bool {
+func floorHitStages(cmd string, depth int, system bool) bool {
 	stages, err := parseStages(cmd)
 	if err != nil {
 		return isGitPushFloor(cmd)
 	}
 	for _, s := range stages {
-		if payload, ok := shellInlinePayload(s); ok {
-			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1) {
+		if payload, ok := floorShellPayload(s, system); ok {
+			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1, system) {
 				return true
 			}
 			continue
 		}
-		if payload, ok := suInlinePayload(s); ok {
-			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1) {
+		if payload, ok := floorSuPayload(s, system); ok {
+			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1, system) {
 				return true
 			}
 			continue
 		}
-		if floorHitArgv(append([]string{s.argv0}, s.args...), depth) {
+		if floorHitArgv(append([]string{s.argv0}, s.args...), depth, system) {
 			return true
 		}
 	}
 	return false
 }
 
+// floorShellPayload and floorSuPayload are the floor's system-aware variants
+// of shellInlinePayload and suInlinePayload: they strip sudo only under
+// system access, so a flag-off `sudo sh -c 'git push'` stays a guardrail
+// Deny instead of being downgraded to the floor's Confirm.
+func floorShellPayload(st stage, system bool) (string, bool) {
+	return shellPayloadFromArgv(skipFloorWrappersFor(append([]string{st.argv0}, st.args...), system))
+}
+
+func floorSuPayload(st stage, system bool) (string, bool) {
+	return suPayloadFromArgv(skipFloorWrappersFor(append([]string{st.argv0}, st.args...), system))
+}
+
 // floorHitArgv reports whether an argv invokes a floored command once the
 // extended wrapper set is stripped. It recurses into the payload-carrying
 // wrappers (xargs, eval) and into inline shell payloads that only become
 // visible after stripping (`exec sh -c '…'`).
-func floorHitArgv(argv []string, depth int) bool {
-	argv = skipFloorWrappersExtended(argv)
+func floorHitArgv(argv []string, depth int, system bool) bool {
+	argv = skipFloorWrappersExtended(argv, system)
 	if gitPushInArgv(argv) {
 		return true
 	}
@@ -1141,22 +1166,23 @@ func floorHitArgv(argv []string, depth int) bool {
 		return false
 	}
 	if depth < maxGuardrailDepth {
-		st := stage{argv0: argv[0], args: argv[1:]}
-		if payload, ok := shellInlinePayload(st); ok {
-			return floorHitStages(payload, depth+1)
+		if payload, ok := shellPayloadFromArgv(argv); ok {
+			return floorHitStages(payload, depth+1, system)
 		}
-		if payload, ok := suInlinePayload(st); ok {
-			return floorHitStages(payload, depth+1)
+		if payload, ok := suPayloadFromArgv(argv); ok {
+			return floorHitStages(payload, depth+1, system)
 		}
 	}
 	switch lastSegment(argv[0]) {
 	case "xargs":
 		if depth < maxGuardrailDepth {
-			return floorHitArgv(xargsPayload(argv), depth+1)
+			return floorHitArgv(xargsPayload(argv), depth+1, system)
 		}
 	case "eval":
 		if depth < maxGuardrailDepth {
-			return floorHitStages(strings.Join(argv[1:], " "), depth+1)
+			// The printer re-emits the payload quoted; strip the quotes so the
+			// inner parse sees the command, not a single literal word.
+			return floorHitStages(strings.Trim(strings.Join(argv[1:], " "), "'\""), depth+1, system)
 		}
 	}
 	return false
@@ -1279,8 +1305,8 @@ func skipFloorWrappers(argv []string) []string {
 // timeout <n>, and watch [-n n]. xargs and eval are handled by the floor
 // walker (floorHitArgv), not here, because they carry a payload rather than a
 // simple prefix.
-func skipFloorWrappersExtended(argv []string) []string {
-	argv = skipFloorWrappers(argv)
+func skipFloorWrappersExtended(argv []string, system bool) []string {
+	argv = skipFloorWrappersFor(argv, system)
 	for len(argv) > 0 {
 		switch lastSegment(argv[0]) {
 		case "exec", "command", "builtin", "nohup", "setsid":
@@ -1315,9 +1341,19 @@ func skipFloorWrappersExtended(argv []string) []string {
 		}
 		// A wrapper may itself be wrapped (exec env sudo git push): re-run the
 		// base stripper before the next pass.
-		argv = skipFloorWrappers(argv)
+		argv = skipFloorWrappersFor(argv, system)
 	}
 	return argv
+}
+
+// skipFloorWrappersFor strips sudo only under system access. Flag-off keeps
+// the privilege wrapper in place so `sudo git push` stays a guardrail Deny
+// instead of being downgraded to the floor's Confirm.
+func skipFloorWrappersFor(argv []string, system bool) []string {
+	if system {
+		return skipFloorWrappers(argv)
+	}
+	return skipCommonWrappers(argv)
 }
 
 // stageIsRMDestructive reports whether a pipeline stage runs rm with both

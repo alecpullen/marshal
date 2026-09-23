@@ -662,8 +662,10 @@ func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) 
 }
 
 // maxGuardrailDepth bounds recursion into inline shell payloads
-// (`sh -c '…'`) so a self-referential command cannot loop.
-const maxGuardrailDepth = 3
+// (`sh -c '…'`) so a self-referential command cannot loop. It is deep enough
+// to see through realistically nested wrappers (`sh -c 'sh -c "sh -c …"'`)
+// while still bounding the walk.
+const maxGuardrailDepth = 8
 
 // analyzeCommandDepth is analyzeCommandWithFloor with a recursion counter for
 // inline shell payloads.
@@ -914,12 +916,24 @@ func shellPayloadFromArgv(argv []string) (string, bool) {
 	default:
 		return "", false
 	}
+	return shellCommandPayload(argv)
+}
+
+// shellCommandPayload returns the command string following a `-c` flag in
+// argv. Shells accept further option words between the flag and the command
+// string (`bash -c -l 'cmd'`, `bash -c -- 'cmd'`), so the payload is the
+// first non-option word after the flag.
+func shellCommandPayload(argv []string) (string, bool) {
 	for i := 1; i < len(argv); i++ {
 		if !shellCommandFlag(argv[i]) {
 			continue
 		}
-		if i+1 < len(argv) {
-			return unquotePayload(argv[i+1]), true
+		j := i + 1
+		for j < len(argv) && len(argv[j]) > 1 && strings.HasPrefix(argv[j], "-") {
+			j++
+		}
+		if j < len(argv) {
+			return shellWordLiteral(argv[j]), true
 		}
 		return "", false
 	}
@@ -940,17 +954,54 @@ func shellCommandFlag(arg string) bool {
 	return strings.Contains(arg[1:], "c")
 }
 
-// unquotePayload strips one matching pair of surrounding quotes from a
-// payload argument. It deliberately does not use strings.Trim, which would
-// strip a trailing quote belonging to a nested payload
-// (`sh -c 'sh -c "git push"'`) and leave the inner command unparseable.
-func unquotePayload(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
-			return s[1 : len(s)-1]
-		}
+// shellWordLiteral converts a printed shell word into the literal string the
+// shell would pass as an argument: it unwraps one surrounding quote pair and
+// decodes backslash escapes. It deliberately does not use strings.Trim, which
+// would strip a trailing quote belonging to a nested payload
+// (`sh -c 'sh -c "git push"'`) and leave the inner command unparseable, and
+// it decodes escapes so `sh -c git\ push` is seen as the command `git push`
+// rather than the single word `git\ push`.
+func shellWordLiteral(s string) string {
+	switch {
+	case strings.HasPrefix(s, "$'") && strings.HasSuffix(s, "'") && len(s) >= 3:
+		return decodeShellEscapes(s[2 : len(s)-1])
+	case strings.HasPrefix(s, "$\"") && strings.HasSuffix(s, "\"") && len(s) >= 3:
+		return decodeShellEscapes(s[2 : len(s)-1])
+	case len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'':
+		// Single quotes suppress every escape.
+		return s[1 : len(s)-1]
+	case len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"':
+		return decodeShellEscapes(s[1 : len(s)-1])
 	}
-	return s
+	return decodeShellEscapes(s)
+}
+
+// decodeShellEscapes resolves the backslash escapes a shell applies to an
+// unquoted or double-quoted word. Unknown escapes drop the backslash, which
+// errs toward recognising a command rather than missing one.
+func decodeShellEscapes(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			switch s[i] {
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			case 'r':
+				b.WriteByte('\r')
+			default:
+				b.WriteByte(s[i])
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // suInlinePayload returns the command string a `su [-user] -c <payload>`
@@ -967,16 +1018,7 @@ func suPayloadFromArgv(argv []string) (string, bool) {
 	if len(argv) == 0 || lastSegment(argv[0]) != "su" {
 		return "", false
 	}
-	for i := 1; i < len(argv); i++ {
-		if !shellCommandFlag(argv[i]) {
-			continue
-		}
-		if i+1 < len(argv) {
-			return unquotePayload(argv[i+1]), true
-		}
-		return "", false
-	}
-	return "", false
+	return shellCommandPayload(argv)
 }
 
 // xargsPayload returns the argv of the command xargs invokes, skipping
@@ -1254,7 +1296,7 @@ func floorHitArgv(argv []string, depth int, system bool, extra []string) string 
 		if depth < maxGuardrailDepth {
 			// The printer re-emits the payload quoted; strip the outer quotes so
 			// the inner parse sees the command, not a single literal word.
-			return floorHitStages(unquotePayload(strings.Join(argv[1:], " ")), depth+1, system, extra)
+			return floorHitStages(shellWordLiteral(strings.Join(argv[1:], " ")), depth+1, system, extra)
 		}
 	}
 	return ""

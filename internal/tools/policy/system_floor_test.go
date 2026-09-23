@@ -165,6 +165,14 @@ func TestGitPushFloorBypassShapes(t *testing.T) {
 		"timeout -s KILL 5 git push",
 		"xargs -a list git push",
 		"xargs --arg-file list git push",
+		// Option words between -c and the payload, and deeper nesting.
+		"bash -c -l 'git push'",
+		"bash -c -- 'git push'",
+		"timeout 5 bash -c -l 'git push'",
+		`sh -c "sh -c 'sh -c \"git push\"'"`,
+		// Escaped and ANSI-C quoted payloads.
+		`sh -c git\ push`,
+		"bash -c $'git push'",
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {
@@ -217,6 +225,12 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 		"timeout -s KILL 5 git push",
 		"xargs -a list git push",
 		"xargs --arg-file list git push",
+		"bash -c -l 'git push'",
+		"bash -c -- 'git push'",
+		"timeout 5 bash -c -l 'git push'",
+		`sh -c "sh -c 'sh -c \"git push\"'"`,
+		`sh -c git\ push`,
+		"bash -c $'git push'",
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {

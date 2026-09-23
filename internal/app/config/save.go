@@ -91,7 +91,14 @@ func SaveVerifyCommands(path, build, test string) error {
 // config file at path, preserving unrelated sections already present. It
 // mirrors SaveProjectConfig's section-preservation logic against the global
 // file. Used by the agent config.* tools for global-scope writes.
-func SaveUserConfigSection(path string, cfg Config) error {
+//
+// An optional baseline — the caller's load-time snapshot — reconciles the
+// user-global sections ([providers], [models.presets]) instead of replacing
+// them: entries persisted by another marshal process after the snapshot was
+// taken survive, while entries the snapshot carried but the write omits are
+// intentional deletions and stay gone. Without a baseline the historical
+// replace semantics apply.
+func SaveUserConfigSection(path string, cfg Config, baseline ...Config) error {
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load existing user config: %w", err)
@@ -104,7 +111,7 @@ func SaveUserConfigSection(path string, cfg Config) error {
 	writeSections(&file, cfg, Default())
 	// [providers] and [models.presets] are user-global only — SaveProjectConfig
 	// deliberately never calls writeGlobalSections.
-	writeGlobalSections(&file, cfg)
+	writeGlobalSections(&file, cfg, baseline...)
 	data, err := toml.Marshal(&file)
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
@@ -514,16 +521,81 @@ func writeSections(file *configFile, cfg Config, def Config) {
 // owner-only 0600 permissions. If a user does not want keys persisted, they
 // should use api_key_env to reference an environment variable instead of
 // embedding the key directly.
-func writeGlobalSections(file *configFile, cfg Config) {
-	if len(cfg.Providers) > 0 {
-		file.Providers = cfg.Providers
-	}
-	if len(cfg.Models.Presets) > 0 {
-		if file.Models == nil {
-			file.Models = &fileModels{}
+func writeGlobalSections(file *configFile, cfg Config, baseline ...Config) {
+	// The section is written when the caller has entries or carried a
+	// baseline for it — a baseline map without matching entries is an
+	// intentional clear (e.g. the last key deleted), which must persist.
+	if len(cfg.Providers) > 0 || (len(baseline) > 0 && baseline[0].Providers != nil) {
+		merged := mergeMap(file.Providers, cfg.Providers, baselineProviders(baseline))
+		if len(merged) == 0 {
+			file.Providers = nil
+		} else {
+			file.Providers = merged
 		}
-		file.Models.Presets = normalizedPresets(cfg.Models.Presets)
 	}
+	if len(cfg.Models.Presets) > 0 || (len(baseline) > 0 && baseline[0].Models.Presets != nil) {
+		var diskPresets map[string]routing.ModelPreset
+		if file.Models != nil {
+			diskPresets = file.Models.Presets
+		}
+		merged := mergeMap(diskPresets, cfg.Models.Presets, baselinePresets(baseline))
+		if len(merged) == 0 {
+			file.Models = nil
+		} else {
+			file.Models = &fileModels{Presets: normalizedPresets(merged)}
+		}
+	}
+}
+
+// baselineProviders adapts the Config-form baseline to mergeMap's
+// slice form: nil slice means no baseline (whole-replace), a one-element
+// slice carrying a nil map means the section was empty at snapshot time.
+func baselineProviders(baseline []Config) []map[string]ProviderConfig {
+	if len(baseline) == 0 {
+		return nil
+	}
+	return []map[string]ProviderConfig{baseline[0].Providers}
+}
+
+// baselinePresets adapts the Config-form baseline to mergeMap's slice form,
+// mirroring baselineProviders.
+func baselinePresets(baseline []Config) []map[string]routing.ModelPreset {
+	if len(baseline) == 0 {
+		return nil
+	}
+	return []map[string]routing.ModelPreset{baseline[0].Models.Presets}
+}
+
+// mergeMap reconciles three maps: disk (as just loaded), next (the caller's
+// write), and baseline (the caller's load-time snapshot, as a slice so the
+// caller can distinguish "no baseline" — historical whole-replace — from an
+// explicitly nil map, meaning the section was empty when the snapshot was
+// taken). next wins for its own keys; a key in the baseline but absent from
+// next is an intentional deletion; a key on disk that is in neither was
+// persisted by another marshal process after the snapshot and survives.
+func mergeMap[T any](disk, next map[string]T, baseline []map[string]T) map[string]T {
+	if baseline == nil {
+		return next
+	}
+	base := baseline[0]
+	out := make(map[string]T, len(next)+len(disk))
+	for k, v := range next {
+		out[k] = v
+	}
+	for k, diskVal := range disk {
+		if _, inNext := next[k]; inNext {
+			continue
+		}
+		if base != nil {
+			if _, inBase := base[k]; inBase {
+				continue // intentional deletion: snapshot had it, write does not
+			}
+		}
+		// Foreign entry: absent from both the snapshot and the write —
+		// another process persisted it after the snapshot was captured.
+		out[k] = diskVal
+	}
+	return out
 }
 
 // normalizedPresets re-keys identity fields from each preset's map key: Name
@@ -660,10 +732,16 @@ func SaveUserConfigProviderAPIKey(path, providerName string, pc ProviderConfig) 
 	return writeUserConfigFile(path, data)
 }
 
-// SaveUserConfigProviders replaces the [providers] section of the user-global
-// config at path with the given entries, credentials included. An empty or
-// nil map removes the section from the file.
-func SaveUserConfigProviders(path string, providers map[string]ProviderConfig) error {
+// SaveUserConfigProviders writes the [providers] section of the user-global
+// config at path, credentials included. Without a baseline it replaces the
+// section wholesale — an empty or nil map removes it — the historical
+// contract. With a baseline (the caller's load-time snapshot), entries that
+// exist on disk but are in neither the write nor the baseline were persisted
+// by another marshal process after the snapshot was taken and survive, while
+// baseline-only entries are intentional deletions. This closes the
+// cross-process clobber window: a long-lived TUI saving its provider section
+// can no longer erase a provider another session added meanwhile.
+func SaveUserConfigProviders(path string, providers map[string]ProviderConfig, baseline ...map[string]ProviderConfig) error {
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load user config: %w", err)
@@ -673,28 +751,52 @@ func SaveUserConfigProviders(path string, providers map[string]ProviderConfig) e
 			return fmt.Errorf("provider %q: %w", name, err)
 		}
 	}
-	if len(providers) == 0 {
-		file.Providers = nil
+	if len(baseline) == 0 {
+		if len(providers) == 0 {
+			file.Providers = nil
+		} else {
+			file.Providers = providers
+		}
 	} else {
-		file.Providers = providers
+		merged := mergeMap(file.Providers, providers, baseline)
+		if len(merged) == 0 {
+			file.Providers = nil
+		} else {
+			file.Providers = merged
+		}
 	}
 	return writeUserConfig(path, &file)
 }
 
-// SaveUserConfigPresets replaces the [models.presets] section of the
-// user-global config at path with the given presets, applying the save-path
-// normalization (identity fields derived from each map key). An empty or nil
-// map removes the presets — and the [models] section, which holds nothing
-// else — from the file.
-func SaveUserConfigPresets(path string, presets map[string]routing.ModelPreset) error {
+// SaveUserConfigPresets writes the [models.presets] section of the
+// user-global config at path, applying the save-path normalization (identity
+// fields derived from each map key). Without a baseline it replaces the
+// section wholesale — an empty or nil map removes it, and the [models]
+// section with it — the historical contract. With a baseline, disk-only
+// foreign entries survive and baseline-only entries count as intentional
+// deletions; see SaveUserConfigProviders and mergeMap.
+func SaveUserConfigPresets(path string, presets map[string]routing.ModelPreset, baseline ...map[string]routing.ModelPreset) error {
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load user config: %w", err)
 	}
-	if len(presets) == 0 {
-		file.Models = nil
+	if len(baseline) == 0 {
+		if len(presets) == 0 {
+			file.Models = nil
+		} else {
+			file.Models = &fileModels{Presets: normalizedPresets(presets)}
+		}
 	} else {
-		file.Models = &fileModels{Presets: normalizedPresets(presets)}
+		var diskPresets map[string]routing.ModelPreset
+		if file.Models != nil {
+			diskPresets = file.Models.Presets
+		}
+		merged := mergeMap(diskPresets, presets, baseline)
+		if len(merged) == 0 {
+			file.Models = nil
+		} else {
+			file.Models = &fileModels{Presets: normalizedPresets(merged)}
+		}
 	}
 	return writeUserConfig(path, &file)
 }

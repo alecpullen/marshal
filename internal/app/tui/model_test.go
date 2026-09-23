@@ -5397,6 +5397,51 @@ func TestApplyConnectDoneWritesAPresetAndPair(t *testing.T) {
 	}
 }
 
+// TestApplyConnectDonePreservesForeignDiskEntries pins the cross-process
+// regression: a TUI whose load-time snapshot predates another marshal
+// process's persisted provider/preset must not erase those entries when it
+// saves its own /connect result. The September 2026 incident had exactly
+// this shape — [providers.ollama] and the ollama/nomic-embed-text preset
+// persisted by one session vanished when a stale-snapshot TUI saved its
+// provider and preset sections wholesale.
+func TestApplyConnectDonePreservesForeignDiskEntries(t *testing.T) {
+	m, _, homeDir := newModelForConfigTest(t)
+
+	// Another marshal process persists these entries after this TUI
+	// captured its (empty) snapshot.
+	userPath := config.UserConfigPath(homeDir)
+	if err := config.SaveUserConfigProviders(userPath, map[string]config.ProviderConfig{
+		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+	}); err != nil {
+		t.Fatalf("seed foreign provider: %v", err)
+	}
+	if err := config.SaveUserConfigPresets(userPath, map[string]routing.ModelPreset{
+		"ollama/nomic-embed-text": {Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
+	}); err != nil {
+		t.Fatalf("seed foreign preset: %v", err)
+	}
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	})
+
+	loaded, err := config.Load(config.LoadOptions{HomeDir: homeDir, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := loaded.Providers["ollama"]; !ok {
+		t.Fatalf("foreign provider 'ollama' erased by stale-snapshot connect save; providers = %v", loaded.Providers)
+	}
+	if _, ok := loaded.Models.Presets["ollama/nomic-embed-text"]; !ok {
+		t.Fatalf("foreign preset 'ollama/nomic-embed-text' erased by stale-snapshot connect save; presets = %v", loaded.Models.Presets)
+	}
+	if _, ok := loaded.Models.Presets["openai/gpt-4o"]; !ok {
+		t.Fatalf("the connect write itself must land; presets = %v", loaded.Models.Presets)
+	}
+}
+
 func TestApplyConnectDonePreservesExistingProfiles(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
 	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{

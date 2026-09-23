@@ -140,6 +140,15 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 		}
 	}
 
+	// Baseline for the user-global merge: the tool's pre-mutation snapshot.
+	// The mutate callbacks edit maps in place (delete(cfg.Providers, k)), so
+	// clone the key membership first — after mutation a deletion would look
+	// like the entry never existed and the merge would resurrect it from disk.
+	// A nil clone stays nil: the section was empty at snapshot time, so every
+	// disk entry is foreign and survives.
+	baseline := t.config
+	baseline.Providers = maps.Clone(t.config.Providers)
+	baseline.Models.Presets = maps.Clone(t.config.Models.Presets)
 	next := t.config
 	mutate(&next)
 
@@ -148,7 +157,7 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 		if t.userConfigPath == "" {
 			return registry.ToolResult{}, fmt.Errorf("global config path not configured")
 		}
-		saveErr = config.SaveUserConfigSection(t.userConfigPath, next)
+		saveErr = config.SaveUserConfigSection(t.userConfigPath, next, baseline)
 	} else {
 		if t.configPath == "" {
 			return registry.ToolResult{}, fmt.Errorf("project config path not configured")

@@ -5224,12 +5224,18 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		return
 	}
 	userPath := config.UserConfigPath(home)
-	if err := config.SaveUserConfigProviders(userPath, newCfg.Providers); err != nil {
+	// Baseline: this process's load-time snapshot (m.state.Config). The
+	// provider/preset maps were copied into newCfg before mutation, so
+	// m.state.Config still carries the pre-edit membership: entries another
+	// marshal process persisted after this process loaded are on disk but in
+	// neither the write nor the baseline, and the merge preserves them
+	// instead of clobbering (the cross-process regression fixed here).
+	if err := config.SaveUserConfigProviders(userPath, newCfg.Providers, m.state.Config.Providers); err != nil {
 		m.state.AddMessage(session.RoleSystem,
 			fmt.Sprintf("✗ Failed to save provider: %v", err), session.ContentTypePlain)
 		return
 	}
-	if err := config.SaveUserConfigPresets(userPath, newCfg.Models.Presets); err != nil {
+	if err := config.SaveUserConfigPresets(userPath, newCfg.Models.Presets, m.state.Config.Models.Presets); err != nil {
 		m.state.AddMessage(session.RoleSystem,
 			fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
 		return
@@ -5296,7 +5302,12 @@ func (m *Model) switchModelPreset(presetName string) {
 			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
 			return
 		}
-		if err := config.SaveUserConfigPresets(config.UserConfigPath(home), newCfg.Models.Presets); err != nil {
+		// Baseline: the shared preset map (which just gained the created
+		// override). Model switches only ever add a preset, so baseline
+		// membership equals pre-switch disk membership plus the new key:
+		// the merge keeps presets other marshal processes wrote after this
+		// process loaded its snapshot.
+		if err := config.SaveUserConfigPresets(config.UserConfigPath(home), newCfg.Models.Presets, m.state.Config.Models.Presets); err != nil {
 			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
 			return
 		}

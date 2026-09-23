@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/routing"
 )
 
 // pendingModelOptionsState tracks a model-options config candidate that was
@@ -119,8 +120,12 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 		return nil
 	}
 	userPath := config.UserConfigPath(home)
+	// Baseline: this process's snapshot (m.state.Config), which seeded the
+	// panel. The panel emitted a mutated clone, so m.state.Config carries the
+	// pre-edit membership — presets another marshal process persisted after
+	// this process loaded survive the merge.
 	if !m.busy && m.state.RunningJobsCount() == 0 {
-		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config)
+		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config, m.state.Config.Models.Presets)
 		if saveErr != nil || reloadErr != nil {
 			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr), session.ContentTypePlain)
 			return nil
@@ -129,7 +134,7 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 		return nil
 	}
 
-	if err := config.SaveUserConfigPresets(userPath, msg.Config.Models.Presets); err != nil {
+	if err := config.SaveUserConfigPresets(userPath, msg.Config.Models.Presets, m.state.Config.Models.Presets); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Saved %s option failed: %v", msg.FieldID, err), session.ContentTypePlain)
 		return nil
 	}
@@ -143,10 +148,12 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 
 // savePresetsAndReload persists the presets of cfg to the user-global config
 // and reloads the runtime, mirroring persistAndReload minus the project
-// write (SaveProjectConfig never emits presets). It returns the save error
-// or, when saving succeeded, the reload error (nil on full success).
-func (m *Model) savePresetsAndReload(userPath string, cfg config.Config) (saveErr, reloadErr error) {
-	if err := config.SaveUserConfigPresets(userPath, cfg.Models.Presets); err != nil {
+// write (SaveProjectConfig never emits presets). baseline is this process's
+// load-time preset map — the merge keeps presets other marshal processes
+// wrote after it was captured. It returns the save error or, when saving
+// succeeded, the reload error (nil on full success).
+func (m *Model) savePresetsAndReload(userPath string, cfg config.Config, baseline map[string]routing.ModelPreset) (saveErr, reloadErr error) {
+	if err := config.SaveUserConfigPresets(userPath, cfg.Models.Presets, baseline); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
 		return err, nil

@@ -686,9 +686,13 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 	case (providersChanged || presetsChanged) && b.userConfigPath == "":
 		saveErr = fmt.Errorf("cannot save providers or presets: user config path is unavailable")
 	case providersChanged || presetsChanged || (retry && b.userConfigPath != ""):
-		if err := config.SaveUserConfigProviders(b.userConfigPath, newCfg.Providers); err != nil {
+		// Baseline: the panel-open snapshot (b.baseline), the same reference
+		// the diff above used. Renames rekey the maps — the old key is in the
+		// baseline but not the write, so the merge drops it; entries another
+		// marshal process persisted meanwhile are in neither and survive.
+		if err := config.SaveUserConfigProviders(b.userConfigPath, newCfg.Providers, b.baseline.Providers); err != nil {
 			saveErr = err
-		} else if err := config.SaveUserConfigPresets(b.userConfigPath, newCfg.Models.Presets); err != nil {
+		} else if err := config.SaveUserConfigPresets(b.userConfigPath, newCfg.Models.Presets, b.baseline.Models.Presets); err != nil {
 			saveErr = err
 		}
 	}

@@ -166,6 +166,9 @@ type fileMCPServer struct {
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
 	Trust   *string           `toml:"trust"`
+	URL     *string           `toml:"url"`
+	Headers map[string]string `toml:"headers"`
+	Type    *string           `toml:"type"`
 }
 
 type fileMCP struct {

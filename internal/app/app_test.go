@@ -37,6 +37,7 @@ import (
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/desktop"
 	"marshal/internal/tools/desktop/browser"
+	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -938,6 +939,97 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 
 	if rt.MCPManager != nil {
 		t.Fatal("MCPManager should be nil after reload removes servers")
+	}
+}
+
+// TestReloadAgentRuntimeAddsRemoteMCPServer covers the same-session loop the
+// spec calls out: a remote MCP server is added to the config, the runtime is
+// reloaded, and its tool becomes callable without restarting the process.
+func TestReloadAgentRuntimeAddsRemoteMCPServer(t *testing.T) {
+	mcp.AllowInsecureHTTP(true)
+	t.Cleanup(func() { mcp.AllowInsecureHTTP(false) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any
+		switch req.Method {
+		case "initialize":
+			result = map[string]any{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]any{},
+				"serverInfo":      map[string]any{"name": "remote", "version": "1"},
+			}
+		case "tools/list":
+			result = map[string]any{"tools": []map[string]any{{
+				"name":        "hello",
+				"description": "says hello",
+				"inputSchema": map[string]any{"type": "object"},
+			}}}
+		case "tools/call":
+			result = map[string]any{"content": []map[string]any{{"type": "text", "text": "hello from remote"}}}
+		default:
+			http.Error(w, "unknown method", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	initial := reloadableAgentConfig("provider")
+	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner initial: %v", err)
+	}
+
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	// Add the remote server the way the agent would: through config.mcp.set.
+	reloaded := reloadableAgentConfig("provider")
+	reloaded.MCP.Servers = map[string]config.MCPServerConfig{
+		"remote": {
+			URL:   srv.URL,
+			Trust: "unrestricted",
+		},
+	}
+	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+	if rt.MCPManager == nil {
+		t.Fatal("MCPManager should be live after adding a remote server")
+	}
+
+	tool, ok := rt.ToolRegistry.Lookup("mcp.remote.hello")
+	if !ok {
+		t.Fatal("remote MCP tool mcp.remote.hello not registered after reload")
+	}
+	res, err := tool.Handler(ctx, registry.ToolCall{Name: "mcp.remote.hello", Args: []byte("{}")})
+	if err != nil {
+		t.Fatalf("remote tool call: %v", err)
+	}
+	if !strings.Contains(res.Content, "hello from remote") {
+		t.Errorf("content = %q, want containing 'hello from remote'", res.Content)
 	}
 }
 

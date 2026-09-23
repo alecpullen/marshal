@@ -291,7 +291,14 @@ func merge(cfg *Config, file configFile) error {
 			if srv.Trust != nil {
 				cfgSrv.Trust = *srv.Trust
 			}
+			if srv.URL != nil {
+				cfgSrv.URL = *srv.URL
+			}
+			if srv.Type != nil {
+				cfgSrv.Type = *srv.Type
+			}
 			cfgSrv.Args = srv.Args
+			cfgSrv.Headers = srv.Headers
 			cfg.MCP.Servers[name] = cfgSrv
 		}
 		for k, v := range file.MCP.Policies {

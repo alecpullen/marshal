@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
+	"marshal/internal/redact"
 	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/registry"
 	"path/filepath"
@@ -14,8 +15,12 @@ import (
 )
 
 // caller abstracts the MCP client invocation so tests can inject a stub.
+// Both the stdio Client and the Streamable-HTTP HTTPClient satisfy it, so
+// everything downstream of Start is transport-agnostic.
 type caller interface {
 	Call(ctx context.Context, method string, params, result any) error
+	ServerName() string
+	Close() error
 }
 
 // validateServerEnv rejects env entries that could hijack the spawned
@@ -77,7 +82,7 @@ type Manager struct {
 	Logger *slog.Logger // nil → slog.Default()
 
 	config  *config.Config
-	clients []*Client
+	clients []caller
 }
 
 func NewManager(cfg *config.Config, opts ...ManagerOption) *Manager {
@@ -104,30 +109,107 @@ func (m *Manager) Start(ctx context.Context) error {
 		return nil
 	}
 	for name, srv := range m.config.MCP.Servers {
-		if err := validateServerCommand(srv); err != nil {
+		transport, err := Transport(srv)
+		if err != nil {
 			m.Close()
 			return fmt.Errorf("start MCP server %q: %w", name, err)
 		}
-		if srv.Trust == "unrestricted" {
-			m.log().Warn("mcp server command accepted with unrestricted trust", "name", name, "command", srv.Command)
+		var client caller
+		if transport == "http" {
+			client, err = m.startRemote(ctx, name, srv)
+		} else {
+			client, err = m.startStdio(ctx, name, srv)
 		}
-		if err := validateServerEnv(srv.Env); err != nil {
-			m.Close()
-			return fmt.Errorf("start MCP server %q: %w", name, err)
-		}
-		var env []string
-		for k, v := range srv.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		client := NewClient(name, srv.Command, srv.Args, env, WithClientLogger(m.log()))
-		if err := client.Start(ctx); err != nil {
+		if err != nil {
 			m.Close()
 			return fmt.Errorf("start MCP server %q: %w", name, err)
 		}
 		m.clients = append(m.clients, client)
-		m.log().Info("mcp connect", "name", name)
+		m.log().Info("mcp connect", "name", name, "transport", transport)
 	}
 	return nil
+}
+
+// startStdio spawns a local MCP server process and completes the initialize
+// handshake over its stdio pipes.
+func (m *Manager) startStdio(ctx context.Context, name string, srv config.MCPServerConfig) (caller, error) {
+	if err := validateServerCommand(srv); err != nil {
+		return nil, err
+	}
+	if srv.Trust == "unrestricted" {
+		m.log().Warn("mcp server command accepted with unrestricted trust", "name", name, "command", srv.Command)
+	}
+	if err := validateServerEnv(srv.Env); err != nil {
+		return nil, err
+	}
+	var env []string
+	for k, v := range srv.Env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+	client := NewClient(name, srv.Command, srv.Args, env, WithClientLogger(m.log()))
+	if err := client.Start(ctx); err != nil {
+		// A half-started client still owns a child process and pipes; close it
+		// rather than leaving them to the garbage collector.
+		_ = client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+// startRemote connects to a Streamable HTTP MCP endpoint. Header values are
+// env-interpolated here — never stored resolved in config — and the resolved
+// credential-bearing values are registered with the redactor so they are
+// masked in logs and exported transcripts.
+func (m *Manager) startRemote(ctx context.Context, name string, srv config.MCPServerConfig) (caller, error) {
+	if err := ValidateRemoteServer(srv); err != nil {
+		return nil, err
+	}
+	headers, err := ResolveHeaders(srv.Headers)
+	if err != nil {
+		return nil, err
+	}
+	registerHeaderSecrets(headers)
+	client := NewHTTPClient(name, srv.URL, headers, WithHTTPClientLogger(m.log()))
+	if err := client.Start(ctx); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+// registerHeaderSecrets records credential-bearing header values with the
+// redactor. A resolved token has no recognisable sigil, so the pattern passes
+// in internal/redact cannot find it; registering it masks it verbatim.
+//
+// The whole value is registered, and so is the credential that follows a
+// scheme prefix: "Bearer <token>" is logged whole in some places and as the
+// bare token in others, so registering only the whole value would leave the
+// token exposed wherever the prefix is absent. Only the text after the FIRST
+// space is registered — registering every whitespace-separated word would
+// mask ordinary prose that happens to appear in a phrase-valued header.
+func registerHeaderSecrets(headers map[string]string) {
+	for k, v := range headers {
+		if !isSecretHeader(k) {
+			continue
+		}
+		redact.RegisterSecret(v)
+		if _, credential, ok := strings.Cut(v, " "); ok {
+			redact.RegisterSecret(strings.TrimSpace(credential))
+		}
+	}
+}
+
+// isSecretHeader reports whether an HTTP header conventionally carries a
+// credential. envutil.IsSecretKey covers env-style names; the explicit list
+// covers the HTTP names that do not follow that convention — Authorization
+// above all.
+func isSecretHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie",
+		"x-api-key", "api-key", "x-auth-token", "x-access-token":
+		return true
+	}
+	return envutil.IsSecretKey(name)
 }
 
 func (m *Manager) Close() error {
@@ -148,7 +230,7 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 		name        string
 		description string
 		schema      []byte
-		client      *Client
+		client      caller
 		mcpToolName string
 	}
 	var pending []pendingTool
@@ -159,7 +241,7 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 		if err := client.Call(srvCtx, "tools/list", nil, &res); err != nil {
 			cancel()
 			m.log().Warn("mcp: server skipped",
-				"server", client.Name,
+				"server", client.ServerName(),
 				"error", err,
 			)
 			continue
@@ -167,7 +249,7 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 		cancel()
 		for _, tool := range res.Tools {
 			pending = append(pending, pendingTool{
-				name:        fmt.Sprintf("mcp.%s.%s", client.Name, tool.Name),
+				name:        fmt.Sprintf("mcp.%s.%s", client.ServerName(), tool.Name),
 				description: tool.Description,
 				schema:      tool.InputSchema,
 				client:      client,
@@ -186,13 +268,13 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 			Schema:      p.schema,
 			Risk:        registry.RiskWorkspaceWrite, // secure default; configurable via policy
 			Deferred:    deferred,
-			Handler:     m.makeHandler(p.client, p.client.Name, p.mcpToolName),
+			Handler:     m.makeHandler(p.client, p.client.ServerName(), p.mcpToolName),
 		}); err != nil {
 			// A third-party server may advertise a schema we cannot compile.
 			// Skip that one tool rather than losing every other tool from
 			// this server and the ones after it.
 			m.log().Warn("mcp: tool skipped",
-				"server", p.client.Name,
+				"server", p.client.ServerName(),
 				"tool", p.mcpToolName,
 				"error", err,
 			)

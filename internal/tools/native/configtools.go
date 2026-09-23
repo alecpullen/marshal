@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/routing"
+	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/registry"
 )
 
@@ -1064,7 +1065,7 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.mcp.set",
 		Description: "Set fields in the [mcp] section (servers, policies, disclosure_threshold_tools). Servers are merged by key (whole-entry overwrite). This is a destructive change requiring explicit approval.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"servers":{"type":"object","additionalProperties":{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"env":{"type":"object","additionalProperties":{"type":"string"}},"trust":{"type":"string"}},"additionalProperties":false}},"policies":{"type":"object","additionalProperties":{"type":"string"}},"disclosure_threshold_tools":{"type":"integer"}},"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"servers":{"type":"object","additionalProperties":{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"env":{"type":"object","additionalProperties":{"type":"string"}},"trust":{"type":"string"},"url":{"type":"string","description":"Remote Streamable HTTP endpoint (https). Mutually exclusive with command."},"headers":{"type":"object","additionalProperties":{"type":"string"},"description":"Auth/custom headers. Values may reference environment variables as $VAR or ${VAR}; literal secrets are not stored."},"type":{"type":"string","enum":["","stdio","http"],"description":"Transport. Empty derives it from which of command/url is set."}},"additionalProperties":false}},"policies":{"type":"object","additionalProperties":{"type":"string"}},"disclosure_threshold_tools":{"type":"integer"}},"additionalProperties":false}`),
 		Risk:        registry.RiskDestructive,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -1075,12 +1076,41 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 				Args    []string          `json:"args"`
 				Env     map[string]string `json:"env"`
 				Trust   *string           `json:"trust"`
+				URL     *string           `json:"url"`
+				Headers map[string]string `json:"headers"`
+				Type    *string           `json:"type"`
 			} `json:"servers"`
 			Policies                 map[string]string `json:"policies"`
 			DisclosureThresholdTools *int              `json:"disclosure_threshold_tools"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.mcp.set args: %w", err)
+		}
+		// Validate every server before writing anything: a rejected entry must
+		// not leave a half-applied [mcp] section on disk.
+		for name, srv := range args.Servers {
+			candidate := config.MCPServerConfig{Env: srv.Env, Args: srv.Args, Headers: srv.Headers}
+			if srv.Command != nil {
+				candidate.Command = *srv.Command
+			}
+			if srv.Trust != nil {
+				candidate.Trust = *srv.Trust
+			}
+			if srv.URL != nil {
+				candidate.URL = *srv.URL
+			}
+			if srv.Type != nil {
+				candidate.Type = *srv.Type
+			}
+			transport, err := mcp.Transport(candidate)
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("mcp server %q: %w", name, err)
+			}
+			if transport == "http" {
+				if err := mcp.ValidateRemoteServer(candidate); err != nil {
+					return registry.ToolResult{}, fmt.Errorf("mcp server %q: %w", name, err)
+				}
+			}
 		}
 		scope := args.resolvedScope()
 		reason := fmt.Sprintf("config.mcp.set (%s scope): update mcp section", scope)
@@ -1097,7 +1127,14 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 					if srv.Trust != nil {
 						cfgSrv.Trust = *srv.Trust
 					}
+					if srv.URL != nil {
+						cfgSrv.URL = *srv.URL
+					}
+					if srv.Type != nil {
+						cfgSrv.Type = *srv.Type
+					}
 					cfgSrv.Args = srv.Args
+					cfgSrv.Headers = srv.Headers
 					cfg.MCP.Servers[name] = cfgSrv
 				}
 			}

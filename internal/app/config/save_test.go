@@ -1010,6 +1010,45 @@ func TestSaveProjectConfigRoundTripsMCPServerTrust(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsMCPServerRemote(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.MCP.Servers = map[string]MCPServerConfig{
+		"remote": {
+			URL:     "https://mcp.example.com/mcp",
+			Type:    "http",
+			Trust:   "unrestricted",
+			Headers: map[string]string{"Authorization": "Bearer $MCP_TOKEN"},
+		},
+	}
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	srv, ok := loaded.MCP.Servers["remote"]
+	if !ok {
+		t.Fatal("remote server config missing after round-trip")
+	}
+	if srv.URL != "https://mcp.example.com/mcp" {
+		t.Errorf("url = %q, want https://mcp.example.com/mcp", srv.URL)
+	}
+	if srv.Type != "http" {
+		t.Errorf("type = %q, want http", srv.Type)
+	}
+	if srv.Trust != "unrestricted" {
+		t.Errorf("trust = %q, want unrestricted", srv.Trust)
+	}
+	if got := srv.Headers["Authorization"]; got != "Bearer $MCP_TOKEN" {
+		t.Errorf("headers[Authorization] = %q, want the unresolved reference", got)
+	}
+}
+
 func TestSaveSidePanelRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

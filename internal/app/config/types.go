@@ -142,6 +142,12 @@ type MCPServerConfig struct {
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
 	Trust   string            `toml:"trust"` // "" | "unrestricted" — see F-SEC-06
+
+	// Remote (Streamable HTTP) transport. Exactly one of Command or URL is
+	// set; Type is "" (derive from which is present), "stdio", or "http".
+	URL     string            `toml:"url"`
+	Headers map[string]string `toml:"headers"`
+	Type    string            `toml:"type"`
 }
 
 type TitlingConfig struct {

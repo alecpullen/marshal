@@ -486,6 +486,76 @@ func TestMCPSetPersists(t *testing.T) {
 	}, st)
 }
 
+func TestMCPSetPersistsRemoteServer(t *testing.T) {
+	st := newAutoApproveSessionState()
+	testSectionWriteWithState(t, "config.mcp.set", (*toolSet).configMCPSetTool,
+		`{"servers":{"remote":{"url":"https://93.184.216.34/mcp","type":"http","trust":"unrestricted","headers":{"Authorization":"Bearer $MCP_TOKEN"}}}}`,
+		func(c config.Config) bool {
+			s, ok := c.MCP.Servers["remote"]
+			return ok && s.URL == "https://93.184.216.34/mcp" && s.Type == "http" &&
+				s.Trust == "unrestricted" && s.Headers["Authorization"] == "Bearer $MCP_TOKEN"
+		}, st)
+}
+
+// mcpSetError runs config.mcp.set with args and returns the handler error.
+func mcpSetError(t *testing.T, args string) error {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	ts := toolSet{
+		config:         cfg,
+		configPath:     cfgPath,
+		configReloader: func(c config.Config) error { return nil },
+		sessionState:   newAutoApproveSessionState(),
+	}
+	_, _ = newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(ts.configMCPSetTool())
+	tool, _ := reg.Lookup("config.mcp.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.mcp.set", Args: json.RawMessage(args)})
+	return err
+}
+
+func TestMCPSetRejectsInvalidRemoteServers(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+	}{
+		{
+			"command and url both set",
+			`{"servers":{"bad":{"command":"npx","url":"https://93.184.216.34/mcp","trust":"unrestricted"}}}`,
+		},
+		{
+			"remote without trust",
+			`{"servers":{"bad":{"url":"https://93.184.216.34/mcp"}}}`,
+		},
+		{
+			"plain http remote",
+			`{"servers":{"bad":{"url":"http://93.184.216.34/mcp","trust":"unrestricted"}}}`,
+		},
+		{
+			"private remote without trust",
+			`{"servers":{"bad":{"url":"https://127.0.0.1/mcp"}}}`,
+		},
+		{
+			"type http without url",
+			`{"servers":{"bad":{"type":"http","command":"npx"}}}`,
+		},
+		{
+			"neither command nor url",
+			`{"servers":{"bad":{"trust":"unrestricted"}}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := mcpSetError(t, tc.args); err == nil {
+				t.Fatal("expected the write to be rejected")
+			}
+		})
+	}
+}
+
 func TestShellAutoApproveEscalates(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")

@@ -643,12 +643,26 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 // analyzeCommandWithFloor parses cmd and classifies it against the hardcoded
 // guardrail set. When system is true the set shrinks to the catastrophic
 // floor (spec §4): mkfs/shutdown/reboot, recursive force-deletes and
-// recursive chmod/chown whose operands are all absolute, and the find/dd
-// payloads. sudo, git reset --hard, git clean -fd, the curl|sh installer
-// pattern, and relative-path recursive deletes are dropped. On parse error it
-// returns a non-nil error; the caller falls back to
+// recursive chmod/chown whose operands are not provably relative, and the
+// find/dd payloads. sudo, git reset --hard, git clean -fd, the curl|sh
+// installer pattern, and relative-path recursive deletes are dropped. On
+// parse error it returns a non-nil error; the caller falls back to
 // isBlockedByGuardrailLegacy.
+//
+// The floor fails closed: an operand the parser cannot prove relative (an
+// absolute path, shell expansion, a glob, or an operand-less xargs payload)
+// keeps the deny (spec §13).
 func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) {
+	return analyzeCommandDepth(cmd, system, 0)
+}
+
+// maxGuardrailDepth bounds recursion into inline shell payloads
+// (`sh -c '…'`) so a self-referential command cannot loop.
+const maxGuardrailDepth = 3
+
+// analyzeCommandDepth is analyzeCommandWithFloor with a recursion counter for
+// inline shell payloads.
+func analyzeCommandDepth(cmd string, system bool, depth int) (guardrailVerdict, error) {
 	stages, err := parseStages(cmd)
 	if err != nil {
 		return guardrailVerdict{}, err
@@ -662,7 +676,9 @@ func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) 
 	// inspects the top-level argv0 of the whole command string, so these
 	// variants would otherwise evade the guardrail.
 	for _, st := range stages {
-		if stageIsRMDestructive(st) && (!system || stageOperandsAbsolute(st, false)) {
+		// Fail closed under system access: the deny is released only when
+		// the operands are provably relative literals (spec §13).
+		if stageIsRMDestructive(st) && (!system || !stageDeletionProvablyRelative(st, false)) {
 			return guardrailVerdict{
 				blocked: true,
 				reason:  "blocked by conservative guardrail: rm -r -f",
@@ -680,6 +696,27 @@ func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) 
 			return guardrailVerdict{
 				blocked: true,
 				reason:  "blocked by conservative guardrail: " + cls.Reason,
+			}, nil
+		}
+	}
+
+	// Wrapper-prefixed destructive commands: `sudo rm -rf /etc` leaves argv0
+	// as sudo, so ClassifyCommand never reaches the rm and the destructive
+	// branch above never fires. Re-classify each stage's effective argv
+	// (after env/nice/sudo stripping) so the floor sees the real command.
+	for _, st := range stages {
+		eff := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+		if len(eff) == 0 {
+			continue
+		}
+		effCls, effErr := ClassifyCommand(strings.Join(eff, " "))
+		if effErr != nil || effCls.Risk != registry.RiskDestructive {
+			continue
+		}
+		if !system || destructiveSurvivesFloor(stages, effCls.Reason) {
+			return guardrailVerdict{
+				blocked: true,
+				reason:  "blocked by conservative guardrail: " + effCls.Reason,
 			}, nil
 		}
 	}
@@ -708,13 +745,32 @@ func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) 
 		// Catches -r, -R (via lowercasing), and --recursive which the
 		// substring guardrailPatterns would miss. chmod -r and chown -r
 		// have been removed from guardrailPatterns above. Under system
-		// access the check survives only for absolute operands.
+		// access the check survives, failing closed unless the operands are
+		// provably relative.
 		if name == "chmod" || name == "chown" {
-			if hasRecursiveFlag(st) && (!system || stageOperandsAbsolute(st, true)) {
+			if hasRecursiveFlag(st) && (!system || !stageDeletionProvablyRelative(st, true)) {
 				return guardrailVerdict{
 					blocked: true,
 					reason:  "blocked by conservative guardrail: " + name + " --recursive",
 				}, nil
+			}
+		}
+		// Inline shell payloads: `sh -c 'rm -rf /etc'` parses as a single
+		// quoted argument, so the outer stage walk never sees the commands
+		// inside it. Analyze the payload as its own command line.
+		if depth < maxGuardrailDepth {
+			if payload, ok := shellInlinePayload(st); ok {
+				inner, err := analyzeCommandDepth(payload, system, depth+1)
+				switch {
+				case err != nil:
+					if isBlockedByGuardrailLegacy(payload, system) {
+						return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: inline shell payload"}, nil
+					}
+				case inner.blocked:
+					return inner, nil
+				case inner.dynamicArgv0:
+					return guardrailVerdict{dynamicArgv0: true, reason: inner.reason}, nil
+				}
 			}
 		}
 		if name == "curl" || name == "wget" {
@@ -732,14 +788,14 @@ func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) 
 
 // destructiveSurvivesFloor reports whether a ClassifyCommand destructive
 // verdict still blocks under the system floor. Recursive deletes and
-// recursive chmod/chown survive only when every operand is absolute; git
-// clean/reset are dropped; find and dd payloads survive unchanged.
+// recursive chmod/chown survive unless their operands are provably relative;
+// git clean/reset are dropped; find and dd payloads survive unchanged.
 func destructiveSurvivesFloor(stages []stage, reason string) bool {
 	switch {
 	case reason == "rm -r -f":
-		return anyStageOperandsAbsolute(stages, "rm", false)
+		return !recursiveDeleteStagesProvablyRelative(stages, "rm", false)
 	case strings.HasSuffix(reason, " -R"):
-		return anyStageOperandsAbsolute(stages, "chmod", true) || anyStageOperandsAbsolute(stages, "chown", true)
+		return !recursiveDeleteStagesProvablyRelative(stages, strings.TrimSuffix(reason, " -R"), true)
 	case reason == "git clean -f*", reason == "git reset --hard":
 		return false
 	default:
@@ -747,25 +803,46 @@ func destructiveSurvivesFloor(stages []stage, reason string) bool {
 	}
 }
 
-// anyStageOperandsAbsolute reports whether any stage runs name with every
-// path operand absolute.
-func anyStageOperandsAbsolute(stages []stage, name string, skipFirstOperand bool) bool {
+// recursiveDeleteStagesProvablyRelative reports whether every stage that runs
+// name as a recursive delete has only provably-relative operands. It fails
+// closed: a stage whose operands cannot be enumerated (an xargs payload fed
+// from a pipe) counts as not provably relative, and if no such stage is found
+// at all the answer is false, so the caller keeps the deny.
+func recursiveDeleteStagesProvablyRelative(stages []stage, name string, skipFirstOperand bool) bool {
+	found := false
 	for _, st := range stages {
-		argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
-		if len(argv) == 0 || lastSegment(argv[0]) != name {
+		if effectiveArgv0(st) != name {
 			continue
 		}
-		if stageOperandsAbsolute(st, skipFirstOperand) {
-			return true
+		found = true
+		if !stageDeletionProvablyRelative(st, skipFirstOperand) {
+			return false
 		}
 	}
-	return false
+	return found
 }
 
-// stageOperandsAbsolute reports whether every path operand of the stage is
-// absolute. skipFirstOperand drops the leading mode argument (chmod/chown).
-// A stage with no operands is not absolute.
-func stageOperandsAbsolute(st stage, skipFirstOperand bool) bool {
+// effectiveArgv0 returns the command a stage actually runs, after common
+// wrappers (env, nice, sudo) and after unwrapping an xargs payload.
+func effectiveArgv0(st stage) string {
+	argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
+		argv = xargsPayload(argv)
+	}
+	if len(argv) == 0 {
+		return ""
+	}
+	return lastSegment(argv[0])
+}
+
+// stageDeletionProvablyRelative reports whether every path operand of a
+// recursive-delete stage is a literal relative path — the only case in which
+// the system floor releases the deny (spec §13: `rm -rf /abs/path` is denied,
+// `rm -rf rel/path` is allowed). It fails closed: absolute operands,
+// shell-expanded or globbed operands, and operand-less payloads (whose
+// targets come from another stage) all return false, keeping the deny.
+// skipFirstOperand drops the leading mode argument (chmod/chown).
+func stageDeletionProvablyRelative(st stage, skipFirstOperand bool) bool {
 	argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
 	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
 		argv = xargsPayload(argv)
@@ -778,11 +855,59 @@ func stageOperandsAbsolute(st stage, skipFirstOperand bool) bool {
 		return false
 	}
 	for _, op := range operands {
-		if !filepath.IsAbs(op) {
+		if !provablyRelativeOperand(op) {
 			return false
 		}
 	}
 	return true
+}
+
+// nonLiteralOperandChars are characters that make an operand impossible to
+// classify lexically: shell expansion ($, backtick), home shorthand (~),
+// globbing (*, ?, [), brace expansion ({, }), history/bang (!), and escaping
+// (\). An operand containing any of them is not provably relative.
+const nonLiteralOperandChars = "$`~*?[]{}!\\"
+
+// provablyRelativeOperand reports whether op is a literal operand the shell
+// will not expand and that does not name an absolute path. Callers treat
+// false as "keep the deny", so anything uncertain is false.
+func provablyRelativeOperand(op string) bool {
+	// The printer re-emits quoting; a purely quoted literal is still
+	// classifiable once the quotes come off.
+	op = strings.Trim(op, "'\"")
+	if op == "" {
+		return false
+	}
+	if strings.ContainsAny(op, nonLiteralOperandChars) {
+		return false
+	}
+	return !filepath.IsAbs(op)
+}
+
+// shellInlinePayload returns the command string a `sh -c`/`bash -c`
+// invocation will run. The payload is a single (usually quoted) argument, so
+// the outer parse sees only the shell name and cannot inspect the commands
+// inside it.
+func shellInlinePayload(st stage) (string, bool) {
+	argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+	if len(argv) == 0 {
+		return "", false
+	}
+	name := strings.ToLower(lastSegment(argv[0]))
+	switch name {
+	case "sh", "bash", "zsh", "dash", "ksh":
+	default:
+		return "", false
+	}
+	for i := 1; i < len(argv); i++ {
+		if argv[i] == "-c" {
+			if i+1 < len(argv) {
+				return strings.Trim(argv[i+1], "'\""), true
+			}
+			return "", false
+		}
+	}
+	return "", false
 }
 
 // xargsPayload returns the argv of the command xargs invokes, skipping
@@ -991,6 +1116,25 @@ func skipCommonWrappers(argv []string) []string {
 				i += 2
 			} else if i < len(argv) && strings.HasPrefix(argv[i], "--adjustment=") {
 				i++
+			}
+		case "sudo":
+			// sudo wraps the real command. Its own options must be skipped or
+			// the argv0 stays "sudo" and the argv-aware rm/chmod/chown and
+			// git-push floors never fire.
+			i++
+			for i < len(argv) {
+				a := argv[i]
+				if !strings.HasPrefix(a, "-") {
+					break
+				}
+				// sudo options that take a separate value.
+				switch a {
+				case "-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
+					"-h", "--host", "-r", "--role", "-t", "--type", "-U", "--other-user":
+					i += 2
+				default:
+					i++
+				}
 			}
 		default:
 			return argv[i:]

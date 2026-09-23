@@ -66,7 +66,15 @@ func (s *State) RollbackBackup() error {
 	var restored, failed []string
 	var firstErr error
 	for _, bf := range backups {
-		path := filepath.Join(s.WorkingDir, bf.Path)
+		// System access permits writes outside the workspace, and the backup
+		// records the caller-supplied path verbatim. Joining an absolute path
+		// onto the working dir would recreate the file inside the workspace
+		// tree instead of restoring the real target (and could overwrite an
+		// unrelated workspace file).
+		path := bf.Path
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(s.WorkingDir, bf.Path)
+		}
 		var err error
 		if bf.Exists {
 			err = os.WriteFile(path, []byte(bf.Content), bf.Mode)

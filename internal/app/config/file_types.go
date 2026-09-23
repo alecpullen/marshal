@@ -91,6 +91,7 @@ type fileShell struct {
 	AllowNetwork          *bool         `toml:"allow_network"`
 	AutoApprove           *bool         `toml:"auto_approve"`
 	GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
+	FloorCommands         []string      `toml:"floor_commands"`
 	Allow                 *CommandRules `toml:"allow"`
 	Confirm               *CommandRules `toml:"confirm"`
 	Deny                  *PatternRules `toml:"deny"`

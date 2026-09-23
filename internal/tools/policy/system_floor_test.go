@@ -129,3 +129,188 @@ func TestSystemFloorFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestGitPushFloorBypassShapes pins that the wrapper/payload shapes from
+// docs/system-access-mode-followups.md items 1 & 2 cannot bypass the
+// non-bypassable push floor. Each entry previously reached Allow under auto
+// mode with no human gate.
+func TestGitPushFloorBypassShapes(t *testing.T) {
+	cmds := []string{
+		"sh -c 'git push'",
+		"bash -c 'git push'",
+		"su -c 'git push'",
+		"su root -c 'git push'",
+		"exec git push",
+		"command git push",
+		"builtin git push",
+		"nohup git push",
+		"setsid git push",
+		"timeout 5 git push",
+		"watch -n 5 git push",
+		"xargs git push <<< 'origin main'",
+		"eval 'git push origin main'",
+		"exec sh -c 'git push'",
+		"nohup bash -c 'git push origin main'",
+		"timeout 5 su -c 'git push'",
+		// Combined single-dash shell flags still carry the payload.
+		"bash -lc 'git push'",
+		"bash -ic 'git push'",
+		"sh -oc 'git push'",
+		"zsh -lc 'git push'",
+		"sudo bash -lc 'git push'",
+		// Nested payloads must recurse, not be mangled by quote trimming.
+		`sh -c 'sh -c "git push"'`,
+		// Wrapper flags that take a value must not desync the operand skip.
+		"timeout -k 5 5 git push",
+		"timeout -s KILL 5 git push",
+		"xargs -a list git push",
+		"xargs --arg-file list git push",
+		// Option words between -c and the payload, and deeper nesting.
+		"bash -c -l 'git push'",
+		"bash -c -- 'git push'",
+		"timeout 5 bash -c -l 'git push'",
+		`sh -c "sh -c 'sh -c \"git push\"'"`,
+		// Escaped and ANSI-C quoted payloads.
+		`sh -c git\ push`,
+		"bash -c $'git push'",
+		// Escaped-quote nesting: the printed form is not valid shell, so the
+		// floor must decode the argument rather than re-parse the printer text.
+		`sh -c 'sh -c '\''git push'\'''`,
+		`bash -c "bash -c '\''git push'\''"`,
+	}
+	for _, cmd := range cmds {
+		t.Run(cmd, func(t *testing.T) {
+			pe := NewEngine(&config.Config{}, []string{})
+			pe.SetApprovalMode(ModeAuto)
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec != DecisionConfirm {
+				t.Fatalf("Evaluate(%q, system) = %v (%s), want Confirm (non-bypassable floor)", cmd, dec, reason)
+			}
+			if !strings.Contains(reason, "non-bypassable floor") {
+				t.Fatalf("Evaluate(%q) reason = %q, want the floor reason", cmd, reason)
+			}
+		})
+	}
+}
+
+// TestGitPushFloorBypassShapesFlagOff pins the flag-off half of the same
+// contract: without system access the floor must still never auto-approve a
+// wrapped push. Some shapes (sudo/su) are caught earlier by the flag-off
+// guardrail and come back Deny; the contract is only that none of them is
+// silently allowed.
+func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
+	cmds := []string{
+		"sh -c 'git push'",
+		"bash -c 'git push'",
+		"su -c 'git push'",
+		"su root -c 'git push'",
+		"exec git push",
+		"command git push",
+		"builtin git push",
+		"nohup git push",
+		"setsid git push",
+		"timeout 5 git push",
+		"watch -n 5 git push",
+		"xargs git push <<< 'origin main'",
+		"eval 'git push origin main'",
+		"exec sh -c 'git push'",
+		"nohup bash -c 'git push origin main'",
+		"timeout 5 su -c 'git push'",
+		"bash -lc 'git push'",
+		"bash -ic 'git push'",
+		"sh -oc 'git push'",
+		"zsh -lc 'git push'",
+		"sudo bash -lc 'git push'",
+		`sh -c 'sh -c "git push"'`,
+		"timeout -k 5 5 git push",
+		"timeout -s KILL 5 git push",
+		"xargs -a list git push",
+		"xargs --arg-file list git push",
+		"bash -c -l 'git push'",
+		"bash -c -- 'git push'",
+		"timeout 5 bash -c -l 'git push'",
+		`sh -c "sh -c 'sh -c \"git push\"'"`,
+		`sh -c git\ push`,
+		"bash -c $'git push'",
+		`sh -c 'sh -c '\''git push'\'''`,
+		`bash -c "bash -c '\''git push'\''"`,
+	}
+	for _, cmd := range cmds {
+		t.Run(cmd, func(t *testing.T) {
+			pe := NewEngine(&config.Config{}, []string{})
+			pe.SetApprovalMode(ModeAuto)
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd})
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec == DecisionAllow {
+				t.Fatalf("Evaluate(%q, flag off) = Allow (%s), want a human gate", cmd, reason)
+			}
+		})
+	}
+}
+
+// TestConfigurableFloorCommands pins the [tools.shell] floor_commands
+// contract: configured prefixes are floored exactly like the built-in push
+// floor (wrapper and payload blindness included), the built-in push floor
+// survives an empty list, and a prefix never matches a longer command.
+func TestConfigurableFloorCommands(t *testing.T) {
+	newEngine := func(floors []string) *PolicyEngine {
+		cfg := &config.Config{}
+		cfg.Tools.Shell.FloorCommands = floors
+		pe := NewEngine(cfg, []string{})
+		pe.SetApprovalMode(ModeAuto)
+		return pe
+	}
+
+	floored := []string{
+		"npm publish",
+		"exec npm publish",
+		"sh -c 'npm publish'",
+		"nohup npm publish --tag x",
+	}
+	for _, cmd := range floored {
+		t.Run("floored/"+cmd, func(t *testing.T) {
+			pe := newEngine([]string{"npm publish"})
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec != DecisionConfirm {
+				t.Fatalf("Evaluate(%q) = %v (%s), want Confirm (configured floor)", cmd, dec, reason)
+			}
+			if !strings.Contains(reason, "configured floor") {
+				t.Fatalf("Evaluate(%q) reason = %q, want the configured-floor reason", cmd, reason)
+			}
+		})
+	}
+
+	// An empty configured list must not remove the built-in push floor.
+	t.Run("empty list keeps push floor", func(t *testing.T) {
+		pe := newEngine(nil)
+		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git push"}, WithSystem(true))
+		if err != nil {
+			t.Fatalf("Evaluate error: %v", err)
+		}
+		if dec != DecisionConfirm || !strings.Contains(reason, "non-bypassable floor") {
+			t.Fatalf("Evaluate(git push) = %v (%s), want the non-bypassable push floor", dec, reason)
+		}
+	})
+
+	// No false positives: a longer command sharing a prefix is not floored.
+	for _, cmd := range []string{"git pushd", "npm publishd"} {
+		t.Run("not floored/"+cmd, func(t *testing.T) {
+			pe := newEngine([]string{"npm publish"})
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec == DecisionConfirm && strings.Contains(reason, "floor") {
+				t.Fatalf("Evaluate(%q) = %v (%s), want no floor", cmd, dec, reason)
+			}
+		})
+	}
+}

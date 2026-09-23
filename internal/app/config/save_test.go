@@ -164,6 +164,7 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	cfg.Tools.Shell.Sandbox.ContainerImage = "golang:1.22"
 	cfg.Tools.Shell.Sandbox.EnvAllowlist = []string{"PATH", "HOME", "GOPATH"}
 	cfg.Tools.Shell.Sandbox.EnvDenylist = []string{"SECRET"}
+	cfg.Tools.Shell.FloorCommands = []string{"git push", "npm publish"}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {
 			Name: "local_balanced",
@@ -205,6 +206,9 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sb.EnvDenylist, []string{"SECRET"}) {
 		t.Fatalf("sandbox EnvDenylist = %#v", sb.EnvDenylist)
+	}
+	if !reflect.DeepEqual(shell.FloorCommands, []string{"git push", "npm publish"}) {
+		t.Fatalf("shell FloorCommands = %#v", shell.FloorCommands)
 	}
 }
 

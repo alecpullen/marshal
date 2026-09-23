@@ -64,6 +64,7 @@ func Default() Config {
 				AllowNetwork:          false,
 				AutoApprove:           false,
 				GuardrailDynamicArgv0: "deny",
+				FloorCommands:         []string{"git push"},
 				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
 				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
 				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},

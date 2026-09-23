@@ -198,6 +198,9 @@ func merge(cfg *Config, file configFile) error {
 		if s.GuardrailDynamicArgv0 != nil {
 			cfg.Tools.Shell.GuardrailDynamicArgv0 = *s.GuardrailDynamicArgv0
 		}
+		if s.FloorCommands != nil {
+			cfg.Tools.Shell.FloorCommands = s.FloorCommands
+		}
 		if s.Allow != nil && s.Allow.Commands != nil {
 			cfg.Tools.Shell.Allow.Commands = s.Allow.Commands
 		}

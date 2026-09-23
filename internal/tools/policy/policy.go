@@ -250,8 +250,13 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, o
 	// transform so a floor Confirm is returned directly, never downgraded.
 	if toolName == "shell.run" || toolName == "test.run" {
 		if cmdRaw, ok := args["command"]; ok {
-			if cmd, ok := cmdRaw.(string); ok && isGitPushFloorWithSystem(cmd, eo.system) {
-				return DecisionConfirm, "git push requires approval (non-bypassable floor)", nil
+			if cmd, ok := cmdRaw.(string); ok {
+				if match, hit := isFloorCommandWithSystem(cmd, eo.system, cfg.Tools.Shell.FloorCommands); hit {
+					if match == gitPushFloorPrefix {
+						return DecisionConfirm, "git push requires approval (non-bypassable floor)", nil
+					}
+					return DecisionConfirm, fmt.Sprintf("%s requires approval (configured floor)", match), nil
+				}
 			}
 		}
 	}
@@ -582,7 +587,55 @@ type stage struct {
 	argv0    string
 	fullText string
 	args     []string // individual argument tokens (excluding argv0)
+	argLits  []string // decoded literal per arg; "" when the word expands
 	dynamic  bool
+}
+
+// wordLiteral returns the literal string a word expands to when it contains
+// no expansions, and "" when it does (the caller then falls back to the
+// printed form). The parser has already decoded quoting and escapes, so this
+// is the value the shell would actually pass as the argument.
+func wordLiteral(w *syntax.Word) string {
+	var b strings.Builder
+	for _, part := range w.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			b.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			// Covers both 'plain' and $'ansi-c' quoting; the parser has
+			// already decoded the content.
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, dp := range p.Parts {
+				lit, ok := dp.(*syntax.Lit)
+				if !ok {
+					return ""
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return ""
+		}
+	}
+	return b.String()
+}
+
+// stageLiteralArgv returns the stage's argv with each argument decoded to its
+// literal value where the parser can prove one. The floor uses this so
+// quoting and escaping cannot hide a command: the printed form of
+// `sh -c 'sh -c '\”git push'\”'` is not valid shell on its own, but its
+// decoded literal is.
+func stageLiteralArgv(st stage) []string {
+	argv := make([]string, 0, len(st.args)+1)
+	argv = append(argv, st.argv0)
+	for i, a := range st.args {
+		if i < len(st.argLits) && st.argLits[i] != "" {
+			argv = append(argv, st.argLits[i])
+			continue
+		}
+		argv = append(argv, a)
+	}
+	return argv
 }
 
 // parseStages parses cmd with mvdan.cc/sh and returns one stage per
@@ -603,12 +656,14 @@ func parseStages(cmd string) ([]stage, error) {
 		syntax.NewPrinter().Print(&b, call.Args[0])
 		var full strings.Builder
 		var args []string
+		var argLits []string
 		for i, w := range call.Args {
 			if i > 0 {
 				full.WriteString(" ")
 				var argBuf strings.Builder
 				syntax.NewPrinter().Print(&argBuf, w)
 				args = append(args, argBuf.String())
+				argLits = append(argLits, wordLiteral(w))
 			}
 			syntax.NewPrinter().Print(&full, w)
 		}
@@ -621,7 +676,7 @@ func parseStages(cmd string) ([]stage, error) {
 			}
 			return true
 		})
-		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), args: args, dynamic: dyn})
+		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), args: args, argLits: argLits, dynamic: dyn})
 		return true
 	})
 	return stages, nil
@@ -657,8 +712,10 @@ func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) 
 }
 
 // maxGuardrailDepth bounds recursion into inline shell payloads
-// (`sh -c '…'`) so a self-referential command cannot loop.
-const maxGuardrailDepth = 3
+// (`sh -c '…'`) so a self-referential command cannot loop. It is deep enough
+// to see through realistically nested wrappers (`sh -c 'sh -c "sh -c …"'`)
+// while still bounding the walk.
+const maxGuardrailDepth = 8
 
 // analyzeCommandDepth is analyzeCommandWithFloor with a recursion counter for
 // inline shell payloads.
@@ -894,7 +951,12 @@ func provablyRelativeOperand(op string) bool {
 // the outer parse sees only the shell name and cannot inspect the commands
 // inside it.
 func shellInlinePayload(st stage) (string, bool) {
-	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+	return shellPayloadFromArgv(skipFloorWrappers(append([]string{st.argv0}, st.args...)))
+}
+
+// shellPayloadFromArgv extracts the `-c` payload from an already
+// wrapper-stripped argv whose argv0 is a shell.
+func shellPayloadFromArgv(argv []string) (string, bool) {
 	if len(argv) == 0 {
 		return "", false
 	}
@@ -904,15 +966,109 @@ func shellInlinePayload(st stage) (string, bool) {
 	default:
 		return "", false
 	}
+	return shellCommandPayload(argv)
+}
+
+// shellCommandPayload returns the command string following a `-c` flag in
+// argv. Shells accept further option words between the flag and the command
+// string (`bash -c -l 'cmd'`, `bash -c -- 'cmd'`), so the payload is the
+// first non-option word after the flag.
+func shellCommandPayload(argv []string) (string, bool) {
 	for i := 1; i < len(argv); i++ {
-		if argv[i] == "-c" {
-			if i+1 < len(argv) {
-				return strings.Trim(argv[i+1], "'\""), true
-			}
-			return "", false
+		if !shellCommandFlag(argv[i]) {
+			continue
 		}
+		j := i + 1
+		for j < len(argv) && len(argv[j]) > 1 && strings.HasPrefix(argv[j], "-") {
+			j++
+		}
+		if j < len(argv) {
+			return shellWordLiteral(argv[j]), true
+		}
+		return "", false
 	}
 	return "", false
+}
+
+// shellCommandFlag reports whether a shell argument is the `-c` flag that
+// introduces a command payload. Shells accept the flag combined with other
+// single-letter flags (`bash -lc '…'`, `sh -oc '…'`), so any single-dash
+// cluster containing `c` counts. Long options (`--login`) never do.
+func shellCommandFlag(arg string) bool {
+	if arg == "-c" {
+		return true
+	}
+	if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+		return false
+	}
+	return strings.Contains(arg[1:], "c")
+}
+
+// shellWordLiteral converts a printed shell word into the literal string the
+// shell would pass as an argument: it unwraps one surrounding quote pair and
+// decodes backslash escapes. It deliberately does not use strings.Trim, which
+// would strip a trailing quote belonging to a nested payload
+// (`sh -c 'sh -c "git push"'`) and leave the inner command unparseable, and
+// it decodes escapes so `sh -c git\ push` is seen as the command `git push`
+// rather than the single word `git\ push`.
+func shellWordLiteral(s string) string {
+	switch {
+	case strings.HasPrefix(s, "$'") && strings.HasSuffix(s, "'") && len(s) >= 3:
+		return decodeShellEscapes(s[2 : len(s)-1])
+	case strings.HasPrefix(s, "$\"") && strings.HasSuffix(s, "\"") && len(s) >= 3:
+		return decodeShellEscapes(s[2 : len(s)-1])
+	case len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'':
+		// Single quotes suppress every escape.
+		return s[1 : len(s)-1]
+	case len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"':
+		return decodeShellEscapes(s[1 : len(s)-1])
+	}
+	return decodeShellEscapes(s)
+}
+
+// decodeShellEscapes resolves the backslash escapes a shell applies to an
+// unquoted or double-quoted word. Unknown escapes drop the backslash, which
+// errs toward recognising a command rather than missing one.
+func decodeShellEscapes(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			switch s[i] {
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			case 'r':
+				b.WriteByte('\r')
+			default:
+				b.WriteByte(s[i])
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// suInlinePayload returns the command string a `su [-user] -c <payload>`
+// invocation runs. Like shellInlinePayload, the payload is a single quoted
+// argument the outer parse cannot inspect. su may take an optional leading
+// user operand (and `-`/`--login` flags) before `-c`.
+func suInlinePayload(st stage) (string, bool) {
+	return suPayloadFromArgv(skipFloorWrappers(append([]string{st.argv0}, st.args...)))
+}
+
+// suPayloadFromArgv extracts the `-c` payload from an already
+// wrapper-stripped argv whose argv0 is su.
+func suPayloadFromArgv(argv []string) (string, bool) {
+	if len(argv) == 0 || lastSegment(argv[0]) != "su" {
+		return "", false
+	}
+	return shellCommandPayload(argv)
 }
 
 // xargsPayload returns the argv of the command xargs invokes, skipping
@@ -921,7 +1077,7 @@ func xargsPayload(argv []string) []string {
 	i := 1
 	for i < len(argv) {
 		a := argv[i]
-		if a == "-I" || a == "-i" || a == "-L" || a == "-n" || a == "-P" || a == "-s" {
+		if xargsFlagTakesValue(a) {
 			i += 2
 			continue
 		}
@@ -935,6 +1091,20 @@ func xargsPayload(argv []string) []string {
 		return nil
 	}
 	return argv[i:]
+}
+
+// xargsFlagTakesValue reports whether an xargs option consumes the following
+// argument as its value. Joined forms (`-I{}`, `--arg-file=list`) are not
+// listed: they carry their value in the same token and are skipped by the
+// generic flag branch.
+func xargsFlagTakesValue(a string) bool {
+	switch a {
+	case "-I", "-i", "-L", "-n", "-P", "-s", "-a", "-d", "-E", "-e",
+		"--arg-file", "--delimiter", "--eof", "--max-args", "--max-chars",
+		"--max-lines", "--max-procs", "--process-slot-var", "--replace":
+		return true
+	}
+	return false
 }
 
 // operandsOf returns the non-flag arguments of args, optionally dropping the
@@ -1063,22 +1233,147 @@ func isGitPushFloor(cmd string) bool {
 // untouched: the default floor already denies those on the sudo guardrail, and
 // seeing them as pushes would downgrade that Deny to the floor's Confirm.
 func isGitPushFloorWithSystem(cmd string, system bool) bool {
+	_, hit := isFloorCommandWithSystem(cmd, system, nil)
+	return hit
+}
+
+// gitPushFloorPrefix is the built-in floor's prefix. It is matched before any
+// configured prefix so the push floor keeps its own reason string.
+const gitPushFloorPrefix = "git push"
+
+// isFloorCommandWithSystem reports whether cmd invokes a floored command and
+// returns the matched prefix. The built-in git-push floor is always checked,
+// even when extra is empty; extra holds the user-configured prefixes from
+// [tools.shell] floor_commands. A configured prefix can only add floors — it
+// can never remove the built-in push floor.
+func isFloorCommandWithSystem(cmd string, system bool, extra []string) (string, bool) {
 	if isGitPushFloor(cmd) {
-		return true
+		return gitPushFloorPrefix, true
 	}
-	if !system {
-		return false
+	if match := floorHitStages(cmd, 0, system, extra); match != "" {
+		return match, true
 	}
+	return "", false
+}
+
+// floorHitStages reports whether cmd invokes a floored command, seeing
+// through the extended wrapper set and recursing into inline payloads
+// (`sh -c '…'`, `su -c '…'`, `xargs …`, `eval …`). Recursion is bounded by
+// maxGuardrailDepth so a self-referential command cannot loop.
+//
+// system controls only whether a privilege wrapper (sudo) is stripped: with
+// the flag off, `sudo git push` must stay a guardrail Deny rather than be
+// downgraded to the floor's Confirm. Every other wrapper is stripped in both
+// modes, because the floor's "non-bypassable in every mode" contract is
+// falsified flag-off too (follow-ups doc item 2).
+//
+// On a parse error it falls back to isGitPushFloor's legacy words check: an
+// unparseable command is not provably a push, and the guardrail path still
+// fails closed on it.
+func floorHitStages(cmd string, depth int, system bool, extra []string) string {
 	stages, err := parseStages(cmd)
 	if err != nil {
-		return isBlockedByGuardrailLegacy(cmd, system)
+		if isGitPushFloor(cmd) {
+			return gitPushFloorPrefix
+		}
+		return ""
 	}
 	for _, s := range stages {
-		if gitPushInArgv(skipFloorWrappers(append([]string{s.argv0}, s.args...))) {
-			return true
+		if payload, ok := floorShellPayload(s, system); ok {
+			if depth < maxGuardrailDepth {
+				if match := floorHitStages(payload, depth+1, system, extra); match != "" {
+					return match
+				}
+			}
+			continue
+		}
+		if payload, ok := floorSuPayload(s, system); ok {
+			if depth < maxGuardrailDepth {
+				if match := floorHitStages(payload, depth+1, system, extra); match != "" {
+					return match
+				}
+			}
+			continue
+		}
+		if match := floorHitArgv(stageLiteralArgv(s), depth, system, extra); match != "" {
+			return match
 		}
 	}
-	return false
+	return ""
+}
+
+// floorShellPayload and floorSuPayload are the floor's system-aware variants
+// of shellInlinePayload and suInlinePayload: they strip sudo only under
+// system access, so a flag-off `sudo sh -c 'git push'` stays a guardrail
+// Deny instead of being downgraded to the floor's Confirm.
+func floorShellPayload(st stage, system bool) (string, bool) {
+	return shellPayloadFromArgv(skipFloorWrappersFor(stageLiteralArgv(st), system))
+}
+
+func floorSuPayload(st stage, system bool) (string, bool) {
+	return suPayloadFromArgv(skipFloorWrappersFor(stageLiteralArgv(st), system))
+}
+
+// floorHitArgv reports whether an argv invokes a floored command once the
+// extended wrapper set is stripped. It recurses into the payload-carrying
+// wrappers (xargs, eval) and into inline shell payloads that only become
+// visible after stripping (`exec sh -c '…'`).
+func floorHitArgv(argv []string, depth int, system bool, extra []string) string {
+	argv = skipFloorWrappersExtended(argv, system)
+	if gitPushInArgv(argv) {
+		return gitPushFloorPrefix
+	}
+	if match := floorExtraPrefixInArgv(argv, extra); match != "" {
+		return match
+	}
+	if len(argv) == 0 {
+		return ""
+	}
+	if depth < maxGuardrailDepth {
+		if payload, ok := shellPayloadFromArgv(argv); ok {
+			return floorHitStages(payload, depth+1, system, extra)
+		}
+		if payload, ok := suPayloadFromArgv(argv); ok {
+			return floorHitStages(payload, depth+1, system, extra)
+		}
+	}
+	switch lastSegment(argv[0]) {
+	case "xargs":
+		if depth < maxGuardrailDepth {
+			return floorHitArgv(xargsPayload(argv), depth+1, system, extra)
+		}
+	case "eval":
+		if depth < maxGuardrailDepth {
+			// The printer re-emits the payload quoted; strip the outer quotes so
+			// the inner parse sees the command, not a single literal word.
+			return floorHitStages(shellWordLiteral(strings.Join(argv[1:], " ")), depth+1, system, extra)
+		}
+	}
+	return ""
+}
+
+// floorExtraPrefixInArgv reports whether an already-wrapper-stripped argv
+// begins with one of the configured floor prefixes, returning the matched
+// prefix. Prefixes match token-wise, so `npm publish` does not floor
+// `npm publishd`.
+func floorExtraPrefixInArgv(argv []string, extra []string) string {
+	for _, raw := range extra {
+		prefix := strings.Fields(raw)
+		if len(prefix) == 0 || len(argv) < len(prefix) {
+			continue
+		}
+		matched := true
+		for i, p := range prefix {
+			if argv[i] != p {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return strings.Join(prefix, " ")
+		}
+	}
+	return ""
 }
 
 // stageIsGitPush reports whether a parsed pipeline stage is a git push
@@ -1191,6 +1486,70 @@ func skipFloorWrappers(argv []string) []string {
 		argv = skipCommonWrappers(argv[i:])
 	}
 	return argv
+}
+
+// skipFloorWrappersExtended is skipFloorWrappers plus the system-access
+// wrapper set: exec/command/builtin/nohup/setsid (transparent prefixes),
+// timeout <n>, and watch [-n n]. xargs and eval are handled by the floor
+// walker (floorHitArgv), not here, because they carry a payload rather than a
+// simple prefix.
+func skipFloorWrappersExtended(argv []string, system bool) []string {
+	argv = skipFloorWrappersFor(argv, system)
+	for len(argv) > 0 {
+		switch lastSegment(argv[0]) {
+		case "exec", "command", "builtin", "nohup", "setsid":
+			argv = argv[1:]
+		case "timeout":
+			// timeout [flags] <duration> <cmd...>: skip flags then the duration.
+			// -k/--kill-after and -s/--signal take a value, so consuming them
+			// as bare flags would desync the duration operand and leave the
+			// real command as argv0 (`timeout -k 5 5 git push`).
+			i := 1
+			for i < len(argv) && strings.HasPrefix(argv[i], "-") {
+				switch argv[i] {
+				case "-k", "-s", "--kill-after", "--signal":
+					i += 2
+				default:
+					i++
+				}
+			}
+			if i < len(argv) {
+				i++ // the duration operand
+			}
+			argv = argv[i:]
+		case "watch":
+			i := 1
+			for i < len(argv) {
+				a := argv[i]
+				if a == "-n" || a == "--interval" {
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(a, "-") {
+					i++
+					continue
+				}
+				break
+			}
+			argv = argv[i:]
+		default:
+			return argv
+		}
+		// A wrapper may itself be wrapped (exec env sudo git push): re-run the
+		// base stripper before the next pass.
+		argv = skipFloorWrappersFor(argv, system)
+	}
+	return argv
+}
+
+// skipFloorWrappersFor strips sudo only under system access. Flag-off keeps
+// the privilege wrapper in place so `sudo git push` stays a guardrail Deny
+// instead of being downgraded to the floor's Confirm.
+func skipFloorWrappersFor(argv []string, system bool) []string {
+	if system {
+		return skipFloorWrappers(argv)
+	}
+	return skipCommonWrappers(argv)
 }
 
 // stageIsRMDestructive reports whether a pipeline stage runs rm with both

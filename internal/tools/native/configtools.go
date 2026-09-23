@@ -803,8 +803,8 @@ func (t *toolSet) configProfileSetTool() registry.Tool {
 func (t *toolSet) configToolsShellSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.tools.shell.set",
-		Description: "Set fields in the [tools.shell] section (default_timeout_seconds, max_output_bytes, max_background_jobs, background_retention, allow_network, auto_approve, allow, confirm, deny, guardrail_dynamic_argv0). auto_approve=true escalates to a destructive (forced-approval) change. Omitted fields are preserved.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"default_timeout_seconds":{"type":"integer"},"max_output_bytes":{"type":"integer"},"max_background_jobs":{"type":"integer"},"background_retention":{"type":"string"},"allow_network":{"type":"boolean"},"auto_approve":{"type":"boolean"},"allow":{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"confirm":{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"deny":{"type":"object","properties":{"patterns":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"guardrail_dynamic_argv0":{"type":"string"}},"additionalProperties":false}`),
+		Description: "Set fields in the [tools.shell] section (default_timeout_seconds, max_output_bytes, max_background_jobs, background_retention, allow_network, auto_approve, allow, confirm, deny, guardrail_dynamic_argv0, floor_commands). auto_approve=true escalates to a destructive (forced-approval) change. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"default_timeout_seconds":{"type":"integer"},"max_output_bytes":{"type":"integer"},"max_background_jobs":{"type":"integer"},"background_retention":{"type":"string"},"allow_network":{"type":"boolean"},"auto_approve":{"type":"boolean"},"allow":{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"confirm":{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"deny":{"type":"object","properties":{"patterns":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"guardrail_dynamic_argv0":{"type":"string"},"floor_commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}`),
 		Risk:        registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -820,6 +820,7 @@ func (t *toolSet) configToolsShellSetTool() registry.Tool {
 			Confirm               *config.CommandRules `json:"confirm"`
 			Deny                  *config.PatternRules `json:"deny"`
 			GuardrailDynamicArgv0 *string              `json:"guardrail_dynamic_argv0"`
+			FloorCommands         *[]string            `json:"floor_commands"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.tools.shell.set args: %w", err)
@@ -871,6 +872,9 @@ func (t *toolSet) configToolsShellSetTool() registry.Tool {
 			}
 			if args.GuardrailDynamicArgv0 != nil {
 				cfg.Tools.Shell.GuardrailDynamicArgv0 = *args.GuardrailDynamicArgv0
+			}
+			if args.FloorCommands != nil {
+				cfg.Tools.Shell.FloorCommands = *args.FloorCommands
 			}
 		})
 	}

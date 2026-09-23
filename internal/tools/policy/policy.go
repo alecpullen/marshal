@@ -7,6 +7,7 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -22,6 +23,21 @@ const (
 	DecisionConfirm Decision = "confirm"
 	DecisionDeny    Decision = "deny"
 )
+
+// EvaluateOption is a per-call modifier to Evaluate. System access is
+// per-call, never engine state: sibling subagents share one engine.
+type EvaluateOption func(*evaluateOptions)
+
+type evaluateOptions struct {
+	system bool
+}
+
+// WithSystem marks the call as coming from a system-access session, which
+// shrinks guardrails to the catastrophic floor. Git push stays
+// non-bypassable in every mode.
+func WithSystem(system bool) EvaluateOption {
+	return func(o *evaluateOptions) { o.system = system }
+}
 
 // ApprovalMode is the active interaction/approval mode. It bundles
 // turn-classification and approval-gating into one concept. The zero
@@ -52,6 +68,14 @@ var approvalModes = []string{string(ModePlan), string(ModeDefault), string(ModeE
 // See hasRecursiveFlag and the chmod/chown check in analyzeCommand.
 var guardrailPatterns = []string{
 	"sudo", "git reset --hard", "git clean -fd",
+	"mkfs", "shutdown", "reboot",
+}
+
+// systemGuardrailPatterns is the catastrophic floor: the subset of
+// guardrailPatterns that survives system access (spec §4). sudo, git reset
+// --hard and git clean -fd are dropped; the recursive rm/chmod/chown checks
+// survive only for absolute operands and are handled argv-aware below.
+var systemGuardrailPatterns = []string{
 	"mkfs", "shutdown", "reboot",
 }
 
@@ -197,7 +221,14 @@ func (pe *PolicyEngine) Logger() *slog.Logger {
 	return pe.logger
 }
 
-func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
+func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, opts ...EvaluateOption) (Decision, string, error) {
+	var eo evaluateOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&eo)
+		}
+	}
+
 	// Snapshot the mutable fields under the lock: SetRules / WithRegistry /
 	// SetSessionRules / SetApprovalMode run from the UI goroutine and must
 	// not race a mid-Evaluate read.
@@ -230,7 +261,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	if strings.HasPrefix(toolName, "mcp.") {
 		decision, reason = evaluateMCP(cfg, rules, toolName, args)
 	} else {
-		decision, reason = pe.evaluateShell(cfg, rules, reg, sessionRules, toolName, args)
+		decision, reason = pe.evaluateShell(cfg, rules, reg, sessionRules, toolName, args, eo.system)
 	}
 
 	// Mode transform: the final step, applied after guardrails, the floor,
@@ -371,7 +402,7 @@ func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, 
 // the guardrail analysis and then the shell rule lists; every other tool
 // resolves through F4 rules, the network-tool confirm, and the registry
 // risk fallback.
-func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Rule, reg *registry.Registry, sessionRules []string, toolName string, args map[string]interface{}) (Decision, string) {
+func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Rule, reg *registry.Registry, sessionRules []string, toolName string, args map[string]interface{}, system bool) (Decision, string) {
 	var normCmd string
 	if toolName == "shell.run" || toolName == "test.run" {
 		var cmd string
@@ -401,7 +432,7 @@ func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Ru
 		if cfg.Tools.Shell.GuardrailDynamicArgv0 != "" {
 			dynSetting = cfg.Tools.Shell.GuardrailDynamicArgv0
 		}
-		dec, reason := pe.EvaluateGuardrails(normCmd, dynSetting)
+		dec, reason := pe.EvaluateGuardrails(normCmd, dynSetting, system)
 		if dec != "" {
 			return dec, reason
 		}
@@ -498,21 +529,30 @@ func evaluateShellRules(cfg *config.Config, sessionRules []string, normCmd strin
 	return DecisionConfirm, "requires approval (default secure configuration)"
 }
 
-func isBlockedByGuardrailLegacy(cmd string) bool {
+func isBlockedByGuardrailLegacy(cmd string, system bool) bool {
 	cmd = strings.ToLower(cmd)
-	for _, b := range guardrailPatterns {
+	patterns := guardrailPatterns
+	if system {
+		patterns = systemGuardrailPatterns
+	}
+	for _, b := range patterns {
 		if strings.Contains(cmd, b) {
 			return true
 		}
 	}
 	for _, b := range legacyRMGuardrail {
 		if strings.Contains(cmd, b) {
-			return true
+			// System access drops the relative-path recursive delete; an
+			// absolute operand keeps it on the catastrophic floor.
+			if !system || hasAbsoluteOperand(cmd) {
+				return true
+			}
 		}
 	}
 
-	// Network installer check (curl/wget piped to sh/bash/zsh)
-	if (strings.Contains(cmd, "curl") || strings.Contains(cmd, "wget")) && strings.Contains(cmd, "|") {
+	// Network installer check (curl/wget piped to sh/bash/zsh). Dropped
+	// under system access (spec §4).
+	if !system && (strings.Contains(cmd, "curl") || strings.Contains(cmd, "wget")) && strings.Contains(cmd, "|") {
 		parts := strings.Split(cmd, "|")
 		for i := 1; i < len(parts); i++ {
 			subCmd := strings.TrimSpace(parts[i])
@@ -589,9 +629,20 @@ type guardrailVerdict struct {
 }
 
 // analyzeCommand parses cmd and classifies it against the hardcoded guardrail
-// set. On parse error it returns a non-nil error; the caller falls back to
-// isBlockedByGuardrailLegacy.
+// set with the default (full) floor.
 func analyzeCommand(cmd string) (guardrailVerdict, error) {
+	return analyzeCommandWithFloor(cmd, false)
+}
+
+// analyzeCommandWithFloor parses cmd and classifies it against the hardcoded
+// guardrail set. When system is true the set shrinks to the catastrophic
+// floor (spec §4): mkfs/shutdown/reboot, recursive force-deletes and
+// recursive chmod/chown whose operands are all absolute, and the find/dd
+// payloads. sudo, git reset --hard, git clean -fd, the curl|sh installer
+// pattern, and relative-path recursive deletes are dropped. On parse error it
+// returns a non-nil error; the caller falls back to
+// isBlockedByGuardrailLegacy.
+func analyzeCommandWithFloor(cmd string, system bool) (guardrailVerdict, error) {
 	stages, err := parseStages(cmd)
 	if err != nil {
 		return guardrailVerdict{}, err
@@ -605,7 +656,7 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 	// inspects the top-level argv0 of the whole command string, so these
 	// variants would otherwise evade the guardrail.
 	for _, st := range stages {
-		if stageIsRMDestructive(st) {
+		if stageIsRMDestructive(st) && (!system || stageOperandsAbsolute(st, false)) {
 			return guardrailVerdict{
 				blocked: true,
 				reason:  "blocked by conservative guardrail: rm -r -f",
@@ -619,10 +670,17 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 	// stage loop below catches non-destructive substring patterns (sudo, mkfs).
 	cls, clsErr := ClassifyCommand(cmd)
 	if clsErr == nil && cls.Risk == registry.RiskDestructive {
-		return guardrailVerdict{
-			blocked: true,
-			reason:  "blocked by conservative guardrail: " + cls.Reason,
-		}, nil
+		if !system || destructiveSurvivesFloor(stages, cls.Reason) {
+			return guardrailVerdict{
+				blocked: true,
+				reason:  "blocked by conservative guardrail: " + cls.Reason,
+			}, nil
+		}
+	}
+
+	patterns := guardrailPatterns
+	if system {
+		patterns = systemGuardrailPatterns
 	}
 
 	shellNames := map[string]bool{"sh": true, "bash": true, "zsh": true}
@@ -634,7 +692,7 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 			return guardrailVerdict{dynamicArgv0: true, reason: "dynamic command name unclassifiable"}, nil
 		}
 		ft := strings.ToLower(st.fullText)
-		for _, p := range guardrailPatterns {
+		for _, p := range patterns {
 			if strings.Contains(ft, p) {
 				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p}, nil
 			}
@@ -643,9 +701,10 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 		// argv-aware check for chmod/chown with recursive flags.
 		// Catches -r, -R (via lowercasing), and --recursive which the
 		// substring guardrailPatterns would miss. chmod -r and chown -r
-		// have been removed from guardrailPatterns above.
+		// have been removed from guardrailPatterns above. Under system
+		// access the check survives only for absolute operands.
 		if name == "chmod" || name == "chown" {
-			if hasRecursiveFlag(st) {
+			if hasRecursiveFlag(st) && (!system || stageOperandsAbsolute(st, true)) {
 				return guardrailVerdict{
 					blocked: true,
 					reason:  "blocked by conservative guardrail: " + name + " --recursive",
@@ -659,10 +718,121 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 			hasShell = true
 		}
 	}
-	if hasFetch && hasShell {
+	if hasFetch && hasShell && !system {
 		return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: network installer (curl/wget to shell)"}, nil
 	}
 	return guardrailVerdict{}, nil
+}
+
+// destructiveSurvivesFloor reports whether a ClassifyCommand destructive
+// verdict still blocks under the system floor. Recursive deletes and
+// recursive chmod/chown survive only when every operand is absolute; git
+// clean/reset are dropped; find and dd payloads survive unchanged.
+func destructiveSurvivesFloor(stages []stage, reason string) bool {
+	switch {
+	case reason == "rm -r -f":
+		return anyStageOperandsAbsolute(stages, "rm", false)
+	case strings.HasSuffix(reason, " -R"):
+		return anyStageOperandsAbsolute(stages, "chmod", true) || anyStageOperandsAbsolute(stages, "chown", true)
+	case reason == "git clean -f*", reason == "git reset --hard":
+		return false
+	default:
+		return true
+	}
+}
+
+// anyStageOperandsAbsolute reports whether any stage runs name with every
+// path operand absolute.
+func anyStageOperandsAbsolute(stages []stage, name string, skipFirstOperand bool) bool {
+	for _, st := range stages {
+		argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+		if len(argv) == 0 || lastSegment(argv[0]) != name {
+			continue
+		}
+		if stageOperandsAbsolute(st, skipFirstOperand) {
+			return true
+		}
+	}
+	return false
+}
+
+// stageOperandsAbsolute reports whether every path operand of the stage is
+// absolute. skipFirstOperand drops the leading mode argument (chmod/chown).
+// A stage with no operands is not absolute.
+func stageOperandsAbsolute(st stage, skipFirstOperand bool) bool {
+	argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
+		argv = xargsPayload(argv)
+	}
+	if len(argv) == 0 {
+		return false
+	}
+	operands := operandsOf(argv[1:], skipFirstOperand)
+	if len(operands) == 0 {
+		return false
+	}
+	for _, op := range operands {
+		if !filepath.IsAbs(op) {
+			return false
+		}
+	}
+	return true
+}
+
+// xargsPayload returns the argv of the command xargs invokes, skipping
+// xargs' own options and their values.
+func xargsPayload(argv []string) []string {
+	i := 1
+	for i < len(argv) {
+		a := argv[i]
+		if a == "-I" || a == "-i" || a == "-L" || a == "-n" || a == "-P" || a == "-s" {
+			i += 2
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			i++
+			continue
+		}
+		break
+	}
+	if i > len(argv) {
+		return nil
+	}
+	return argv[i:]
+}
+
+// operandsOf returns the non-flag arguments of args, optionally dropping the
+// first one (chmod/chown's mode). Tokens after a bare "--" are operands.
+func operandsOf(args []string, skipFirst bool) []string {
+	var out []string
+	afterDashDash := false
+	for _, a := range args {
+		if !afterDashDash {
+			if a == "--" {
+				afterDashDash = true
+				continue
+			}
+			if strings.HasPrefix(a, "-") && len(a) > 1 {
+				continue
+			}
+		}
+		out = append(out, a)
+	}
+	if skipFirst && len(out) > 0 {
+		out = out[1:]
+	}
+	return out
+}
+
+// hasAbsoluteOperand reports whether any whitespace-separated token of cmd is
+// an absolute path. Used by the legacy substring fallback, which has no argv.
+func hasAbsoluteOperand(cmd string) bool {
+	for _, f := range strings.Fields(cmd) {
+		if filepath.IsAbs(f) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasRecursiveFlag checks whether the stage's arguments include a recursive
@@ -681,11 +851,11 @@ func hasRecursiveFlag(st stage) bool {
 // EvaluateGuardrails runs the AST-based guardrail analysis and returns the
 // resulting Decision + reason. Returns Decision("") (empty) to signal
 // "not blocked — continue to rule matching".
-func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, string) {
-	verdict, err := analyzeCommand(cmd)
+func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string, system bool) (Decision, string) {
+	verdict, err := analyzeCommandWithFloor(cmd, system)
 	if err != nil {
 		pe.Logger().Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
-		if isBlockedByGuardrailLegacy(cmd) {
+		if isBlockedByGuardrailLegacy(cmd, system) {
 			return DecisionDeny, "blocked by conservative guardrail safety checks (legacy)"
 		}
 		return "", ""
@@ -710,8 +880,8 @@ func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, st
 // given command based on its conservative guardrails. The error wraps
 // the deny reason. shell.run / test.run call this as a final pre-flight
 // check before handing the command to the sandbox.
-func (pe *PolicyEngine) GuardrailCheck(command string) error {
-	dec, reason := pe.EvaluateGuardrails(command, "deny")
+func (pe *PolicyEngine) GuardrailCheck(command string, system bool) error {
+	dec, reason := pe.EvaluateGuardrails(command, "deny", system)
 	if dec == DecisionDeny {
 		return fmt.Errorf("command blocked by conservative guardrail: %s", reason)
 	}

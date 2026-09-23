@@ -2068,19 +2068,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// when embeddings are configured and the watcher is enabled.
 		workers := runOpts.workers
 		if len(workers) == 0 {
-			embeddingConfigured := false
-			embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
-			if _, err := embedRouter.ResolveEmbedding(); err == nil {
-				embeddingConfigured = true
-			}
-
-			// Surface a hint when embedding indexing is enabled but no
-			// embedding preset is configured — semantic search will report
-			// "unavailable" until one is set.
-			if cfg.Indexing.UseEmbeddings && !embeddingConfigured {
-				msg := "Semantic search is enabled (indexing.use_embeddings) but no embedding preset is configured. " +
-					"Set one with: [indexing] embedding_preset = '<provider>/<model>' — or via /settings → Indexing."
-				logger.Warn("embedding preset not configured while use_embeddings is enabled")
+			// Surface a hint when embedding indexing is enabled but the
+			// embedding route cannot resolve — semantic search reports
+			// "unavailable" until it does. embeddingStartupWarning
+			// distinguishes "nothing configured" from a preset that is
+			// named but unresolvable (e.g. its provider entry vanished),
+			// so the hint points at the actual problem.
+			if msg, ok := embeddingStartupWarning(cfg); ok {
+				logger.Warn("embedding route not resolvable while use_embeddings is enabled")
 				state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 			}
 

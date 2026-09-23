@@ -81,6 +81,10 @@ type TurnRuntime struct {
 	// SetMode applies a session-level approval mode (plan, default, edit,
 	// copilot, auto). Nil means the runtime does not support mode switching.
 	SetMode func(mode string) error
+	// SetSystemAccess applies the per-session system-access modifier. Nil
+	// means the runtime falls back to State.SetSystemAccess; when State is
+	// also nil the runtime does not support system access.
+	SetSystemAccess func(on bool)
 	// Steer enqueues a mid-turn steering message, consumed by the runner
 	// at its next loop-top. Nil means the runtime does not support steering.
 	Steer func(text string)
@@ -95,6 +99,48 @@ type TurnRuntime struct {
 	// overrides map carries per-run role→preset overrides from the castlist;
 	// nil when no overrides are set. Nil when plan execution is unavailable.
 	PipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
+}
+
+// systemAccess reports the runtime session's live system-access flag.
+// Nil-safe: a runtime without state reports false.
+func (rt *TurnRuntime) systemAccess() bool {
+	if rt == nil || rt.State == nil {
+		return false
+	}
+	return rt.State.SystemAccess()
+}
+
+// applySystemAccess toggles the runtime session's system-access modifier
+// through the SetSystemAccess seam, falling back to the session state's own
+// setter when the seam is not wired. It reports whether a setter was found.
+func (rt *TurnRuntime) applySystemAccess(on bool) bool {
+	if rt == nil {
+		return false
+	}
+	if rt.SetSystemAccess != nil {
+		rt.SetSystemAccess(on)
+		return true
+	}
+	if rt.State != nil {
+		rt.State.SetSystemAccess(on)
+		return true
+	}
+	return false
+}
+
+// modeRequestWantsSystem reports whether a mode.request tool call's args
+// carry a system-access elevation request.
+func modeRequestWantsSystem(args string) bool {
+	if strings.TrimSpace(args) == "" {
+		return false
+	}
+	var a struct {
+		System bool `json:"system"`
+	}
+	if err := json.Unmarshal([]byte(args), &a); err != nil {
+		return false
+	}
+	return a.System
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -528,6 +574,13 @@ func (m *TurnManager) runTurn(
 						if chosen == "" {
 							chosen = "edit"
 						}
+						// A mode.request may also carry a system-access
+						// elevation (internal/tools/native/mode_request.go).
+						// Apply it alongside the mode so the grant and the
+						// mode land together.
+						if modeRequestWantsSystem(pa.Args) {
+							rt.applySystemAccess(true)
+						}
 						if rt.SetMode != nil {
 							if err := rt.SetMode(chosen); err != nil {
 								slog.Default().Warn("acp: apply mode elevation",
@@ -535,7 +588,7 @@ func (m *TurnManager) runTurn(
 							} else {
 								_ = m.notify("session/update", SessionUpdateParams{
 									SessionID: sessionID,
-									Update:    map[string]any{"kind": "mode_changed", "mode": chosen},
+									Update:    map[string]any{"kind": "mode_changed", "mode": chosen, "system_access": rt.systemAccess()},
 								})
 							}
 						}
@@ -971,6 +1024,10 @@ func (m *TurnManager) SDDStart(ctx context.Context, params json.RawMessage) (any
 type SetModeParams struct {
 	SessionID string `json:"sessionId"`
 	Mode      string `json:"mode"`
+	// SystemAccess is an overlay field: when true, the session's
+	// system-access modifier is enabled alongside the mode. Absent or
+	// false leaves the current flag untouched.
+	SystemAccess bool `json:"system_access"`
 }
 
 // SetMode handles session/set_mode: it applies the requested approval mode
@@ -1005,9 +1062,16 @@ func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any,
 	if err := rt.SetMode(p.Mode); err != nil {
 		return nil, serverErrorf("set mode: %v", err)
 	}
+	if p.SystemAccess {
+		if !rt.applySystemAccess(true) {
+			return nil, serverErrorf("session %s does not support system access", p.SessionID)
+		}
+	}
+	// Broadcast the session's live system-access flag, not the request
+	// field, so a plain set_mode call still reports the current value.
 	if err := m.notify("session/update", SessionUpdateParams{
 		SessionID: p.SessionID,
-		Update:    map[string]any{"kind": "mode_changed", "mode": p.Mode},
+		Update:    map[string]any{"kind": "mode_changed", "mode": p.Mode, "system_access": rt.systemAccess()},
 	}); err != nil {
 		return nil, err
 	}

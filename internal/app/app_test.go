@@ -3020,6 +3020,80 @@ func TestRoleRunnerVerificationGateFallback(t *testing.T) {
 	}
 }
 
+// TestAgentRunSystemFlagInherits pins the AND at child construction: a parent
+// with system access plus an explicit system:true request yields a child whose
+// own session state carries the flag.
+func TestAgentRunSystemFlagInherits(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	parentState.SetSystemAccess(true)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, registry.New(), nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	_, childState, err := factory(agent.SubagentRequest{System: true})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if !childState.SystemAccess() {
+		t.Fatal("child SystemAccess = false, want true (parent has it and the request asked)")
+	}
+}
+
+// TestAgentRunSystemFlagDefaultOff pins default containment: a parent with
+// system access that does NOT pass system:true yields a child without it.
+func TestAgentRunSystemFlagDefaultOff(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	parentState.SetSystemAccess(true)
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, registry.New(), nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	_, childState, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if childState.SystemAccess() {
+		t.Fatal("child SystemAccess = true, want false (the request did not ask for it)")
+	}
+}
+
+// TestAgentRunSystemFlagParentWithoutSystem pins the other half of the AND: a
+// request that asks for system access cannot manufacture it when the parent
+// does not have it. The handler rejects this earlier with a clean tool error;
+// this test covers the construction-time guard directly.
+func TestAgentRunSystemFlagParentWithoutSystem(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "ollama", BaseURL: "http://local/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m"},
+	}
+	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	if parentState.SystemAccess() {
+		t.Fatal("precondition: parent must not have system access")
+	}
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, registry.New(), nil, "m", nil, nil, nil, 0, pricing.ModelPricing{})
+	_, childState, err := factory(agent.SubagentRequest{System: true})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if childState.SystemAccess() {
+		t.Fatal("child SystemAccess = true, want false (the parent does not have it)")
+	}
+}
+
 func TestBuildSubagentFactorySeedsChildSessionContext(t *testing.T) {
 	// Regression: a child session built without the parent's layer snapshot
 	// makes layer-aware project saves (config.SaveProjectConfig) fall back

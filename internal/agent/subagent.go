@@ -37,6 +37,11 @@ type SubagentRequest struct {
 	// Thinking optionally overrides the child's reasoning effort
 	// (ad-hoc agent.run parameter). "" inherits route resolution.
 	Thinking string
+	// System requests system access for the child (ad-hoc agent.run
+	// parameter). It is honored only when the parent session already has
+	// system access: the factory ANDs the two, so a child can never widen
+	// its own scope.
+	System bool
 }
 
 // SubagentModelPreview describes what model a subagent will use before it
@@ -182,6 +187,7 @@ type agentRunArgs struct {
 	Model       string   `json:"model,omitempty"`
 	Temperature *float64 `json:"temperature,omitempty"`
 	Thinking    string   `json:"thinking,omitempty"`
+	System      bool     `json:"system,omitempty"`
 }
 
 // NewSubagentTool returns the registry.Tool entry for agent.run. The
@@ -202,7 +208,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		Name:        "agent.run",
 		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent context. The child runs in the BACKGROUND: this tool returns immediately with a handle (subagent N) and the child's report is delivered to you as a [subagent N finished] message when it completes — do NOT assume the task is done when this tool returns. Call agent.await with the subagent id when you need the result before continuing, or agent.output to peek at progress. Maximum depth: 1. Maximum concurrency: %d. Multiple agent.run calls in a single response all start immediately (max %d in flight); writes across agents are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.", concurrency, concurrency),
 		Schema: json.RawMessage(
-			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."},"temperature":{"type":"number","description":"Optional sampling temperature override for this subtask. Lower values (e.g. 0.1) produce more focused, deterministic output for tight-scope implementers; higher values (e.g. 0.4) allow more creativity. Omitted uses the role/preset default."},"thinking":{"type":"string","description":"Optional reasoning effort override for this subtask (e.g. \"low\", \"medium\", \"high\"). Lower values reduce reasoning time for well-specified mechanical tasks. Omitted uses the role/preset default."}},"required":["prompt","description"],"additionalProperties":false}`,
+			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."},"temperature":{"type":"number","description":"Optional sampling temperature override for this subtask. Lower values (e.g. 0.1) produce more focused, deterministic output for tight-scope implementers; higher values (e.g. 0.4) allow more creativity. Omitted uses the role/preset default."},"thinking":{"type":"string","description":"Optional reasoning effort override for this subtask (e.g. \"low\", \"medium\", \"high\"). Lower values reduce reasoning time for well-specified mechanical tasks. Omitted uses the role/preset default."},"system":{"type":"boolean","description":"Run the child with system access (full filesystem read/write). Requires the parent to have system access."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
 		// The dispatch stays RiskWorkspaceWrite: the child's tool set
 		// includes write tools (file.write, file.write_patch, shell.run,
@@ -217,6 +223,14 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		args, err := decodeAgentRunArgs(tool, call.Args)
 		if err != nil {
 			return registry.ToolResult{}, err
+		}
+		// System access is never granted upward: a child may only inherit
+		// what the parent already has. Reject before admission so the
+		// refusal costs no concurrency slot and spawns no child. The factory
+		// enforces the same AND at construction; this check exists so the
+		// model gets a clean tool error instead of a silent downgrade.
+		if args.System && !state.SystemAccess() {
+			return registry.ToolResult{}, errors.New("agent.run: system access requested but this session does not have it")
 		}
 		// Admission stays synchronous so cap/depth violations fail the tool
 		// call directly. The pairing ExitSubagent moves to the completion
@@ -259,7 +273,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			}
 		}
 
-		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model, Temperature: args.Temperature, Thinking: args.Thinking})
+		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model, Temperature: args.Temperature, Thinking: args.Thinking, System: args.System})
 		if err != nil {
 			state.ExitSubagent()
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)

@@ -579,7 +579,13 @@ func (m *TurnManager) runTurn(
 						// Apply it alongside the mode so the grant and the
 						// mode land together.
 						if modeRequestWantsSystem(pa.Args) {
-							rt.applySystemAccess(true)
+							if !rt.applySystemAccess(true) {
+								// The tool contract already told the model the grant
+								// succeeded, so a silent failure would send it into
+								// writes that cannot work. Surface it.
+								slog.Default().Warn("acp: mode.request system elevation not applied: runtime has no system-access setter",
+									"session", sessionID, "approval", pa.ID)
+							}
 						}
 						if rt.SetMode != nil {
 							if err := rt.SetMode(chosen); err != nil {
@@ -1028,6 +1034,29 @@ type SetModeParams struct {
 	// system-access modifier is enabled alongside the mode. Absent or
 	// false leaves the current flag untouched.
 	SystemAccess bool `json:"system_access"`
+	// SystemAccessSet records whether the client sent the field at all, so
+	// "revoke to false" is distinguishable from "leave unchanged". It is a
+	// wire-presence flag, not a value.
+	SystemAccessSet bool `json:"-"`
+}
+
+// UnmarshalJSON records the presence of system_access alongside its value so
+// an explicit false revokes and an absent field leaves the flag untouched.
+func (p *SetModeParams) UnmarshalJSON(data []byte) error {
+	type alias SetModeParams
+	var raw struct {
+		alias
+		SystemAccess *bool `json:"system_access"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*p = SetModeParams(raw.alias)
+	if raw.SystemAccess != nil {
+		p.SystemAccess = *raw.SystemAccess
+		p.SystemAccessSet = true
+	}
+	return nil
 }
 
 // SetMode handles session/set_mode: it applies the requested approval mode
@@ -1062,8 +1091,12 @@ func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any,
 	if err := rt.SetMode(p.Mode); err != nil {
 		return nil, serverErrorf("set mode: %v", err)
 	}
-	if p.SystemAccess {
-		if !rt.applySystemAccess(true) {
+	// system_access is an overlay: true grants, false revokes, and an absent
+	// field leaves the current value untouched (SystemAccessSet records
+	// whether the client actually sent it). A client that granted the flag
+	// must be able to take it back.
+	if p.SystemAccessSet {
+		if !rt.applySystemAccess(p.SystemAccess) {
 			return nil, serverErrorf("session %s does not support system access", p.SessionID)
 		}
 	}

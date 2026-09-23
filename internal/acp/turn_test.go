@@ -2733,6 +2733,46 @@ func TestSetModeSystemAccessField(t *testing.T) {
 	}
 }
 
+// TestSetModeSystemAccessRevokesAndAbsentLeavesUntouched pins the three-way
+// overlay semantics: system_access:true grants, an explicit false revokes, and
+// an absent field leaves the current flag alone.
+func TestSetModeSystemAccessRevokesAndAbsentLeavesUntouched(t *testing.T) {
+	state := &session.State{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     state,
+				SetMode:   func(mode string) error { return nil },
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"edit","system_access":true}`)); err != nil {
+		t.Fatalf("SetMode(grant) error = %v", err)
+	}
+	if !state.SystemAccess() {
+		t.Fatal("SystemAccess() = false after grant, want true")
+	}
+
+	// An absent field must not disturb the granted flag.
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"edit"}`)); err != nil {
+		t.Fatalf("SetMode(absent) error = %v", err)
+	}
+	if !state.SystemAccess() {
+		t.Fatal("SystemAccess() = false after a set_mode without the field, want it untouched at true")
+	}
+
+	// An explicit false must revoke it.
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"edit","system_access":false}`)); err != nil {
+		t.Fatalf("SetMode(revoke) error = %v", err)
+	}
+	if state.SystemAccess() {
+		t.Fatal("SystemAccess() = true after an explicit system_access:false, want false")
+	}
+}
+
 // TestSetModeInvalidModeDoesNotApplySystem pins validation ordering: an
 // invalid mode is rejected before the system-access overlay is applied.
 func TestSetModeInvalidModeDoesNotApplySystem(t *testing.T) {

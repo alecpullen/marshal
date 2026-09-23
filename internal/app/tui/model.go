@@ -1940,16 +1940,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// pass. handleAgentFinished clears the flag and quits, so the
 			// elevation never outlives the exit.
 			m.state.SetSystemAccess(true)
-			if m.approvalMode == policy.ModePlan || m.approvalMode == policy.ModeDefault || m.approvalMode == "" {
+			// Record the pre-grant mode so a refused start can restore it
+			// instead of leaving the session elevated.
+			priorMode := m.approvalMode
+			if priorMode == policy.ModePlan || priorMode == policy.ModeDefault || priorMode == "" {
 				m.setMode("edit")
 			}
 			mm, agentCmd, started := m.startAgentRun(m.runner, postmortemAgentGoal(path))
 			if !started {
 				// BeginWork was refused, so no turn is in flight and no
-				// agentFinishedMsg will ever arrive to quit. Drop the flag and
-				// quit here rather than strand the exit at the prompt.
+				// agentFinishedMsg will ever arrive to quit. Undo the grant and
+				// the elevation, then quit rather than strand the exit at the
+				// prompt with a mode the user never chose.
 				m.postmortemAgentPending = false
 				m.state.SetSystemAccess(false)
+				if priorMode != "" && priorMode != m.approvalMode {
+					m.setMode(string(priorMode))
+				}
 				return m, m.finishQuit()
 			}
 			m.refreshViewport()

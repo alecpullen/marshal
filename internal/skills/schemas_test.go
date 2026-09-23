@@ -14,7 +14,7 @@ func TestSchemasCompileAndRejectUnknownProperties(t *testing.T) {
 	reg := registry.New()
 	idx := NewIndex()
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 	for _, tool := range reg.List() {
 		if _, err := registry.CompileSchema(tool.Name, tool.Schema); err != nil {
 			t.Errorf("%s: %v", tool.Name, err)

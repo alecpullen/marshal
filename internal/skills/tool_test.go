@@ -2,6 +2,8 @@ package skills
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ func TestSkillLoadToolSuccess(t *testing.T) {
 
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, ok := reg.Lookup("skill.load")
 	if !ok {
@@ -84,7 +86,7 @@ func TestSkillLoadToolUnknownName(t *testing.T) {
 	idx := NewIndex()
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.load")
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -109,7 +111,7 @@ func TestSkillLoadToolAlreadyActive(t *testing.T) {
 	state.ActivateSkill("debug")
 
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.load")
 	result, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -132,7 +134,7 @@ func TestSkillLoadToolInvalidArgs(t *testing.T) {
 	idx := NewIndex()
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.load")
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -155,7 +157,7 @@ func TestSkillBodyIsWrappedAsReference(t *testing.T) {
 
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.load")
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -195,7 +197,7 @@ func TestSkillLoadToolMissingNameArg(t *testing.T) {
 	idx := NewIndex()
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.load")
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -387,7 +389,7 @@ func TestSkillUnloadToolSuccess(t *testing.T) {
 	idx.Set("debug", Skill{Name: "debug", Description: "d", Body: "body"})
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	// Load first so the skill is active.
 	loadTool, _ := reg.Lookup("skill.load")
@@ -429,7 +431,7 @@ func TestSkillUnloadToolInvalidArgs(t *testing.T) {
 	idx := NewIndex()
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.unload")
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -445,7 +447,7 @@ func TestSkillUnloadToolMissingNameArg(t *testing.T) {
 	idx := NewIndex()
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.unload")
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -461,7 +463,7 @@ func TestSkillUnloadToolInactiveSkill(t *testing.T) {
 	idx := NewIndex()
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state)
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.unload")
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -470,5 +472,168 @@ func TestSkillUnloadToolInactiveSkill(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for unloading an inactive skill")
+	}
+}
+
+// --- skill.install tool tests ---
+
+func TestSkillInstallToolRegistered(t *testing.T) {
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+
+	tool, ok := reg.Lookup("skill.install")
+	if !ok {
+		t.Fatal("skill.install tool not registered")
+	}
+	if tool.Risk != registry.RiskWorkspaceWrite {
+		t.Fatalf("Risk = %s, want workspace_write", tool.Risk)
+	}
+	if tool.Cacheable {
+		t.Fatal("skill.install should not be cacheable")
+	}
+}
+
+func TestSkillInstallToolRejectsMissingSource(t *testing.T) {
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+
+	tool, _ := reg.Lookup("skill.install")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.install",
+		Args: []byte(`{}`),
+	})
+	if err == nil {
+		t.Fatal("expected error for missing source arg")
+	}
+	if !strings.Contains(err.Error(), "source") {
+		t.Fatalf("error should mention source: %v", err)
+	}
+}
+
+func TestSkillInstallToolRejectsInvalidName(t *testing.T) {
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+
+	tool, _ := reg.Lookup("skill.install")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.install",
+		Args: []byte(`{"source": "x.md", "name": "../evil"}`),
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid skill name")
+	}
+	if !strings.Contains(err.Error(), "invalid skill name") {
+		t.Fatalf("error should mention invalid skill name: %v", err)
+	}
+}
+
+func TestSkillInstallToolInstallsAndHotInserts(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "hot-skill.md")
+	srcContent := "+++\nname = \"hot-skill\"\ndescription = \"A hot skill\"\n+++\n\n# Hot\n\nBody.\n"
+	if err := os.WriteFile(src, []byte(srcContent), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	home := t.TempDir()
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: home, WorkingDir: t.TempDir()})
+
+	tool, _ := reg.Lookup("skill.install")
+	result, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.install",
+		Args: []byte(`{"source": "` + src + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("install handler: %v", err)
+	}
+
+	// The default scope is user-global: assert the file actually landed
+	// there, so a broken ScopeDir cannot pass on summary text alone.
+	wantPath := filepath.Join(home, ".config", "marshal", "skills", "hot-skill.md")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("installed skill not at %s: %v", wantPath, err)
+	}
+
+	skill, ok := idx.Load("hot-skill")
+	if !ok {
+		t.Fatal("installed skill should be visible in the index immediately")
+	}
+	if skill.Description != "A hot skill" {
+		t.Fatalf("Description = %q, want %q", skill.Description, "A hot skill")
+	}
+	if !strings.Contains(result.Summary, "hot-skill") {
+		t.Fatalf("Summary should mention hot-skill: %s", result.Summary)
+	}
+	if !strings.Contains(result.Summary, "user-global") {
+		t.Fatalf("Summary should mention user-global scope: %s", result.Summary)
+	}
+}
+
+func TestSkillInstallToolProjectScope(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "proj-skill.md")
+	srcContent := "+++\nname = \"proj-skill\"\ndescription = \"A project skill\"\n+++\n\nBody.\n"
+	if err := os.WriteFile(src, []byte(srcContent), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	work := t.TempDir()
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: work})
+
+	tool, _ := reg.Lookup("skill.install")
+	result, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.install",
+		Args: []byte(`{"source": "` + src + `", "project": true}`),
+	})
+	if err != nil {
+		t.Fatalf("install handler: %v", err)
+	}
+
+	dest := filepath.Join(work, ".marshal", "skills", "proj-skill.md")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("installed file missing at %s: %v", dest, err)
+	}
+	if !strings.Contains(result.Summary, "proj-skill") {
+		t.Fatalf("Summary should mention proj-skill: %s", result.Summary)
+	}
+	if !strings.Contains(result.Summary, "project") {
+		t.Fatalf("Summary should mention project scope: %s", result.Summary)
+	}
+}
+
+func TestSkillInstallToolRejectsUnparseableSkill(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "bad.md")
+	if err := os.WriteFile(src, []byte("just some text, no frontmatter\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	idx := NewIndex()
+	state := newTestState()
+	reg := registry.New()
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+
+	tool, _ := reg.Lookup("skill.install")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "skill.install",
+		Args: []byte(`{"source": "` + src + `"}`),
+	})
+	if err == nil {
+		t.Fatal("expected error for unparseable skill file")
+	}
+	if !strings.Contains(err.Error(), "not loadable") {
+		t.Fatalf("error should mention not loadable: %v", err)
+	}
+	if skills := idx.List(); len(skills) != 0 {
+		t.Fatalf("index should stay empty after failed install, got %d entries", len(skills))
 	}
 }

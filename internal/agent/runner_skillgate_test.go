@@ -26,7 +26,7 @@ func newSkillGateTestRunner(t *testing.T, state *session.State) (*Runner, *agent
 	idx.Set("test-skill", skills.Skill{Name: "test-skill", Description: "a test skill", Body: "TEST SKILL BODY"})
 	idx.Set("other-skill", skills.Skill{Name: "other-skill", Description: "another", Body: "OTHER BODY"})
 	reg := registry.New()
-	skills.RegisterTool(reg, idx, state)
+	skills.RegisterTool(reg, idx, state, skills.SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 	pol := policy.NewEngine(&config.Config{}, nil)
 	p := &agenttest.ScriptedProvider{}
 	r := NewRunner(p, reg, pol, state, "test-model")

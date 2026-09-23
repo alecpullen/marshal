@@ -688,7 +688,10 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register watch tools: %w", err)
 	}
 
-	skills.RegisterTool(reg, skillIndex, state)
+	skills.RegisterTool(reg, skillIndex, state, skills.SkillsToolOptions{
+		HomeDir:    homeDir,
+		WorkingDir: state.WorkingDir,
+	})
 
 	var mcpMgr *mcp.Manager
 	if len(cfg.MCP.Servers) > 0 {
@@ -1391,7 +1394,13 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 			return nil, fmt.Errorf("pipeline registry factory: register: %w", err)
 		}
-		skills.RegisterTool(childReg, skillIndex, childState)
+		skills.RegisterTool(childReg, skillIndex, childState, skills.SkillsToolOptions{
+			HomeDir: state.HomeDir(),
+			// Project scope must resolve to the real repository, not the
+			// per-dispatch worktree: the worktree is gitignored and removed
+			// by workspace.finish, so a skill installed there would vanish.
+			WorkingDir: ctx.RepoRoot,
+		})
 		switch scope {
 		case pipeline.ScopeReadOnly:
 			return registry.ReadOnlyView(childReg), nil

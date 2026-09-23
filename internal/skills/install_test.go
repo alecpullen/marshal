@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,78 @@ func TestInstallGitRejectsTraversalBundleName(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, `bad\name`)); err == nil {
 		t.Fatalf("invalid-named bundle was installed into target: %v", err)
+	}
+}
+
+// A repo that lays its bundles out for several harnesses at once (the
+// Runpod plugin repo uses plugins/<owner>/skills/<name>/SKILL.md) must
+// still have every bundle discovered.
+func TestInstallGitDiscoversNestedBundles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	src := t.TempDir()
+	runGitTest(t, src, "init")
+	runGitTest(t, src, "config", "user.email", "test@example.com")
+	runGitTest(t, src, "config", "user.name", "Test")
+
+	for _, name := range []string{"alpha", "beta"} {
+		dir := filepath.Join(src, "plugins", "runpod", "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: " + name + "\ndescription: d\n---\nbody\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A SKILL.md inside node_modules must not be discovered.
+	noise := filepath.Join(src, "node_modules", "pkg")
+	if err := os.MkdirAll(noise, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noise, "SKILL.md"), []byte("# noise\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, src, "add", "-A")
+	runGitTest(t, src, "commit", "-m", "initial")
+
+	target := t.TempDir()
+	if _, err := installGit(context.Background(), src, target, ""); err != nil {
+		t.Fatalf("installGit: %v", err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		if _, err := os.Stat(filepath.Join(target, name, "SKILL.md")); err != nil {
+			t.Errorf("bundle %q not installed: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(target, "pkg")); err == nil {
+		t.Error("node_modules bundle was installed")
+	}
+}
+
+// A clone with no discoverable bundle must fail with a clear message rather
+// than installing nothing silently.
+func TestInstallGitNoBundlesErrors(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	src := t.TempDir()
+	runGitTest(t, src, "init")
+	runGitTest(t, src, "config", "user.email", "test@example.com")
+	runGitTest(t, src, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# nothing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, src, "add", "-A")
+	runGitTest(t, src, "commit", "-m", "initial")
+
+	_, err := installGit(context.Background(), src, t.TempDir(), "")
+	if err == nil {
+		t.Fatal("expected an error for a clone with no bundles")
+	}
+	if !strings.Contains(err.Error(), "no SKILL.md bundles") {
+		t.Errorf("error = %v, want it to mention no SKILL.md bundles", err)
 	}
 }
 

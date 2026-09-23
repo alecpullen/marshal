@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -126,22 +127,20 @@ func installGit(ctx context.Context, source, targetDir, name string) (string, er
 		return installBundleDir(filepath.Dir(rootBundle), targetDir, name)
 	}
 
-	// Otherwise copy every skills/<name>/SKILL.md bundle found.
-	skillsDir := filepath.Join(cloneDir, "skills")
-	entries, err := os.ReadDir(skillsDir)
+	// Otherwise discover every SKILL.md bundle anywhere in the clone. A repo
+	// may lay its bundles out for several harnesses at once (the Runpod
+	// plugin repo uses plugins/<owner>/skills/<name>/SKILL.md), so the clone
+	// root is the only thing that must be predictable.
+	bundles, err := discoverBundles(cloneDir)
 	if err != nil {
-		return "", fmt.Errorf("cloned repo has no %s at root or skills/ subdirectory", BundleFileName)
+		return "", err
+	}
+	if len(bundles) == 0 {
+		return "", fmt.Errorf("cloned repo has no %s bundles", BundleFileName)
 	}
 	var installed string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		bundle := filepath.Join(skillsDir, e.Name(), BundleFileName)
-		if _, err := os.Stat(bundle); err != nil {
-			continue
-		}
-		bundleName := e.Name()
+	for _, bundle := range bundles {
+		bundleName := filepath.Base(filepath.Dir(bundle))
 		if !ValidName(bundleName) {
 			continue
 		}
@@ -163,6 +162,47 @@ func installGit(ctx context.Context, source, targetDir, name string) (string, er
 		return "", fmt.Errorf("cloned repo has no %s bundles", BundleFileName)
 	}
 	return installed, nil
+}
+
+// discoverBundles walks a cloned repo for SKILL.md bundle files and returns
+// their paths sorted for a deterministic install order. The walk is bounded:
+// a bundle nested deeper than maxBundleDepth is not treated as a bundle, and
+// the two directories that can hold thousands of irrelevant files are
+// skipped outright.
+func discoverBundles(root string) ([]string, error) {
+	const maxBundleDepth = 6
+	var found []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == root {
+				return nil
+			}
+			switch d.Name() {
+			case ".git", "node_modules":
+				return fs.SkipDir
+			}
+			rel, relErr := filepath.Rel(root, p)
+			if relErr != nil {
+				return relErr
+			}
+			if strings.Count(rel, string(filepath.Separator)) >= maxBundleDepth {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == BundleFileName {
+			found = append(found, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan cloned repo for %s: %w", BundleFileName, err)
+	}
+	sort.Strings(found)
+	return found, nil
 }
 
 func normalizeSkillSource(source string) (cloneURL, name string, err error) {

@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1115,6 +1118,63 @@ func TestRunnerMarksFinalAnswer(t *testing.T) {
 	}
 	if !answer.Final {
 		t.Fatal("answer message Final = false, want true")
+	}
+}
+
+// TestRunInstallsThenLoadsSkillViaToolCalls covers the end-to-end agent
+// flow the skill.install tool exists for: the model installs a skill from
+// a local file and then loads it in the same turn. The install must
+// hot-insert into the live index, otherwise the subsequent skill.load
+// resolves against the startup-cached index and fails.
+func TestRunInstallsThenLoadsSkillViaToolCalls(t *testing.T) {
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "installed-skill.md")
+	src := "+++\nname = \"installed-skill\"\ndescription = \"Installed mid-turn\"\n+++\n\n# Installed\n\nBody of the installed skill.\n"
+	if err := os.WriteFile(srcPath, []byte(src), 0644); err != nil {
+		t.Fatalf("write source skill: %v", err)
+	}
+
+	idx := skills.NewIndex()
+	reg := registry.New()
+	state := newTestState(t)
+	// The skill load gate would block this test's unattended skill.load on
+	// the pending prompt; this test covers install/load mechanics, not gating.
+	state.Config.Skills.LoadGateThresholdTokens = 0
+
+	pol := policy.NewEngine(&config.Config{}, nil)
+	skills.RegisterTool(reg, idx, state, skills.SkillsToolOptions{
+		HomeDir:    t.TempDir(),
+		WorkingDir: t.TempDir(),
+	})
+
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"install the skill the user pointed at","action":{"type":"tool_call","tool":"skill.install","args":{"source":` + strconv.Quote(srcPath) + `}}}`,
+		`{"rationale":"now activate it","action":{"type":"tool_call","tool":"skill.load","args":{"name":"installed-skill"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Installed and loaded."}}`,
+	}}
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SkillIndex = idx
+
+	if err := runner.Run(context.Background(), "Install the skill at that path"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if _, ok := idx.Load("installed-skill"); !ok {
+		t.Fatal("skill.install did not hot-insert into the live index")
+	}
+	if !state.HasActiveSkill("installed-skill") {
+		t.Fatal("HasActiveSkill(installed-skill) = false, want true")
+	}
+
+	foundBody := false
+	for _, m := range state.Messages() {
+		if strings.Contains(m.Content, "Body of the installed skill.") {
+			foundBody = true
+			break
+		}
+	}
+	if !foundBody {
+		t.Fatal("installed skill body not found in session messages")
 	}
 }
 

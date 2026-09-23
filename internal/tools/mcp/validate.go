@@ -17,6 +17,12 @@ import (
 // serves plain HTTP.
 var allowInsecureHTTP = false
 
+// AllowInsecureHTTP permits plain-http remote MCP endpoints. It exists so
+// integration tests in other packages can point a remote server at an
+// httptest.Server, which serves plain HTTP; production code never calls it,
+// and the https-only rule is enforced everywhere else.
+func AllowInsecureHTTP(allow bool) { allowInsecureHTTP = allow }
+
 // remoteResolver is the DNS resolver used by the SSRF check. Nil means
 // net.DefaultResolver.
 var remoteResolver func(ctx context.Context, host string) ([]net.IP, error)

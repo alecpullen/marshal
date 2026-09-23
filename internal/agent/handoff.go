@@ -33,7 +33,20 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 	r.emittedSkills = nil
 	r.State.ResetAllSkillBodyAges()
 	fresh := []schema.ChatMessage{
-		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, r.agentRoster(), r.State.LoadedToolNames()...),
+		BuildSystemPromptWithSystem(SystemPromptOptions{
+			Role:         r.role(),
+			Tools:        r.Registry.List(),
+			Deferred:     r.Registry.ListDeferred(),
+			SkillIndex:   r.SkillIndex,
+			ActiveSkills: r.State.ActiveSkills(),
+			NativeTools:  r.NativeTools,
+			Mode:         r.Policy.ApprovalMode(),
+			Addendum:     r.SystemPromptAddendum,
+			WorkingDir:   r.State.WorkingDir,
+			Roster:       r.agentRoster(),
+			LoadedNames:  r.State.LoadedToolNames(),
+			SystemAccess: r.State.SystemAccess(),
+		}),
 	}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
 	fresh = r.appendSkillHint(fresh)

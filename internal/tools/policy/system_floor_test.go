@@ -8,6 +8,52 @@ import (
 	"marshal/internal/app/config"
 )
 
+// TestGitPushFloorSurvivesPrivilegeWrapper pins that the non-bypassable push
+// floor cannot be skipped by prefixing a privilege wrapper. Under system
+// access the `sudo` substring guardrail is gone, so without the floor seeing
+// through the wrapper a `sudo git push` auto-approved in auto mode. Flag-off
+// behavior must stay a guardrail Deny, not become the floor's Confirm — that
+// is why the wrapper stripping is scoped to the system floor.
+func TestGitPushFloorSurvivesPrivilegeWrapper(t *testing.T) {
+	tests := []struct {
+		name   string
+		cmd    string
+		system bool
+		want   Decision
+	}{
+		{name: "plain push system", cmd: "git push", system: true, want: DecisionConfirm},
+		{name: "privilege push system", cmd: "sudo git push", system: true, want: DecisionConfirm},
+		{name: "privilege push with remote system", cmd: "sudo git push origin main", system: true, want: DecisionConfirm},
+		{name: "privilege push path-prefixed git system", cmd: "sudo /usr/bin/git push", system: true, want: DecisionConfirm},
+		{name: "env privilege push system", cmd: "env sudo git push", system: true, want: DecisionConfirm},
+		// Flag-off keeps the stricter guardrail Deny.
+		{name: "privilege push flag off", cmd: "sudo git push", want: DecisionDeny},
+		// A non-push sudo command is not the floor either way.
+		{name: "privilege non-push system", cmd: "sudo git status", system: true, want: DecisionAllow},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pe := NewEngine(&config.Config{}, []string{})
+			pe.SetApprovalMode(ModeAuto)
+			var opts []EvaluateOption
+			if tc.system {
+				opts = append(opts, WithSystem(true))
+			}
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd}, opts...)
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
+			}
+			if dec != tc.want {
+				t.Fatalf("Evaluate(%q, system=%v) = %v (%s), want %v", tc.cmd, tc.system, dec, reason, tc.want)
+			}
+			if tc.want == DecisionConfirm && !strings.Contains(reason, "non-bypassable floor") {
+				t.Fatalf("Evaluate(%q) reason = %q, want the non-bypassable push floor", tc.cmd, reason)
+			}
+		})
+	}
+}
+
 // TestSystemFloorFailsClosed pins the fail-closed contract of the catastrophic
 // floor (spec §4/§13). The floor releases the recursive-delete deny only for
 // operands the parser can prove are relative literals; every other shape —

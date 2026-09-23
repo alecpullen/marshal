@@ -250,7 +250,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, o
 	// transform so a floor Confirm is returned directly, never downgraded.
 	if toolName == "shell.run" || toolName == "test.run" {
 		if cmdRaw, ok := args["command"]; ok {
-			if cmd, ok := cmdRaw.(string); ok && isGitPushFloor(cmd) {
+			if cmd, ok := cmdRaw.(string); ok && isGitPushFloorWithSystem(cmd, eo.system) {
 				return DecisionConfirm, "git push requires approval (non-bypassable floor)", nil
 			}
 		}
@@ -700,24 +700,29 @@ func analyzeCommandDepth(cmd string, system bool, depth int) (guardrailVerdict, 
 		}
 	}
 
-	// Wrapper-prefixed destructive commands: `sudo rm -rf /etc` leaves argv0
-	// as sudo, so ClassifyCommand never reaches the rm and the destructive
-	// branch above never fires. Re-classify each stage's effective argv
-	// (after env/nice/sudo stripping) so the floor sees the real command.
-	for _, st := range stages {
-		eff := skipCommonWrappers(append([]string{st.argv0}, st.args...))
-		if len(eff) == 0 {
-			continue
-		}
-		effCls, effErr := ClassifyCommand(strings.Join(eff, " "))
-		if effErr != nil || effCls.Risk != registry.RiskDestructive {
-			continue
-		}
-		if !system || destructiveSurvivesFloor(stages, effCls.Reason) {
-			return guardrailVerdict{
-				blocked: true,
-				reason:  "blocked by conservative guardrail: " + effCls.Reason,
-			}, nil
+	// Wrapper-prefixed destructive commands under system access: `sudo rm -rf
+	// /etc` leaves argv0 as sudo, so ClassifyCommand never reaches the rm and
+	// the destructive branch above never fires. Re-classify each stage's
+	// effective argv (after env/nice/sudo stripping) so the floor sees the
+	// real command. This runs only for the system floor: the default floor
+	// already denies these via the `sudo` substring guardrail, and leaving it
+	// untouched keeps flag-off decisions and reasons byte-identical.
+	if system {
+		for _, st := range stages {
+			eff := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+			if len(eff) == 0 {
+				continue
+			}
+			effCls, effErr := ClassifyCommand(strings.Join(eff, " "))
+			if effErr != nil || effCls.Risk != registry.RiskDestructive {
+				continue
+			}
+			if destructiveSurvivesFloor(stages, effCls.Reason) {
+				return guardrailVerdict{
+					blocked: true,
+					reason:  "blocked by conservative guardrail: " + effCls.Reason,
+				}, nil
+			}
 		}
 	}
 
@@ -825,7 +830,7 @@ func recursiveDeleteStagesProvablyRelative(stages []stage, name string, skipFirs
 // effectiveArgv0 returns the command a stage actually runs, after common
 // wrappers (env, nice, sudo) and after unwrapping an xargs payload.
 func effectiveArgv0(st stage) string {
-	argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
 	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
 		argv = xargsPayload(argv)
 	}
@@ -843,7 +848,7 @@ func effectiveArgv0(st stage) string {
 // targets come from another stage) all return false, keeping the deny.
 // skipFirstOperand drops the leading mode argument (chmod/chown).
 func stageDeletionProvablyRelative(st stage, skipFirstOperand bool) bool {
-	argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
 	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
 		argv = xargsPayload(argv)
 	}
@@ -889,7 +894,7 @@ func provablyRelativeOperand(op string) bool {
 // the outer parse sees only the shell name and cannot inspect the commands
 // inside it.
 func shellInlinePayload(st stage) (string, bool) {
-	argv := skipCommonWrappers(append([]string{st.argv0}, st.args...))
+	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
 	if len(argv) == 0 {
 		return "", false
 	}
@@ -1051,11 +1056,41 @@ func isGitPushFloor(cmd string) bool {
 	return false
 }
 
+// isGitPushFloorWithSystem is isGitPushFloor plus the system-access floor's
+// wider wrapper stripping. Under system access the `sudo` substring guardrail
+// is gone, so a privilege-prefixed push would otherwise slide past the
+// non-bypassable floor and auto-approve in auto mode. Flag-off behavior is
+// untouched: the default floor already denies those on the sudo guardrail, and
+// seeing them as pushes would downgrade that Deny to the floor's Confirm.
+func isGitPushFloorWithSystem(cmd string, system bool) bool {
+	if isGitPushFloor(cmd) {
+		return true
+	}
+	if !system {
+		return false
+	}
+	stages, err := parseStages(cmd)
+	if err != nil {
+		return isBlockedByGuardrailLegacy(cmd, system)
+	}
+	for _, s := range stages {
+		if gitPushInArgv(skipFloorWrappers(append([]string{s.argv0}, s.args...))) {
+			return true
+		}
+	}
+	return false
+}
+
 // stageIsGitPush reports whether a parsed pipeline stage is a git push
 // invocation. It handles path-prefixed git binaries, git global options such
 // as `-c key=val`, and common prefix wrappers like `env` and `nice`.
 func stageIsGitPush(s stage) bool {
-	argv := skipCommonWrappers(append([]string{s.argv0}, s.args...))
+	return gitPushInArgv(skipCommonWrappers(append([]string{s.argv0}, s.args...)))
+}
+
+// gitPushInArgv reports whether an already-wrapper-stripped argv is a git push
+// invocation (path-prefixed git binaries and git global options included).
+func gitPushInArgv(argv []string) bool {
 	if len(argv) == 0 || lastSegment(argv[0]) != "git" {
 		return false
 	}
@@ -1117,30 +1152,45 @@ func skipCommonWrappers(argv []string) []string {
 			} else if i < len(argv) && strings.HasPrefix(argv[i], "--adjustment=") {
 				i++
 			}
-		case "sudo":
-			// sudo wraps the real command. Its own options must be skipped or
-			// the argv0 stays "sudo" and the argv-aware rm/chmod/chown and
-			// git-push floors never fire.
-			i++
-			for i < len(argv) {
-				a := argv[i]
-				if !strings.HasPrefix(a, "-") {
-					break
-				}
-				// sudo options that take a separate value.
-				switch a {
-				case "-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
-					"-h", "--host", "-r", "--role", "-t", "--type", "-U", "--other-user":
-					i += 2
-				default:
-					i++
-				}
-			}
 		default:
 			return argv[i:]
 		}
 	}
 	return argv[i:]
+}
+
+// skipFloorWrappers is skipCommonWrappers plus sudo stripping, for the
+// system-access floor only. The floor must see through a privilege wrapper to
+// find the real command (`sudo rm -rf /etc` would otherwise keep argv0 sudo
+// and evade every argv-aware floor check).
+//
+// This is deliberately separate from skipCommonWrappers: that helper also
+// backs stageIsGitPush, so teaching it about sudo would turn a flag-off
+// `sudo git push` from a guardrail Deny into the push floor's Confirm.
+func skipFloorWrappers(argv []string) []string {
+	argv = skipCommonWrappers(argv)
+	for len(argv) > 0 && lastSegment(argv[0]) == "sudo" {
+		i := 1
+		for i < len(argv) {
+			a := argv[i]
+			if !strings.HasPrefix(a, "-") {
+				break
+			}
+			// sudo options that take a separate value.
+			switch a {
+			case "-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
+				"-h", "--host", "-r", "--role", "-t", "--type", "-U", "--other-user":
+				i += 2
+			default:
+				i++
+			}
+		}
+		if i > len(argv) {
+			return nil
+		}
+		argv = skipCommonWrappers(argv[i:])
+	}
+	return argv
 }
 
 // stageIsRMDestructive reports whether a pipeline stage runs rm with both

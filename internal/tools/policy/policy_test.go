@@ -54,6 +54,54 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 	}
 }
 
+func TestSystemModeReasonPrefix(t *testing.T) {
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.write", Description: "write", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeEdit)
+	pe.WithRegistry(reg)
+
+	args := map[string]interface{}{"path": "/tmp/out-of-root/report.json", "content": "x"}
+
+	dec, reason, err := pe.Evaluate("file.write", args, WithSystem(true))
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("Evaluate(file.write, system) = %v, want Confirm; reason=%q", dec, reason)
+	}
+	if !strings.HasPrefix(reason, "system mode:") {
+		t.Fatalf("system-mode reason = %q, want the %q prefix", reason, "system mode:")
+	}
+
+	dec, reason, err = pe.Evaluate("file.write", args)
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("Evaluate(file.write) = %v, want Confirm; reason=%q", dec, reason)
+	}
+	if strings.HasPrefix(reason, "system mode:") {
+		t.Fatalf("reason without system access = %q, want no system-mode prefix", reason)
+	}
+
+	// A workspace-relative path never gains the prefix, even with system
+	// access on.
+	relArgs := map[string]interface{}{"path": "internal/foo.go", "content": "x"}
+	_, reason, err = pe.Evaluate("file.write", relArgs, WithSystem(true))
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if strings.HasPrefix(reason, "system mode:") {
+		t.Fatalf("relative-path reason = %q, want no system-mode prefix", reason)
+	}
+}
+
 func TestEvaluateWithSystemShrinksGuardrails(t *testing.T) {
 	pe := NewEngine(&config.Config{}, []string{})
 	pe.SetApprovalMode(ModeEdit)

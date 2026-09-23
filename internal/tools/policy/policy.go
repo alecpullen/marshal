@@ -476,8 +476,14 @@ func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Ru
 					return DecisionAllow, "read-only tool"
 				case registry.RiskWorkspaceWrite, registry.RiskCommand,
 					registry.RiskNetwork, registry.RiskDestructive:
-					return DecisionConfirm,
-						fmt.Sprintf("%s tool requires approval", tool.Risk)
+					reason := fmt.Sprintf("%s tool requires approval", tool.Risk)
+					// System access widens the write surface beyond the
+					// workspace; say so in the reason so the confirmation
+					// discloses the scope it is granting.
+					if system && hasAbsoluteSubject(toolName, args, normCmd) {
+						reason = "system mode: " + reason
+					}
+					return DecisionConfirm, reason
 				}
 				// Unknown risk: fall through to the existing
 				// "low-risk read tool" allow (preserves current behavior
@@ -1094,6 +1100,17 @@ func globMatch(pattern, subject string) bool {
 		idx += found + len(part)
 	}
 	return true
+}
+
+// hasAbsoluteSubject reports whether any path subject of the tool is an
+// absolute path. Used to disclose system-mode scope in Confirm reasons.
+func hasAbsoluteSubject(toolName string, args map[string]interface{}, normCmd string) bool {
+	for _, s := range subjectsForTool(toolName, args, normCmd) {
+		if filepath.IsAbs(s) {
+			return true
+		}
+	}
+	return false
 }
 
 func subjectsForTool(toolName string, args map[string]interface{}, normCmd string) []string {

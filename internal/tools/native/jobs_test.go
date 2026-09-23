@@ -436,7 +436,7 @@ func TestShellRunBackgroundInvokesGuardrail(t *testing.T) {
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot: root,
 		SessionState:  state,
-		Guardrail: func(command string) error {
+		Guardrail: func(command string, system bool) error {
 			blocked = true
 			return fmt.Errorf("guardrail blocked %q", command)
 		},

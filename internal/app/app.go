@@ -654,7 +654,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		Config:         cfg,
 		JobManager:     jobManager,
 		JobBroker:      jobBroker,
-		Guardrail:      func(cmd string) error { return pol.GuardrailCheck(cmd) },
+		Guardrail:      func(cmd string, system bool) error { return pol.GuardrailCheck(cmd, system) },
 		ConfigPath:     config.ProjectConfigPath(state.WorkingDir),
 		UserConfigPath: config.UserConfigPath(homeDir),
 		ConfigReloader: configReloader,

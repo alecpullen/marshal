@@ -73,10 +73,12 @@ type Options struct {
 	// Guardrail is invoked by shell.run / test.run after policy
 	// evaluation, as a final pre-flight check. Returning a non-nil
 	// error aborts the command with a tool error. Typically wired to
-	// (*policy.PolicyEngine).GuardrailCheck in app.go. Optional; when
-	// nil, no guardrail check is performed (the policy engine already
-	// ran Evaluate upstream in the agent loop).
-	Guardrail func(command string) error
+	// (*policy.PolicyEngine).GuardrailCheck in app.go. The system flag
+	// is the toolset's own session state, so the pre-flight applies the
+	// same catastrophic floor as the engine. Optional; when nil, no
+	// guardrail check is performed (the policy engine already ran
+	// Evaluate upstream in the agent loop).
+	Guardrail func(command string, system bool) error
 
 	// LSP is an optional LSPQuerier for symbol-name-addressed definition,
 	// references, and hover tools. nil when LSP is unavailable.
@@ -155,7 +157,7 @@ type toolSet struct {
 	webHTTPClient *http.Client
 	ssrfCheck     func(*url.URL) bool
 
-	guardrail func(command string) error
+	guardrail func(command string, system bool) error
 
 	config config.Config
 
@@ -297,6 +299,16 @@ func (t *toolSet) activeRoot() string {
 		}
 	}
 	return t.root
+}
+
+// systemAccess reports whether this toolset's session has the
+// system-access modifier. Nil-safe: no session state means no system
+// access — containment is enforced as today.
+func (t *toolSet) systemAccess() bool {
+	if t.sessionState == nil {
+		return false
+	}
+	return t.sessionState.SystemAccess()
 }
 
 // wsState returns the workspace-scoped state: WorkspaceState when set,

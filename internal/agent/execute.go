@@ -150,7 +150,7 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 				// the edited args should block execution. DecisionConfirm
 				// is treated as "proceed" because the user has already
 				// provided consent.
-				newDecision, newReason, perr := r.Policy.Evaluate(toolName, argsMap)
+				newDecision, newReason, perr := r.Policy.Evaluate(toolName, argsMap, policy.WithSystem(r.State.SystemAccess()))
 				if perr != nil {
 					return policyLoopResult{}, fmt.Errorf("policy re-evaluate after edit: %w", perr)
 				}
@@ -286,7 +286,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 
 		r.Policy.SetSessionRules(r.State.SessionRules())
-		decision, reason, evalErr := r.Policy.Evaluate(toolName, argsMap)
+		decision, reason, evalErr := r.Policy.Evaluate(toolName, argsMap, policy.WithSystem(r.State.SystemAccess()))
 		if evalErr != nil {
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, evalErr.Error(), toolCallID)}, nil

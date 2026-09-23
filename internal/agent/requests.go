@@ -27,7 +27,7 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	diff := ""
 	if toolName == "file.write_patch" {
 		if patchText, ok := argsMap["patch"].(string); ok {
-			if preview, previewErr := PreviewPatchDiff(r.State.WorkingDir, patchText); previewErr == nil {
+			if preview, previewErr := PreviewPatchDiff(r.State.WorkingDir, patchText, r.State.SystemAccess()); previewErr == nil {
 				diff = preview
 			}
 		}

@@ -209,3 +209,65 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigurableFloorCommands pins the [tools.shell] floor_commands
+// contract: configured prefixes are floored exactly like the built-in push
+// floor (wrapper and payload blindness included), the built-in push floor
+// survives an empty list, and a prefix never matches a longer command.
+func TestConfigurableFloorCommands(t *testing.T) {
+	newEngine := func(floors []string) *PolicyEngine {
+		cfg := &config.Config{}
+		cfg.Tools.Shell.FloorCommands = floors
+		pe := NewEngine(cfg, []string{})
+		pe.SetApprovalMode(ModeAuto)
+		return pe
+	}
+
+	floored := []string{
+		"npm publish",
+		"exec npm publish",
+		"sh -c 'npm publish'",
+		"nohup npm publish --tag x",
+	}
+	for _, cmd := range floored {
+		t.Run("floored/"+cmd, func(t *testing.T) {
+			pe := newEngine([]string{"npm publish"})
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec != DecisionConfirm {
+				t.Fatalf("Evaluate(%q) = %v (%s), want Confirm (configured floor)", cmd, dec, reason)
+			}
+			if !strings.Contains(reason, "configured floor") {
+				t.Fatalf("Evaluate(%q) reason = %q, want the configured-floor reason", cmd, reason)
+			}
+		})
+	}
+
+	// An empty configured list must not remove the built-in push floor.
+	t.Run("empty list keeps push floor", func(t *testing.T) {
+		pe := newEngine(nil)
+		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git push"}, WithSystem(true))
+		if err != nil {
+			t.Fatalf("Evaluate error: %v", err)
+		}
+		if dec != DecisionConfirm || !strings.Contains(reason, "non-bypassable floor") {
+			t.Fatalf("Evaluate(git push) = %v (%s), want the non-bypassable push floor", dec, reason)
+		}
+	})
+
+	// No false positives: a longer command sharing a prefix is not floored.
+	for _, cmd := range []string{"git pushd", "npm publishd"} {
+		t.Run("not floored/"+cmd, func(t *testing.T) {
+			pe := newEngine([]string{"npm publish"})
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec == DecisionConfirm && strings.Contains(reason, "floor") {
+				t.Fatalf("Evaluate(%q) = %v (%s), want no floor", cmd, dec, reason)
+			}
+		})
+	}
+}

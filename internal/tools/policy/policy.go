@@ -250,8 +250,13 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, o
 	// transform so a floor Confirm is returned directly, never downgraded.
 	if toolName == "shell.run" || toolName == "test.run" {
 		if cmdRaw, ok := args["command"]; ok {
-			if cmd, ok := cmdRaw.(string); ok && isGitPushFloorWithSystem(cmd, eo.system) {
-				return DecisionConfirm, "git push requires approval (non-bypassable floor)", nil
+			if cmd, ok := cmdRaw.(string); ok {
+				if match, hit := isFloorCommandWithSystem(cmd, eo.system, cfg.Tools.Shell.FloorCommands); hit {
+					if match == gitPushFloorPrefix {
+						return DecisionConfirm, "git push requires approval (non-bypassable floor)", nil
+					}
+					return DecisionConfirm, fmt.Sprintf("%s requires approval (configured floor)", match), nil
+				}
 			}
 		}
 	}
@@ -1096,10 +1101,27 @@ func isGitPushFloor(cmd string) bool {
 // untouched: the default floor already denies those on the sudo guardrail, and
 // seeing them as pushes would downgrade that Deny to the floor's Confirm.
 func isGitPushFloorWithSystem(cmd string, system bool) bool {
+	_, hit := isFloorCommandWithSystem(cmd, system, nil)
+	return hit
+}
+
+// gitPushFloorPrefix is the built-in floor's prefix. It is matched before any
+// configured prefix so the push floor keeps its own reason string.
+const gitPushFloorPrefix = "git push"
+
+// isFloorCommandWithSystem reports whether cmd invokes a floored command and
+// returns the matched prefix. The built-in git-push floor is always checked,
+// even when extra is empty; extra holds the user-configured prefixes from
+// [tools.shell] floor_commands. A configured prefix can only add floors — it
+// can never remove the built-in push floor.
+func isFloorCommandWithSystem(cmd string, system bool, extra []string) (string, bool) {
 	if isGitPushFloor(cmd) {
-		return true
+		return gitPushFloorPrefix, true
 	}
-	return floorHitStages(cmd, 0, system)
+	if match := floorHitStages(cmd, 0, system, extra); match != "" {
+		return match, true
+	}
+	return "", false
 }
 
 // floorHitStages reports whether cmd invokes a floored command, seeing
@@ -1116,29 +1138,36 @@ func isGitPushFloorWithSystem(cmd string, system bool) bool {
 // On a parse error it falls back to isGitPushFloor's legacy words check: an
 // unparseable command is not provably a push, and the guardrail path still
 // fails closed on it.
-func floorHitStages(cmd string, depth int, system bool) bool {
+func floorHitStages(cmd string, depth int, system bool, extra []string) string {
 	stages, err := parseStages(cmd)
 	if err != nil {
-		return isGitPushFloor(cmd)
+		if isGitPushFloor(cmd) {
+			return gitPushFloorPrefix
+		}
+		return ""
 	}
 	for _, s := range stages {
 		if payload, ok := floorShellPayload(s, system); ok {
-			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1, system) {
-				return true
+			if depth < maxGuardrailDepth {
+				if match := floorHitStages(payload, depth+1, system, extra); match != "" {
+					return match
+				}
 			}
 			continue
 		}
 		if payload, ok := floorSuPayload(s, system); ok {
-			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1, system) {
-				return true
+			if depth < maxGuardrailDepth {
+				if match := floorHitStages(payload, depth+1, system, extra); match != "" {
+					return match
+				}
 			}
 			continue
 		}
-		if floorHitArgv(append([]string{s.argv0}, s.args...), depth, system) {
-			return true
+		if match := floorHitArgv(append([]string{s.argv0}, s.args...), depth, system, extra); match != "" {
+			return match
 		}
 	}
-	return false
+	return ""
 }
 
 // floorShellPayload and floorSuPayload are the floor's system-aware variants
@@ -1157,35 +1186,62 @@ func floorSuPayload(st stage, system bool) (string, bool) {
 // extended wrapper set is stripped. It recurses into the payload-carrying
 // wrappers (xargs, eval) and into inline shell payloads that only become
 // visible after stripping (`exec sh -c '…'`).
-func floorHitArgv(argv []string, depth int, system bool) bool {
+func floorHitArgv(argv []string, depth int, system bool, extra []string) string {
 	argv = skipFloorWrappersExtended(argv, system)
 	if gitPushInArgv(argv) {
-		return true
+		return gitPushFloorPrefix
+	}
+	if match := floorExtraPrefixInArgv(argv, extra); match != "" {
+		return match
 	}
 	if len(argv) == 0 {
-		return false
+		return ""
 	}
 	if depth < maxGuardrailDepth {
 		if payload, ok := shellPayloadFromArgv(argv); ok {
-			return floorHitStages(payload, depth+1, system)
+			return floorHitStages(payload, depth+1, system, extra)
 		}
 		if payload, ok := suPayloadFromArgv(argv); ok {
-			return floorHitStages(payload, depth+1, system)
+			return floorHitStages(payload, depth+1, system, extra)
 		}
 	}
 	switch lastSegment(argv[0]) {
 	case "xargs":
 		if depth < maxGuardrailDepth {
-			return floorHitArgv(xargsPayload(argv), depth+1, system)
+			return floorHitArgv(xargsPayload(argv), depth+1, system, extra)
 		}
 	case "eval":
 		if depth < maxGuardrailDepth {
 			// The printer re-emits the payload quoted; strip the quotes so the
 			// inner parse sees the command, not a single literal word.
-			return floorHitStages(strings.Trim(strings.Join(argv[1:], " "), "'\""), depth+1, system)
+			return floorHitStages(strings.Trim(strings.Join(argv[1:], " "), "'\""), depth+1, system, extra)
 		}
 	}
-	return false
+	return ""
+}
+
+// floorExtraPrefixInArgv reports whether an already-wrapper-stripped argv
+// begins with one of the configured floor prefixes, returning the matched
+// prefix. Prefixes match token-wise, so `npm publish` does not floor
+// `npm publishd`.
+func floorExtraPrefixInArgv(argv []string, extra []string) string {
+	for _, raw := range extra {
+		prefix := strings.Fields(raw)
+		if len(prefix) == 0 || len(argv) < len(prefix) {
+			continue
+		}
+		matched := true
+		for i, p := range prefix {
+			if argv[i] != p {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return strings.Join(prefix, " ")
+		}
+	}
+	return ""
 }
 
 // stageIsGitPush reports whether a parsed pipeline stage is a git push

@@ -487,6 +487,7 @@ func TestMCPSetPersists(t *testing.T) {
 }
 
 func TestMCPSetPersistsRemoteServer(t *testing.T) {
+	t.Setenv("MCP_TOKEN", "test-token")
 	st := newAutoApproveSessionState()
 	testSectionWriteWithState(t, "config.mcp.set", (*toolSet).configMCPSetTool,
 		`{"servers":{"remote":{"url":"https://93.184.216.34/mcp","type":"http","trust":"unrestricted","headers":{"Authorization":"Bearer $MCP_TOKEN"}}}}`,
@@ -760,6 +761,25 @@ func TestProvidersDeleteRemovesKey(t *testing.T) {
 		_, ok := c.Providers["openai"]
 		return !ok
 	})
+}
+
+// An unresolvable $VAR must be a write-time error naming the variable, not
+// an entry that cannot connect.
+func TestConfigMCPSetRejectsUnresolvableHeaderVar(t *testing.T) {
+	cfg := config.Default()
+	tool, _, _, _, reloaded := setupGlobalOnlyTool(t, cfg, "config.mcp.set", (*toolSet).configMCPSetTool)
+
+	args := `{"scope":"global","servers":{"remote":{"url":"https://mcp.example.com/","type":"http","trust":"unrestricted","headers":{"Authorization":"Bearer $MARSHAL_TEST_UNSET_VAR"}}}}`
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.set", Args: []byte(args)})
+	if err == nil {
+		t.Fatal("expected an error for an unresolvable header variable")
+	}
+	if !strings.Contains(err.Error(), "MARSHAL_TEST_UNSET_VAR") {
+		t.Errorf("error = %v, want it to name the variable", err)
+	}
+	if *reloaded != nil {
+		t.Error("config was written despite the rejected header")
+	}
 }
 
 func TestModelsPresetSetRoundTrip(t *testing.T) {

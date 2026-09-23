@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -209,6 +210,35 @@ func ResolveHeaders(headers map[string]string) (map[string]string, error) {
 		out[k] = expanded
 	}
 	return out, nil
+}
+
+// HeaderEnvRefs returns the sorted, de-duplicated names of the environment
+// variables referenced by $VAR / ${VAR} in the given header values. It
+// reports names only — never values — so a tool result can say what it
+// resolved without echoing a credential.
+func HeaderEnvRefs(headers map[string]string) []string {
+	seen := map[string]bool{}
+	for _, v := range headers {
+		for i := 0; i < len(v); {
+			if v[i] != '$' {
+				i++
+				continue
+			}
+			name, next, ok := envRef(v, i)
+			if !ok {
+				i++
+				continue
+			}
+			seen[name] = true
+			i = next
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // expandEnv expands $VAR and ${VAR} references from the process environment.

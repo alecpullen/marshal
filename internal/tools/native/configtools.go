@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"sort"
 	"strings"
 	"time"
 
@@ -1086,6 +1087,9 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.mcp.set args: %w", err)
 		}
+		// Names of the header variables this write resolved, reported back so
+		// the caller can see the credential path worked. Names only.
+		var resolvedVars []string
 		// Validate every server before writing anything: a rejected entry must
 		// not leave a half-applied [mcp] section on disk.
 		for name, srv := range args.Servers {
@@ -1110,11 +1114,20 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 				if err := mcp.ValidateRemoteServer(candidate); err != nil {
 					return registry.ToolResult{}, fmt.Errorf("mcp server %q: %w", name, err)
 				}
+				// Resolve headers now so an unresolvable $VAR is a write-time
+				// error naming the variable, instead of an entry that cannot
+				// connect and fails later as an opaque reload error. The
+				// resolved values are discarded — config stores the
+				// references, never the secrets.
+				if _, err := mcp.ResolveHeaders(candidate.Headers); err != nil {
+					return registry.ToolResult{}, fmt.Errorf("mcp server %q: %w", name, err)
+				}
+				resolvedVars = append(resolvedVars, mcp.HeaderEnvRefs(candidate.Headers)...)
 			}
 		}
 		scope := args.resolvedScope()
 		reason := fmt.Sprintf("config.mcp.set (%s scope): update mcp section", scope)
-		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
+		res, err := t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
 			if args.Servers != nil {
 				if cfg.MCP.Servers == nil {
 					cfg.MCP.Servers = map[string]config.MCPServerConfig{}
@@ -1150,6 +1163,14 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 				cfg.MCP.DisclosureThresholdTools = *args.DisclosureThresholdTools
 			}
 		})
+		if err != nil {
+			return res, err
+		}
+		if len(resolvedVars) > 0 {
+			sort.Strings(resolvedVars)
+			res.Summary += fmt.Sprintf(" Resolved header variables: %s.", strings.Join(resolvedVars, ", "))
+		}
+		return res, nil
 	}
 	return tool
 }

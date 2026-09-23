@@ -3,11 +3,25 @@ package mcp
 import (
 	"context"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 
 	"marshal/internal/app/config"
 )
+
+func TestHeaderEnvRefs(t *testing.T) {
+	headers := map[string]string{
+		"Authorization": "Bearer $RUNPOD_API_KEY",
+		"X-Other":       "${SECOND_VAR} and $RUNPOD_API_KEY",
+		"Literal":       "no variables here",
+	}
+	got := HeaderEnvRefs(headers)
+	want := []string{"RUNPOD_API_KEY", "SECOND_VAR"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("HeaderEnvRefs = %v, want %v", got, want)
+	}
+}
 
 func TestTransportDerivesFromFields(t *testing.T) {
 	tests := []struct {

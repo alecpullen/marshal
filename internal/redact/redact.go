@@ -7,7 +7,9 @@ package redact
 
 import (
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"unicode"
 
 	"marshal/internal/sandbox/envutil"
@@ -126,6 +128,63 @@ var bearerJWT = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]
 // entire block is replaced.
 var privateKeyBlock = regexp.MustCompile(`(?is)-----BEGIN(?:\s+(?:RSA|EC|DSA|OPENSSH))? PRIVATE KEY-----.*?-----END(?:\s+(?:RSA|EC|DSA|OPENSSH))? PRIVATE KEY-----`)
 
+// minLiteralSecretLen is the shortest value RegisterSecret will mask. Short
+// values would match ordinary prose and corrupt transcripts for no security
+// gain.
+const minLiteralSecretLen = 8
+
+// maxLiteralSecrets bounds the registry so a long-running process cannot grow
+// it without limit.
+const maxLiteralSecrets = 256
+
+// literalSecrets holds exact secret values registered at runtime — currently
+// env-resolved MCP header values. They carry no recognisable sigil, so the
+// pattern passes below cannot find them; they are masked verbatim instead.
+var (
+	literalMu      sync.RWMutex
+	literalSecrets = map[string]struct{}{}
+)
+
+// RegisterSecret records a literal secret value so Secrets masks every
+// occurrence of it. Values shorter than minLiteralSecretLen are ignored, and
+// the registry stops growing at maxLiteralSecrets.
+func RegisterSecret(value string) {
+	if len(value) < minLiteralSecretLen {
+		return
+	}
+	literalMu.Lock()
+	defer literalMu.Unlock()
+	if len(literalSecrets) >= maxLiteralSecrets {
+		return
+	}
+	literalSecrets[value] = struct{}{}
+}
+
+// resetRegisteredSecrets clears the registry. Tests use it to isolate cases.
+func resetRegisteredSecrets() {
+	literalMu.Lock()
+	defer literalMu.Unlock()
+	literalSecrets = map[string]struct{}{}
+}
+
+// maskRegisteredSecrets replaces every registered literal secret with
+// MaskToken. Longest values are replaced first so a secret that contains
+// another registered secret is masked whole rather than partially.
+func maskRegisteredSecrets(text string) string {
+	literalMu.RLock()
+	values := make([]string, 0, len(literalSecrets))
+	for v := range literalSecrets {
+		values = append(values, v)
+	}
+	literalMu.RUnlock()
+
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, v := range values {
+		text = strings.ReplaceAll(text, v, MaskToken)
+	}
+	return text
+}
+
 // Secrets returns text with secret-bearing values replaced by MaskToken. It is
 // conservative: it only masks values adjacent to known bearer keys/sigils, so
 // ordinary prose and code are untouched.
@@ -156,5 +215,5 @@ func Secrets(text string) string {
 	text = highEntropyToken.ReplaceAllString(text, MaskToken)
 	text = bearerJWT.ReplaceAllString(text, MaskToken)
 	text = privateKeyBlock.ReplaceAllString(text, MaskToken)
-	return text
+	return maskRegisteredSecrets(text)
 }

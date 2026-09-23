@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/redact"
 	"marshal/internal/tools/registry"
 )
 
@@ -139,11 +143,121 @@ func TestRegisterTools_SkipsHangingServer(t *testing.T) {
 	}
 }
 
+// TestManagerStartsRemoteServerAndRegistersTools covers the remote branch of
+// Start end to end: a Streamable-HTTP server is configured by URL, its header
+// value is env-interpolated, its tools register under mcp.<server>.<tool>,
+// and calling one round-trips through the HTTP client.
+func TestManagerStartsRemoteServerAndRegistersTools(t *testing.T) {
+	origInsecure := allowInsecureHTTP
+	allowInsecureHTTP = true
+	t.Cleanup(func() { allowInsecureHTTP = origInsecure })
+
+	var (
+		mu      sync.Mutex
+		sawAuth string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			mu.Lock()
+			sawAuth = got
+			mu.Unlock()
+		}
+		var req Request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any
+		switch req.Method {
+		case "initialize":
+			w.Header().Set(mcpSessionIDHeader, "sess-1")
+			result = InitializeResult{
+				ProtocolVersion: "2024-11-05",
+				ServerInfo:      Implementation{Name: "remote", Version: "1"},
+			}
+		case "tools/list":
+			result = ListToolsResult{Tools: []MCPTool{{
+				Name:        "hello",
+				Description: "says hello",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			}}}
+		case "tools/call":
+			result = CallToolResult{Content: []MCPContent{{Type: "text", Text: "hello from remote"}}}
+		default:
+			http.Error(w, "unknown method", http.StatusNotFound)
+			return
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Response{JSONRPC: "2.0", ID: req.ID, Result: raw})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MCP_TEST_REMOTE_TOKEN", "resolved-token-value")
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"remote": {
+			URL:     srv.URL,
+			Trust:   "unrestricted",
+			Headers: map[string]string{"Authorization": "Bearer $MCP_TEST_REMOTE_TOKEN"},
+		},
+	}
+
+	mgr := NewManager(&cfg)
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer mgr.Close()
+
+	reg := registry.New()
+	if err := mgr.RegisterTools(reg); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+
+	tool, ok := reg.Lookup("mcp.remote.hello")
+	if !ok {
+		t.Fatal("tool mcp.remote.hello not registered")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Name: "mcp.remote.hello", Args: []byte("{}")})
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	if !strings.Contains(res.Content, "hello from remote") {
+		t.Errorf("content = %q, want containing 'hello from remote'", res.Content)
+	}
+
+	mu.Lock()
+	gotAuth := sawAuth
+	mu.Unlock()
+	if gotAuth != "Bearer resolved-token-value" {
+		t.Errorf("Authorization header = %q, want the env-resolved value", gotAuth)
+	}
+
+	// The resolved header value must be registered with the redactor so it is
+	// masked in logs and exported transcripts.
+	if masked := redact.Secrets("sending resolved-token-value upstream"); strings.Contains(masked, "resolved-token-value") {
+		t.Errorf("resolved header value was not registered with the redactor: %q", masked)
+	}
+}
+
 // stubCaller is a test stub that implements the caller interface.
 type stubCaller struct {
 	res CallToolResult
 	err error
 }
+
+func (s *stubCaller) ServerName() string { return "stub" }
+
+func (s *stubCaller) Close() error { return nil }
 
 func (s *stubCaller) Call(ctx context.Context, method string, params, result any) error {
 	if s.err != nil {

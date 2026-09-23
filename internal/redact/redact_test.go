@@ -238,6 +238,52 @@ func TestSecretsTrailingPunctuationRedacted(t *testing.T) {
 	}
 }
 
+// TestRegisterSecretMasksLiteralValues covers the runtime registry used for
+// env-resolved MCP header values, which carry no recognisable sigil and so
+// are invisible to the pattern passes.
+func TestRegisterSecretMasksLiteralValues(t *testing.T) {
+	resetRegisteredSecrets()
+	t.Cleanup(resetRegisteredSecrets)
+
+	const token = "opaque-header-token-value"
+	RegisterSecret(token)
+
+	in := "sending Authorization: Bearer " + token + " to the server"
+	out := Secrets(in)
+	if contains(out, token) {
+		t.Fatalf("registered secret survived redaction: %q", out)
+	}
+	if !contains(out, MaskToken) {
+		t.Fatalf("redaction marker absent: %q", out)
+	}
+	if !contains(out, "to the server") {
+		t.Fatalf("surrounding text altered: %q", out)
+	}
+}
+
+func TestRegisterSecretIgnoresShortValues(t *testing.T) {
+	resetRegisteredSecrets()
+	t.Cleanup(resetRegisteredSecrets)
+
+	RegisterSecret("short")
+	in := "a short value in ordinary prose"
+	if out := Secrets(in); out != in {
+		t.Fatalf("short value should not be registered, got %q", out)
+	}
+}
+
+func TestRegisterSecretMasksLongestFirst(t *testing.T) {
+	resetRegisteredSecrets()
+	t.Cleanup(resetRegisteredSecrets)
+
+	RegisterSecret("abcdefgh")
+	RegisterSecret("abcdefghijkl")
+	out := Secrets("value abcdefghijkl here")
+	if contains(out, "abcdefgh") {
+		t.Fatalf("overlapping secrets left a fragment: %q", out)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

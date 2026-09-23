@@ -80,6 +80,10 @@ func NewHTTPClient(name, url string, headers map[string]string, opts ...HTTPClie
 	return c
 }
 
+// ServerName returns the configured server name, satisfying the caller
+// interface so the manager can address clients generically.
+func (c *HTTPClient) ServerName() string { return c.Name }
+
 // log returns the client's logger, defaulting to slog.Default() when the
 // Logger field is nil.
 func (c *HTTPClient) log() *slog.Logger {

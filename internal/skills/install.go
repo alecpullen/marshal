@@ -31,6 +31,18 @@ func Install(ctx context.Context, source, targetDir, name string) (string, error
 		return "", fmt.Errorf("invalid skill name %q", name)
 	}
 
+	// Raw single-file skill URL: fetch it to a temp .md file first, then
+	// install that local file. This must run before looksLikeGitURL, which
+	// treats every http(s) string as a git URL.
+	if isRawSkillURL(source) {
+		localPath, cleanup, err := fetchRawSkillURL(ctx, source)
+		if err != nil {
+			return "", fmt.Errorf("fetch skill from %s: %w", source, err)
+		}
+		defer cleanup()
+		source = localPath
+	}
+
 	// Git URL install.
 	if looksLikeGitURL(source) {
 		return installGit(ctx, source, targetDir, name)

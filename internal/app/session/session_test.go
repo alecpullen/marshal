@@ -26,6 +26,21 @@ func newTestState() *State {
 	return New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
 }
 
+func TestSystemAccessDefaultsFalseAndToggles(t *testing.T) {
+	s := newTestState()
+	if s.SystemAccess() {
+		t.Fatal("SystemAccess() = true on a fresh state, want false")
+	}
+	s.SetSystemAccess(true)
+	if !s.SystemAccess() {
+		t.Fatal("SystemAccess() = false after SetSystemAccess(true), want true")
+	}
+	s.SetSystemAccess(false)
+	if s.SystemAccess() {
+		t.Fatal("SystemAccess() = true after SetSystemAccess(false), want false")
+	}
+}
+
 func TestEnterSubagentDefaultCapIsThree(t *testing.T) {
 	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
 	for i := 0; i < 3; i++ {

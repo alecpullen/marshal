@@ -62,8 +62,15 @@ type HTTPClient struct {
 // NewHTTPClient returns a Streamable-HTTP MCP client for a remote endpoint.
 // headers are already env-resolved by the caller.
 func NewHTTPClient(name, url string, headers map[string]string, opts ...HTTPClientOption) *HTTPClient {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = httpClientTimeout
+	// Clone the default transport so this client's timeouts are its own. The
+	// assertion is guarded: a wrapped DefaultTransport (a test or embedding
+	// host may install one) falls back to a fresh transport rather than
+	// panicking.
+	transport := &http.Transport{ResponseHeaderTimeout: httpClientTimeout}
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = base.Clone()
+		transport.ResponseHeaderTimeout = httpClientTimeout
+	}
 
 	c := &HTTPClient{
 		Name:    name,
@@ -148,7 +155,7 @@ func (c *HTTPClient) Call(ctx context.Context, method string, params, result any
 	if isEventStream(resp.Header.Get("Content-Type")) {
 		res, err = readSSEResponse(resp.Body, id)
 	} else {
-		res, err = readJSONResponse(resp.Body)
+		res, err = readJSONResponse(resp.Body, id)
 	}
 	if err != nil {
 		return err
@@ -249,11 +256,15 @@ func isEventStream(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
 }
 
-// readJSONResponse decodes a single JSON-RPC response body.
-func readJSONResponse(r io.Reader) (Response, error) {
+// readJSONResponse decodes a single JSON-RPC response body and checks that it
+// answers the request we sent, matching the SSE path's id check.
+func readJSONResponse(r io.Reader, id json.Number) (Response, error) {
 	var res Response
 	if err := json.NewDecoder(r).Decode(&res); err != nil {
 		return Response{}, fmt.Errorf("mcp: decode response: %w", err)
+	}
+	if res.ID != id {
+		return Response{}, fmt.Errorf("mcp: response id %s does not match request id %s", res.ID, id)
 	}
 	return res, nil
 }

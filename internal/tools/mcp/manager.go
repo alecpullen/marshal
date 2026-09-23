@@ -148,6 +148,9 @@ func (m *Manager) startStdio(ctx context.Context, name string, srv config.MCPSer
 	}
 	client := NewClient(name, srv.Command, srv.Args, env, WithClientLogger(m.log()))
 	if err := client.Start(ctx); err != nil {
+		// A half-started client still owns a child process and pipes; close it
+		// rather than leaving them to the garbage collector.
+		_ = client.Close()
 		return nil, err
 	}
 	return client, nil
@@ -168,6 +171,7 @@ func (m *Manager) startRemote(ctx context.Context, name string, srv config.MCPSe
 	registerHeaderSecrets(headers)
 	client := NewHTTPClient(name, srv.URL, headers, WithHTTPClientLogger(m.log()))
 	if err := client.Start(ctx); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 	return client, nil
@@ -177,19 +181,20 @@ func (m *Manager) startRemote(ctx context.Context, name string, srv config.MCPSe
 // redactor. A resolved token has no recognisable sigil, so the pattern passes
 // in internal/redact cannot find it; registering it masks it verbatim.
 //
-// Both the whole value and its individual words are registered: a header like
-// "Bearer <token>" is logged whole in some places and as the bare token in
-// others, and only registering the whole value would leave the token exposed
-// wherever the scheme prefix is absent. redact.RegisterSecret ignores values
-// below its minimum length, so short scheme words are not registered.
+// The whole value is registered, and so is the credential that follows a
+// scheme prefix: "Bearer <token>" is logged whole in some places and as the
+// bare token in others, so registering only the whole value would leave the
+// token exposed wherever the prefix is absent. Only the text after the FIRST
+// space is registered — registering every whitespace-separated word would
+// mask ordinary prose that happens to appear in a phrase-valued header.
 func registerHeaderSecrets(headers map[string]string) {
 	for k, v := range headers {
 		if !isSecretHeader(k) {
 			continue
 		}
 		redact.RegisterSecret(v)
-		for _, word := range strings.Fields(v) {
-			redact.RegisterSecret(word)
+		if _, credential, ok := strings.Cut(v, " "); ok {
+			redact.RegisterSecret(strings.TrimSpace(credential))
 		}
 	}
 }

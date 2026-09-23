@@ -154,6 +154,11 @@ func (m Model) modeSegment() string {
 	if mode == "" {
 		mode = "default"
 	}
+	// System access is a modifier on the mode, not a mode of its own, so it
+	// rides the mode cue rather than taking a segment of its own.
+	if m.state.SystemAccess() {
+		mode += " · system"
+	}
 	return mode
 }
 

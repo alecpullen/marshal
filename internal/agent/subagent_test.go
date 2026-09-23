@@ -45,7 +45,7 @@ func TestSubagentDepthLimit(t *testing.T) {
 	if !ok {
 		t.Fatal("schema missing properties object")
 	}
-	for _, field := range []string{"temperature", "thinking"} {
+	for _, field := range []string{"temperature", "thinking", "system"} {
 		if _, ok := props[field]; !ok {
 			t.Fatalf("schema must expose %q property, got properties: %v", field, props)
 		}
@@ -60,6 +60,59 @@ func TestSubagentDepthLimit(t *testing.T) {
 	}
 	if called {
 		t.Fatal("factory must not be invoked when depth guard rejects")
+	}
+}
+
+// TestAgentRunSystemFlagWithoutParent pins the upward-only rule: a child can
+// never be granted system access the parent does not already have. The
+// handler rejects before admission, so the refusal costs no concurrency slot
+// and spawns no child.
+func TestAgentRunSystemFlagWithoutParent(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	if state.SystemAccess() {
+		t.Fatal("precondition: parent must not have system access")
+	}
+	factoryCalls := 0
+	factory := func(_ SubagentRequest) (*Runner, *session.State, error) {
+		factoryCalls++
+		return &Runner{}, state, nil
+	}
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
+	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y","system":true}`)})
+	if err == nil {
+		t.Fatal("expected a tool error when the parent lacks system access")
+	}
+	if !strings.Contains(err.Error(), "system access requested but this session does not have it") {
+		t.Fatalf("error = %v, want the system-access refusal", err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("factory invocations = %d, want 0 (no child may be spawned)", factoryCalls)
+	}
+	if got := state.SubagentConcurrency(); got != 0 {
+		t.Fatalf("concurrency = %d, want 0 (the refusal must not take a slot)", got)
+	}
+}
+
+// TestAgentRunSystemFlagPropagatesToFactory pins the agent-side half of the
+// contract: when the parent has system access and the call asks for it, the
+// flag reaches the factory in the SubagentRequest. The factory (app.go) is
+// what ANDs it with the parent's own flag at child construction.
+func TestAgentRunSystemFlagPropagatesToFactory(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state.SetSystemAccess(true)
+	var got SubagentRequest
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		got = req
+		return &Runner{}, state, nil
+	}
+	tool := NewSubagentTool(factory, nil, registry.New(), state,
+		WithSubagentExec(func(context.Context, *Runner, string) (string, string, error) {
+			return "done", "", nil
+		}),
+	)
+	runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"y","system":true}`)
+	if !got.System {
+		t.Fatal("SubagentRequest.System = false, want true")
 	}
 }
 

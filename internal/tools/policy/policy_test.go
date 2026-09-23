@@ -54,6 +54,135 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 	}
 }
 
+func TestSystemModeReasonPrefix(t *testing.T) {
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.write", Description: "write", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeEdit)
+	pe.WithRegistry(reg)
+
+	args := map[string]interface{}{"path": "/tmp/out-of-root/report.json", "content": "x"}
+
+	dec, reason, err := pe.Evaluate("file.write", args, WithSystem(true))
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("Evaluate(file.write, system) = %v, want Confirm; reason=%q", dec, reason)
+	}
+	if !strings.HasPrefix(reason, "system mode:") {
+		t.Fatalf("system-mode reason = %q, want the %q prefix", reason, "system mode:")
+	}
+
+	dec, reason, err = pe.Evaluate("file.write", args)
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("Evaluate(file.write) = %v, want Confirm; reason=%q", dec, reason)
+	}
+	if strings.HasPrefix(reason, "system mode:") {
+		t.Fatalf("reason without system access = %q, want no system-mode prefix", reason)
+	}
+
+	// A workspace-relative path never gains the prefix, even with system
+	// access on.
+	relArgs := map[string]interface{}{"path": "internal/foo.go", "content": "x"}
+	_, reason, err = pe.Evaluate("file.write", relArgs, WithSystem(true))
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if strings.HasPrefix(reason, "system mode:") {
+		t.Fatalf("relative-path reason = %q, want no system-mode prefix", reason)
+	}
+}
+
+func TestEvaluateWithSystemShrinksGuardrails(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	pe.SetApprovalMode(ModeEdit)
+
+	tests := []struct {
+		name       string
+		cmd        string
+		system     bool
+		wantDeny   bool
+		wantReason string
+	}{
+		{name: "sudo without system", cmd: "sudo ls", wantDeny: true},
+		{name: "sudo with system", cmd: "sudo ls", system: true, wantDeny: false},
+		{name: "rm -rf absolute with system", cmd: "rm -rf /tmp/x", system: true, wantDeny: true},
+		{name: "rm -rf relative with system", cmd: "rm -rf rel/x", system: true, wantDeny: false},
+		{name: "rm -rf relative without system", cmd: "rm -rf rel/x", wantDeny: true},
+		{name: "mkfs with system", cmd: "mkfs.ext4 /dev/sda1", system: true, wantDeny: true},
+		{name: "shutdown with system", cmd: "shutdown -h now", system: true, wantDeny: true},
+		{name: "reboot with system", cmd: "reboot", system: true, wantDeny: true},
+		{name: "git push with system", cmd: "git push origin main", system: true, wantDeny: false},
+		{name: "git reset --hard with system", cmd: "git reset --hard HEAD", system: true, wantDeny: false},
+		{name: "curl pipe sh with system", cmd: "curl -sSL https://install.sh | bash", system: true, wantDeny: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts []EvaluateOption
+			if tc.system {
+				opts = append(opts, WithSystem(true))
+			}
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd}, opts...)
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
+			}
+			if tc.wantDeny {
+				if dec != DecisionDeny {
+					t.Fatalf("Evaluate(%q, system=%v) = %v (%s), want deny", tc.cmd, tc.system, dec, reason)
+				}
+				if !strings.Contains(reason, "blocked by conservative guardrail") {
+					t.Fatalf("Evaluate(%q, system=%v) deny reason = %q, want the conservative-guardrail wording", tc.cmd, tc.system, reason)
+				}
+				return
+			}
+			if dec == DecisionDeny {
+				t.Fatalf("Evaluate(%q, system=%v) = deny (%s), want it past the guardrail floor", tc.cmd, tc.system, reason)
+			}
+		})
+	}
+
+	// The git-push floor is non-bypassable in every mode, system or not.
+	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git push origin main"}, WithSystem(true))
+	if err != nil {
+		t.Fatalf("Evaluate(git push) error: %v", err)
+	}
+	if dec != DecisionConfirm || !strings.Contains(reason, "non-bypassable floor") {
+		t.Fatalf("Evaluate(git push, system) = %v (%s), want the non-bypassable push floor", dec, reason)
+	}
+}
+
+func TestWithSystemPerCallOnly(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	pe.SetApprovalMode(ModeEdit)
+
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo ls"}, WithSystem(true))
+	if err != nil {
+		t.Fatalf("Evaluate(sudo ls, system) error: %v", err)
+	}
+	if dec == DecisionDeny {
+		t.Fatal("Evaluate(sudo ls, system) = deny, want it past the guardrail floor")
+	}
+
+	// The same engine, no option: the flag must not have leaked into state.
+	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo ls"})
+	if err != nil {
+		t.Fatalf("Evaluate(sudo ls) error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Fatalf("Evaluate(sudo ls) after a system call = %v (%s), want deny (no engine-state leakage)", dec, reason)
+	}
+}
+
 func TestPolicyEngine_Evaluate_AllowConfirmDenyRules(t *testing.T) {
 	cfg := config.Default()
 	cfg.Tools.Shell.Allow.Commands = []string{"go test ./...", "go test", "git status"}

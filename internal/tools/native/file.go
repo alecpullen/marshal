@@ -139,7 +139,7 @@ func (t *toolSet) filePageTool() registry.Tool {
 // It performs the same path validation, TOCTOU size check, and read tracking
 // used by both file.read and file.page.
 func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byte, error) {
-	path, err := resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), requestedPath)
+	path, err := t.resolveToolPath(requestedPath, true)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +283,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 
 		// Dry run first
 		for _, fp := range patches {
-			path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), fp.Path)
+			path, err := t.resolveToolPath(fp.Path, false)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
@@ -335,7 +335,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 
 		// Apply for real
 		for _, fp := range patches {
-			path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), fp.Path)
+			path, err := t.resolveToolPath(fp.Path, false)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
@@ -478,7 +478,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 
-		path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), args.Path)
+		path, err := t.resolveToolPath(args.Path, false)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}

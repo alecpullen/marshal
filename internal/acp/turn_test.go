@@ -2689,3 +2689,200 @@ func TestForwarderDeniesSkillGateWhenBridgeNil(t *testing.T) {
 		t.Fatal("no response on ResponseChan; forwarder is stuck (F-SEC-13)")
 	}
 }
+
+// TestSetModeSystemAccessField pins the session/set_mode system_access
+// overlay: the request field turns the session flag on and the
+// mode_changed broadcast carries the live value.
+func TestSetModeSystemAccessField(t *testing.T) {
+	state := &session.State{}
+	var mu sync.Mutex
+	var updates []map[string]any
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     state,
+				SetMode:   func(mode string) error { return nil },
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				updates = append(updates, p.Update)
+			}
+			return nil
+		},
+	})
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"edit","system_access":true}`)); err != nil {
+		t.Fatalf("SetMode() error = %v", err)
+	}
+	if !state.SystemAccess() {
+		t.Fatal("SystemAccess() = false after set_mode with system_access:true, want true")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 1 {
+		t.Fatalf("updates = %#v, want one mode_changed", updates)
+	}
+	if updates[0]["kind"] != "mode_changed" || updates[0]["mode"] != "edit" {
+		t.Fatalf("update = %#v, want mode_changed edit", updates[0])
+	}
+	if got, ok := updates[0]["system_access"].(bool); !ok || !got {
+		t.Fatalf("broadcast system_access = %#v, want true", updates[0]["system_access"])
+	}
+}
+
+// TestSetModeSystemAccessRevokesAndAbsentLeavesUntouched pins the three-way
+// overlay semantics: system_access:true grants, an explicit false revokes, and
+// an absent field leaves the current flag alone.
+func TestSetModeSystemAccessRevokesAndAbsentLeavesUntouched(t *testing.T) {
+	state := &session.State{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     state,
+				SetMode:   func(mode string) error { return nil },
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"edit","system_access":true}`)); err != nil {
+		t.Fatalf("SetMode(grant) error = %v", err)
+	}
+	if !state.SystemAccess() {
+		t.Fatal("SystemAccess() = false after grant, want true")
+	}
+
+	// An absent field must not disturb the granted flag.
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"edit"}`)); err != nil {
+		t.Fatalf("SetMode(absent) error = %v", err)
+	}
+	if !state.SystemAccess() {
+		t.Fatal("SystemAccess() = false after a set_mode without the field, want it untouched at true")
+	}
+
+	// An explicit false must revoke it.
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"edit","system_access":false}`)); err != nil {
+		t.Fatalf("SetMode(revoke) error = %v", err)
+	}
+	if state.SystemAccess() {
+		t.Fatal("SystemAccess() = true after an explicit system_access:false, want false")
+	}
+}
+
+// TestSetModeInvalidModeDoesNotApplySystem pins validation ordering: an
+// invalid mode is rejected before the system-access overlay is applied.
+func TestSetModeInvalidModeDoesNotApplySystem(t *testing.T) {
+	state := &session.State{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     state,
+				SetMode:   func(mode string) error { return nil },
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_sys","mode":"yolo","system_access":true}`))
+	if err == nil || !strings.Contains(err.Error(), "invalid mode") {
+		t.Fatalf("err = %v, want invalid mode error", err)
+	}
+	if state.SystemAccess() {
+		t.Fatal("SystemAccess() = true after a rejected set_mode, want false")
+	}
+}
+
+// TestModeRequestSystemElevationApplied pins the mode.request elevation
+// path: an approved call whose args carry system:true turns the session
+// flag on and the mode_changed broadcast reports it.
+func TestModeRequestSystemElevationApplied(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	state := &session.State{}
+	pendingCh := make(chan session.UserApprovalDecision, 1)
+	var mu sync.Mutex
+	var updates []map[string]any
+	setModeDone := make(chan struct{})
+	modeChangedDone := make(chan struct{})
+	var setModeOnce sync.Once
+	var modeChangedOnce sync.Once
+
+	permClient := &fakePermissionClient{decision: PermissionDecision{Approved: true, Edited: "edit"}}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     state,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingToolCall{
+						ID:           "mode_req_sys_1",
+						Name:         "mode.request",
+						Args:         `{"mode":"edit","system":true}`,
+						Reason:       "mode-elevation: agent requests system access",
+						ResponseChan: pendingCh,
+					}
+					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
+					select {
+					case <-pendingCh:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Second):
+						return errors.New("timed out waiting for decision")
+					}
+				}),
+				Events: broker,
+				SetMode: func(mode string) error {
+					setModeOnce.Do(func() { close(setModeDone) })
+					return nil
+				},
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				updates = append(updates, p.Update)
+				if p.Update["kind"] == "mode_changed" && p.Update["mode"] == "edit" {
+					modeChangedOnce.Do(func() { close(modeChangedDone) })
+				}
+			}
+			return nil
+		},
+		Perms: permClient,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_sys_elev","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	waitFor := func(ch <-chan struct{}, label string) {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %s", label)
+		}
+	}
+	waitFor(setModeDone, "SetMode")
+	waitFor(modeChangedDone, "mode_changed update")
+
+	if !state.SystemAccess() {
+		t.Fatal("SystemAccess() = false after an approved mode.request with system:true, want true")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, u := range updates {
+		if u["kind"] == "mode_changed" && u["mode"] == "edit" {
+			if got, ok := u["system_access"].(bool); ok && got {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no mode_changed update carrying system_access=true: %#v", updates)
+	}
+}

@@ -221,6 +221,7 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 					rt.Runner.SetApprovalMode(m)
 					return nil
 				},
+				SetSystemAccess: rt.State.SetSystemAccess,
 				Steer:           rt.State.PushSteering,
 				State:           rt.State,
 				SwarmRunner:     swarmRunner,

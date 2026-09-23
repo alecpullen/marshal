@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**System access mode**
+
+- A per-session, runtime-only modifier that grants full-filesystem read/write
+  through the file tools — `file.read`, `file.page`, `file.write` and
+  `file.write_patch` accept absolute paths anywhere on the filesystem, not
+  only inside the workspace or the configured additional roots. Also widens
+  the read-side tools (`repo.search`, `csv.inspect`, `json.query`) so their
+  absolute-path behavior matches. Enable it with `/system`, the exit-flow
+  postmortem agent pass, an approved `mode.request` carrying `system: true`,
+  or ACP `session/set_mode` with `system_access`. Subagents receive it only
+  when the parent passes `system: true` on `agent.run`.
+- System access is a modifier, not an approval rung: it never changes mode
+  friction. Plan stays read-only, edit still confirms each write, and
+  copilot/auto still auto-approve.
+- The prompt-level ban on shell file editing is lifted under system access;
+  `file.write`/`file.write_patch` remain preferred because they alone
+  provide diff review, backups, and rollback. The stale-file guard still
+  requires a fresh read before overwriting a shell-edited file.
+- Guardrails shrink to a catastrophic floor that **fails closed**: `mkfs`,
+  `shutdown`, `reboot`, and recursive force-deletes or recursive
+  `chmod`/`chown` are still denied unless every operand is provably a
+  relative literal. Absolute paths, mixed operands, quoting, globs, shell
+  expansion, `xargs` payloads, privilege-wrapper prefixes, and inline shell
+  payloads all keep the deny. The git-push floor is untouched.
+- Session-scoped backup rollback now restores absolute paths at their real
+  location instead of recreating them inside the workspace tree. Git-backed
+  snapshots still do not cover files outside the workspace, and the consent
+  copy says so.
+
 ### Fixed
 
 - The verification reminder no longer treats every `shell.run` as an edit.

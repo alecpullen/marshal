@@ -262,8 +262,13 @@ type State struct {
 	sandbox            SandboxInfo
 	browser            BrowserInfo
 	trusted            bool
-	turnIndex          int
-	snapshotter        Snapshotter
+	// systemAccess is the per-session system-access modifier (spec §2):
+	// full-filesystem read/write via file tools, lifted prompt-level
+	// shell-editing ban, and catastrophic-floor guardrails. Runtime-only;
+	// never a config default. Sticky until toggled off. Guarded by mu.
+	systemAccess bool
+	turnIndex    int
+	snapshotter  Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
@@ -751,6 +756,20 @@ func (s *State) Trusted() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.trusted
+}
+
+// SystemAccess reports whether the session has system access enabled.
+func (s *State) SystemAccess() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.systemAccess
+}
+
+// SetSystemAccess toggles the per-session system-access modifier.
+func (s *State) SetSystemAccess(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.systemAccess = on
 }
 
 func (s *State) TurnIndex() int {

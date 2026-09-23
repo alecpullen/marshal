@@ -654,7 +654,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		Config:         cfg,
 		JobManager:     jobManager,
 		JobBroker:      jobBroker,
-		Guardrail:      func(cmd string) error { return pol.GuardrailCheck(cmd) },
+		Guardrail:      func(cmd string, system bool) error { return pol.GuardrailCheck(cmd, system) },
 		ConfigPath:     config.ProjectConfigPath(state.WorkingDir),
 		UserConfigPath: config.UserConfigPath(homeDir),
 		ConfigReloader: configReloader,
@@ -1546,6 +1546,13 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		childState.SetLayers(parentState.Layers())
 		childState.SetHomeDir(parentState.HomeDir())
 		childState.SetTrusted(parentState.Trusted())
+		// System access is inherited only when the parent has it AND the
+		// request explicitly asked for it. The AND lives here, at
+		// construction, so a child can never widen its own scope even if a
+		// future caller bypasses the handler's guard. Set outside the
+		// native-toolset branch below so the flag holds on every factory
+		// path (including the test wrapper with no WorkspaceRoot).
+		childState.SetSystemAccess(req.System && parentState.SystemAccess())
 		// The child needs its own native toolset, not a filtered view of the
 		// parent's. SubtaskScopeView re-registers the parent's existing Tool
 		// values, whose handlers close over the parent's toolSet — so a

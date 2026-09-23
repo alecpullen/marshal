@@ -305,6 +305,14 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name: "system",
+			Description: "System access: file tools may read/write absolute paths anywhere on the filesystem; " +
+				"shell file editing is permitted; guardrails shrink to a catastrophic floor. " +
+				"Sticky until toggled off. Does not change approval friction.",
+			Group:   groupWorkflow,
+			TUIOnly: true,
+		},
+		{
 			Name:        "swarm",
 			Description: "Run a goal through the swarm (planner → scouts → implementer → reviewer)",
 			Args:        "<goal>",
@@ -834,8 +842,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				}
 				summary := postmortem.Summarize(report)
 				if agent {
+					// The agent pass edits the report at an absolute path outside
+					// the workspace, so it needs system access. The grant is
+					// disclosed in the transcript alongside the report path.
+					state.SetSystemAccess(true)
 					return Result{
-						Text:      summary + " — " + path,
+						Text: summary + " — " + path +
+							"\nThe agent pass runs with system access: it may edit this file at an absolute path outside the workspace.",
 						AgentGoal: "Run the postmortem skill: review this session's transcript and append semantic observations into the agent_observations field of " + path + ". Extraction only — record observations, do not summarize or rank.",
 					}
 				}

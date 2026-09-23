@@ -47,7 +47,7 @@ func (t *toolSet) jsonQueryTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("json.query invalid jq expression %q: %w", args.Query, err)
 		}
 
-		path, err := resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), args.Path)
+		path, err := t.resolveReadToolPath(args.Path)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}

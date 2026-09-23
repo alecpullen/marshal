@@ -108,3 +108,57 @@ func TestModeRequestDeniedStaysInDefault(t *testing.T) {
 		t.Fatal("mode.request did not return after denial")
 	}
 }
+
+// TestModeRequestSystemReasonAndGrant pins the system variant: the pending
+// call's reason names the grant, and the approved result tells the agent
+// exactly what it received.
+func TestModeRequestSystemReasonAndGrant(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, SessionState: state}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args := `{"mode":"edit","system":true}`
+	type result struct {
+		res registry.ToolResult
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		res, err := invokeTool(t, reg, "mode.request", args)
+		done <- result{res, err}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	var pending *session.PendingToolCall
+	for {
+		pending = state.PendingApproval()
+		if pending != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("mode.request did not set a pending approval")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if !strings.Contains(pending.Reason, "system access") {
+		t.Fatalf("pending Reason = %q, want the system-access wording", pending.Reason)
+	}
+
+	pending.Respond(session.UserApprovalDecision{Approved: true, Edited: "edit"})
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("mode.request error: %v", r.err)
+		}
+		if !strings.Contains(r.res.Content, "system access") {
+			t.Fatalf("result content %q should name the system-access grant", r.res.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("mode.request did not return after approval")
+	}
+}

@@ -121,7 +121,7 @@ func TestDefaultModeBlocksFileWritePatch(t *testing.T) {
 	if err := native.RegisterAll(reg, native.Options{
 		WorkspaceRoot:  t.TempDir(),
 		CommandRunner:  &fakeCommandRunner{},
-		Guardrail:      func(string) error { return nil },
+		Guardrail:      func(string, bool) error { return nil },
 		MaxOutputBytes: 1000,
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)

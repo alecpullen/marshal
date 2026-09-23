@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -156,6 +157,54 @@ func resolveWorkspacePathMultiMode(root string, additionalRoots []string, rel st
 		return "", lastLexical
 	}
 	return "", fmt.Errorf("path %q escapes workspace", rel)
+}
+
+// resolveSystemPath resolves an absolute path for a system-access session.
+// It is the system-mode counterpart to resolveAbsolute: containment is
+// deliberately not checked, but the path is still symlink-resolved so
+// callers get a canonical absolute path. A path that does not exist yet
+// resolves through its nearest existing ancestor, matching SafeResolve's
+// new-file behavior.
+func resolveSystemPath(abs string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve %q: %w", abs, err)
+		}
+		resolved, err = resolveUpThenDown(abs)
+		if err != nil {
+			return "", fmt.Errorf("resolve %q: %w", abs, err)
+		}
+	}
+	return resolved, nil
+}
+
+// resolveReadToolPath resolves a path for a read-side tool other than the
+// file tools (repo.search, csv.inspect, json.query). With system access on it
+// accepts absolute paths anywhere on the filesystem, matching the file tools
+// and the system-access prompt directive. Without the flag the prior
+// containment behavior is preserved exactly.
+func (t *toolSet) resolveReadToolPath(rel string) (string, error) {
+	if t.systemAccess() {
+		return t.resolveToolPath(rel, true)
+	}
+	return resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+}
+
+// resolveToolPath is the single entry point for file-tool path resolution.
+// With system access on, an absolute path resolves anywhere on the
+// filesystem; otherwise the existing containment rules apply unchanged.
+// Relative paths behave identically in both modes. read selects the
+// read-tool variant, which additionally accepts absolute paths contained in
+// an allowed root even without system access.
+func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
+	if t.systemAccess() && filepath.IsAbs(rel) {
+		return resolveSystemPath(filepath.Clean(rel))
+	}
+	if read {
+		return resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+	}
+	return resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
 }
 
 func workspaceRel(root string, abs string) (string, error) {

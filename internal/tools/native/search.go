@@ -85,7 +85,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 
 		start := t.activeRoot()
 		if args.Path != "" {
-			start, err = resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), args.Path)
+			start, err = t.resolveReadToolPath(args.Path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
@@ -275,7 +275,14 @@ func (t *toolSet) searchFile(path string, match lineMatcher, include string, ctx
 	}
 	rel, err := workspaceRel(t.activeRoot(), resolvedPath)
 	if err != nil {
-		return nil, 0
+		// System access widens reads past the workspace root, so a file
+		// outside it is searched rather than skipped. Display it by its
+		// absolute path so matches remain attributable. Without the flag
+		// this layered defense is unchanged.
+		if !t.systemAccess() {
+			return nil, 0
+		}
+		rel = filepath.ToSlash(resolvedPath)
 	}
 
 	if include != "" {

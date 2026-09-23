@@ -157,6 +157,58 @@ func TestBaseRulesForbidShellFileWrites(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptSystemVariant(t *testing.T) {
+	opts := SystemPromptOptions{
+		Role:         RoleGeneral,
+		Tools:        dummyTools(),
+		Mode:         policy.ModeEdit,
+		SystemAccess: true,
+	}
+	content := buildSystemPrompt(opts).Content
+	if !strings.Contains(content, systemAccessDirective) {
+		t.Errorf("system variant missing systemAccessDirective:\n%s", content)
+	}
+	if !strings.Contains(content, "- Write files with the file.write or file.write_patch tools whenever practical") {
+		t.Errorf("system variant missing amended file-tools rule:\n%s", content)
+	}
+	if strings.Contains(content, "never via shell redirection, heredocs, or tee") {
+		t.Errorf("system variant should not contain the original file-tools rule:\n%s", content)
+	}
+
+	opts.SystemAccess = false
+	content = buildSystemPrompt(opts).Content
+	if strings.Contains(content, systemAccessDirective) {
+		t.Errorf("default variant should not contain systemAccessDirective:\n%s", content)
+	}
+	if !strings.Contains(content, "never via shell redirection, heredocs, or tee") {
+		t.Errorf("default variant missing original file-tools rule:\n%s", content)
+	}
+	if !strings.Contains(content, baseRules) {
+		t.Errorf("default variant should embed baseRules byte-identically")
+	}
+}
+
+func TestSystemAccessDirectiveAppendedAfterModeDirective(t *testing.T) {
+	opts := SystemPromptOptions{
+		Role:         RoleGeneral,
+		Tools:        dummyTools(),
+		Mode:         policy.ModeEdit,
+		SystemAccess: true,
+	}
+	content := buildSystemPrompt(opts).Content
+	modeIdx := strings.Index(content, modeDirective(policy.ModeEdit))
+	sysIdx := strings.Index(content, systemAccessDirective)
+	if modeIdx < 0 {
+		t.Fatalf("mode directive missing from prompt:\n%s", content)
+	}
+	if sysIdx < 0 {
+		t.Fatalf("system access directive missing from prompt:\n%s", content)
+	}
+	if sysIdx < modeIdx {
+		t.Errorf("system access directive (at %d) should appear after the mode directive (at %d)", sysIdx, modeIdx)
+	}
+}
+
 func TestBuildSystemPromptPlannerHasCorrectAllowedActions(t *testing.T) {
 	msg := BuildSystemPrompt(RolePlanner, dummyTools(), nil, nil, false)
 	content := msg.Content

@@ -15,7 +15,7 @@ func TestPreviewPatchDiffGeneratesUnifiedDiff(t *testing.T) {
 
 	patchText := "File: main.go\n<<<<<<< SEARCH\nfunc main() {}\n=======\nfunc main() {\n\tprintln(\"hi\")\n}\n>>>>>>> REPLACE\n"
 
-	diff, err := PreviewPatchDiff(dir, patchText)
+	diff, err := PreviewPatchDiff(dir, patchText, false)
 	if err != nil {
 		t.Fatalf("PreviewPatchDiff returned error: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestPreviewPatchDiffRejectsAbsolutePath(t *testing.T) {
 	dir := t.TempDir()
 	patchText := "File: /etc/passwd\n<<<<<<< SEARCH\nroot\n=======\nroot2\n>>>>>>> REPLACE\n"
 
-	if _, err := PreviewPatchDiff(dir, patchText); err == nil {
+	if _, err := PreviewPatchDiff(dir, patchText, false); err == nil {
 		t.Fatal("expected error for absolute path, got nil")
 	}
 }
@@ -40,7 +40,7 @@ func TestPreviewPatchDiffRejectsPathTraversal(t *testing.T) {
 	dir := t.TempDir()
 	patchText := "File: ../outside.go\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n"
 
-	if _, err := PreviewPatchDiff(dir, patchText); err == nil {
+	if _, err := PreviewPatchDiff(dir, patchText, false); err == nil {
 		t.Fatal("expected error for path traversal, got nil")
 	}
 }
@@ -52,14 +52,14 @@ func TestPreviewPatchDiffRejectsSearchBlockNotFound(t *testing.T) {
 	}
 	patchText := "File: main.go\n<<<<<<< SEARCH\nnot present\n=======\nreplacement\n>>>>>>> REPLACE\n"
 
-	if _, err := PreviewPatchDiff(dir, patchText); err == nil {
+	if _, err := PreviewPatchDiff(dir, patchText, false); err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
 }
 
 func TestPreviewPatchDiffRejectsEmptyPatch(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := PreviewPatchDiff(dir, ""); err == nil {
+	if _, err := PreviewPatchDiff(dir, "", false); err == nil {
 		t.Fatal("expected error for empty patch, got nil")
 	}
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"marshal/internal/pathutil"
@@ -15,7 +16,7 @@ import (
 // file.write_patch so the TUI's Diff panel has something to render while the
 // user is still deciding — the real apply-and-backup happens later, inside
 // the file.write_patch tool handler itself, once the user approves.
-func PreviewPatchDiff(workspaceRoot string, patchText string) (string, error) {
+func PreviewPatchDiff(workspaceRoot string, patchText string, system bool) (string, error) {
 	patches, err := patch.Parse(patchText)
 	if err != nil {
 		return "", err
@@ -26,9 +27,22 @@ func PreviewPatchDiff(workspaceRoot string, patchText string) (string, error) {
 
 	var diffs []string
 	for _, fp := range patches {
-		path, err := pathutil.SafeWorkspacePath(workspaceRoot, fp.Path)
-		if err != nil {
-			return "", err
+		var path string
+		if system && filepath.IsAbs(fp.Path) {
+			// System access: absolute paths anywhere on the filesystem are
+			// previewable. No containment check — the approval prompt is the
+			// gate, and the diff is what the user decides on.
+			abs, err := filepath.Abs(fp.Path)
+			if err != nil {
+				return "", fmt.Errorf("resolve absolute path %s: %w", fp.Path, err)
+			}
+			path = filepath.Clean(abs)
+		} else {
+			resolved, err := pathutil.SafeWorkspacePath(workspaceRoot, fp.Path)
+			if err != nil {
+				return "", err
+			}
+			path = resolved
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {

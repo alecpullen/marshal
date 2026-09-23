@@ -1933,12 +1933,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Set the flag before the start so the model startAgentRun hands
 			// back carries it; clear it again if the start was refused.
 			m.postmortemAgentPending = true
+			// The agent pass writes the report at an absolute path outside the
+			// workspace, so it needs system access. Plan/default would
+			// mode-deny that write and bounce a mode.request back at a user who
+			// is trying to exit, so the grant also elevates to edit for the
+			// pass. handleAgentFinished clears the flag and quits, so the
+			// elevation never outlives the exit.
+			m.state.SetSystemAccess(true)
+			// Record the pre-grant mode so a refused start can restore it
+			// instead of leaving the session elevated.
+			priorMode := m.approvalMode
+			if priorMode == policy.ModePlan || priorMode == policy.ModeDefault || priorMode == "" {
+				m.setMode("edit")
+			}
 			mm, agentCmd, started := m.startAgentRun(m.runner, postmortemAgentGoal(path))
 			if !started {
 				// BeginWork was refused, so no turn is in flight and no
-				// agentFinishedMsg will ever arrive to quit. Drop the flag and
-				// quit here rather than strand the exit at the prompt.
+				// agentFinishedMsg will ever arrive to quit. Undo the grant and
+				// the elevation, then quit rather than strand the exit at the
+				// prompt with a mode the user never chose.
 				m.postmortemAgentPending = false
+				m.state.SetSystemAccess(false)
+				if priorMode != "" && priorMode != m.approvalMode {
+					m.setMode(string(priorMode))
+				}
 				return m, m.finishQuit()
 			}
 			m.refreshViewport()
@@ -2091,11 +2109,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.beginResume(pm.Value)
 		case cmdName == "mode-elevation":
 			chosen := pm.Value
+			wantsSystem := modeRequestWantsSystem(m.state.PendingApproval())
 			if tc := m.state.PendingApproval(); tc != nil {
 				tc.Respond(session.UserApprovalDecision{Approved: true, Edited: chosen})
 			}
 			m.state.SetPendingApproval(nil)
 			m.setMode(chosen)
+			if wantsSystem {
+				m.state.SetSystemAccess(true)
+			}
 			newCfg := m.state.Config
 			newCfg.Agent.ApprovalMode = chosen
 			saveErr, reloadErr := m.persistAndReload(newCfg)
@@ -2513,6 +2535,22 @@ func isModeElevationApproval(tc *session.PendingToolCall) bool {
 	return tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:")
 }
 
+// modeRequestWantsSystem reports whether a pending mode.request carried
+// `system: true`. The flag is read from the pending call's own args, never
+// from engine state, so the disclosure and the grant cannot drift apart.
+func modeRequestWantsSystem(tc *session.PendingToolCall) bool {
+	if tc == nil || tc.Name != "mode.request" {
+		return false
+	}
+	var args struct {
+		System bool `json:"system"`
+	}
+	if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
+		return false
+	}
+	return args.System
+}
+
 // handleApproval routes messages to the inline approval chooser (or the
 // edit-command textarea sub-mode) while a tool-call approval is pending. It
 // is called before the main keypress switch so huh's internal navigation
@@ -2541,7 +2579,12 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			{Label: "Copilot", Detail: "auto-approve, may ask", Value: "copilot"},
 			{Label: "Auto", Detail: "fully autonomous", Value: "auto"},
 		}
-		m.openPicker("mode-elevation", "Elevate to editing mode", "choose an editing mode", items, "")
+		subtitle := "choose an editing mode"
+		if modeRequestWantsSystem(tc) {
+			subtitle = "choose an editing mode — the agent requests system access " +
+				"(full filesystem read/write). Approving grants it for this session."
+		}
+		m.openPicker("mode-elevation", "Elevate to editing mode", subtitle, items, "")
 		m.refreshViewport()
 		return m, nil
 	}

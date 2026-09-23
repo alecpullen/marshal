@@ -51,7 +51,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 				return registry.ToolResult{}, fmt.Errorf("command is required")
 			}
 			if t.guardrail != nil {
-				if err := t.guardrail(command); err != nil {
+				if err := t.guardrail(command, t.systemAccess()); err != nil {
 					return registry.ToolResult{}, err
 				}
 			}
@@ -98,7 +98,7 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 		return registry.ToolResult{}, fmt.Errorf("command is required")
 	}
 	if t.guardrail != nil {
-		if err := t.guardrail(command); err != nil {
+		if err := t.guardrail(command, t.systemAccess()); err != nil {
 			return registry.ToolResult{}, err
 		}
 	}

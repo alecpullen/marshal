@@ -109,6 +109,9 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	var b strings.Builder
 	b.WriteString(question + "\n\n")
+	if p.stage == 1 {
+		b.WriteString("The agent pass runs with system access and editing approval: it may edit this file at an absolute path outside the workspace.\n\n")
+	}
 	for i, label := range []string{"Yes", "No"} {
 		marker := "  "
 		style := lipgloss.NewStyle().Foreground(theme.Current().FGDefault)

@@ -245,6 +245,9 @@ func handleSkillInstall(ctx context.Context, call registry.ToolCall, idx *Index,
 	}
 	skill, err := parseSkillFile(skillPath)
 	if err != nil {
+		// Do not leave an unloadable artifact behind in the skills store:
+		// it would be re-scanned (and warned about) on every future start.
+		_ = os.RemoveAll(installedPath)
 		return registry.ToolResult{}, fmt.Errorf("installed skill is not loadable: %w", err)
 	}
 	idx.Set(skill.Name, skill)

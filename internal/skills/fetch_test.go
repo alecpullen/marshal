@@ -49,6 +49,15 @@ func TestIsRawSkillURL(t *testing.T) {
 		{in: "https://example.com/x.txt", want: false},
 		{in: "", want: false},
 		{in: "https://example.com/", want: false},
+		// Query strings and fragments must not defeat the suffix test.
+		{in: "https://example.com/SKILL.md?raw=1", want: true},
+		{in: "https://example.com/SKILL.md#section", want: true},
+		{in: "https://example.com/x.md.git?ref=main", want: false},
+		// Scheme comparison is case-insensitive.
+		{in: "HTTPS://example.com/x.md", want: true},
+		{in: "HTTP://example.com/x.md", want: true},
+		// A scheme with no host is not a fetchable URL.
+		{in: "https:///x.md", want: false},
 	}
 	for _, tt := range tests {
 		if got := isRawSkillURL(tt.in); got != tt.want {
@@ -200,6 +209,69 @@ func TestInstallRawSkillURL(t *testing.T) {
 	}
 	if skill.Name != "remote-skill" {
 		t.Errorf("skill.Name = %q, want %q", skill.Name, "remote-skill")
+	}
+}
+
+// TestDefaultSkillFetcherBlocksPrivateHost exercises the production fetcher
+// (real SSRF check, safe dialer) rather than a permissive fake, so the
+// shipped posture is actually covered.
+func TestDefaultSkillFetcherBlocksPrivateHost(t *testing.T) {
+	ctx := context.Background()
+	for _, u := range []string{
+		"http://127.0.0.1/x.md",
+		"http://localhost/x.md",
+		"http://169.254.169.254/x.md",
+		"http://[::1]/x.md",
+	} {
+		if _, err := defaultSkillFetcher.fetch(ctx, u); err == nil {
+			t.Errorf("defaultSkillFetcher.fetch(%q) = nil error, want SSRF block", u)
+		} else if !strings.Contains(err.Error(), "private or link-local") {
+			t.Errorf("defaultSkillFetcher.fetch(%q) error = %q, want 'private or link-local'", u, err)
+		}
+	}
+}
+
+// TestDefaultSkillFetcherInstallsSafeTransport pins the invariant that the
+// production fetcher never dials without the SSRF guard: it has no
+// caller-supplied client, and the client it builds carries both a safe
+// dialer and a redirect check.
+func TestDefaultSkillFetcherInstallsSafeTransport(t *testing.T) {
+	if defaultSkillFetcher.client != nil {
+		t.Fatal("defaultSkillFetcher must not carry a caller-supplied client")
+	}
+	client := defaultSkillFetcher.httpClient()
+	if client.Transport == nil {
+		t.Fatal("httpClient() returned a client with no transport")
+	}
+	if client.CheckRedirect == nil {
+		t.Fatal("httpClient() returned a client with no redirect guard")
+	}
+}
+
+// TestFetchRawSkillURLRejectsSSRFRedirect covers the redirect guard: a
+// public-looking host that redirects to a private one must be blocked.
+func TestFetchRawSkillURLRejectsSSRFRedirect(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://blocked.example/x.md", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	// Allow the initial request (the httptest server) but block the
+	// redirect target, mirroring the web.fetch redirect test.
+	f := &skillFetcher{
+		client: srv.Client(),
+		ssrfCheck: func(u *url.URL) bool {
+			return u.Hostname() == "blocked.example"
+		},
+		maxBytes: maxSkillFetchBytes,
+	}
+	_, err := f.fetch(ctx, srv.URL+"/x.md")
+	if err == nil {
+		t.Fatal("expected SSRF redirect to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirect to private or link-local") {
+		t.Errorf("error %q does not mention the blocked redirect", err)
 	}
 }
 

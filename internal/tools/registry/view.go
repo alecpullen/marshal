@@ -99,6 +99,13 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 			_ = view.Register(fallbackWriterPatchTool(tool, allowedSet))
 		case tool.Name == "file.write":
 			_ = view.Register(fallbackWriterFileWriteTool(tool, allowedSet))
+		case tool.Name == "skill.install":
+			// Skill installation is a network-egress plus persistent
+			// prompt-injection surface: it can fetch a remote document and
+			// write it into the user-global skill store, which every future
+			// session loads. The fallback child runs unattended under an
+			// auto-approving policy, so it must not reach it — the same
+			// reason ReadOnlyView and ArtifactWriterView filter it out.
 		default:
 			_ = view.Register(tool)
 		}

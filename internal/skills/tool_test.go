@@ -540,10 +540,11 @@ func TestSkillInstallToolInstallsAndHotInserts(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 
+	home := t.TempDir()
 	idx := NewIndex()
 	state := newTestState()
 	reg := registry.New()
-	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+	RegisterTool(reg, idx, state, SkillsToolOptions{HomeDir: home, WorkingDir: t.TempDir()})
 
 	tool, _ := reg.Lookup("skill.install")
 	result, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -552,6 +553,13 @@ func TestSkillInstallToolInstallsAndHotInserts(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("install handler: %v", err)
+	}
+
+	// The default scope is user-global: assert the file actually landed
+	// there, so a broken ScopeDir cannot pass on summary text alone.
+	wantPath := filepath.Join(home, ".config", "marshal", "skills", "hot-skill.md")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("installed skill not at %s: %v", wantPath, err)
 	}
 
 	skill, ok := idx.Load("hot-skill")

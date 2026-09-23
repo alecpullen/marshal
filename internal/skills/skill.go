@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"marshal/internal/tools/registry"
 
@@ -32,7 +33,13 @@ type Skill struct {
 	Body        string
 }
 
+// Index is the live skill registry. It is shared by every runner in a
+// session (the main loop, async subagents, swarm roles, pipeline children),
+// so its map is guarded: skill.install mutates it at runtime while other
+// runners concurrently read it to build their system prompts. An
+// unsynchronised map read+write is a fatal runtime error, not a panic.
 type Index struct {
+	mu     sync.RWMutex
 	skills map[string]Skill
 }
 
@@ -41,15 +48,21 @@ func NewIndex() *Index {
 }
 
 func (idx *Index) Set(name string, skill Skill) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	idx.skills[name] = skill
 }
 
 func (idx *Index) Load(name string) (Skill, bool) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
 	skill, ok := idx.skills[name]
 	return skill, ok
 }
 
 func (idx *Index) List() []Skill {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
 	names := make([]string, 0, len(idx.skills))
 	for name := range idx.skills {
 		names = append(names, name)

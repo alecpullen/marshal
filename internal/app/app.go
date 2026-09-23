@@ -1395,8 +1395,11 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 			return nil, fmt.Errorf("pipeline registry factory: register: %w", err)
 		}
 		skills.RegisterTool(childReg, skillIndex, childState, skills.SkillsToolOptions{
-			HomeDir:    state.HomeDir(),
-			WorkingDir: ctx.WorkspaceRoot,
+			HomeDir: state.HomeDir(),
+			// Project scope must resolve to the real repository, not the
+			// per-dispatch worktree: the worktree is gitignored and removed
+			// by workspace.finish, so a skill installed there would vanish.
+			WorkingDir: ctx.RepoRoot,
 		})
 		switch scope {
 		case pipeline.ScopeReadOnly:

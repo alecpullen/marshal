@@ -33,13 +33,24 @@ var defaultSkillResolver ipResolver = net.DefaultResolver
 // before looksLikeGitURL, which treats every http(s) string as a git URL
 // and would mis-route a raw skill file down a failing git clone path.
 func isRawSkillURL(s string) bool {
-	if !strings.HasPrefix(s, "https://") && !strings.HasPrefix(s, "http://") {
+	u, err := url.Parse(s)
+	if err != nil {
 		return false
 	}
-	if strings.HasSuffix(s, ".git") {
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
 		return false
 	}
-	return strings.HasSuffix(s, ".md")
+	if u.Host == "" {
+		return false
+	}
+	// Inspect the path only, so a query string or fragment
+	// ("…/SKILL.md?raw=1") does not defeat the suffix test.
+	if strings.HasSuffix(u.Path, ".git") {
+		return false
+	}
+	return strings.HasSuffix(u.Path, ".md")
 }
 
 // skillFetcher downloads raw skill URLs with the same SSRF posture as

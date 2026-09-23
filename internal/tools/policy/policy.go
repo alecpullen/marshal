@@ -1092,13 +1092,71 @@ func isGitPushFloorWithSystem(cmd string, system bool) bool {
 	if !system {
 		return false
 	}
+	return floorHitStages(cmd, 0)
+}
+
+// floorHitStages reports whether cmd invokes a floored command, seeing
+// through the extended wrapper set and recursing into inline payloads
+// (`sh -c '…'`, `su -c '…'`, `xargs …`, `eval …`). Recursion is bounded by
+// maxGuardrailDepth so a self-referential command cannot loop.
+//
+// On a parse error it falls back to isGitPushFloor's legacy words check: an
+// unparseable command is not provably a push, and the guardrail path still
+// fails closed on it.
+func floorHitStages(cmd string, depth int) bool {
 	stages, err := parseStages(cmd)
 	if err != nil {
-		return isBlockedByGuardrailLegacy(cmd, system)
+		return isGitPushFloor(cmd)
 	}
 	for _, s := range stages {
-		if gitPushInArgv(skipFloorWrappers(append([]string{s.argv0}, s.args...))) {
+		if payload, ok := shellInlinePayload(s); ok {
+			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1) {
+				return true
+			}
+			continue
+		}
+		if payload, ok := suInlinePayload(s); ok {
+			if depth < maxGuardrailDepth && floorHitStages(payload, depth+1) {
+				return true
+			}
+			continue
+		}
+		if floorHitArgv(append([]string{s.argv0}, s.args...), depth) {
 			return true
+		}
+	}
+	return false
+}
+
+// floorHitArgv reports whether an argv invokes a floored command once the
+// extended wrapper set is stripped. It recurses into the payload-carrying
+// wrappers (xargs, eval) and into inline shell payloads that only become
+// visible after stripping (`exec sh -c '…'`).
+func floorHitArgv(argv []string, depth int) bool {
+	argv = skipFloorWrappersExtended(argv)
+	if gitPushInArgv(argv) {
+		return true
+	}
+	if len(argv) == 0 {
+		return false
+	}
+	if depth < maxGuardrailDepth {
+		st := stage{argv0: argv[0], args: argv[1:]}
+		if payload, ok := shellInlinePayload(st); ok {
+			return floorHitStages(payload, depth+1)
+		}
+		if payload, ok := suInlinePayload(st); ok {
+			return floorHitStages(payload, depth+1)
+		}
+	}
+	switch lastSegment(argv[0]) {
+	case "xargs":
+		if depth < maxGuardrailDepth {
+			return floorHitArgv(xargsPayload(argv), depth+1)
+		}
+	case "eval":
+		if depth < maxGuardrailDepth {
+			return floorHitStages(strings.Join(argv[1:], " "), depth+1)
 		}
 	}
 	return false
@@ -1212,6 +1270,52 @@ func skipFloorWrappers(argv []string) []string {
 			return nil
 		}
 		argv = skipCommonWrappers(argv[i:])
+	}
+	return argv
+}
+
+// skipFloorWrappersExtended is skipFloorWrappers plus the system-access
+// wrapper set: exec/command/builtin/nohup/setsid (transparent prefixes),
+// timeout <n>, and watch [-n n]. xargs and eval are handled by the floor
+// walker (floorHitArgv), not here, because they carry a payload rather than a
+// simple prefix.
+func skipFloorWrappersExtended(argv []string) []string {
+	argv = skipFloorWrappers(argv)
+	for len(argv) > 0 {
+		switch lastSegment(argv[0]) {
+		case "exec", "command", "builtin", "nohup", "setsid":
+			argv = argv[1:]
+		case "timeout":
+			// timeout [flags] <duration> <cmd...>: skip flags then the duration.
+			i := 1
+			for i < len(argv) && strings.HasPrefix(argv[i], "-") {
+				i++
+			}
+			if i < len(argv) {
+				i++ // the duration operand
+			}
+			argv = argv[i:]
+		case "watch":
+			i := 1
+			for i < len(argv) {
+				a := argv[i]
+				if a == "-n" || a == "--interval" {
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(a, "-") {
+					i++
+					continue
+				}
+				break
+			}
+			argv = argv[i:]
+		default:
+			return argv
+		}
+		// A wrapper may itself be wrapped (exec env sudo git push): re-run the
+		// base stripper before the next pass.
+		argv = skipFloorWrappers(argv)
 	}
 	return argv
 }

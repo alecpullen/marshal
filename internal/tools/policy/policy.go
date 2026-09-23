@@ -587,7 +587,55 @@ type stage struct {
 	argv0    string
 	fullText string
 	args     []string // individual argument tokens (excluding argv0)
+	argLits  []string // decoded literal per arg; "" when the word expands
 	dynamic  bool
+}
+
+// wordLiteral returns the literal string a word expands to when it contains
+// no expansions, and "" when it does (the caller then falls back to the
+// printed form). The parser has already decoded quoting and escapes, so this
+// is the value the shell would actually pass as the argument.
+func wordLiteral(w *syntax.Word) string {
+	var b strings.Builder
+	for _, part := range w.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			b.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			// Covers both 'plain' and $'ansi-c' quoting; the parser has
+			// already decoded the content.
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, dp := range p.Parts {
+				lit, ok := dp.(*syntax.Lit)
+				if !ok {
+					return ""
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return ""
+		}
+	}
+	return b.String()
+}
+
+// stageLiteralArgv returns the stage's argv with each argument decoded to its
+// literal value where the parser can prove one. The floor uses this so
+// quoting and escaping cannot hide a command: the printed form of
+// `sh -c 'sh -c '\”git push'\”'` is not valid shell on its own, but its
+// decoded literal is.
+func stageLiteralArgv(st stage) []string {
+	argv := make([]string, 0, len(st.args)+1)
+	argv = append(argv, st.argv0)
+	for i, a := range st.args {
+		if i < len(st.argLits) && st.argLits[i] != "" {
+			argv = append(argv, st.argLits[i])
+			continue
+		}
+		argv = append(argv, a)
+	}
+	return argv
 }
 
 // parseStages parses cmd with mvdan.cc/sh and returns one stage per
@@ -608,12 +656,14 @@ func parseStages(cmd string) ([]stage, error) {
 		syntax.NewPrinter().Print(&b, call.Args[0])
 		var full strings.Builder
 		var args []string
+		var argLits []string
 		for i, w := range call.Args {
 			if i > 0 {
 				full.WriteString(" ")
 				var argBuf strings.Builder
 				syntax.NewPrinter().Print(&argBuf, w)
 				args = append(args, argBuf.String())
+				argLits = append(argLits, wordLiteral(w))
 			}
 			syntax.NewPrinter().Print(&full, w)
 		}
@@ -626,7 +676,7 @@ func parseStages(cmd string) ([]stage, error) {
 			}
 			return true
 		})
-		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), args: args, dynamic: dyn})
+		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), args: args, argLits: argLits, dynamic: dyn})
 		return true
 	})
 	return stages, nil
@@ -1245,7 +1295,7 @@ func floorHitStages(cmd string, depth int, system bool, extra []string) string {
 			}
 			continue
 		}
-		if match := floorHitArgv(append([]string{s.argv0}, s.args...), depth, system, extra); match != "" {
+		if match := floorHitArgv(stageLiteralArgv(s), depth, system, extra); match != "" {
 			return match
 		}
 	}
@@ -1257,11 +1307,11 @@ func floorHitStages(cmd string, depth int, system bool, extra []string) string {
 // system access, so a flag-off `sudo sh -c 'git push'` stays a guardrail
 // Deny instead of being downgraded to the floor's Confirm.
 func floorShellPayload(st stage, system bool) (string, bool) {
-	return shellPayloadFromArgv(skipFloorWrappersFor(append([]string{st.argv0}, st.args...), system))
+	return shellPayloadFromArgv(skipFloorWrappersFor(stageLiteralArgv(st), system))
 }
 
 func floorSuPayload(st stage, system bool) (string, bool) {
-	return suPayloadFromArgv(skipFloorWrappersFor(append([]string{st.argv0}, st.args...), system))
+	return suPayloadFromArgv(skipFloorWrappersFor(stageLiteralArgv(st), system))
 }
 
 // floorHitArgv reports whether an argv invokes a floored command once the

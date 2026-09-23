@@ -173,6 +173,10 @@ func TestGitPushFloorBypassShapes(t *testing.T) {
 		// Escaped and ANSI-C quoted payloads.
 		`sh -c git\ push`,
 		"bash -c $'git push'",
+		// Escaped-quote nesting: the printed form is not valid shell, so the
+		// floor must decode the argument rather than re-parse the printer text.
+		`sh -c 'sh -c '\''git push'\'''`,
+		`bash -c "bash -c '\''git push'\''"`,
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {
@@ -231,6 +235,8 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 		`sh -c "sh -c 'sh -c \"git push\"'"`,
 		`sh -c git\ push`,
 		"bash -c $'git push'",
+		`sh -c 'sh -c '\''git push'\'''`,
+		`bash -c "bash -c '\''git push'\''"`,
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {

@@ -13,6 +13,8 @@ import (
 
 type modeRequestArgs struct {
 	Mode string `json:"mode"`
+	// System asks for the system-access modifier alongside the mode switch.
+	System bool `json:"system,omitempty"`
 }
 
 // modeRequestTool builds the mode.request native tool. The agent calls it
@@ -32,7 +34,7 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "mode.request",
 		Description: "Request the user to switch from default mode to an editing mode (edit, copilot, or auto). Use this when you need to modify files but are in default mode.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","description":"The editing intent, e.g. \"edit\""}},"required":["mode"],"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","description":"The editing intent, e.g. \"edit\""},"system":{"type":"boolean","description":"Also request system access (full filesystem read/write) for this session."}},"required":["mode"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -47,12 +49,17 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("session state not available")
 		}
 
+		reason := "mode-elevation: agent requests an editing mode"
+		if args.System {
+			reason = "mode-elevation: agent requests system access"
+		}
+
 		ch := make(chan session.UserApprovalDecision, 1)
 		pending := &session.PendingToolCall{
 			ID:           fmt.Sprintf("mode_req_%d", time.Now().UnixNano()),
 			Name:         "mode.request",
 			Args:         string(call.Args),
-			Reason:       "mode-elevation: agent requests an editing mode",
+			Reason:       reason,
 			Schema:       tool.Description,
 			ResponseChan: ch,
 		}
@@ -65,6 +72,12 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 				chosen := decision.Edited
 				if chosen == "" {
 					chosen = "edit"
+				}
+				if args.System {
+					return registry.ToolResult{
+						Summary: fmt.Sprintf("approved — switched to %s mode with system access", chosen),
+						Content: fmt.Sprintf("mode.request result: approved — switched to %s mode and granted system access for this session. File and search tools now accept absolute paths anywhere on the filesystem; shell file editing is permitted; guardrails shrink to a catastrophic floor.", chosen),
+					}, nil
 				}
 				return registry.ToolResult{
 					Summary: fmt.Sprintf("approved — switched to %s mode", chosen),

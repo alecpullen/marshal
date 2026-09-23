@@ -245,6 +245,17 @@ func init() {
 			m.refreshViewport()
 			return m, nil
 		},
+		"system": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			on := !m.state.SystemAccess()
+			m.state.SetSystemAccess(on)
+			if on {
+				m.state.AddMessage(session.RoleSystem, "System access enabled for this session.", session.ContentTypePlain)
+			} else {
+				m.state.AddMessage(session.RoleSystem, "System access disabled.", session.ContentTypePlain)
+			}
+			m.refreshViewport()
+			return m, nil
+		},
 		"swarm": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			goal := strings.TrimSpace(strings.Join(args, " "))
 			if goal == "" {

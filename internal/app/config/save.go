@@ -356,7 +356,12 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			},
 		}
 	}
-	if !reflect.DeepEqual(cfg.MCP, def.MCP) {
+	// [mcp] is written when the merged value differs from the default OR the
+	// file already carries a section. writeSections replaces file.MCP
+	// wholesale rather than merging, so "the file has [mcp]" is a complete
+	// trigger: deleting the last server leaves cfg.MCP equal to the default,
+	// and without the file clause the on-disk entry would survive the delete.
+	if file.MCP != nil || !reflect.DeepEqual(cfg.MCP, def.MCP) {
 		servers := map[string]fileMCPServer{}
 		for name, srv := range cfg.MCP.Servers {
 			servers[name] = fileMCPServer{

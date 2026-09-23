@@ -51,6 +51,7 @@ func (t *toolSet) configTools() []registry.Tool {
 		t.configHooksSetTool(),
 		t.configPermissionsSetTool(),
 		t.configMCPSetTool(),
+		t.configMCPDeleteTool(),
 		t.configProvidersSetTool(),
 		t.configProvidersDeleteTool(),
 		t.configModelsPresetSetTool(),
@@ -151,6 +152,7 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 	baseline := t.config
 	baseline.Providers = maps.Clone(t.config.Providers)
 	baseline.Models.Presets = maps.Clone(t.config.Models.Presets)
+	baseline.MCP.Servers = maps.Clone(t.config.MCP.Servers)
 	next := t.config
 	mutate(&next)
 
@@ -1171,6 +1173,41 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 			res.Summary += fmt.Sprintf(" Resolved header variables: %s.", strings.Join(resolvedVars, ", "))
 		}
 		return res, nil
+	}
+	return tool
+}
+
+func (t *toolSet) configMCPDeleteTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.mcp.delete",
+		Description: "Delete an MCP server entry from the [mcp] section by name. Use this to remove a server that will not start or is no longer wanted.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"MCP server name key to delete"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.mcp.delete args: %w", err)
+		}
+		if args.Name == "" {
+			return registry.ToolResult{}, fmt.Errorf("missing required argument: name")
+		}
+		if _, ok := t.config.MCP.Servers[args.Name]; !ok {
+			known := make([]string, 0, len(t.config.MCP.Servers))
+			for k := range t.config.MCP.Servers {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			return registry.ToolResult{}, fmt.Errorf("no MCP server named %q; configured servers: %v", args.Name, known)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.mcp.delete (%s scope): delete MCP server %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
+			delete(cfg.MCP.Servers, args.Name)
+		})
 	}
 	return tool
 }

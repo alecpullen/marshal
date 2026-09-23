@@ -782,6 +782,33 @@ func TestConfigMCPSetRejectsUnresolvableHeaderVar(t *testing.T) {
 	}
 }
 
+func TestConfigMCPDeleteRemovesServer(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"runpod": {URL: "https://mcp.getrunpod.io/", Type: "http", Trust: "unrestricted"},
+	}
+	tool, _, _, _, reloaded := setupGlobalOnlyTool(t, cfg, "config.mcp.delete", (*toolSet).configMCPDeleteTool)
+
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.delete", Args: []byte(`{"scope":"global","name":"runpod"}`)})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if res.Summary == "" {
+		t.Error("expected a summary")
+	}
+	if *reloaded == nil {
+		t.Fatal("reload was not called")
+	}
+	if _, ok := (*reloaded).MCP.Servers["runpod"]; ok {
+		t.Error("server still present in the reloaded config")
+	}
+
+	_, err = tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.delete", Args: []byte(`{"scope":"global","name":"nope"}`)})
+	if err == nil {
+		t.Fatal("expected an error for an unknown server name")
+	}
+}
+
 func TestModelsPresetSetRoundTrip(t *testing.T) {
 	tool, home, projectPath, approved, reloaded := setupGlobalOnlyTool(t, config.Default(), "config.models.preset.set", (*toolSet).configModelsPresetSetTool)
 	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.models.preset.set", Args: json.RawMessage(`{"name":"ollama/qwen2.5-coder","provider":"ollama","model":"qwen2.5-coder"}`)})

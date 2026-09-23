@@ -179,6 +179,18 @@ func resolveSystemPath(abs string) (string, error) {
 	return resolved, nil
 }
 
+// resolveReadToolPath resolves a path for a read-side tool other than the
+// file tools (repo.search, csv.inspect, json.query). With system access on it
+// accepts absolute paths anywhere on the filesystem, matching the file tools
+// and the system-access prompt directive. Without the flag the prior
+// containment behavior is preserved exactly.
+func (t *toolSet) resolveReadToolPath(rel string) (string, error) {
+	if t.systemAccess() {
+		return t.resolveToolPath(rel, true)
+	}
+	return resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+}
+
 // resolveToolPath is the single entry point for file-tool path resolution.
 // With system access on, an absolute path resolves anywhere on the
 // filesystem; otherwise the existing containment rules apply unchanged.

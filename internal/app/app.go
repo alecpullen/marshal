@@ -696,9 +696,18 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	var mcpMgr *mcp.Manager
 	if len(cfg.MCP.Servers) > 0 {
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
-		if err := mcpMgr.Start(ctx); err != nil {
-			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		// A server that will not start is a per-server failure, not a fatal
+		// one: the agent must still run, with the healthy servers' tools and
+		// a notice naming what was skipped. Aborting here used to leave the
+		// runtime with a nil runner, so one bad MCP entry cost every turn.
+		if failures := mcpMgr.Start(ctx); len(failures) > 0 {
+			state.SetNotice(session.Notice{
+				Category: session.NoticeConfig,
+				Severity: session.SeverityWarn,
+				Message:  mcpFailureMessage(failures),
+				Hint:     "Fix or remove the failing server in /settings → MCP, then apply any settings change to retry.",
+				Source:   "mcp",
+			})
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
@@ -1003,6 +1012,16 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner)
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, watchManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
+}
+
+// mcpFailureMessage renders per-server MCP start failures as one notice
+// line. Names and reasons only — never header values.
+func mcpFailureMessage(failures []mcp.ServerFailure) string {
+	parts := make([]string, 0, len(failures))
+	for _, f := range failures {
+		parts = append(parts, f.Error())
+	}
+	return fmt.Sprintf("%d MCP server(s) unavailable: %s", len(failures), strings.Join(parts, "; "))
 }
 
 // loadLimitsTable loads the merged model-limits table so presets without an

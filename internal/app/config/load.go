@@ -39,6 +39,29 @@ func loadFile(path string) (configFile, error) {
 	return file, nil
 }
 
+// MCPServersInFile returns the set of MCP server names the config file at
+// path defines. A missing file, an empty path, or a file without an [mcp]
+// section yields an empty set. Callers use this to tell which layer owns a
+// server: [mcp] is bipolar (either the user or the project file may carry
+// it), so a write aimed at the wrong layer silently no-ops.
+func MCPServersInFile(path string) (map[string]bool, error) {
+	if path == "" {
+		return nil, nil
+	}
+	file, err := loadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if file.MCP == nil {
+		return nil, nil
+	}
+	names := make(map[string]bool, len(file.MCP.Servers))
+	for name := range file.MCP.Servers {
+		names[name] = true
+	}
+	return names, nil
+}
+
 func HasConfig(opts LoadOptions) bool {
 	home := opts.HomeDir
 	if home == "" {

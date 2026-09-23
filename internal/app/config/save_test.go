@@ -1532,3 +1532,71 @@ func TestSaveUserConfigPresetsEmptyMapRemovesSection(t *testing.T) {
 		t.Fatalf("[models] not removed:\n%s", data)
 	}
 }
+
+// Deleting the last MCP server must remove it from disk. Without the
+// baseline clause in writeSections, cfg.MCP equals the default and the
+// section is not written at all, so the on-disk entry survives.
+func TestSaveUserConfigSectionDeletesLastMCPServer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	withServer := Default()
+	withServer.MCP.Servers = map[string]MCPServerConfig{
+		"runpod": {URL: "https://mcp.getrunpod.io/", Type: "http", Trust: "unrestricted"},
+	}
+	if err := SaveUserConfigSection(path, withServer); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Baseline carries the server; the write omits it — an intentional delete.
+	baseline := withServer
+	next := Default()
+	next.MCP.Servers = map[string]MCPServerConfig{}
+	if err := SaveUserConfigSection(path, next, baseline); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "runpod") {
+		t.Errorf("deleted server survived on disk:\n%s", data)
+	}
+}
+
+// A delete must leave every other section on disk untouched.
+func TestSaveUserConfigSectionDeletePreservesOtherSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	withServer := Default()
+	withServer.MCP.Servers = map[string]MCPServerConfig{
+		"runpod": {URL: "https://mcp.getrunpod.io/", Type: "http", Trust: "unrestricted"},
+	}
+	withServer.Profile.Default = "kept-profile"
+	if err := SaveUserConfigSection(path, withServer); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	next := withServer
+	next.MCP.Servers = map[string]MCPServerConfig{
+		"other": {URL: "https://other.example.com/", Type: "http", Trust: "unrestricted"},
+	}
+	if err := SaveUserConfigSection(path, next, withServer); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	loaded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(loaded)
+	if strings.Contains(s, "runpod") {
+		t.Errorf("deleted server survived:\n%s", s)
+	}
+	if !strings.Contains(s, "other") {
+		t.Errorf("added server missing:\n%s", s)
+	}
+	if !strings.Contains(s, "kept-profile") {
+		t.Errorf("unrelated section was disturbed:\n%s", s)
+	}
+}

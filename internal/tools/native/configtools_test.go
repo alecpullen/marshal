@@ -487,6 +487,7 @@ func TestMCPSetPersists(t *testing.T) {
 }
 
 func TestMCPSetPersistsRemoteServer(t *testing.T) {
+	t.Setenv("MCP_TOKEN", "test-token")
 	st := newAutoApproveSessionState()
 	testSectionWriteWithState(t, "config.mcp.set", (*toolSet).configMCPSetTool,
 		`{"servers":{"remote":{"url":"https://93.184.216.34/mcp","type":"http","trust":"unrestricted","headers":{"Authorization":"Bearer $MCP_TOKEN"}}}}`,
@@ -760,6 +761,110 @@ func TestProvidersDeleteRemovesKey(t *testing.T) {
 		_, ok := c.Providers["openai"]
 		return !ok
 	})
+}
+
+// An unresolvable $VAR must be a write-time error naming the variable, not
+// an entry that cannot connect.
+func TestConfigMCPSetRejectsUnresolvableHeaderVar(t *testing.T) {
+	cfg := config.Default()
+	tool, _, _, _, reloaded := setupGlobalOnlyTool(t, cfg, "config.mcp.set", (*toolSet).configMCPSetTool)
+
+	args := `{"scope":"global","servers":{"remote":{"url":"https://mcp.example.com/","type":"http","trust":"unrestricted","headers":{"Authorization":"Bearer $MARSHAL_TEST_UNSET_VAR"}}}}`
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.set", Args: []byte(args)})
+	if err == nil {
+		t.Fatal("expected an error for an unresolvable header variable")
+	}
+	if !strings.Contains(err.Error(), "MARSHAL_TEST_UNSET_VAR") {
+		t.Errorf("error = %v, want it to name the variable", err)
+	}
+	if *reloaded != nil {
+		t.Error("config was written despite the rejected header")
+	}
+}
+
+// seedUserMCPConfig writes a user config file defining one MCP server, so a
+// delete has an on-disk entry to remove. Asserting only the in-memory
+// reloaded config would pass even with the last-entry resurrection bug.
+func seedUserMCPConfig(t *testing.T, home, name string) string {
+	t.Helper()
+	path := config.UserConfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[mcp.servers." + name + "]\nurl = \"https://mcp.getrunpod.io/\"\ntype = \"http\"\ntrust = \"unrestricted\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestConfigMCPDeleteRemovesServer(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"runpod": {URL: "https://mcp.getrunpod.io/", Type: "http", Trust: "unrestricted"},
+	}
+	tool, home, _, _, reloaded := setupGlobalOnlyTool(t, cfg, "config.mcp.delete", (*toolSet).configMCPDeleteTool)
+	userPath := seedUserMCPConfig(t, home, "runpod")
+
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.delete", Args: []byte(`{"scope":"global","name":"runpod"}`)})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if res.Summary == "" {
+		t.Error("expected a summary")
+	}
+	if *reloaded == nil {
+		t.Fatal("reload was not called")
+	}
+	if _, ok := (*reloaded).MCP.Servers["runpod"]; ok {
+		t.Error("server still present in the reloaded config")
+	}
+	// The on-disk assertion is the one that catches the resurrection bug:
+	// the in-memory reload is correct even when the file keeps the entry.
+	data, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if strings.Contains(string(data), "runpod") {
+		t.Errorf("server still on disk after delete:\n%s", data)
+	}
+
+	_, err = tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.delete", Args: []byte(`{"scope":"global","name":"nope"}`)})
+	if err == nil {
+		t.Fatal("expected an error for an unknown server name")
+	}
+}
+
+// A server the user config defines must be deleted from the user config even
+// when the caller omits scope: the default project scope would write a file
+// that never held the entry, silently no-op, and let the server reappear.
+func TestConfigMCPDeleteResolvesScopeFromOwningLayer(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"runpod": {URL: "https://mcp.getrunpod.io/", Type: "http", Trust: "unrestricted"},
+	}
+	tool, home, projectPath, _, _ := setupGlobalOnlyTool(t, cfg, "config.mcp.delete", (*toolSet).configMCPDeleteTool)
+	userPath := seedUserMCPConfig(t, home, "runpod")
+
+	// An explicit project scope cannot remove a user-config server.
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.delete", Args: []byte(`{"scope":"project","name":"runpod"}`)}); err == nil {
+		t.Fatal("expected an error for a project-scope delete of a user-config server")
+	}
+
+	// Scope omitted resolves to the owning layer.
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Name: "config.mcp.delete", Args: []byte(`{"name":"runpod"}`)}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Errorf("delete must not create the project config: %v", err)
+	}
+	data, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if strings.Contains(string(data), "runpod") {
+		t.Errorf("server still on disk after delete:\n%s", data)
+	}
 }
 
 func TestModelsPresetSetRoundTrip(t *testing.T) {

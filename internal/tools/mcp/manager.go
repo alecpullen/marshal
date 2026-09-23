@@ -10,6 +10,7 @@ import (
 	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/registry"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -104,15 +105,39 @@ func (m *Manager) log() *slog.Logger {
 	return m.Logger
 }
 
-func (m *Manager) Start(ctx context.Context) error {
+// ServerFailure records one MCP server that could not be started. Start
+// collects these instead of aborting: a single bad server must not cost the
+// user every other server's tools, nor the agent runtime itself.
+type ServerFailure struct {
+	Name      string
+	Transport string
+	Err       error
+}
+
+func (f ServerFailure) Error() string {
+	if f.Transport == "" {
+		return fmt.Sprintf("mcp server %q: %v", f.Name, f.Err)
+	}
+	return fmt.Sprintf("mcp server %q (%s): %v", f.Name, f.Transport, f.Err)
+}
+
+// Start connects every configured MCP server and returns the ones that
+// failed. A per-server failure is not fatal: the manager keeps the healthy
+// clients, and the caller decides how to surface the rest. There is no
+// fatal-error return because no failure mode here is fatal to the manager —
+// a config that is entirely broken degrades to "no MCP tools", never to
+// "no agent".
+func (m *Manager) Start(ctx context.Context) []ServerFailure {
 	if m.config == nil {
 		return nil
 	}
+	var failures []ServerFailure
 	for name, srv := range m.config.MCP.Servers {
 		transport, err := Transport(srv)
 		if err != nil {
-			m.Close()
-			return fmt.Errorf("start MCP server %q: %w", name, err)
+			failures = append(failures, ServerFailure{Name: name, Err: err})
+			m.log().Warn("mcp server skipped", "name", name, "error", err)
+			continue
 		}
 		var client caller
 		if transport == "http" {
@@ -121,13 +146,18 @@ func (m *Manager) Start(ctx context.Context) error {
 			client, err = m.startStdio(ctx, name, srv)
 		}
 		if err != nil {
-			m.Close()
-			return fmt.Errorf("start MCP server %q: %w", name, err)
+			// startRemote/startStdio close a half-started client themselves.
+			// The manager must not Close() the healthy ones.
+			failures = append(failures, ServerFailure{Name: name, Transport: transport, Err: err})
+			m.log().Warn("mcp server skipped", "name", name, "transport", transport, "error", err)
+			continue
 		}
 		m.clients = append(m.clients, client)
 		m.log().Info("mcp connect", "name", name, "transport", transport)
 	}
-	return nil
+	// Map iteration order is random; sort so the reported order is stable.
+	sort.Slice(failures, func(i, j int) bool { return failures[i].Name < failures[j].Name })
+	return failures
 }
 
 // startStdio spawns a local MCP server process and completes the initialize

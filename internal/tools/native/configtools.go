@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func (t *toolSet) configTools() []registry.Tool {
 		t.configHooksSetTool(),
 		t.configPermissionsSetTool(),
 		t.configMCPSetTool(),
+		t.configMCPDeleteTool(),
 		t.configProvidersSetTool(),
 		t.configProvidersDeleteTool(),
 		t.configModelsPresetSetTool(),
@@ -150,6 +152,7 @@ func (t *toolSet) commitConfigWrite(ctx context.Context, scope, reason string, d
 	baseline := t.config
 	baseline.Providers = maps.Clone(t.config.Providers)
 	baseline.Models.Presets = maps.Clone(t.config.Models.Presets)
+	baseline.MCP.Servers = maps.Clone(t.config.MCP.Servers)
 	next := t.config
 	mutate(&next)
 
@@ -1086,6 +1089,9 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.mcp.set args: %w", err)
 		}
+		// Names of the header variables this write resolved, reported back so
+		// the caller can see the credential path worked. Names only.
+		var resolvedVars []string
 		// Validate every server before writing anything: a rejected entry must
 		// not leave a half-applied [mcp] section on disk.
 		for name, srv := range args.Servers {
@@ -1110,11 +1116,20 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 				if err := mcp.ValidateRemoteServer(candidate); err != nil {
 					return registry.ToolResult{}, fmt.Errorf("mcp server %q: %w", name, err)
 				}
+				// Resolve headers now so an unresolvable $VAR is a write-time
+				// error naming the variable, instead of an entry that cannot
+				// connect and fails later as an opaque reload error. The
+				// resolved values are discarded — config stores the
+				// references, never the secrets.
+				if _, err := mcp.ResolveHeaders(candidate.Headers); err != nil {
+					return registry.ToolResult{}, fmt.Errorf("mcp server %q: %w", name, err)
+				}
+				resolvedVars = append(resolvedVars, mcp.HeaderEnvRefs(candidate.Headers)...)
 			}
 		}
 		scope := args.resolvedScope()
 		reason := fmt.Sprintf("config.mcp.set (%s scope): update mcp section", scope)
-		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
+		res, err := t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
 			if args.Servers != nil {
 				if cfg.MCP.Servers == nil {
 					cfg.MCP.Servers = map[string]config.MCPServerConfig{}
@@ -1149,6 +1164,81 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 			if args.DisclosureThresholdTools != nil {
 				cfg.MCP.DisclosureThresholdTools = *args.DisclosureThresholdTools
 			}
+		})
+		if err != nil {
+			return res, err
+		}
+		if len(resolvedVars) > 0 {
+			sort.Strings(resolvedVars)
+			res.Summary += fmt.Sprintf(" Resolved header variables: %s.", strings.Join(resolvedVars, ", "))
+		}
+		return res, nil
+	}
+	return tool
+}
+
+func (t *toolSet) configMCPDeleteTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.mcp.delete",
+		Description: "Delete an MCP server entry from the [mcp] section by name. Use this to remove a server that will not start or is no longer wanted. The scope is resolved from the layer that actually defines the server; pass scope explicitly only when both the user and project configs define it.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"MCP server name key to delete"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.mcp.delete args: %w", err)
+		}
+		if args.Name == "" {
+			return registry.ToolResult{}, fmt.Errorf("missing required argument: name")
+		}
+		if _, ok := t.config.MCP.Servers[args.Name]; !ok {
+			known := make([]string, 0, len(t.config.MCP.Servers))
+			for k := range t.config.MCP.Servers {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			return registry.ToolResult{}, fmt.Errorf("no MCP server named %q; configured servers: %v", args.Name, known)
+		}
+		// [mcp] is bipolar: either the user or the project file may carry the
+		// section. A delete aimed at the layer that does not define the server
+		// writes a file that never held the entry, returns success, and the
+		// server reappears on the next reload. Resolve the scope from where
+		// the server actually lives.
+		inUser, err := config.MCPServersInFile(t.userConfigPath)
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("read user config: %w", err)
+		}
+		inProject, err := config.MCPServersInFile(t.configPath)
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("read project config: %w", err)
+		}
+		scope := args.resolvedScope()
+		switch {
+		case inUser[args.Name] && inProject[args.Name]:
+			// Both layers define it. Honour an explicit scope; refuse to guess
+			// when the caller left it out, since either choice leaves the
+			// other layer's entry in place.
+			if args.Scope == "" {
+				return registry.ToolResult{}, fmt.Errorf("MCP server %q is defined in both the user and project configs; pass scope=\"global\" or scope=\"project\" to choose which entry to delete", args.Name)
+			}
+		case inUser[args.Name]:
+			if args.Scope == "project" {
+				return registry.ToolResult{}, fmt.Errorf("MCP server %q is defined in the user config; a project-scope delete cannot remove it — rerun with scope omitted or \"global\"", args.Name)
+			}
+			scope = "global"
+		case inProject[args.Name]:
+			if args.Scope == "global" {
+				return registry.ToolResult{}, fmt.Errorf("MCP server %q is defined in the project config; a global-scope delete cannot remove it — rerun with scope omitted or \"project\"", args.Name)
+			}
+			scope = "project"
+		}
+		reason := fmt.Sprintf("config.mcp.delete (%s scope): delete MCP server %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
+			delete(cfg.MCP.Servers, args.Name)
 		})
 	}
 	return tool

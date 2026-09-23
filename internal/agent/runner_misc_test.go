@@ -1134,7 +1134,7 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	state.Config.Skills.LoadGateThresholdTokens = 0
 
 	pol := policy.NewEngine(&config.Config{}, nil)
-	skills.RegisterTool(reg, idx, state)
+	skills.RegisterTool(reg, idx, state, skills.SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"need debugging workflow","action":{"type":"tool_call","tool":"skill.load","args":{"name":"debug"}}}`,
@@ -1207,7 +1207,7 @@ func TestRunSendsSkillBodyToProviderAfterLoad(t *testing.T) {
 	// test covers loading mechanics, not gating — disable the gate.
 	state.Config.Skills.LoadGateThresholdTokens = 0
 	pol := policy.NewEngine(&config.Config{}, nil)
-	skills.RegisterTool(reg, idx, state)
+	skills.RegisterTool(reg, idx, state, skills.SkillsToolOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
 
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"need debugging workflow","action":{"type":"tool_call","tool":"skill.load","args":{"name":"debug"}}}`,

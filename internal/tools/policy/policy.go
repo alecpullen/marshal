@@ -915,6 +915,29 @@ func shellInlinePayload(st stage) (string, bool) {
 	return "", false
 }
 
+// suInlinePayload returns the command string a `su [-user] -c <payload>`
+// invocation runs. Like shellInlinePayload, the payload is a single quoted
+// argument the outer parse cannot inspect. su may take an optional leading
+// user operand (and `-`/`--login` flags) before `-c`.
+func suInlinePayload(st stage) (string, bool) {
+	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+	if len(argv) == 0 || lastSegment(argv[0]) != "su" {
+		return "", false
+	}
+	for i := 1; i < len(argv); i++ {
+		a := argv[i]
+		if a == "-c" {
+			if i+1 < len(argv) {
+				return strings.Trim(argv[i+1], "'\""), true
+			}
+			return "", false
+		}
+		// Skip su's own flags and an optional leading user operand; only `-c`
+		// introduces the payload.
+	}
+	return "", false
+}
+
 // xargsPayload returns the argv of the command xargs invokes, skipping
 // xargs' own options and their values.
 func xargsPayload(argv []string) []string {

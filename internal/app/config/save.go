@@ -236,6 +236,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&shell.AllowNetwork, fileField[bool](file.Tools.Shell, "AllowNetwork"), cfg.Tools.Shell.AllowNetwork, def.Tools.Shell.AllowNetwork)
 	putKey(&shell.AutoApprove, fileField[bool](file.Tools.Shell, "AutoApprove"), cfg.Tools.Shell.AutoApprove, def.Tools.Shell.AutoApprove)
 	putKey(&shell.GuardrailDynamicArgv0, fileField[string](file.Tools.Shell, "GuardrailDynamicArgv0"), cfg.Tools.Shell.GuardrailDynamicArgv0, def.Tools.Shell.GuardrailDynamicArgv0)
+	putSlice(&shell.FloorCommands, fileSlice[string](file.Tools.Shell, "FloorCommands"), cfg.Tools.Shell.FloorCommands, def.Tools.Shell.FloorCommands)
 
 	if file.Tools.Shell.Sandbox == nil {
 		file.Tools.Shell.Sandbox = &sandboxFile{}

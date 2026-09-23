@@ -366,6 +366,7 @@ type ShellToolConfig struct {
 	Confirm               CommandRules  `toml:"confirm"`
 	Deny                  PatternRules  `toml:"deny"`
 	GuardrailDynamicArgv0 string        `toml:"guardrail_dynamic_argv0"`
+	FloorCommands         []string      `toml:"floor_commands"`
 	Sandbox               SandboxConfig `toml:"sandbox"`
 }
 

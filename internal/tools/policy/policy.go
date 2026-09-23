@@ -915,14 +915,42 @@ func shellPayloadFromArgv(argv []string) (string, bool) {
 		return "", false
 	}
 	for i := 1; i < len(argv); i++ {
-		if argv[i] == "-c" {
-			if i+1 < len(argv) {
-				return strings.Trim(argv[i+1], "'\""), true
-			}
-			return "", false
+		if !shellCommandFlag(argv[i]) {
+			continue
 		}
+		if i+1 < len(argv) {
+			return unquotePayload(argv[i+1]), true
+		}
+		return "", false
 	}
 	return "", false
+}
+
+// shellCommandFlag reports whether a shell argument is the `-c` flag that
+// introduces a command payload. Shells accept the flag combined with other
+// single-letter flags (`bash -lc '…'`, `sh -oc '…'`), so any single-dash
+// cluster containing `c` counts. Long options (`--login`) never do.
+func shellCommandFlag(arg string) bool {
+	if arg == "-c" {
+		return true
+	}
+	if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+		return false
+	}
+	return strings.Contains(arg[1:], "c")
+}
+
+// unquotePayload strips one matching pair of surrounding quotes from a
+// payload argument. It deliberately does not use strings.Trim, which would
+// strip a trailing quote belonging to a nested payload
+// (`sh -c 'sh -c "git push"'`) and leave the inner command unparseable.
+func unquotePayload(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 // suInlinePayload returns the command string a `su [-user] -c <payload>`
@@ -940,15 +968,13 @@ func suPayloadFromArgv(argv []string) (string, bool) {
 		return "", false
 	}
 	for i := 1; i < len(argv); i++ {
-		a := argv[i]
-		if a == "-c" {
-			if i+1 < len(argv) {
-				return strings.Trim(argv[i+1], "'\""), true
-			}
-			return "", false
+		if !shellCommandFlag(argv[i]) {
+			continue
 		}
-		// Skip su's own flags and an optional leading user operand; only `-c`
-		// introduces the payload.
+		if i+1 < len(argv) {
+			return unquotePayload(argv[i+1]), true
+		}
+		return "", false
 	}
 	return "", false
 }
@@ -959,7 +985,7 @@ func xargsPayload(argv []string) []string {
 	i := 1
 	for i < len(argv) {
 		a := argv[i]
-		if a == "-I" || a == "-i" || a == "-L" || a == "-n" || a == "-P" || a == "-s" {
+		if xargsFlagTakesValue(a) {
 			i += 2
 			continue
 		}
@@ -973,6 +999,20 @@ func xargsPayload(argv []string) []string {
 		return nil
 	}
 	return argv[i:]
+}
+
+// xargsFlagTakesValue reports whether an xargs option consumes the following
+// argument as its value. Joined forms (`-I{}`, `--arg-file=list`) are not
+// listed: they carry their value in the same token and are skipped by the
+// generic flag branch.
+func xargsFlagTakesValue(a string) bool {
+	switch a {
+	case "-I", "-i", "-L", "-n", "-P", "-s", "-a", "-d", "-E", "-e",
+		"--arg-file", "--delimiter", "--eof", "--max-args", "--max-chars",
+		"--max-lines", "--max-procs", "--process-slot-var", "--replace":
+		return true
+	}
+	return false
 }
 
 // operandsOf returns the non-flag arguments of args, optionally dropping the
@@ -1212,9 +1252,9 @@ func floorHitArgv(argv []string, depth int, system bool, extra []string) string 
 		}
 	case "eval":
 		if depth < maxGuardrailDepth {
-			// The printer re-emits the payload quoted; strip the quotes so the
-			// inner parse sees the command, not a single literal word.
-			return floorHitStages(strings.Trim(strings.Join(argv[1:], " "), "'\""), depth+1, system, extra)
+			// The printer re-emits the payload quoted; strip the outer quotes so
+			// the inner parse sees the command, not a single literal word.
+			return floorHitStages(unquotePayload(strings.Join(argv[1:], " ")), depth+1, system, extra)
 		}
 	}
 	return ""
@@ -1369,9 +1409,17 @@ func skipFloorWrappersExtended(argv []string, system bool) []string {
 			argv = argv[1:]
 		case "timeout":
 			// timeout [flags] <duration> <cmd...>: skip flags then the duration.
+			// -k/--kill-after and -s/--signal take a value, so consuming them
+			// as bare flags would desync the duration operand and leave the
+			// real command as argv0 (`timeout -k 5 5 git push`).
 			i := 1
 			for i < len(argv) && strings.HasPrefix(argv[i], "-") {
-				i++
+				switch argv[i] {
+				case "-k", "-s", "--kill-after", "--signal":
+					i += 2
+				default:
+					i++
+				}
 			}
 			if i < len(argv) {
 				i++ // the duration operand

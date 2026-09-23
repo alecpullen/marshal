@@ -152,6 +152,19 @@ func TestGitPushFloorBypassShapes(t *testing.T) {
 		"exec sh -c 'git push'",
 		"nohup bash -c 'git push origin main'",
 		"timeout 5 su -c 'git push'",
+		// Combined single-dash shell flags still carry the payload.
+		"bash -lc 'git push'",
+		"bash -ic 'git push'",
+		"sh -oc 'git push'",
+		"zsh -lc 'git push'",
+		"sudo bash -lc 'git push'",
+		// Nested payloads must recurse, not be mangled by quote trimming.
+		`sh -c 'sh -c "git push"'`,
+		// Wrapper flags that take a value must not desync the operand skip.
+		"timeout -k 5 5 git push",
+		"timeout -s KILL 5 git push",
+		"xargs -a list git push",
+		"xargs --arg-file list git push",
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {
@@ -194,6 +207,16 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 		"exec sh -c 'git push'",
 		"nohup bash -c 'git push origin main'",
 		"timeout 5 su -c 'git push'",
+		"bash -lc 'git push'",
+		"bash -ic 'git push'",
+		"sh -oc 'git push'",
+		"zsh -lc 'git push'",
+		"sudo bash -lc 'git push'",
+		`sh -c 'sh -c "git push"'`,
+		"timeout -k 5 5 git push",
+		"timeout -s KILL 5 git push",
+		"xargs -a list git push",
+		"xargs --arg-file list git push",
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {

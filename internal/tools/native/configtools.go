@@ -1180,7 +1180,7 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 func (t *toolSet) configMCPDeleteTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.mcp.delete",
-		Description: "Delete an MCP server entry from the [mcp] section by name. Use this to remove a server that will not start or is no longer wanted.",
+		Description: "Delete an MCP server entry from the [mcp] section by name. Use this to remove a server that will not start or is no longer wanted. The scope is resolved from the layer that actually defines the server; pass scope explicitly only when both the user and project configs define it.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"MCP server name key to delete"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
@@ -1203,7 +1203,39 @@ func (t *toolSet) configMCPDeleteTool() registry.Tool {
 			sort.Strings(known)
 			return registry.ToolResult{}, fmt.Errorf("no MCP server named %q; configured servers: %v", args.Name, known)
 		}
+		// [mcp] is bipolar: either the user or the project file may carry the
+		// section. A delete aimed at the layer that does not define the server
+		// writes a file that never held the entry, returns success, and the
+		// server reappears on the next reload. Resolve the scope from where
+		// the server actually lives.
+		inUser, err := config.MCPServersInFile(t.userConfigPath)
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("read user config: %w", err)
+		}
+		inProject, err := config.MCPServersInFile(t.configPath)
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("read project config: %w", err)
+		}
 		scope := args.resolvedScope()
+		switch {
+		case inUser[args.Name] && inProject[args.Name]:
+			// Both layers define it. Honour an explicit scope; refuse to guess
+			// when the caller left it out, since either choice leaves the
+			// other layer's entry in place.
+			if args.Scope == "" {
+				return registry.ToolResult{}, fmt.Errorf("MCP server %q is defined in both the user and project configs; pass scope=\"global\" or scope=\"project\" to choose which entry to delete", args.Name)
+			}
+		case inUser[args.Name]:
+			if args.Scope == "project" {
+				return registry.ToolResult{}, fmt.Errorf("MCP server %q is defined in the user config; a project-scope delete cannot remove it — rerun with scope omitted or \"global\"", args.Name)
+			}
+			scope = "global"
+		case inProject[args.Name]:
+			if args.Scope == "global" {
+				return registry.ToolResult{}, fmt.Errorf("MCP server %q is defined in the project config; a global-scope delete cannot remove it — rerun with scope omitted or \"project\"", args.Name)
+			}
+			scope = "project"
+		}
 		reason := fmt.Sprintf("config.mcp.delete (%s scope): delete MCP server %q", scope, args.Name)
 		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
 			delete(cfg.MCP.Servers, args.Name)

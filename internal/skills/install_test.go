@@ -135,6 +135,62 @@ func TestInstallGitNoBundlesErrors(t *testing.T) {
 	}
 }
 
+// An explicit name installs exactly one bundle and renames it, and an
+// invalid-named bundle is skipped before the rename — so it can never be
+// installed under the caller's name. This is the only test that exercises
+// the explicit-name path, where the ValidName-before-rename ordering is
+// load-bearing.
+func TestInstallGitExplicitNameInstallsOneBundle(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	src := t.TempDir()
+	runGitTest(t, src, "init")
+	runGitTest(t, src, "config", "user.email", "test@example.com")
+	runGitTest(t, src, "config", "user.name", "Test")
+
+	// Sorts first, so it is the first bundle the walk reaches: if the
+	// ValidName check ran after the rename it would be installed as
+	// "renamed" and the test would see two entries.
+	badDir := filepath.Join(src, "skills", `aaa\bad`)
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "SKILL.md"), []byte("# Bad\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		dir := filepath.Join(src, "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGitTest(t, src, "add", "-A")
+	runGitTest(t, src, "commit", "-m", "initial")
+
+	target := t.TempDir()
+	if _, err := installGit(context.Background(), src, target, "renamed"); err != nil {
+		t.Fatalf("installGit: %v", err)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("explicit name must install exactly one bundle, got %v", names)
+	}
+	if _, err := os.Stat(filepath.Join(target, "renamed", "SKILL.md")); err != nil {
+		t.Errorf("bundle not installed under the explicit name: %v", err)
+	}
+}
+
 func TestInstallSingleFileRejectsInvalidName(t *testing.T) {
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "source.md")

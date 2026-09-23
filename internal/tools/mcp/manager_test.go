@@ -42,8 +42,8 @@ func TestManagerRegistersAndInvokesTools(t *testing.T) {
 	}
 
 	mgr := NewManager(&cfg)
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
+	if failures := mgr.Start(ctx); len(failures) > 0 {
+		t.Fatalf("Start: %v", failures)
 	}
 	defer mgr.Close()
 
@@ -112,8 +112,8 @@ func TestRegisterTools_SkipsHangingServer(t *testing.T) {
 	}
 
 	mgr := NewManager(&cfg)
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
+	if failures := mgr.Start(ctx); len(failures) > 0 {
+		t.Fatalf("Start: %v", failures)
 	}
 	defer mgr.Close()
 
@@ -213,8 +213,8 @@ func TestManagerStartsRemoteServerAndRegistersTools(t *testing.T) {
 	}
 
 	mgr := NewManager(&cfg)
-	if err := mgr.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
+	if failures := mgr.Start(context.Background()); len(failures) > 0 {
+		t.Fatalf("Start: %v", failures)
 	}
 	defer mgr.Close()
 
@@ -343,7 +343,8 @@ func TestStartRejectsDangerousEnvKey(t *testing.T) {
 		},
 	}
 	m := NewManager(&cfg)
-	if err := m.Start(context.Background()); err == nil {
+	failures := m.Start(context.Background())
+	if len(failures) == 0 {
 		t.Fatal("expected Start to reject LD_PRELOAD env key, got nil")
 	}
 }
@@ -374,7 +375,8 @@ func TestStartRejectsInterpreterEnvKey(t *testing.T) {
 				},
 			}
 			m := NewManager(&cfg)
-			if err := m.Start(context.Background()); err == nil {
+			failures := m.Start(context.Background())
+			if len(failures) == 0 {
 				t.Fatalf("expected Start to reject %q env key, got nil", key)
 			}
 		})
@@ -405,7 +407,8 @@ func TestStartRejectsSecretEnvKey(t *testing.T) {
 		},
 	}
 	m := NewManager(&cfg)
-	if err := m.Start(context.Background()); err == nil {
+	failures := m.Start(context.Background())
+	if len(failures) == 0 {
 		t.Fatal("expected Start to reject MY_API_KEY env key, got nil")
 	}
 }
@@ -434,7 +437,8 @@ func TestStartRejectsNewlineInEnvValue(t *testing.T) {
 		},
 	}
 	m := NewManager(&cfg)
-	if err := m.Start(context.Background()); err == nil {
+	failures := m.Start(context.Background())
+	if len(failures) == 0 {
 		t.Fatal("expected Start to reject newline in env value, got nil")
 	}
 }
@@ -448,7 +452,8 @@ func TestStartRejectsUnknownCommandWithoutTrust(t *testing.T) {
 		},
 	}
 	m := NewManager(cfg)
-	if err := m.Start(context.Background()); err == nil {
+	failures := m.Start(context.Background())
+	if len(failures) == 0 {
 		t.Fatal("expected Start to reject unlisted command without trust flag")
 	}
 }
@@ -462,11 +467,13 @@ func TestStartAcceptsUnknownCommandWithUnrestrictedTrust(t *testing.T) {
 		},
 	}
 	m := NewManager(cfg)
-	err := m.Start(context.Background())
-	// /tmp/evil-binary doesn't exist, so Start will fail with exec-not-found.
-	// We're asserting the validation step does NOT reject it.
-	if err != nil && (strings.Contains(err.Error(), "deny-list") || strings.Contains(err.Error(), "allow-list")) {
-		t.Fatalf("validation should have passed; got %v", err)
+	// /tmp/evil-binary doesn't exist, so Start will report an exec-not-found
+	// failure. We're asserting the validation step does NOT reject it.
+	for _, f := range m.Start(context.Background()) {
+		msg := f.Error()
+		if strings.Contains(msg, "deny-list") || strings.Contains(msg, "allow-list") {
+			t.Fatalf("validation should have passed; got %v", msg)
+		}
 	}
 }
 
@@ -480,9 +487,11 @@ func TestStartAcceptsNpx(t *testing.T) {
 	}
 	m := NewManager(cfg)
 	// npx may not be installed in the test env; we just want validation to pass.
-	err := m.Start(context.Background())
-	if err != nil && (strings.Contains(err.Error(), "allow-list") || strings.Contains(err.Error(), "command")) {
-		t.Fatalf("validation should have passed; got %v", err)
+	for _, f := range m.Start(context.Background()) {
+		msg := f.Error()
+		if strings.Contains(msg, "deny-list") || strings.Contains(msg, "allow-list") {
+			t.Fatalf("validation should have passed; got %v", msg)
+		}
 	}
 }
 
@@ -512,8 +521,8 @@ func TestRegisterToolsSkipsUncompilableSchema(t *testing.T) {
 	}
 
 	mgr := NewManager(&cfg)
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
+	if failures := mgr.Start(ctx); len(failures) > 0 {
+		t.Fatalf("Start: %v", failures)
 	}
 	defer mgr.Close()
 
@@ -529,6 +538,55 @@ func TestRegisterToolsSkipsUncompilableSchema(t *testing.T) {
 	}
 	if _, ok := reg.Lookup("mcp.mock.broken"); ok {
 		t.Error("mcp.mock.broken registered despite an uncompilable schema")
+	}
+}
+
+// One unstartable server must not cost the user a healthy server's tools,
+// and must not abort the manager.
+func TestStartDegradesOnOneBadServer(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockServerMain()
+		return
+	}
+
+	ctx := context.Background()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"good": {
+			Command: exe,
+			Args:    []string{"-test.run=TestStartDegradesOnOneBadServer"},
+			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+			Trust:   "unrestricted",
+		},
+		"bad": {
+			// Not in the allow-list and no trust flag: rejected by
+			// validateServerCommand before any process is spawned.
+			Command: "/nonexistent/marshal-mcp-server",
+		},
+	}
+
+	mgr := NewManager(&cfg)
+	failures := mgr.Start(ctx)
+	defer mgr.Close()
+
+	if len(failures) != 1 {
+		t.Fatalf("failures = %v, want exactly one", failures)
+	}
+	if failures[0].Name != "bad" {
+		t.Errorf("failed server = %q, want %q", failures[0].Name, "bad")
+	}
+
+	reg := registry.New()
+	if err := mgr.RegisterTools(reg); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+	if _, ok := reg.Lookup("mcp.good.hello"); !ok {
+		t.Error("healthy server's tool was not registered")
 	}
 }
 

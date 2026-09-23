@@ -942,6 +942,69 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 }
 
+// Reloading with a config containing one unstartable MCP server must not
+// fail, and must not disturb the healthy server's tool.
+func TestReloadAgentRuntimeToleratesBadMCPServer(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockMCPServer()
+		return
+	}
+
+	ctx := context.Background()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initial := reloadableAgentConfig("provider")
+	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner initial: %v", err)
+	}
+	if mcpMgr != nil {
+		defer mcpMgr.Close()
+	}
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		MCPManager:   nil, // no MCP servers configured; use nil interface
+		Snapshot:     nil,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	// Reload with one good server and one that cannot start.
+	reloaded := reloadableAgentConfig("provider")
+	reloaded.MCP.Servers = map[string]config.MCPServerConfig{
+		"good": {
+			Command: exe,
+			Args:    []string{"-test.run=TestReloadAgentRuntimeToleratesBadMCPServer"},
+			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+			Trust:   "unrestricted",
+		},
+		"bad": {
+			// Not in the allow-list and no trust flag: rejected before spawn.
+			Command: "/nonexistent/marshal-mcp-server",
+		},
+	}
+	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime must tolerate a bad MCP server, got: %v", err)
+	}
+
+	// The healthy server's tool must have survived the reload.
+	if _, ok := rt.ToolRegistry.Lookup("mcp.good.hello"); !ok {
+		t.Error("healthy server's tool missing after reload with a bad server")
+	}
+	// The failure must be surfaced, not swallowed. Notice() returns
+	// (Notice, bool) — verified at internal/app/session/notice.go:64.
+	if n, ok := state.Notice(); !ok || !strings.Contains(n.Message, "bad") {
+		t.Errorf("expected a notice naming the failed server, got %+v (ok=%v)", n, ok)
+	}
+}
+
 // TestReloadAgentRuntimeAddsRemoteMCPServer covers the same-session loop the
 // spec calls out: a remote MCP server is added to the config, the runtime is
 // reloaded, and its tool becomes callable without restarting the process.

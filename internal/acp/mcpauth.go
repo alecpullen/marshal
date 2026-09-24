@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/commands"
 	"marshal/internal/credentials"
 	"marshal/internal/tools/mcp/oauth"
@@ -123,7 +124,31 @@ func (m *CommandManager) mcpAuth(ctx context.Context, sessionID string, rt *Comm
 	go func() {
 		defer cancel()
 		err := eng.Authorize(authCtx, disp)
-		disp.finish(err)
+		if err != nil {
+			disp.finish(err)
+			return
+		}
+		// Terminal success: the token is stored. Rebuild the runtime so the
+		// server that returned ErrAuthRequired at startup (and never entered
+		// the manager's client set) is started and its tools registered on
+		// the live registry — the same reload the TUI's reconnectMCPServer
+		// performs. A nil ReloadConfig (embedded/test runtimes) keeps the
+		// token-stored-only sentence.
+		if rt.ReloadConfig == nil {
+			disp.finish(nil)
+			return
+		}
+		// Clear the startup notices the rebuild resolves BEFORE reloading, as
+		// the TUI's reconnectMCPServer does: the stale "needs OAuth" notice is
+		// exactly what this flow fixes, but a rebuild that still fails sets a
+		// fresh notice of its own, so clearing afterwards would wipe it and
+		// leave the operator with a bare success message.
+		// No nil-State guard: rt.State is already dereferenced above (its
+		// Logger, and the server lookup in mcpServers), so a nil State would
+		// have failed long before this goroutine was started.
+		rt.State.ClearNotice(session.NoticeProvider)
+		rt.State.ClearNotice(session.NoticeConfig)
+		disp.finishConnected(rt.ReloadConfig(rt.State.Config))
 	}()
 
 	return commands.Text(fmt.Sprintf(
@@ -203,6 +228,19 @@ func (d *headlessMCPDisplay) finish(err error) {
 	case err != nil:
 		d.emit(fmt.Sprintf("Authorization of MCP server %q failed: %v", d.name, err))
 	}
+}
+
+// finishConnected reports the post-authorization reload outcome. The
+// success sentence names the connection because the reload is what makes
+// it true; a reload failure reports the TUI's could-not-be-connected shape
+// (internal/app/tui/mcp.go reconnectMCPServer) — the token stays stored,
+// so a later rebuild connects the server.
+func (d *headlessMCPDisplay) finishConnected(reloadErr error) {
+	if reloadErr == nil {
+		d.emit(fmt.Sprintf("\u2713 Authorized MCP server %q. Tokens are stored in the OS keychain; the server is now connected.", d.name))
+		return
+	}
+	d.emit(fmt.Sprintf("\u2717 Authorized MCP server %q, but it could not be connected: %v", d.name, reloadErr))
 }
 
 // emit sends text to the connected client as an agent message chunk, the

@@ -2266,6 +2266,15 @@ func layerReloaderFor(homeDir, workingDir string, trusted func() bool) func() (c
 }
 
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
+	// A reload mutates the runtime in several phases that are not
+	// individually atomic: the dry-run build, the in-place field/pointer
+	// swap, and the old-generation cleanup. Serialize the whole operation.
+	// The headless /mcp auth completion fires this from a different goroutine
+	// than a turn's own config.*.set reload, so without this gate two reloads
+	// could interleave.
+	rt.reloadMu.Lock()
+	defer rt.reloadMu.Unlock()
+
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 	// Reuse the runtime's stable WriteLock: in-flight background children
@@ -2285,11 +2294,11 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		return err
 	}
 
-	// Config validated — swap atomically with the runtime.
-	rt.State.Config = cfg
-
 	// Capture old values for cleanup under the pointer mutex.
 	rt.mu.Lock()
+	// Config validated — install it under both the reload gate (one writer
+	// at a time) and the pointer mutex.
+	rt.State.Config = cfg
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager
 	oldWatchMgr := rt.WatchManager

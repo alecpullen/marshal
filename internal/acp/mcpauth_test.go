@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,6 +202,36 @@ func newMCPAuthTestManager(t *testing.T, servers map[string]config.MCPServerConf
 	return mgr, sink, store
 }
 
+// newMCPAuthTestManagerWithReload mirrors newMCPAuthTestManager but wires the
+// runtime's config reload handle, so the post-authorization reload path is
+// reachable from tests. The existing harness stays untouched for the
+// back-compat (nil reloader) path.
+func newMCPAuthTestManagerWithReload(t *testing.T, servers map[string]config.MCPServerConfig, reload func(config.Config) error) (*CommandManager, *noticeSink, *session.State) {
+	t.Helper()
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = servers
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+
+	sink := newNoticeSink()
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			if sessionID != "sess_mcp" {
+				return nil, false
+			}
+			return &CommandRuntime{State: state, Registry: reg, ReloadConfig: reload}, true
+		},
+		HasActive: func(string) bool { return false },
+		Notify:    sink.notify,
+		OpenStore: func() (credentials.Store, error) { return credentials.NewMemStore(), nil },
+	})
+	return mgr, sink, state
+}
+
 // --- tests ---------------------------------------------------------------
 
 // /mcp auth is headless-capable: session/command_list must report the command
@@ -279,14 +311,140 @@ func TestCommandManagerMCPAuthEmitsURLAndCompletesFlow(t *testing.T) {
 	// a browser on the same machine would do.
 	as.completeLoopback(t, authURL)
 
-	// Success is reported back over the wire and the token set is persisted.
-	sink.waitForText(t, "Authorized MCP server")
+	// Wait for the sentence unique to the nil-reloader success path (the
+	// finish() text, not finishConnected()'s "now connected" variant); this
+	// is what keeps the back-compat (no reloader) path covered if the
+	// harness ever gains a reloader. The token set is persisted too.
+	success := sink.waitForText(t, "Tokens are stored in the OS keychain.")
+	if strings.Contains(success, "now connected") {
+		t.Errorf("nil-reloader flow reported a connection: %q", success)
+	}
 	stored, err := store.Get("marshal:mcp:" + as.origin())
 	if err != nil {
 		t.Fatalf("tokens were not persisted: %v", err)
 	}
 	if len(stored) == 0 {
 		t.Fatal("persisted token blob is empty")
+	}
+}
+
+// A successful flow must rebuild the runtime so the now-authorized server's
+// tools are live, and the terminal notice must report the connection (not
+// just token storage).
+func TestCommandManagerMCPAuthReloadsRuntimeOnSuccess(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	mcp.AllowInsecureHTTP(true)
+	t.Cleanup(func() { mcp.AllowInsecureHTTP(false) })
+
+	as := newFakeAuthorizeServer(t)
+	var reloads atomic.Int64
+	mgr, sink, _ := newMCPAuthTestManagerWithReload(t, map[string]config.MCPServerConfig{
+		"linear": {URL: as.origin(), Type: "http", Auth: "oauth", Trust: "unrestricted"},
+	}, func(config.Config) error {
+		reloads.Add(1)
+		return nil
+	})
+
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_mcp", Name: "mcp", Args: []string{"auth", "linear"}})
+	if _, err := mgr.Command(context.Background(), raw); err != nil {
+		t.Fatalf("Command(mcp auth linear): %v", err)
+	}
+
+	urlNotice := sink.waitForText(t, "Authorize MCP server")
+	authURL := authorizationURLFromNotice(t, urlNotice)
+	as.completeLoopback(t, authURL)
+
+	sink.waitForText(t, "is now connected")
+	if got := reloads.Load(); got != 1 {
+		t.Errorf("reload ran %d times, want exactly 1", got)
+	}
+}
+
+// A failed post-authorization reload must be reported truthfully: the token
+// stays stored, so the notice says the server could not be connected and
+// names the cause.
+func TestCommandManagerMCPAuthReloadFailureReported(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	mcp.AllowInsecureHTTP(true)
+	t.Cleanup(func() { mcp.AllowInsecureHTTP(false) })
+
+	as := newFakeAuthorizeServer(t)
+	mgr, sink, _ := newMCPAuthTestManagerWithReload(t, map[string]config.MCPServerConfig{
+		"linear": {URL: as.origin(), Type: "http", Auth: "oauth", Trust: "unrestricted"},
+	}, func(config.Config) error {
+		return errors.New("mcp: startup boom")
+	})
+
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_mcp", Name: "mcp", Args: []string{"auth", "linear"}})
+	if _, err := mgr.Command(context.Background(), raw); err != nil {
+		t.Fatalf("Command(mcp auth linear): %v", err)
+	}
+
+	urlNotice := sink.waitForText(t, "Authorize MCP server")
+	authURL := authorizationURLFromNotice(t, urlNotice)
+	as.completeLoopback(t, authURL)
+
+	notice := sink.waitForText(t, "could not be connected")
+	if !strings.Contains(notice, "mcp: startup boom") {
+		t.Errorf("notice = %q, want it to contain the reload cause", notice)
+	}
+}
+
+// The startup "needs OAuth" notice is exactly what this flow fixes; like the
+// TUI's reconnectMCPServer, the headless path must clear it before the
+// rebuild, so a successful authorization does not leave a stale banner up.
+func TestCommandManagerMCPAuthClearsStaleStartupNotice(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	mcp.AllowInsecureHTTP(true)
+	t.Cleanup(func() { mcp.AllowInsecureHTTP(false) })
+
+	as := newFakeAuthorizeServer(t)
+
+	// Clearing happens before the reload, not after: asserting inside the
+	// injected reload observes that ordering directly (a fix that cleared
+	// afterwards would still see the notice here).
+	var state *session.State
+	var reloads atomic.Int64
+	noticeGoneAtReload := atomic.Bool{}
+	mgr, sink, st := newMCPAuthTestManagerWithReload(t, map[string]config.MCPServerConfig{
+		"linear": {URL: as.origin(), Type: "http", Auth: "oauth", Trust: "unrestricted"},
+	}, func(config.Config) error {
+		reloads.Add(1)
+		if _, ok := state.Notice(); !ok {
+			noticeGoneAtReload.Store(true)
+		}
+		return nil
+	})
+	state = st
+
+	// Seed the startup notice the /mcp auth flow exists to resolve.
+	state.SetNotice(session.Notice{
+		Category: session.NoticeConfig,
+		Severity: session.SeverityWarn,
+		Message:  "MCP server 'linear' needs OAuth - run /mcp auth linear",
+	})
+
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_mcp", Name: "mcp", Args: []string{"auth", "linear"}})
+	if _, err := mgr.Command(context.Background(), raw); err != nil {
+		t.Fatalf("Command(mcp auth linear): %v", err)
+	}
+
+	urlNotice := sink.waitForText(t, "Authorize MCP server")
+	authURL := authorizationURLFromNotice(t, urlNotice)
+	as.completeLoopback(t, authURL)
+
+	sink.waitForText(t, "is now connected")
+	if got := reloads.Load(); got != 1 {
+		t.Errorf("reload ran %d times, want exactly 1", got)
+	}
+	if !noticeGoneAtReload.Load() {
+		t.Error("reload observed the stale startup notice still set; clearing must happen before the reload")
+	}
+	if n, ok := state.Notice(); ok {
+		t.Errorf("stale startup notice survived the flow: %+v", n)
 	}
 }
 

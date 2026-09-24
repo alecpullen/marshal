@@ -199,22 +199,33 @@ description and `auth <name>` args, so `session/command_list` shows it.
    the same-machine browser flow completes it, and the token is written to the
    keychain.
 
-5. **The ACP path cannot reconnect for you.** Unlike the TUI, the headless
-   surface has no runtime-reload seam: `CommandRuntime` carries only
-   `{State, Registry}` and `acp.CommandManager` holds no reloader handle. The
-   token is stored, but the failing server's tools stay unregistered for the
-   life of that session's runtime. To pick it up, reload the session over the
+5. **The ACP path reloads the session's runtime in place.** When the flow
+   completes, the headless command manager calls the runtime's config-reload
+   handle, rebuilding the runtime so the now-authorized server's tools are
+   registered live — no wire round-trip needed. The terminal notice reports
+   either that the server is now connected, or that it could not be connected,
+   with the cause; in the latter case the token stays stored, so a later reload
+   or `session/load` still connects it.
+
+   `session/load` and `session/resume` remain valid alternatives — the former
+   starts a fresh runtime (`SessionManager.Load` in `internal/acp/session.go`),
+   which re-runs MCP startup — now with a stored token — and replays the
+   transcript; the latter restarts the runtime the same way without the replay —
+   but they are no longer the only recovery. To reload the session over the
    wire:
 
    ```json
    {"sessionId": "sess_...", "cwd": "/path/to/repo"}
    ```
 
-   `session/load` starts a fresh runtime (`SessionManager.Load` in
-   `internal/acp/session.go`), which re-runs MCP startup — now with a stored
-   token — and replays the transcript. `session/resume` restarts the runtime
-   the same way without the replay. The ACP success notice therefore reports
-   only that the token was stored; it does not claim the server is connected.
+Reloads are serialized by a whole-reload gate (`Runtime.reloadMu`), so two
+reloads cannot interleave their build/swap/cleanup phases. The reload still
+mutates the live `*agent.Runner` in place (`Runner.CopyFrom`), though, so a
+turn that is already running keeps reading the same runner pointer while its
+fields are updated — the same posture the TUI has always had via
+`reconnectMCPServer`, not a new ACP-only hazard. An in-flight turn may
+therefore observe a mix of old and new provider and registry fields for the
+duration of the swap.
 
 `Engine.Open` is deliberately nil on this path: a headless server must not
 spawn a browser on the host it runs on. Only the URL is emitted.

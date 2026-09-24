@@ -312,7 +312,7 @@ func (h *agentHost) registerHandlers(srv *Server) {
 			if !ok || rt == nil {
 				return nil, false
 			}
-			return &CommandRuntime{State: rt.State, Registry: rt.CommandRegistry}, true
+			return &CommandRuntime{State: rt.State, Registry: rt.CommandRegistry, ReloadConfig: rt.ConfigReloader}, true
 		},
 		HasActive: turns.HasActiveTurn,
 		// The host-level sink so a headless command's mid-flight notice (the

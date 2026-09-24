@@ -4836,3 +4836,128 @@ func TestRunShutdownDoesNotWaitForWorkers(t *testing.T) {
 		t.Fatalf("Run took %s, want shutdown not blocked on workers", elapsed)
 	}
 }
+
+func TestStartRuntimeDefaultConfigReloader(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return nativeToolAgentConfig("reload-default"), nil
+		}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	// (a) startRuntime must self-wire a reloader when the caller supplied none.
+	if rt.ConfigReloader == nil {
+		t.Fatal("Runtime.ConfigReloader is nil; expected startRuntime to self-wire a default reloader")
+	}
+
+	oldRegistry := rt.ToolRegistry
+	oldState := rt.State
+
+	// (b) the default reloader must succeed for a config the build accepts.
+	if err := rt.ConfigReloader(rt.Config); err != nil {
+		t.Fatalf("rt.ConfigReloader(rt.Config): %v", err)
+	}
+
+	// (c) the reload swaps in a fresh tool registry pointer.
+	if rt.ToolRegistry == oldRegistry {
+		t.Fatal("ToolRegistry pointer did not change after reload")
+	}
+
+	// (d) the session state pointer is stable across the reload.
+	if rt.State != oldState {
+		t.Fatal("State pointer changed after reload")
+	}
+}
+
+func TestStartRuntimePreservesExplicitConfigReloader(t *testing.T) {
+	ctx := context.Background()
+
+	called := false
+	wantErr := errors.New("explicit reloader sentinel")
+	explicit := func(config.Config) error {
+		called = true
+		return wantErr
+	}
+
+	runOpts := options{
+		now:                    time.Now,
+		configWithLayersLoader: config.LoadWithLayers,
+		trustResolver:          &fakeTrustResolver{decision: trust.DecisionTrustPermanent},
+		workingDir:             t.TempDir(),
+		homeDir:                t.TempDir(),
+		configReloader:         explicit,
+	}
+
+	rt, err := startRuntime(ctx, runOpts)
+	if err != nil {
+		t.Fatalf("startRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.ConfigReloader == nil {
+		t.Fatal("Runtime.ConfigReloader is nil")
+	}
+
+	// The explicit closure must survive; the default closure would swallow the
+	// sentinel error and never set called.
+	if err := rt.ConfigReloader(config.Default()); !errors.Is(err, wantErr) {
+		t.Fatalf("rt.ConfigReloader error = %v, want %v", err, wantErr)
+	}
+	if !called {
+		t.Fatal("explicit reloader was not called; startRuntime replaced it with the default")
+	}
+}
+
+// TestReloadAgentRuntimeSerializesOnReloadMu pins the whole-reload gate. The
+// test holds rt.reloadMu itself before starting the reload, so the blocked
+// state is observable regardless of goroutine scheduling: a reload that did
+// not take the gate would sail past the timeout below.
+func TestReloadAgentRuntimeSerializesOnReloadMu(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return nativeToolAgentConfig("reload-gate"), nil
+		}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	// Hold the reload gate so the reload below cannot pass it.
+	rt.reloadMu.Lock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- reloadAgentRuntime(context.Background(), rt.State.Config, rt)
+	}()
+
+	select {
+	case err := <-done:
+		rt.reloadMu.Unlock()
+		t.Fatalf("reloadAgentRuntime returned while reloadMu was held (err = %v)", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: the reload is parked on the gate.
+	}
+
+	rt.reloadMu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reloadAgentRuntime: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reloadAgentRuntime did not complete after reloadMu was released")
+	}
+}

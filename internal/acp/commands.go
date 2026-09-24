@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 	"marshal/internal/credentials"
@@ -14,6 +15,10 @@ import (
 type CommandRuntime struct {
 	State    *session.State
 	Registry *commands.Registry
+	// ReloadConfig is the runtime's in-place config reload handle
+	// (app.Runtime.ConfigReloader). Nil in embedded/test runtimes; the
+	// auth flow treats nil as token-stored-only reporting.
+	ReloadConfig func(config.Config) error
 }
 
 // CommandLookup returns the runtime registered for an ACP session id.

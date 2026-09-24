@@ -125,11 +125,38 @@ type Runtime struct {
 	// when config reload changes the LSP server set.
 	lspCancel context.CancelFunc
 
+	// reloadMu serializes whole-runtime config reloads. A reload rebuilds the
+	// runner, the MCP manager, the registries, and the cleanup generation;
+	// those phases are not individually mutex-guarded, so two interleaving
+	// reloads would leave the runtime with mismatched generations even
+	// though each individual pointer swap is atomic. Reloads arrive from
+	// more than one goroutine — the TUI's /connect and /settings paths, the
+	// agent's own config.*.set tools mid-turn, and the headless /mcp auth
+	// completion callback (internal/acp/mcpauth.go) — so this gate is what
+	// makes concurrent reloads safe.
+	//
+	// Lock order: reloadMu is always taken ABOVE Runtime.mu and never below
+	// it, and a reload never re-enters itself, so holding it for a whole
+	// reload cannot deadlock. The stacking to keep honest is the write gate:
+	// a turn's config.* tool holds swarm.WriteLock and then calls the
+	// reloader, so the reload build must NEVER acquire the write gate — it
+	// does not today, and adding such an acquisition would deadlock against
+	// that turn. Holding reloadMu across the old-generation cleanup can also
+	// park a concurrent config.* tool for the duration of the bounded (2s)
+	// manager shutdowns; that is acceptable, but worth remembering.
+	reloadMu sync.Mutex
+
 	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
 	// agent. Used by the TUI's Run-now dispatch. Set by startRuntime.
 	CustomAgentFactory agent.SubagentRunnerFactory
-	// ConfigReloader hot-swaps the agent runtime from a new config. Set by
-	// Run() after the TUI is live; nil when the runtime is headless.
+	// ConfigReloader hot-swaps the agent runtime from a new config. Run()
+	// installs one after the TUI is live; startRuntime installs a default for
+	// every other runtime (StartRuntime / ACP / CLI / embedded), so a headless
+	// runtime always has a working reload handle. Reloads are serialized by
+	// reloadMu. Note that a reload mutates the live *agent.Runner in place via
+	// Runner.CopyFrom, so a turn already in flight keeps reading that pointer
+	// mid-swap — the posture the TUI has always had, deliberately accepted
+	// rather than fixed here (see docs/mcp-oauth-verification.md).
 	ConfigReloader func(config.Config) error
 	// WriteLock is the single swarm.WriteLock shared by the parent runner
 	// and every agent.run child. It is created once at startRuntime and
@@ -421,6 +448,24 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		return nil, err
 	}
 
+	// Default config reloader for headless runtimes: every Runtime must carry
+	// a working reload handle, not just those built by the TUI. When a caller
+	// (Run) already supplied runOpts.configReloader it wins; when none did
+	// (StartRuntime / ACP / CLI / embedded), the runtime self-wires the same
+	// in-place rebuild the TUI uses. The closure captures rt by reference —
+	// rt is assigned at the Runtime literal below — so the handle works as
+	// soon as construction succeeds. Mirrors the two-phase capture in Run
+	// (app.go:1928-1932).
+	var rt *Runtime
+	if runOpts.configReloader == nil {
+		runOpts.configReloader = func(newCfg config.Config) error {
+			if rt == nil {
+				return fmt.Errorf("runtime not yet built")
+			}
+			return reloadAgentRuntime(ctx, newCfg, rt)
+		}
+	}
+
 	if runOpts.sessionID != "" && runOpts.existingSessionID != "" {
 		return nil, fmt.Errorf("app: WithSessionID and WithExistingSession are mutually exclusive")
 	}
@@ -654,7 +699,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 	}
 
-	rt := &Runtime{
+	rt = &Runtime{
 		Config:               cfg,
 		Layers:               layers,
 		State:                state,

@@ -1072,7 +1072,7 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.mcp.set",
 		Description: "Set fields in the [mcp] section (servers, policies, disclosure_threshold_tools). Servers are merged by key (whole-entry overwrite). This is a destructive change requiring explicit approval.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"servers":{"type":"object","additionalProperties":{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"env":{"type":"object","additionalProperties":{"type":"string"}},"trust":{"type":"string"},"url":{"type":"string","description":"Remote Streamable HTTP endpoint (https). Mutually exclusive with command."},"headers":{"type":"object","additionalProperties":{"type":"string"},"description":"Auth/custom headers. Values may reference environment variables as $VAR or ${VAR}; literal secrets are not stored."},"type":{"type":"string","enum":["","stdio","http"],"description":"Transport. Empty derives it from which of command/url is set."}},"additionalProperties":false}},"policies":{"type":"object","additionalProperties":{"type":"string"}},"disclosure_threshold_tools":{"type":"integer"}},"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"servers":{"type":"object","additionalProperties":{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"env":{"type":"object","additionalProperties":{"type":"string"}},"trust":{"type":"string"},"url":{"type":"string","description":"Remote Streamable HTTP endpoint (https). Mutually exclusive with command."},"headers":{"type":"object","additionalProperties":{"type":"string"},"description":"Auth/custom headers. Values may reference environment variables as $VAR or ${VAR}; literal secrets are not stored."},"type":{"type":"string","enum":["","stdio","http"],"description":"Transport. Empty derives it from which of command/url is set."},"auth":{"type":"string","enum":["","oauth"],"description":"Authentication mode for a remote server. Empty (default) keeps static-header behaviour; oauth requires an http transport."}},"additionalProperties":false}},"policies":{"type":"object","additionalProperties":{"type":"string"}},"disclosure_threshold_tools":{"type":"integer"}},"additionalProperties":false}`),
 		Risk:        registry.RiskDestructive,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -1086,6 +1086,7 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 				URL     *string           `json:"url"`
 				Headers map[string]string `json:"headers"`
 				Type    *string           `json:"type"`
+				Auth    *string           `json:"auth"`
 			} `json:"servers"`
 			Policies                 map[string]string `json:"policies"`
 			DisclosureThresholdTools *int              `json:"disclosure_threshold_tools"`
@@ -1112,9 +1113,21 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 			if srv.Type != nil {
 				candidate.Type = *srv.Type
 			}
+			if srv.Auth != nil {
+				candidate.Auth = *srv.Auth
+			}
 			transport, err := mcp.Transport(candidate)
 			if err != nil {
 				return registry.ToolResult{}, fmt.Errorf("mcp server %q: %w", name, err)
+			}
+			switch candidate.Auth {
+			case "":
+			case "oauth":
+				if transport != "http" {
+					return registry.ToolResult{}, fmt.Errorf("mcp server %q: auth = \"oauth\" requires an http transport (url)", name)
+				}
+			default:
+				return registry.ToolResult{}, fmt.Errorf("mcp server %q: unknown auth %q (accepted: \"\", \"oauth\")", name, candidate.Auth)
 			}
 			if transport == "http" {
 				if err := mcp.ValidateRemoteServer(candidate); err != nil {
@@ -1151,6 +1164,9 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 					}
 					if srv.Type != nil {
 						cfgSrv.Type = *srv.Type
+					}
+					if srv.Auth != nil {
+						cfgSrv.Auth = *srv.Auth
 					}
 					cfgSrv.Args = srv.Args
 					cfgSrv.Headers = srv.Headers

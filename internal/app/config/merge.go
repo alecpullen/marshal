@@ -300,6 +300,9 @@ func merge(cfg *Config, file configFile) error {
 			if srv.Type != nil {
 				cfgSrv.Type = *srv.Type
 			}
+			if srv.Auth != nil {
+				cfgSrv.Auth = *srv.Auth
+			}
 			cfgSrv.Args = srv.Args
 			cfgSrv.Headers = srv.Headers
 			cfg.MCP.Servers[name] = cfgSrv

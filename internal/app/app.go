@@ -47,6 +47,7 @@ import (
 	"marshal/internal/tools/desktop"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/mcp"
+	"marshal/internal/tools/mcp/oauth"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -1016,10 +1017,26 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 
 // mcpFailureMessage renders per-server MCP start failures as one notice
 // line. Names and reasons only — never header values.
+//
+// A server that failed because it needs OAuth gets an actionable sentence
+// naming the command that fixes it; every other failure keeps its raw
+// reason and the generic "unavailable" wording.
 func mcpFailureMessage(failures []mcp.ServerFailure) string {
 	parts := make([]string, 0, len(failures))
+	allAuth := len(failures) > 0
 	for _, f := range failures {
+		if errors.Is(f.Err, oauth.ErrAuthSentinel) {
+			parts = append(parts, fmt.Sprintf("MCP server '%s' needs OAuth — run /mcp auth %s", f.Name, f.Name))
+			continue
+		}
+		allAuth = false
 		parts = append(parts, f.Error())
+	}
+	// When every failure is an authentication gap, the "unavailable"
+	// framing is misleading: the server is configured correctly and only
+	// needs the user to authorize it.
+	if allAuth {
+		return strings.Join(parts, "; ")
 	}
 	return fmt.Sprintf("%d MCP server(s) unavailable: %s", len(failures), strings.Join(parts, "; "))
 }

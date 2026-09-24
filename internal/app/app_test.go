@@ -39,6 +39,7 @@ import (
 	"marshal/internal/tools/desktop"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/mcp"
+	"marshal/internal/tools/mcp/oauth"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -1070,6 +1071,41 @@ func TestReloadAgentRuntimeToleratesBadMCPServer(t *testing.T) {
 	// (Notice, bool) — verified at internal/app/session/notice.go:64.
 	if n, ok := state.Notice(); !ok || !strings.Contains(n.Message, "bad") {
 		t.Errorf("expected a notice naming the failed server, got %+v (ok=%v)", n, ok)
+	}
+}
+
+// A server whose start failed because it needs OAuth must render an
+// actionable notice naming the /mcp auth command, while every other failure
+// keeps the existing "unavailable" wording (regression guard).
+func TestMCPFailureMessageOAuthAndGeneric(t *testing.T) {
+	authErr := &oauth.ErrAuthRequired{ServerName: "linear", Reason: "no stored tokens"}
+	got := mcpFailureMessage([]mcp.ServerFailure{{
+		Name:      "linear",
+		Transport: "http",
+		Err:       authErr,
+	}})
+	want := "MCP server 'linear' needs OAuth — run /mcp auth linear"
+	if got != want {
+		t.Errorf("oauth failure notice = %q, want %q", got, want)
+	}
+
+	// The sentinel must match through the initialize-handshake wrap the
+	// HTTP client applies, not just the bare error.
+	wrapped := mcpFailureMessage([]mcp.ServerFailure{{
+		Name: "linear",
+		Err:  fmt.Errorf("initialize handshake: %w", authErr),
+	}})
+	if wrapped != want {
+		t.Errorf("wrapped oauth notice = %q, want %q", wrapped, want)
+	}
+
+	// Regression guard: a generic failure still uses the existing wording.
+	generic := mcpFailureMessage([]mcp.ServerFailure{{
+		Name: "bad",
+		Err:  errors.New("connection refused"),
+	}})
+	if !strings.Contains(generic, "MCP server(s) unavailable") || !strings.Contains(generic, "connection refused") {
+		t.Errorf("generic failure notice = %q, want the existing unavailable wording", generic)
 	}
 }
 

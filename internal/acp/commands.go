@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/credentials"
 )
 
 // CommandRuntime is the per-session slice of state CommandManager needs.
@@ -27,6 +28,18 @@ type ActiveTurnCheck func(sessionID string) bool
 type CommandManagerConfig struct {
 	Lookup    CommandLookup
 	HasActive ActiveTurnCheck
+
+	// Notify emits a JSON-RPC notification to the connected client. Headless
+	// commands that must surface something before they finish use it: the
+	// /mcp auth OAuth flow emits the authorization URL this way, because the
+	// flow keeps running (blocked on the loopback callback) after the URL is
+	// known. When nil, notifications are skipped.
+	Notify NotifyFunc
+
+	// OpenStore opens the OS credential store OAuth tokens are written to.
+	// When nil, credentials.New("marshal") is used. Injectable so the
+	// keyring-unavailable path can be covered without a real OS keychain.
+	OpenStore func() (credentials.Store, error)
 }
 
 // CommandManager dispatches session/command and session/command_list
@@ -34,6 +47,8 @@ type CommandManagerConfig struct {
 type CommandManager struct {
 	lookup    CommandLookup
 	hasActive ActiveTurnCheck
+	notify    NotifyFunc
+	openStore func() (credentials.Store, error)
 }
 
 func NewCommandManager(cfg CommandManagerConfig) *CommandManager {
@@ -43,15 +58,21 @@ func NewCommandManager(cfg CommandManagerConfig) *CommandManager {
 	if cfg.HasActive == nil {
 		panic("acp: CommandManagerConfig.HasActive is required")
 	}
-	return &CommandManager{lookup: cfg.Lookup, hasActive: cfg.HasActive}
+	return &CommandManager{
+		lookup:    cfg.Lookup,
+		hasActive: cfg.HasActive,
+		notify:    cfg.Notify,
+		openStore: cfg.OpenStore,
+	}
 }
 
 // kindOf classifies a command for the session/command_list wire result.
-// "headless" commands have a real Handler and can be run via
-// session/command. "tui_only" commands are interactive; those without a
-// Handler are rejected by session/command — see Command.
-// "prompt" commands have no Handler — a client runs them by sending
-// PromptBody as a normal session/prompt instead.
+// "headless" commands can be run via session/command: either they carry a
+// real Handler, or the manager implements them itself (see
+// CommandManager.supportsHeadless, applied by CommandList). "tui_only"
+// commands are interactive; those without a Handler are rejected by
+// session/command — see Command. "prompt" commands have no Handler — a
+// client runs them by sending PromptBody as a normal session/prompt instead.
 func kindOf(cmd commands.Command) string {
 	switch {
 	case cmd.TUIOnly:
@@ -145,8 +166,9 @@ func toWireRows(rows []commands.Row) []WireRow {
 }
 
 // Command handles session/command. It rejects unknown commands, commands
-// with no headless Handler (TUIOnly or bare PromptBody), and any command
-// while the session has an active prompt turn.
+// with no headless implementation (a bare PromptBody, or a TUIOnly command
+// the manager cannot run itself), and any command while the session has an
+// active prompt turn.
 func (m *CommandManager) Command(ctx context.Context, params json.RawMessage) (any, error) {
 	var p CommandParams
 	if len(params) > 0 {
@@ -173,7 +195,8 @@ func (m *CommandManager) Command(ctx context.Context, params json.RawMessage) (a
 	if !ok {
 		return nil, &jsonRPCError{Code: methodNotFound, Message: "unknown command: " + p.Name}
 	}
-	if cmd.Handler == nil {
+	headless := m.supportsHeadless(cmd.Name)
+	if !headless && cmd.Handler == nil {
 		reason := "prompt command; send its body via session/prompt instead"
 		if cmd.TUIOnly {
 			reason = "command is TUI-only and has no headless handler"
@@ -185,7 +208,18 @@ func (m *CommandManager) Command(ctx context.Context, params json.RawMessage) (a
 		return nil, serverErrorf("session %s already has an active turn", p.SessionID)
 	}
 
-	result := cmd.Handler(rt.State, p.Args)
+	var result commands.Result
+	if headless {
+		// The registry entry is TUIOnly (its interactive panel lives in the
+		// TUI); the manager supplies the headless implementation instead.
+		var err error
+		result, err = m.runHeadless(ctx, p.SessionID, rt, cmd.Name, p.Args)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		result = cmd.Handler(rt.State, p.Args)
+	}
 	return CommandResult{Text: result.Text, Doc: toWireDoc(result.Doc)}, nil
 }
 
@@ -212,12 +246,18 @@ func (m *CommandManager) CommandList(ctx context.Context, params json.RawMessage
 	cmds := rt.Registry.ListAll()
 	out := make([]CommandInfo, len(cmds))
 	for i, c := range cmds {
+		kind := kindOf(c)
+		if m.supportsHeadless(c.Name) {
+			// A command the manager runs itself is headless-capable over the
+			// wire even though its registry entry is TUIOnly.
+			kind = "headless"
+		}
 		out[i] = CommandInfo{
 			Name:        c.Name,
 			Description: c.Description,
 			Args:        c.Args,
 			Group:       c.Group,
-			Kind:        kindOf(c),
+			Kind:        kind,
 		}
 	}
 	return CommandListResult{Commands: out}, nil

@@ -37,6 +37,7 @@ import (
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
@@ -463,6 +464,11 @@ type Model struct {
 	// session; the app.Run program runner reads it from the final model.
 	resumeSession string
 	dock          dock.Host
+
+	// mcpAuthServer is the name of the MCP server whose OAuth flow is in
+	// flight, set while the authorization panel is docked. It scopes the
+	// success/cancel message to the right server when AuthDoneMsg arrives.
+	mcpAuthServer string
 
 	// doctorFixProvider is non-empty while the /doctor panel is in key-input
 	// sub-mode: the input prompt asks for an API key for this provider.
@@ -1851,6 +1857,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
+	case mcpauth.AuthDoneMsg:
+		return m.handleMCPAuthDone(msg)
 	case settings.BrowserClosedMsg:
 		m.dock.CloseNow()
 		m.refreshViewport()

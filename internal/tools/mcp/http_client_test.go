@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"marshal/internal/tools/mcp/oauth"
 )
 
 // decodeRequest reads and decodes the JSON-RPC request from an HTTP request.
@@ -291,6 +293,157 @@ func TestHTTPClientContextCancellation(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("Call took %v, want it to return promptly", elapsed)
+	}
+}
+
+// TestHTTPClientUnauthorizedWithoutTokenSource is a regression guard: with no
+// OAuth token source the 401 error text is unchanged.
+func TestHTTPClientUnauthorizedWithoutTokenSource(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no creds", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient("remote", srv.URL, nil)
+	err := c.Call(context.Background(), "tools/list", nil, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	const want = "mcp: HTTP 401: no creds"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+	if errors.Is(err, oauth.ErrAuthSentinel) {
+		t.Errorf("error = %v, want it not to satisfy oauth.ErrAuthSentinel", err)
+	}
+}
+
+// TestHTTPClientUnauthorizedWithEmptyToken verifies an empty token is
+// reported as an authentication requirement, not a generic HTTP error.
+func TestHTTPClientUnauthorizedWithEmptyToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no creds", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient("remote", srv.URL, nil, WithHTTPOAuth(func(context.Context) (string, error) {
+		return "", nil
+	}))
+	err := c.Call(context.Background(), "tools/list", nil, nil)
+	if !errors.Is(err, oauth.ErrAuthSentinel) {
+		t.Errorf("error = %v, want it to satisfy oauth.ErrAuthSentinel", err)
+	}
+}
+
+// TestHTTPClientTokenSourceError verifies a failing token source surfaces an
+// authentication requirement that still unwraps to the source error.
+func TestHTTPClientTokenSourceError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("server should not be reached when the token source fails")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cause := errors.New("refresh token expired")
+	c := NewHTTPClient("remote", srv.URL, nil, WithHTTPOAuth(func(context.Context) (string, error) {
+		return "", cause
+	}))
+	err := c.Call(context.Background(), "tools/list", nil, nil)
+	if !errors.Is(err, oauth.ErrAuthSentinel) {
+		t.Errorf("error = %v, want it to satisfy oauth.ErrAuthSentinel", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("error = %v, want it to unwrap to the token source error", err)
+	}
+	var authErr *oauth.ErrAuthRequired
+	if !errors.As(err, &authErr) {
+		t.Fatalf("error = %v, want it to be an *oauth.ErrAuthRequired", err)
+	}
+	if authErr.ServerName != "remote" {
+		t.Errorf("ServerName = %q, want %q", authErr.ServerName, "remote")
+	}
+}
+
+// TestHTTPClientUnauthorizedWithToken verifies a 401 returned despite a
+// token source is reported as an authentication requirement.
+func TestHTTPClientUnauthorizedWithToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient("remote", srv.URL, nil, WithHTTPOAuth(func(context.Context) (string, error) {
+		return "stale-token", nil
+	}))
+	err := c.Call(context.Background(), "tools/list", nil, nil)
+	if !errors.Is(err, oauth.ErrAuthSentinel) {
+		t.Errorf("error = %v, want it to satisfy oauth.ErrAuthSentinel", err)
+	}
+}
+
+// TestHTTPClientOAuthBearerToken verifies the token source's token reaches the
+// server as a bearer credential.
+func TestHTTPClientOAuthBearerToken(t *testing.T) {
+	var mu sync.Mutex
+	var auth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = r.Header.Get("Authorization")
+		mu.Unlock()
+		req := decodeRequest(t, r)
+		writeJSONResult(w, req.ID, ListToolsResult{})
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient("remote", srv.URL, nil, WithHTTPOAuth(func(context.Context) (string, error) {
+		return "tok-abc", nil
+	}))
+	var list ListToolsResult
+	if err := c.Call(context.Background(), "tools/list", nil, &list); err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+
+	mu.Lock()
+	got := auth
+	mu.Unlock()
+	if got != "Bearer tok-abc" {
+		t.Errorf("Authorization header = %q, want %q", got, "Bearer tok-abc")
+	}
+}
+
+// TestHTTPClientOAuthOverridesStaticHeader verifies the token source wins over
+// a static Authorization header without mutating the client's Headers map.
+func TestHTTPClientOAuthOverridesStaticHeader(t *testing.T) {
+	var mu sync.Mutex
+	var auth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = r.Header.Get("Authorization")
+		mu.Unlock()
+		req := decodeRequest(t, r)
+		writeJSONResult(w, req.ID, ListToolsResult{})
+	}))
+	defer srv.Close()
+
+	headers := map[string]string{"Authorization": "Bearer static"}
+	c := NewHTTPClient("remote", srv.URL, headers, WithHTTPOAuth(func(context.Context) (string, error) {
+		return "dynamic", nil
+	}))
+	var list ListToolsResult
+	if err := c.Call(context.Background(), "tools/list", nil, &list); err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+
+	mu.Lock()
+	got := auth
+	mu.Unlock()
+	if got != "Bearer dynamic" {
+		t.Errorf("Authorization header = %q, want %q", got, "Bearer dynamic")
+	}
+	if c.Headers["Authorization"] != "Bearer static" {
+		t.Errorf("client Headers mutated to %q, want %q", c.Headers["Authorization"], "Bearer static")
 	}
 }
 

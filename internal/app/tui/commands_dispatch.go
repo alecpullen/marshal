@@ -167,6 +167,9 @@ func init() {
 			m.refreshViewport()
 			return m, nil
 		},
+		"mcp": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			return m.handleMCPCommand(args)
+		},
 		"trust": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			if m.state.Trusted() {
 				m.refreshViewport()

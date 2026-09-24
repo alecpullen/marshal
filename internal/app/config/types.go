@@ -148,6 +148,10 @@ type MCPServerConfig struct {
 	URL     string            `toml:"url"`
 	Headers map[string]string `toml:"headers"`
 	Type    string            `toml:"type"`
+	// Auth is the authentication mode for a remote server: "" (default,
+	// static-header behaviour) or "oauth". "oauth" requires an http
+	// transport; it is rejected on a stdio server.
+	Auth string `toml:"auth"`
 }
 
 type TitlingConfig struct {

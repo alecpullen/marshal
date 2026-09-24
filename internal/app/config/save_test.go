@@ -1025,6 +1025,7 @@ func TestSaveProjectConfigRoundTripsMCPServerRemote(t *testing.T) {
 			Type:    "http",
 			Trust:   "unrestricted",
 			Headers: map[string]string{"Authorization": "Bearer $MCP_TOKEN"},
+			Auth:    "oauth",
 		},
 	}
 	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
@@ -1050,6 +1051,9 @@ func TestSaveProjectConfigRoundTripsMCPServerRemote(t *testing.T) {
 	}
 	if got := srv.Headers["Authorization"]; got != "Bearer $MCP_TOKEN" {
 		t.Errorf("headers[Authorization] = %q, want the unresolved reference", got)
+	}
+	if srv.Auth != "oauth" {
+		t.Errorf("auth = %q, want oauth", srv.Auth)
 	}
 }
 

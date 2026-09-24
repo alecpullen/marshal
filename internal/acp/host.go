@@ -315,6 +315,9 @@ func (h *agentHost) registerHandlers(srv *Server) {
 			return &CommandRuntime{State: rt.State, Registry: rt.CommandRegistry}, true
 		},
 		HasActive: turns.HasActiveTurn,
+		// The host-level sink so a headless command's mid-flight notice (the
+		// /mcp auth authorization URL) survives a dropped connection.
+		Notify: h.sink.Notify,
 	})
 	srv.Handle("session/command", cmds.Command)
 	srv.Handle("session/command_list", cmds.CommandList)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"marshal/internal/tools/mcp/oauth"
 )
 
 // mcpSessionIDHeader is the request/response header used by the Streamable
@@ -38,6 +41,43 @@ func WithHTTPClientLogger(l *slog.Logger) HTTPClientOption {
 	return func(c *HTTPClient) { c.Logger = l }
 }
 
+// WithHTTPOAuth installs a token source that supplies an OAuth bearer token
+// for each request. src is consulted once per POST so a refreshed token is
+// picked up without rebuilding the client.
+//
+// When src returns a non-empty token, the request carries
+// "Authorization: Bearer <token>". Precedence: the token source wins over a
+// static Authorization entry in the client's Headers map, because the token
+// is per-request and freshly sourced while Headers is fixed at construction.
+//
+// When the source yields no token (empty string or an error), the client
+// reports *oauth.ErrAuthRequired instead of sending the request, so callers
+// can drive an authorization flow.
+func WithHTTPOAuth(src func(ctx context.Context) (string, error)) HTTPClientOption {
+	return func(c *HTTPClient) { c.tokenSource = src }
+}
+
+// tokenSourceError couples an *oauth.ErrAuthRequired with the underlying
+// failure from the token source. errors.Is reaches the sentinel through Is
+// and the source error through Unwrap.
+type tokenSourceError struct {
+	auth  *oauth.ErrAuthRequired
+	cause error
+}
+
+func (e *tokenSourceError) Error() string { return e.auth.Error() }
+
+func (e *tokenSourceError) Unwrap() error { return e.cause }
+
+// Is reports whether target matches the wrapped authentication error. Cause
+// matching falls through to Unwrap, so errors.Is still reaches the token
+// source's own error.
+func (e *tokenSourceError) Is(target error) bool { return errors.Is(e.auth, target) }
+
+// As forwards to the wrapped authentication error so errors.As can extract an
+// *oauth.ErrAuthRequired; Unwrap alone points at the token source's cause.
+func (e *tokenSourceError) As(target any) bool { return errors.As(e.auth, target) }
+
 // HTTPClient is a Streamable-HTTP MCP client. It speaks JSON-RPC over HTTP
 // POST and accepts either a single JSON response body or an SSE-framed
 // response stream, matching the single-endpoint Streamable HTTP model.
@@ -49,6 +89,10 @@ type HTTPClient struct {
 	Headers map[string]string
 
 	Logger *slog.Logger // nil → slog.Default()
+
+	// tokenSource, when non-nil, supplies an OAuth bearer token for every
+	// outgoing request. It is nil unless WithHTTPOAuth was supplied.
+	tokenSource func(ctx context.Context) (string, error)
 
 	http *http.Client
 
@@ -223,6 +267,28 @@ func (c *HTTPClient) post(ctx context.Context, req Request) (*http.Response, fun
 	for k, v := range c.Headers {
 		httpReq.Header.Set(k, v)
 	}
+	// A configured token source wins over a static Authorization header:
+	// the token is per-request and freshly sourced, while c.Headers is fixed
+	// at construction. The header is set on the outgoing request only; the
+	// client's static Headers map is never mutated.
+	if c.tokenSource != nil {
+		token, tokErr := c.tokenSource(ctx)
+		if tokErr != nil {
+			cleanup()
+			return nil, nil, &tokenSourceError{
+				auth: &oauth.ErrAuthRequired{
+					ServerName: c.Name,
+					Reason:     fmt.Sprintf("token source failed: %v", tokErr),
+				},
+				cause: tokErr,
+			}
+		}
+		if token == "" {
+			cleanup()
+			return nil, nil, &oauth.ErrAuthRequired{ServerName: c.Name, Reason: "no stored tokens"}
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+	}
 	if sessionID != "" {
 		httpReq.Header.Set(mcpSessionIDHeader, sessionID)
 	}
@@ -239,6 +305,18 @@ func (c *HTTPClient) post(ctx context.Context, req Request) (*http.Response, fun
 		c.mu.Lock()
 		c.sessionID = sid
 		c.mu.Unlock()
+	}
+
+	// A 401 means the server rejected our credentials. When a token source is
+	// configured that is a re-authorization signal (there is no auto-retry);
+	// without one we keep the generic HTTP error text unchanged.
+	if resp.StatusCode == http.StatusUnauthorized && c.tokenSource != nil {
+		resp.Body.Close()
+		cleanup()
+		return nil, nil, &oauth.ErrAuthRequired{
+			ServerName: c.Name,
+			Reason:     "server rejected credentials (HTTP 401)",
+		}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

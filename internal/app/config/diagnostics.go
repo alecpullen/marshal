@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 )
 
 // Severity ranks a diagnostic. SeverityError < SeverityWarning < SeverityInfo
@@ -169,6 +170,46 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 			Message:  fmt.Sprintf("moved %d preset(s) to the user config", n),
 			Source:   LayerProject.String(),
 		})
+	}
+
+	// 9: MCP server auth mode. config.mcp.set validates this before writing,
+	// but merge() copies the field verbatim, so a hand-edited config.toml could
+	// carry a value that is silently ignored at runtime: an unknown mode, or
+	// auth = "oauth" on a server with no url. The latter never reaches the
+	// OAuth path, because manager.startRemote only consults Auth after the
+	// transport has already resolved to "http" — so the user gets no feedback
+	// that their entry does nothing. Reporting it as a config diagnostic (not
+	// a merge error) keeps a typo from being fatal to startup while still
+	// surfacing it.
+	//
+	// A url is the load-time proxy for "is the http transport": Transport's
+	// http branch requires url to be set, so an empty url can never resolve to
+	// http. The full Transport/ValidateRemoteServer rule lives in
+	// internal/tools/mcp, which imports this package — checking it here would
+	// be an import cycle, and duplicating the whole derivation would let the
+	// two policies drift.
+	for name, srv := range cfg.MCP.Servers {
+		path := "mcp.servers." + name + ".auth"
+		source := layers.ProvenanceOf(path).SetBy.String()
+		switch srv.Auth {
+		case "":
+		case "oauth":
+			if srv.URL == "" {
+				ds = append(ds, Diagnostic{
+					Severity: SeverityError,
+					Path:     path,
+					Message:  "mcp server " + name + " sets auth = \"oauth\" but has no url; OAuth requires the http transport, so this setting is ignored",
+					Source:   source,
+				})
+			}
+		default:
+			ds = append(ds, Diagnostic{
+				Severity: SeverityError,
+				Path:     path,
+				Message:  "mcp server " + name + " has unknown auth " + strconv.Quote(srv.Auth) + " (accepted: \"\", \"oauth\"); this setting is ignored",
+				Source:   source,
+			})
+		}
 	}
 
 	// Sort: errors before warnings, then by Path within each group.

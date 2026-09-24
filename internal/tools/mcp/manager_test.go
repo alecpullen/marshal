@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,7 +16,9 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/credentials"
 	"marshal/internal/redact"
+	"marshal/internal/tools/mcp/oauth"
 	"marshal/internal/tools/registry"
 )
 
@@ -617,5 +620,170 @@ func hangingServerMain() {
 		}
 		// Block forever without responding. The parent will kill this process.
 		select {}
+	}
+}
+
+// TestStartRemoteOAuthWithoutTokenSurfacesAuthRequired covers the OAuth branch
+// of startRemote when no token is stored: the initialize POST is answered with
+// 401 (no bearer), and the handshake error must still satisfy
+// errors.Is(err, oauth.ErrAuthSentinel) after HTTPClient.Start wraps it as
+// "initialize handshake: %w". The failure is reported through the
+// []ServerFailure path, so a broken OAuth server degrades to unavailable
+// rather than taking down the agent.
+func TestStartRemoteOAuthWithoutTokenSurfacesAuthRequired(t *testing.T) {
+	origInsecure := allowInsecureHTTP
+	allowInsecureHTTP = true
+	t.Cleanup(func() { allowInsecureHTTP = origInsecure })
+
+	// The server rejects any request without a bearer token.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Response{JSONRPC: "2.0"})
+	}))
+	defer srv.Close()
+
+	// Substitute an empty in-memory store for the OS keychain.
+	origNew := oauthCredentialsNew
+	oauthCredentialsNew = func(string) (credentials.Store, error) { return credentials.NewMemStore(), nil }
+	t.Cleanup(func() { oauthCredentialsNew = origNew })
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"remote": {URL: srv.URL, Trust: "unrestricted", Auth: "oauth"},
+	}
+
+	mgr := NewManager(&cfg)
+	failures := mgr.Start(context.Background())
+	defer mgr.Close()
+
+	if len(failures) != 1 {
+		t.Fatalf("failures = %v, want exactly one", failures)
+	}
+	if !errors.Is(failures[0].Err, oauth.ErrAuthSentinel) {
+		t.Errorf("failure error = %v, want errors.Is(err, oauth.ErrAuthSentinel)", failures[0].Err)
+	}
+	if !strings.Contains(failures[0].Error(), "authentication required") {
+		t.Errorf("failure = %q, want an actionable auth notice", failures[0].Error())
+	}
+}
+
+// TestStartRemoteOAuthWithStoredTokenSucceeds verifies the happy path: with a
+// valid unexpired token already in the store, TokenSource yields it, the
+// initialize POST carries the bearer, and the handshake completes.
+func TestStartRemoteOAuthWithStoredTokenSucceeds(t *testing.T) {
+	origInsecure := allowInsecureHTTP
+	allowInsecureHTTP = true
+	t.Cleanup(func() { allowInsecureHTTP = origInsecure })
+
+	const wantToken = "tok-abc"
+
+	var (
+		mu      sync.Mutex
+		sawAuth string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+wantToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		mu.Lock()
+		sawAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+
+		var req Request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		raw, _ := json.Marshal(InitializeResult{
+			ProtocolVersion: "2024-11-05",
+			ServerInfo:      Implementation{Name: "remote", Version: "1"},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Response{JSONRPC: "2.0", ID: req.ID, Result: raw})
+	}))
+	defer srv.Close()
+
+	// Seed a valid, unexpired token under the engine's server-scoped key.
+	store := credentials.NewMemStore()
+	blob, err := json.Marshal(oauth.StoredTokens{
+		AccessToken: wantToken,
+		ExpiresAt:   time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("marshal:mcp:"+srv.URL, blob); err != nil {
+		t.Fatal(err)
+	}
+
+	origNew := oauthCredentialsNew
+	oauthCredentialsNew = func(string) (credentials.Store, error) { return store, nil }
+	t.Cleanup(func() { oauthCredentialsNew = origNew })
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"remote": {URL: srv.URL, Trust: "unrestricted", Auth: "oauth"},
+	}
+
+	mgr := NewManager(&cfg)
+	if failures := mgr.Start(context.Background()); len(failures) > 0 {
+		t.Fatalf("Start: %v", failures)
+	}
+	defer mgr.Close()
+
+	mu.Lock()
+	gotAuth := sawAuth
+	mu.Unlock()
+	if gotAuth != "Bearer "+wantToken {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer "+wantToken)
+	}
+}
+
+// TestStartRemoteOAuthKeyringUnavailableDegrades ensures a missing OS keychain
+// surfaces as an actionable per-server failure (naming the problem) rather than
+// a fatal error, and never falls back to plaintext storage.
+func TestStartRemoteOAuthKeyringUnavailableDegrades(t *testing.T) {
+	origInsecure := allowInsecureHTTP
+	allowInsecureHTTP = true
+	t.Cleanup(func() { allowInsecureHTTP = origInsecure })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	origNew := oauthCredentialsNew
+	oauthCredentialsNew = func(string) (credentials.Store, error) {
+		return nil, credentials.ErrKeyringUnavailable
+	}
+	t.Cleanup(func() { oauthCredentialsNew = origNew })
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"remote": {URL: srv.URL, Trust: "unrestricted", Auth: "oauth"},
+	}
+
+	mgr := NewManager(&cfg)
+	failures := mgr.Start(context.Background())
+	defer mgr.Close()
+
+	if len(failures) != 1 {
+		t.Fatalf("failures = %v, want exactly one", failures)
+	}
+	msg := failures[0].Error()
+	if !strings.Contains(msg, "keychain unavailable") {
+		t.Errorf("failure = %q, want a keychain-unavailable notice", msg)
+	}
+	if !errors.Is(failures[0].Err, credentials.ErrKeyringUnavailable) {
+		t.Errorf("failure error = %v, want errors.Is(err, credentials.ErrKeyringUnavailable)", failures[0].Err)
 	}
 }

@@ -170,6 +170,7 @@ type fileMCPServer struct {
 	URL     *string           `toml:"url"`
 	Headers map[string]string `toml:"headers"`
 	Type    *string           `toml:"type"`
+	Auth    *string           `toml:"auth"`
 }
 
 type fileMCP struct {

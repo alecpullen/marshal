@@ -421,6 +421,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "mcp",
+			Description: "Authorize a remote MCP server configured with auth = \"oauth\"",
+			Args:        "auth <name>",
+			Group:       groupSettings,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "rollback",
 			Description: "Rollback last patch",
 			Group:       groupChanges,

@@ -56,7 +56,7 @@ func TestSaveUserConfigProvidersPreservesDiskOnlyEntry(t *testing.T) {
 	}
 	// Disk carries the foreign entry the snapshot never saw.
 	disk := map[string]ProviderConfig{
-		"work": baseline["work"],
+		"work":   baseline["work"],
 		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
 	}
 	if err := SaveUserConfigProviders(path, disk, nil); err != nil {
@@ -88,7 +88,7 @@ func TestSaveUserConfigPresetsPreservesDiskOnlyEntry(t *testing.T) {
 	}
 	disk := map[string]routing.ModelPreset{
 		"ollama-cloud/deepseek-v4-flash": baseline["ollama-cloud/deepseek-v4-flash"],
-		"ollama/nomic-embed-text":       {Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
+		"ollama/nomic-embed-text":        {Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
 	}
 	if err := SaveUserConfigPresets(path, disk, nil); err != nil {
 		t.Fatalf("seed disk: %v", err)
@@ -121,7 +121,7 @@ func TestSaveUserConfigProvidersRemovesIntentionallyDeletedKey(t *testing.T) {
 
 	baseline := map[string]ProviderConfig{
 		"work": {Type: "openai_compatible", BaseURL: "https://api.work.example/v1"},
-		"old": {Type: "openai_compatible", BaseURL: "https://api.old.example/v1"},
+		"old":  {Type: "openai_compatible", BaseURL: "https://api.old.example/v1"},
 	}
 	if err := SaveUserConfigProviders(path, baseline, nil); err != nil {
 		t.Fatalf("seed disk: %v", err)
@@ -147,7 +147,7 @@ func TestSaveUserConfigPresetsRemovesIntentionallyDeletedKey(t *testing.T) {
 	path := staleMergeUserPath(t)
 
 	baseline := map[string]routing.ModelPreset{
-		"a/one": {Provider: "a", Model: "one"},
+		"a/one":  {Provider: "a", Model: "one"},
 		"a/gone": {Provider: "a", Model: "gone"},
 	}
 	if err := SaveUserConfigPresets(path, baseline, nil); err != nil {

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
+	"marshal/internal/credentials"
 	"marshal/internal/redact"
 	"marshal/internal/sandbox/envutil"
+	"marshal/internal/tools/mcp/oauth"
 	"marshal/internal/tools/registry"
 	"path/filepath"
 	"sort"
@@ -199,12 +201,54 @@ func (m *Manager) startRemote(ctx context.Context, name string, srv config.MCPSe
 		return nil, err
 	}
 	registerHeaderSecrets(headers)
-	client := NewHTTPClient(name, srv.URL, headers, WithHTTPClientLogger(m.log()))
+
+	opts := []HTTPClientOption{WithHTTPClientLogger(m.log())}
+	if srv.Auth == "oauth" {
+		engine, err := m.oauthEngine(name, srv)
+		if err != nil {
+			return nil, err
+		}
+		// TokenSource is consulted once per POST, so a token refreshed after
+		// startup is picked up without rebuilding the client. RegisterTools
+		// and makeHandler are untouched: every tool call routes through the
+		// same client and therefore inherits this source.
+		opts = append(opts, WithHTTPOAuth(engine.TokenSource))
+	}
+
+	client := NewHTTPClient(name, srv.URL, headers, opts...)
 	if err := client.Start(ctx); err != nil {
 		_ = client.Close()
 		return nil, err
 	}
 	return client, nil
+}
+
+// oauthCredentialsNew opens the OS credential store used to persist OAuth
+// tokens for remote MCP servers. It is a var so tests can substitute an
+// in-memory store; production always uses credentials.New, which refuses to
+// fall back to plaintext storage when no secure backend exists.
+var oauthCredentialsNew = credentials.New
+
+// oauthEngine builds the OAuth engine for a remote server whose config opts
+// into auth = "oauth". The credentials store is opened once per startRemote
+// call and is shared by every request the client makes, so a token refreshed
+// on one call is visible to the next. Engine.Open is deliberately left nil:
+// startup only reads stored tokens (TokenSource never launches a browser);
+// the interactive Authorize flow is driven from the UI layer. CacheDir and
+// LoopbackTimeout are left zero so the engine's production defaults apply.
+func (m *Manager) oauthEngine(name string, srv config.MCPServerConfig) (*oauth.Engine, error) {
+	store, err := oauthCredentialsNew("marshal")
+	if err != nil {
+		// Never fall back to plaintext. Surface the keychain problem as a
+		// per-server failure so the rest of the agent stays usable.
+		return nil, fmt.Errorf("mcp server %q: OS keychain unavailable \u2014 OAuth tokens cannot be stored: %w", name, err)
+	}
+	return &oauth.Engine{
+		ServerURL:  srv.URL,
+		ClientName: "marshal",
+		Store:      store,
+		Logger:     m.log(),
+	}, nil
 }
 
 // registerHeaderSecrets records credential-bearing header values with the

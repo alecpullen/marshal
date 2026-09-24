@@ -498,6 +498,16 @@ func TestMCPSetPersistsRemoteServer(t *testing.T) {
 		}, st)
 }
 
+func TestMCPSetPersistsAuth(t *testing.T) {
+	st := newAutoApproveSessionState()
+	testSectionWriteWithState(t, "config.mcp.set", (*toolSet).configMCPSetTool,
+		`{"servers":{"remote":{"url":"https://93.184.216.34/mcp","type":"http","trust":"unrestricted","auth":"oauth"}}}`,
+		func(c config.Config) bool {
+			s, ok := c.MCP.Servers["remote"]
+			return ok && s.Auth == "oauth"
+		}, st)
+}
+
 // mcpSetError runs config.mcp.set with args and returns the handler error.
 func mcpSetError(t *testing.T, args string) error {
 	t.Helper()
@@ -546,6 +556,14 @@ func TestMCPSetRejectsInvalidRemoteServers(t *testing.T) {
 		{
 			"neither command nor url",
 			`{"servers":{"bad":{"trust":"unrestricted"}}}`,
+		},
+		{
+			"auth on a stdio server",
+			`{"servers":{"bad":{"command":"npx","auth":"oauth"}}}`,
+		},
+		{
+			"unknown auth value",
+			`{"servers":{"bad":{"url":"https://93.184.216.34/mcp","trust":"unrestricted","auth":"basic"}}}`,
 		},
 	}
 	for _, tc := range cases {

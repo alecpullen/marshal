@@ -373,6 +373,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 				URL:     strutil.Ptr(srv.URL),
 				Headers: srv.Headers,
 				Type:    strutil.Ptr(srv.Type),
+				Auth:    strutil.Ptr(srv.Auth),
 			}
 		}
 		file.MCP = &fileMCP{

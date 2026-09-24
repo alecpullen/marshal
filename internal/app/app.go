@@ -1086,6 +1086,14 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 			toolReg = s.testerReg
 		}
 	}
+	// Unattended pipeline children evaluate under an auto-approving policy
+	// clone, so a network tool's Confirm would be silently allowed with no
+	// user watching. The pipeline registry factory strips them too and
+	// replaces this registry on the production path; this covers the legacy
+	// dispatch that has no RegistryFactory wired.
+	if s.childSession {
+		toolReg = registry.WithoutNetwork(toolReg)
+	}
 	// Pipeline role runners stream into a fresh child session so their turn
 	// and tool noise stays out of the orchestrator transcript; the parent
 	// shows a drillable summary card instead. Depth is parent+1 so any
@@ -1432,7 +1440,13 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 			}
 			return registry.FallbackWriterView(childReg, allowed), nil
 		default:
-			return childReg, nil
+			// ScopeFull is the implementer/fixer: the only pipeline scope
+			// that keeps write and shell tools. It must still lose network
+			// tools — pipeline role runners are built with childSession:
+			// true, so their policy clone auto-approves a web Confirm with
+			// no user watching, and web.fetch bypasses the shell sandbox's
+			// network isolation.
+			return registry.WithoutNetwork(childReg), nil
 		}
 	}
 }

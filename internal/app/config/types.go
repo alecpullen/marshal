@@ -332,10 +332,12 @@ type CalibrationConfig struct {
 }
 
 // WebConfig gates outbound network access from agent-side tools (web.fetch
-// and web.search). It is disabled by default — Marshal is local-friendly and
-// opt-in for anything that talks to the public internet. Search is further
-// conditional on SearchURL being set; web.fetch is available whenever
-// Enabled is true.
+// and web.search). Enabled by default; each call is subject to permission
+// rules and the caller's approval mode (confirm in plan/default/edit,
+// auto-approve in copilot/auto), and an explicit enabled = false opts out
+// entirely. Unattended children — the SDD pipeline's role runners — never
+// receive these tools. Search is further conditional on SearchURL being set;
+// web.fetch is available whenever Enabled is true.
 type WebConfig struct {
 	Enabled        bool          `toml:"enabled"`
 	FetchTimeout   time.Duration `toml:"fetch_timeout"`

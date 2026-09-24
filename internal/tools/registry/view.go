@@ -28,6 +28,24 @@ func ReadOnlyView(src *Registry) *Registry {
 	return view
 }
 
+// WithoutNetwork returns a new Registry containing src's tools minus every
+// RiskNetwork tool. Unattended children get this view: the SDD pipeline's
+// role runners are built with childSession: true and therefore evaluate
+// under an auto-approving policy clone, so a network tool's Confirm would be
+// silently downgraded to Allow with no user watching. It also keeps
+// web.fetch — an in-process HTTP client — from bypassing the shell sandbox's
+// network isolation entirely.
+func WithoutNetwork(src *Registry) *Registry {
+	view := New()
+	for _, tool := range src.List() {
+		if tool.Risk == RiskNetwork {
+			continue
+		}
+		_ = view.Register(tool)
+	}
+	return view
+}
+
 // TesterView returns a new Registry containing src's read-only tools plus a
 // constrained test.run. The swarm tester needs to inspect and run the
 // configured test command, but must not get arbitrary shell execution or
@@ -106,6 +124,12 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 			// session loads. The fallback child runs unattended under an
 			// auto-approving policy, so it must not reach it — the same
 			// reason ReadOnlyView and ArtifactWriterView filter it out.
+		case tool.Risk == RiskNetwork:
+			// Network egress: the fallback child runs unattended under an
+			// auto-approving policy, so it must not reach the network. Keyed
+			// on the risk level rather than the tool name so a future
+			// network-capable tool cannot slip through the default case now
+			// that web tools are enabled by default.
 		default:
 			_ = view.Register(tool)
 		}

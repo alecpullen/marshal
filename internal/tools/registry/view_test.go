@@ -364,6 +364,67 @@ func TestFallbackWriterViewExcludesSkillInstall(t *testing.T) {
 	}
 }
 
+// TestFallbackWriterViewExcludesWebTools pins the security boundary: the
+// fallback child runs unattended under an auto-approving policy, so it must
+// not gain network egress now that web tools are enabled by default. The
+// filter is keyed on the risk level, so a network tool that is not one of
+// the built-in web tools is excluded too.
+func TestFallbackWriterViewExcludesWebTools(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "web.fetch", Description: "fetch", Risk: RiskNetwork, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(web.fetch): %v", err)
+	}
+	if err := src.Register(Tool{Name: "web.search", Description: "search", Risk: RiskNetwork, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(web.search): %v", err)
+	}
+	if err := src.Register(Tool{Name: "browser.navigate", Description: "browse", Risk: RiskNetwork, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(browser.navigate): %v", err)
+	}
+	if err := src.Register(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.read): %v", err)
+	}
+
+	view := FallbackWriterView(src, []string{"internal/foo"})
+	for _, name := range []string{"web.fetch", "web.search", "browser.navigate"} {
+		if _, ok := view.Lookup(name); ok {
+			t.Errorf("fallback view must not expose %s", name)
+		}
+	}
+	if _, ok := view.Lookup("file.read"); !ok {
+		t.Error("fallback view must retain read-only tools")
+	}
+}
+
+// TestWithoutNetworkExcludesNetworkTools pins the shared filter the
+// unattended pipeline children use: every RiskNetwork tool disappears while
+// the rest of the registry survives.
+func TestWithoutNetworkExcludesNetworkTools(t *testing.T) {
+	src := New()
+	for _, tool := range []Tool{
+		{Name: "web.fetch", Description: "fetch", Risk: RiskNetwork, Handler: nopHandler},
+		{Name: "web.search", Description: "search", Risk: RiskNetwork, Handler: nopHandler},
+		{Name: "browser.navigate", Description: "browse", Risk: RiskNetwork, Handler: nopHandler},
+		{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler},
+		{Name: "shell.run", Description: "shell", Risk: RiskCommand, Handler: nopHandler},
+	} {
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Name, err)
+		}
+	}
+
+	view := WithoutNetwork(src)
+	for _, name := range []string{"web.fetch", "web.search", "browser.navigate"} {
+		if _, ok := view.Lookup(name); ok {
+			t.Errorf("WithoutNetwork must not expose %s", name)
+		}
+	}
+	for _, name := range []string{"file.read", "shell.run"} {
+		if _, ok := view.Lookup(name); !ok {
+			t.Errorf("WithoutNetwork must retain %s", name)
+		}
+	}
+}
+
 // TestFallbackWriterViewRejectsPathTraversal also guards the exact-match
 // plan writer and prefix artifact writer via the same cleaning helper.
 func TestScopeViewsRejectPathTraversal(t *testing.T) {

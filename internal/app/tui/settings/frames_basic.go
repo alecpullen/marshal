@@ -219,7 +219,7 @@ func webFrame(s *state) *frame {
 		return []*field{
 			{ID: "web.enabled", Title: "Enabled", Kind: kindToggle,
 				TomlPath: "web.enabled",
-				Desc:     "allow web.fetch / web.search tools",
+				Desc:     "web.fetch / web.search tools (on by default; per-call approval by mode)",
 				GetBool:  func() bool { return s.cfg.Web.Enabled },
 				SetBool:  func(v bool) { s.cfg.Web.Enabled = v }},
 			func() *field {

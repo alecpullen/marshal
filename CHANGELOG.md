@@ -38,6 +38,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshots still do not cover files outside the workspace, and the consent
   copy says so.
 
+### Changed
+
+**Web tools are enabled by default**
+
+- `[web] enabled` now defaults to `true`, so `web.fetch` is available out of
+  the box (it was previously opt-in). Each call is still approved per the
+  active permission mode — a per-call prompt in plan/default/edit,
+  auto-approve in copilot/auto — and an explicit `enabled = false` opts out
+  entirely. `web.search` additionally requires `search_url`.
+- Unattended children never receive the web tools. The SDD pipeline's
+  implementer/fixer/reviewer runners and the `marshal.agent` fallback run
+  under an auto-approving policy clone with no user watching, so a network
+  tool's approval prompt would be silently allowed. They are stripped
+  structurally, which also keeps `web.fetch` — an in-process HTTP client —
+  from bypassing the container sandbox's network isolation.
+
 ### Fixed
 
 - The verification reminder no longer treats every `shell.run` as an edit.

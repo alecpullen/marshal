@@ -69,6 +69,47 @@ func TestDefaultConfigValues(t *testing.T) {
 	}
 }
 
+func TestDefaultWebEnabled(t *testing.T) {
+	cfg := Default()
+	if !cfg.Web.Enabled {
+		t.Fatal("Web.Enabled = false, want true (web tools enabled by default)")
+	}
+	if cfg.Web.FetchTimeout != 30*time.Second {
+		t.Fatalf("Web.FetchTimeout = %v, want 30s", cfg.Web.FetchTimeout)
+	}
+}
+
+func TestWebExplicitFalseKept(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", "[web]\nenabled = false\n")
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Web.Enabled {
+		t.Fatal("explicit enabled = false was overridden by the default")
+	}
+}
+
+func TestWebOmittedKeyInheritsDefault(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", "[web]\nfetch_timeout = \"45s\"\n")
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Web.Enabled {
+		t.Fatal("[web] without an enabled key must inherit the default (true)")
+	}
+	if cfg.Web.FetchTimeout != 45*time.Second {
+		t.Fatalf("Web.FetchTimeout = %v, want 45s (sibling keys still apply)", cfg.Web.FetchTimeout)
+	}
+}
+
 func TestLoadIgnoresMissingConfigFiles(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

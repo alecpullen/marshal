@@ -35,6 +35,7 @@ import (
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/pipeline"
 	"marshal/internal/tools/desktop"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/mcp"
@@ -55,6 +56,73 @@ func (f *fakeTrustResolver) Resolve(workingDir string, hasProjectConfig bool) (t
 
 func (f *fakeTrustResolver) Record(workingDir string, decision trust.Decision) error {
 	return nil
+}
+
+// TestPipelineRegistryFactoryExcludesWebTools pins the security boundary for
+// unattended pipeline children: no scope the factory can return may expose a
+// network tool. Pipeline role runners are built with childSession: true, so
+// their policy clone auto-approves a web Confirm with no user watching — and
+// web.fetch is an in-process HTTP client that would otherwise bypass the
+// container sandbox's network isolation.
+func TestPipelineRegistryFactoryExcludesWebTools(t *testing.T) {
+	cfg := config.Default()
+	// Register both web tools so the assertion is not vacuous: web.search
+	// needs a provider URL, web.fetch only needs [web] enabled.
+	cfg.Web.Enabled = true
+	cfg.Web.SearchURL = "https://search.example.com"
+
+	dir := t.TempDir()
+	state := session.New(cfg, dir, time.Unix(100, 0), session.Persistence{})
+	state.SetSDDFallbackAllowedFiles([]string{"internal/foo"})
+
+	// Control: the same native toolset WITHOUT the filter does expose the
+	// web tools, so the exclusion assertions below cannot pass vacuously.
+	control := registry.New()
+	if err := native.RegisterAll(control, native.Options{WorkspaceRoot: dir, Config: cfg}); err != nil {
+		t.Fatalf("control RegisterAll: %v", err)
+	}
+	for _, name := range []string{"web.fetch", "web.search"} {
+		if _, ok := control.Lookup(name); !ok {
+			t.Fatalf("control registry lacks %s; the exclusion assertions would be vacuous", name)
+		}
+	}
+
+	factory := makePipelineRegistryFactory(cfg, state, nil, nil, nil, 0, nil, nil)
+	ctx := pipeline.ExecutionContext{
+		RepoRoot:      dir,
+		WorkspaceRoot: dir,
+		ArtifactRoot:  filepath.Join(dir, "run"),
+		ArtifactAlias: "@run",
+	}
+
+	for _, scope := range []pipeline.RegistryScope{
+		pipeline.ScopeFull,
+		pipeline.ScopeReadOnly,
+		pipeline.ScopeArtifactWriter,
+		pipeline.ScopeFallback,
+	} {
+		reg, err := factory(ctx, scope, state)
+		if err != nil {
+			t.Fatalf("factory(%v): %v", scope, err)
+		}
+		for _, name := range []string{"web.fetch", "web.search"} {
+			if _, ok := reg.Lookup(name); ok {
+				t.Errorf("scope %v must not expose %s", scope, name)
+			}
+		}
+	}
+
+	// ScopeFull is the implementer/fixer: it must keep its write and shell
+	// tools, so the exclusion is a network filter and not a blanket strip.
+	reg, err := factory(ctx, pipeline.ScopeFull, state)
+	if err != nil {
+		t.Fatalf("factory(ScopeFull): %v", err)
+	}
+	for _, name := range []string{"file.write_patch", "shell.run"} {
+		if _, ok := reg.Lookup(name); !ok {
+			t.Errorf("ScopeFull must retain %s", name)
+		}
+	}
 }
 
 func TestStartRuntimeDoesNotRunTUI(t *testing.T) {

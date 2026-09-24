@@ -280,7 +280,9 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, o
 // the git-push floor, F4 rules, and risk fallbacks.
 //
 //   - plan / default: write-capable tools and shell writes are denied
-//     (directing the agent to mode.request). Read-only tools pass.
+//     (directing the agent to mode.request). Read-only tools pass. Web
+//     tools (web.fetch / web.search) keep their Confirm so each call
+//     surfaces as a per-call approval prompt, as in edit mode.
 //   - edit: no transform (today's confirm-each behavior).
 //   - copilot / auto: a computed Confirm is downgraded to Allow
 //     (auto-approve), EXCEPT the floor and guardrails already returned
@@ -290,6 +292,12 @@ func applyModeTransform(mode ApprovalMode, toolName string, args map[string]inte
 	case ModePlan, ModeDefault, "":
 		if decision == DecisionAllow {
 			// Read-only tools and explicitly-allowed read commands pass.
+			return decision, reason
+		}
+		// Web tools keep their Confirm so each call surfaces as a normal
+		// per-call approval prompt, exactly as in edit mode. Keyed on tool
+		// name (stable identity), not the reason string (presentation).
+		if decision == DecisionConfirm && isWebTool(toolName) {
 			return decision, reason
 		}
 		// Everything else (Confirm, Deny that isn't a guardrail) is denied
@@ -315,6 +323,13 @@ func applyModeTransform(mode ApprovalMode, toolName string, args map[string]inte
 		}
 		return DecisionDeny, fmt.Sprintf("denied: unknown mode %q, cannot modify files; switch to edit/copilot/auto", mode)
 	}
+}
+
+// isWebTool reports whether name is one of the built-in network-egress tools.
+// Single definition so the approval carve-out and the mode transform cannot
+// drift apart when a third web tool is added.
+func isWebTool(name string) bool {
+	return name == "web.fetch" || name == "web.search"
 }
 
 // isGuardrailDeny reports whether a Deny reason originated from a
@@ -460,7 +475,7 @@ func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Ru
 	// behavior. Users can opt into specific URLs/commands by writing an F4
 	// rule with matching subject (subjectsForTool returns {"web.fetch"} /
 	// {"web.search"}).
-	if toolName == "web.fetch" || toolName == "web.search" {
+	if isWebTool(toolName) {
 		return DecisionConfirm, "network access requires approval"
 	}
 

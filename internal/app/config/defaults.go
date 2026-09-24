@@ -124,7 +124,7 @@ func Default() Config {
 		},
 		Worktree: WorktreeConfig{},
 		Web: WebConfig{
-			Enabled:      false,
+			Enabled:      true,
 			FetchTimeout: 30 * time.Second,
 		},
 		Desktop: DesktopConfig{

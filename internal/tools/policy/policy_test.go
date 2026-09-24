@@ -689,6 +689,56 @@ func TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm(t *testing.T) {
 	}
 }
 
+// TestWebToolsModeMatrix pins the per-mode approval behavior for the built-in
+// web tools: plan/default/edit surface a per-call approval prompt (Confirm);
+// copilot/auto auto-approve (Allow). The web Confirm is unconditional in
+// Evaluate, so this holds regardless of [web] enabled.
+func TestWebToolsModeMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		mode ApprovalMode
+		want Decision
+	}{
+		{ModePlan, DecisionConfirm},
+		{ModeDefault, DecisionConfirm},
+		{"", DecisionConfirm}, // zero value: applyModeTransform treats it as plan/default
+		{ModeEdit, DecisionConfirm},
+		{ModeCopilot, DecisionAllow},
+		{ModeAuto, DecisionAllow},
+	} {
+		for _, name := range []string{"web.fetch", "web.search"} {
+			cfg := config.Default()
+			pe := NewEngine(&cfg, []string{})
+			pe.SetApprovalMode(tc.mode)
+			dec, reason, err := pe.Evaluate(name, map[string]interface{}{"url": "http://example.com"})
+			if err != nil {
+				t.Fatalf("%s %s: Evaluate error: %v", tc.mode, name, err)
+			}
+			if dec != tc.want {
+				t.Errorf("%s %s = %v (%q), want %v", tc.mode, name, dec, reason, tc.want)
+			}
+		}
+	}
+}
+
+// TestWebToolDenyRuleWinsInPlanMode guards the carve-out's failure mode: an
+// explicit F4 deny rule runs before the web Confirm branch, so the decision
+// is Deny and the plan/default carve-out must not soften it.
+func TestWebToolDenyRuleWinsInPlanMode(t *testing.T) {
+	cfg := config.Default()
+	pe := NewEngine(&cfg, []string{})
+	pe.SetApprovalMode(ModePlan)
+	pe.SetRules([]permissions.Rule{
+		{Permission: "web.fetch", Pattern: "web.fetch", Action: permissions.ActionDeny},
+	})
+	dec, _, err := pe.Evaluate("web.fetch", map[string]interface{}{"url": "http://example.com"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Fatalf("deny rule + plan mode web.fetch = %v, want Deny", dec)
+	}
+}
+
 // TestEvaluate_DestructiveRequiresApproval verifies that genuinely destructive
 // shell commands (e.g. rm -rf) are always denied (DecisionDeny) and the reason
 // includes guardrail information.

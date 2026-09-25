@@ -210,3 +210,104 @@ func run(tests []Case) {
 		}
 	}
 }
+
+// A plain not-found (content genuinely absent, no whitespace near-match) must
+// keep the original lead and coach the model to re-read the file.
+func TestValidatePatchNotFoundIncludesGuidance(t *testing.T) {
+	content := `package main
+
+func hello() {
+	println("hello")
+}
+`
+	fp := FilePatch{
+		Path: "main.go",
+		Chunks: []PatchChunk{
+			{
+				Search:  `func goodbye() {`,
+				Replace: `func farewell() {`,
+			},
+		},
+	}
+
+	ok, err := ValidatePatch(content, fp)
+	if ok {
+		t.Fatal("expected ValidatePatch to fail")
+	}
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "search block not found in main.go") {
+		t.Errorf("non-whitespace failure should keep the original lead, got: %s", errMsg)
+	}
+	if strings.Contains(errMsg, "near-match found") {
+		t.Errorf("genuinely absent content must not be reported as a whitespace near-match, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "re-read the file around that region and retry with the exact bytes from disk.") {
+		t.Errorf("error should include re-read guidance, got: %s", errMsg)
+	}
+}
+
+// A block that differs only in indentation (tabs vs spaces) must be reported
+// as a whitespace near-match instead of a plain not-found.
+func TestValidatePatchWhitespaceMismatchLead(t *testing.T) {
+	content := "package main\n\nfunc hello() {\n\tprintln(\"hello\")\n}\n"
+	fp := FilePatch{
+		Path: "main.go",
+		Chunks: []PatchChunk{
+			{
+				// Same tokens, spaces instead of the file's tabs.
+				Search:  "    println(\"hello\")",
+				Replace: "    println(\"farewell\")",
+			},
+		},
+	}
+
+	ok, err := ValidatePatch(content, fp)
+	if ok {
+		t.Fatal("expected ValidatePatch to fail on whitespace mismatch")
+	}
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "near-match found; whitespace differs (tabs/spaces/indentation) in main.go") {
+		t.Errorf("expected whitespace-specific lead, got: %s", errMsg)
+	}
+	if strings.HasPrefix(errMsg, "search block not found") {
+		t.Errorf("whitespace near-match must replace the not-found lead, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "nearest region") {
+		t.Errorf("expected nearest region hint to still be included, got: %s", errMsg)
+	}
+}
+
+// Multiple identical matches must coach the model to add context lines.
+func TestValidatePatchAmbiguousIncludesGuidance(t *testing.T) {
+	content := "line 1\nreturn nil\nline 3\nreturn nil\n"
+	fp := FilePatch{
+		Path: "main.go",
+		Chunks: []PatchChunk{
+			{
+				Search:  "return nil",
+				Replace: "return err",
+			},
+		},
+	}
+
+	ok, err := ValidatePatch(content, fp)
+	if ok {
+		t.Fatal("expected ValidatePatch to fail on ambiguous match")
+	}
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "ambiguous match") {
+		t.Errorf("expected ambiguous match lead, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "add more context lines to the search block to make it unique, then re-apply.") {
+		t.Errorf("error should include uniqueness guidance, got: %s", errMsg)
+	}
+}

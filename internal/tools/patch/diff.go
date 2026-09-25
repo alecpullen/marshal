@@ -13,17 +13,64 @@ func ValidatePatch(content string, fp FilePatch) (bool, error) {
 		if count == 0 {
 			region := NearestRegion(normContent, normSearch, NearestRegionWindowSize(normSearch))
 			msg := fmt.Sprintf("search block not found in %s", fp.Path)
+			// When the block matches once whitespace is collapsed away, the
+			// failure is tabs/spaces/indentation, so say so rather than
+			// reporting a plain not-found and sending the model looking for
+			// content differences that do not exist.
+			if whitespaceNearMatch(normContent, normSearch) {
+				msg = fmt.Sprintf("near-match found; whitespace differs (tabs/spaces/indentation) in %s. Exact file content shown in the nearest region above.", fp.Path)
+			}
 			if region != "" {
 				msg += fmt.Sprintf("\n\nnearest region:\n%s", region)
 			}
+			msg += "\n\nre-read the file around that region and retry with the exact bytes from disk."
 			return false, fmt.Errorf("%s", msg)
 		}
 		if count > 1 {
-			return false, fmt.Errorf("ambiguous match: search block matched %d locations in %s", count, fp.Path)
+			return false, fmt.Errorf("ambiguous match: search block matched %d locations in %s; add more context lines to the search block to make it unique, then re-apply.", count, fp.Path)
 		}
 		normContent = strings.Replace(normContent, normSearch, strings.ReplaceAll(chunk.Replace, "\r\n", "\n"), 1)
 	}
 	return true, nil
+}
+
+// whitespaceNearMatch reports whether search matches content once whitespace
+// differences are collapsed away. It distinguishes a failure caused purely by
+// tabs/spaces/indentation from one caused by genuinely different content, and
+// only rewrites the diagnostic message -- it never changes match semantics.
+func whitespaceNearMatch(content, search string) bool {
+	if search == "" {
+		return false
+	}
+	return strings.Contains(collapseWhitespace(content), collapseWhitespace(search))
+}
+
+// collapseWhitespace normalizes every line by trimming trailing whitespace and
+// collapsing runs of spaces/tabs into a single space.
+func collapseWhitespace(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = collapseWhitespaceLine(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func collapseWhitespaceLine(line string) string {
+	line = strings.TrimRight(line, " \t")
+	var sb strings.Builder
+	lastWasSpace := false
+	for _, r := range line {
+		if r == ' ' || r == '\t' {
+			if !lastWasSpace {
+				sb.WriteByte(' ')
+				lastWasSpace = true
+			}
+			continue
+		}
+		sb.WriteRune(r)
+		lastWasSpace = false
+	}
+	return sb.String()
 }
 
 // NearestRegionWindowSize sizes NearestRegion's fuzzy-match window to the

@@ -107,6 +107,19 @@ func TestEvalScenarios(t *testing.T) {
 				if m.Outcome != "answered" || m.ParseFailures != 1 || m.ToolCalls != 0 || m.Iterations != 1 {
 					t.Fatalf("metrics = %+v", m)
 				}
+				// This is the turnStats -> TurnMetrics hop that feeds
+				// turn_metrics: the malformed-JSON scenario must surface its
+				// labelled sample on the emitted metrics, not just on the
+				// unexported collector the white-box test reads.
+				if m.ParseFailKind != "envelope" {
+					t.Fatalf("ParseFailKind = %q, want %q", m.ParseFailKind, "envelope")
+				}
+				if len(m.ParseFailSample) == 0 {
+					t.Fatal("ParseFailSample is empty, want the offending output")
+				}
+				if len(m.ParseFailSample) > 4096 { // parseFailSampleCap
+					t.Fatalf("len(ParseFailSample) = %d, want <= 4096", len(m.ParseFailSample))
+				}
 			},
 		},
 		{

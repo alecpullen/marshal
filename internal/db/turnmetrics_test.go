@@ -39,6 +39,9 @@ func sampleRow(projectID int64, sessionID string) TurnMetricsRow {
 		ToolErrors:       1,
 		CacheHits:        1,
 		ParseFailures:    1,
+		ParseFailKind:    "envelope",
+		ParseFailSample:  "hello broken json",
+		ParseRepairs:     2,
 		HardStalls:       0,
 		Outcome:          "answered",
 		SalvageReason:    "",
@@ -73,6 +76,21 @@ func TestInsertAndRecentTurnMetricsRoundTrip(t *testing.T) {
 	want.ID = got.ID
 	if got != want {
 		t.Fatalf("row mismatch:\n got %+v\nwant %+v", got, want)
+	}
+
+	// The session-scoped reader has its own SELECT/Scan pair; it must
+	// surface the same new columns.
+	sessRows, err := database.RecentTurnMetricsForSession(projectID, "sess_1", 10)
+	if err != nil {
+		t.Fatalf("RecentTurnMetricsForSession: %v", err)
+	}
+	if len(sessRows) != 1 {
+		t.Fatalf("len(sessRows) = %d, want 1", len(sessRows))
+	}
+	got = sessRows[0]
+	want.ID = got.ID
+	if got != want {
+		t.Fatalf("session row mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }
 

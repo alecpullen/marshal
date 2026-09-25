@@ -107,6 +107,15 @@ type ParseIssue struct {
 	Kind   string `json:"kind"`
 	Detail string `json:"detail"`
 	Count  int    `json:"count"`
+	// ParseSample carries the redacted head of one offending model output
+	// when Detail came from a turn_metrics row with parse_fail_sample set.
+	// Omitted empty.
+	//
+	// It is intentionally exempt from the fieldCap truncation applied to
+	// other report strings: it is diagnostic output already redacted and
+	// bounded to parseFailSampleCap (4096 bytes) at the producer, and Build
+	// re-redacts it as defense in depth rather than shortening it.
+	ParseSample string `json:"parse_sample,omitempty"`
 }
 
 // ApprovalDenial is one deduplicated denied tool call.
@@ -313,7 +322,7 @@ func Build(state *session.State, database *db.DB) (Report, error) {
 		report.RunEvents = append(report.RunEvents, RunEventEntry{Kind: kind, Detail: detail, Count: 1})
 	}
 
-	collectTurnMetrics(state, database, &report, models, clean, addParse)
+	collectTurnMetrics(state, database, &report, models, clean, parseIdx, addParse)
 
 	for model := range models {
 		report.Session.ModelsUsed = append(report.Session.ModelsUsed, model)
@@ -334,6 +343,7 @@ func collectTurnMetrics(
 	report *Report,
 	models map[string]bool,
 	clean func(string) string,
+	parseIdx map[string]int,
 	addParse func(kind, detail string, n int),
 ) {
 	if database == nil {
@@ -361,7 +371,6 @@ func collectTurnMetrics(
 	}
 
 	outcomeIdx := make(map[string]int)
-	parseFailures := 0
 	for _, row := range rows {
 		// On the project-scoped fallback the session filter is ours.
 		if sessionID == "" && row.SessionID != sessionID {
@@ -378,7 +387,36 @@ func collectTurnMetrics(
 			report.TokenWaste.TokensFailedTurns += row.PromptTokens + row.CompletionTokens
 		}
 		if row.ParseFailures > 0 {
-			parseFailures += row.ParseFailures
+			// Resolve the detail once and use that same value for both the
+			// count bucket and the sample lookup key: an unrecognized but
+			// non-empty kind (a future kind, or a typo) must not split its
+			// count from its sample.
+			detail := row.ParseFailKind
+			if detail == "" {
+				// Legacy rows (pre-migration) have empty kind; keep the
+				// historical provenance label for one release cycle.
+				detail = turnMetricsParseDetail
+			}
+			addParse(parseFailureKind, detail, row.ParseFailures)
+			// Attach the sample to the detail entry just written when present.
+			// addParse's grouping key is (kind, detail); lookup the entry and
+			// set ParseSample if not already carried by an earlier row.
+			if row.ParseFailSample != "" {
+				// Re-redact at the report boundary as defense in depth. The
+				// producer redacts unconditionally, so on a well-behaved row
+				// this is a deliberate no-op double-redact. The sample is
+				// deliberately exempt from clean/fieldCap: it is diagnostic
+				// output already bounded to parseFailSampleCap at the producer
+				// (see the ParseSample field comment).
+				sample := redact.Secrets(row.ParseFailSample)
+				key := parseFailureKind + "\x00" + detail
+				if i, ok := parseIdx[key]; ok && report.ParseIssues[i].ParseSample == "" {
+					report.ParseIssues[i].ParseSample = sample
+				}
+			}
+		}
+		if row.ParseRepairs > 0 {
+			addParse(repairKind, "envelope", row.ParseRepairs)
 		}
 		if row.Outcome == "" {
 			continue
@@ -399,8 +437,6 @@ func collectTurnMetrics(
 			Count:         1,
 		})
 	}
-
-	addParse(parseFailureKind, turnMetricsParseDetail, parseFailures)
 }
 
 // patchRepairNotes returns the format mistakes file.write_patch healed in

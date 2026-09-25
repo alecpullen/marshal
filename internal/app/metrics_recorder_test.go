@@ -28,15 +28,18 @@ func TestMetricsRecorderPersistsTurn(t *testing.T) {
 
 	record := metricsRecorder(database, projectID, "sess_1", nil)
 	record(agent.TurnMetrics{
-		StartedAt:  time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC),
-		DurationMs: 42,
-		Goal:       "eval goal",
-		Class:      "question",
-		Role:       "general",
-		Model:      "test-model",
-		Iterations: 2,
-		ToolCalls:  1,
-		Outcome:    "answered",
+		StartedAt:       time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC),
+		DurationMs:      42,
+		Goal:            "eval goal",
+		Class:           "question",
+		Role:            "general",
+		Model:           "test-model",
+		Iterations:      2,
+		ToolCalls:       1,
+		Outcome:         "answered",
+		ParseFailKind:   "envelope",
+		ParseFailSample: "x",
+		ParseRepairs:    2,
 	})
 
 	rows, err := database.RecentTurnMetrics(projectID, 5)
@@ -50,6 +53,11 @@ func TestMetricsRecorderPersistsTurn(t *testing.T) {
 	if got.SessionID != "sess_1" || got.Goal != "eval goal" || got.Outcome != "answered" ||
 		got.Iterations != 2 || got.ToolCalls != 1 || got.Model != "test-model" {
 		t.Fatalf("row = %+v", got)
+	}
+	// Without the recorder mapping these stay ""/0 on every production turn.
+	if got.ParseFailKind != "envelope" || got.ParseFailSample != "x" || got.ParseRepairs != 2 {
+		t.Fatalf("parse fields not persisted: kind=%q sample=%q repairs=%d",
+			got.ParseFailKind, got.ParseFailSample, got.ParseRepairs)
 	}
 }
 

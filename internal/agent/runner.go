@@ -1372,7 +1372,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
 			messages = append(messages, BuildCorrectionMessage(parseErr))
-			r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
+			r.withStats(func(s *turnStats) { s.noteParseFailure("envelope", raw) })
 			if consecutiveParseFailures == 2 {
 				repairMsg := BuildRepairMessage()
 				messages = append(messages, repairMsg)
@@ -1398,7 +1398,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			budget.overhead++
 			countIterations()
 			consecutiveParseFailures++
-			r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
+			r.withStats(func(s *turnStats) { s.noteParseFailure("truncated_args", raw) })
 			assistantContent := raw
 			if strings.TrimSpace(assistantContent) == "" {
 				assistantContent = emptyModelResponsePlaceholder

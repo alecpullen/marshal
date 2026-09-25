@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
@@ -38,6 +39,53 @@ func TestTruncateGoal(t *testing.T) {
 				t.Fatalf("goal length = %d runes, want %d", len([]rune(got)), len([]rune(tc.want)))
 			}
 		})
+	}
+}
+
+// TestTruncateForSampleKeepsRunesWhole guards the byte cap: clipping a
+// multi-byte sample at exactly parseFailSampleCap bytes can land mid-rune, and
+// the result must stay well-formed UTF-8 without exceeding the cap.
+func TestTruncateForSampleKeepsRunesWhole(t *testing.T) {
+	// Three-byte runes. parseFailSampleCap is not a multiple of 3, so the byte
+	// boundary falls inside a rune and must back off to the rune start.
+	raw := strings.Repeat("\u2192", parseFailSampleCap)
+	if len(raw) <= parseFailSampleCap {
+		t.Fatalf("fixture too short: %d bytes, want > %d", len(raw), parseFailSampleCap)
+	}
+
+	got := truncateForSample(raw)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateForSample produced invalid UTF-8 (%d bytes)", len(got))
+	}
+	if len(got) == 0 {
+		t.Fatal("truncateForSample returned an empty string, want a non-empty prefix")
+	}
+	if len(got) > parseFailSampleCap {
+		t.Fatalf("len(got) = %d, want <= %d", len(got), parseFailSampleCap)
+	}
+	// parseFailSampleCap is not a multiple of the 3-byte rune length, so the
+	// clip must back off to the largest whole-rune prefix below the cap.
+	runeLen := len("\u2192")
+	wantLen := parseFailSampleCap - parseFailSampleCap%runeLen
+	if len(got) != wantLen {
+		t.Fatalf("len(got) = %d, want %d (backed off from %d)", len(got), wantLen, parseFailSampleCap)
+	}
+	if got != raw[:wantLen] {
+		t.Fatalf("got = %q, want raw[:%d]", got, wantLen)
+	}
+}
+
+// TestTruncateForSamplePlainPathClipsToCap pins the ASCII behaviour: when the
+// byte at the cap already begins a rune, the clip is exactly parseFailSampleCap
+// bytes, unchanged from the previous implementation.
+func TestTruncateForSamplePlainPathClipsToCap(t *testing.T) {
+	raw := strings.Repeat("a", parseFailSampleCap+10)
+	got := truncateForSample(raw)
+	if len(got) != parseFailSampleCap {
+		t.Fatalf("len(got) = %d, want exactly %d", len(got), parseFailSampleCap)
+	}
+	if got != raw[:parseFailSampleCap] {
+		t.Fatalf("got = %q, want the plain byte prefix", got)
 	}
 }
 
@@ -146,6 +194,77 @@ func TestRunTaskMetricsCountsParseFailures(t *testing.T) {
 	if m.Outcome != "answered" || m.ParseFailures != 1 || m.ToolCalls != 0 {
 		t.Fatalf("metrics = %+v, want answered with ParseFailures=1 ToolCalls=0", *m)
 	}
+}
+
+// TestRunTaskMetricsCapturesParseSample drives the runner through both
+// ParseFailures sites and asserts each records the failure kind plus a
+// bounded sample of the offending output. White-box by design: turnStats is
+// unexported and the sample does not yet reach TurnMetrics. The runner's
+// collector is set at turn start and not cleared at turn end, so it still
+// holds this turn's sample once RunTask returns.
+func TestRunTaskMetricsCapturesParseSample(t *testing.T) {
+	t.Run("envelope", func(t *testing.T) {
+		const malformed = "this is not a json action"
+		state := newTestState(t)
+		p := &agenttest.ScriptedProvider{Responses: []string{
+			malformed,
+			`{"rationale":"done","action":{"type":"final","content":"Recovered."}}`,
+		}}
+		r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r.SetForceClass(string(ClassQuestion))
+		m := captureMetrics(r)
+
+		if _, err := r.RunTask(context.Background(), "question"); err != nil {
+			t.Fatalf("RunTask err = %v", err)
+		}
+		if m.ParseFailures != 1 {
+			t.Fatalf("ParseFailures = %d, want 1", m.ParseFailures)
+		}
+		var sample parseSample
+		r.withStats(func(s *turnStats) { sample = s.parseFailSample })
+		if sample.Kind != "envelope" {
+			t.Fatalf("sample.Kind = %q, want %q", sample.Kind, "envelope")
+		}
+		if sample.Text == "" {
+			t.Fatal("sample.Text is empty, want the offending output")
+		}
+		if len(sample.Text) > parseFailSampleCap {
+			t.Fatalf("len(sample.Text) = %d, want <= %d", len(sample.Text), parseFailSampleCap)
+		}
+	})
+
+	t.Run("truncated args", func(t *testing.T) {
+		const truncatedCall = `{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`
+		state := newTestState(t)
+		p := &agenttest.ScriptedProvider{
+			Responses: []string{
+				truncatedCall,
+				`{"rationale":"done","action":{"type":"final","content":"Recovered."}}`,
+			},
+			FinishReasons: []string{"length", "stop"},
+		}
+		r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r.SetForceClass(string(ClassQuestion))
+		m := captureMetrics(r)
+
+		if _, err := r.RunTask(context.Background(), "question"); err != nil {
+			t.Fatalf("RunTask err = %v", err)
+		}
+		if m.ParseFailures != 1 {
+			t.Fatalf("ParseFailures = %d, want 1", m.ParseFailures)
+		}
+		var sample parseSample
+		r.withStats(func(s *turnStats) { sample = s.parseFailSample })
+		if sample.Kind != "truncated_args" {
+			t.Fatalf("sample.Kind = %q, want %q", sample.Kind, "truncated_args")
+		}
+		if sample.Text == "" {
+			t.Fatal("sample.Text is empty, want the offending output")
+		}
+		if len(sample.Text) > parseFailSampleCap {
+			t.Fatalf("len(sample.Text) = %d, want <= %d", len(sample.Text), parseFailSampleCap)
+		}
+	})
 }
 
 func TestRunTaskMetricsCountsToolErrorsAndCacheHits(t *testing.T) {

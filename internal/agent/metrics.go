@@ -3,9 +3,11 @@ package agent
 import (
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/redact"
 	"marshal/internal/strutil"
 )
 
@@ -32,6 +34,12 @@ type TurnMetrics struct {
 	// being bounced back for a regeneration. A rising count with a flat
 	// ParseFailures means tolerance is absorbing a real prompt problem.
 	ParseRepairs int
+	// ParseFailKind labels the first parse failure of the turn:
+	// "envelope" or "truncated_args". Empty on turns with no parse failure.
+	ParseFailKind string
+	// ParseFailSample is the redacted head (<=4 KB) of the first unparseable
+	// model output this turn. Empty alongside ParseFailKind.
+	ParseFailSample string
 	// StreamRecoveries counts turns continued from a partial response after
 	// the provider stream failed mid-flight (e.g. an undecodable SSE chunk).
 	// A non-zero value means the turn survived an error that used to end it.
@@ -55,7 +63,48 @@ type TurnMetrics struct {
 // tracker/trackerMu pattern), because executeActions mutates counters from
 // worker goroutines.
 type turnStats struct {
-	m TurnMetrics
+	m               TurnMetrics
+	parseFailSample parseSample
+}
+
+// parseSample is the redacted head of the first unparseable model output
+// this turn, kept so post-turn diagnosis can see what broke without
+// re-running the model.
+type parseSample struct {
+	Kind string
+	Text string
+}
+
+// parseFailSampleCap bounds the captured sample so a model rant cannot
+// bloat the DB row.
+const parseFailSampleCap = 4096
+
+// truncateForSample clips raw to parseFailSampleCap bytes without ever
+// emitting a partial rune: when the byte cap falls inside a multi-byte
+// codepoint, the boundary backs off to the nearest preceding rune start. The
+// result is always well-formed UTF-8 and never longer than parseFailSampleCap
+// bytes. When the byte at the cap already begins a rune, behaviour is the
+// plain byte clip.
+func truncateForSample(raw string) string {
+	if len(raw) <= parseFailSampleCap {
+		return raw
+	}
+	n := parseFailSampleCap
+	for n > 0 && !utf8.RuneStart(raw[n]) {
+		n--
+	}
+	return raw[:n]
+}
+
+// noteParseFailure increments the ParseFailures counter and, on the first
+// failure of the turn, captures a bounded redacted sample of the offending
+// output. kind is "envelope" for ParseAction failures or "truncated_args"
+// for the output-token-limit guard.
+func (s *turnStats) noteParseFailure(kind, raw string) {
+	s.m.ParseFailures++
+	if s.parseFailSample.Kind == "" {
+		s.parseFailSample = parseSample{Kind: kind, Text: redact.Secrets(truncateForSample(raw))}
+	}
 }
 
 // outcomeFor maps a finished task to the metrics outcome vocabulary. Any
@@ -135,6 +184,7 @@ func (r *Runner) emitMetrics(task *Task) {
 	}
 	r.statsMu.Lock()
 	m := r.stats.m
+	sample := r.stats.parseFailSample
 	r.statsMu.Unlock()
 	m.DurationMs = r.Now().Sub(m.StartedAt).Milliseconds()
 	m.Class = string(task.Class)
@@ -147,5 +197,7 @@ func (r *Runner) emitMetrics(task *Task) {
 		CacheReadTokens:  m.CacheReadTokens,
 		CacheWriteTokens: m.CacheWriteTokens,
 	}, r.Pricing)
+	m.ParseFailKind = sample.Kind
+	m.ParseFailSample = sample.Text
 	r.MetricsObserver(m)
 }

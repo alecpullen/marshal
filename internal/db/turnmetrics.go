@@ -65,6 +65,9 @@ type TurnMetricsRow struct {
 	CacheReadTokens    int
 	CacheWriteTokens   int
 	EstimatedCostCents int64
+	ParseFailKind      string
+	ParseFailSample    string
+	ParseRepairs       int
 }
 
 func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
@@ -78,8 +81,9 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 			provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, soft_stalls, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
+			parse_fail_kind, parse_fail_sample, parse_repairs
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -104,6 +108,9 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.CacheReadTokens,
 		row.CacheWriteTokens,
 		row.EstimatedCostCents,
+		row.ParseFailKind,
+		row.ParseFailSample,
+		row.ParseRepairs,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert turn metrics: %w", err)
@@ -143,7 +150,8 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			role, provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
+			parse_fail_kind, parse_fail_sample, parse_repairs
 		 FROM turn_metrics
 		 WHERE project_id = ?
 		 ORDER BY id DESC
@@ -167,6 +175,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
 			&r.CompletionTokens,
 			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
+			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
 		); err != nil {
 			return nil, fmt.Errorf("scan turn metrics row: %w", err)
 		}
@@ -202,7 +211,8 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			role, provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
+			parse_fail_kind, parse_fail_sample, parse_repairs
 		 FROM turn_metrics
 		 WHERE project_id = ? AND session_id = ?
 		 ORDER BY id DESC
@@ -226,6 +236,7 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
 			&r.CompletionTokens,
 			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
+			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
 		); err != nil {
 			return nil, fmt.Errorf("scan turn metrics row: %w", err)
 		}

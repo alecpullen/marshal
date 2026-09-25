@@ -76,6 +76,9 @@ var migrationColumns = []columnAdd{
 	{"turn_metrics", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "cache_write_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "estimated_cost_cents", "INTEGER NOT NULL DEFAULT 0"},
+	{"turn_metrics", "parse_fail_kind", "TEXT NOT NULL DEFAULT ''"},
+	{"turn_metrics", "parse_fail_sample", "TEXT NOT NULL DEFAULT ''"},
+	{"turn_metrics", "parse_repairs", "INTEGER NOT NULL DEFAULT 0"},
 	{"symbols", "source", "TEXT"},
 }
 

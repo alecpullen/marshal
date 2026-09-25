@@ -169,6 +169,245 @@ func TestBuildCountsParseFailuresFromTurnMetrics(t *testing.T) {
 	}
 }
 
+// testMetricsDB opens a migrated database with one project and the test
+// session already created, so a test can insert turn_metrics rows directly.
+func testMetricsDB(t *testing.T) (*db.DB, int64) {
+	t.Helper()
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.CreateSession(testSessionID, projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	return database, projectID
+}
+
+func TestBuildParseIssueCarriesSample(t *testing.T) {
+	database, projectID := testMetricsDB(t)
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:       projectID,
+		SessionID:       testSessionID,
+		StartedAt:       time.Unix(3000, 0).UTC(),
+		ParseFailures:   1,
+		ParseFailKind:   "envelope",
+		ParseFailSample: "hello broken json",
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	report, err := Build(testState(t, testConfig(), database), database)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ParseIssues) != 1 {
+		t.Fatalf("parse_issues = %+v, want one entry", report.ParseIssues)
+	}
+	want := ParseIssue{Kind: parseFailureKind, Detail: "envelope", Count: 1, ParseSample: "hello broken json"}
+	if report.ParseIssues[0] != want {
+		t.Errorf("parse_issues[0] = %+v, want %+v", report.ParseIssues[0], want)
+	}
+}
+
+// TestBuildParseIssueCarriesTruncatedArgsSample exercises the
+// parse_fail_kind="truncated_args" arm of the turn_metrics consumption, which
+// the envelope case above does not reach: the output-token-limit site labels
+// its sample differently, and postmortem must surface both the label and the
+// sample rather than falling through to the legacy turn_metrics detail.
+func TestBuildParseIssueCarriesTruncatedArgsSample(t *testing.T) {
+	database, projectID := testMetricsDB(t)
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:       projectID,
+		SessionID:       testSessionID,
+		StartedAt:       time.Unix(3000, 0).UTC(),
+		ParseFailures:   1,
+		ParseFailKind:   "truncated_args",
+		ParseFailSample: `{"path":"a.go"}`,
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	report, err := Build(testState(t, testConfig(), database), database)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ParseIssues) != 1 {
+		t.Fatalf("parse_issues = %+v, want one entry", report.ParseIssues)
+	}
+	want := ParseIssue{Kind: parseFailureKind, Detail: "truncated_args", Count: 1, ParseSample: `{"path":"a.go"}`}
+	if report.ParseIssues[0] != want {
+		t.Errorf("parse_issues[0] = %+v, want %+v", report.ParseIssues[0], want)
+	}
+}
+
+// TestBuildUnrecognizedParseKindKeepsCountAndSampleTogether covers a row whose
+// parse_fail_kind is neither envelope nor truncated_args (a future kind, or a
+// typo). Its count and its sample must land on the same parse_issues entry
+// under that kind, not split across two entries.
+func TestBuildUnrecognizedParseKindKeepsCountAndSampleTogether(t *testing.T) {
+	database, projectID := testMetricsDB(t)
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:       projectID,
+		SessionID:       testSessionID,
+		StartedAt:       time.Unix(3000, 0).UTC(),
+		ParseFailures:   2,
+		ParseFailKind:   "something_unexpected",
+		ParseFailSample: "unrecognized kind output",
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	report, err := Build(testState(t, testConfig(), database), database)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ParseIssues) != 1 {
+		t.Fatalf("parse_issues = %+v, want exactly one entry", report.ParseIssues)
+	}
+	want := ParseIssue{
+		Kind:        parseFailureKind,
+		Detail:      "something_unexpected",
+		Count:       2,
+		ParseSample: "unrecognized kind output",
+	}
+	if report.ParseIssues[0] != want {
+		t.Errorf("parse_issues[0] = %+v, want %+v", report.ParseIssues[0], want)
+	}
+}
+
+// TestBuildRedactsParseSampleAtReportBoundary proves the report re-redacts a
+// turn_metrics sample even when the session's redact_secrets flag is off (so
+// clean() would leave it alone): the sample crosses the DB boundary carrying
+// whatever the producer wrote, and must not surface a secret verbatim.
+func TestBuildRedactsParseSampleAtReportBoundary(t *testing.T) {
+	// Build the sigil at runtime so no credential-shaped literal lands in the
+	// test source (matching the convention in internal/redact's own tests).
+	secret := "ghp_" + strings.Repeat("a", 30)
+	database, projectID := testMetricsDB(t)
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:       projectID,
+		SessionID:       testSessionID,
+		StartedAt:       time.Unix(3000, 0).UTC(),
+		ParseFailures:   1,
+		ParseFailKind:   "envelope",
+		ParseFailSample: "unparseable output for token " + secret,
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	report, err := Build(testState(t, testConfig(), database), database)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ParseIssues) != 1 {
+		t.Fatalf("parse_issues = %+v, want one entry", report.ParseIssues)
+	}
+	sample := report.ParseIssues[0].ParseSample
+	if strings.Contains(sample, secret) {
+		t.Errorf("parse sample not redacted: %q", sample)
+	}
+	if !strings.Contains(sample, redact.MaskToken) {
+		t.Errorf("parse sample missing the redaction marker: %q", sample)
+	}
+	if !strings.Contains(sample, "unparseable output for token") {
+		t.Errorf("parse sample lost its non-secret context: %q", sample)
+	}
+}
+
+func TestBuildLegacyParseIssueKeepsTurnMetricsDetail(t *testing.T) {
+	database, projectID := testMetricsDB(t)
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:     projectID,
+		SessionID:     testSessionID,
+		StartedAt:     time.Unix(3000, 0).UTC(),
+		ParseFailures: 2,
+		// ParseFailKind deliberately empty: a row written before the kind
+		// column existed.
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	report, err := Build(testState(t, testConfig(), database), database)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ParseIssues) != 1 {
+		t.Fatalf("parse_issues = %+v, want one entry", report.ParseIssues)
+	}
+	want := ParseIssue{Kind: parseFailureKind, Detail: turnMetricsParseDetail, Count: 2}
+	if report.ParseIssues[0] != want {
+		t.Errorf("parse_issues[0] = %+v, want %+v", report.ParseIssues[0], want)
+	}
+}
+
+func TestBuildParseSamplesKeepFirst(t *testing.T) {
+	database, projectID := testMetricsDB(t)
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:       projectID,
+		SessionID:       testSessionID,
+		StartedAt:       time.Unix(3000, 0).UTC(),
+		ParseFailures:   1,
+		ParseFailKind:   "envelope",
+		ParseFailSample: "first sample",
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics(first): %v", err)
+	}
+	// A later row with no sample must not blank the sample already carried.
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:     projectID,
+		SessionID:     testSessionID,
+		StartedAt:     time.Unix(3001, 0).UTC(),
+		ParseFailures: 4,
+		ParseFailKind: "envelope",
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics(second): %v", err)
+	}
+
+	report, err := Build(testState(t, testConfig(), database), database)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ParseIssues) != 1 {
+		t.Fatalf("parse_issues = %+v, want one entry", report.ParseIssues)
+	}
+	want := ParseIssue{Kind: parseFailureKind, Detail: "envelope", Count: 5, ParseSample: "first sample"}
+	if report.ParseIssues[0] != want {
+		t.Errorf("parse_issues[0] = %+v, want %+v", report.ParseIssues[0], want)
+	}
+}
+
+func TestBuildParseRepairsSurfaceAsEnvelope(t *testing.T) {
+	database, projectID := testMetricsDB(t)
+	if _, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+		ProjectID:    projectID,
+		SessionID:    testSessionID,
+		StartedAt:    time.Unix(3000, 0).UTC(),
+		ParseRepairs: 2,
+	}); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	report, err := Build(testState(t, testConfig(), database), database)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ParseIssues) != 1 {
+		t.Fatalf("parse_issues = %+v, want one entry", report.ParseIssues)
+	}
+	want := ParseIssue{Kind: repairKind, Detail: "envelope", Count: 2}
+	if report.ParseIssues[0] != want {
+		t.Errorf("parse_issues[0] = %+v, want %+v", report.ParseIssues[0], want)
+	}
+}
+
 func TestBuildRedactsWhenConfigured(t *testing.T) {
 	cfg := testConfig()
 	cfg.Privacy.RedactSecrets = true

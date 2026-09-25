@@ -202,6 +202,43 @@ func TestListReturnsToolsSortedByName(t *testing.T) {
 	}
 }
 
+func TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers(t *testing.T) {
+	reg := New()
+	readOnly := testTool("file.read")
+	shell := testTool("shell.run")
+	shell.Risk = RiskCommand
+	for _, tool := range []Tool{readOnly, shell} {
+		if err := reg.Register(tool); err != nil {
+			t.Fatalf("Register(%q): %v", tool.Name, err)
+		}
+	}
+
+	names := reg.ReadOnlyNames()
+	found := false
+	for _, name := range names {
+		if name == "file.read" {
+			found = true
+		}
+		if name == "shell.run" {
+			t.Fatalf("ReadOnlyNames() = %v, must not contain shell.run", names)
+		}
+	}
+	if !found {
+		t.Fatalf("ReadOnlyNames() = %v, want it to contain file.read", names)
+	}
+
+	// The package-level function and the method must agree.
+	got := ReadOnlyNames(reg.List())
+	if len(got) != len(names) {
+		t.Fatalf("ReadOnlyNames(List()) = %v, want %v", got, names)
+	}
+	for i := range got {
+		if got[i] != names[i] {
+			t.Fatalf("ReadOnlyNames(List()) = %v, want %v", got, names)
+		}
+	}
+}
+
 func TestListDeferredReturnsOnlyDeferredToolsSortedByName(t *testing.T) {
 	reg := New()
 	a := testTool("example.alpha")

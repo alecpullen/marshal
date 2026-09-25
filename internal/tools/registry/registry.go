@@ -88,6 +88,25 @@ func (r *Registry) List() []Tool {
 	return r.listWhere(nil)
 }
 
+// ReadOnlyNames returns the sorted names of every tool in tools whose
+// risk level is RiskReadOnly. Used to teach the actions[] read-only rule
+// from the live registry so the list cannot drift from reality.
+func ReadOnlyNames(tools []Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Risk == RiskReadOnly {
+			names = append(names, tool.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ReadOnlyNames returns the sorted names of the registry's read-only tools.
+func (r *Registry) ReadOnlyNames() []string {
+	return ReadOnlyNames(r.List())
+}
+
 // ListDeferred returns all registered tools flagged with Deferred=true,
 // sorted by name. Used by the prompt builder and disclosure tools to
 // enumerate deferred tools (native config.*/data tools and MCP tools)

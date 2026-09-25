@@ -1457,7 +1457,7 @@ func TestPromptTurnForwardsQuestionToClient(t *testing.T) {
 				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
 					pending := &session.PendingQuestion{
-						Questions:    []session.Question{{Question: "pick", Options: []string{"a", "b"}}},
+						Questions:    []session.Question{{Question: "pick", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}}},
 						ResponseChan: answersCh,
 					}
 					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pending})

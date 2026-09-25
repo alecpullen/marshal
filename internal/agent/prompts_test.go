@@ -541,6 +541,95 @@ func TestBuildSystemPromptDescribesParallelActionsArray(t *testing.T) {
 	if !strings.Contains(content, "parallel read-only work") {
 		t.Error("system prompt missing parallel read-only guidance")
 	}
+	if !strings.Contains(content, "read-only tools are:") {
+		t.Error("system prompt missing read-only actions[] rule sentence")
+	}
+	if !strings.Contains(content, "file.read") {
+		t.Error("system prompt read-only list missing file.read")
+	}
+}
+
+func TestBuildSystemPromptReadOnlyListExcludesWriteTools(t *testing.T) {
+	tools := []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly, Description: "Read a file."},
+		{Name: "shell.run", Risk: registry.RiskCommand, Description: "Run a shell command."},
+	}
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
+
+	const prefix = "read-only tools are: "
+	i := strings.Index(msg.Content, prefix)
+	if i < 0 {
+		t.Fatalf("system prompt missing read-only list: %s", msg.Content)
+	}
+	const suffix = ". Any tool that is not read-only"
+	rest := msg.Content[i+len(prefix):]
+	end := strings.Index(rest, suffix)
+	if end < 0 {
+		t.Fatalf("read-only list missing sentence terminator: %s", rest)
+	}
+	list := rest[:end]
+	if !strings.Contains(list, "file.read") {
+		t.Errorf("read-only list %q missing file.read", list)
+	}
+	if strings.Contains(list, "shell.run") {
+		t.Errorf("read-only list %q must not contain shell.run", list)
+	}
+}
+
+// TestBuildSystemPromptReadOnlyListExcludesSerialTools verifies the
+// advertised actions[] list names only tools that are genuinely safe to
+// run concurrently. question.ask / ask_user / mode.request / skill.load
+// are read-only but serial-gated by executeActions, and tools.select
+// mutates session state a sibling call may be reading; advertising any of
+// them invites a parallel call the runner has to serialise or that races.
+func TestBuildSystemPromptReadOnlyListExcludesSerialTools(t *testing.T) {
+	tools := []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly, Description: "Read a file."},
+		{Name: "question.ask", Risk: registry.RiskReadOnly, Description: "Ask."},
+		{Name: "ask_user", Risk: registry.RiskReadOnly, Description: "Ask."},
+		{Name: "mode.request", Risk: registry.RiskReadOnly, Description: "Request a mode."},
+		{Name: "skill.load", Risk: registry.RiskReadOnly, Description: "Load a skill."},
+		{Name: "tools.select", Risk: registry.RiskReadOnly, Description: "Select tools."},
+	}
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
+
+	const prefix = "read-only tools are: "
+	i := strings.Index(msg.Content, prefix)
+	if i < 0 {
+		t.Fatalf("system prompt missing read-only list: %s", msg.Content)
+	}
+	const suffix = ". Any tool that is not read-only"
+	rest := msg.Content[i+len(prefix):]
+	end := strings.Index(rest, suffix)
+	if end < 0 {
+		t.Fatalf("read-only list missing sentence terminator: %s", rest)
+	}
+	list := rest[:end]
+	if !strings.Contains(list, "file.read") {
+		t.Errorf("read-only list %q missing file.read", list)
+	}
+	for _, name := range []string{"question.ask", "ask_user", "mode.request", "skill.load", "tools.select"} {
+		if strings.Contains(list, name) {
+			t.Errorf("read-only list %q must not advertise %s", list, name)
+		}
+	}
+}
+
+// TestBuildSystemPromptOmitsEmptyReadOnlyList guards the degenerate case:
+// a registry with no batch-safe read-only tools must not render a dangling
+// "read-only tools are: ." fragment.
+func TestBuildSystemPromptOmitsEmptyReadOnlyList(t *testing.T) {
+	tools := []registry.Tool{
+		{Name: "shell.run", Risk: registry.RiskCommand, Description: "Run a shell command."},
+	}
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
+
+	if strings.Contains(msg.Content, "read-only tools are:") {
+		t.Errorf("system prompt must omit an empty read-only list:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "Each actions[] entry must be a read-only tool_call.") {
+		t.Errorf("system prompt missing the read-only actions[] rule:\n%s", msg.Content)
+	}
 }
 
 func TestBuildContextPackMessageRendersPack(t *testing.T) {
@@ -1578,6 +1667,12 @@ func TestBuildSystemPromptLoadedDeferredToolMovesToAvailableList(t *testing.T) {
 	}
 	listSection := content[availableIdx:announceIdx]
 	announceSection := content[announceIdx:]
+	// Scope the announcement to its own section so the read-only actions[]
+	// list injected at the end of the prompt (which legitimately repeats the
+	// read-only tool names) is not mistaken for an announcement entry.
+	if sec := strings.Index(announceSection, "\n\n## "); sec >= 0 {
+		announceSection = announceSection[:sec]
+	}
 	if !strings.Contains(listSection, "config.read") {
 		t.Fatalf("loaded deferred tool should appear in the Available tools list:\n%s", listSection)
 	}

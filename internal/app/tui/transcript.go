@@ -1424,8 +1424,12 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 			b.WriteString("\n")
 		}
 		if len(qs.Options) > 0 {
+			labels := make([]string, 0, len(qs.Options))
+			for _, o := range qs.Options {
+				labels = append(labels, o.Label)
+			}
 			b.WriteString(indent)
-			b.WriteString(mutedStyle().Render("(" + strings.Join(qs.Options, " / ") + ")"))
+			b.WriteString(mutedStyle().Render("(" + strings.Join(labels, " / ") + ")"))
 			b.WriteString("\n")
 		}
 	}

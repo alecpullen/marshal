@@ -1,4 +1,8 @@
-package native
+// This file is an external test package (native_test) on purpose: it
+// exercises agent.NewSubagentTool, and package agent imports
+// marshal/internal/tools/native. Keeping it in package native would make
+// that a test-only import cycle.
+package native_test
 
 import (
 	"context"

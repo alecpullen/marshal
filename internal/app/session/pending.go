@@ -1,6 +1,9 @@
 package session
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,6 +16,42 @@ type UserApprovalDecision struct {
 	Edited   string
 }
 
+// QuestionOption is one selectable answer to a Question. Plain strings
+// from older payloads decode as {Label: s} via the custom unmarshaller.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// UnmarshalJSON accepts either a plain string (legacy / simple form) or
+// an object with label + optional description.
+func (o *QuestionOption) UnmarshalJSON(b []byte) error {
+	// json.Unmarshal treats the null literal as a no-op success for every
+	// target type, so without this guard a null option would take the
+	// string branch below and decode as an empty label — a blank selectable
+	// row whose recorded answer is "". The declared schema rejects null, so
+	// the decoder must too.
+	if strings.TrimSpace(string(b)) == "null" {
+		return fmt.Errorf("question option: must be a string or an object with label/description, got null")
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		o.Label = s
+		o.Description = ""
+		return nil
+	}
+	type alias QuestionOption
+	if err := json.Unmarshal(b, (*alias)(o)); err != nil {
+		return err
+	}
+	// An object with no label is not a usable option; reject it so the
+	// shape stays string-or-{label,...} rather than silently empty.
+	if o.Label == "" {
+		return fmt.Errorf("question option: missing label")
+	}
+	return nil
+}
+
 // Question is a single clarifying question presented to the user. Options
 // triggers select/multi-select rendering in the TUI; Multi selects between
 // NewSelect and NewMultiSelect. Every options question always exposes an
@@ -20,9 +59,9 @@ type UserApprovalDecision struct {
 // answer not in the option list; the sentinel and its input are unconditional
 // (there is no per-question switch to disable them).
 type Question struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
-	Multi    bool     `json:"multi,omitempty"`
+	Question string           `json:"question"`
+	Options  []QuestionOption `json:"options,omitempty"`
+	Multi    bool             `json:"multi,omitempty"`
 }
 
 // Answer is the user's response to one Question. When the user hits Esc on

@@ -398,6 +398,45 @@ func TestRunNativeAskUserFeedsAnswerAsRoleTool(t *testing.T) {
 	}
 }
 
+// TestRunNativeQuestionAskRejectsNonArrayOptionsWithExample drives
+// question.ask through the runner with an options field shaped as an
+// object rather than an array. The generic schema check would have
+// rejected this too, but the rejection the model sees must come from the
+// bespoke validator: it names the offending field path and embeds a valid
+// example the model can copy.
+func TestRunNativeQuestionAskRejectsNonArrayOptionsWithExample(t *testing.T) {
+	state := newTestState(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Asking.", "Done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "call_q", Name: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Pick","options":{"label":"a"}}]}`)}},
+		},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+
+	if _, err := r.RunTask(context.Background(), "gather preferences"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+
+	var got string
+	for _, msg := range p.Requests[1].Messages {
+		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_q" {
+			got = msg.Content
+		}
+	}
+	if got == "" {
+		t.Fatalf("no tool message for call_q: %#v", p.Requests[1].Messages)
+	}
+	if !strings.Contains(got, "example:") {
+		t.Fatalf("error message missing example payload: %q", got)
+	}
+	if !strings.Contains(got, "questions[0].options") {
+		t.Fatalf("error message missing field path: %q", got)
+	}
+}
+
 func TestRunNativeTruncatedToolNameResolves(t *testing.T) {
 	var gotArgs json.RawMessage
 	reg := registry.New()
@@ -1052,6 +1091,104 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing correction message in provider requests: %#v", p.Requests)
+	}
+}
+
+// TestModeRequestIsSerialGated verifies mode.request is in the serial deny
+// list. It blocks on the single State.PendingApproval slot, so two calls in
+// one actions[] batch would clobber each other and the first would hang
+// until the turn was cancelled.
+func TestModeRequestIsSerialGated(t *testing.T) {
+	if !requiresSerialTool("mode.request") {
+		t.Fatal("mode.request must be serial-gated: it blocks on the single PendingApproval slot")
+	}
+	for _, name := range []string{"question.ask", "ask_user", "skill.load"} {
+		if !requiresSerialTool(name) {
+			t.Fatalf("%s must remain serial-gated", name)
+		}
+	}
+	if requiresSerialTool("file.read") {
+		t.Fatal("file.read must not be serial-gated")
+	}
+}
+
+// TestBatchSafeReadOnlyNamesExcludesSerialAndStatefulTools verifies the
+// list advertised in the system prompt never names a tool that
+// executeActions would serialise or that mutates session state a sibling
+// call may be reading.
+func TestBatchSafeReadOnlyNamesExcludesSerialAndStatefulTools(t *testing.T) {
+	tools := []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly},
+		{Name: "repo.search", Risk: registry.RiskReadOnly},
+		{Name: "question.ask", Risk: registry.RiskReadOnly},
+		{Name: "ask_user", Risk: registry.RiskReadOnly},
+		{Name: "mode.request", Risk: registry.RiskReadOnly},
+		{Name: "skill.load", Risk: registry.RiskReadOnly},
+		{Name: "tools.select", Risk: registry.RiskReadOnly},
+		{Name: "shell.run", Risk: registry.RiskCommand},
+	}
+	got := batchSafeReadOnlyNames(tools)
+	want := []string{"file.read", "repo.search"}
+	if len(got) != len(want) {
+		t.Fatalf("batchSafeReadOnlyNames = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("batchSafeReadOnlyNames = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestAllReadOnlyEnumeratesEveryOffender verifies that one rejection names
+// every non-read-only entry in the batch (not just the first) and lists the
+// live read-only tool set so the model can correct the whole batch at once.
+func TestAllReadOnlyEnumeratesEveryOffender(t *testing.T) {
+	handler := func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+		return registry.ToolResult{}, nil
+	}
+	reg := registry.New()
+	for _, tool := range []registry.Tool{
+		{Name: "file.read", Schema: json.RawMessage(`{"type":"object"}`), Risk: registry.RiskReadOnly, Handler: handler},
+		{Name: "shell.run", Schema: json.RawMessage(`{"type":"object"}`), Risk: registry.RiskCommand, Handler: handler},
+		{Name: "file.write", Schema: json.RawMessage(`{"type":"object"}`), Risk: registry.RiskWorkspaceWrite, Handler: handler},
+	} {
+		if err := reg.Register(tool); err != nil {
+			t.Fatalf("Register(%q): %v", tool.Name, err)
+		}
+	}
+
+	r := NewRunner(nil, reg, nil, newTestState(t), "test-model")
+	err := r.allReadOnly([]ModelAction{
+		{Type: ActionToolCall, Tool: "file.read", Args: json.RawMessage(`{}`)},
+		{Type: ActionToolCall, Tool: "shell.run", Args: json.RawMessage(`{}`)},
+		{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{}`)},
+	})
+	if err == nil {
+		t.Fatal("expected allReadOnly to reject shell.run and file.write")
+	}
+	msg := err.Error()
+	// Assert on the rejected: segment specifically. file.read also appears
+	// in the appended allowed-list, so a bare Contains(msg, "file.read")
+	// would pass even if file.read had been wrongly rejected.
+	const rejectedPrefix = "rejected: "
+	i := strings.Index(msg, rejectedPrefix)
+	if i < 0 {
+		t.Fatalf("error %q must contain a %q segment", msg, rejectedPrefix)
+	}
+	rejected := msg[i+len(rejectedPrefix):]
+	if end := strings.Index(rejected, ". Read-only tools:"); end >= 0 {
+		rejected = rejected[:end]
+	}
+	for _, want := range []string{"shell.run", "file.write"} {
+		if !strings.Contains(rejected, want) {
+			t.Fatalf("rejected segment %q must name %q", rejected, want)
+		}
+	}
+	if strings.Contains(rejected, "file.read") {
+		t.Fatalf("rejected segment %q must not name the read-only tool file.read", rejected)
+	}
+	if !strings.Contains(msg, "Read-only tools:") || !strings.Contains(msg, "file.read") {
+		t.Fatalf("error %q must list the read-only tool set", msg)
 	}
 }
 

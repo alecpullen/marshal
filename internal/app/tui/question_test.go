@@ -80,7 +80,7 @@ func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
 		Questions: []session.Question{
 			{
 				Question: "Pick one:",
-				Options:  []string{"red", "green", "blue"},
+				Options:  []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}},
 			},
 		},
 		ResponseChan: ch2,
@@ -116,7 +116,7 @@ func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
 // submits directly.
 func TestQuestionFinalizeSingleChoice(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = "green"
@@ -135,11 +135,55 @@ func TestQuestionFinalizeSingleChoice(t *testing.T) {
 }
 
 func TestBuildQuestionOptionsAlwaysAppendsOther(t *testing.T) {
-	if got := buildQuestionOptions([]string{"red"}); len(got) != 2 {
+	if got := buildQuestionOptions([]session.QuestionOption{{Label: "red"}}); len(got) != 2 {
 		t.Fatalf("option count = %d, want 2", len(got))
 	}
-	if got := buildQuestionOptions([]string{"red"}); got[len(got)-1].Value != questionOtherSentinel {
+	if got := buildQuestionOptions([]session.QuestionOption{{Label: "red"}}); got[len(got)-1].Value != questionOtherSentinel {
 		t.Fatalf("last option value should be the Other sentinel, got %q", got[len(got)-1].Value)
+	}
+}
+
+// TestBuildQuestionOptionsFoldsDescription verifies an option's description
+// is rendered in the visible key while the value stays the bare label, so a
+// recorded answer never carries the description.
+func TestBuildQuestionOptionsFoldsDescription(t *testing.T) {
+	opts := buildQuestionOptions([]session.QuestionOption{
+		{Label: "red", Description: "the warm one"},
+		{Label: "green"},
+	})
+	if len(opts) != 3 {
+		t.Fatalf("option count = %d, want 3", len(opts))
+	}
+	if opts[0].Key != "red — the warm one" {
+		t.Fatalf("key = %q, want %q", opts[0].Key, "red — the warm one")
+	}
+	if opts[0].Value != "red" {
+		t.Fatalf("value = %q, want bare label %q", opts[0].Value, "red")
+	}
+	if opts[1].Key != "green" {
+		t.Fatalf("key = %q, want bare label %q (no separator)", opts[1].Key, "green")
+	}
+	if opts[1].Value != "green" {
+		t.Fatalf("value = %q, want %q", opts[1].Value, "green")
+	}
+}
+
+// TestQuestionModelViewShowsOptionDescriptions verifies the description is
+// visible in the rendered question view.
+func TestQuestionModelViewShowsOptionDescriptions(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{
+			{Label: "red", Description: "the warm one"},
+			{Label: "green"},
+		}}},
+	}
+	qm := newQuestionModel(q, 80)
+	view := stripANSI(qm.View())
+	if !strings.Contains(view, "the warm one") {
+		t.Fatalf("question view missing option description:\n%s", view)
+	}
+	if !strings.Contains(view, "red") {
+		t.Fatalf("question view missing option label:\n%s", view)
 	}
 }
 
@@ -147,7 +191,7 @@ func TestBuildQuestionOptionsAlwaysAppendsOther(t *testing.T) {
 // selected values.
 func TestQuestionFinalizeMultiChoice(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []string{"a", "b", "c"}, Multi: true}},
+		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}, {Label: "c"}}, Multi: true}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.multis[0] = []string{"a", "c"}
@@ -166,7 +210,7 @@ func TestQuestionFinalizeMultiChoice(t *testing.T) {
 // trimmed custom text.
 func TestQuestionFinalizeOtherWithText(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = questionOtherSentinel
@@ -186,7 +230,7 @@ func TestQuestionFinalizeOtherWithText(t *testing.T) {
 // with blank custom text does NOT submit the sentinel.
 func TestQuestionFinalizeOtherBlankStaysUnanswered(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = questionOtherSentinel
@@ -204,7 +248,7 @@ func TestQuestionFinalizeOtherBlankStaysUnanswered(t *testing.T) {
 
 func TestQuestionModelViewUsesGutter(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "What is your favorite color?", Options: []string{"red", "green", "blue"}}},
+		Questions: []session.Question{{Question: "What is your favorite color?", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	view := stripANSI(qm.View())
@@ -219,7 +263,7 @@ func TestQuestionModelViewUsesGutter(t *testing.T) {
 func TestQuestionModelViewHasChromeRail(t *testing.T) {
 	q := &session.PendingQuestion{
 		Questions: []session.Question{
-			{Question: "Pick one:", Options: []string{"red", "green"}},
+			{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}},
 			{Question: "Why?"},
 		},
 	}
@@ -281,7 +325,7 @@ func TestQuestionModelViewEchoesTypedInput(t *testing.T) {
 
 func TestQuestionModelViewShowsInteractiveOptions(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	view := stripANSI(qm.View())
@@ -313,7 +357,7 @@ func TestRenderInputAreaHidesTextareaWhileQuestionPending(t *testing.T) {
 
 func TestQuestionMultiSelectOffersOther(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []string{"a", "b"}, Multi: true}},
+		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}, Multi: true}},
 	}
 	qm := newQuestionModel(q, 80)
 	if qm.multis[0] == nil {
@@ -338,7 +382,7 @@ func TestQuestionMultiSelectOffersOther(t *testing.T) {
 // bound select value + the custom-answer input's existence.)
 func TestQuestionPremadePickSkipsCustomInput(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green"}}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	// A listed pick binds into the select; the input exists but is hidden
@@ -364,7 +408,7 @@ func TestQuestionPremadePickSkipsCustomInput(t *testing.T) {
 // that the input could be walked into unconditionally.)
 func TestQuestionOtherPickRevealsCustomInput(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green"}}},
+		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	if qm.others[0] == nil {
@@ -386,7 +430,7 @@ func TestQuestionOtherPickRevealsCustomInput(t *testing.T) {
 
 func TestQuestionFinalizeMultiOtherSubstitutesCustom(t *testing.T) {
 	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []string{"real", "other-choice"}, Multi: true}},
+		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "real"}, {Label: "other-choice"}}, Multi: true}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.multis[0] = []string{"real", questionOtherSentinel}
@@ -403,7 +447,7 @@ func TestQuestionFinalizeMultiOtherSubstitutesCustom(t *testing.T) {
 
 	// Sentinel with blank custom text is omitted entirely.
 	q2 := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []string{"real", "other-choice"}, Multi: true}},
+		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "real"}, {Label: "other-choice"}}, Multi: true}},
 	}
 	qm2 := newQuestionModel(q2, 80)
 	*qm2.multis[0] = []string{"real", questionOtherSentinel}

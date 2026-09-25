@@ -27,8 +27,10 @@ const actionEnvelopeSchema = `{
     },
     "actions": {
       "type": "array",
+      "description": "Every entry must be a read-only tool_call. Any tool that is not read-only rejects the whole envelope; the current read-only tool list is in the system prompt.",
       "items": {
         "type": "object",
+        "description": "Every entry must be a read-only tool_call. Any tool that is not read-only rejects the whole envelope; the current read-only tool list is in the system prompt.",
         "properties": {
           "type": {
             "type": "string",

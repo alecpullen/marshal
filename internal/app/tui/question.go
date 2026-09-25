@@ -156,10 +156,17 @@ func questionFieldWidth(panelWidth int) int {
 // buildQuestionOptions constructs a huh option list for an options
 // question. The 'Other…' sentinel is always appended; picking it reveals the
 // custom-answer input via that input group's WithHideFunc.
-func buildQuestionOptions(in []string) []huh.Option[string] {
+// When an option carries a description, it is folded into the rendered
+// key (huh.Option has no description field). The value stays the bare
+// label so recorded answers never carry the description.
+func buildQuestionOptions(in []session.QuestionOption) []huh.Option[string] {
 	opts := make([]huh.Option[string], 0, len(in)+1)
 	for _, o := range in {
-		opts = append(opts, huh.NewOption(o, o))
+		key := o.Label
+		if o.Description != "" {
+			key = o.Label + " — " + o.Description
+		}
+		opts = append(opts, huh.NewOption(key, o.Label))
 	}
 	opts = append(opts, huh.NewOption("Other…", questionOtherSentinel))
 	return opts

@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/hooks"
 	"marshal/internal/llm/schema"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -680,15 +681,14 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 		return BuildNativeToolErrorMessage(call.Name, "question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made", call.ID), nil
 	}
 	// executeNativeToolCalls short-circuits on tool name before the agent
-	// path's early validation runs, so ask_user/question.ask need an
-	// explicit ValidateArgs here — the schema (minItems) covers both
-	// decode and array-emptiness checks.
-	if tool, ok := r.Registry.Lookup(call.Name); ok {
-		if err := registry.ValidateArgs(tool, call.Args); err != nil {
-			r.countToolCall(true, false)
-			r.noteInvalidArgs()
-			return BuildNativeToolErrorMessage(call.Name, err.Error(), call.ID), nil
-		}
+	// path's early validation runs, so question.ask needs an explicit
+	// validation here. Use the bespoke validator rather than the generic
+	// schema check so a rejected payload comes back with a field path and
+	// a valid example the model can copy.
+	if err := native.ValidateQuestionAsk(call.Args); err != nil {
+		r.countToolCall(true, false)
+		r.noteInvalidArgs()
+		return BuildNativeToolErrorMessage(call.Name, err.Error(), call.ID), nil
 	}
 	var payload struct {
 		Questions []session.Question `json:"questions"`
@@ -724,6 +724,7 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 }
 
 func (r *Runner) allReadOnly(actions []ModelAction) error {
+	var rejected []string
 	for _, a := range actions {
 		if a.Type != ActionToolCall {
 			return fmt.Errorf("action type %q in actions array is not a tool_call", a.Type)
@@ -733,16 +734,19 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 			return fmt.Errorf("unknown tool %q in actions array", a.Tool)
 		}
 		if tool.Risk != registry.RiskReadOnly {
-			return fmt.Errorf("tool %q is read-write, not read-only — actions array only supports read-only tools", a.Tool)
+			rejected = append(rejected, fmt.Sprintf("%s (risk=%s)", a.Tool, tool.Risk))
 		}
+	}
+	if len(rejected) > 0 {
+		return fmt.Errorf("actions array accepts read-only tools only; rejected: %s. Read-only tools: %s",
+			strings.Join(rejected, ", "), strings.Join(r.Registry.ReadOnlyNames(), ", "))
 	}
 	return nil
 }
 
 // requiresSerialTool is the deny list of tools that share a single
-// process-wide slot (today: State.PendingQuestion, and skill.load shares
-// State.PendingSkillGate the same way question tools share
-// PendingQuestion). They must never run concurrently inside
+// process-wide slot (today: State.PendingQuestion, State.PendingSkillGate,
+// and State.PendingApproval). They must never run concurrently inside
 // executeActions, or two calls will clobber each other and leak the inner
 // ResponseChan. They are still admitted by allReadOnly; executeActions is
 // responsible for ordering them.
@@ -753,10 +757,34 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 // parallel-batch race on the single PendingQuestion slot.
 func requiresSerialTool(name string) bool {
 	switch name {
-	case "question.ask", "ask_user", "skill.load":
+	case "question.ask", "ask_user", "skill.load", "mode.request":
 		return true
 	}
 	return false
+}
+
+// batchUnsafeReadOnlyTools are read-only tools that must not be advertised
+// as valid actions[] entries even though allReadOnly admits them: they
+// mutate session state that a sibling call in the same batch may be
+// reading. requiresSerialTool names are excluded separately.
+var batchUnsafeReadOnlyTools = map[string]bool{
+	"tools.select": true,
+}
+
+// batchSafeReadOnlyNames returns the sorted names of read-only tools that
+// are safe to run concurrently inside an actions[] batch. It is the list
+// the system prompt advertises, so it must never name a tool that
+// executeActions would serialise or that would race on shared state.
+func batchSafeReadOnlyNames(tools []registry.Tool) []string {
+	all := registry.ReadOnlyNames(tools)
+	safe := make([]string, 0, len(all))
+	for _, name := range all {
+		if requiresSerialTool(name) || batchUnsafeReadOnlyTools[name] {
+			continue
+		}
+		safe = append(safe, name)
+	}
+	return safe
 }
 
 func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]schema.ChatMessage, error) {

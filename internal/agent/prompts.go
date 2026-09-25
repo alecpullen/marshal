@@ -818,6 +818,18 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 		}
 	} else {
 		b.WriteString(baseOutputFormat)
+		// Advertise only the tools that are genuinely safe to run
+		// concurrently. Naming a serial-gated or state-mutating tool here
+		// would invite a parallel call that executeActions has to serialise
+		// (or that races on shared session state), and naming a tool the
+		// registry does not classify as read-only would contradict
+		// allReadOnly's own rejection message.
+		b.WriteString("\n\nEach actions[] entry must be a read-only tool_call")
+		if names := batchSafeReadOnlyNames(tools); len(names) > 0 {
+			b.WriteString("; read-only tools are: ")
+			b.WriteString(strings.Join(names, ", "))
+		}
+		b.WriteString(". Any tool that is not read-only rejects the whole envelope.")
 	}
 	b.WriteString("\n\n")
 	b.WriteString(renderRoleAddendum(rp, nativeTools))

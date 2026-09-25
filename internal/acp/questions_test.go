@@ -2,11 +2,42 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"marshal/internal/app/session"
 )
+
+// TestQuestionRequestOptionsWireShape pins the JSON shape of question
+// options on the ACP wire. session.QuestionOption marshals as an object
+// ({"label":...}) rather than the bare string older clients may expect,
+// so this test makes that protocol change deliberate and visible instead
+// of silent. The bundled web client tolerates both shapes (see
+// web/ui/src/lib/fleet.ts toOption), but an out-of-tree client that
+// assumes strings would break here.
+func TestQuestionRequestOptionsWireShape(t *testing.T) {
+	req := QuestionRequest{
+		SessionID:  "sess_1",
+		QuestionID: "q_1",
+		Questions: []session.Question{{
+			Question: "pick",
+			Options: []session.QuestionOption{
+				{Label: "a"},
+				{Label: "b", Description: "second"},
+			},
+		}},
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const want = `"options":[{"label":"a"},{"label":"b","description":"second"}]`
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("options wire shape changed; want substring %s in:\n%s", want, raw)
+	}
+}
 
 type fakeQuestionClient struct {
 	resp    QuestionResponse
@@ -30,7 +61,7 @@ func newPendingQuestion(questions ...session.Question) (*session.PendingQuestion
 }
 
 func TestQuestionBridgeDeliversAnswers(t *testing.T) {
-	pending, ch := newPendingQuestion(session.Question{Question: "pick", Options: []string{"a", "b"}})
+	pending, ch := newPendingQuestion(session.Question{Question: "pick", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}})
 	client := &fakeQuestionClient{resp: QuestionResponse{
 		Answers: []session.Answer{{Question: "pick", Answer: "a"}},
 	}}

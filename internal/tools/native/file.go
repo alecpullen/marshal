@@ -517,11 +517,16 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 }
 
 // changedOnDiskError builds the "file changed on disk" error, embedding the
-// current on-disk content's nearest-matching region for the patch's first
-// chunk (mirroring patch.ValidatePatch's "search block not found" hint) so
-// the model can retry the patch immediately instead of spending a separate
-// tool-call round-trip re-reading the file first. Live testing showed this
-// exact pattern recurring during multi-step edits.
+// current on-disk content's nearest-matching region for the chunk that
+// actually went stale (mirroring patch.ValidatePatch's "search block not
+// found" hint) so the model can retry the patch immediately instead of
+// spending a separate tool-call round-trip re-reading the file first. Live
+// testing showed this exact pattern recurring during multi-step edits.
+//
+// The stale chunk is located rather than assumed: in a multi-hunk patch
+// against a file that changed on disk the earlier chunks frequently still
+// apply, and showing the model chunk 0's region for a failure that happened
+// in chunk 5 points it at content that is not the problem.
 func changedOnDiskError(path string, fp patch.FilePatch) error {
 	base := fmt.Errorf("file %s changed on disk since last read; re-read it before editing", fp.Path)
 	if len(fp.Chunks) == 0 {
@@ -531,12 +536,21 @@ func changedOnDiskError(path string, fp patch.FilePatch) error {
 	if err != nil {
 		return base
 	}
-	region := patch.NearestRegion(string(data), fp.Chunks[0].Search, patch.NearestRegionWindowSize(fp.Chunks[0].Search))
+	search, _, failed := patch.FindFailingChunk(string(data), fp)
+	if !failed {
+		search = fp.Chunks[0].Search
+	}
+	region := patch.NearestRegion(string(data), search, patch.NearestRegionWindowSize(search))
 	if region == "" {
 		return base
 	}
-	return fmt.Errorf("%s\n\ncurrent content near the target:\n%s", base, region)
+	return fmt.Errorf("%s\n\n%s\n%s", base, currentContentHeader, region)
 }
+
+// currentContentHeader introduces an embedded snapshot of the bytes currently
+// on disk. One spelling is used everywhere a tool result pastes file content
+// so postmortem greps match a single vocabulary.
+const currentContentHeader = "current on-disk content near the target:"
 
 func (t *toolSet) enrichMissingFileError(requestedPath string, origErr error) error {
 	baseErr := fmt.Errorf("stat %s: %w", requestedPath, origErr)

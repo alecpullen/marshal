@@ -28,6 +28,46 @@ func TestDifferentOutputIsNotARepeat(t *testing.T) {
 	}
 }
 
+func TestFailedRepeatsIgnoreResultHash(t *testing.T) {
+	tr := newProgressTracker()
+	args := `{"patch":"p"}`
+	// Same args, different error detail each time (e.g. a differing
+	// nearest-region hint): a failure ignores the result hash, so these are
+	// one repeated futile call, not three distinct ones.
+	for i, out := range []string{"error A", "error B", "error C"} {
+		got := tr.record("file.write_patch", args, hashToolResult(out), false)
+		if want := i + 1; got != want {
+			t.Fatalf("failure record %d count = %d, want %d", i+1, got, want)
+		}
+		if streak := tr.failedStreak("file.write_patch", args); streak != i+1 {
+			t.Fatalf("failedStreak after %d failures = %d, want %d", i+1, streak, i+1)
+		}
+	}
+}
+
+func TestSuccessStillKeysOnResultHash(t *testing.T) {
+	tr := newProgressTracker()
+	tr.record("shell.run", `{"command":"go test"}`, hashToolResult("FAIL: TestX"), true)
+	got := tr.record("shell.run", `{"command":"go test"}`, hashToolResult("ok"), true)
+	if got != 1 {
+		t.Fatalf("same call with different output counted as repeat: count = %d, want 1", got)
+	}
+}
+
+func TestFailedStreakResets(t *testing.T) {
+	tr := newProgressTracker()
+	args := `{"patch":"p"}`
+	tr.record("file.write_patch", args, hashToolResult("error A"), false)
+	tr.record("file.write_patch", args, hashToolResult("error B"), false)
+	if streak := tr.failedStreak("file.write_patch", args); streak != 2 {
+		t.Fatalf("failedStreak before success = %d, want 2", streak)
+	}
+	tr.record("file.write_patch", args, hashToolResult("applied"), true)
+	if streak := tr.failedStreak("file.write_patch", args); streak != 0 {
+		t.Fatalf("failedStreak after success = %d, want 0", streak)
+	}
+}
+
 func TestMutatingCallResetsRepeatCounts(t *testing.T) {
 	tr := newProgressTracker()
 	h := hashToolResult("x")
@@ -90,6 +130,88 @@ func TestToolCallBreaksIdleRun(t *testing.T) {
 	tr.recordIdle("empty")
 	if a := tr.assess(); a == assessHardStall {
 		t.Fatal("idle run interrupted by a tool call must not hard stall")
+	}
+}
+
+func TestFailedRepeatTierThresholds(t *testing.T) {
+	args := `{"patch":"p"}`
+	streaks := []struct {
+		failures int
+		wantTier int
+	}{
+		{0, 0},
+		{1, 0},
+		{failedRepeatNudge - 1, 0},
+		{failedRepeatNudge, failedRepeatNudge},
+		{failedRepeatInject - 1, failedRepeatNudge},
+		{failedRepeatInject, failedRepeatInject},
+		{failedRepeatStall - 1, failedRepeatInject},
+		{failedRepeatStall, failedRepeatStall},
+		{failedRepeatStall + 5, failedRepeatStall},
+	}
+	for _, tc := range streaks {
+		tr := newProgressTracker()
+		for i := 0; i < tc.failures; i++ {
+			tr.record("file.write_patch", args, hashToolResult("error"), false)
+		}
+		if got := tr.failedRepeatTier("file.write_patch", args); got != tc.wantTier {
+			t.Fatalf("failedRepeatTier after %d failures = %d, want %d", tc.failures, got, tc.wantTier)
+		}
+	}
+	// A different (name, args) pair has its own independent streak.
+	tr := newProgressTracker()
+	for i := 0; i < failedRepeatStall; i++ {
+		tr.record("file.write_patch", args, hashToolResult("error"), false)
+	}
+	if got := tr.failedRepeatTier("shell.run", `{"command":"go test"}`); got != 0 {
+		t.Fatalf("unrelated pair tier = %d, want 0", got)
+	}
+}
+
+func TestFailedRepeatStallArmsAssessEarly(t *testing.T) {
+	tr := newProgressTracker()
+	args := `{"patch":"p"}`
+	for i := 0; i < failedRepeatStall-1; i++ {
+		tr.record("file.write_patch", args, hashToolResult("error"), false)
+	}
+	if a := tr.assess(); a != assessProgressing {
+		t.Fatalf("assess below failedRepeatStall = %v, want assessProgressing", a)
+	}
+	tr.record("file.write_patch", args, hashToolResult("error"), false)
+	tr.noteFailedRepeatStall()
+	if a := tr.assess(); a != assessHardStall {
+		t.Fatalf("assess after arming failed-repeat stall = %v, want assessHardStall", a)
+	}
+	// The arming is not the success-side ladder: repeats never reached
+	// repeatHardStall, so the flag is what tripped it.
+	if tr.lastRepeat >= repeatHardStall {
+		t.Fatalf("test precondition broken: lastRepeat = %d", tr.lastRepeat)
+	}
+}
+
+func TestFailedRepeatStallClearsOnSuccessAndReset(t *testing.T) {
+	args := `{"patch":"p"}`
+	clearers := map[string]func(*progressTracker){
+		"success": func(tr *progressTracker) {
+			tr.record("file.write_patch", args, hashToolResult("applied"), true)
+		},
+		"resetCounts": func(tr *progressTracker) {
+			tr.resetCounts()
+		},
+		"known mutation": func(tr *progressTracker) {
+			tr.record("file.write", `{"path":"new.go","content":"x"}`, hashToolResult("ok"), true)
+		},
+	}
+	for name, clear := range clearers {
+		tr := newProgressTracker()
+		for i := 0; i < failedRepeatStall; i++ {
+			tr.record("file.write_patch", args, hashToolResult("error"), false)
+		}
+		tr.noteFailedRepeatStall()
+		clear(tr)
+		if a := tr.assess(); a != assessProgressing {
+			t.Fatalf("assess after %s cleared the stall = %v, want assessProgressing", name, a)
+		}
 	}
 }
 

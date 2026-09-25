@@ -383,10 +383,40 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.logToolCall(event)
 		r.trackerMu.Lock()
 		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()), false)
+		tier := r.tracker.failedRepeatTier(toolName, string(normalizedArgs))
+		streak := r.tracker.failedStreak(toolName, string(normalizedArgs))
+		if tier >= failedRepeatStall {
+			// Arm the failure-path hard stall so checkStall breaks the loop
+			// instead of waiting for the much slower success-side ladder.
+			r.tracker.noteFailedRepeatStall()
+		}
 		r.trackerMu.Unlock()
+		r.noteFailedRepeatTelemetry(tier, streak)
 		r.countToolCall(true, false)
 		msg := r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)
-		msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+		// repeatReminder tells the model the repeated call produced IDENTICAL
+		// OUTPUT. On the failure path that is precisely what is NOT true of the
+		// spiral this ladder exists to catch: the args repeat while the error
+		// text differs every attempt. Asserting identical output beside a
+		// failure-streak line would contradict it, so from the nudge threshold
+		// up the failure ladder owns the coaching text.
+		//
+		// The success-side ladder is untouched: a call that keeps SUCCEEDING
+		// with identical output never enters this branch and still gets every
+		// reminder.
+		if tier < failedRepeatNudge {
+			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+		}
+		if tier >= failedRepeatNudge {
+			msg.Content += fmt.Sprintf("\n\nthis identical call already failed %d times; re-read the target and retry with exact bytes from disk.", streak)
+		}
+		// Forced retry correction (tier 3+): on the third identical-args
+		// file.write_patch failure, stop coaching and name the exact bytes to
+		// re-read. Purely additive diagnostic text — it never changes control
+		// flow, the returned messages, or the error.
+		if toolName == "file.write_patch" && tier >= failedRepeatInject {
+			msg.Content += failedPatchTargetHint(r, args, execErr)
+		}
 		return []schema.ChatMessage{msg}, nil
 	}
 

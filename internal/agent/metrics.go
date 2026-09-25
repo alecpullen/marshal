@@ -46,12 +46,25 @@ type TurnMetrics struct {
 	StreamRecoveries int
 	HardStalls       int
 	Outcome          string
-	SalvageReason    string // non-empty when Outcome is "salvaged": "exhausted", "stalled", or "malformed"
-	PromptTokens     int
-	CompletionTokens int
-	ReasoningTokens  int
-	CacheReadTokens  int
-	CacheWriteTokens int
+	// SalvageReason is non-empty when Outcome is "salvaged". Reasons are the
+	// finalizeReason literals (see finalize.go): "exhausted",
+	// "overhead_exhausted", "stalled", "repeat_failure", "malformed",
+	// "empty", or "unverified".
+	SalvageReason string
+	// FailedRepeatStreak is the longest run of identical failed calls seen in
+	// this turn; HighestFailedRepeatTier is how far the failure ladder
+	// escalated for it (0 none, 2 nudge, 3 injected retry correction, 4 hard
+	// stall). Together they make a recovery visible: without them, a nudge at
+	// 2 that the model heeded is indistinguishable from a turn whose calls
+	// never failed twice, which is exactly the feedback tuning the 2/3/4
+	// thresholds requires.
+	FailedRepeatStreak      int
+	HighestFailedRepeatTier int
+	PromptTokens            int
+	CompletionTokens        int
+	ReasoningTokens         int
+	CacheReadTokens         int
+	CacheWriteTokens        int
 	// EstimatedCostCents is the estimated cost in hundredths of a cent
 	// (1/10000 of a dollar), computed from the token counts and the
 	// pricing table at metrics-emission time. 0 for local/unpriced models.
@@ -65,6 +78,24 @@ type TurnMetrics struct {
 type turnStats struct {
 	m               TurnMetrics
 	parseFailSample parseSample
+}
+
+// noteFailedRepeatTelemetry records how far the failure ladder escalated this
+// turn. It keeps the maxima so a turn that recovers after a nudge still shows
+// the tier it reached, and ignores tier 0 (no intervention was warranted) so
+// an untouched turn reports zero.
+func (r *Runner) noteFailedRepeatTelemetry(tier, streak int) {
+	if tier <= 0 {
+		return
+	}
+	r.withStats(func(s *turnStats) {
+		if tier > s.m.HighestFailedRepeatTier {
+			s.m.HighestFailedRepeatTier = tier
+		}
+		if streak > s.m.FailedRepeatStreak {
+			s.m.FailedRepeatStreak = streak
+		}
+	})
 }
 
 // parseSample is the redacted head of the first unparseable model output

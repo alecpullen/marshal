@@ -162,6 +162,7 @@ func TestSeedDocsArchiveSymlinked(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
 	writeSeedFile(t, src, ".docs-archive/plan.md", "# plan\n")
+	writeSeedFile(t, src, ".docs-archive/superpowers/plans/p.md", "# nested\n")
 	g := NewFakeGitOps()
 	g.CheckIgnoreFunc = func(dir, path string) (bool, error) { return true, nil }
 
@@ -169,20 +170,45 @@ func TestSeedDocsArchiveSymlinked(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %v, want none", warnings)
 	}
-	link := filepath.Join(dst, ".docs-archive")
-	info, err := os.Lstat(link)
+	// The archive itself must be a REAL directory. Git's ignore matching
+	// is type-sensitive: a directory-form pattern (".docs-archive/")
+	// matches this directory but never a symlink to one — an untracked
+	// whole-directory link is what once got committed and then destroyed
+	// the real archive on merge-back.
+	archive := filepath.Join(dst, ".docs-archive")
+	info, err := os.Lstat(archive)
 	if err != nil {
-		t.Fatalf("lstat link: %v", err)
+		t.Fatalf("lstat archive: %v", err)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf(".docs-archive is %v, want a symlink", info.Mode())
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf(".docs-archive is %v, want a real directory (not a symlink)", info.Mode())
 	}
-	resolved, err := filepath.EvalSymlinks(link)
-	if err != nil {
-		t.Fatalf("evalsymlinks: %v", err)
+	if !info.IsDir() {
+		t.Fatalf(".docs-archive is %v, want a real directory", info.Mode())
 	}
-	if want, err := filepath.EvalSymlinks(filepath.Join(src, ".docs-archive")); err != nil || resolved != want {
-		t.Fatalf("link resolves to %q, want %q (err=%v)", resolved, want, err)
+	// Each top-level entry is a symlink to the corresponding live source
+	// entry, so reads and writes flow through to the checkout.
+	for _, name := range []string{"plan.md", "superpowers"} {
+		link := filepath.Join(archive, name)
+		info, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", name, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s is %v, want a symlink", name, info.Mode())
+		}
+		resolved, err := filepath.EvalSymlinks(link)
+		if err != nil {
+			t.Fatalf("evalsymlinks %s: %v", name, err)
+		}
+		want, werr := filepath.EvalSymlinks(filepath.Join(src, ".docs-archive", name))
+		if werr != nil || resolved != want {
+			t.Fatalf("%s resolves to %q, want %q (err=%v)", name, resolved, want, werr)
+		}
+	}
+	// Nested content stays reachable through the per-entry links.
+	if got := readSeedFile(t, dst, ".docs-archive/superpowers/plans/p.md"); got != "# nested\n" {
+		t.Fatalf("nested plan through the worktree = %q, want %q", got, "# nested\n")
 	}
 }
 
@@ -241,6 +267,58 @@ func TestSeedDocsArchiveSkippedWhenTracked(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(dst, ".docs-archive")); !os.IsNotExist(err) {
 		t.Fatalf("tracked .docs-archive was seeded anyway: %v", err)
+	}
+}
+
+// TestSeedDocsArchiveExplicitEntryDeduped pins that configuring the implicit
+// archive path explicitly does not produce a guaranteed "already exists"
+// warning on every fresh worktree.
+func TestSeedDocsArchiveExplicitEntryDeduped(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeSeedFile(t, src, ".docs-archive/plan.md", "# plan\n")
+	g := NewFakeGitOps()
+	g.CheckIgnoreFunc = func(dir, path string) (bool, error) { return true, nil }
+
+	warnings := SeedIntoWorktree(config.WorktreeConfig{
+		Seed: []config.WorktreeSeed{{Path: seedDocsArchivePath, Mode: "symlink"}},
+	}, g, src, dst)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none for a deduped implicit entry", warnings)
+	}
+	info, err := os.Lstat(filepath.Join(dst, seedDocsArchivePath))
+	if err != nil {
+		t.Fatalf("lstat archive: %v", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("archive is %v, want the seeded real directory", info.Mode())
+	}
+}
+
+// TestSeedDocsArchiveExplicitSymlinkStillShallow pins that an explicit
+// mode="symlink" for the archive cannot reintroduce the whole-directory link,
+// and that overriding a different configured mode is reported rather than
+// dropped silently. "copy" is the config default, so a user who merely lists
+// the path lands here.
+func TestSeedDocsArchiveExplicitSymlinkStillShallow(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeSeedFile(t, src, ".docs-archive/superpowers/plans/p.md", "# plan\n")
+	g := NewFakeGitOps()
+	g.CheckIgnoreFunc = func(dir, path string) (bool, error) { return true, nil }
+
+	warnings := SeedIntoWorktree(config.WorktreeConfig{
+		Seed: []config.WorktreeSeed{{Path: seedDocsArchivePath, Mode: "copy"}},
+	}, g, src, dst)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "shallow link") {
+		t.Fatalf("warnings = %v, want one override warning", warnings)
+	}
+	info, err := os.Lstat(filepath.Join(dst, seedDocsArchivePath))
+	if err != nil {
+		t.Fatalf("lstat archive: %v", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("archive is %v, want a real directory rather than a whole-directory symlink", info.Mode())
 	}
 }
 

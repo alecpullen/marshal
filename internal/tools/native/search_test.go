@@ -872,6 +872,41 @@ func TestRepoSearchKindPathOutsideWorkspaceIsInformative(t *testing.T) {
 	}
 }
 
+// TestRepoSearchDisclosesSkippedSymlinks pins that searching a subtree made of
+// symlinks — the shape a worktree's seeded .docs-archive has — reports that
+// links were skipped rather than a bare "found 0 matches" the model would read
+// as "the content does not exist".
+func TestRepoSearchDisclosesSkippedSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root := t.TempDir()
+	source := t.TempDir()
+	writeFile(t, filepath.Join(source, "plans", "p.md"), "needle\n")
+
+	// A real directory holding a per-entry symlink, exactly as seeded.
+	archive := filepath.Join(root, ".docs-archive")
+	if err := os.MkdirAll(archive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(source, "plans"), filepath.Join(archive, "plans")); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle","path":".docs-archive"}`)
+	if err != nil {
+		t.Fatalf("repo.search: %v", err)
+	}
+	if !strings.Contains(result.Content, "symlinked path") {
+		t.Fatalf("Content = %q, want it to disclose skipped symlinks", result.Content)
+	}
+}
+
 func TestRepoSearchAutoModeInvalidRegexFallsBackToSubstring(t *testing.T) {
 	root := t.TempDir()
 	// The literal query text is present, so a substring fallback must find it.

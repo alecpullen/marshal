@@ -251,7 +251,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			}
 		}
 
-		matches, capped, walkErrs, err := t.searchFiles(ctx, start, match, args.Include, args.Context, limit)
+		matches, capped, walkErrs, symlinksSkipped, err := t.searchFiles(ctx, start, match, args.Include, args.Context, limit)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
@@ -281,6 +281,13 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 				footer = `no matches; query looks like a regex — retry with mode:"regex"`
 			case actualMode == "regex":
 				footer = `no matches; regex matched nothing — check escaping or try mode:"substring"`
+			}
+			// A subtree made of symlinks (a worktree's seeded .docs-archive is a
+			// real directory holding one link per entry) yields zero matches
+			// without any error, because the walk deliberately does not follow
+			// symlinks. Say so, or a model concludes the content is absent.
+			if footer == "" && symlinksSkipped > 0 {
+				footer = fmt.Sprintf("no matches; %d symlinked path(s) were skipped (the search walk does not follow symlinks) — search the link target's real path instead", symlinksSkipped)
 			}
 			if footer != "" {
 				if content == "" {
@@ -369,11 +376,12 @@ func describeSymbolFilters(pathPrefix, include string) string {
 	return strings.Join(parts, " and ")
 }
 
-func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatcher, include string, ctxLines int, limit int) ([]string, bool, []error, error) {
+func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatcher, include string, ctxLines int, limit int) ([]string, bool, []error, int, error) {
 	var walkErrs []error
 	var matches []string
 	matchCount := 0
 	capped := false
+	symlinksSkipped := 0
 
 	// Anchor gitignore rules at the workspace root when the search is scoped
 	// to a subdirectory, so root-level patterns like "*.log" still apply.
@@ -413,6 +421,7 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 		// most platforms, but this explicit check is an extra
 		// defense so we never accidentally descend into or read a symlink.
 		if entry.Type()&os.ModeSymlink != 0 {
+			symlinksSkipped++
 			return nil
 		}
 		if path == start {
@@ -477,10 +486,10 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 		err = nil
 	}
 	if err != nil {
-		return nil, false, walkErrs, err
+		return nil, false, walkErrs, 0, err
 	}
 
-	return matches, capped, walkErrs, nil
+	return matches, capped, walkErrs, symlinksSkipped, nil
 }
 
 // contextLine is a remembered pre-match line, kept so it can be emitted as

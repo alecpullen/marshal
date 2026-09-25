@@ -868,7 +868,7 @@ func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
 	if !strings.Contains(msg.Content, "shell.run executes with this directory as its cwd") {
 		t.Errorf("system prompt missing cwd guidance\n%s", msg.Content)
 	}
-	if !strings.Contains(msg.Content, "resolve from the current worktree root; do not prefix with .marshal/worktrees/<branch>/ yourself") {
+	if !strings.Contains(msg.Content, "do not prefix paths with .marshal/worktrees/<branch>/ yourself") {
 		t.Errorf("system prompt missing worktree-root guidance\n%s", msg.Content)
 	}
 }

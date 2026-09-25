@@ -77,6 +77,47 @@ func TestSafeResolve_SymlinkEscapeRejected(t *testing.T) {
 	}
 }
 
+func TestDetectDoubledWorktree_Hit(t *testing.T) {
+	p := filepath.Join(".marshal", "worktrees", "feat-x", ".marshal", "worktrees", "feat-x", "foo.go")
+	got, ok := detectDoubledWorktree(p)
+	if !ok {
+		t.Fatalf("detectDoubledWorktree(%q) = _, false; want true", p)
+	}
+	want := filepath.Join(".marshal", "worktrees", "feat-x", "foo.go")
+	if got != want {
+		t.Errorf("detectDoubledWorktree(%q) = %q, want %q", p, got, want)
+	}
+}
+
+func TestDetectDoubledWorktree_Miss(t *testing.T) {
+	p := filepath.Join(".marshal", "worktrees", "feat-x", "foo.go")
+	if got, ok := detectDoubledWorktree(p); ok {
+		t.Errorf("detectDoubledWorktree(%q) = %q, true; want false", p, got)
+	}
+}
+
+func TestExpandHomeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	got, err := expandHomeDir("~/x")
+	if err != nil {
+		t.Fatalf("expandHomeDir(~/x): %v", err)
+	}
+	if want := filepath.Join(home, "x"); got != want {
+		t.Errorf("expandHomeDir(~/x) = %q, want %q", got, want)
+	}
+
+	if got, err := expandHomeDir("/etc/passwd"); err != nil || got != "/etc/passwd" {
+		t.Errorf("expandHomeDir(/etc/passwd) = %q, %v; want unchanged", got, err)
+	}
+
+	if got, err := expandHomeDir("relative/x"); err != nil || got != "relative/x" {
+		t.Errorf("expandHomeDir(relative/x) = %q, %v; want unchanged", got, err)
+	}
+}
+
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {

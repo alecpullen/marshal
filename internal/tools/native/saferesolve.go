@@ -12,6 +12,48 @@ import (
 // outside the designated workspace root.
 var ErrPathEscapes = errors.New("native: path escapes workspace root")
 
+// expandHomeDir expands a leading "~/" in p against the user's home
+// directory. Non-~ paths are returned unchanged.
+func expandHomeDir(p string) (string, error) {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expand %q: %w", p, err)
+	}
+	if p == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, strings.TrimPrefix(p, "~/")), nil
+}
+
+// detectDoubledWorktree reports whether path repeats the same
+// .marshal/worktrees/<branch>/ segment. On hit it returns the cleaned
+// suggestion with the duplicate collapsed.
+func detectDoubledWorktree(p string) (string, bool) {
+	const marker = ".marshal/worktrees/"
+	idx := strings.Index(p, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := p[idx+len(marker):]
+	segEnd := strings.Index(rest, string(filepath.Separator))
+	if segEnd < 0 {
+		return "", false
+	}
+	branch := rest[:segEnd]
+	dup := marker + branch + string(filepath.Separator)
+	first := strings.Index(p, dup)
+	second := strings.Index(p[first+len(dup):], dup)
+	if second < 0 {
+		return "", false
+	}
+	// Collapse the duplicate.
+	cleaned := p[:first+len(dup)] + p[first+len(dup)+second+len(dup):]
+	return cleaned, true
+}
+
 // SafeResolve resolves a relative path rel against root, following symlinks,
 // and verifies that the result is still contained within root.
 //
@@ -24,6 +66,13 @@ var ErrPathEscapes = errors.New("native: path escapes workspace root")
 // On success it returns the absolute, cleaned, symlink-resolved path.
 // On escape it returns ErrPathEscapes (wrapped).
 func SafeResolve(root, rel string) (string, error) {
+	if expanded, err := expandHomeDir(rel); err == nil {
+		rel = expanded
+	}
+	if suggestion, ok := detectDoubledWorktree(rel); ok {
+		return "", fmt.Errorf("%w: path %q contains a duplicated worktree segment; relative paths resolve from the current worktree root — did you mean %q?", ErrPathEscapes, rel, suggestion)
+	}
+
 	// Reject absolute paths immediately.
 	if filepath.IsAbs(rel) {
 		return "", fmt.Errorf("%w: path %q is absolute", ErrPathEscapes, rel)

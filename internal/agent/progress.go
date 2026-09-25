@@ -199,6 +199,12 @@ func (t *progressTracker) record(name, normalizedArgs, resultHash string, succes
 	if success {
 		key = name + "\x00" + normalizedArgs + "\x00" + resultHash
 		delete(t.failedStreaks, failureKey(name, normalizedArgs))
+		// counts[failureKey] is deliberately NOT deleted here. The failure
+		// streak restarts (so the ladder re-nudges a fresh run from scratch),
+		// while the cumulative repeat count keeps feeding repeatReminder. That
+		// split is what still catches a fail/succeed/fail alternation: it never
+		// accumulates a long enough streak to trip the failure ladder, but its
+		// repeated failures do keep climbing the success-side reminder.
 		// A success is progress: the failure-path stall no longer applies.
 		t.failedRepeatStalled = false
 	} else {

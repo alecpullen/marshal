@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,12 @@ func failedPatchTargetHint(r *Runner, args json.RawMessage, execErr error) strin
 	if !ok {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxHintReadBytes))
 	if err != nil {
 		return ""
 	}
@@ -57,6 +63,12 @@ func failedPatchTargetHint(r *Runner, args json.RawMessage, execErr error) strin
 
 // newline keeps the line-count arithmetic above free of escape noise.
 const newline = "\n"
+
+// maxHintReadBytes bounds how much of a target file the hint reader loads. It
+// is a safety bound rather than a semantic limit: a file this large simply
+// loses the hint (no region can be located in the prefix read) and never
+// produces a wrong one.
+const maxHintReadBytes = 1 << 20
 
 // failingPatchTarget returns the SEARCH block that failed and the absolute path
 // of the file it failed in. Only a SEARCH block that could not be located at

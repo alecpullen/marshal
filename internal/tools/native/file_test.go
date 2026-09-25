@@ -1266,6 +1266,147 @@ func TestWritePatch_ChangedOnDiskErrorIncludesCurrentContent(t *testing.T) {
 	}
 }
 
+// TestWritePatch_ChangedOnDiskErrorNamesChangedTarget is the read-before-edit
+// attribution regression: in a multi-file patch the "changed on disk" error
+// must name the specific chunk target that actually changed, not another file
+// from the same request. Both a.txt and b.txt are read; only b.txt is then
+// modified on disk; the patch touches a.txt first (unchanged) and b.txt second
+// (changed). The error must name b.txt and must never mention a.txt — a
+// regression that bound a request-level (first) path instead of the per-chunk
+// target would name a.txt.
+//
+// b.txt must have been read for this branch to fire: the changed-on-disk guard
+// only triggers once a read is on record. The sibling scenario where the second
+// target was never read is pinned by
+// TestWritePatch_MultiFilePatchAttributionNamesUnreadTarget.
+func TestWritePatch_ChangedOnDiskErrorNamesChangedTarget(t *testing.T) {
+	root := t.TempDir()
+	pathA := filepath.Join(root, "a.txt")
+	pathB := filepath.Join(root, "b.txt")
+	if err := os.WriteFile(pathA, []byte("a-v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile a.txt: %v", err)
+	}
+	if err := os.WriteFile(pathB, []byte("b-v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile b.txt: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Read both targets so the read-before-edit contract is satisfied for each.
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"a.txt"}`); err != nil {
+		t.Fatalf("file.read a.txt: %v", err)
+	}
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"b.txt"}`); err != nil {
+		t.Fatalf("file.read b.txt: %v", err)
+	}
+
+	// Only b.txt changes on disk, after its read.
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(pathB, []byte("b-v1-changed-on-disk\n"), 0644); err != nil {
+		t.Fatalf("WriteFile (modify b.txt): %v", err)
+	}
+
+	patchText := "File: a.txt\n<<<<<<< SEARCH\na-v1\n=======\na-v2\n>>>>>>> REPLACE\n" +
+		"File: b.txt\n<<<<<<< SEARCH\nb-v1\n=======\nb-v2\n>>>>>>> REPLACE\n"
+	args, err := json.Marshal(map[string]string{"patch": patchText})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	_, err = invokeTool(t, reg, "file.write_patch", string(args))
+	if err == nil {
+		t.Fatal("expected a changed-on-disk error naming b.txt, got nil")
+	}
+	if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should mention 'changed on disk', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "b.txt") {
+		t.Fatalf("error must name the changed target b.txt, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "a.txt") {
+		t.Fatalf("error must not misattribute to the unchanged target a.txt, got: %v", err)
+	}
+}
+
+// TestWritePatch_MultiFilePatchAttributionNamesUnreadTarget covers the literal
+// "only file A was read" multi-file scenario: the patch touches a.txt (read,
+// unchanged) and b.txt (present on disk but never read this session). With no
+// read on record for b.txt this is rejected by the never-read branch rather
+// than the changed-on-disk branch, and the rejection must still name b.txt —
+// the target whose read state is missing — not a.txt.
+func TestWritePatch_MultiFilePatchAttributionNamesUnreadTarget(t *testing.T) {
+	root := t.TempDir()
+	pathA := filepath.Join(root, "a.txt")
+	pathB := filepath.Join(root, "b.txt")
+	if err := os.WriteFile(pathA, []byte("a-v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile a.txt: %v", err)
+	}
+	if err := os.WriteFile(pathB, []byte("b-v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile b.txt: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Read only a.txt.
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"a.txt"}`); err != nil {
+		t.Fatalf("file.read a.txt: %v", err)
+	}
+
+	patchText := "File: a.txt\n<<<<<<< SEARCH\na-v1\n=======\na-v2\n>>>>>>> REPLACE\n" +
+		"File: b.txt\n<<<<<<< SEARCH\nb-v1\n=======\nb-v2\n>>>>>>> REPLACE\n"
+	args, err := json.Marshal(map[string]string{"patch": patchText})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	_, err = invokeTool(t, reg, "file.write_patch", string(args))
+	if err == nil {
+		t.Fatal("expected an error naming the unread target b.txt, got nil")
+	}
+	if !strings.Contains(err.Error(), "b.txt") {
+		t.Fatalf("error must name the unread target b.txt, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "a.txt") {
+		t.Fatalf("error must not misattribute to the read file a.txt, got: %v", err)
+	}
+}
+
 func TestFileWriteCreatesNewFile(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()

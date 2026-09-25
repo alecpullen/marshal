@@ -118,6 +118,38 @@ func TestExpandHomeDir(t *testing.T) {
 	}
 }
 
+// TestIsReadAllowedOutsideWorkspace pins the read-only Marshal-owned
+// allowlist. It injects a fake HOME so the assertion is hermetic. The
+// postmortems-evil case guards against a naive strings.HasPrefix that would
+// accept a sibling directory sharing the allowlisted prefix.
+func TestIsReadAllowedOutsideWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	allowed := []string{
+		filepath.Join(home, ".config", "marshal", "config.toml"),
+		filepath.Join(home, ".config", "marshal", "postmortems", "p", "sess_x.json"),
+		filepath.Join(home, ".config", "marshal", "skills", "foo", "SKILL.md"),
+	}
+	for _, abs := range allowed {
+		if !IsReadAllowedOutsideWorkspace(abs) {
+			t.Errorf("IsReadAllowedOutsideWorkspace(%q) = false, want true", abs)
+		}
+	}
+
+	denied := []string{
+		"/etc/passwd",
+		filepath.Join(home, ".config", "marshal", "other.txt"),
+		filepath.Join(home, ".config", "marshal", "postmortems-evil", "x.json"),
+	}
+	for _, abs := range denied {
+		if IsReadAllowedOutsideWorkspace(abs) {
+			t.Errorf("IsReadAllowedOutsideWorkspace(%q) = true, want false", abs)
+		}
+	}
+}
+
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {

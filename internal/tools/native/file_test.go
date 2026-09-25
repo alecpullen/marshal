@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -181,6 +182,140 @@ func TestFileReadRejectsAbsolutePathOutsideAllRoots(t *testing.T) {
 	_, err = invokeTool(t, reg, "file.read", `{"path":"/etc/passwd"}`)
 	if err == nil {
 		t.Fatal("file.read /etc/passwd returned nil error")
+	}
+}
+
+// TestFileRead_AllowlistedPostmortem pins that file.read reaches a
+// Marshal-owned postmortem path under $HOME via the ~/ form, without a
+// workspace override.
+func TestFileRead_AllowlistedPostmortem(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	writeFile(t, filepath.Join(home, ".config", "marshal", "postmortems", "proj", "sess_x.json"), `{"session":"x"}`+"\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"~/.config/marshal/postmortems/proj/sess_x.json"}`)
+	if err != nil {
+		t.Fatalf("file.read allowlisted postmortem returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, `"session":"x"`) {
+		t.Fatalf("Content = %q, want the fixture body", result.Content)
+	}
+}
+
+// TestFileRead_AllowlistSkills pins the skills allowlist entry.
+func TestFileRead_AllowlistSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	writeFile(t, filepath.Join(home, ".config", "marshal", "skills", "foo", "SKILL.md"), "# Skill\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"~/.config/marshal/skills/foo/SKILL.md"}`)
+	if err != nil {
+		t.Fatalf("file.read allowlisted skill returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "# Skill") {
+		t.Fatalf("Content = %q, want the fixture body", result.Content)
+	}
+}
+
+// TestFileRead_AllowlistConfigToml pins the exact-file config.toml entry.
+func TestFileRead_AllowlistConfigToml(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"), "[project]\nname = \"x\"\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"~/.config/marshal/config.toml"}`)
+	if err != nil {
+		t.Fatalf("file.read allowlisted config.toml returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "name = \"x\"") {
+		t.Fatalf("Content = %q, want the fixture body", result.Content)
+	}
+}
+
+// TestFileRead_NotAllowlistedEtcPasswd pins that the escape rejection still
+// fires for a non-allowlisted absolute path and that the enriched error names
+// the readable set.
+func TestFileRead_NotAllowlistedEtcPasswd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "file.read", `{"path":"/etc/passwd"}`)
+	if err == nil {
+		t.Fatal("file.read /etc/passwd returned nil error")
+	}
+	if !errors.Is(err, ErrPathEscapes) {
+		t.Fatalf("err = %v, want ErrPathEscapes", err)
+	}
+	if !strings.Contains(err.Error(), "postmortems") {
+		t.Fatalf("error should list the readable set, got: %v", err)
+	}
+}
+
+// TestFileWrite_AllowlistedStillRejects pins that the allowlist is read-only:
+// a write aimed at an allowlisted Marshal-owned path is rejected and the file
+// on disk is left untouched.
+func TestFileWrite_AllowlistedStillRejects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	target := filepath.Join(home, ".config", "marshal", "postmortems", "proj", "sess_x.json")
+	writeFile(t, target, "original\n")
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{
+		"path":    "~/.config/marshal/postmortems/proj/sess_x.json",
+		"content": "overwritten\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := invokeTool(t, reg, "file.write", string(args)); err == nil {
+		t.Fatal("file.write to an allowlisted path returned nil error")
+	}
+
+	// The allowlist is read-only: the write must not have landed.
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("re-read fixture: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("allowlisted file was modified: got %q, want %q", after, before)
 	}
 }
 

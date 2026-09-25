@@ -12,6 +12,39 @@ import (
 // outside the designated workspace root.
 var ErrPathEscapes = errors.New("native: path escapes workspace root")
 
+// readAllowedUnderHome are the Marshal-owned paths file.read and
+// file.page may reach without a workspace override. Writes NEVER use
+// this list. Paths are checked as cleaned absolute paths after ~
+// expansion.
+var readAllowedUnderHome = []string{
+	".config/marshal/postmortems",
+	".config/marshal/skills",
+	".config/marshal/config.toml", // exact file, prefix-matched below
+}
+
+// IsReadAllowedOutsideWorkspace reports whether abs is one of the
+// explicitly allowlisted Marshal-owned paths. Decoupled so tests
+// can inject a fake HOME via t.Setenv.
+func IsReadAllowedOutsideWorkspace(abs string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	for _, rel := range readAllowedUnderHome {
+		allowed := filepath.Join(home, filepath.FromSlash(rel))
+		if strings.HasSuffix(rel, ".toml") {
+			if abs == allowed {
+				return true
+			}
+			continue
+		}
+		if abs == allowed || strings.HasPrefix(abs, allowed+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // expandHomeDir expands a leading "~/" in p against the user's home
 // directory. Non-~ paths are returned unchanged.
 func expandHomeDir(p string) (string, error) {

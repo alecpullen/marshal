@@ -198,13 +198,32 @@ func (t *toolSet) resolveReadToolPath(rel string) (string, error) {
 // read-tool variant, which additionally accepts absolute paths contained in
 // an allowed root even without system access.
 func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
+	if expanded, err := expandHomeDir(rel); err == nil {
+		rel = expanded
+	}
 	if t.systemAccess() && filepath.IsAbs(rel) {
 		return resolveSystemPath(filepath.Clean(rel))
 	}
+	var resolved string
+	var err error
 	if read {
-		return resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+		resolved, err = resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+	} else {
+		resolved, err = resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
 	}
-	return resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+	if err != nil {
+		if errors.Is(err, ErrPathEscapes) {
+			// Read-side only: Marshal-owned paths under $HOME are readable
+			// without a workspace override. Writes never take this branch.
+			if read && filepath.IsAbs(rel) && IsReadAllowedOutsideWorkspace(filepath.Clean(rel)) {
+				return filepath.Clean(rel), nil
+			}
+			return "", fmt.Errorf("%w; Marshal-owned paths readable outside the workspace: %s",
+				err, strings.Join(readAllowedUnderHome, ", "))
+		}
+		return "", err
+	}
+	return resolved, nil
 }
 
 func workspaceRel(root string, abs string) (string, error) {

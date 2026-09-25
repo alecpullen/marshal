@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"marshal/internal/agent/agenttest"
@@ -24,6 +25,40 @@ func evalRegistry(t *testing.T) *registry.Registry {
 	for _, tool := range fakes {
 		tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			return registry.ToolResult{Summary: "ok", Content: "ok"}, nil
+		}
+		if err := reg.Register(tool); err != nil {
+			t.Fatalf("Register %s: %v", tool.Name, err)
+		}
+	}
+	return reg
+}
+
+// evalFailingPatchRegistry mirrors evalRegistry but its file.write_patch
+// handler always FAILS, returning a distinct error string on every call (a
+// call counter is embedded in the message). It exists so the failing-edit
+// eval scenario can exercise the failure-path ladder without changing
+// evalRegistry, which every other scenario depends on: a distinct error per
+// attempt proves the failed-call streak keys on (name, args) alone and is
+// not reset by differing error detail.
+func evalFailingPatchRegistry(t *testing.T) *registry.Registry {
+	t.Helper()
+	reg := registry.New()
+	var patchCalls atomic.Int64
+	fakes := []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly},
+		{Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite},
+		{Name: "test.run", Risk: registry.RiskReadOnly},
+	}
+	for _, tool := range fakes {
+		if tool.Name == "file.write_patch" {
+			tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+				n := patchCalls.Add(1)
+				return registry.ToolResult{}, fmt.Errorf("simulated patch failure #%d", n)
+			}
+		} else {
+			tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+				return registry.ToolResult{Summary: "ok", Content: "ok"}, nil
+			}
 		}
 		if err := reg.Register(tool); err != nil {
 			t.Fatalf("Register %s: %v", tool.Name, err)
@@ -216,6 +251,48 @@ func TestEvalScenarios(t *testing.T) {
 			}
 			tc.want(t, *got)
 		})
+	}
+}
+
+// TestEvalFailingPatchStallScenario proves the failure-path ladder breaks an
+// identical-failing-edit spiral at failedRepeatStall (tier 4) instead of the
+// success-side repeatHardStall (12). A scripted provider emits the SAME
+// file.write_patch twelve times; each execution fails with DISTINCT error
+// text, so the scenario also pins that the failed-call streak keys on
+// (name, args) alone and is not reset by differing error detail. The role is
+// non-general (RepoScout), so the hard stall finalizes directly instead of
+// prompting the user — mirroring the exact-repeat scenario above.
+func TestEvalFailingPatchStallScenario(t *testing.T) {
+	const attempts = 12
+	failingPatch := `{"rationale":"apply","action":{"type":"patch","content":"File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}}`
+	responses := make([]string, 0, attempts+1)
+	for i := 0; i < attempts; i++ {
+		responses = append(responses, failingPatch)
+	}
+	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"Answer."}}`)
+
+	p := &agenttest.ScriptedProvider{Responses: responses}
+	state := newTestState(t)
+	r := NewRunner(p, evalFailingPatchRegistry(t), evalPolicy(), state, "test-model")
+	r.Role = RoleRepoScout
+	r.SetForceClass(string(ClassQuestion))
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	if _, err := r.RunTask(context.Background(), "eval goal"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if got == nil {
+		t.Fatal("no TurnMetrics emitted")
+	}
+	// Pre-change behaviour: with only the success-side ladder the model burned
+	// all 12 scripted calls before salvaging (repeatHardStall == 12). The
+	// failure-path ladder must break the spiral at failedRepeatStall == 4
+	// instead, so the remaining scripted responses go unused.
+	if got.Outcome != "salvaged" || got.SalvageReason != "repeat_failure" ||
+		got.HardStalls != 1 || got.ToolCalls != 4 {
+		t.Fatalf("metrics = %+v (want salvaged/repeat_failure, 1 stall, 4 tool calls)", *got)
 	}
 }
 

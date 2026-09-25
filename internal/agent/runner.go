@@ -1641,6 +1641,7 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 	r.trackerMu.Lock()
 	a := r.tracker.assess()
 	name, args, _ := r.tracker.lastCall()
+	repeatFailure := r.tracker.failedRepeatStallActive()
 	r.trackerMu.Unlock()
 
 	if a != assessHardStall {
@@ -1666,7 +1667,14 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 		}
 	}
 
-	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled, responseFormat)
+	// An identical call that kept FAILING is a distinct failure mode from a
+	// repeated successful call: label the salvage so the two are
+	// distinguishable in metrics and postmortems.
+	reason := reasonStalled
+	if repeatFailure {
+		reason = reasonRepeatFailure
+	}
+	res, ferr := r.finalize(ctx, p, model, messages, task, reason, responseFormat)
 	return true, res, ferr, ""
 }
 

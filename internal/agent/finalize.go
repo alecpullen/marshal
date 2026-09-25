@@ -21,6 +21,10 @@ const (
 	reasonMalformed  finalizeReason = "malformed"
 	reasonEmpty      finalizeReason = "empty"
 	reasonUnverified finalizeReason = "unverified"
+	// reasonRepeatFailure marks a completion salvaged because an identical
+	// tool call kept failing (see failedRepeatStall): the model was looping
+	// on the same futile call rather than a repeated successful one.
+	reasonRepeatFailure finalizeReason = "repeat_failure"
 
 	// maxFinalizeAttempts bounds how many times finalize will ask the model
 	// to comply with FinalizationDirective (or NativeFinalizationDirective in
@@ -202,6 +206,8 @@ func synthesizeFallback(task *Task, raw string, reason finalizeReason) string {
 	switch reason {
 	case reasonStalled:
 		b.WriteString("I appear to be stuck repeating the same kind of lookup without making progress. Here is my best summary of what I know so far.\n\n")
+	case reasonRepeatFailure:
+		b.WriteString("I appear to be stuck: the same tool call kept failing without making progress. Here is my best summary of what I know so far.\n\n")
 	case reasonMalformed:
 		b.WriteString("The model kept producing output I could not parse. Here is the best answer I can construct from the work completed so far.\n\n")
 	case reasonEmpty:

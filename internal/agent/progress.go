@@ -101,6 +101,18 @@ const (
 	repeatHardStall    = 12
 )
 
+// Failure-path escalation ladder. The success ladder above tolerates
+// repeatHardStall (12) identical calls before stalling, but a model
+// re-issuing the SAME failing call is stuck far sooner: the failure path
+// nudges at 2, injects a retry correction at 3 (see Task 3), and hard-stalls
+// at 4. The two ladders are independent — the success thresholds above are
+// deliberately untouched.
+const (
+	failedRepeatNudge  = 2
+	failedRepeatInject = 3
+	failedRepeatStall  = 4
+)
+
 // idleEntryName is the sentinel name used for synthetic idle entries recorded
 // by recordIdle. It deliberately starts with "<" so it can never collide with
 // a real tool name.
@@ -130,6 +142,13 @@ type progressTracker struct {
 	// Failures key repeats on (name, args) alone (see failureKey), so two
 	// identical failed calls repeat even when their error text differs.
 	failedStreaks map[string]int
+	// failedRepeatStalled is set once an identical failing call reaches
+	// failedRepeatStall. assess() consumes it to trip the hard-stall path
+	// far sooner than the success-side ladder, so a model looping on a
+	// failing call is broken out instead of being allowed to burn the whole
+	// tool budget. Cleared whenever the failure streak it reflects is: a
+	// success, a known mutation, or resetCounts.
+	failedRepeatStalled bool
 }
 
 func newProgressTracker() *progressTracker {
@@ -170,6 +189,7 @@ func (t *progressTracker) record(name, normalizedArgs, resultHash string, succes
 		// The state changed, so previously gathered failures are stale too:
 		// a retry after a real edit deserves a fresh failure streak.
 		t.failedStreaks = make(map[string]int)
+		t.failedRepeatStalled = false
 	}
 	// Failures ignore the result hash: an identical failed call repeats even
 	// when the error detail differs between attempts. Successes keep the
@@ -179,6 +199,8 @@ func (t *progressTracker) record(name, normalizedArgs, resultHash string, succes
 	if success {
 		key = name + "\x00" + normalizedArgs + "\x00" + resultHash
 		delete(t.failedStreaks, failureKey(name, normalizedArgs))
+		// A success is progress: the failure-path stall no longer applies.
+		t.failedRepeatStalled = false
 	} else {
 		key = failureKey(name, normalizedArgs)
 		t.failedStreaks[key]++
@@ -203,6 +225,7 @@ func (t *progressTracker) recordIdle(reason string) {
 func (t *progressTracker) resetCounts() {
 	t.counts = make(map[string]int)
 	t.failedStreaks = make(map[string]int)
+	t.failedRepeatStalled = false
 	t.lastRepeat = 0
 	t.idleRun = 0
 }
@@ -212,6 +235,41 @@ func (t *progressTracker) resetCounts() {
 // counters, or resetCounts ran.
 func (t *progressTracker) failedStreak(name, args string) int {
 	return t.failedStreaks[failureKey(name, args)]
+}
+
+// failedRepeatTier classifies the failure streak for a (name, args) pair into
+// its intervention tier: 0 below the nudge threshold, otherwise
+// failedRepeatNudge, failedRepeatInject, or failedRepeatStall as the streak
+// crosses each threshold in turn. Callers dispatch on the returned value — a
+// nudge at 2, an injected retry correction at 3, a hard stall at 4.
+func (t *progressTracker) failedRepeatTier(name, args string) int {
+	streak := t.failedStreak(name, args)
+	switch {
+	case streak >= failedRepeatStall:
+		return failedRepeatStall
+	case streak >= failedRepeatInject:
+		return failedRepeatInject
+	case streak >= failedRepeatNudge:
+		return failedRepeatNudge
+	default:
+		return 0
+	}
+}
+
+// noteFailedRepeatStall records that an identical call has now failed
+// failedRepeatStall times in a row, arming the failure-path hard stall that
+// assess() reports.
+func (t *progressTracker) noteFailedRepeatStall() {
+	t.failedRepeatStalled = true
+}
+
+// failedRepeatStallActive reports whether the current hard stall was armed by
+// the failure-path ladder (an identical call failing failedRepeatStall times)
+// rather than the success-side repeat ladder. The stall handler uses it to
+// label the salvage reason, so a futile-call spiral is distinguishable from a
+// repeated successful call in postmortems.
+func (t *progressTracker) failedRepeatStallActive() bool {
+	return t.failedRepeatStalled
 }
 
 // lastCall returns the most recent recorded real call so stall messages can
@@ -227,6 +285,12 @@ func (t *progressTracker) lastCall() (name, args string, ok bool) {
 
 func (t *progressTracker) assess() assessment {
 	if t.idleRun >= idleStallThreshold {
+		return assessHardStall
+	}
+	// Failure-path breaker: an identical call that keeps FAILING reaches
+	// failedRepeatStall long before the success-side repeatHardStall (12),
+	// so it trips the hard stall on its own faster ladder.
+	if t.failedRepeatStalled {
 		return assessHardStall
 	}
 	if t.lastRepeat >= repeatHardStall {

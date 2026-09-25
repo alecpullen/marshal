@@ -133,6 +133,88 @@ func TestToolCallBreaksIdleRun(t *testing.T) {
 	}
 }
 
+func TestFailedRepeatTierThresholds(t *testing.T) {
+	args := `{"patch":"p"}`
+	streaks := []struct {
+		failures int
+		wantTier int
+	}{
+		{0, 0},
+		{1, 0},
+		{failedRepeatNudge - 1, 0},
+		{failedRepeatNudge, failedRepeatNudge},
+		{failedRepeatInject - 1, failedRepeatNudge},
+		{failedRepeatInject, failedRepeatInject},
+		{failedRepeatStall - 1, failedRepeatInject},
+		{failedRepeatStall, failedRepeatStall},
+		{failedRepeatStall + 5, failedRepeatStall},
+	}
+	for _, tc := range streaks {
+		tr := newProgressTracker()
+		for i := 0; i < tc.failures; i++ {
+			tr.record("file.write_patch", args, hashToolResult("error"), false)
+		}
+		if got := tr.failedRepeatTier("file.write_patch", args); got != tc.wantTier {
+			t.Fatalf("failedRepeatTier after %d failures = %d, want %d", tc.failures, got, tc.wantTier)
+		}
+	}
+	// A different (name, args) pair has its own independent streak.
+	tr := newProgressTracker()
+	for i := 0; i < failedRepeatStall; i++ {
+		tr.record("file.write_patch", args, hashToolResult("error"), false)
+	}
+	if got := tr.failedRepeatTier("shell.run", `{"command":"go test"}`); got != 0 {
+		t.Fatalf("unrelated pair tier = %d, want 0", got)
+	}
+}
+
+func TestFailedRepeatStallArmsAssessEarly(t *testing.T) {
+	tr := newProgressTracker()
+	args := `{"patch":"p"}`
+	for i := 0; i < failedRepeatStall-1; i++ {
+		tr.record("file.write_patch", args, hashToolResult("error"), false)
+	}
+	if a := tr.assess(); a != assessProgressing {
+		t.Fatalf("assess below failedRepeatStall = %v, want assessProgressing", a)
+	}
+	tr.record("file.write_patch", args, hashToolResult("error"), false)
+	tr.noteFailedRepeatStall()
+	if a := tr.assess(); a != assessHardStall {
+		t.Fatalf("assess after arming failed-repeat stall = %v, want assessHardStall", a)
+	}
+	// The arming is not the success-side ladder: repeats never reached
+	// repeatHardStall, so the flag is what tripped it.
+	if tr.lastRepeat >= repeatHardStall {
+		t.Fatalf("test precondition broken: lastRepeat = %d", tr.lastRepeat)
+	}
+}
+
+func TestFailedRepeatStallClearsOnSuccessAndReset(t *testing.T) {
+	args := `{"patch":"p"}`
+	clearers := map[string]func(*progressTracker){
+		"success": func(tr *progressTracker) {
+			tr.record("file.write_patch", args, hashToolResult("applied"), true)
+		},
+		"resetCounts": func(tr *progressTracker) {
+			tr.resetCounts()
+		},
+		"known mutation": func(tr *progressTracker) {
+			tr.record("file.write", `{"path":"new.go","content":"x"}`, hashToolResult("ok"), true)
+		},
+	}
+	for name, clear := range clearers {
+		tr := newProgressTracker()
+		for i := 0; i < failedRepeatStall; i++ {
+			tr.record("file.write_patch", args, hashToolResult("error"), false)
+		}
+		tr.noteFailedRepeatStall()
+		clear(tr)
+		if a := tr.assess(); a != assessProgressing {
+			t.Fatalf("assess after %s cleared the stall = %v, want assessProgressing", name, a)
+		}
+	}
+}
+
 func TestRepeatReminderLadder(t *testing.T) {
 	if got := repeatReminder(1, "file.read", "{}"); got != "" {
 		t.Fatalf("reminder at count 1 = %q, want empty", got)

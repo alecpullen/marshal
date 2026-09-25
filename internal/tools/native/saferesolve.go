@@ -12,33 +12,54 @@ import (
 // outside the designated workspace root.
 var ErrPathEscapes = errors.New("native: path escapes workspace root")
 
-// readAllowedUnderHome are the Marshal-owned paths file.read and
-// file.page may reach without a workspace override. Writes NEVER use
-// this list. Paths are checked as cleaned absolute paths after ~
-// expansion.
+// readAllowedUnderHome are the Marshal-owned directories file.read and
+// file.page may reach without a workspace override. Writes NEVER use this
+// list. Every entry is a directory subtree; a single-file entry would need
+// exact-match handling of its own rather than the prefix rule below.
+//
+// $HOME/.config/marshal/config.toml is deliberately absent: it can carry
+// literal provider api_key values (config types.go: "literal key; wins over
+// APIKeyEnv"), and file.read would hand them to the model verbatim. The
+// config.read tool already serves that need with the keys masked.
 var readAllowedUnderHome = []string{
 	".config/marshal/postmortems",
 	".config/marshal/skills",
-	".config/marshal/config.toml", // exact file, prefix-matched below
 }
 
 // IsReadAllowedOutsideWorkspace reports whether abs is one of the
 // explicitly allowlisted Marshal-owned paths. Decoupled so tests
 // can inject a fake HOME via t.Setenv.
+//
+// The check resolves symlinks on BOTH sides before comparing. Comparing the
+// unresolved request would let a symlink planted anywhere inside an
+// allowlisted tree pivot the read to an arbitrary target; comparing against
+// an unresolved entry would break the legitimate case where the user
+// symlinks their own ~/.config/marshal directory elsewhere.
 func IsReadAllowedOutsideWorkspace(abs string) bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
+	resolved, err := resolveSystemPath(filepath.Clean(abs))
+	if err != nil {
+		return false
+	}
 	for _, rel := range readAllowedUnderHome {
 		allowed := filepath.Join(home, filepath.FromSlash(rel))
-		if strings.HasSuffix(rel, ".toml") {
-			if abs == allowed {
-				return true
-			}
+		// Refuse an entry whose own root is a symlink. Resolving both sides
+		// closes pivots INSIDE an allowlisted tree, but a symlink AT the
+		// allowlisted directory makes the resolved entry equal to whatever
+		// it points at, which would re-open the pivot for every path under
+		// it. A symlinked PARENT (the user keeps ~/.config/marshal
+		// elsewhere) is still fine — only the entry itself is checked.
+		if info, lerr := os.Lstat(allowed); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		if abs == allowed || strings.HasPrefix(abs, allowed+string(filepath.Separator)) {
+		resolvedAllowed, err := resolveSystemPath(allowed)
+		if err != nil {
+			continue
+		}
+		if containsPath(resolvedAllowed, resolved) {
 			return true
 		}
 	}
@@ -65,20 +86,26 @@ func expandHomeDir(p string) (string, error) {
 // .marshal/worktrees/<branch>/ segment. On hit it returns the cleaned
 // suggestion with the duplicate collapsed.
 func detectDoubledWorktree(p string) (string, bool) {
+	// Match on the slash form so the diagnostic works for paths built with
+	// filepath.Join on any platform (a hardcoded separator missed Windows
+	// paths entirely). Slash and backslash are both one byte, so the
+	// offsets computed here slice the ORIGINAL p, and the suggestion keeps
+	// the caller's own separator style.
+	norm := filepath.ToSlash(p)
 	const marker = ".marshal/worktrees/"
-	idx := strings.Index(p, marker)
+	idx := strings.Index(norm, marker)
 	if idx < 0 {
 		return "", false
 	}
-	rest := p[idx+len(marker):]
-	segEnd := strings.Index(rest, string(filepath.Separator))
+	rest := norm[idx+len(marker):]
+	segEnd := strings.IndexByte(rest, '/')
 	if segEnd < 0 {
 		return "", false
 	}
 	branch := rest[:segEnd]
-	dup := marker + branch + string(filepath.Separator)
-	first := strings.Index(p, dup)
-	second := strings.Index(p[first+len(dup):], dup)
+	dup := marker + branch + "/"
+	first := strings.Index(norm, dup)
+	second := strings.Index(norm[first+len(dup):], dup)
 	if second < 0 {
 		return "", false
 	}
@@ -99,9 +126,14 @@ func detectDoubledWorktree(p string) (string, bool) {
 // On success it returns the absolute, cleaned, symlink-resolved path.
 // On escape it returns ErrPathEscapes (wrapped).
 func SafeResolve(root, rel string) (string, error) {
-	if expanded, err := expandHomeDir(rel); err == nil {
-		rel = expanded
+	// Propagate rather than swallow: a failure here means ~ could not be
+	// expanded, and silently treating "~/x" as a relative path named "~"
+	// hides the real cause behind a confusing not-found.
+	expanded, err := expandHomeDir(rel)
+	if err != nil {
+		return "", err
 	}
+	rel = expanded
 	if suggestion, ok := detectDoubledWorktree(rel); ok {
 		return "", fmt.Errorf("%w: path %q contains a duplicated worktree segment; relative paths resolve from the current worktree root — did you mean %q?", ErrPathEscapes, rel, suggestion)
 	}
@@ -144,6 +176,22 @@ func SafeResolve(root, rel string) (string, error) {
 // This is the single source of truth for symlink containment checks. Both
 // SafeResolve and resolveWorkspacePathMulti call into it.
 func resolveAbsolute(absRoot, full string) (string, error) {
+	resolved, err := resolveTarget(full)
+	if err != nil {
+		return "", err
+	}
+	if !containsPath(absRoot, resolved) {
+		return "", fmt.Errorf("%w: path %q resolves outside root", ErrPathEscapes, resolved)
+	}
+	return resolved, nil
+}
+
+// resolveTarget resolves full through symlinks and returns the
+// symlink-resolved absolute target without judging containment. The
+// containment judgement is a separate step (containsPath) so callers that
+// need to weigh the SAME target against more than one root — the multi-root
+// resolver — can do so without resolving twice.
+func resolveTarget(full string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(full)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -156,20 +204,22 @@ func resolveAbsolute(absRoot, full string) (string, error) {
 			return "", fmt.Errorf("resolve %q: %w", full, err)
 		}
 	}
-	// In both branches, `resolved` is now the symlink-resolved absolute
-	// path that the containment check must use.
-	full = resolved
+	return resolved, nil
+}
 
-	// Verify containment: the resolved path must be under absRoot.
-	relToRoot, err := filepath.Rel(absRoot, full)
+// containsPath reports whether the already symlink-resolved path lies inside
+// absRoot. It is deliberately a pure predicate: an unjudgeable pair (a
+// filepath.Rel failure, which needs one path to be relative) is reported as
+// not contained, so callers fail closed.
+func containsPath(absRoot, resolved string) bool {
+	relToRoot, err := filepath.Rel(absRoot, resolved)
 	if err != nil {
-		return "", fmt.Errorf("compute relative path: %w", err)
+		return false
 	}
 	if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: path %q resolves outside root", ErrPathEscapes, full)
+		return false
 	}
-
-	return full, nil
+	return true
 }
 
 // resolveUpThenDown walks up from path until it finds a directory that

@@ -124,12 +124,12 @@ func resolveWorkspacePathMultiMode(root string, additionalRoots []string, rel st
 		return root, nil
 	}
 
-	// First pass: lexical check. Pick the first root under which the
-	// path is lexically contained. This intentionally allows `..` at the
-	// start of rel — a path like `../siblingroot/file` is valid when
-	// `siblingroot` is in additionalRoots. The symlink check below
-	// will catch symlink-based escapes that the lexical check would miss.
+	// The request is ONE path, so exactly one root claims it: the first root
+	// under which it is lexically contained. This intentionally allows `..`
+	// at the start of rel — a path like `../siblingroot/file` is valid when
+	// `siblingroot` is in additionalRoots.
 	var lastLexical error
+	var chosenRoot string
 	for _, r := range roots {
 		full := filepath.Join(r, cleaned)
 		relToRoot, err := filepath.Rel(r, full)
@@ -141,22 +141,62 @@ func resolveWorkspacePathMultiMode(root string, additionalRoots []string, rel st
 			lastLexical = fmt.Errorf("path %q escapes root %q", rel, r)
 			continue
 		}
-		// Lexically contained. Now verify symlink containment via the
-		// single source of truth (resolveAbsolute).
-		absRoot, err := filepath.Abs(r)
-		if err != nil {
-			return "", err
-		}
-		resolvedRoot, err := filepath.EvalSymlinks(absRoot)
-		if err != nil {
-			return "", fmt.Errorf("resolve root %q: %w", absRoot, err)
-		}
-		return resolveAbsolute(resolvedRoot, full)
+		chosenRoot = r
+		break
 	}
-	if lastLexical != nil {
-		return "", lastLexical
+	if chosenRoot == "" {
+		if lastLexical != nil {
+			return "", lastLexical
+		}
+		return "", fmt.Errorf("path %q escapes workspace", rel)
 	}
-	return "", fmt.Errorf("path %q escapes workspace", rel)
+
+	absRoot, err := filepath.Abs(chosenRoot)
+	if err != nil {
+		return "", err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve root %q: %w", absRoot, err)
+	}
+
+	// Resolve the target ONCE, then decide containment.
+	resolved, err := resolveTarget(filepath.Join(chosenRoot, cleaned))
+	if err != nil {
+		return "", err
+	}
+	if containsPath(resolvedRoot, resolved) {
+		return resolved, nil
+	}
+
+	// A symlink took the target outside the root that owns this path. A
+	// different root may still contain that SAME target — a worktree's
+	// seeded .docs-archive is lexically inside the worktree but resolves
+	// into the project root — so weigh the resolved target against the
+	// remaining roots.
+	//
+	// It must be the resolved target that is weighed, never a re-join of
+	// the request to another root: re-joining fabricates a different file
+	// that merely shares the name, so a worktree link to an external file
+	// would silently answer from a same-named path in the project root (and
+	// write there too, inside what should be an isolated checkout).
+	for _, r := range roots {
+		if r == chosenRoot {
+			continue
+		}
+		rootAbs, aerr := filepath.Abs(r)
+		if aerr != nil {
+			continue
+		}
+		rootResolved, rerr := filepath.EvalSymlinks(rootAbs)
+		if rerr != nil {
+			continue
+		}
+		if containsPath(rootResolved, resolved) {
+			return resolved, nil
+		}
+	}
+	return "", fmt.Errorf("%w: path %q resolves outside root", ErrPathEscapes, resolved)
 }
 
 // resolveSystemPath resolves an absolute path for a system-access session.
@@ -188,7 +228,44 @@ func (t *toolSet) resolveReadToolPath(rel string) (string, error) {
 	if t.systemAccess() {
 		return t.resolveToolPath(rel, true)
 	}
+	// These tools take a path FILTER, not a workspace path, so they keep the
+	// write-side containment rules (absolute paths rejected). They do share
+	// the file tools' ~ expansion and doubled-prefix diagnostic, so an agent
+	// that reads a path with file.read and then filters with repo.search gets
+	// the same answer from both instead of a colder not-found.
+	expanded, err := expandHomeDir(rel)
+	if err != nil {
+		return "", err
+	}
+	rel = expanded
+	if derr := t.doubledWorktreeError(rel); derr != nil {
+		return "", derr
+	}
 	return resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+}
+
+// doubledWorktreeError returns the diagnostic for a mistaken repeated
+// .marshal/worktrees/<branch>/ prefix, or nil when the path is not doubled or
+// the literal path really exists. Shared by every path entry point so the file
+// tools and the other read tools answer alike.
+func (t *toolSet) doubledWorktreeError(rel string) error {
+	suggestion, ok := detectDoubledWorktree(rel)
+	if !ok {
+		return nil
+	}
+	// The suggestion only fires when the literal path is not real, so a
+	// workspace that genuinely nests that layout (a doc tree describing the
+	// on-disk structure, say) stays readable instead of being rejected.
+	probe := rel
+	if !filepath.IsAbs(probe) {
+		probe = filepath.Join(t.activeRoot(), rel)
+	}
+	// Lstat, not Stat: a dangling symlink is still a real entry at the
+	// literal path, so it must not be second-guessed as a typo.
+	if _, err := os.Lstat(probe); err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: path %q contains a duplicated worktree segment; relative paths resolve from the current worktree root — did you mean %q?", ErrPathEscapes, rel, suggestion)
 }
 
 // resolveToolPath is the single entry point for file-tool path resolution.
@@ -198,14 +275,27 @@ func (t *toolSet) resolveReadToolPath(rel string) (string, error) {
 // read-tool variant, which additionally accepts absolute paths contained in
 // an allowed root even without system access.
 func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
-	if expanded, err := expandHomeDir(rel); err == nil {
-		rel = expanded
+	// Propagate rather than swallow: a failure here means ~ could not be
+	// expanded, and silently treating "~/x" as a relative path named "~"
+	// hides the real cause behind a confusing not-found.
+	expanded, err := expandHomeDir(rel)
+	if err != nil {
+		return "", err
 	}
+	rel = expanded
 	if t.systemAccess() && filepath.IsAbs(rel) {
 		return resolveSystemPath(filepath.Clean(rel))
 	}
+	// A repeated .marshal/worktrees/<branch>/ segment is a mistaken prefix,
+	// not a real path. This diagnostic previously lived only in SafeResolve,
+	// which file.* does not route through — they go via the named-root and
+	// multi-root resolvers below — so they answered with a bare not-found
+	// and the model had no way to learn it had prefixed the root itself.
+	//
+	if derr := t.doubledWorktreeError(rel); derr != nil {
+		return "", derr
+	}
 	var resolved string
-	var err error
 	if read {
 		resolved, err = resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
 	} else {
@@ -215,8 +305,15 @@ func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
 		if errors.Is(err, ErrPathEscapes) {
 			// Read-side only: Marshal-owned paths under $HOME are readable
 			// without a workspace override. Writes never take this branch.
-			if read && filepath.IsAbs(rel) && IsReadAllowedOutsideWorkspace(filepath.Clean(rel)) {
-				return filepath.Clean(rel), nil
+			// The target is resolved BEFORE the allowlist decision and the
+			// resolved path is what gets returned, so a symlink planted
+			// inside an allowlisted directory cannot pivot the read
+			// elsewhere on disk.
+			if read && filepath.IsAbs(rel) {
+				if target, rerr := resolveSystemPath(filepath.Clean(rel)); rerr == nil &&
+					IsReadAllowedOutsideWorkspace(target) {
+					return target, nil
+				}
 			}
 			return "", fmt.Errorf("%w; Marshal-owned paths readable outside the workspace: %s",
 				err, strings.Join(readAllowedUnderHome, ", "))

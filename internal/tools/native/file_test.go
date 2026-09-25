@@ -231,25 +231,254 @@ func TestFileRead_AllowlistSkills(t *testing.T) {
 	}
 }
 
-// TestFileRead_AllowlistConfigToml pins the exact-file config.toml entry.
-func TestFileRead_AllowlistConfigToml(t *testing.T) {
+// TestFileRead_ConfigTomlNotAllowlisted pins that config.toml is deliberately
+// NOT readable: it can hold literal provider api_key values, which file.read
+// would hand to the model verbatim. config.read serves it with keys masked.
+func TestFileRead_ConfigTomlNotAllowlisted(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"), "[project]\nname = \"x\"\n")
+	writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"), "[providers.x]\napi_key = \"sk-live-secret\"\n")
 
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	result, err := invokeTool(t, reg, "file.read", `{"path":"~/.config/marshal/config.toml"}`)
-	if err != nil {
-		t.Fatalf("file.read allowlisted config.toml returned error: %v", err)
+	_, err := invokeTool(t, reg, "file.read", `{"path":"~/.config/marshal/config.toml"}`)
+	if err == nil {
+		t.Fatal("file.read on config.toml returned nil error; it must not expose literal api_key values")
 	}
-	if !strings.Contains(result.Content, "name = \"x\"") {
-		t.Fatalf("Content = %q, want the fixture body", result.Content)
+	if !errors.Is(err, ErrPathEscapes) {
+		t.Fatalf("err = %v, want ErrPathEscapes", err)
+	}
+}
+
+// TestFileRead_AllowlistSymlinkPivotRejected pins the end-to-end behaviour of
+// the allowlist against a symlink planted inside an allowlisted directory: the
+// read must be refused rather than following the link off the allowlist.
+func TestFileRead_AllowlistSymlinkPivotRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "secret.txt"), "TOP-SECRET\n")
+	postmortems := filepath.Join(home, ".config", "marshal", "postmortems")
+	if err := os.MkdirAll(postmortems, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(postmortems, "leak")); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "file.read", `{"path":"~/.config/marshal/postmortems/leak/secret.txt"}`)
+	if err == nil {
+		t.Fatal("file.read followed a symlink out of the allowlisted directory")
+	}
+}
+
+// TestFileReadThroughSeededWorktreeSymlink reproduces the production shape a
+// worktree session sees: `.docs-archive` is a real directory inside the
+// worktree whose top-level entries are symlinks into the project root, and the
+// project root is an additional root. A lexically-contained path whose symlink
+// resolves into a LATER root must resolve there rather than failing on the
+// first root's containment check.
+func TestFileReadThroughSeededWorktreeSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	projectRoot := t.TempDir()
+	worktreePath := t.TempDir()
+
+	// The real archive lives in the project root.
+	writeFile(t, filepath.Join(projectRoot, ".docs-archive", "superpowers", "plans", "p.md"), "# plan body\n")
+	// The worktree gets a real .docs-archive directory with a per-entry
+	// symlink, which is what the seeder now creates.
+	if err := os.MkdirAll(filepath.Join(worktreePath, ".docs-archive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(projectRoot, ".docs-archive", "superpowers"),
+		filepath.Join(worktreePath, ".docs-archive", "superpowers"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:   worktreePath,
+		AdditionalRoots: []string{projectRoot},
+		CommandRunner:   &fakeRunner{},
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":".docs-archive/superpowers/plans/p.md"}`)
+	if err != nil {
+		t.Fatalf("file.read through a seeded worktree archive returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "# plan body") {
+		t.Fatalf("Content = %q, want the archive body", result.Content)
+	}
+}
+
+// TestFileReadRejectsSymlinkTargetOutsideAllRoots pins the containment rule the
+// multi-root fallthrough must not break: when a worktree path is a symlink
+// whose target lies outside EVERY root, the request is refused — even though a
+// same-named path exists in a later root. Answering from that lookalike would
+// silently return a different file than the one asked for.
+func TestFileReadRejectsSymlinkTargetOutsideAllRoots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	external := t.TempDir()
+	writeFile(t, filepath.Join(external, "notes.md"), "EXTERNAL ORIGINAL\n")
+
+	projectRoot := t.TempDir()
+	writeFile(t, filepath.Join(projectRoot, "notes.md"), "PROJECT VERSION\n")
+
+	worktreePath := t.TempDir()
+	if err := os.Symlink(filepath.Join(external, "notes.md"), filepath.Join(worktreePath, "notes.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:   worktreePath,
+		AdditionalRoots: []string{projectRoot},
+		CommandRunner:   &fakeRunner{},
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"notes.md"}`)
+	if err == nil {
+		t.Fatalf("file.read answered from a different location: %q", result.Content)
+	}
+	if !errors.Is(err, ErrPathEscapes) {
+		t.Fatalf("err = %v, want ErrPathEscapes", err)
+	}
+}
+
+// TestFileWriteRejectsSymlinkTargetOutsideAllRoots is the write-side twin: an
+// agent isolated in a worktree must not be able to edit a same-named file in
+// the project checkout through a symlink, which would break the isolation
+// internal/worktree exists to provide.
+func TestFileWriteRejectsSymlinkTargetOutsideAllRoots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	external := t.TempDir()
+	writeFile(t, filepath.Join(external, "notes.md"), "EXTERNAL ORIGINAL\n")
+
+	projectRoot := t.TempDir()
+	target := filepath.Join(projectRoot, "notes.md")
+	writeFile(t, target, "PROJECT VERSION\n")
+
+	worktreePath := t.TempDir()
+	if err := os.Symlink(filepath.Join(external, "notes.md"), filepath.Join(worktreePath, "notes.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:   worktreePath,
+		AdditionalRoots: []string{projectRoot},
+		CommandRunner:   &fakeRunner{},
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{
+		"path":    "notes.md",
+		"content": "PATCHED BY AGENT IN WORKTREE\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := invokeTool(t, reg, "file.write", string(args)); err == nil {
+		t.Fatal("file.write through a symlink outside all roots returned nil error")
+	}
+
+	// The isolation guarantee: the project checkout is untouched.
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read project file: %v", err)
+	}
+	if string(got) != "PROJECT VERSION\n" {
+		t.Fatalf("project checkout was modified: %q", got)
+	}
+}
+
+// TestFileReadDoubledWorktreePrefixDiagnostic pins that the file tools — not
+// just the git tools that route through SafeResolve — explain a repeated
+// .marshal/worktrees/<branch>/ prefix instead of returning a bare not-found.
+func TestFileReadDoubledWorktreePrefixDiagnostic(t *testing.T) {
+	root := t.TempDir()
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	doubled := filepath.ToSlash(filepath.Join(
+		".marshal", "worktrees", "feat-x",
+		".marshal", "worktrees", "feat-x", "foo.go",
+	))
+	args, err := json.Marshal(map[string]string{"path": doubled})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = invokeTool(t, reg, "file.read", string(args))
+	if err == nil {
+		t.Fatal("file.read on a doubled worktree prefix returned nil error")
+	}
+	if !strings.Contains(err.Error(), "duplicated worktree segment") {
+		t.Fatalf("error should explain the duplicated prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "foo.go") {
+		t.Fatalf("error should suggest the collapsed path, got: %v", err)
+	}
+}
+
+// TestFileReadDoubledWorktreePrefixRealPathAllowed pins that the doubled-prefix
+// diagnostic yields to reality: a workspace that genuinely nests that layout
+// must stay readable rather than being rejected as a mistaken prefix.
+func TestFileReadDoubledWorktreePrefixRealPathAllowed(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(
+		".marshal", "worktrees", "feat-x",
+		".marshal", "worktrees", "feat-x",
+	)
+	writeFile(t, filepath.Join(root, real, "example.md"), "documented layout\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{
+		"path": filepath.ToSlash(filepath.Join(real, "example.md")),
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result, err := invokeTool(t, reg, "file.read", string(args))
+	if err != nil {
+		t.Fatalf("a real doubly-nested path was rejected: %v", err)
+	}
+	if !strings.Contains(result.Content, "documented layout") {
+		t.Fatalf("Content = %q, want the file body", result.Content)
 	}
 }
 

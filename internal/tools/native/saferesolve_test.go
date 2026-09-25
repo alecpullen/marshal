@@ -128,7 +128,6 @@ func TestIsReadAllowedOutsideWorkspace(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 
 	allowed := []string{
-		filepath.Join(home, ".config", "marshal", "config.toml"),
 		filepath.Join(home, ".config", "marshal", "postmortems", "p", "sess_x.json"),
 		filepath.Join(home, ".config", "marshal", "skills", "foo", "SKILL.md"),
 	}
@@ -140,6 +139,9 @@ func TestIsReadAllowedOutsideWorkspace(t *testing.T) {
 
 	denied := []string{
 		"/etc/passwd",
+		// config.toml can carry literal provider api_key values, so it is
+		// deliberately not readable; config.read serves it masked.
+		filepath.Join(home, ".config", "marshal", "config.toml"),
 		filepath.Join(home, ".config", "marshal", "other.txt"),
 		filepath.Join(home, ".config", "marshal", "postmortems-evil", "x.json"),
 	}
@@ -147,6 +149,64 @@ func TestIsReadAllowedOutsideWorkspace(t *testing.T) {
 		if IsReadAllowedOutsideWorkspace(abs) {
 			t.Errorf("IsReadAllowedOutsideWorkspace(%q) = true, want false", abs)
 		}
+	}
+}
+
+// TestIsReadAllowedOutsideWorkspace_SymlinkPivot pins that a symlink planted
+// inside an allowlisted directory cannot pivot the read anywhere on disk.
+// The comparison runs on the RESOLVED target, not the cleaned request.
+func TestIsReadAllowedOutsideWorkspace_SymlinkPivot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.txt"), "TOP-SECRET\n")
+
+	postmortems := filepath.Join(home, ".config", "marshal", "postmortems")
+	mustMkdir(t, postmortems)
+	if err := os.Symlink(outside, filepath.Join(postmortems, "leak")); err != nil {
+		t.Fatal(err)
+	}
+
+	pivot := filepath.Join(postmortems, "leak", "secret.txt")
+	if IsReadAllowedOutsideWorkspace(pivot) {
+		t.Errorf("IsReadAllowedOutsideWorkspace(%q) = true, want false (symlink pivot)", pivot)
+	}
+
+	// The allowlisted directory itself stays readable through its real path.
+	if !IsReadAllowedOutsideWorkspace(filepath.Join(postmortems, "real.json")) {
+		t.Error("allowlisted directory became unreadable")
+	}
+}
+
+// TestIsReadAllowedOutsideWorkspace_RootSymlinkRejected pins that an
+// allowlisted directory which is ITSELF a symlink does not become an alias for
+// wherever it points. Resolving both sides closes pivots inside the tree, but
+// a symlink at the entry itself would otherwise re-open the pivot for every
+// path beneath it.
+func TestIsReadAllowedOutsideWorkspace_RootSymlinkRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	victim := t.TempDir()
+	mustWrite(t, filepath.Join(victim, "secret.txt"), "TOP-SECRET\n")
+
+	marshalDir := filepath.Join(home, ".config", "marshal")
+	mustMkdir(t, marshalDir)
+	if err := os.Symlink(victim, filepath.Join(marshalDir, "postmortems")); err != nil {
+		t.Fatal(err)
+	}
+
+	if IsReadAllowedOutsideWorkspace(filepath.Join(marshalDir, "postmortems", "secret.txt")) {
+		t.Error("a symlinked allowlist root was accepted as an alias for its target")
 	}
 }
 

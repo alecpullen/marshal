@@ -294,6 +294,14 @@ func TestEvalFailingPatchStallScenario(t *testing.T) {
 		got.HardStalls != 1 || got.ToolCalls != 4 {
 		t.Fatalf("metrics = %+v (want salvaged/repeat_failure, 1 stall, 4 tool calls)", *got)
 	}
+	// The stall must also be visible in the ladder telemetry, so postmortems
+	// can tell a tier-4 stall from a success-side repeat stall.
+	if got.HighestFailedRepeatTier != failedRepeatStall {
+		t.Fatalf("HighestFailedRepeatTier = %d, want %d", got.HighestFailedRepeatTier, failedRepeatStall)
+	}
+	if got.FailedRepeatStreak != failedRepeatStall {
+		t.Fatalf("FailedRepeatStreak = %d, want %d", got.FailedRepeatStreak, failedRepeatStall)
+	}
 }
 
 func TestEvalNativeScenarios(t *testing.T) {

@@ -68,6 +68,13 @@ type TurnMetricsRow struct {
 	ParseFailKind      string
 	ParseFailSample    string
 	ParseRepairs       int
+	// FailedRepeatStreak and HighestFailedRepeatTier record the failure-path
+	// repeat ladder: the longest run of identical failed calls in the turn and
+	// how far escalation got (0 none, 2 nudge, 3 injected correction, 4 hard
+	// stall). A turn that recovers after a nudge still reports its tier, so
+	// the thresholds can be tuned from data.
+	FailedRepeatStreak      int
+	HighestFailedRepeatTier int
 }
 
 func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
@@ -82,8 +89,9 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 			cache_hits, parse_failures, soft_stalls, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
 			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
-			parse_fail_kind, parse_fail_sample, parse_repairs
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			parse_fail_kind, parse_fail_sample, parse_repairs,
+			failed_repeat_streak, highest_failed_repeat_tier
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -111,6 +119,8 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.ParseFailKind,
 		row.ParseFailSample,
 		row.ParseRepairs,
+		row.FailedRepeatStreak,
+		row.HighestFailedRepeatTier,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert turn metrics: %w", err)

@@ -67,6 +67,18 @@ func SummarizeToolResult(toolName string, result registry.ToolResult, maxChars i
 		content = content[:maxChars] + "\n\n...[truncated]"
 	}
 
+	// The notice footer is the coaching line for the model — it says what to
+	// do next (narrow the query, continue with start_line, retry with
+	// mode:"regex"). It is deliberately exempt from the per-tool line limit
+	// and the char cap above: repo.search's default cap (50 matches) leaves
+	// the footer as line 51, exactly where limitLines would cut it, defeating
+	// the coaching precisely when it matters most. The containment check
+	// avoids duplicating a footer that already survived the line limit, and
+	// a short bounded append past maxChars is acceptable.
+	if out.Notice != nil && out.Notice.Text != "" && !strings.Contains(content, out.Notice.Text) {
+		content += "\n" + out.Notice.Text
+	}
+
 	if content != result.Content && !strings.HasSuffix(out.Summary, "[truncated]") {
 		out.Summary = out.Summary + " [truncated]"
 	}

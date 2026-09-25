@@ -15,15 +15,19 @@ const (
 )
 
 type AuditEvent struct {
-	Timestamp       time.Time
-	AgentRole       string
-	Model           string
-	ToolName        string
-	Args            json.RawMessage
-	Risk            RiskLevel
-	Approval        ApprovalState
-	ResultSummary   string
-	ResultContent   string
+	Timestamp     time.Time
+	AgentRole     string
+	Model         string
+	ToolName      string
+	Args          json.RawMessage
+	Risk          RiskLevel
+	Approval      ApprovalState
+	ResultSummary string
+	ResultContent string
+	// Notice mirrors ToolResult.Notice so the audit trail can count tool-UX
+	// notice events (oversize fallback, zero-match coaching, capped results,
+	// slice truncation) without parsing result prose. Nil on the happy path.
+	Notice          *ToolNotice
 	FilesChanged    []string
 	Symbols         []SymbolRef
 	CommandExitCode *int
@@ -69,6 +73,7 @@ func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, a
 		Approval:      approval,
 		ResultSummary: result.Summary,
 		ResultContent: result.Content,
+		Notice:        cloneToolNotice(result.Notice),
 		FilesChanged:  append([]string(nil), result.FilesChanged...),
 		Symbols:       append([]SymbolRef(nil), result.Symbols...),
 		Sandbox:       result.Sandbox,
@@ -84,4 +89,21 @@ func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, a
 		event.Error = err.Error()
 	}
 	return event
+}
+
+// cloneToolNotice returns an independent copy of n, including its Data map, so
+// the audit event does not alias the tool result the caller still holds. Nil is
+// returned for a nil notice so the happy path keeps a nil Notice on the event.
+func cloneToolNotice(n *ToolNotice) *ToolNotice {
+	if n == nil {
+		return nil
+	}
+	clone := &ToolNotice{Kind: n.Kind, Text: n.Text}
+	if len(n.Data) > 0 {
+		clone.Data = make(map[string]any, len(n.Data))
+		for k, v := range n.Data {
+			clone.Data[k] = v
+		}
+	}
+	return clone
 }

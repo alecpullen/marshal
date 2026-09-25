@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -539,3 +540,181 @@ func TestGetToolCallsSandboxLimitsFilesystemIsolated(t *testing.T) {
 }
 
 func argsJSON(s string) []byte { return []byte(s) }
+
+// TestSaveAndGetToolCalls_Notice covers the durable ToolNotice coaching field:
+// an event carrying a Notice round-trips Kind, Text, and Data.
+//
+// The Data map is encoded through JSON, so numeric values come back as float64
+// (encoding/json decodes every number into float64 for map[string]any). This
+// test documents that behaviour rather than asserting a byte-for-byte equal
+// map, because the equality does not hold.
+func TestSaveAndGetToolCalls_Notice(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	sessionID := "session-notice"
+	if err := db.CreateSession(sessionID, projectID, "notice test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	event := registry.AuditEvent{
+		Timestamp: time.Now().UTC(),
+		ToolName:  "file.read",
+		Args:      argsJSON(`{"path":"big.go"}`),
+		Notice: &registry.ToolNotice{
+			Kind: registry.NoticeOversizeFallback,
+			Text: "file too large; showing head",
+			Data: map[string]any{"total_bytes": 123456, "path": "big.go"},
+		},
+	}
+	if err := db.SaveToolCall(sessionID, event); err != nil {
+		t.Fatalf("SaveToolCall failed: %v", err)
+	}
+
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	got := calls[0].Notice
+	if got == nil {
+		t.Fatal("Notice round-tripped to nil")
+	}
+	if got.Kind != registry.NoticeOversizeFallback {
+		t.Errorf("Kind = %q, want %q", got.Kind, registry.NoticeOversizeFallback)
+	}
+	if got.Text != "file too large; showing head" {
+		t.Errorf("Text = %q", got.Text)
+	}
+	// A JSON round-trip turns numbers into float64; assert the actual type.
+	if v := got.Data["total_bytes"]; v != float64(123456) {
+		t.Errorf("Data[total_bytes] = %#v (%T), want float64(123456)", v, v)
+	}
+	if v := got.Data["path"]; v != "big.go" {
+		t.Errorf("Data[path] = %#v, want %q", v, "big.go")
+	}
+}
+
+// TestSaveAndGetToolCalls_NilNotice pins that a nil Notice persists as SQL NULL
+// (not "{}" or the literal "null") and reads back as nil, so existing rows and
+// existing consumers keep working.
+func TestSaveAndGetToolCalls_NilNotice(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	sessionID := "session-nil-notice"
+	if err := db.CreateSession(sessionID, projectID, "nil notice test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	event := registry.AuditEvent{
+		Timestamp: time.Now().UTC(),
+		ToolName:  "grep",
+		Args:      argsJSON(`{"query":"x"}`),
+	}
+	if err := db.SaveToolCall(sessionID, event); err != nil {
+		t.Fatalf("SaveToolCall failed: %v", err)
+	}
+
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	if calls[0].Notice != nil {
+		t.Errorf("Notice = %+v, want nil", calls[0].Notice)
+	}
+
+	var stored sql.NullString
+	if err := db.sqlDB.QueryRow(`SELECT notice_json FROM tool_calls WHERE session_id = ?`, sessionID).Scan(&stored); err != nil {
+		t.Fatalf("select notice_json: %v", err)
+	}
+	if stored.Valid {
+		t.Errorf("notice_json = %q, want SQL NULL", stored.String)
+	}
+}
+
+// TestGetToolCalls_LegacyRowLacksNotice follows the legacy-table pattern used
+// by TestGetToolCalls_LegacyRows: a pre-migration tool_calls table (no
+// notice_json) is upgraded by Migrate, and the old row reads back with a nil
+// Notice rather than an error.
+func TestGetToolCalls_LegacyRowLacksNotice(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.sqlDB.Exec(`CREATE TABLE tool_calls (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT,
+		agent_role TEXT,
+		model TEXT,
+		tool_name TEXT,
+		args_json TEXT,
+		result_summary TEXT,
+		risk_level TEXT,
+		approval_state TEXT,
+		created_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatalf("create legacy tool_calls table: %v", err)
+	}
+
+	sessionID := "session-legacy-notice"
+	_, err = db.sqlDB.Exec(
+		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, "implementer", "legacy-model", "shell.exec", `{"command":"go test"}`,
+		"tests passed", string(registry.RiskCommand), string(registry.ApprovalApproved),
+		time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert legacy tool call: %v", err)
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	cols, err := db.tableColumns("tool_calls")
+	if err != nil {
+		t.Fatalf("tableColumns failed: %v", err)
+	}
+	if !cols["notice_json"] {
+		t.Fatal("Migrate did not add notice_json to tool_calls")
+	}
+
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	if calls[0].Notice != nil {
+		t.Errorf("legacy row Notice = %+v, want nil", calls[0].Notice)
+	}
+}

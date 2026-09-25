@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -343,10 +345,18 @@ func TestFilePageReadsFileLargerThanOutputLimit(t *testing.T) {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	// file.read should reject the whole file because it exceeds the default
-	// per-tool output limit.
-	if _, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`); err == nil {
-		t.Fatal("file.read should reject a file larger than max output bytes")
+	// file.read no longer rejects the whole file: it exceeds the default
+	// per-tool output limit, so it falls back to showing the head with a
+	// footer telling the model how to continue.
+	head, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`)
+	if err != nil {
+		t.Fatalf("file.read should fall back to a head read, got error: %v", err)
+	}
+	if !strings.Contains(head.Content, "showing lines") {
+		t.Fatalf("file.read oversized fallback missing footer: %q", head.Content)
+	}
+	if head.Notice == nil || head.Notice.Kind != registry.NoticeOversizeFallback {
+		t.Fatalf("file.read oversized Notice = %#v, want %q", head.Notice, registry.NoticeOversizeFallback)
 	}
 
 	// file.page should still be able to page through it.
@@ -411,12 +421,19 @@ func TestFileReadMissingFileSuggestsClosestPaths(t *testing.T) {
 	}
 }
 
-func TestFileReadRefusesHugeFile(t *testing.T) {
+// TestFileReadHugeFileFallsBackToHead pins the Task 2 contract: a file above
+// the per-tool read budget no longer errors; file.read shows the head plus a
+// footer telling the model how to continue. (This replaced the older
+// TestFileReadRefusesHugeFile, which asserted the pre-Task-2 error behavior.)
+func TestFileReadHugeFileFallsBackToHead(t *testing.T) {
 	tmp := t.TempDir()
 	big := filepath.Join(tmp, "big.txt")
-	// Write a 100 MB file. The default maxOutputBytes in toolset is
-	// much smaller (8 KB or so); we expect a clear error.
-	if err := os.WriteFile(big, make([]byte, 100*1024*1024), 0644); err != nil {
+	// A file comfortably larger than the configured 8 KiB read budget.
+	var sb strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&sb, "line %05d\n", i)
+	}
+	if err := os.WriteFile(big, []byte(sb.String()), 0644); err != nil {
 		t.Fatalf("write big: %v", err)
 	}
 
@@ -429,12 +446,524 @@ func TestFileReadRefusesHugeFile(t *testing.T) {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	_, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`)
-	if err == nil {
-		t.Fatal("expected error for huge file, got success")
+	result, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`)
+	if err != nil {
+		t.Fatalf("file.read oversized file should fall back to a head read, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "too large") && !strings.Contains(err.Error(), "limit") {
-		t.Fatalf("expected size-related error, got: %v", err)
+	if !strings.Contains(result.Content, "showing lines") {
+		t.Fatalf("Content should contain the head-fallback footer, got: %q", result.Content)
+	}
+	if result.Notice == nil || result.Notice.Kind != registry.NoticeOversizeFallback {
+		t.Fatalf("Notice = %#v, want kind %q", result.Notice, registry.NoticeOversizeFallback)
+	}
+}
+
+func TestFileReadOversizedHeadFallback(t *testing.T) {
+	root := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&sb, "line %05d padding padding\n", i)
+	}
+	writeFile(t, filepath.Join(root, "big.txt"), sb.String())
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: 1024,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`)
+	if err != nil {
+		t.Fatalf("file.read returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "showing lines") {
+		t.Fatalf("Content should contain the head-plus-footer, got: %q", result.Content)
+	}
+	if !strings.Contains(result.Summary, "oversized head fallback") {
+		t.Fatalf("Summary = %q, want it to mention the oversized head fallback", result.Summary)
+	}
+	if result.Notice == nil {
+		t.Fatal("expected a Notice on the oversized head fallback")
+	}
+	if result.Notice.Kind != registry.NoticeOversizeFallback {
+		t.Fatalf("Notice.Kind = %q, want %q", result.Notice.Kind, registry.NoticeOversizeFallback)
+	}
+	if got := result.Notice.Data["total_lines"]; got != 300 {
+		t.Fatalf("Notice.Data[total_lines] = %v, want 300", got)
+	}
+}
+
+// oversizedLinesFixture writes a file of n lines ("line %05d padding" style)
+// whose byte size comfortably exceeds the configured read budget, and returns
+// the path. The line format is stable so tests can assert real line content.
+func oversizedLinesFixture(t *testing.T, dir, name string, n int) string {
+	t.Helper()
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&sb, "line %05d\n", i)
+	}
+	path := filepath.Join(dir, name)
+	writeFile(t, path, sb.String())
+	return path
+}
+
+// TestFileReadOversizedRangedReadReturnsRequestedWindow pins the approved fix:
+// a range request against an oversized file returns the requested window
+// (real line content), not the head.
+func TestFileReadOversizedRangedReadReturnsRequestedWindow(t *testing.T) {
+	root := t.TempDir()
+	oversizedLinesFixture(t, root, "big.txt", 2000)
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: 8 * 1024,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"big.txt","start_line":101,"end_line":103}`)
+	if err != nil {
+		t.Fatalf("file.read ranged oversized returned error: %v", err)
+	}
+	// Line 101 is index 100: "line 00100".
+	for _, want := range []string{"line 00100", "line 00101", "line 00102"} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("Content missing %q:\n%s", want, result.Content)
+		}
+	}
+	if strings.Contains(result.Content, "line 00000") {
+		t.Fatalf("ranged read must not return the head:\n%s", result.Content)
+	}
+	if result.Notice == nil || result.Notice.Kind != registry.NoticeOversizeFallback {
+		t.Fatalf("Notice = %#v, want kind %q", result.Notice, registry.NoticeOversizeFallback)
+	}
+	if got := result.Notice.Data["total_lines"]; got != 2000 {
+		t.Fatalf("Notice.Data[total_lines] = %v, want 2000", got)
+	}
+	if got := result.Notice.Data["shown_lines"]; got != 3 {
+		t.Fatalf("Notice.Data[shown_lines] = %v, want 3", got)
+	}
+	if got := result.Notice.Data["start_line"]; got != 101 {
+		t.Fatalf("Notice.Data[start_line] = %v, want 101", got)
+	}
+}
+
+// TestFileReadOversizedHeadContinuationAdvances is the regression that
+// motivated the fix: the head fallback's advertised continuation
+// (file.read start_line=N+1) must return a *different* window, not the same
+// head forever.
+func TestFileReadOversizedHeadContinuationAdvances(t *testing.T) {
+	root := t.TempDir()
+	oversizedLinesFixture(t, root, "big.txt", 2000)
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: 8 * 1024,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	head, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`)
+	if err != nil {
+		t.Fatalf("file.read head returned error: %v", err)
+	}
+	if !strings.Contains(head.Content, "line 00000") {
+		t.Fatalf("head should contain the first line:\n%s", head.Content)
+	}
+
+	// Parse the advertised continuation from the footer.
+	idx := strings.Index(head.Content, "continue with file.read start_line=")
+	if idx < 0 {
+		t.Fatalf("head footer missing advertised continuation:\n%s", head.Content)
+	}
+	rest := head.Content[idx+len("continue with file.read start_line="):]
+	digits := rest
+	for i, r := range rest {
+		if r < '0' || r > '9' {
+			digits = rest[:i]
+			break
+		}
+	}
+	next, err := strconv.Atoi(digits)
+	if err != nil {
+		t.Fatalf("could not parse advertised start_line %q: %v", digits, err)
+	}
+
+	cont, err := invokeTool(t, reg, "file.read", fmt.Sprintf(`{"path":"big.txt","start_line":%d}`, next))
+	if err != nil {
+		t.Fatalf("file.read continuation returned error: %v", err)
+	}
+	// The continuation window starts at the advertised line, not at line 1.
+	first := fmt.Sprintf("line %05d", next-1)
+	if !strings.Contains(cont.Content, first) {
+		t.Fatalf("continuation window should contain %q:\n%s", first, cont.Content)
+	}
+	if strings.Contains(cont.Content, "line 00000") {
+		t.Fatalf("continuation returned the head again (infinite loop):\n%s", cont.Content)
+	}
+	if cont.Content == head.Content {
+		t.Fatal("continuation returned identical content to the head")
+	}
+}
+
+// TestFileReadOversizedRangeStartPastEOF mirrors selectLines' in-budget
+// behavior: a start beyond the last line is an empty window, not an error.
+func TestFileReadOversizedRangeStartPastEOF(t *testing.T) {
+	root := t.TempDir()
+	oversizedLinesFixture(t, root, "big.txt", 300)
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: 1024,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"big.txt","start_line":5000,"end_line":5100}`)
+	if err != nil {
+		t.Fatalf("file.read start past EOF returned error: %v", err)
+	}
+	if result.Content != "" {
+		t.Fatalf("Content = %q, want empty window", result.Content)
+	}
+	if !strings.Contains(result.Summary, "past the end of the file") {
+		t.Fatalf("Summary = %q, want a past-EOF note", result.Summary)
+	}
+}
+
+// TestFileReadOversizedRangeByteBudgetTruncation covers a window that is cut
+// by the output byte budget: it carries the slice-truncation footer and the
+// NoticeSliceTruncated notice (with accurate window/total fields).
+func TestFileReadOversizedRangeByteBudgetTruncation(t *testing.T) {
+	root := t.TempDir()
+	oversizedLinesFixture(t, root, "big.txt", 400)
+
+	const limit = 1024
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: limit,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Whole-file window: its byte size far exceeds the limit, so it is cut.
+	result, err := invokeTool(t, reg, "file.read", `{"path":"big.txt","start_line":1,"end_line":400}`)
+	if err != nil {
+		t.Fatalf("file.read returned error: %v", err)
+	}
+	if result.Notice == nil || result.Notice.Kind != registry.NoticeSliceTruncated {
+		t.Fatalf("Notice = %#v, want kind %q", result.Notice, registry.NoticeSliceTruncated)
+	}
+	if !strings.Contains(result.Content, "output truncated at") {
+		t.Fatalf("Content should contain the truncation footer, got: %q", result.Content)
+	}
+	if got := result.Notice.Data["total_lines"]; got != 400 {
+		t.Fatalf("Notice.Data[total_lines] = %v, want 400", got)
+	}
+	// shown_lines must reflect the emitted window, which is cut short of 400.
+	// Each line is 11 bytes ("line %05d" + '\n'), so the 1024 emitted bytes
+	// end at the newline of line 93; line 94 is cut mid-line and is therefore
+	// only partially shown. Exactly 93 lines are fully shown. Reporting more
+	// would advertise part of line 94 as shown and send a caller following the
+	// continuation past bytes it never received.
+	shown, ok := result.Notice.Data["shown_lines"].(int)
+	if !ok {
+		t.Fatalf("Notice.Data[shown_lines] = %#v, want int", result.Notice.Data["shown_lines"])
+	}
+	if shown != 93 {
+		t.Fatalf("Notice.Data[shown_lines] = %d, want 93", shown)
+	}
+	if end, _ := result.Notice.Data["end_line"].(int); end != 93 {
+		t.Fatalf("Notice.Data[end_line] = %v, want 93", result.Notice.Data["end_line"])
+	}
+	if start, _ := result.Notice.Data["start_line"].(int); start != 1 {
+		t.Fatalf("Notice.Data[start_line] = %v, want 1", result.Notice.Data["start_line"])
+	}
+	// The footer text must agree with the data it advertises.
+	if !strings.Contains(result.Content, "showing lines 1-93 of 400") {
+		t.Fatalf("Content footer should advertise lines 1-93, got:\n%s", result.Content)
+	}
+	if len(result.Content) < limit {
+		t.Fatalf("emitted prefix is %d bytes, want at least %d", len(result.Content), limit)
+	}
+	if !strings.Contains(result.Content, "continue with file.read start_line=94") {
+		t.Fatalf("Content footer should advertise start_line=94, got:\n%s", result.Content)
+	}
+	// The emitted prefix must end mid-line: that is the partially shown line 94,
+	// so the last body byte before the marker is not a line break.
+	if result.Content[limit-1] == '\n' {
+		t.Fatalf("the truncated body should end mid-line (line 94), not at a line break")
+	}
+}
+
+// TestFileReadOversizedRangeSingleOverlongLineFooter pins that the degenerate
+// branch (the window's first line alone exceeds the whole output budget) does
+// not recommend file.page: file.page applies the same output budget, so it
+// cannot recover the tail of the line either. The footer must point at a route
+// that can actually work.
+func TestFileReadOversizedRangeSingleOverlongLineFooter(t *testing.T) {
+	root := t.TempDir()
+	// One line far longer than the budget; the trailing newline keeps the file
+	// oversized and gives the streaming path a window to work with.
+	writeFile(t, filepath.Join(root, "wide.txt"), strings.Repeat("x", 200)+"\n")
+
+	const limit = 64
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: limit,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"wide.txt","start_line":1,"end_line":1}`)
+	if err != nil {
+		t.Fatalf("file.read returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "not reachable with file.read") {
+		t.Fatalf("degenerate branch footer missing the unreachable-warning, got:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, "use file.page") {
+		t.Fatalf("footer must not recommend file.page, which cannot recover the tail:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "shell.run") {
+		t.Fatalf("footer should offer a route that can work (shell.run byte range), got:\n%s", result.Content)
+	}
+}
+
+// TestClipLinesRuneSafe pins that the per-line clip never splits a multi-byte
+// UTF-8 rune and that the reported elision count is in runes.
+func TestClipLinesRuneSafe(t *testing.T) {
+	const runeCount = 2000
+	line := strings.Repeat("→", runeCount) // 3 bytes each; > maxLineChars runes.
+	clipped, did := clipLines(line)
+	if !did {
+		t.Fatal("clipLines reported no clip for an over-long line")
+	}
+	if !utf8.ValidString(clipped) {
+		t.Fatalf("clipLines produced invalid UTF-8: %q", clipped)
+	}
+	marker := fmt.Sprintf(" … [%d more chars]", runeCount-maxLineChars)
+	if !strings.HasSuffix(clipped, marker) {
+		t.Fatalf("clipped line should end with %q, got: %q", marker, clipped)
+	}
+	kept := strings.TrimSuffix(clipped, marker)
+	if got := utf8.RuneCountInString(kept); got != maxLineChars {
+		t.Fatalf("kept %d runes, want %d", got, maxLineChars)
+	}
+}
+
+func TestFileReadRangedTruncationFooter(t *testing.T) {
+	root := t.TempDir()
+	// readWorkspaceFile admits files up to limit+1 bytes and selectLines can
+	// only ever return a subset of what was read, so a ranged read can only
+	// exceed the byte budget at this exact boundary.
+	const limit = 64
+	writeFile(t, filepath.Join(root, "ranged.txt"), strings.Repeat("x", limit)+"\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: limit,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"ranged.txt","start_line":1,"end_line":1}`)
+	if err != nil {
+		t.Fatalf("file.read returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "output truncated at") {
+		t.Fatalf("Content should contain the truncation footer, got: %q", result.Content)
+	}
+	if result.Notice == nil || result.Notice.Kind != registry.NoticeSliceTruncated {
+		t.Fatalf("Notice = %#v, want kind %q", result.Notice, registry.NoticeSliceTruncated)
+	}
+}
+
+// TestFileReadRangedTruncationAdvertisesFullyShownLines is the exact
+// reproduction of the silent-data-loss bug in the streaming ranged read: with
+// a 64-byte budget and 63-'x' lines the body is cut one byte into line 2, so
+// line 2 is emitted only in part. The footer must not claim line 2 as fully
+// shown — its "start_line=shownEnd+1" advice would then skip the remaining 62
+// bytes of line 2 — and the rest of the output must be reachable by following
+// the advertised continuation.
+func TestFileReadRangedTruncationAdvertisesFullyShownLines(t *testing.T) {
+	root := t.TempDir()
+	const limit = 64
+	line := strings.Repeat("x", 63) // 64 bytes per line, exactly the budget.
+	writeFile(t, filepath.Join(root, "wide.txt"), strings.Repeat(line+"\n", 3))
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: limit,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"wide.txt","start_line":1,"end_line":3}`)
+	if err != nil {
+		t.Fatalf("file.read returned error: %v", err)
+	}
+	if result.Notice == nil || result.Notice.Kind != registry.NoticeSliceTruncated {
+		t.Fatalf("Notice = %#v, want kind %q", result.Notice, registry.NoticeSliceTruncated)
+	}
+
+	// The cut lands one byte into line 2, so line 1 is the last FULLY shown
+	// line. Pre-fix this reported end_line 2.
+	if end, _ := result.Notice.Data["end_line"].(int); end != 1 {
+		t.Fatalf("Notice.Data[end_line] = %#v, want 1 (the last fully shown line)", result.Notice.Data["end_line"])
+	}
+	if shown, _ := result.Notice.Data["shown_lines"].(int); shown != 1 {
+		t.Fatalf("Notice.Data[shown_lines] = %#v, want 1", result.Notice.Data["shown_lines"])
+	}
+	if strings.Contains(result.Content, "showing lines 1-2 ") {
+		t.Fatalf("footer claims line 2 is fully shown, but it was cut mid-line:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "showing lines 1-1 of 3") {
+		t.Fatalf("footer should advertise the fully shown line only, got:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "continue with file.read start_line=2") {
+		t.Fatalf("footer should advertise start_line=2, got:\n%s", result.Content)
+	}
+
+	// Following the advice must reach the bytes the cut dropped, not jump
+	// past them.
+	cont, err := invokeTool(t, reg, "file.read", `{"path":"wide.txt","start_line":2,"end_line":3}`)
+	if err != nil {
+		t.Fatalf("file.read continuation returned error: %v", err)
+	}
+	if !strings.Contains(cont.Content, line) {
+		t.Fatalf("continuation must reach the remainder of line 2:\n%s", cont.Content)
+	}
+	if !strings.Contains(cont.Content, "showing lines 2-2 of 3") {
+		t.Fatalf("continuation should report line 2 (not 3) as the last fully shown line, got:\n%s", cont.Content)
+	}
+}
+
+// TestFileReadOversizedRangeKeepsCarriageReturns pins that the ranged path
+// trims exactly what selectLines trims. selectLines splits on '\n' and keeps a
+// trailing '\r', so a CRLF file must read the same above and below the size
+// limit instead of silently losing the carriage returns.
+func TestFileReadOversizedRangeKeepsCarriageReturns(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "crlf.txt"), "alpha\r\nbeta\r\ngamma\r\n")
+
+	// The budget forces file.read down the streaming path; file.page still
+	// reads the same file whole, so the two can be compared directly.
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: 16,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	ranged, err := invokeTool(t, reg, "file.read", `{"path":"crlf.txt","start_line":1,"end_line":2}`)
+	if err != nil {
+		t.Fatalf("file.read ranged returned error: %v", err)
+	}
+	// The window is lines 1-2, which do not reach EOF, so the body keeps the
+	// carriage returns but has no trailing newline of its own.
+	if !strings.HasPrefix(ranged.Content, "alpha\r\nbeta\r") {
+		t.Fatalf("ranged read should keep the carriage returns, got: %q", ranged.Content)
+	}
+	if !strings.Contains(ranged.Content, "showing lines 1-2 of 3") {
+		t.Fatalf("ranged read should carry the window footer, got: %q", ranged.Content)
+	}
+	if strings.Contains(ranged.Content, "alpha\nbeta") {
+		t.Fatalf("ranged read dropped the '\\r' that selectLines keeps: %q", ranged.Content)
+	}
+
+	// page_size 2 keeps the page inside the budget (13 bytes), so file.page
+	// emits the same two lines whole for comparison.
+	page, err := invokeTool(t, reg, "file.page", `{"path":"crlf.txt","page":1,"page_size":2}`)
+	if err != nil {
+		t.Fatalf("file.page returned error: %v", err)
+	}
+	if page.Content != "alpha\r\nbeta\r" {
+		t.Fatalf("file.page content = %q, want %q", page.Content, "alpha\r\nbeta\r")
+	}
+	if !strings.HasPrefix(ranged.Content, page.Content) {
+		t.Fatalf("ranged read %q should start with the same lines file.page emits (%q)", ranged.Content, page.Content)
+	}
+}
+
+// TestFileReadMarkerLiteralIsNotTruncation pins that the truncation footer is
+// driven by the emitted-length comparison and not by looking for the marker
+// text: a file that is exactly the limit and whose own last line is the
+// literal marker must come back whole and with a nil Notice.
+func TestFileReadMarkerLiteralIsNotTruncation(t *testing.T) {
+	root := t.TempDir()
+	const limit = 64
+	content := strings.Repeat("z", limit-len(truncationMarker)) + truncationMarker
+	if len(content) != limit {
+		t.Fatalf("fixture is %d bytes, want exactly %d", len(content), limit)
+	}
+	writeFile(t, filepath.Join(root, "marker.txt"), content)
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: limit,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"marker.txt"}`)
+	if err != nil {
+		t.Fatalf("file.read returned error: %v", err)
+	}
+	if result.Notice != nil {
+		t.Fatalf("Notice = %#v, want nil for a file returned whole", result.Notice)
+	}
+	if strings.Contains(result.Content, "output truncated at") {
+		t.Fatalf("Content should not carry a truncation footer, got:\n%q", result.Content)
+	}
+	if result.Content != content {
+		t.Fatalf("Content = %q, want the file verbatim", result.Content)
+	}
+}
+
+func TestFileReadLineClip(t *testing.T) {
+	root := t.TempDir()
+	longLine := strings.Repeat("y", 2000)
+	writeFile(t, filepath.Join(root, "long.txt"), longLine+"\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.read", `{"path":"long.txt"}`)
+	if err != nil {
+		t.Fatalf("file.read returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "more chars]") {
+		t.Fatalf("expected an elision marker on the clipped line, got: %q", result.Content)
+	}
+	if strings.Contains(result.Content, longLine) {
+		t.Fatalf("the 2000-char line should have been clipped, got: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, longLine[:maxLineChars]) {
+		t.Fatalf("expected the first %d chars to be retained", maxLineChars)
 	}
 }
 

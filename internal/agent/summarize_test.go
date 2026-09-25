@@ -43,6 +43,84 @@ func TestSummarizeToolResultLimitsRepoSearchLines(t *testing.T) {
 	}
 }
 
+func TestSummarizeToolResultAppendsNoticeAfterLineLimit(t *testing.T) {
+	// repo.search's default cap yields 50 match lines plus the capped-results
+	// footer as line 51; the line limit would otherwise cut the footer.
+	content := strings.Repeat("match\n", 50)
+	footer := `result capped at 50 matches; narrow with path/include or a more specific query`
+	content += footer
+	result := SummarizeToolResult("repo.search", registry.ToolResult{
+		Summary: "found 50",
+		Content: content,
+		Notice:  &registry.ToolNotice{Kind: registry.NoticeCappedResults, Text: footer},
+	}, -1)
+
+	if !strings.Contains(result.Content, "more matches omitted") {
+		t.Fatalf("missing line-limit marker: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, footer) {
+		t.Fatalf("notice footer was cut by the line limit: %q", result.Content)
+	}
+	if strings.Count(result.Content, footer) != 1 {
+		t.Fatalf("notice footer should appear exactly once: %q", result.Content)
+	}
+}
+
+func TestSummarizeToolResultDoesNotDuplicateSurvivingNotice(t *testing.T) {
+	// Six lines: the notice survives the 50-line limit on its own, so the
+	// containment check must not append a second copy.
+	footer := `no matches; query looks like a regex — retry with mode:"regex"`
+	content := strings.Repeat("match\n", 5) + footer
+	result := SummarizeToolResult("repo.search", registry.ToolResult{
+		Summary: "found 5",
+		Content: content,
+		Notice:  &registry.ToolNotice{Kind: registry.NoticeZeroMatchCoach, Text: footer},
+	}, 0)
+
+	if result.Content != content {
+		t.Fatalf("content changed when the notice already survived: %q", result.Content)
+	}
+	if strings.Count(result.Content, footer) != 1 {
+		t.Fatalf("notice footer duplicated: %q", result.Content)
+	}
+}
+
+func TestSummarizeToolResultNilNoticeUnchanged(t *testing.T) {
+	result := SummarizeToolResult("repo.search", registry.ToolResult{Summary: "found 60", Content: strings.Repeat("match\n", 60)}, 0)
+
+	lines := strings.Split(strings.TrimSpace(result.Content), "\n")
+	if len(lines) != 51 {
+		t.Fatalf("got %d lines, want 51", len(lines))
+	}
+	if !strings.Contains(result.Content, "more matches omitted") {
+		t.Fatalf("missing omission notice: %q", result.Content)
+	}
+
+	empty := SummarizeToolResult("repo.search", registry.ToolResult{
+		Summary: "found 60",
+		Content: strings.Repeat("match\n", 60),
+		Notice:  &registry.ToolNotice{Kind: registry.NoticeCappedResults, Text: ""},
+	}, 0)
+	if empty.Content != result.Content {
+		t.Fatalf("empty notice text must behave like a nil notice:\n got %q\nwant %q", empty.Content, result.Content)
+	}
+}
+
+func TestSummarizeToolResultNoticeSurvivesCharCap(t *testing.T) {
+	// file.read applies no line limit, so the notice path here exercises the
+	// char cap: the footer must be appended after it and not clipped.
+	footer := `output truncated at 100 bytes; re-issue with a narrower start_line/end_line`
+	result := SummarizeToolResult("file.read", registry.ToolResult{
+		Summary: "read ok",
+		Content: strings.Repeat("x", 500),
+		Notice:  &registry.ToolNotice{Kind: registry.NoticeOversizeFallback, Text: footer},
+	}, 100)
+
+	if !strings.HasSuffix(result.Content, footer) {
+		t.Fatalf("notice must be the final line and not clipped: %q", result.Content)
+	}
+}
+
 func TestSummarizeToolResultLeavesSmallResultsUnchanged(t *testing.T) {
 	result := SummarizeToolResult("file.read", registry.ToolResult{Summary: "ok", Content: "hello"}, 0)
 	if result.Content != "hello" {

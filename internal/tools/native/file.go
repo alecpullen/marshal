@@ -1,15 +1,19 @@
 package native
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/patch"
@@ -20,6 +24,57 @@ import (
 // It is intentionally larger than the per-tool output limit so the model can
 // page through big files a screen at a time.
 const maxPageableFileBytes = 10 * 1024 * 1024 // 10 MiB
+
+// Head-fallback budget for file.read when a file exceeds the per-tool size
+// limit: show at most this many lines or bytes, whichever comes first.
+const (
+	oversizedHeadMaxLines = 50
+	oversizedHeadMaxBytes = 32 * 1024
+)
+
+// maxLineChars is the per-line clip applied to file.read output so a single
+// minified or generated line cannot dominate the context window.
+const maxLineChars = 1500
+
+// errFileTooLarge marks the "file exceeds the read budget" condition so
+// file.read can substitute a head fallback instead of failing outright.
+var errFileTooLarge = errors.New("file too large")
+
+// clipLines truncates any single line longer than maxLineChars runes,
+// appending an elision marker. The cut is rune-safe (a multi-byte UTF-8 rune
+// is never split) and the reported elision count is in runes, matching the
+// "chars" in the marker. Returns the clipped text and whether any line was
+// cut.
+func clipLines(s string) (string, bool) {
+	lines := strings.Split(s, "\n")
+	clipped := false
+	for i, ln := range lines {
+		if runes := utf8.RuneCountInString(ln); runes > maxLineChars {
+			cut := runeCutIndex(ln, maxLineChars)
+			lines[i] = ln[:cut] + " … [" + strconv.Itoa(runes-maxLineChars) + " more chars]"
+			clipped = true
+		}
+	}
+	return strings.Join(lines, "\n"), clipped
+}
+
+// runeCutIndex returns the byte offset in s at which a cut keeps exactly n
+// runes without splitting a multi-byte rune. It returns len(s) when s holds n
+// or fewer runes. Only the prefix up to the cut is scanned, so a very long
+// line is never converted to []rune just to be clipped.
+func runeCutIndex(s string, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return i
+		}
+		count++
+	}
+	return len(s)
+}
 
 // readPathBaseDescription is the path schema base text for the read
 // tools; kept short — schema descriptions are prompt budget.
@@ -34,7 +89,7 @@ type fileReadArgs struct {
 func (t *toolSet) fileReadTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.read",
-		Description: "Read a workspace file. For large files, use start_line and end_line (1-based, inclusive) to page through content instead of reading the whole file at once.",
+		Description: "Read a workspace file. If the file exceeds the size limit I show the head and how to continue (file.read start_line / file.page / repo.search kind). Lines are clipped at 1500 chars; ranged reads over the byte budget are truncated with a footer. Use start_line/end_line (1-based, inclusive) to page.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
 			t.pathDescription(readPathBaseDescription) +
 			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
@@ -54,18 +109,298 @@ func (t *toolSet) fileReadTool() registry.Tool {
 
 		data, err := t.readWorkspaceFile(args.Path, int64(t.maxOutputBytes))
 		if err != nil {
+			if errors.Is(err, errFileTooLarge) {
+				// A ranged read of an oversized file streams the requested
+				// window; only an unbounded read falls back to the head. This
+				// is what makes the head fallback's advertised continuation
+				// (file.read start_line=N+1) actually advance.
+				if args.StartLine > 0 || args.EndLine > 0 {
+					return t.fileReadOversizedRange(args.Path, args.StartLine, args.EndLine)
+				}
+				return t.fileReadOversizedHead(args.Path)
+			}
 			return registry.ToolResult{}, err
 		}
 
 		content, start, end := selectLines(string(data), args.StartLine, args.EndLine)
+		content, _ = clipLines(content)
+		preLimit := len(content)
 		content = limitOutput(content, t.maxOutputBytes)
 
-		return registry.ToolResult{
+		result := registry.ToolResult{
 			Summary: fmt.Sprintf("read %s lines %d-%d", args.Path, start, end),
 			Content: content,
-		}, nil
+		}
+		// Detect truncation by comparing the content length around
+		// limitOutput rather than testing for the marker suffix: a file whose
+		// own content ends with the literal marker would otherwise look
+		// truncated when it was not.
+		t.applySliceTruncationFooter(&result, preLimit, len(content))
+		return result, nil
 	}
 	return tool
+}
+
+// applySliceTruncationFooter appends the output-budget truncation footer and
+// attaches the matching NoticeSliceTruncated notice when limitOutput cut the
+// content. Truncation is detected by comparing the content length before and
+// after limiting (not by testing for the marker suffix, which a file's own
+// content could contain), so the footer is appended exactly once and never on
+// a false positive. It returns whether truncation occurred.
+func (t *toolSet) applySliceTruncationFooter(result *registry.ToolResult, before, after int) bool {
+	if before == after {
+		return false
+	}
+	footer := fmt.Sprintf("output truncated at %d bytes; re-issue with a narrower start_line/end_line", t.maxOutputBytes)
+	result.Content += "\n" + footer
+	result.Notice = &registry.ToolNotice{
+		Kind: registry.NoticeSliceTruncated,
+		Text: footer,
+		Data: map[string]any{"limit_bytes": t.maxOutputBytes},
+	}
+	return true
+}
+
+// fileReadOversizedHead is the fallback for a file that exceeds the read
+// budget: instead of failing, it shows the head of the file (at most
+// oversizedHeadMaxLines lines or oversizedHeadMaxBytes bytes) plus a footer
+// telling the model how to continue. Total line and byte counts are streamed
+// so a huge file is never slurped into memory.
+func (t *toolSet) fileReadOversizedHead(requestedPath string) (registry.ToolResult, error) {
+	path, err := t.resolveToolPath(requestedPath, true)
+	if err != nil {
+		return registry.ToolResult{}, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return registry.ToolResult{}, fmt.Errorf("read %s: %w", requestedPath, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return registry.ToolResult{}, fmt.Errorf("stat %s: %w", requestedPath, err)
+	}
+	totalBytes := info.Size()
+
+	reader := bufio.NewReader(f)
+	var head []string
+	headBytes := 0
+	totalLines := 0
+	for {
+		line, readErr := reader.ReadString('\n')
+		if len(line) > 0 {
+			totalLines++
+			if len(head) < oversizedHeadMaxLines && headBytes < oversizedHeadMaxBytes {
+				segment := strings.TrimRight(line, "\r\n")
+				if remaining := oversizedHeadMaxBytes - headBytes; len(segment) > remaining {
+					segment = segment[:remaining]
+				}
+				head = append(head, segment)
+				headBytes += len(segment)
+			}
+		}
+		if readErr != nil {
+			// io.EOF is the normal end of the file; anything else is a real
+			// read failure that would otherwise be swallowed and silently
+			// under-report total_lines/total_bytes.
+			if !errors.Is(readErr, io.EOF) {
+				return registry.ToolResult{}, fmt.Errorf("read %s: %w", requestedPath, readErr)
+			}
+			break
+		}
+	}
+
+	shown := len(head)
+	headText, _ := clipLines(strings.Join(head, "\n"))
+	headText = limitOutput(headText, t.maxOutputBytes)
+
+	footer := fmt.Sprintf("showing lines 1-%d of %d (%d bytes); continue with file.read start_line=%d, page with file.page, or narrow with repo.search kind:...",
+		shown, totalLines, totalBytes, shown+1)
+
+	content := footer
+	if headText != "" {
+		content = headText + "\n" + footer
+	}
+
+	if t.fileTracker != nil {
+		_ = t.fileTracker.RecordRead(path, time.Now())
+	}
+
+	return registry.ToolResult{
+		Summary: fmt.Sprintf("read %s lines 1-%d of %d (oversized head fallback)", requestedPath, shown, totalLines),
+		Content: content,
+		Notice: &registry.ToolNotice{
+			Kind: registry.NoticeOversizeFallback,
+			Text: footer,
+			Data: map[string]any{
+				"total_lines": totalLines,
+				"total_bytes": totalBytes,
+				"shown_lines": shown,
+			},
+		},
+	}, nil
+}
+
+// fileReadOversizedRange is the fallback for an oversized file when the caller
+// supplied start_line/end_line: it streams the requested window instead of
+// repeating the head. The file is never slurped — lines are read one at a
+// time, lines before the window are skipped, and capturing stops once the
+// output byte budget is spent (the remaining lines are only counted, so the
+// footer's total stays accurate). Clamping mirrors selectLines: start<=0 → 1,
+// end<=0 → EOF, end past EOF → clamp, start past EOF → empty window.
+func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLine int) (registry.ToolResult, error) {
+	path, err := t.resolveToolPath(requestedPath, true)
+	if err != nil {
+		return registry.ToolResult{}, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return registry.ToolResult{}, fmt.Errorf("read %s: %w", requestedPath, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return registry.ToolResult{}, fmt.Errorf("stat %s: %w", requestedPath, err)
+	}
+	totalBytes := info.Size()
+
+	if startLine <= 0 {
+		startLine = 1
+	}
+	budget := t.maxOutputBytes
+
+	reader := bufio.NewReader(f)
+	var window []string
+	windowBytes := 0
+	budgetExhausted := false
+	totalLines := 0
+	fileEndsWithNewline := false
+	for {
+		line, readErr := reader.ReadString('\n')
+		if len(line) > 0 {
+			totalLines++
+			fileEndsWithNewline = strings.HasSuffix(line, "\n")
+			inWindow := totalLines >= startLine && (endLine <= 0 || totalLines <= endLine)
+			if inWindow && !budgetExhausted {
+				// Strip only the '\n' ReadString included. selectLines
+				// splits on '\n' and keeps a trailing '\r', so a CRLF file
+				// must read the same above and below the size limit.
+				segment := strings.TrimSuffix(line, "\n")
+				window = append(window, segment)
+				windowBytes += len(segment) + 1
+				if budget > 0 && windowBytes > budget {
+					// Budget spent: stop capturing, but keep counting lines
+					// below so the footer's total is accurate.
+					budgetExhausted = true
+				}
+			}
+		}
+		if readErr != nil {
+			// io.EOF is the normal end of the file; anything else is a real
+			// read failure that must surface rather than silently truncate
+			// the reported totals.
+			if !errors.Is(readErr, io.EOF) {
+				return registry.ToolResult{}, fmt.Errorf("read %s: %w", requestedPath, readErr)
+			}
+			break
+		}
+	}
+
+	// Record the read exactly as the head path does: file.write_patch's
+	// freshness guard depends on it.
+	if t.fileTracker != nil {
+		_ = t.fileTracker.RecordRead(path, time.Now())
+	}
+
+	// A start past the end of the file is an empty window, not an error —
+	// mirroring selectLines' in-budget behavior.
+	if startLine > totalLines {
+		return registry.ToolResult{
+			Summary: fmt.Sprintf("read %s: requested start_line %d is past the end of the file (%d lines)", requestedPath, startLine, totalLines),
+			Content: "",
+		}, nil
+	}
+
+	clampedEnd := endLine
+	if clampedEnd <= 0 || clampedEnd > totalLines {
+		clampedEnd = totalLines
+	}
+
+	body := strings.Join(window, "\n")
+	if !budgetExhausted && clampedEnd == totalLines && fileEndsWithNewline {
+		// Mirror selectLines: a window that runs to the end of a
+		// newline-terminated file keeps the trailing newline.
+		body += "\n"
+	}
+	body, _ = clipLines(body)
+	limited := limitOutput(body, budget)
+
+	// The advertised window must describe what was actually emitted, not what
+	// was captured. limitOutput cuts the body at exactly `budget` bytes (its
+	// marker is appended after the cut), so when a cut happens the emitted
+	// prefix is body[:budget] and the line the cut lands in is shown only in
+	// part. Counting that line as fully shown would send a caller following the
+	// "start_line=shownEnd+1" advice past bytes that were never emitted.
+	//
+	// A line clipped by clipLines counts as shown: the elision marker states
+	// explicitly how much was cut, re-reading yields the same clipped text, and
+	// treating it as unshown would stall the continuation on one over-long line
+	// forever.
+	shownStart := startLine
+	shownLines := len(window)
+	if budget > 0 && len(body) > budget {
+		shownLines = strings.Count(body[:budget], "\n")
+	}
+	// shownEnd is the last FULLY shown line. It falls below shownStart when the
+	// window's first line alone exceeds the whole output budget: that line is
+	// emitted partially and the rest of it is not reachable with file.read, so
+	// the footer says so instead of advertising a continuation that would skip
+	// it.
+	shownEnd := shownStart + shownLines - 1
+
+	var windowFooter string
+	if shownEnd < shownStart {
+		windowFooter = fmt.Sprintf("showing line %d of %d (%d bytes) truncated: a single line is longer than the %d-byte output budget; the rest of that line is not reachable with file.read — extract a byte range with shell.run (e.g. tail -c +N), or narrow with repo.search",
+			shownStart, totalLines, totalBytes, budget)
+	} else {
+		windowFooter = fmt.Sprintf("showing lines %d-%d of %d (%d bytes); continue with file.read start_line=%d, page with file.page, or narrow with repo.search kind:...",
+			shownStart, shownEnd, totalLines, totalBytes, shownEnd+1)
+	}
+
+	summary := fmt.Sprintf("read %s lines %d-%d of %d (oversized ranged read)", requestedPath, shownStart, shownEnd, totalLines)
+	if shownEnd < shownStart {
+		summary = fmt.Sprintf("read %s: line %d of %d is longer than the %d-byte output budget (oversized ranged read)",
+			requestedPath, shownStart, totalLines, budget)
+	}
+
+	result := registry.ToolResult{
+		Summary: summary,
+		Content: limited + "\n" + windowFooter,
+	}
+	windowData := map[string]any{
+		"start_line":  shownStart,
+		"end_line":    shownEnd,
+		"shown_lines": shownLines,
+		"total_lines": totalLines,
+		"total_bytes": totalBytes,
+	}
+	if t.applySliceTruncationFooter(&result, len(body), len(limited)) {
+		// The window was cut by the byte budget as well as being oversized.
+		// The slice-truncation notice wins (it is what the in-budget path
+		// emits) and carries the window fields too.
+		for k, v := range windowData {
+			result.Notice.Data[k] = v
+		}
+	} else {
+		result.Notice = &registry.ToolNotice{
+			Kind: registry.NoticeOversizeFallback,
+			Text: windowFooter,
+			Data: windowData,
+		}
+	}
+	return result, nil
 }
 
 func (t *toolSet) filePageTool() registry.Tool {
@@ -165,8 +500,8 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 		return nil, fmt.Errorf("stat %s after open: %w", requestedPath, err)
 	}
 	if info2.Size() > maxBytes+1 {
-		return nil, fmt.Errorf("%s is too large to read (%d bytes; limit %d)",
-			requestedPath, info2.Size(), maxBytes)
+		return nil, fmt.Errorf("%w: %s is too large to read (%d bytes; limit %d)",
+			errFileTooLarge, requestedPath, info2.Size(), maxBytes)
 	}
 
 	cap := maxBytes + 1

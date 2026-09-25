@@ -58,6 +58,7 @@ var migrationColumns = []columnAdd{
 	{"tool_calls", "sandbox_enabled", "INTEGER NOT NULL DEFAULT 0"},
 	{"tool_calls", "resource_limits", "INTEGER NOT NULL DEFAULT 0"},
 	{"tool_calls", "output_truncated", "INTEGER NOT NULL DEFAULT 0"},
+	{"tool_calls", "notice_json", "TEXT"},
 	{"files", "summary", "TEXT"},
 	{"messages", "content_type", "TEXT"},
 	{"messages", "reasoning", "TEXT"},

@@ -141,3 +141,90 @@ func TestNewAuditEventCopiesFilesChangedSlice(t *testing.T) {
 		t.Fatalf("Error = %q, want empty", event.Error)
 	}
 }
+
+func TestNewAuditEventCopiesNotice(t *testing.T) {
+	now := time.Unix(123, 0)
+	tests := []struct {
+		name   string
+		notice *ToolNotice
+	}{
+		{
+			name: "nil notice stays nil",
+		},
+		{
+			name: "notice with data",
+			notice: &ToolNotice{
+				Kind: NoticeOversizeFallback,
+				Text: "showed head of oversized file",
+				Data: map[string]any{"path": "big.go", "bytes": float64(9000001)},
+			},
+		},
+		{
+			name:   "notice without data",
+			notice: &ToolNotice{Kind: NoticeCappedResults, Text: "capped at 50"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ToolResult{Summary: "read big.go", Notice: tt.notice}
+
+			event := NewAuditEvent(now, testTool("file.read"), ToolCall{Name: "file.read"}, result, ApprovalNotRequired, nil)
+
+			if tt.notice == nil {
+				if event.Notice != nil {
+					t.Fatalf("Notice = %#v, want nil", event.Notice)
+				}
+				return
+			}
+			if event.Notice == nil {
+				t.Fatal("Notice = nil, want copy")
+			}
+			if event.Notice.Kind != tt.notice.Kind {
+				t.Fatalf("Notice.Kind = %q, want %q", event.Notice.Kind, tt.notice.Kind)
+			}
+			if event.Notice.Text != tt.notice.Text {
+				t.Fatalf("Notice.Text = %q, want %q", event.Notice.Text, tt.notice.Text)
+			}
+			if len(event.Notice.Data) != len(tt.notice.Data) {
+				t.Fatalf("Notice.Data = %#v, want %#v", event.Notice.Data, tt.notice.Data)
+			}
+			for k, v := range tt.notice.Data {
+				if event.Notice.Data[k] != v {
+					t.Fatalf("Notice.Data[%q] = %#v, want %#v", k, event.Notice.Data[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestNewAuditEventNoticeIsIndependentCopy(t *testing.T) {
+	now := time.Unix(123, 0)
+	notice := &ToolNotice{
+		Kind: NoticeZeroMatchCoach,
+		Text: "no matches for pattern",
+		Data: map[string]any{"query": "foo"},
+	}
+	result := ToolResult{Summary: "searched", Notice: notice}
+
+	event := NewAuditEvent(now, testTool("repo.search"), ToolCall{Name: "repo.search"}, result, ApprovalNotRequired, nil)
+
+	// Mutate the source notice and its Data map after the event is built.
+	notice.Kind = "mutated"
+	notice.Text = "mutated"
+	notice.Data["query"] = "mutated"
+	notice.Data["added"] = true
+
+	if event.Notice == nil {
+		t.Fatal("Notice = nil, want copy")
+	}
+	if event.Notice.Kind != NoticeZeroMatchCoach {
+		t.Fatalf("Notice.Kind = %q, want %q", event.Notice.Kind, NoticeZeroMatchCoach)
+	}
+	if event.Notice.Text != "no matches for pattern" {
+		t.Fatalf("Notice.Text = %q, want unchanged", event.Notice.Text)
+	}
+	if len(event.Notice.Data) != 1 || event.Notice.Data["query"] != "foo" {
+		t.Fatalf("Notice.Data = %#v, want independent copy", event.Notice.Data)
+	}
+}

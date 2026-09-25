@@ -80,12 +80,17 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		rewritten = 1
 	}
 
+	noticeJSON, err := encodeNotice(event.Notice)
+	if err != nil {
+		return fmt.Errorf("marshal tool notice: %w", err)
+	}
+
 	_, err = db.sqlDB.Exec(
 		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
 		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json,
 		                          original_args_json, rewritten,
-		                          sandbox_enabled, resource_limits, output_truncated, finish_reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                          sandbox_enabled, resource_limits, output_truncated, finish_reason, notice_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		event.AgentRole,
 		event.Model,
@@ -110,6 +115,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		boolToInt(event.Sandbox.ResourceLimits),
 		boolToInt(event.Sandbox.OutputTruncated),
 		event.FinishReason,
+		noticeJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("save tool call: %w", err)
@@ -137,13 +143,41 @@ type sandboxLimitsBlob struct {
 	KilledReason       *string `json:"killed_reason"`
 }
 
+// encodeNotice marshals a tool notice for the notice_json column. A nil notice
+// returns a nil value so the column stores SQL NULL rather than an empty string
+// or the literal "null" — a consumer must be able to tell "no notice" apart
+// from "a notice with no fields".
+func encodeNotice(n *registry.ToolNotice) (any, error) {
+	if n == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(n)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+// decodeNotice reverses encodeNotice. A NULL or empty column yields a nil
+// notice, so a pre-migration row reads back exactly as it was written.
+func decodeNotice(v sql.NullString) (*registry.ToolNotice, error) {
+	if !v.Valid || v.String == "" {
+		return nil, nil
+	}
+	var n registry.ToolNotice
+	if err := json.Unmarshal([]byte(v.String), &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
 // GetToolCalls returns all audit events for a session in chronological order.
 func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
 		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json,
 		        original_args_json, rewritten,
-		        sandbox_enabled, resource_limits, output_truncated
+		        sandbox_enabled, resource_limits, output_truncated, notice_json
 		 FROM tool_calls
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -175,8 +209,9 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		var sbEnabled sql.NullInt64
 		var rl sql.NullInt64
 		var ot sql.NullInt64
+		var noticeJSON sql.NullString
 		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &errorString, &created,
-			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON, &origArgs, &rewritten, &sbEnabled, &rl, &ot); err != nil {
+			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON, &origArgs, &rewritten, &sbEnabled, &rl, &ot, &noticeJSON); err != nil {
 			return nil, fmt.Errorf("scan tool call row: %w", err)
 		}
 		e.Args = []byte(args)
@@ -236,6 +271,11 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		if rewritten.Valid {
 			e.Rewritten = rewritten.Int64 == 1
 		}
+		notice, err := decodeNotice(noticeJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode tool notice: %w", err)
+		}
+		e.Notice = notice
 		if sbLimits.Valid && sbLimits.String != "" {
 			// Parse the JSON blob the SandboxMeta.LimitsJSON writer
 			// produced on Save. Backend/NetworkIsolated/KilledReason/

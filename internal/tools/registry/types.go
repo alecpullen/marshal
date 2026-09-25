@@ -69,6 +69,22 @@ type SymbolRef struct {
 	Resolved bool
 }
 
+// ToolNotice is a structured, machine-readable companion to a tool result's
+// human-readable footer. Kind is a stable string so consumers can switch on
+// it without parsing Text.
+type ToolNotice struct {
+	Kind string         `json:"kind"`
+	Text string         `json:"text"`
+	Data map[string]any `json:"data,omitempty"`
+}
+
+const (
+	NoticeOversizeFallback = "oversize_fallback"
+	NoticeSliceTruncated   = "slice_truncated"
+	NoticeZeroMatchCoach   = "zero_match_coach"
+	NoticeCappedResults    = "capped_results"
+)
+
 type ToolResult struct {
 	Summary         string
 	Content         string
@@ -76,6 +92,12 @@ type ToolResult struct {
 	FilesChanged    []string
 	CommandExitCode *int
 	Sandbox         SandboxMeta
+	// Notice carries optional machine-readable guidance about a soft-failure
+	// or fallback the tool applied (e.g. oversized-file head fallback,
+	// zero-match coaching, capped results). Nil on the happy path. The Text
+	// mirrors whatever human-readable footer was appended to Content; Data
+	// holds kind-specific structured facts so consumers do not parse prose.
+	Notice *ToolNotice
 	// Symbols are the symbols this call touched, when the tool and the
 	// file's language support attribution. Always safe to be empty.
 	Symbols []SymbolRef

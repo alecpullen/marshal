@@ -115,7 +115,7 @@ Tool results from earlier in the conversation are in the transcript and context 
 	if workingDir != "" {
 		b.WriteString("\n\nThe workspace root is ")
 		b.WriteString(workingDir)
-		b.WriteString(". Relative paths in tool arguments are resolved from this directory, and shell.run executes with this directory as its cwd.")
+		b.WriteString(". Relative paths in tool arguments are resolved from this directory, and shell.run executes with this directory as its cwd. Paths passed to file.* and shell.run resolve from the current worktree root; do not prefix with .marshal/worktrees/<branch>/ yourself.")
 	}
 	return b.String()
 }

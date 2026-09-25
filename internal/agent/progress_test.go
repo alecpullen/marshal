@@ -28,6 +28,46 @@ func TestDifferentOutputIsNotARepeat(t *testing.T) {
 	}
 }
 
+func TestFailedRepeatsIgnoreResultHash(t *testing.T) {
+	tr := newProgressTracker()
+	args := `{"patch":"p"}`
+	// Same args, different error detail each time (e.g. a differing
+	// nearest-region hint): a failure ignores the result hash, so these are
+	// one repeated futile call, not three distinct ones.
+	for i, out := range []string{"error A", "error B", "error C"} {
+		got := tr.record("file.write_patch", args, hashToolResult(out), false)
+		if want := i + 1; got != want {
+			t.Fatalf("failure record %d count = %d, want %d", i+1, got, want)
+		}
+		if streak := tr.failedStreak("file.write_patch", args); streak != i+1 {
+			t.Fatalf("failedStreak after %d failures = %d, want %d", i+1, streak, i+1)
+		}
+	}
+}
+
+func TestSuccessStillKeysOnResultHash(t *testing.T) {
+	tr := newProgressTracker()
+	tr.record("shell.run", `{"command":"go test"}`, hashToolResult("FAIL: TestX"), true)
+	got := tr.record("shell.run", `{"command":"go test"}`, hashToolResult("ok"), true)
+	if got != 1 {
+		t.Fatalf("same call with different output counted as repeat: count = %d, want 1", got)
+	}
+}
+
+func TestFailedStreakResets(t *testing.T) {
+	tr := newProgressTracker()
+	args := `{"patch":"p"}`
+	tr.record("file.write_patch", args, hashToolResult("error A"), false)
+	tr.record("file.write_patch", args, hashToolResult("error B"), false)
+	if streak := tr.failedStreak("file.write_patch", args); streak != 2 {
+		t.Fatalf("failedStreak before success = %d, want 2", streak)
+	}
+	tr.record("file.write_patch", args, hashToolResult("applied"), true)
+	if streak := tr.failedStreak("file.write_patch", args); streak != 0 {
+		t.Fatalf("failedStreak after success = %d, want 0", streak)
+	}
+}
+
 func TestMutatingCallResetsRepeatCounts(t *testing.T) {
 	tr := newProgressTracker()
 	h := hashToolResult("x")

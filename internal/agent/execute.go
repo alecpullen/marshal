@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +15,8 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/hooks"
 	"marshal/internal/llm/schema"
+	"marshal/internal/pathutil"
+	"marshal/internal/tools/patch"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -32,6 +36,83 @@ func parseToolArgs(args json.RawMessage) (map[string]interface{}, json.RawMessag
 		return nil, nil, fmt.Errorf("failed to normalize arguments")
 	}
 	return argsMap, normalizedArgs, nil
+}
+
+// failedPatchRegionHint returns a bounded "current on-disk content near the
+// target" block for a failed file.write_patch whose first SEARCH block was not
+// found. It reuses the same nearest-region logic the patch tool itself uses
+// (patch.NearestRegion + NearestRegionWindowSize), so the model is shown the
+// exact bytes it needs rather than a fresh coaching line. Any failure to
+// parse, resolve, read, or match returns "" — a diagnostic aid must never turn
+// into a new error.
+func failedPatchRegionHint(r *Runner, args json.RawMessage, execErr error) string {
+	if execErr == nil {
+		return ""
+	}
+	errText := execErr.Error()
+	if !strings.Contains(errText, "search block not found") && !strings.Contains(errText, "near-match found") {
+		return ""
+	}
+	if len(args) == 0 {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(args, &m); err != nil {
+		return ""
+	}
+	patchText, ok := m["patch"].(string)
+	if !ok || patchText == "" {
+		return ""
+	}
+	patches, err := patch.Parse(patchText)
+	if err != nil || len(patches) == 0 {
+		return ""
+	}
+	fp := patches[0]
+	if len(fp.Chunks) == 0 || fp.Chunks[0].Search == "" {
+		return ""
+	}
+	chunk := fp.Chunks[0]
+
+	var path string
+	if r.State.SystemAccess() && filepath.IsAbs(fp.Path) {
+		abs, err := filepath.Abs(fp.Path)
+		if err != nil {
+			return ""
+		}
+		path = filepath.Clean(abs)
+	} else {
+		resolved, err := pathutil.SafeWorkspacePath(r.State.WorkingDir, fp.Path)
+		if err != nil {
+			return ""
+		}
+		path = resolved
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	region := patch.NearestRegion(string(data), chunk.Search, patch.NearestRegionWindowSize(chunk.Search))
+	if region == "" {
+		return ""
+	}
+	region = boundRegionLines(region, maxInjectedRegionLines)
+	return "\n\ncurrent on-disk content near the target:\n" + region
+}
+
+// maxInjectedRegionLines caps the forced region injection so a pathological
+// search block cannot flood the transcript.
+const maxInjectedRegionLines = 300
+
+// boundRegionLines truncates region to maxLines, appending a note describing
+// how many lines were dropped.
+func boundRegionLines(region string, maxLines int) string {
+	lines := strings.Split(region, "\n")
+	if len(lines) <= maxLines {
+		return region
+	}
+	return strings.Join(lines[:maxLines], "\n") +
+		fmt.Sprintf("\n... %d more lines omitted", len(lines)-maxLines)
 }
 
 // runPreToolUseHook runs the configured pre_tool_use hooks for toolName.
@@ -396,6 +477,13 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
 		if tier >= failedRepeatNudge {
 			msg.Content += fmt.Sprintf("\n\nthis identical call already failed %d times; re-read the target and retry with exact bytes from disk.", streak)
+		}
+		// Forced region injection (tier 3+): on the third identical-args
+		// file.write_patch failure, stop coaching and show the model the true
+		// on-disk bytes near the target. Purely additive diagnostic text — it
+		// never changes control flow, the returned messages, or the error.
+		if toolName == "file.write_patch" && tier >= failedRepeatInject {
+			msg.Content += failedPatchRegionHint(r, args, execErr)
 		}
 		return []schema.ChatMessage{msg}, nil
 	}

@@ -9,10 +9,21 @@ import (
 	"marshal/internal/app/config"
 )
 
+// seedDocsArchivePath is symlinked into every worktree so subagents
+// can read specs/plans the parent authored there. Mode is symlink so
+// reads/writes on either side stay in sync.
+const seedDocsArchivePath = ".docs-archive"
+
 // SeedIntoWorktree seeds cfg.Seed entries from srcRoot (the project
 // checkout) into dstRoot (a fresh worktree). Seed entries exist for
 // git-ignored material a toolchain expects to find locally — node_modules,
 // caches, .env — which a fresh checkout lacks.
+//
+// In addition to cfg.Seed, an implicit .docs-archive entry is always
+// attempted: it is symlinked into the worktree by default so subagents can
+// read specs/plans the parent authored in the checkout. It is skipped
+// silently when the checkout has no .docs-archive, and never clobbers a
+// destination that already exists.
 //
 // Every failure is returned as a warning, never an error: a worktree with
 // a missing node_modules symlink is still usable, and seeding must never
@@ -20,7 +31,12 @@ import (
 // legitimately skipped.
 func SeedIntoWorktree(cfg config.WorktreeConfig, git GitOps, srcRoot, dstRoot string) []string {
 	var warnings []string
-	for _, entry := range cfg.Seed {
+	// Prepend implicit entries, then per-config entries. Guards below
+	// (skip on missing, skip on tracked, no clobber) keep this safe.
+	seeds := append([]config.WorktreeSeed{
+		{Path: seedDocsArchivePath, Mode: "symlink"},
+	}, cfg.Seed...)
+	for _, entry := range seeds {
 		p := entry.Path
 		// A seed entry is a path inside the repo. Absolute paths and ..
 		// escapes would read or link outside the checkout — refuse them.

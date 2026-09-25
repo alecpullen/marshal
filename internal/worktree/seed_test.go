@@ -158,6 +158,92 @@ func TestSeedCheckIgnoreErrorBecomesWarning(t *testing.T) {
 	}
 }
 
+func TestSeedDocsArchiveSymlinked(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeSeedFile(t, src, ".docs-archive/plan.md", "# plan\n")
+	g := NewFakeGitOps()
+	g.CheckIgnoreFunc = func(dir, path string) (bool, error) { return true, nil }
+
+	warnings := SeedIntoWorktree(config.WorktreeConfig{}, g, src, dst)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	link := filepath.Join(dst, ".docs-archive")
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf(".docs-archive is %v, want a symlink", info.Mode())
+	}
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatalf("evalsymlinks: %v", err)
+	}
+	if want, err := filepath.EvalSymlinks(filepath.Join(src, ".docs-archive")); err != nil || resolved != want {
+		t.Fatalf("link resolves to %q, want %q (err=%v)", resolved, want, err)
+	}
+}
+
+func TestSeedDocsArchiveSkippedWhenSourceMissing(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	g := NewFakeGitOps()
+	g.CheckIgnoreFunc = func(dir, path string) (bool, error) { return true, nil }
+
+	warnings := SeedIntoWorktree(config.WorktreeConfig{}, g, src, dst)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none for a missing .docs-archive", warnings)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, ".docs-archive")); !os.IsNotExist(err) {
+		t.Fatalf(".docs-archive was created anyway: %v", err)
+	}
+}
+
+func TestSeedDocsArchiveNoClobber(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeSeedFile(t, src, ".docs-archive/plan.md", "# plan\n")
+	writeSeedFile(t, dst, ".docs-archive/existing.md", "existing\n")
+	g := NewFakeGitOps()
+	g.CheckIgnoreFunc = func(dir, path string) (bool, error) { return true, nil }
+
+	warnings := SeedIntoWorktree(config.WorktreeConfig{}, g, src, dst)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], ".docs-archive") {
+		t.Fatalf("warnings = %v, want one .docs-archive warning", warnings)
+	}
+	info, err := os.Lstat(filepath.Join(dst, ".docs-archive"))
+	if err != nil {
+		t.Fatalf("lstat destination: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("existing destination replaced with a symlink: %v", info.Mode())
+	}
+	if !info.IsDir() {
+		t.Fatalf("existing destination is %v, want a real directory", info.Mode())
+	}
+	if got := readSeedFile(t, dst, ".docs-archive/existing.md"); got != "existing\n" {
+		t.Fatalf("existing destination was modified: %q", got)
+	}
+}
+
+func TestSeedDocsArchiveSkippedWhenTracked(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeSeedFile(t, src, ".docs-archive/plan.md", "# plan\n")
+	g := NewFakeGitOps()
+	g.CheckIgnoreFunc = func(dir, path string) (bool, error) { return false, nil }
+
+	warnings := SeedIntoWorktree(config.WorktreeConfig{}, g, src, dst)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "git-tracked") {
+		t.Fatalf("warnings = %v, want one git-tracked warning", warnings)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, ".docs-archive")); !os.IsNotExist(err) {
+		t.Fatalf("tracked .docs-archive was seeded anyway: %v", err)
+	}
+}
+
 func writeSeedFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)

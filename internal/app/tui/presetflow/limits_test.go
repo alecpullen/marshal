@@ -104,3 +104,49 @@ func TestWithProbedOverridesKnownContext(t *testing.T) {
 		t.Errorf("ContextWindow=%d Source=%q, want 65536/probed", got.ContextWindow, got.ContextSource)
 	}
 }
+
+func TestWithProbedOverridesFetchedContext(t *testing.T) {
+	lim := Limits{ContextWindow: 32768, ContextSource: SourceFetched}
+	got := lim.WithProbed(nil, 65536)
+	if got.ContextWindow != 65536 || got.ContextSource != SourceProbed {
+		t.Errorf("ContextWindow=%d Source=%q, want 65536/probed", got.ContextWindow, got.ContextSource)
+	}
+}
+
+// A probed context window is the model file's training ceiling, not the
+// user's configured budget. A saved-preset figure is a deliberate choice
+// and must survive re-probing /connect — otherwise /connect silently
+// resets the user's saved limits every time they re-pick a model.
+func TestWithProbedPreservesPresetContext(t *testing.T) {
+	lim := Limits{ContextWindow: 200000, ContextSource: SourcePreset}
+	got := lim.WithProbed(nil, 40960)
+	if got.ContextWindow != 200000 || got.ContextSource != SourcePreset {
+		t.Errorf("ContextWindow=%d Source=%q, want unchanged 200000/preset", got.ContextWindow, got.ContextSource)
+	}
+}
+
+// A value the user just typed into the confirm-limits screen (SourceEdited)
+// is even more authoritative than a saved preset: the probe resolving
+// asynchronously must not clobber an in-flight edit.
+func TestWithProbedPreservesEditedContext(t *testing.T) {
+	lim := Limits{ContextWindow: 131072, ContextSource: SourceEdited}
+	got := lim.WithProbed(nil, 40960)
+	if got.ContextWindow != 131072 || got.ContextSource != SourceEdited {
+		t.Errorf("ContextWindow=%d Source=%q, want unchanged 131072/edited", got.ContextWindow, got.ContextSource)
+	}
+}
+
+// ToolCalling has no user-configurable meaning independent of the probe,
+// so the probe stays authoritative even when the figure came from a saved
+// preset or an edit; only the context window is preserved.
+func TestWithProbedStillOverridesToolCallingOnPresetSource(t *testing.T) {
+	toolCalling := false
+	lim := Limits{ContextWindow: 200000, ContextSource: SourcePreset}
+	got := lim.WithProbed(&toolCalling, 40960)
+	if got.ToolCalling == nil || *got.ToolCalling || got.ToolSource != SourceProbed {
+		t.Errorf("ToolCalling=%v Source=%q, want false/probed", got.ToolCalling, got.ToolSource)
+	}
+	if got.ContextWindow != 200000 || got.ContextSource != SourcePreset {
+		t.Errorf("ContextWindow=%d Source=%q, want unchanged 200000/preset", got.ContextWindow, got.ContextSource)
+	}
+}

@@ -32,6 +32,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/llm/pricing"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -1376,6 +1377,29 @@ func TestRoutedProviderResolverPassesLimitCacheDir(t *testing.T) {
 	}
 	if models[0].ContextWindow != 128000 || models[0].MaxOutputTokens != 8192 {
 		t.Fatalf("model limits = %d/%d, want 128000/8192", models[0].ContextWindow, models[0].MaxOutputTokens)
+	}
+}
+
+// The resolver must thread the session's stable ID into OpenCode-compatible
+// providers as Options.SessionID so chat requests carry x-opencode-session
+// (required by OpenCode Zen; see provider package).
+func TestRoutedProviderResolverThreadsSessionID(t *testing.T) {
+	cfg := config.Config{
+		Providers: map[string]config.ProviderConfig{
+			"opencode-go": {Type: "openai_compatible", BaseURL: "https://opencode.ai/zen/go/v1"},
+		},
+	}
+	resolver := newRoutedProviderResolver(cfg, "").withSessionID("sess_thread_test")
+	p, err := resolver.providerFor(routing.Route{Preset: routing.ModelPreset{Provider: "opencode-go"}})
+	if err != nil {
+		t.Fatalf("providerFor: %v", err)
+	}
+	oc, ok := p.(*provider.OpenAICompatible)
+	if !ok {
+		t.Fatalf("providerFor returned %T, want *provider.OpenAICompatible", p)
+	}
+	if got := oc.SessionID(); got != "sess_thread_test" {
+		t.Fatalf("provider SessionID = %q, want %q", got, "sess_thread_test")
 	}
 }
 

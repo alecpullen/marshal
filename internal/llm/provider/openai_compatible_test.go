@@ -1392,3 +1392,121 @@ func TestChatRetriesOnEmbeddedStrictTemplateError(t *testing.T) {
 		t.Fatalf("retry should demote trailing system to user, got %q", requests[1][2].Role)
 	}
 }
+
+// OpenCode Zen's Go endpoint requires every chat request to carry a stable
+// per-conversation session ID (x-opencode-session) and a self-identifying
+// User-Agent; without them it rejects with HTTP 400 MissingSessionID.
+func TestChatSendsOpencodeSessionHeaders(t *testing.T) {
+	var gotSession, gotUA string
+	var sawSession bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// http.Header canonicalizes keys (X-Opencode-Session), so presence
+		// must be checked via Get, not direct map indexing.
+		gotSession = r.Header.Get("x-opencode-session")
+		sawSession = gotSession != ""
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{
+		Name:      "opencode-go",
+		BaseURL:   server.URL,
+		SessionID: "sess_123",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	events, err := p.Chat(t.Context(), chatReq(false))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	// Non-streaming responses emit Delta events then Done; drain to Done.
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+	}
+	if !sawSession || gotSession != "sess_123" {
+		t.Fatalf("x-opencode-session = %q (present=%v), want %q", gotSession, sawSession, "sess_123")
+	}
+	if !strings.HasPrefix(gotUA, "marshal/") {
+		t.Fatalf("User-Agent = %q, want a marshal/<version> self-identifying value", gotUA)
+	}
+}
+
+// The session headers are gated on opencode detection, not on whether a
+// session ID happens to be configured: a non-opencode provider with a
+// session ID must not leak opencode routing headers (or a custom UA).
+func TestChatOmitsOpencodeHeadersForOtherProviders(t *testing.T) {
+	var sawSession bool
+	var gotUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawSession = r.Header.Get("x-opencode-session") != ""
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{
+		Name:      "test",
+		BaseURL:   server.URL,
+		SessionID: "sess_123",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	events, err := p.Chat(t.Context(), chatReq(false))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+	}
+	if sawSession {
+		t.Fatal("x-opencode-session sent for a non-opencode provider; want gated")
+	}
+	if strings.HasPrefix(gotUA, "marshal/") {
+		t.Fatalf("User-Agent = %q for a non-opencode provider; want the default client UA", gotUA)
+	}
+}
+
+// isOpencode must recognize the provider by name (users may point the
+// template at a proxy) and by host (the connect flow lets users rename
+// the provider), without matching lookalike domains.
+func TestIsOpencodeDetection(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		{"opencode-go", "https://api.example.com/v1", true},
+		{"renamed-zen", "https://opencode.ai/zen/go/v1", true},
+		{"renamed-zen", "https://go.opencode.ai/v1", true},
+		{"test", "http://localhost:1234/v1", false},
+		{"lookalike", "https://opencode.ai.attacker.com/v1", false},
+	}
+	for _, tc := range cases {
+		p, err := NewOpenAICompatible(Options{Name: tc.name, BaseURL: tc.baseURL})
+		if err != nil {
+			t.Fatalf("NewOpenAICompatible(%q, %q): %v", tc.name, tc.baseURL, err)
+		}
+		if got := p.isOpencode(); got != tc.want {
+			t.Errorf("isOpencode(name=%q, baseURL=%q) = %v, want %v", tc.name, tc.baseURL, got, tc.want)
+		}
+	}
+}

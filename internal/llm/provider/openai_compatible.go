@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -41,6 +42,11 @@ type Options struct {
 	// ReasoningSummary requests reasoning summaries on the wire
 	// (reasoning.summary). Off by default.
 	ReasoningSummary bool
+	// SessionID is the stable per-conversation identifier sent as
+	// x-opencode-session on OpenCode Zen endpoints, which require it for
+	// efficient routing and prompt caching. Empty means no session
+	// identity; only opencode-detected providers send the header.
+	SessionID string
 }
 
 type OpenAICompatible struct {
@@ -51,6 +57,7 @@ type OpenAICompatible struct {
 	capabilities     schema.ProviderCapabilities
 	limitsTable      *limits.Table
 	reasoningSummary bool
+	sessionID        string
 }
 
 func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
@@ -76,6 +83,7 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 		capabilities:     caps,
 		limitsTable:      opts.LimitsTable,
 		reasoningSummary: opts.ReasoningSummary,
+		sessionID:        opts.SessionID,
 	}, nil
 }
 
@@ -97,9 +105,44 @@ func (p *OpenAICompatible) Capabilities(ctx context.Context) schema.ProviderCapa
 	return p.capabilities
 }
 
+
+// UserAgent is the User-Agent marshal's provider client identifies itself
+// with on OpenCode Zen endpoints, which ask clients to use their own name
+// and version rather than a generic HTTP-library default. cmd/marshal
+// stamps the release version at startup; local builds keep the dev
+// default.
+var UserAgent = "marshal/dev"
+
+// isOpencode reports whether this provider talks to OpenCode Zen, which
+// requires the x-opencode-session routing header on chat requests.
+// Detection is by provider name (the built-in template ID, even when its
+// base URL points elsewhere) or by base-URL host (the connect flow lets
+// users rename the provider) — either signal is sufficient.
+func (p *OpenAICompatible) isOpencode() bool {
+	if p.name == "opencode-go" {
+		return true
+	}
+	u, err := url.Parse(p.baseURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
+}
+
+// SessionID returns the configured per-conversation session identifier
+// (empty when unset). Exposed for wiring tests.
+func (p *OpenAICompatible) SessionID() string { return p.sessionID }
+
 func (p *OpenAICompatible) setHeaders(req *http.Request) {
 	if p.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	if p.isOpencode() {
+		if p.sessionID != "" {
+			req.Header.Set("x-opencode-session", p.sessionID)
+		}
+		req.Header.Set("User-Agent", UserAgent)
 	}
 }
 

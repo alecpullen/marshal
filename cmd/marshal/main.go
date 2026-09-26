@@ -11,6 +11,7 @@ import (
 	"marshal/internal/acp"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
+	"marshal/internal/llm/provider"
 	"marshal/internal/repo"
 	"marshal/internal/trust"
 )
@@ -40,6 +41,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return err
 	}
 	args = fs.Args()
+
+	// Stamp the release version into the provider HTTP client's
+	// self-identifying User-Agent. OpenCode Zen asks clients to send their
+	// own name and version rather than a generic HTTP-library default; a
+	// plain `go build` leaves version empty and keeps the marshal/dev
+	// default. acp.AgentVersion is stamped the same way below.
+	if version != "" {
+		provider.UserAgent = "marshal/" + version
+	}
 
 	if *versionFlag {
 		fmt.Fprintln(stdout, versionString())

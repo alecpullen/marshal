@@ -250,11 +250,12 @@ func logPath(workingDir string) string {
 }
 
 type routedProviderResolver struct {
-	router    *routing.StaticRouter
-	cfg       config.Config
-	dataDir   string
-	mu        *sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
-	providers map[string]provider.Provider
+	router     *routing.StaticRouter
+	cfg        config.Config
+	dataDir    string
+	mu         *sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
+	providers  map[string]provider.Provider
+	sessionID  string
 }
 
 // dbMemoryProvider adapts stored project memories for context-pack
@@ -265,11 +266,31 @@ type dbMemoryProvider struct {
 
 func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProviderResolver {
 	return &routedProviderResolver{
-		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
-		cfg:       cfg,
-		dataDir:   dataDir,
-		mu:        &sync.Mutex{},
-		providers: make(map[string]provider.Provider),
+		router:     routing.NewStaticRouter(cfg.RoutingConfig()),
+		cfg:        cfg,
+		dataDir:    dataDir,
+		mu:         &sync.Mutex{},
+		providers:  make(map[string]provider.Provider),
+		sessionID:  "",
+	}
+}
+
+// withSessionID returns a copy of the resolver that stamps the given stable
+// conversation ID onto every OpenAI-compatible provider it builds, as
+// x-opencode-session (required by OpenCode Zen for routing/caching). The
+// provider cache is shared with the original resolver so the copy can serve
+// the same conversation.
+func (r *routedProviderResolver) withSessionID(sessionID string) *routedProviderResolver {
+	if r.sessionID == sessionID {
+		return r
+	}
+	return &routedProviderResolver{
+		router:     routing.NewStaticRouter(r.cfg.RoutingConfig()),
+		cfg:        r.cfg,
+		dataDir:    r.dataDir,
+		mu:         r.mu,
+		providers:  r.providers,
+		sessionID:  sessionID,
 	}
 }
 
@@ -286,11 +307,12 @@ func (r *routedProviderResolver) withRoleOverrides(overrides map[routing.AgentRo
 		rc = rc.WithRoleOverride(role, preset)
 	}
 	return &routedProviderResolver{
-		router:    routing.NewStaticRouter(rc),
-		cfg:       r.cfg,
-		dataDir:   r.dataDir,
-		providers: r.providers, // shared cache
-		mu:        r.mu,        // shared mutex (pointer)
+		router:     routing.NewStaticRouter(rc),
+		cfg:        r.cfg,
+		dataDir:    r.dataDir,
+		providers:  r.providers, // shared cache
+		mu:         r.mu,        // shared mutex (pointer)
+		sessionID:  r.sessionID,
 	}
 }
 
@@ -356,7 +378,7 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	if !ok {
 		return nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
 	}
-	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery, r.cfg.Agent.ThinkingBudgetMargin)
+	p, err := provider.NewFromConfigWithSession(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery, r.cfg.Agent.ThinkingBudgetMargin, r.sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +519,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // that in-flight background children from the pre-reload generation already
 // hold.
 func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
-	resolver := newRoutedProviderResolver(cfg, dataDir)
+	resolver := newRoutedProviderResolver(cfg, dataDir).withSessionID(state.SessionID())
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
@@ -2269,7 +2291,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				ProjectID:           projectID,
 				SessionID:           sessionID,
 				State:               state,
-				RouteResolver:       newRoutedProviderResolver(state.Config, rt.DataDir),
+				RouteResolver:       newRoutedProviderResolver(state.Config, rt.DataDir).withSessionID(state.SessionID()),
 				WorkingDir:          workingDir,
 				MaxTouchedFileBytes: state.Config.Agent.MaxTouchedFileBytes,
 				Now:                 runOpts.now,
@@ -2453,7 +2475,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// Update the active route so the status bar reflects the new model
 	// immediately, without waiting for the next turn to call resolveRoute.
 	// This mirrors the startup wiring in buildAgentRunner.
-	resolver := newRoutedProviderResolver(cfg, rt.DataDir)
+	resolver := newRoutedProviderResolver(cfg, rt.DataDir).withSessionID(rt.State.SessionID())
 	if route, rp, rErr := resolver.Resolve("edit"); rErr == nil {
 		rt.State.SetActiveRoute(session.RouteInfo{
 			Role:             route.Role,

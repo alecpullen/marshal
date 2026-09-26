@@ -33,6 +33,15 @@ const defaultOllamaKeepAlive = "30m"
 // because NewFromConfig receives a ProviderConfig, which has no access to
 // the [agent] section.
 func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int) (Provider, error) {
+	return NewFromConfigWithSession(name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin, "")
+}
+
+// NewFromConfigWithSession is NewFromConfig with a stable per-conversation
+// session identifier, threaded into OpenAI-compatible providers so chat
+// requests carry x-opencode-session (OpenCode Zen requires it for routing
+// and prompt caching). Callers without a conversation — model listing,
+// capability probing — should use NewFromConfig instead.
+func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int, sessionID string) (Provider, error) {
 	switch pc.Type {
 	case "", "openai_compatible":
 		apiKey, err := ResolveAPIKey(pc)
@@ -52,6 +61,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 			Capabilities:     &caps,
 			LimitsTable:      table,
 			ReasoningSummary: pc.ReasoningSummary,
+			SessionID:        sessionID,
 		})
 	case "ollama":
 		apiKey, err := ResolveAPIKey(pc)

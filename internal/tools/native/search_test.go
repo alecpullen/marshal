@@ -505,21 +505,88 @@ func TestRepoSearchContextClamp(t *testing.T) {
 	}
 }
 
-func TestRepoSearchKindFunctionRejectsContext(t *testing.T) {
-	// The context rejection runs before the db-nil check, so a registry with no
-	// configured DB still exercises it.
+// TestRepoSearchContextClampComposition covers the three paths a clamped
+// context can be composed into: a zero-match coaching footer, a bare
+// zero-match footer, and capped results. In every case the clamp footer must
+// ride Content exactly once — the composed branches append it themselves, so
+// this is the guard against a second unconditional append.
+func TestRepoSearchContextClampComposition(t *testing.T) {
 	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "alpha\nbeta\nneedle 1\nneedle 2\n")
+
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	_, err := invokeTool(t, reg, "repo.search", `{"query":"x","kind":"function","context":2}`)
-	if err == nil {
-		t.Fatal("expected error when context is set with kind")
+	cases := []struct {
+		name string
+		args string
+		// wantNoticeKind is the kind the handler must report. The clamp notice
+		// is a fallback rather than an override: when the call also composes
+		// with another condition, that condition keeps the Notice slot and the
+		// clamp footer still rides Content.
+		wantNoticeKind string
+		// wantFooters must each appear in Content exactly once.
+		wantFooters []string
+		// hardCap, when > 0, temporarily lowers hardSearchMaxResults to make
+		// the capped path reachable cheaply.
+		hardCap int
+	}{
+		{
+			// Clamped + zero matches + regex coaching: the coaching footer owns
+			// the Notice slot and both footers are present.
+			name:           "clamped with zero-match coaching",
+			args:           `{"query":"foo(","context":9}`,
+			wantNoticeKind: registry.NoticeZeroMatchCoach,
+			wantFooters: []string{
+				"context clamped to 3 (requested 9)",
+				"no matches; query looks like a regex",
+			},
+		},
+		{
+			// Clamped + zero matches with no coaching: the clamp footer is the
+			// only signal, so it must appear in Content.
+			name:           "clamped with bare zero match",
+			args:           `{"query":"zzzznotfound","context":-2}`,
+			wantNoticeKind: registry.NoticeContextClamped,
+			wantFooters:    []string{"context clamped to 0 (requested -2)"},
+		},
+		{
+			// Clamped + capped: the capped footer owns the Notice slot and both
+			// footers are present.
+			name:           "clamped with capped results",
+			args:           `{"query":"needle","context":7}`,
+			wantNoticeKind: registry.NoticeCappedResults,
+			wantFooters: []string{
+				"context clamped to 3 (requested 7)",
+				"result capped at 1 matches",
+			},
+			hardCap: 1,
+		},
 	}
-	if !strings.Contains(err.Error(), "repo.search context does not apply when kind is set") {
-		t.Fatalf("error = %v, want it to reject context when kind is set", err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.hardCap > 0 {
+				old := hardSearchMaxResults
+				hardSearchMaxResults = tc.hardCap
+				defer func() { hardSearchMaxResults = old }()
+			}
+
+			result, err := invokeTool(t, reg, "repo.search", tc.args)
+			if err != nil {
+				t.Fatalf("repo.search returned error: %v", err)
+			}
+			if result.Notice == nil || result.Notice.Kind != tc.wantNoticeKind {
+				t.Fatalf("Notice = %+v, want kind %q", result.Notice, tc.wantNoticeKind)
+			}
+			for _, footer := range tc.wantFooters {
+				if got := strings.Count(result.Content, footer); got != 1 {
+					t.Fatalf("Content has %d occurrences of %q, want exactly 1:\n%s", got, footer, result.Content)
+				}
+			}
+		})
 	}
 }
 

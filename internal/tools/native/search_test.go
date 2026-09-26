@@ -427,6 +427,102 @@ func TestRepoSearchCappedNotice(t *testing.T) {
 	}
 }
 
+func TestRepoSearchContextClamp(t *testing.T) {
+	root := t.TempDir()
+	// Ten numbered lines so a clamp to 3 is observable: a match on line5 with
+	// three leading context lines must surface line2.
+	writeFile(t, filepath.Join(root, "a.txt"), "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		// contextArg is the raw value the caller put on the wire.
+		contextArg int
+		// wantNotice selects the clamped vs. in-range shape.
+		wantNotice bool
+		// wantRequested / wantClamped are the notice payload values, only
+		// meaningful when wantNotice is set.
+		wantRequested int
+		wantClamped   int
+		// wantContentSubstr, when non-empty, must appear in Content and proves
+		// the (possibly clamped) context value actually drove the search.
+		wantContentSubstr string
+	}{
+		{
+			name:              "over-cap clamps to 3 and searches 3 lines back",
+			contextArg:        4,
+			wantNotice:        true,
+			wantRequested:     4,
+			wantClamped:       3,
+			wantContentSubstr: "a.txt-2-line2",
+		},
+		{name: "zero context is in range", contextArg: 0},
+		{name: "max context is in range", contextArg: 3, wantContentSubstr: "a.txt-2-line2"},
+		{name: "negative context clamps to zero", contextArg: -1, wantNotice: true, wantRequested: -1, wantClamped: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := fmt.Sprintf(`{"query":"line5","context":%d}`, tc.contextArg)
+			result, err := invokeTool(t, reg, "repo.search", args)
+			if err != nil {
+				t.Fatalf("repo.search returned error: %v", err)
+			}
+
+			if !tc.wantNotice {
+				if result.Notice != nil {
+					t.Fatalf("Notice = %+v, want nil for an in-range context", result.Notice)
+				}
+				if strings.Contains(result.Content, "context clamped") {
+					t.Fatalf("in-range context must not carry a clamp footer:\n%s", result.Content)
+				}
+			} else {
+				if result.Notice == nil || result.Notice.Kind != registry.NoticeContextClamped {
+					t.Fatalf("Notice = %+v, want kind %q", result.Notice, registry.NoticeContextClamped)
+				}
+				wantFooter := fmt.Sprintf("context clamped to %d (requested %d)", tc.wantClamped, tc.wantRequested)
+				if !strings.Contains(result.Content, wantFooter) {
+					t.Fatalf("Content missing clamp footer %q:\n%s", wantFooter, result.Content)
+				}
+				// fmt.Sprint keeps the assertion agnostic to whether the Data
+				// values arrive as ints or (after a JSON hop) float64.
+				if got := fmt.Sprint(result.Notice.Data["requested_context"]); got != fmt.Sprint(tc.wantRequested) {
+					t.Fatalf("Notice.Data[requested_context] = %v, want %v", result.Notice.Data["requested_context"], tc.wantRequested)
+				}
+				if got := fmt.Sprint(result.Notice.Data["clamped_context"]); got != fmt.Sprint(tc.wantClamped) {
+					t.Fatalf("Notice.Data[clamped_context] = %v, want %v", result.Notice.Data["clamped_context"], tc.wantClamped)
+				}
+			}
+
+			if tc.wantContentSubstr != "" && !strings.Contains(result.Content, tc.wantContentSubstr) {
+				t.Fatalf("Content missing context line %q (the context window did not drive the search):\n%s", tc.wantContentSubstr, result.Content)
+			}
+		})
+	}
+}
+
+func TestRepoSearchKindFunctionRejectsContext(t *testing.T) {
+	// The context rejection runs before the db-nil check, so a registry with no
+	// configured DB still exercises it.
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "repo.search", `{"query":"x","kind":"function","context":2}`)
+	if err == nil {
+		t.Fatal("expected error when context is set with kind")
+	}
+	if !strings.Contains(err.Error(), "repo.search context does not apply when kind is set") {
+		t.Fatalf("error = %v, want it to reject context when kind is set", err)
+	}
+}
+
 func TestRepoSearchRejectsInvalidMode(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()

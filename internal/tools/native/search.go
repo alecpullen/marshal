@@ -234,8 +234,26 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("repo.search mode must be auto|substring|regex, got %q", args.Mode)
 		}
 
+		// Out-of-range context is clamped into the supported [0, 3] window
+		// rather than erroring: postmortems showed agents repeatedly re-issuing
+		// the same over-cap call after the hard error, so the call now succeeds
+		// and a context_clamped notice carries the remediation instead.
+		var clampNotice *registry.ToolNotice
 		if args.Context < 0 || args.Context > 3 {
-			return registry.ToolResult{}, fmt.Errorf("repo.search context must be between 0 and 3, got %d", args.Context)
+			requested := args.Context
+			clamped := requested
+			if clamped < 0 {
+				clamped = 0
+			} else {
+				clamped = 3
+			}
+			args.Context = clamped
+			footer := fmt.Sprintf("context clamped to %d (requested %d)", clamped, requested)
+			clampNotice = &registry.ToolNotice{
+				Kind: registry.NoticeContextClamped,
+				Text: footer,
+				Data: map[string]any{"requested_context": requested, "clamped_context": clamped},
+			}
 		}
 		if args.Include != "" {
 			if _, err := path.Match(args.Include, ""); err != nil {
@@ -270,7 +288,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			summary += fmt.Sprintf(" (mode: %s)", actualMode)
 		}
 
-		var notice *registry.ToolNotice
+		notice := clampNotice
 		if len(matches) == 0 {
 			// Zero matches: coach the caller toward the other mode when the
 			// query shape suggests they picked the wrong one. A plain literal
@@ -300,6 +318,17 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 					Text: footer,
 					Data: map[string]any{"query": args.Query, "mode": actualMode},
 				}
+				if clampNotice != nil {
+					content += "\n" + clampNotice.Text
+				}
+			} else if clampNotice != nil {
+				// Zero matches with no coaching footer: the clamp notice is the
+				// only signal, so surface its footer in Content too.
+				if content == "" {
+					content = clampNotice.Text
+				} else {
+					content += "\n" + clampNotice.Text
+				}
 			}
 		} else if capped {
 			footer := fmt.Sprintf("result capped at %d matches; narrow with path/include or a more specific query", limit)
@@ -313,8 +342,21 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 				Text: footer,
 				Data: map[string]any{"limit": limit},
 			}
+			if clampNotice != nil {
+				content += "\n" + clampNotice.Text
+			}
 		}
 
+		if notice == clampNotice && clampNotice != nil && !strings.Contains(content, clampNotice.Text) {
+			// Clamped but neither zero-match nor capped: the footer has not been
+			// added to Content yet. The containment check guards the composed
+			// branches above against double-appending.
+			if content == "" {
+				content = clampNotice.Text
+			} else {
+				content += "\n" + clampNotice.Text
+			}
+		}
 		return registry.ToolResult{Summary: summary, Content: content, Notice: notice}, nil
 	}
 	return tool

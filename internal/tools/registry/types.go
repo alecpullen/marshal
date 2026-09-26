@@ -83,6 +83,11 @@ const (
 	NoticeSliceTruncated   = "slice_truncated"
 	NoticeZeroMatchCoach   = "zero_match_coach"
 	NoticeCappedResults    = "capped_results"
+	// NoticeContextClamped marks a parameter-validation clamp: the caller
+	// asked for a context window outside the supported range and the tool
+	// silently coerced it into range. Distinct from NoticeCappedResults,
+	// which marks result-set truncation, so consumers can switch cleanly.
+	NoticeContextClamped = "context_clamped"
 )
 
 type ToolResult struct {

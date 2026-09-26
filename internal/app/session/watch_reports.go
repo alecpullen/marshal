@@ -18,44 +18,67 @@ package session
 // persisted message per drain, not one per fire.
 
 // watchReportEntry is one pending report, keyed by watch ID so a later
-// fire for the same watch can replace it in place.
+// fire for the same watch can replace it in place. name/repeat/resume are
+// the watch facts the resume pipeline needs (the runner's turn-end
+// residual drain arms the resume latch from them); they are primitives,
+// not a watch.Report, because the session package cannot import watch
+// (watch imports native which imports session).
 type watchReportEntry struct {
-	id   string
-	text string
+	id     string
+	text   string
+	name   string
+	repeat bool
+	resume bool
+}
+
+// DrainedWatchReport is one drained queue entry: the formatted text the
+// model wire and the transcript receive, plus the watch facts the resume
+// pipeline needs.
+type DrainedWatchReport struct {
+	Text   string
+	Name   string
+	Repeat bool
+	Resume bool
 }
 
 // PushWatchReport records a background watch child's completion report,
 // coalescing by watch ID. If a report for the same watch is already
 // pending (not yet drained), it is replaced in place with the new text
 // (which the push site has formatted with the cumulative FiredCount);
-// otherwise the report is appended. It is drained by the runner at the
-// next loop-top (or the next turn's start) and injected into the model
-// context, so a report that arrives after the parent turn has ended still
-// reaches the model.
-func (s *State) PushWatchReport(id string, text string) {
+// otherwise the report is appended. name/repeat/resume are the resume
+// pipeline's facts — they overwrite the folded entry's fields with the
+// latest fire's values. It is drained by the runner at the next loop-top
+// (or the next turn's start) and injected into the model context, so a
+// report that arrives after the parent turn has ended still reaches the
+// model.
+func (s *State) PushWatchReport(id string, text string, name string, repeat bool, resume bool) {
 	s.mu.Lock()
 	for i := range s.watchReports {
 		if s.watchReports[i].id == id {
 			s.watchReports[i].text = text
+			s.watchReports[i].name = name
+			s.watchReports[i].repeat = repeat
+			s.watchReports[i].resume = resume
 			s.mu.Unlock()
 			return
 		}
 	}
-	s.watchReports = append(s.watchReports, watchReportEntry{id: id, text: text})
+	s.watchReports = append(s.watchReports, watchReportEntry{id: id, text: text, name: name, repeat: repeat, resume: resume})
 	s.mu.Unlock()
 }
 
 // DrainWatchReports returns and clears the watch report queue atomically,
-// delivering the formatted text of each pending report in push order. The
-// runner calls this at every loop-top, alongside DrainSteering, to inject
-// completed background watch child reports into the live model context,
-// and persists each drained report as a RoleUser message (the durable
-// copy that buildHistoryMessages replays across restart).
-func (s *State) DrainWatchReports() []string {
+// delivering each pending report in push order. The runner calls this at
+// every loop-top, alongside DrainSteering, to inject completed background
+// watch child reports into the live model context, and persists each
+// drained report's Text as a RoleUser message (the durable copy that
+// buildHistoryMessages replays across restart). The resume fields arm the
+// turn-end residual path's auto-resume latch.
+func (s *State) DrainWatchReports() []DrainedWatchReport {
 	s.mu.Lock()
-	out := make([]string, 0, len(s.watchReports))
+	out := make([]DrainedWatchReport, 0, len(s.watchReports))
 	for _, e := range s.watchReports {
-		out = append(out, e.text)
+		out = append(out, DrainedWatchReport{Text: e.text, Name: e.name, Repeat: e.repeat, Resume: e.resume})
 	}
 	s.watchReports = nil
 	s.mu.Unlock()

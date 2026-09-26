@@ -686,8 +686,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// persisted copy bounded at one message per watch per drain/clear while
 	// preserving late fires as replayable messages (see watch_reports.go).
 	defer func() {
-		for _, msg := range r.State.DrainWatchReports() {
-			r.State.AddMessage(session.RoleUser, msg, session.ContentTypeWatchReport)
+		// A residual whose entry says resume is exactly the
+		// fire-in-the-final-answer-window case (spec §3): the report was
+		// pushed after the final loop-top drain, the model never saw it,
+		// and the turn is ending. Persist it like any residual, then arm
+		// the one-shot resume latch so the runtime's idle boundary wakes
+		// the session. Loop-top drains never arm the latch — the model saw
+		// those reports in-turn, so there is nothing to resume into. One
+		// producer, replace-on-write: two resume residuals in one
+		// turn-end produce one wake; both reports persist.
+		for _, rep := range r.State.DrainWatchReports() {
+			r.State.AddMessage(session.RoleUser, rep.Text, session.ContentTypeWatchReport)
+			if rep.Resume {
+				r.State.SetWatchResume(rep.Name, rep.Repeat)
+			}
 		}
 	}()
 
@@ -1055,9 +1067,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// persisted transcript: a watch that fires repeatedly while idle
 		// coalesces into one pending entry, so one drain persists one
 		// message per watch.
-		for _, msg := range r.State.DrainWatchReports() {
-			r.State.AddMessage(session.RoleUser, msg, session.ContentTypeWatchReport)
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+		for _, rep := range r.State.DrainWatchReports() {
+			r.State.AddMessage(session.RoleUser, rep.Text, session.ContentTypeWatchReport)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: rep.Text})
 		}
 		if len(steeringPins) > 0 {
 			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {

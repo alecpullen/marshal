@@ -535,6 +535,7 @@ func fullEditedConfig() Config {
 	}
 	cfg.Snapshots = SnapshotsConfig{Enabled: false, RetentionDays: 14, MaxFileBytes: 1000}
 	cfg.Titling = TitlingConfig{Enabled: false, TimeoutMs: 2500}
+	cfg.Watch = WatchConfig{ResumeEnabled: false}
 	cfg.Permissions.Rules = []PermissionRule{{Permission: "shell", Pattern: "go *", Action: "allow"}}
 	cfg.Diagnostics.Commands = map[string]string{"go": "go vet ./...", "py": "ruff check"}
 	cfg.Hooks = HooksConfig{FailClosed: true, Entries: []HookConfig{{Event: "pre_tool", Matcher: "shell.*", Command: "echo hi", TimeoutMS: 500}}}
@@ -584,6 +585,9 @@ func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
 	}
 	if loaded.Titling != cfg.Titling {
 		t.Errorf("titling: got %+v want %+v", loaded.Titling, cfg.Titling)
+	}
+	if loaded.Watch != cfg.Watch {
+		t.Errorf("watch: got %+v want %+v", loaded.Watch, cfg.Watch)
 	}
 	if !reflect.DeepEqual(loaded.Permissions, cfg.Permissions) {
 		t.Errorf("permissions: got %+v want %+v", loaded.Permissions, cfg.Permissions)

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"marshal/internal/app/session"
@@ -16,6 +17,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
+	"marshal/internal/watch"
 )
 
 // AgentVersion is the release version of the marshal binary, stamped at
@@ -166,8 +168,12 @@ func (h *agentHost) chainedCancel(ctx context.Context, sessionID string) error {
 // so notifications survive connection changes. perms and questions are the
 // per-connection clients that send outbound JSON-RPC requests to the
 // connected client.
-func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyFunc, perms PermissionClient, questions QuestionClient) *TurnManager {
-	return NewTurnManager(TurnManagerConfig{
+func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyFunc, perms PermissionClient, questions QuestionClient, alive *atomic.Bool) *TurnManager {
+	// tm is pre-declared so the Lookup closure below can capture it before
+	// the construction call returns: the closure only runs after
+	// construction completes, so the capture is safe.
+	var tm *TurnManager
+	tm = NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			rt, ok := manager.Get(sessionID)
 			if !ok || rt == nil {
@@ -206,7 +212,10 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 				}
 			}
 
-			return &TurnRuntime{
+			// Auto-resume seams (spec §5): the gate read is live from the
+			// runtime's config; the SDD-gate check mirrors the TUI's
+			// never-wake-over-an-open-panel rule.
+			crt := &TurnRuntime{
 				SessionID: sessionID,
 				BeginWork: rt.BeginWork,
 				Run:       run,
@@ -226,22 +235,42 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 				State:           rt.State,
 				SwarmRunner:     swarmRunner,
 				PipelineFactory: pipelineFactory,
-			}, true
+			}
+			crt.WatchResumeEnabled = func() bool { return rt.State != nil && rt.State.Config.Watch.ResumeEnabled }
+			crt.WatchResumeGatePending = func() bool { return rt.State != nil && rt.State.SDDGate().Question != "" }
+			if rt.WatchResume != nil {
+				// Idempotent: a later Lookup on this connection re-sets the
+				// cell with an equivalent fn, and a fresh connection's first
+				// Lookup re-binds with its own alive flag, so the binding
+				// always follows the most recent live connection. The hook
+				// must return promptly (OnFire runs on the watch goroutine);
+				// ResumeIfIdle is non-blocking — it spawns the turn goroutine
+				// itself. The Lookup closure must NOT defer anything and needs
+				// no once-guard: Set is replace-on-write.
+				rt.WatchResume.Set(func(r watch.Report) {
+					if !alive.Load() || !r.Resume {
+						return
+					}
+					tm.ResumeIfIdle(sessionID, r.Name, r.Mode == watch.ModeRepeat)
+				})
+			}
+			return crt, true
 		},
 		Notify:    notify,
 		Perms:     perms,
 		Questions: questions,
 	})
+	return tm
 }
 
 // registerHandlers registers every JSON-RPC handler on srv, constructing
 // the per-handler managers in the same dependency order as before. The
 // managers are wired to this specific connection's server.
-func (h *agentHost) registerHandlers(srv *Server) {
+func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	manager := h.manager
 	turns := newTurnManagerFor(manager, h.log, h.sink.Notify,
 		&serverPermissionClient{server: srv},
-		&serverQuestionClient{server: srv})
+		&serverQuestionClient{server: srv}, alive)
 
 	srv.Handle("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p InitializeParams
@@ -434,9 +463,15 @@ func (h *agentHost) registerHandlers(srv *Server) {
 // the connection must remain cancellable (follow-ups doc item #5).
 func (h *agentHost) serveConn(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	srv := NewServer(stdin, stdout, WithLogger(h.log))
-	h.registerHandlers(srv)
+	// The liveness flag inerting this connection's watch-resume binding on
+	// teardown: after the connection dies the flag goes false, so a stale
+	// binding on the Runtime cannot start a turn.
+	alive := &atomic.Bool{}
+	alive.Store(true)
+	h.registerHandlers(srv, alive)
 	h.sink.Set(srv.Notify)
 	defer h.sink.Clear()
+	defer alive.Store(false)
 	return srv.Serve(ctx)
 }
 

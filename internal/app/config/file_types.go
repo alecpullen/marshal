@@ -187,6 +187,10 @@ type fileTitling struct {
 	TimeoutMs *int  `toml:"timeout_ms"`
 }
 
+type fileWatch struct {
+	ResumeEnabled *bool `toml:"resume_enabled"`
+}
+
 type filePostmortem struct {
 	OnExit *string `toml:"on_exit"`
 }
@@ -304,6 +308,7 @@ type configFile struct {
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
 	Titling     *fileTitling     `toml:"titling"`
+	Watch       *fileWatch       `toml:"watch"`
 	Postmortem  *filePostmortem  `toml:"postmortem"`
 	History     *fileHistory     `toml:"history"`
 	TUI         *fileTUI         `toml:"tui"`

@@ -68,9 +68,14 @@ type Spec struct {
 	Path      string // KindFile — file path or glob
 	Condition string // e.g. "change" (default), "exit_code 0", "regex ...", "json <path> <op> <value>"
 	Mode      Mode
-	Notify    *bool         // repeat-mode only; default true
-	Interval  time.Duration // command/file; clamped to floor
-	Owner     string        // "" (parent) or subagent tag
+	Notify    *bool // repeat-mode only; default true
+	// Resume opts the watch into session auto-resume: a fire on an idle
+	// session starts a new turn (gated by [watch] resume_enabled at wake
+	// time). Start forces Notify on and drops Resume for owned
+	// (subagent) watches.
+	Resume   bool
+	Interval time.Duration // command/file; clamped to floor
+	Owner    string        // "" (parent) or subagent tag
 }
 
 // Info is the snapshot returned by List/Status.
@@ -104,16 +109,30 @@ type Report struct {
 	AutoRemoved bool
 	IsError     bool
 	Owner       string // "" parent, else subagent tag
+	// Resume echoes the watch's resume opt-in: the push site forwards it
+	// to the session queue so the turn-end residual drain can arm the
+	// auto-resume latch.
+	Resume bool
 }
 
-// Event is the pubsub payload for the TUI lane. Task 5 wires OnEvent to the
-// broker.
+// Event is the pubsub payload for the TUI lane.
 type Event struct {
 	WatchID string
 	Name    string
 	Kind    Kind
 	State   State
 	Sample  string // tail-capped
+	// Owner is the subagent tag ("" for parent watches). Informational:
+	// owned watches never carry resume intent (Start drops it at
+	// registration), so wake sites need no owner check of their own.
+	Owner string
+	// Mode is the watch mode; the TUI's idle wake builds the wrapper
+	// goal from the event alone (the queue entry is not on this lane).
+	Mode Mode
+	// Resume is true only when this event corresponds to a pushed
+	// report on a resume-opted watch: deliberate stops, deduped repeat
+	// fires, and transient sample errors carry false.
+	Resume bool
 }
 
 // Deps carries the injected seams the Manager's sources consume. Task 1 ships
@@ -176,6 +195,7 @@ type watch struct {
 	condRaw           string
 	mode              Mode
 	notify            bool
+	resume            bool
 	interval          time.Duration
 	owner             string
 	state             State
@@ -280,11 +300,11 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 	}
 
 	// Clamp the interval below the floor with a note.
-	note := ""
+	var notes []string
 	interval := spec.Interval
 	if interval < MinInterval {
 		interval = MinInterval
-		note = fmt.Sprintf("interval %s below floor; clamped to %s", spec.Interval, MinInterval)
+		notes = append(notes, fmt.Sprintf("interval %s below floor; clamped to %s", spec.Interval, MinInterval))
 	}
 
 	// Defaults.
@@ -298,6 +318,22 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 	notify := true
 	if spec.Notify != nil {
 		notify = *spec.Notify
+	}
+
+	// Auto-resume rules (spec §1): a subagent watch never resumes —
+	// dropping it here means re-parenting (TransferFromSubagent) can
+	// never reintroduce intent; resume forces notify because a fire
+	// nobody reports can't wake anyone.
+	resume := spec.Resume
+	if resume && spec.Owner != "" {
+		resume = false
+		notes = append(notes, "resume ignored: subagent watches never resume")
+	}
+	if resume && !notify {
+		notes = append(notes, "resume=true forces notify=true")
+	}
+	if resume {
+		notify = true
 	}
 
 	// Dedup the name.
@@ -319,6 +355,7 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 		condRaw:   spec.Condition,
 		mode:      mode,
 		notify:    notify,
+		resume:    resume,
 		interval:  interval,
 		owner:     spec.Owner,
 		state:     StateWatching,
@@ -336,8 +373,8 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 	// Publish the initial StateWatching event so the TUI lane can synthesize
 	// the row from registration (the manager owns the publish path; the lane
 	// has no other way to learn about a watch before its first transition).
-	m.publishEvent(w, StateWatching, "")
-	return id, note, nil
+	m.publishEvent(w, StateWatching, "", spec.Owner, mode, false)
+	return id, strings.Join(notes, "; "), nil
 }
 
 // sampleOnce performs one evaluation: sample the source, record the result,
@@ -400,8 +437,9 @@ func (m *Manager) handleSampleError(w *watch, err error) {
 	w.state = StateError
 	w.signalWaitersLocked()
 	consecutive := w.consecutiveErrors
+	owner, mode := w.owner, w.mode
 	w.mu.Unlock()
-	m.publishEvent(w, StateError, "")
+	m.publishEvent(w, StateError, "", owner, mode, false)
 
 	if consecutive >= MaxConsecutiveErrors {
 		reason := fmt.Sprintf("stopped after %d consecutive errors: %v", MaxConsecutiveErrors, err)
@@ -419,10 +457,10 @@ func (m *Manager) autoStop(w *watch, reason string) {
 	w.state = StateStopped
 	w.signalWaitersLocked()
 	w.lastError = reason
-	owner := w.owner
+	owner, mode, resume := w.owner, w.mode, w.resume
 	w.mu.Unlock()
 	m.removeWatch(w.id)
-	m.publishEvent(w, StateStopped, "")
+	m.publishEvent(w, StateStopped, "", owner, mode, resume)
 	if m.deps.OnFire != nil {
 		m.deps.OnFire(Report{
 			WatchID:     w.id,
@@ -432,6 +470,7 @@ func (m *Manager) autoStop(w *watch, reason string) {
 			Mode:        w.mode,
 			Interval:    w.interval,
 			Owner:       owner,
+			Resume:      resume,
 			AutoRemoved: true,
 			IsError:     true,
 		})
@@ -461,11 +500,12 @@ func (m *Manager) fire(w *watch, sample Sample) {
 	notify := w.notify && !alreadyNotified
 	mode := w.mode
 	owner := w.owner
+	resume := w.resume
 	firedCount := w.fireCount
 	w.signalWaitersLocked()
 	w.mu.Unlock()
 
-	m.publishEvent(w, StateFired, sample.Stdout)
+	m.publishEvent(w, StateFired, sample.Stdout, owner, mode, resume && notify)
 	if removed {
 		m.removeWatch(w.id)
 	}
@@ -481,6 +521,7 @@ func (m *Manager) fire(w *watch, sample Sample) {
 			FiredCount:  firedCount,
 			AutoRemoved: removed,
 			Owner:       owner,
+			Resume:      resume,
 		})
 	}
 }
@@ -501,9 +542,10 @@ func (m *Manager) Stop(id string) (string, error) {
 	}
 	w.state = StateStopped
 	w.signalWaitersLocked()
+	owner, mode := w.owner, w.mode
 	w.mu.Unlock()
 	m.removeWatch(id)
-	m.publishEvent(w, StateStopped, "")
+	m.publishEvent(w, StateStopped, "", owner, mode, false)
 	return "", nil
 }
 
@@ -604,9 +646,13 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 }
 
-// publishEvent emits a watch event to the TUI lane via the injected OnEvent
-// seam, if configured.
-func (m *Manager) publishEvent(w *watch, state State, sample string) {
+// publishEvent emits a watch event to the TUI lane via the injected
+// OnEvent seam, if configured. owner/mode/resume are passed by the
+// caller — the sites that hold w.mu extract them there (fire, autoStop,
+// Stop, handleSampleError) and Start passes its spec-locals — so the
+// event carries exact resume semantics: resume is true only when this
+// transition also pushed a report.
+func (m *Manager) publishEvent(w *watch, state State, sample string, owner string, mode Mode, resume bool) {
 	if m.deps.OnEvent == nil {
 		return
 	}
@@ -616,6 +662,9 @@ func (m *Manager) publishEvent(w *watch, state State, sample string) {
 		Kind:    w.kind,
 		State:   state,
 		Sample:  tailCap(sample),
+		Owner:   owner,
+		Mode:    mode,
+		Resume:  resume,
 	})
 }
 

@@ -4002,6 +4002,41 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd()), true
 }
 
+// startWatchResumeRun checks the auto-resume conditions (runner wired,
+// not busy, no open dock panel, config gate on) and, when all hold,
+// starts the auto-resume turn, returning its cmd. It returns nil when
+// any guard fails or BeginWork refused (quiesce) — the caller proceeds
+// with its normal tail. The *m assignment is what makes the post-start
+// state (busy flag, suggestion clear, agentCancel) stick for the
+// value-receiver callers. handleWatchMsg passes name/repeat from the
+// event; handleAgentFinished from the latch.
+func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
+	if m.runner == nil || m.busy || m.dock.IsOpen() || !m.state.Config.Watch.ResumeEnabled {
+		return nil
+	}
+	goal := watch.ResumeGoal(name, m.lastAssistantText(), repeat)
+	model, cmd, started := m.startAgentRun(m.runner, goal)
+	if !started {
+		return nil
+	}
+	*m = model.(Model)
+	return cmd
+}
+
+// lastAssistantText returns the last RoleAssistant message's content
+// (empty when there is none). Idle means the transcript is frozen, so
+// the backward scan is race-free (same pattern as computeSuggestion and
+// lastFinalAssistantPlan).
+func (m *Model) lastAssistantText() string {
+	msgs := m.state.Messages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == session.RoleAssistant {
+			return msgs[i].Content
+		}
+	}
+	return ""
+}
+
 // startSDDAuthoring begins an authoring turn for /sdd new. It builds the
 // scoped authoring runner, resolves the candidate path, and starts the
 // async command. On success the completion handler opens the review panel;
@@ -4489,6 +4524,21 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// tea.Batch drops nil entries, so this is a no-op with no finder or no
 	// newly-seen resolved symbols.
 	cmds = append(cmds, m.callerQueryCmds())
+	// Auto-resume latch (spec §4): a resume fire landed in the
+	// final-answer window of the turn that just ended — the model never
+	// saw the report, and the turn-end residual drain armed the latch.
+	// The session is idle now: consume the intent and start the resumed
+	// turn; its cmd rides the existing batch. When the wake is
+	// suppressed (dock open, gate off), the consumed intent is dropped
+	// by design: the report stays persisted, repeat watches retry on
+	// their next fire, and once-watches lose the wake (spec edge
+	// cases). startAgentRun clears the ghost suggestion and bumps the
+	// suggestion generation, so no computeSuggestion gating is needed.
+	if name, repeat, ok := m.state.TakeWatchResume(); ok {
+		if cmd := m.startWatchResumeRun(name, repeat); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	return m, tea.Batch(cmds...)
 }
 
@@ -4648,6 +4698,33 @@ func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
 	}
 	if !updated {
 		m.watches = append(m.watches, msg.event)
+	}
+	// Auto-resume (spec §4): a resume-bearing event on an idle session
+	// with no open dock panel starts a turn immediately. Event.Resume is
+	// true only for report-bearing fires on resume-opted watches
+	// (deliberate stops, deduped repeat fires, and transient errors
+	// carry false), so no owner or dedup check is needed here. The dock
+	// guard keeps an auto-turn from starting under a settings browser,
+	// SDD gate, or castlist — "never wake over an open panel"; the report
+	// stays persisted and a repeat watch retries on its next fire.
+	// Wake-on-idle and the latch (handleAgentFinished) are mutually
+	// exclusive in practice: the latch only arms when a fire lands
+	// mid-turn (the session was busy here), but the check is cheap and
+	// the gate read is live so a config reload applies immediately.
+	if msg.event.Resume {
+		if cmd := m.startWatchResumeRun(msg.event.Name, msg.event.Mode == watch.ModeRepeat); cmd != nil {
+			// Post-start state (busy flag, suggestion clear, agentCancel)
+			// already stuck via the helper's *m assignment. The wake cmd
+			// AND the pump re-arm must both ride the return: the pump is a
+			// chain — each watchMsg returns the next pump cmd, and
+			// dropping it would permanently stall the watch-event lane.
+			m.refreshViewport()
+			flush := m.flushPendingModelOptions()
+			if m.watchEvents == nil {
+				return m, tea.Batch(cmd, flush)
+			}
+			return m, tea.Sequence(pumpWatchEvents(m.watchEvents), tea.Batch(cmd, flush))
+		}
 	}
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()

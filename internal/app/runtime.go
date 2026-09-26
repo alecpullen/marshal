@@ -110,6 +110,12 @@ type Runtime struct {
 	JobManager      *native.JobManager
 	WatchManager    *watch.Manager
 	DesktopCloser   func()
+	// WatchResume is the settable auto-resume hook invoked by the watch
+	// manager's OnFire closure after each fired report is queued. The ACP
+	// host binds it per session; the TUI never sets it, so TUI behavior
+	// is unchanged. Survives config reload (reloadAgentRuntime passes the
+	// same cell); cleared by Close.
+	WatchResume *WatchResumeHook
 
 	// TrustPromptPending reports that a project config exists but was not
 	// applied because the trust question was deferred to the TUI.
@@ -180,6 +186,40 @@ type Runtime struct {
 	closeOnce   sync.Once
 	quiesceErr  error
 	closeErr    error
+}
+
+// WatchResumeHook is invoked by the watch manager's OnFire closure after
+// a fired report is pushed to the session queue, for runtimes that want to
+// auto-resume an idle session (ACP). It receives the report so the sink
+// can derive the watch name/mode. It must return promptly — it runs on
+// the watch goroutine — so implementations spawn their work in a
+// goroutine. A nil receiver is safe (no-op).
+type WatchResumeHook struct {
+	mu sync.Mutex
+	fn func(r watch.Report)
+}
+
+// Set installs (or clears, with nil) the hook fn.
+func (h *WatchResumeHook) Set(fn func(r watch.Report)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.fn = fn
+	h.mu.Unlock()
+}
+
+// Invoke calls the installed fn when non-nil. Nil-receiver-safe.
+func (h *WatchResumeHook) Invoke(r watch.Report) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	fn := h.fn
+	h.mu.Unlock()
+	if fn != nil {
+		fn(r)
+	}
 }
 
 // runLSPManager starts m's Run loop under a child of rt.workCtx and returns a
@@ -324,6 +364,13 @@ func (rt *Runtime) Close(ctx context.Context) error {
 
 	rt.closeOnce.Do(func() {
 		var errs []error
+
+		// Clear the watch auto-resume hook so a torn-down session's watch
+		// fires can no longer start turns on a replacement runtime. The
+		// watch goroutines are already stopped by Quiesce (which Close
+		// calls first), so this closes a small race window rather than
+		// eliminating one.
+		rt.WatchResume.Set(nil)
 
 		// 2. MCP manager.
 		if rt.MCPManager != nil {
@@ -665,7 +712,11 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// every agent.run child serialize writes on it, and config reloads reuse
 	// it so in-flight background children keep sharing the same gate.
 	writeLock := &swarm.WriteLock{}
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, runOpts.configReloader, homeDir, writeLock)
+	// Allocate the auto-resume hook cell before the builder: the OnFire
+	// closure built inside it captures the cell, and the OnFire closure is
+	// built before the Runtime exists.
+	watchResumeCell := &WatchResumeHook{}
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -721,6 +772,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		IndexBroker:          indexBroker,
 		JobManager:           jobMgr,
 		WatchManager:         watchMgr,
+		WatchResume:          watchResumeCell,
 		DesktopCloser:        desktopCloser,
 		CustomAgentFactory:   subagentFactory,
 		WriteLock:            writeLock,
@@ -885,7 +937,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		lock = &swarm.WriteLock{}
 	}
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.ConfigReloader, rt.HomeDir, lock,
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.

@@ -19,7 +19,7 @@ import (
 func TestRunPromptDrainsWatchReportsAtLoopTop(t *testing.T) {
 	state := newTestState(t)
 	// Simulate a watch that fired before the turn started.
-	state.PushWatchReport("w1", "[watch build fired] kind=command interval=5s")
+	state.PushWatchReport("w1", "[watch build fired] kind=command interval=5s", "", false, false)
 
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
@@ -59,7 +59,7 @@ func TestRunPromptDrainsWatchReportsAtLoopTop(t *testing.T) {
 // the model wire.
 func TestRunPromptPersistsDrainedWatchReport(t *testing.T) {
 	state := newTestState(t)
-	state.PushWatchReport("w1", "[watch build fired] kind=command interval=5s")
+	state.PushWatchReport("w1", "[watch build fired] kind=command interval=5s", "", false, false)
 
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
@@ -99,7 +99,7 @@ func TestRunPromptPersistsDrainedWatchReport(t *testing.T) {
 func TestWatchReportQueueClearedAtTurnEnd(t *testing.T) {
 	state := newTestState(t)
 	// Simulate a report pushed after the turn's final loop-top drain.
-	state.PushWatchReport("w1", "[watch build fired] late report")
+	state.PushWatchReport("w1", "[watch build fired] late report", "", false, false)
 	if got := state.WatchReports(); len(got) != 1 {
 		t.Fatalf("queue before clear = %v, want 1", got)
 	}
@@ -124,7 +124,7 @@ func TestRunPromptPersistsTurnEndResidual(t *testing.T) {
 	// loop-top drain has already run (empty) and before the turn ends.
 	p.OnChat = func(idx int, req schema.ChatRequest) {
 		if idx == 0 {
-			state.PushWatchReport("w1", "[watch build fired] late mid-turn report")
+			state.PushWatchReport("w1", "[watch build fired] late mid-turn report", "build", false, true)
 		}
 	}
 	reg := registry.New()
@@ -148,8 +148,35 @@ func TestRunPromptPersistsTurnEndResidual(t *testing.T) {
 		t.Fatalf("turn-end residual not persisted as ContentTypeWatchReport: %#v", state.Messages())
 	}
 
+	if name, repeat, ok := state.TakeWatchResume(); !ok || name != "build" || repeat {
+		t.Fatalf("latch after turn end = (%q, %v, %v), want (build, false, true)", name, repeat, ok)
+	}
+
 	// The queue must be empty after the turn (drained by the defer).
 	if got := state.WatchReports(); len(got) != 0 {
 		t.Fatalf("watch report queue after run = %v, want empty", got)
+	}
+}
+
+// TestLoopTopDrainDoesNotArmResumeLatch guards the latch asymmetry: a
+// report pushed before the turn (drained at the first loop-top, delivered
+// in-turn) must NOT arm the latch — only turn-end residuals do.
+func TestLoopTopDrainDoesNotArmResumeLatch(t *testing.T) {
+	state := newTestState(t)
+	state.PushWatchReport("w1", "[watch build fired] early report", "build", false, true)
+
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.NativeTools = true
+
+	if err := runner.Run(context.Background(), "hello"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, _, ok := state.TakeWatchResume(); ok {
+		t.Fatal("loop-top drain armed the resume latch; only turn-end residuals may arm it")
 	}
 }

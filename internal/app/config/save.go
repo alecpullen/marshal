@@ -395,6 +395,9 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	if cfg.Titling != def.Titling {
 		file.Titling = &fileTitling{Enabled: strutil.Ptr(cfg.Titling.Enabled), TimeoutMs: strutil.Ptr(cfg.Titling.TimeoutMs)}
 	}
+	if cfg.Watch != def.Watch {
+		file.Watch = &fileWatch{ResumeEnabled: strutil.Ptr(cfg.Watch.ResumeEnabled)}
+	}
 	if cfg.Postmortem != def.Postmortem {
 		file.Postmortem = &filePostmortem{OnExit: strutil.Ptr(cfg.Postmortem.OnExit)}
 	}

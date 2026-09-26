@@ -18,6 +18,13 @@ func watchEvent(id, name string, kind watch.Kind, state watch.State) watch.Event
 	return watch.Event{WatchID: id, Name: name, Kind: kind, State: state}
 }
 
+// resumeWatchEvent builds the report-bearing event shape the auto-resume
+// wake sites act on: a fired command watch opted into resume, carrying its
+// mode so the TUI can add the repeat stop hint to the wrapper goal.
+func resumeWatchEvent(id, name string, mode watch.Mode) watch.Event {
+	return watch.Event{WatchID: id, Name: name, Kind: watch.KindCommand, State: watch.StateFired, Mode: mode, Resume: true}
+}
+
 func TestPumpBridgesWatchEventsToMsgs(t *testing.T) {
 	// First call: nothing published. The pump cmd must block until a
 	// publish arrives or ctx is cancelled (not return nil immediately).

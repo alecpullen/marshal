@@ -486,7 +486,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
 	// this wrapper discards it so the ~25 test call sites that use
 	// buildAgentRunner directly do not need to change.
-	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, configReloader, homeDir, &swarm.WriteLock{})
+	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{})
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err
 }
 
@@ -496,7 +496,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // (which rebuilds the runner and the subagent factory) reuses the same lock
 // that in-flight background children from the pre-reload generation already
 // hold.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -621,7 +621,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			// buildHistoryMessages replays across restart. Persisting at drain
 			// time (rather than at push) is what bounds the persisted
 			// transcript the same way the queue is bounded.
-			state.PushWatchReport(r.WatchID, watch.Format(r))
+			state.PushWatchReport(r.WatchID, watch.Format(r), r.Name, r.Mode == watch.ModeRepeat, r.Resume)
+			// Auto-resume (spec §5): the TUI never binds WatchResume, so this
+			// is a no-op there; the ACP host binds it per session in its
+			// Lookup closure and starts a server-initiated turn when the
+			// session is idle. r.Resume gates: non-resume fires invoke
+			// nothing.
+			if r.Resume {
+				watchResumeCell.Invoke(r)
+			}
 		},
 		OnEvent: func(ev watch.Event) {
 			if watchBroker != nil {
@@ -2337,7 +2345,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.ConfigReloader, rt.HomeDir, lock)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)

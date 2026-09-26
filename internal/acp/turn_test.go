@@ -3049,3 +3049,158 @@ func TestModeRequestSystemElevationApplied(t *testing.T) {
 		t.Fatalf("no mode_changed update carrying system_access=true: %#v", updates)
 	}
 }
+
+// newResumeTestManager builds a TurnManager whose single runtime runs goal
+// through a recording runner. goals receives every goal the runner is
+// handed; rt mutates the returned runtime before it is installed.
+func newResumeTestManager(t *testing.T, state *session.State, goals chan string, rt func(*TurnRuntime)) *TurnManager {
+	t.Helper()
+	broker := pubsub.NewBroker[session.Event]()
+	return NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			r := &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, goal string) error {
+					if goals != nil {
+						goals <- goal
+					}
+					return nil
+				}),
+				Events: broker,
+				State:  state,
+			}
+			if rt != nil {
+				rt(r)
+			}
+			return r, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+}
+
+func TestResumeIfIdleStartsTurnWhenIdle(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	state.AddMessage(session.RoleAssistant, "waiting on the build", session.ContentTypePlain)
+	goals := make(chan string, 4)
+	manager := newResumeTestManager(t, state, goals, nil)
+
+	manager.ResumeIfIdle("s1", "build", false)
+
+	select {
+	case goal := <-goals:
+		if !strings.Contains(goal, `Watch "build" fired`) || !strings.Contains(goal, "auto-resuming") {
+			t.Fatalf("resume goal = %q, want the wrapper goal text", goal)
+		}
+		if !strings.Contains(goal, "waiting on the build") {
+			t.Fatalf("resume goal missing the assistant quote: %q", goal)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ResumeIfIdle did not start a turn on an idle session")
+	}
+}
+
+func TestResumeIfIdleNoTurnWhenBusy(t *testing.T) {
+	block := make(chan struct{})
+	firstStarted := make(chan struct{})
+	done := make(chan struct{})
+	var calls atomic.Int64
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	manager := newResumeTestManager(t, state, nil, nil)
+
+	// Replace the runner with one that parks so the slot stays occupied,
+	// then drive a client prompt in the background.
+	manager.lookup = func(sessionID string) (*TurnRuntime, bool) {
+		return &TurnRuntime{
+			SessionID: sessionID,
+			BeginWork: identityBeginWork,
+			Run: RunnerFunc(func(ctx context.Context, goal string) error {
+				if calls.Add(1) == 1 {
+					close(firstStarted)
+				}
+				<-block
+				return nil
+			}),
+			Events: pubsub.NewBroker[session.Event](),
+			State:  state,
+		}, true
+	}
+
+	go func() {
+		defer close(done)
+		_, _ = manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"s1","prompt":[{"type":"text","text":"hi"}]}`))
+	}()
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the client turn never started")
+	}
+
+	manager.ResumeIfIdle("s1", "build", false)
+	time.Sleep(50 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1 (a busy session must not auto-resume)", got)
+	}
+
+	close(block)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the client turn never finished")
+	}
+}
+
+func TestResumeIfIdleGateOffNoTurn(t *testing.T) {
+	var calls atomic.Int64
+	manager := newResumeTestManager(t, session.New(config.Default(), "/tmp", time.Now(), session.Persistence{}), nil, func(rt *TurnRuntime) {
+		rt.WatchResumeEnabled = func() bool { return false }
+		rt.Run = RunnerFunc(func(ctx context.Context, goal string) error { calls.Add(1); return nil })
+	})
+
+	manager.ResumeIfIdle("s1", "build", false)
+	time.Sleep(50 * time.Millisecond)
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("runner calls = %d, want 0 (the config gate is off)", got)
+	}
+}
+
+func TestResumeIfIdleGatePendingNoTurn(t *testing.T) {
+	var calls atomic.Int64
+	manager := newResumeTestManager(t, session.New(config.Default(), "/tmp", time.Now(), session.Persistence{}), nil, func(rt *TurnRuntime) {
+		rt.WatchResumeGatePending = func() bool { return true }
+		rt.Run = RunnerFunc(func(ctx context.Context, goal string) error { calls.Add(1); return nil })
+	})
+
+	manager.ResumeIfIdle("s1", "build", false)
+	time.Sleep(50 * time.Millisecond)
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("runner calls = %d, want 0 (a human gate is pending)", got)
+	}
+}
+
+func TestPostTurnLatchStartsFollowOnTurn(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	goals := make(chan string, 4)
+	manager := newResumeTestManager(t, state, goals, nil)
+
+	// A resume fire landed in the final-answer window: the turn-end
+	// residual drain armed the latch before the turn ended.
+	state.SetWatchResume("build", false)
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"s1","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+
+	select {
+	case <-goals: // the client turn's own goal
+	case <-time.After(2 * time.Second):
+		t.Fatal("the client turn never ran")
+	}
+	select {
+	case goal := <-goals:
+		if !strings.Contains(goal, `Watch "build" fired`) || !strings.Contains(goal, "auto-resuming") {
+			t.Fatalf("follow-on goal = %q, want the wrapper goal text", goal)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the post-turn latch did not start a follow-on turn")
+	}
+}

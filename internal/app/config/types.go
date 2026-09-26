@@ -28,6 +28,7 @@ type Config struct {
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
 	Titling       TitlingConfig                         `toml:"titling"`
+	Watch         WatchConfig                           `toml:"watch"`
 	Postmortem    PostmortemConfig                      `toml:"postmortem"`
 	History       HistoryConfig                         `toml:"history"`
 	TUI           TUIConfig                             `toml:"tui"`
@@ -157,6 +158,13 @@ type MCPServerConfig struct {
 type TitlingConfig struct {
 	Enabled   bool `toml:"enabled"`
 	TimeoutMs int  `toml:"timeout_ms"`
+}
+
+// WatchConfig holds watch subsystem settings. Unrelated to the
+// [indexing] watch flag (the file-index watcher): different section,
+// different meaning.
+type WatchConfig struct {
+	ResumeEnabled bool `toml:"resume_enabled"`
 }
 
 // PostmortemConfig controls the session exit post-mortem flow. OnExit is one

@@ -20,6 +20,7 @@ type watchStartArgs struct {
 	Condition string `json:"condition"`
 	Mode      string `json:"mode"`
 	Notify    *bool  `json:"notify"`
+	Resume    *bool  `json:"resume"`
 	Interval  string `json:"interval"`
 }
 
@@ -66,8 +67,11 @@ func watchStartTool(m *Manager) registry.Tool {
 			"job_id is the background job to watch (fires on terminal state). For file watches, " +
 			"path is a file path or glob. condition defaults to \"change\"; other forms: " +
 			"\"exit_code N\", \"regex PATTERN\", \"json PATH OP VALUE\". mode is once (default) " +
-			"or repeat. interval is a duration string like \"5s\" (clamped to a 2s floor).",
-		Schema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"kind":{"type":"string","enum":["command","job","file"]},"command":{"type":"string"},"job_id":{"type":"string"},"path":{"type":"string"},"condition":{"type":"string"},"mode":{"type":"string","enum":["once","repeat"]},"notify":{"type":"boolean"},"interval":{"type":"string"}},"required":["name","kind"],"additionalProperties":false}`),
+			"or repeat. interval is a duration string like \"5s\" (clamped to a 2s floor). " +
+			"resume=true auto-starts a new turn when this watch fires on an idle session " +
+			"(gated by the [watch] resume_enabled config setting, default on); it implies " +
+			"notify=true and is ignored for subagent-started watches.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"kind":{"type":"string","enum":["command","job","file"]},"command":{"type":"string"},"job_id":{"type":"string"},"path":{"type":"string"},"condition":{"type":"string"},"mode":{"type":"string","enum":["once","repeat"]},"notify":{"type":"boolean"},"resume":{"type":"boolean"},"interval":{"type":"string"}},"required":["name","kind"],"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -121,6 +125,7 @@ func watchStartTool(m *Manager) registry.Tool {
 			Condition: args.Condition,
 			Mode:      mode,
 			Notify:    args.Notify,
+			Resume:    args.Resume != nil && *args.Resume,
 			Interval:  interval,
 			// A subagent's watch.start calls carry the owner tag on the
 			// context (set by the agent.run handler via watch.WithOwner);

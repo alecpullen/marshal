@@ -151,6 +151,9 @@ func Default() Config {
 			Enabled:   true,
 			TimeoutMs: 10000,
 		},
+		Watch: WatchConfig{
+			ResumeEnabled: true,
+		},
 		Postmortem: PostmortemConfig{
 			OnExit: "prompt",
 		},

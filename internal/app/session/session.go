@@ -350,6 +350,12 @@ type State struct {
 	// that fires repeatedly while idle folds into one pending entry.
 	watchReports []watchReportEntry
 
+	// watchResumeName/watchResumeRepeat are the one-slot auto-resume
+	// latch (see watch_resume.go). Armed by the runner's turn-end residual
+	// drain; consumed at each runtime's idle boundary.
+	watchResumeName   string
+	watchResumeRepeat bool
+
 	// F21: session event surface. Publishes message, streaming/thinking,
 	// activity, tool lifecycle, audit, approval, and question events to
 	// external subscribers (e.g. the ACP transport in a later task).

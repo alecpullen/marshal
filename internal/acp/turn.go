@@ -22,6 +22,7 @@ import (
 	"marshal/internal/strutil"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/watch"
 )
 
 // PromptTurnParams is the JSON-RPC body for session/prompt.
@@ -99,6 +100,14 @@ type TurnRuntime struct {
 	// overrides map carries per-run role→preset overrides from the castlist;
 	// nil when no overrides are set. Nil when plan execution is unavailable.
 	PipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
+	// WatchResumeEnabled reads the config gate at wake time. Nil-safe:
+	// a runtime that doesn't supply it never resumes (tests). Set by the
+	// host's Lookup closure from rt.State.Config.Watch.ResumeEnabled (the
+	// same live source the TUI wake reads).
+	WatchResumeEnabled func() bool
+	// WatchResumeGatePending reports whether a human gate is pending
+	// (SDD). Nil means never gated.
+	WatchResumeGatePending func() bool
 }
 
 // systemAccess reports the runtime session's live system-access flag.
@@ -595,6 +604,25 @@ func (m *TurnManager) runTurn(
 		close(slot.done)
 	}()
 
+	// Post-turn auto-resume (spec §5): a resume fire that landed after
+	// this turn's final loop-top drain armed the session latch. The
+	// turn-end residual drain already persisted the report; the latch
+	// still says "wake when idle". This waiter fires when the cleanup
+	// defer releases the slot (close(slot.done) runs AFTER the slot is
+	// deleted from the map), then checks the latch and starts the
+	// follow-on turn while the session is genuinely idle. In-function
+	// post-release checks are impossible: the defers run after finishTurn
+	// computes its return value.
+	go func() {
+		<-slot.done
+		if rt.State == nil {
+			return
+		}
+		if name, repeat, ok := rt.State.TakeWatchResume(); ok {
+			m.ResumeIfIdle(sessionID, name, repeat)
+		}
+	}()
+
 	// Register runtime work. If the session is quiescing, return
 	// requestCancelled without starting the runner.
 	turnCtx, finish, err := rt.BeginWork(slotCtx)
@@ -827,6 +855,61 @@ func (m *TurnManager) runTurn(
 			return m.finishTurn(sessionID, rt, runErrVal, slot, resultOf)
 		}
 	}
+}
+
+// ResumeIfIdle starts a server-initiated auto-resume turn for sessionID
+// when the session is idle: no active turn slot, the config gate is on,
+// and no human gate is pending. It is the ACP twin of the TUI's
+// handleWatchMsg wake. Called from two sites: the Runtime.WatchResume
+// hook (idle fire; spawned in a goroutine because OnFire runs on the
+// watch goroutine) and the post-turn latch check (final-window fire).
+// Occupied or guarded → return; the running turn's loop-top drain or the
+// turn-end latch handles the report.
+func (m *TurnManager) ResumeIfIdle(sessionID string, name string, repeat bool) {
+	rt, ok := m.lookup(sessionID)
+	if !ok || rt == nil || rt.Run == nil || rt.State == nil {
+		return
+	}
+	if rt.WatchResumeEnabled != nil && !rt.WatchResumeEnabled() {
+		return
+	}
+	if rt.WatchResumeGatePending != nil && rt.WatchResumeGatePending() {
+		return
+	}
+	m.activeTurnsMu.Lock()
+	if _, exists := m.activeTurns[sessionID]; exists {
+		m.activeTurnsMu.Unlock()
+		return
+	}
+	m.activeTurnsMu.Unlock()
+	// Reserve the slot via runTurn itself — its atomic reservation is the
+	// single serialization point; a race with a concurrent client prompt is
+	// decided by runTurn's duplicate rejection (loser returns, no side
+	// effects). Build the wrapper goal (quote from rt.State's last
+	// assistant message) and start the turn in a goroutine so the caller
+	// (the watch goroutine) never blocks on RPC.
+	lastAssistant := lastAssistantText(rt.State)
+	goal := watch.ResumeGoal(name, lastAssistant, repeat)
+	go func() {
+		// A client prompt arriving mid-resume-turn is rejected by the
+		// existing one-turn-per-session rule, same as any duplicate.
+		_, _ = m.runTurn(context.Background(), sessionID, rt, rt.Run, goal, resultOrError)
+	}()
+}
+
+// lastAssistantText returns the last RoleAssistant message content in
+// state, or "" (same backward-scan pattern as the TUI's helper).
+func lastAssistantText(state *session.State) string {
+	if state == nil {
+		return ""
+	}
+	msgs := state.Messages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == session.RoleAssistant {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 // resultOrError maps the finished-turn state to a return value.

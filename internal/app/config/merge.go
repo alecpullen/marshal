@@ -337,6 +337,9 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Titling.Enabled, file.Titling.Enabled)
 		set(&cfg.Titling.TimeoutMs, file.Titling.TimeoutMs)
 	}
+	if file.Watch != nil {
+		set(&cfg.Watch.ResumeEnabled, file.Watch.ResumeEnabled)
+	}
 	if file.Postmortem != nil {
 		set(&cfg.Postmortem.OnExit, file.Postmortem.OnExit)
 	}

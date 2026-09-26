@@ -105,7 +105,6 @@ func (p *OpenAICompatible) Capabilities(ctx context.Context) schema.ProviderCapa
 	return p.capabilities
 }
 
-
 // UserAgent is the User-Agent marshal's provider client identifies itself
 // with on OpenCode Zen endpoints, which ask clients to use their own name
 // and version rather than a generic HTTP-library default. cmd/marshal
@@ -204,6 +203,20 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 // habit — an embedded error event inside an HTTP-200 stream, which is why
 // the first stream event is peeked at before the channel is handed back.
 func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	// OpenCode Go routes model families across three wire protocols; the
+	// chat-completions path below remains the default for every other
+	// provider and model. The strict-template demote/retry never applies
+	// to the gateway paths (that is llama.cpp/LM Studio behavior), so they
+	// return directly without the first-event peek.
+	if p.isOpencodeGo() {
+		switch opencodeEndpointFor(req.Model) {
+		case endpointResponses:
+			return p.responsesChat(ctx, req)
+		case endpointMessages:
+			return p.messagesChat(ctx, req)
+		}
+	}
+
 	events, err := p.chat(ctx, req)
 	if err != nil {
 		if isStrictSystemPositionError(err) && hasTrailingSystemMessage(req.Messages) {

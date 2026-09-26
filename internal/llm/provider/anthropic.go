@@ -239,6 +239,16 @@ func anthropicToolCallsFromBlocks(blocks []anthropicContentBlock) []schema.ToolC
 // --- request building ---
 
 func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
+	return buildAnthropicRequestBody(req, p.thinkingBudget, p.thinkingBudgetMargin)
+}
+
+// buildAnthropicRequestBody is the package-level Messages body
+// builder, shared by the native Anthropic provider and the OpenCode Go
+// /messages path (openai_compatible_messages.go). thinkingBudget and
+// thinkingBudgetMargin are the provider-level knobs; 0/0 gives the Go
+// path no provider-level thinking (the request's Thinking field still
+// maps through to budget_tokens).
+func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingBudgetMargin int) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
@@ -273,7 +283,7 @@ func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error)
 	// budget), medium -> 4096, high -> 16384. "" leaves the provider budget
 	// unchanged.
 	var thinking *anthropicThinking
-	budget := p.thinkingBudget
+	budget := thinkingBudget
 	if req.Thinking != "" {
 		switch req.Thinking {
 		case "off":
@@ -287,7 +297,7 @@ func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error)
 		}
 	}
 	if budget > 0 {
-		margin := p.thinkingBudgetMargin
+		margin := thinkingBudgetMargin
 		if margin == 0 {
 			// Auto: max(2048, maxTokens/4).
 			margin = 2048
@@ -365,14 +375,17 @@ func (p *Anthropic) Chat(ctx context.Context, req schema.ChatRequest) (<-chan sc
 	events := make(chan schema.ChatEvent)
 	capture := newWireCapture(p.name)
 	if req.Stream {
-		go p.streamChatEvents(capture.wrap(resp.Body), capture, events)
+		go streamAnthropicChatEvents(capture.wrap(resp.Body), capture, events)
 	} else {
-		go p.readChatResponse(capture.wrap(resp.Body), events)
+		go readAnthropicChatResponse(capture.wrap(resp.Body), events)
 	}
 	return events, nil
 }
 
-func (p *Anthropic) readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
+// readAnthropicChatResponse decodes one non-streaming Messages API body
+// into ChatEvents. Package-level so the OpenCode Go /messages path
+// reuses it (openai_compatible_messages.go).
+func readAnthropicChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
 
@@ -400,7 +413,7 @@ func (p *Anthropic) readChatResponse(body io.ReadCloser, events chan<- schema.Ch
 		hasContent = true
 	}
 	if !hasContent {
-		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("anthropic returned empty content (usage: in=%d out=%d)", parsed.Usage.InputTokens, parsed.Usage.OutputTokens)}
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("messages endpoint returned empty content (usage: in=%d out=%d)", parsed.Usage.InputTokens, parsed.Usage.OutputTokens)}
 		return
 	}
 	events <- schema.ChatEvent{
@@ -440,9 +453,11 @@ type anthropicBlockBuffer struct {
 	args      strings.Builder
 }
 
-// streamChatEvents consumes the Messages API SSE stream: typed events walk
-// content blocks by index, with tool_use input arriving as JSON fragments.
-func (p *Anthropic) streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- schema.ChatEvent) {
+// streamAnthropicChatEvents consumes the Messages API SSE stream: typed
+// events walk content blocks by index, with tool_use input arriving as
+// JSON fragments. Package-level so the OpenCode Go /messages path reuses
+// it (openai_compatible_messages.go).
+func streamAnthropicChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
 
@@ -536,7 +551,7 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, capture *wireCapture, e
 	toolCalls, _ = repairToolCalls(toolCalls)
 
 	if !hasContent {
-		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("anthropic returned empty content (stream)")}
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("messages endpoint returned empty content (stream)")}
 		return
 	}
 

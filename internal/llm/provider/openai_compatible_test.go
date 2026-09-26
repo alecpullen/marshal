@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1507,6 +1511,1138 @@ func TestIsOpencodeDetection(t *testing.T) {
 		}
 		if got := p.isOpencode(); got != tc.want {
 			t.Errorf("isOpencode(name=%q, baseURL=%q) = %v, want %v", tc.name, tc.baseURL, got, tc.want)
+		}
+	}
+}
+
+// opencodeEndpointFor implements the Go docs table as anchored prefix
+// rules: every current table row plus the fall-through default. The
+// provider-prefixed form never matches a rule — the routing layer cuts
+// the preset prefix before the provider sees the model — so it stays on
+// the status-quo chat path like any other unknown ID.
+func TestOpencodeEndpointForRouting(t *testing.T) {
+	cases := []struct {
+		model string
+		want  string
+	}{
+		// /responses families
+		{"grok-4.7", endpointResponses},
+		{"grok-4.6", endpointResponses},
+		{"gpt-6-luna", endpointResponses},
+		{"gpt-5.6-luna", endpointResponses},
+		{"muse-spark-1.3-contributor", endpointResponses},
+		{"muse-spark-1.2-contributor", endpointResponses},
+		// /messages families
+		{"minimax-m3", endpointMessages},
+		{"minimax-m2.7", endpointMessages},
+		{"minimax-m2.5", endpointMessages},
+		{"qwen3.8-max", endpointMessages},
+		{"qwen3.8-flash", endpointMessages},
+		{"qwen3.7-max", endpointMessages},
+		{"qwen3.7-plus", endpointMessages},
+		{"qwen3.6-plus", endpointMessages},
+		// /chat/completions families and the default
+		{"glm-5.3", endpointChat},
+		{"kimi-k3", endpointChat},
+		{"longcat-2.0", endpointChat},
+		{"deepseek-v4.1-flash", endpointChat},
+		{"mimo-v2.6-pro", endpointChat},
+		{"hy4-preview", endpointChat},
+		{"space-bunny-free", endpointChat},
+		{"test-model", endpointChat},
+		{"opencode-go/grok-4.7", endpointChat}, // prefixed form never routes
+	}
+	for _, tc := range cases {
+		if got := opencodeEndpointFor(tc.model); got != tc.want {
+			t.Errorf("opencodeEndpointFor(%q) = %q, want %q", tc.model, got, tc.want)
+		}
+	}
+}
+
+// isOpencodeGo gates endpoint routing on the Go product: the /zen/go
+// path, not the bare host, because plain Zen routes some of the same
+// model IDs differently (minimax-m3 and qwen3.8-max are /chat/completions
+// there but /messages here).
+func TestIsOpencodeGo(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		// Name match covers a provider pointed at a proxy that forwards to Go.
+		{"opencode-go", "https://api.example.com/v1", true},
+		// Renamed providers are detected via the opencode.ai host + /zen/go path.
+		{"renamed-go", "https://opencode.ai/zen/go/v1", true},
+		// Plain Zen shares the host but must NOT route.
+		{"plain-zen", "https://opencode.ai/zen/v1", false},
+		// The go.opencode.ai alias stays headers-only (Phase 1), no routing.
+		{"go-alias", "https://go.opencode.ai/v1", false},
+		// Lookalike hosts never match.
+		{"lookalike", "https://opencode.ai.attacker.com/zen/go/v1", false},
+		// A renamed provider at a non-opencode proxy is undetectable.
+		{"renamed-go", "https://proxy.example.com/zen/go/v1", false},
+		{"test", "http://localhost:1234/v1", false},
+	}
+	for _, tc := range cases {
+		p, err := NewOpenAICompatible(Options{Name: tc.name, BaseURL: tc.baseURL})
+		if err != nil {
+			t.Fatalf("NewOpenAICompatible(%q, %q): %v", tc.name, tc.baseURL, err)
+		}
+		if got := p.isOpencodeGo(); got != tc.want {
+			t.Errorf("isOpencodeGo(name=%q, baseURL=%q) = %v, want %v", tc.name, tc.baseURL, got, tc.want)
+		}
+	}
+}
+
+// --- OpenCode Go /responses path (direct responsesChat calls; the
+// end-to-end routing through Chat lands with the dispatch head) ---
+
+func TestResponsesChatNonStreaming(t *testing.T) {
+	var gotPath, gotSession, gotUA string
+	var rawBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSession = r.Header.Get("x-opencode-session")
+		gotUA = r.Header.Get("User-Agent")
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"output": [
+				{"type": "reasoning", "summary": [{"type": "summary_text", "text": "pondering"}]},
+				{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+				{"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\": \"SF\"}"}
+			],
+			"status": "completed",
+			"usage": {
+				"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+				"input_tokens_details": {"cached_tokens": 4},
+				"output_tokens_details": {"reasoning_tokens": 2}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL, SessionID: "sess_123"})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(false)
+	req.Model = "grok-4.7"
+	req.Messages = []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "You are helpful"},
+		{Role: schema.RoleUser, Content: "hi"},
+	}
+	req.Tools = []schema.ToolDefinition{{
+		Name:        "get_weather",
+		Description: "Get weather",
+		Parameters:  json.RawMessage(`{"type": "object"}`),
+	}}
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Kind != schema.DeltaThinking || ev.Delta != "pondering" {
+		t.Fatalf("first event = %+v ok=%v, want thinking delta %q", ev, ok, "pondering")
+	}
+	ev, ok = recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Delta != "hello" {
+		t.Fatalf("second event = %+v ok=%v, want answer delta %q", ev, ok, "hello")
+	}
+	ev, ok = recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDone {
+		t.Fatalf("third event = %+v ok=%v, want done", ev, ok)
+	}
+	if ev.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want tool_calls (function_call items present)", ev.FinishReason)
+	}
+	if ev.Usage == nil {
+		t.Fatal("Usage = nil, want mapped usage")
+	}
+	if ev.Usage.PromptTokens != 10 || ev.Usage.CompletionTokens != 5 || ev.Usage.TotalTokens != 15 {
+		t.Errorf("usage tokens = %+v, want 10/5/15", ev.Usage)
+	}
+	if ev.Usage.CacheReadTokens != 4 {
+		t.Errorf("CacheReadTokens = %d, want 4", ev.Usage.CacheReadTokens)
+	}
+	if ev.Usage.ReasoningTokens != 2 {
+		t.Errorf("ReasoningTokens = %d, want 2", ev.Usage.ReasoningTokens)
+	}
+	if len(ev.ToolCalls) != 1 || ev.ToolCalls[0].ID != "call_1" || ev.ToolCalls[0].Name != "get_weather" {
+		t.Fatalf("ToolCalls = %+v, want one assembled get_weather call", ev.ToolCalls)
+	}
+	if string(ev.ToolCalls[0].Args) != `{"city": "SF"}` {
+		t.Errorf("Args = %s, want the raw arguments JSON", ev.ToolCalls[0].Args)
+	}
+
+	if gotPath != "/responses" {
+		t.Errorf("request path = %q, want /responses", gotPath)
+	}
+	if gotSession != "sess_123" {
+		t.Errorf("x-opencode-session = %q, want sess_123 (Phase 1 regression)", gotSession)
+	}
+	if !strings.HasPrefix(gotUA, "marshal/") {
+		t.Errorf("User-Agent = %q, want marshal/<version> (Phase 1 regression)", gotUA)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		t.Fatalf("parse request body: %v", err)
+	}
+	if body["store"] != false {
+		t.Errorf("store = %v, want false (stateless client)", body["store"])
+	}
+	if got, _ := body["instructions"].(string); got != "You are helpful" {
+		t.Errorf("instructions = %q, want the leading system run", got)
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %+v, want one entry", body["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "function" || tool["name"] != "get_weather" {
+		t.Errorf("tool = %+v, want the FLAT responses shape {type, name, ...}", tool)
+	}
+	if _, nested := tool["function"]; nested {
+		t.Error("tool has a nested \"function\" object; the responses API tool shape is flat")
+	}
+	input, _ := body["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("input = %+v, want one user item (system went to instructions)", body["input"])
+	}
+	item, _ := input[0].(map[string]any)
+	if item["role"] != "user" {
+		t.Errorf("input[0].role = %v, want user", item["role"])
+	}
+}
+
+func TestResponsesChatStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"get_weather"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hel"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"lo"}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","delta":"pondering"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"city\""}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":":\"SF\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15},"output":[{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"}]}}
+
+`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+
+	var sawThinking bool
+	var answer strings.Builder
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			if !sawThinking {
+				t.Error("no thinking delta seen; want reasoning_summary_text.delta mapped to DeltaThinking")
+			}
+			if answer.String() != "hello" {
+				t.Errorf("answer deltas = %q, want hello", answer.String())
+			}
+			if ev.FinishReason != "tool_calls" {
+				t.Errorf("FinishReason = %q, want tool_calls", ev.FinishReason)
+			}
+			if ev.Usage == nil || ev.Usage.TotalTokens != 15 {
+				t.Errorf("Usage = %+v, want total 15 from response.completed", ev.Usage)
+			}
+			if len(ev.ToolCalls) != 1 || ev.ToolCalls[0].Name != "get_weather" {
+				t.Fatalf("ToolCalls = %+v, want one assembled get_weather call", ev.ToolCalls)
+			}
+			if string(ev.ToolCalls[0].Args) != `{"city":"SF"}` {
+				t.Errorf("Args = %s, want the assembled arguments JSON", ev.ToolCalls[0].Args)
+			}
+			break
+		}
+		switch {
+		case ev.Type == schema.ChatEventDelta && ev.Kind == schema.DeltaThinking:
+			if ev.Delta != "pondering" {
+				t.Errorf("thinking delta = %q, want pondering", ev.Delta)
+			}
+			sawThinking = true
+		case ev.Type == schema.ChatEventDelta:
+			answer.WriteString(ev.Delta)
+		}
+	}
+}
+
+func TestResponsesMapsIncompleteToLength(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "partial"}]}],
+			"status": "incomplete",
+			"incomplete_details": {"reason": "max_output_tokens"},
+			"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+		}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(false)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Delta != "partial" {
+		t.Fatalf("first event = %+v ok=%v, want delta %q", ev, ok, "partial")
+	}
+	ev, ok = recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDone {
+		t.Fatalf("second event = %+v ok=%v, want done", ev, ok)
+	}
+	if ev.FinishReason != "length" {
+		t.Errorf("FinishReason = %q, want length (status incomplete)", ev.FinishReason)
+	}
+}
+
+func TestResponsesReasoningEffortField(t *testing.T) {
+	req := chatReq(false)
+	req.Model = "grok-4.7"
+	req.Thinking = "medium"
+	body, err := buildResponsesRequestBody(req, false)
+	if err != nil {
+		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if _, hasTopLevel := parsed["reasoning_effort"]; hasTopLevel {
+		t.Error("body carries a top-level reasoning_effort field; the responses API uses reasoning.effort")
+	}
+	reasoning, _ := parsed["reasoning"].(map[string]any)
+	if reasoning == nil {
+		t.Fatal("reasoning object missing; want reasoning.effort for a thinking request")
+	}
+	if reasoning["effort"] != "medium" {
+		t.Errorf("reasoning.effort = %v, want medium", reasoning["effort"])
+	}
+	if _, hasSummary := reasoning["summary"]; hasSummary {
+		t.Error("reasoning.summary set without the provider reasoning_summary flag; want omitted")
+	}
+
+	// The summary flag adds summary:auto alongside the effort.
+	body, err = buildResponsesRequestBody(req, true)
+	if err != nil {
+		t.Fatalf("buildResponsesRequestBody(summary) returned error: %v", err)
+	}
+	parsed = nil
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	reasoning, _ = parsed["reasoning"].(map[string]any)
+	if reasoning == nil || reasoning["summary"] != "auto" {
+		t.Errorf("reasoning = %+v, want summary auto when the flag is on", parsed["reasoning"])
+	}
+
+	// "off"/"default"/"" omit the reasoning object entirely, matching
+	// the chat path's reasoning_effort convention.
+	for _, effort := range []string{"off", "default", ""} {
+		req.Thinking = effort
+		body, err = buildResponsesRequestBody(req, false)
+		if err != nil {
+			t.Fatalf("buildResponsesRequestBody(%q) returned error: %v", effort, err)
+		}
+		parsed = nil
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		if _, has := parsed["reasoning"]; has {
+			t.Errorf("thinking %q: reasoning object present, want omitted", effort)
+		}
+	}
+}
+
+// --- OpenCode Go /messages path (direct messagesChat calls) ---
+
+func TestMessagesChatNonStreaming(t *testing.T) {
+	var gotPath, gotSession, gotUA, gotVersion, gotAuth string
+	var rawBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSession = r.Header.Get("x-opencode-session")
+		gotUA = r.Header.Get("User-Agent")
+		gotVersion = r.Header.Get("anthropic-version")
+		gotAuth = r.Header.Get("Authorization")
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"content": [
+				{"type": "text", "text": "hello"},
+				{"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "SF"}}
+			],
+			"stop_reason": "tool_use",
+			"usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 4, "cache_creation_input_tokens": 2}
+		}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL, APIKey: "sk-test", SessionID: "sess_123"})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(false)
+	req.Model = "minimax-m3"
+	req.Messages = []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "You are helpful"},
+		{Role: schema.RoleUser, Content: "hi"},
+	}
+	req.Tools = []schema.ToolDefinition{{
+		Name:        "get_weather",
+		Description: "Get weather",
+		Parameters:  json.RawMessage(`{"type": "object"}`),
+	}}
+	events, err := p.messagesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("messagesChat returned error: %v", err)
+	}
+
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Delta != "hello" {
+		t.Fatalf("first event = %+v ok=%v, want delta %q", ev, ok, "hello")
+	}
+	ev, ok = recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDone {
+		t.Fatalf("second event = %+v ok=%v, want done", ev, ok)
+	}
+	if ev.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want tool_calls (stop_reason tool_use)", ev.FinishReason)
+	}
+	if ev.Usage == nil || ev.Usage.CacheReadTokens != 4 || ev.Usage.CacheWriteTokens != 2 {
+		t.Errorf("Usage = %+v, want cache read 4 / write 2", ev.Usage)
+	}
+	if len(ev.ToolCalls) != 1 || ev.ToolCalls[0].Name != "get_weather" {
+		t.Fatalf("ToolCalls = %+v, want one get_weather call", ev.ToolCalls)
+	}
+
+	if gotPath != "/messages" {
+		t.Errorf("request path = %q, want /messages", gotPath)
+	}
+	if gotAuth != "Bearer sk-test" {
+		t.Errorf("Authorization = %q, want Bearer (not x-api-key)", gotAuth)
+	}
+	if gotSession != "sess_123" || !strings.HasPrefix(gotUA, "marshal/") {
+		t.Errorf("session headers = %q / %q, want Phase 1 behavior on the messages path", gotSession, gotUA)
+	}
+	if gotVersion != "2023-06-01" {
+		t.Errorf("anthropic-version = %q, want 2023-06-01", gotVersion)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		t.Fatalf("parse request body: %v", err)
+	}
+	if body["max_tokens"] == nil {
+		t.Error("max_tokens missing; the Messages API requires it on every call")
+	}
+	if body["model"] != "minimax-m3" {
+		t.Errorf("model = %v, want minimax-m3", body["model"])
+	}
+	system, _ := body["system"].([]any)
+	if len(system) == 0 {
+		t.Fatal("system missing; the leading system message must be extracted to the system field")
+	}
+	sysBlock, _ := system[0].(map[string]any)
+	if cc, _ := sysBlock["cache_control"].(map[string]any); cc == nil || cc["type"] != "ephemeral" {
+		t.Errorf("system[0].cache_control = %+v, want an ephemeral breakpoint (prompt caching)", sysBlock["cache_control"])
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %+v, want one entry", body["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["input_schema"] == nil {
+		t.Error("tool.input_schema missing; want the Anthropic tool shape")
+	}
+}
+
+func TestMessagesChatStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"get_weather"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"SF\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "minimax-m3"
+	events, err := p.messagesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("messagesChat returned error: %v", err)
+	}
+
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDone {
+		t.Fatalf("event = %+v ok=%v, want done (tool_use-only stream)", ev, ok)
+	}
+	if ev.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want tool_calls", ev.FinishReason)
+	}
+	if len(ev.ToolCalls) != 1 || ev.ToolCalls[0].Name != "get_weather" || string(ev.ToolCalls[0].Args) != `{"city":"SF"}` {
+		t.Fatalf("ToolCalls = %+v, want assembled get_weather({\"city\":\"SF\"})", ev.ToolCalls)
+	}
+	if ev.Usage == nil || ev.Usage.PromptTokens != 10 || ev.Usage.CompletionTokens != 5 {
+		t.Errorf("Usage = %+v, want prompt 10 (message_start) / completion 5 (message_delta)", ev.Usage)
+	}
+}
+
+// --- end-to-end routing through Chat (dispatch head) ---
+
+func TestChatRoutesGrokToResponses(t *testing.T) {
+	var gotPath, gotSession string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSession = r.Header.Get("x-opencode-session")
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/responses" {
+			_, _ = w.Write([]byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"status":"completed"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL, SessionID: "sess_123"})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(false)
+	req.Model = "grok-4.7"
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+	}
+	if gotPath != "/responses" {
+		t.Errorf("Chat(grok-4.7) posted to %q, want /responses", gotPath)
+	}
+	if gotSession != "sess_123" {
+		t.Errorf("x-opencode-session = %q, want sess_123 on the responses path", gotSession)
+	}
+}
+
+func TestChatRoutesMiniMaxToMessages(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/messages" {
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(false)
+	req.Model = "minimax-m3"
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+	}
+	if gotPath != "/messages" {
+		t.Errorf("Chat(minimax-m3) posted to %q, want /messages", gotPath)
+	}
+}
+
+func TestChatStreamsResponsesModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hel"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"lo"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}
+
+`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	var answer strings.Builder
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+		if ev.Type == schema.ChatEventDelta {
+			answer.WriteString(ev.Delta)
+		}
+	}
+	if answer.String() != "hello" {
+		t.Errorf("streamed answer = %q, want hello", answer.String())
+	}
+}
+
+func TestChatStreamsMessagesModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "minimax-m3"
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	var answer strings.Builder
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			if ev.FinishReason != "stop" {
+				t.Errorf("FinishReason = %q, want stop (end_turn)", ev.FinishReason)
+			}
+			break
+		}
+		if ev.Type == schema.ChatEventDelta {
+			answer.WriteString(ev.Delta)
+		}
+	}
+	if answer.String() != "hello" {
+		t.Errorf("streamed answer = %q, want hello", answer.String())
+	}
+}
+
+// A chat-family model on a Go provider keeps the status-quo path and
+// body shape — the dispatch head must not disturb the default.
+func TestChatCompletionsUnaffectedForGo(t *testing.T) {
+	var gotPath string
+	var rawBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(false)
+	req.Model = "kimi-k3"
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+	}
+	if gotPath != "/chat/completions" {
+		t.Errorf("Chat(kimi-k3) posted to %q, want /chat/completions", gotPath)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		t.Fatalf("parse request body: %v", err)
+	}
+	if body["messages"] == nil {
+		t.Error("chat-completions body missing the messages array")
+	}
+	if body["input"] != nil {
+		t.Error("chat-completions body carries a responses-style input array")
+	}
+}
+
+// rewriteHostClient returns an HTTP client that sends every request to
+// target instead of the URL's own host, so a provider configured with a
+// real base URL (e.g. opencode.ai/zen/v1) can be exercised against an
+// httptest server without touching the network.
+func rewriteHostClient(t *testing.T, target string) *http.Client {
+	t.Helper()
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parse target %q: %v", target, err)
+	}
+	return &http.Client{Transport: rewriteHostTransport{target: targetURL}}
+}
+
+type rewriteHostTransport struct{ target *url.URL }
+
+func (tr rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = tr.target.Scheme
+	req.URL.Host = tr.target.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// The dispatch head is gated on the Go product alone: a routing-family
+// model on any other OpenAI-compatible provider — the built-in openai
+// template, or plain Zen, which shares opencode.ai and routes some of the
+// same model IDs differently — must keep posting /chat/completions.
+// Widening isOpencodeGo to the host-wide isOpencode() would silently
+// reroute grok/gpt/muse-spark/minimax/qwen3 models on every provider, so
+// this is the highest-blast-radius invariant in the change.
+func TestChatRoutingFamiliesStayOnChatForNonGoProviders(t *testing.T) {
+	models := []string{
+		"grok-4.7", // /responses family on Go
+		"gpt-6-luna",
+		"muse-spark-1.3-contributor",
+		"minimax-m3", // /messages family on Go
+		"qwen3.8-max",
+	}
+	cases := []struct {
+		name    string
+		baseURL string // empty = point straight at the httptest server
+	}{
+		{name: "openai-compatible"},
+		{name: "opencode-zen", baseURL: "https://opencode.ai/zen/v1"},
+	}
+	for _, tc := range cases {
+		for _, model := range models {
+			t.Run(tc.name+"/"+model, func(t *testing.T) {
+				var gotPath string
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotPath = r.URL.Path
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+				}))
+				defer server.Close()
+
+				baseURL := tc.baseURL
+				var client *http.Client
+				if baseURL == "" {
+					baseURL = server.URL
+				} else {
+					client = rewriteHostClient(t, server.URL)
+				}
+				p, err := NewOpenAICompatible(Options{Name: tc.name, BaseURL: baseURL, HTTPClient: client})
+				if err != nil {
+					t.Fatalf("NewOpenAICompatible returned error: %v", err)
+				}
+				req := chatReq(false)
+				req.Model = model
+				events, err := p.Chat(t.Context(), req)
+				if err != nil {
+					t.Fatalf("Chat returned error: %v", err)
+				}
+				for {
+					ev, ok := recvEvent(t, events)
+					if !ok {
+						t.Fatal("channel closed before done event")
+					}
+					if ev.Type == schema.ChatEventDone {
+						break
+					}
+				}
+				// Suffix rather than equality: the Zen base URL carries a
+				// /zen/v1 path prefix. A reroute to /responses or /messages
+				// still fails this.
+				if !strings.HasSuffix(gotPath, endpointChat) {
+					t.Errorf("Chat(%s) on provider %q posted to %q, want a path ending in %q", model, tc.name, gotPath, endpointChat)
+				}
+			})
+		}
+	}
+}
+
+// A streaming refusal must reach the user as answer text. The
+// non-streaming reader concatenates every content part, so it already
+// surfaces refusals; dropping the refusal delta would make the same
+// response visible non-streamed but read as a generic "empty content"
+// error when streamed.
+func TestResponsesStreamSurfacesRefusalDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.refusal.delta
+data: {"type":"response.refusal.delta","delta":"I can't"}
+
+event: response.refusal.delta
+data: {"type":"response.refusal.delta","delta":" help with that"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed"}}
+
+`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+	var answer strings.Builder
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventError {
+			t.Fatalf("stream error: %v (refusal text was dropped)", ev.Err)
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+		if ev.Type == schema.ChatEventDelta {
+			answer.WriteString(ev.Delta)
+		}
+	}
+	if answer.String() != "I can't help with that" {
+		t.Errorf("streamed refusal = %q, want the refusal text as answer deltas", answer.String())
+	}
+}
+
+// A proxy in front of the Responses API may append the chat-style [DONE]
+// sentinel even though the API itself has none. Skipping it keeps the
+// turn alive instead of failing the decode and ending on a stream error.
+func TestResponsesStreamToleratesDoneSentinel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hi"}
+
+data: [DONE]
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed"}}
+
+`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+	var answer strings.Builder
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventError {
+			t.Fatalf("stream error: %v (sentinel should be skipped, not decoded)", ev.Err)
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+		if ev.Type == schema.ChatEventDelta {
+			answer.WriteString(ev.Delta)
+		}
+	}
+	if answer.String() != "hi" {
+		t.Errorf("streamed answer = %q, want hi", answer.String())
+	}
+}
+
+// A truncated (/responses) turn surfaces its incomplete reason in the
+// error, so a max_output_tokens or content_filter stop is diagnosable
+// instead of reading as a generic empty response.
+func TestResponsesEmptyContentSurfacesIncompleteReason(t *testing.T) {
+	t.Run("non-streaming", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"output":[],"status":"incomplete","incomplete_details":{"reason":"content_filter"}}`))
+		}))
+		defer server.Close()
+
+		p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+		if err != nil {
+			t.Fatalf("NewOpenAICompatible returned error: %v", err)
+		}
+		req := chatReq(false)
+		req.Model = "grok-4.7"
+		events, err := p.responsesChat(t.Context(), req)
+		if err != nil {
+			t.Fatalf("responsesChat returned error: %v", err)
+		}
+		ev, ok := recvEvent(t, events)
+		if !ok || ev.Type != schema.ChatEventError {
+			t.Fatalf("event = %+v ok=%v, want a stream error", ev, ok)
+		}
+		if ev.Err == nil || !strings.Contains(ev.Err.Error(), "content_filter") {
+			t.Errorf("error = %v, want it to mention the incomplete reason content_filter", ev.Err)
+		}
+	})
+
+	t.Run("streaming", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`event: response.incomplete
+data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}
+
+`))
+		}))
+		defer server.Close()
+
+		p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+		if err != nil {
+			t.Fatalf("NewOpenAICompatible returned error: %v", err)
+		}
+		req := chatReq(true)
+		req.Model = "grok-4.7"
+		events, err := p.responsesChat(t.Context(), req)
+		if err != nil {
+			t.Fatalf("responsesChat returned error: %v", err)
+		}
+		ev, ok := recvEvent(t, events)
+		if !ok || ev.Type != schema.ChatEventError {
+			t.Fatalf("event = %+v ok=%v, want a stream error", ev, ok)
+		}
+		if ev.Err == nil || !strings.Contains(ev.Err.Error(), "max_output_tokens") {
+			t.Errorf("error = %v, want it to mention the incomplete reason max_output_tokens", ev.Err)
+		}
+	})
+}
+
+// Replayed assistant tool calls with empty or malformed arguments must
+// still carry an arguments string: the Responses API requires the field,
+// and omitempty would drop it and 400 on the next request. Matches the
+// Anthropic conversion's defense.
+func TestResponsesInputDefaultsEmptyToolCallArguments(t *testing.T) {
+	msgs := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hi"},
+		{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{
+			{ID: "call_empty", Name: "no_args"},
+			{ID: "call_bad", Name: "bad_args", Args: json.RawMessage(`{oops`)},
+			{ID: "call_ok", Name: "good_args", Args: json.RawMessage(`{"a":1}`)},
+		}},
+		{Role: schema.RoleTool, ToolCallID: "call_empty", Content: "ok"},
+	}
+	_, items := buildResponsesInput(msgs)
+
+	got := make(map[string]string)
+	for _, item := range items {
+		if item.Type == "function_call" {
+			got[item.CallID] = item.Arguments
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("function_call items = %+v, want 3", got)
+	}
+	if got["call_empty"] != "{}" {
+		t.Errorf("empty args = %q, want {} so the required field survives omitempty", got["call_empty"])
+	}
+	if got["call_bad"] != "{}" {
+		t.Errorf("malformed args = %q, want {}", got["call_bad"])
+	}
+	if got["call_ok"] != `{"a":1}` {
+		t.Errorf("valid args = %q, want the original JSON untouched", got["call_ok"])
+	}
+
+	// The field must actually reach the wire.
+	req := chatReq(false)
+	req.Model = "grok-4.7"
+	req.Messages = msgs
+	body, err := buildResponsesRequestBody(req, false)
+	if err != nil {
+		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
+	}
+	var parsed struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	for _, item := range parsed.Input {
+		if item["type"] != "function_call" {
+			continue
+		}
+		if args, ok := item["arguments"].(string); !ok || args == "" {
+			t.Errorf("function_call item = %+v, want a non-empty arguments string", item)
+		}
+	}
+}
+
+// Known no-op events stay out of the capture's [unrecognized-chunk]
+// markers so a real capture file keeps the signal for genuinely unknown
+// events (the Anthropic reader sets the same precedent).
+func TestResponsesWireCaptureQuietsKnownNoOps(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MARSHAL_WIRE_CAPTURE", dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.created\"}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.done\",\"text\":\"hi\"}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"weird_future_event\",\"x\":1}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "wiretest-responses", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+	var answer strings.Builder
+	for {
+		ev, ok := recvEvent(t, events)
+		if !ok {
+			t.Fatal("channel closed before done event")
+		}
+		if ev.Type == schema.ChatEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == schema.ChatEventDone {
+			break
+		}
+		if ev.Type == schema.ChatEventDelta {
+			answer.WriteString(ev.Delta)
+		}
+	}
+	if answer.String() != "hi" {
+		t.Fatalf("streamed answer = %q, want hi", answer.String())
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "wiretest-responses-*.stream"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected one capture file, got %v (err=%v)", matches, err)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	if !strings.Contains(string(data), "[unrecognized-chunk] {\"type\":\"weird_future_event\"") {
+		t.Fatalf("capture missing marker for the unknown event:\n%s", data)
+	}
+	for _, quiet := range []string{"response.created", "response.output_text.done"} {
+		if strings.Contains(string(data), "[unrecognized-chunk] {\"type\":\""+quiet+"\"") {
+			t.Errorf("known no-op event %s wrongly flagged:\n%s", quiet, data)
 		}
 	}
 }

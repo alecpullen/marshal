@@ -218,19 +218,20 @@ type Model struct {
 	// trustRefresh, when set, advances the permanent-trust config hash after
 	// an interactive project-config save succeeds: the user approved the new
 	// config from a trusted session, so the next launch must not re-prompt.
-	trustRefresh   func(workingDir string)
-	memoryDB       *db.DB
-	memoryProject  int64
-	homeDir        string
-	dataDir        string
-	workDir        string
-	skillIndex     *skills.Index
-	cmdRegistry    *commands.Registry
-	agentCancel    context.CancelFunc
-	approvalMode   policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
-	approvalModel  *approvalModel
-	questionModel  *questionModel
-	skillGateModel *skillGateModel
+	trustRefresh       func(workingDir string)
+	memoryDB           *db.DB
+	memoryProject      int64
+	homeDir            string
+	dataDir            string
+	workDir            string
+	skillIndex         *skills.Index
+	cmdRegistry        *commands.Registry
+	agentCancel        context.CancelFunc
+	approvalMode       policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
+	approvalModel      *approvalModel
+	questionModel      *questionModel
+	childQuestionModel *questionModel
+	skillGateModel     *skillGateModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -1453,6 +1454,9 @@ func New(state *session.State, opts ...Option) Model {
 	if q := m.state.PendingQuestion(); q != nil {
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
 	}
+	if child := m.state.PendingChildQuestion(); child != nil && m.childQuestionModel == nil {
+		m.childQuestionModel = newChildQuestionModel(child, max(m.leftWidth-4, 30))
+	}
 	if sg := m.state.PendingSkillGate(); sg != nil {
 		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
 	}
@@ -1750,6 +1754,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.questionModel != nil {
 			m.questionModel.SetSize(max(m.leftWidth-4, 30))
+		}
+		if m.childQuestionModel != nil {
+			m.childQuestionModel.SetSize(max(m.leftWidth-4, 30))
 		}
 		if m.skillGateModel != nil {
 			m.skillGateModel.SetSize(max(m.leftWidth-4, 30))
@@ -2327,7 +2334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
 	// tool decision is pending. These must be intercepted before the
 	// approval/question routing below, which would otherwise swallow them.
-	if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSkillGate() != nil {
+	if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil || m.state.PendingSkillGate() != nil {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
@@ -2379,6 +2386,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return updated, cmd
 		}
 		return m.handleQuestion(msg, q)
+	}
+
+	// Inline child-question prompt (idle-parent case): a background
+	// subagent is blocked on parent.ask and no runner question or tool
+	// decision is pending, so the user answers the child directly. Scroll
+	// gestures are handled first, mirroring the question form.
+	if child := m.state.PendingChildQuestion(); child != nil {
+		if updated, cmd, handled := m.scrollTranscript(msg); handled {
+			return updated, cmd
+		}
+		return m.handleChildQuestion(msg, child)
 	}
 
 	// Bubble Tea v2 emits a KeyReleaseMsg alongside every KeyPressMsg.
@@ -2785,6 +2803,51 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 	return m, nil
 }
 
+// handleChildQuestion routes messages to the inline child-question form:
+// a background subagent's parent.ask surfaced for the user to answer
+// directly (the parent loop is idle; there is no model to answer from
+// context). On completion the answers go to the child's own ResponseChan;
+// Esc answers Unanswered rather than leaving the child to time out.
+func (m Model) handleChildQuestion(msg tea.Msg, child *session.PendingChildQuestion) (tea.Model, tea.Cmd) {
+	if m.childQuestionModel == nil || m.childQuestionModel.child != child {
+		// Build lazily — and rebuild when the open form is bound to a
+		// question that was superseded while it was up (queue rotation):
+		// the user's keypresses must land on the question that is live
+		// NOW, not a stale one (same identity guard as the skill gate).
+		m.childQuestionModel = newChildQuestionModel(child, max(m.leftWidth-4, 30))
+		return m, m.childQuestionModel.Init()
+	}
+	qm, cmd := m.childQuestionModel.Update(msg)
+	m.childQuestionModel = qm
+	if !m.childQuestionModel.IsDone() {
+		return m, cmd
+	}
+	if m.state.PendingChildQuestion() == child {
+		child.Respond(m.childQuestionModel.Answers())
+		m.state.ResolveChildQuestion(child)
+		m.state.AddMessage(session.RoleSystem, formatChildAnsweredNotice(child, m.childQuestionModel.Answers()), session.ContentTypePlain)
+	}
+	m.childQuestionModel = nil
+	m.resetInput()
+	m.input.Placeholder = "Ask Marshal..."
+	m.updateViewportHeight()
+	m.lastTranscriptHash = 0
+	return m, nil
+}
+
+// formatChildAnsweredNotice renders the user-visible record of a child
+// question the user answered directly from the TUI form.
+func formatChildAnsweredNotice(child *session.PendingChildQuestion, answers []session.Answer) string {
+	pairs := make([]string, 0, len(answers))
+	for _, a := range answers {
+		pairs = append(pairs, fmt.Sprintf("%q → %q", a.Question, a.Answer))
+	}
+	return fmt.Sprintf(
+		"You answered subagent %d (%s): %s",
+		child.ChildID, child.ChildDesc, strings.Join(pairs, ", "),
+	)
+}
+
 // handleSkillGate routes messages to the inline skill-gate dialog while a
 // skill load gate is pending. The decision is responded on the original
 // pending struct; per-skill and allow-all decisions are recorded on the
@@ -2919,6 +2982,14 @@ func (m Model) inputChromeRows() int {
 			content = renderQuestionPanel(q, max(m.leftWidth-4, 1))
 		}
 		rows += lipgloss.Height(content)
+	} else if child := m.state.PendingChildQuestion(); child != nil {
+		content := ""
+		if m.childQuestionModel != nil {
+			content = m.childQuestionModel.View()
+		} else {
+			content = renderChildQuestionPanel(child, max(m.leftWidth-4, 1))
+		}
+		rows += lipgloss.Height(content)
 	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		// Mirror renderInputArea's switch exactly so the budget never
 		// disagrees with what is on screen.
@@ -2947,7 +3018,7 @@ func (m Model) inputChromeRows() int {
 
 func (m Model) inputAreaRows() int {
 	rows := m.inputChromeRows()
-	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil {
+	if m.state.PendingQuestion() == nil && m.state.PendingChildQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
@@ -4314,6 +4385,9 @@ func (m Model) settingsBlockReason() string {
 	}
 	if m.state.PendingQuestion() != nil {
 		return "Answer the pending question to save."
+	}
+	if m.state.PendingChildQuestion() != nil {
+		return "Answer the pending subagent question to save."
 	}
 	if m.dock.IsOpen() {
 		if _, browser := m.dock.Panel().(*settings.BrowserPanel); browser {

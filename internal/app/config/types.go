@@ -494,6 +494,21 @@ type AgentConfig struct {
 	// value (including -1) means disabled (maxTokens is never adjusted).
 	// Positive values are used directly.
 	ThinkingBudgetMargin int `toml:"thinking_budget_margin"`
+	// ParentQuestionRoles lists the child-agent roles that may raise a
+	// question back to their parent agent mid-task. v1 wires ONE role:
+	// "subtask" (ad-hoc agent.run children); the pipeline roles
+	// "implementer" and "sdd_implementer" are reserved and inert until
+	// the pipeline owner grows a ParentQuestioner (spec §10 caveat). A
+	// role outside the list cannot bridge a question; its questions fail
+	// the child turn instead. Empty means no role may ask.
+	ParentQuestionRoles []string `toml:"parent_question_roles"`
+	// ParentQuestionTimeout bounds how long a child waits for its parent to
+	// answer a bridged question before the question is abandoned. 0 =
+	// built-in default (5 minutes).
+	ParentQuestionTimeout time.Duration `toml:"parent_question_timeout"`
+	// ParentQuestionMaxPerTask caps how many questions one child task may
+	// bridge to its parent. 0 = built-in default (3).
+	ParentQuestionMaxPerTask int `toml:"parent_question_max_per_task"`
 }
 
 // ParseRepairFeedbackEnabled resolves the tri-state toggle: unset means on.

@@ -1033,6 +1033,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		for _, msg := range r.State.DrainSubagentReports() {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 		}
+		// A subagent blocked on parent.ask holds the PendingChildQuestion
+		// slot. The synthetic report above announces the question once; this
+		// hint is the standing affordance that tells the parent HOW to
+		// answer it. It is re-derived from live state every loop-top and is
+		// deliberately not persisted: persisting would repeat it in the
+		// transcript on every iteration while the child waits.
+		if hint, ok := r.pendingChildQuestionHint(); ok {
+			messages = append(messages, hint)
+		}
 		// Drain background watch completion reports alongside subagent
 		// reports. These are machine-generated (never user-typed), so they
 		// do not count as a user intervention for the doom-loop guard, but
@@ -1815,4 +1824,30 @@ func (r *Runner) verificationGateOn(route routing.Route) bool {
 		return *route.Preset.VerificationGate
 	}
 	return r.VerificationGate
+}
+
+// pendingChildQuestionHint returns the loop-top affordance message telling
+// the parent how to answer a subagent that is blocked on parent.ask. ok is
+// false when no child question is outstanding, or when this runner is a
+// subtask child that has no children of its own to answer.
+func (r *Runner) pendingChildQuestionHint() (schema.ChatMessage, bool) {
+	if r.role() == RoleSubtask {
+		return schema.ChatMessage{}, false
+	}
+	queued := r.State.ChildQuestions()
+	if len(queued) == 0 {
+		return schema.ChatMessage{}, false
+	}
+	head := queued[0]
+	var b strings.Builder
+	fmt.Fprintf(&b, "[system hint] subagent %d (%s) is blocked waiting on your answer. Questions:\n", head.ChildID, head.ChildDesc)
+	b.WriteString(formatChildQuestions(head.Questions))
+	if remaining := len(queued) - 1; remaining > 0 {
+		fmt.Fprintf(&b, "%d more subagent question(s) are queued behind this one and become answerable next.\n", remaining)
+	}
+	b.WriteString("Call parent.respond with one answer per question in the same order (answers determined by the task description or the repository), or escalate to the user with question.ask first and relay their answer.")
+	return schema.ChatMessage{
+		Role:    schema.RoleUser,
+		Content: b.String(),
+	}, true
 }

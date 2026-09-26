@@ -38,23 +38,26 @@ type fileProfile struct {
 }
 
 type fileAgent struct {
-	Provider                 *string `toml:"provider"`
-	Model                    *string `toml:"model"`
-	MaxToolIterations        *int    `toml:"max_tool_iterations"`
-	MaxRetries               *int    `toml:"max_retries"`
-	MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
-	ReconnectMaxWaitSeconds  *int    `toml:"reconnect_max_wait_seconds"`
-	MaxToolResultChars       *int    `toml:"max_tool_result_chars"`
-	MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
-	PlanFirst                *bool   `toml:"plan_first"`
-	SubtaskIterations        *int    `toml:"subtask_iterations"`
-	ApprovalMode             *string `toml:"approval_mode"`
-	HistoryBudgetTokens      *int    `toml:"history_budget_tokens"`
-	ParseRepairFeedback      *bool   `toml:"parse_repair_feedback"`
-	VerificationGate         *bool   `toml:"verification_gate"`
-	MaxTouchedFileBytes      *int    `toml:"max_touched_file_bytes"`
-	ThinkingBudgetMargin     *int    `toml:"thinking_budget_margin"`
-	MaxConcurrentSubagents   *int    `toml:"max_concurrent_subagents"`
+	Provider                 *string  `toml:"provider"`
+	Model                    *string  `toml:"model"`
+	MaxToolIterations        *int     `toml:"max_tool_iterations"`
+	MaxRetries               *int     `toml:"max_retries"`
+	MaxTurnContextTokens     *int     `toml:"max_turn_context_tokens"`
+	ReconnectMaxWaitSeconds  *int     `toml:"reconnect_max_wait_seconds"`
+	MaxToolResultChars       *int     `toml:"max_tool_result_chars"`
+	MaxStructuredOutputChars *int     `toml:"max_structured_output_chars"`
+	PlanFirst                *bool    `toml:"plan_first"`
+	SubtaskIterations        *int     `toml:"subtask_iterations"`
+	ApprovalMode             *string  `toml:"approval_mode"`
+	HistoryBudgetTokens      *int     `toml:"history_budget_tokens"`
+	ParseRepairFeedback      *bool    `toml:"parse_repair_feedback"`
+	VerificationGate         *bool    `toml:"verification_gate"`
+	MaxTouchedFileBytes      *int     `toml:"max_touched_file_bytes"`
+	ThinkingBudgetMargin     *int     `toml:"thinking_budget_margin"`
+	MaxConcurrentSubagents   *int     `toml:"max_concurrent_subagents"`
+	ParentQuestionRoles      []string `toml:"parent_question_roles"`
+	ParentQuestionTimeout    *string  `toml:"parent_question_timeout"`
+	ParentQuestionMaxPerTask *int     `toml:"parent_question_max_per_task"`
 }
 
 type filePrivacy struct {

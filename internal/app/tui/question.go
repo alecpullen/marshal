@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -32,8 +33,12 @@ const questionOtherSentinel = "other"
 // Pressing Esc on any question marks every remaining question as
 // session.AnswerUnanswered.
 type questionModel struct {
-	form    *huh.Form
-	q       *session.PendingQuestion
+	form *huh.Form
+	q    *session.PendingQuestion
+	// child, when non-nil, marks this form as answering a background
+	// subagent's parent.ask (idle-parent case) rather than the runner's
+	// own question.ask.
+	child   *session.PendingChildQuestion
 	width   int
 	done    bool
 	aborted bool
@@ -60,6 +65,39 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 		others:  make([]*string, len(q.Questions)),
 		fields:  make([][]huh.Field, len(q.Questions)),
 	}
+	qm.buildForm()
+	return qm
+}
+
+// newChildQuestionModel builds the form for a question a background
+// subagent asked via parent.ask while no parent turn was live to answer
+// it (the idle-parent case, spec §5.4). It renders the same question
+// surface with a "from subagent" attribution so the user answers the
+// child directly; submit routes through the child's own ResponseChan.
+func newChildQuestionModel(child *session.PendingChildQuestion, width int) *questionModel {
+	q := &session.PendingQuestion{
+		Questions:    child.Questions,
+		ResponseChan: child.ResponseChan,
+	}
+	qm := &questionModel{
+		q:       q,
+		child:   child,
+		width:   max(width, 30),
+		answers: session.UnansweredAnswers(child.Questions),
+		inputs:  make([]*string, len(child.Questions)),
+		selects: make([]*string, len(child.Questions)),
+		multis:  make([]*[]string, len(child.Questions)),
+		others:  make([]*string, len(child.Questions)),
+		fields:  make([][]huh.Field, len(child.Questions)),
+	}
+	qm.buildForm()
+	return qm
+}
+
+// buildForm constructs the huh form groups shared by the runner-question
+// and child-question surfaces. Split from the constructors so both stay
+// in lockstep (question rendering, Other-sentinel hiding, Esc semantics).
+func (qm *questionModel) buildForm() {
 
 	// One huh.Group per question field. The custom-answer input must live in
 	// its own group so it can be hidden independently: by the time huh
@@ -67,7 +105,7 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 	// is committed, so a user who picked a listed option never gets walked
 	// into the free-text input.
 	var groups []*huh.Group
-	for i, qst := range q.Questions {
+	for i, qst := range qm.q.Questions {
 		hasOptions := len(qst.Options) > 0
 		switch {
 		case hasOptions && qst.Multi:
@@ -144,7 +182,6 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 		WithKeyMap(km)
 
 	qm.initCmd = qm.form.Init()
-	return qm
 }
 
 // questionFieldWidth is the width given to the huh form: the panel width
@@ -271,6 +308,23 @@ func (qm *questionModel) View() string {
 	focused := qm.form.GetFocusedField()
 
 	var b strings.Builder
+	if qm.child != nil {
+		attribution := "from subagent"
+		if d := strings.TrimSpace(qm.child.ChildDesc); d != "" {
+			attribution = "from subagent " + d
+		} else if qm.child.ChildID != 0 {
+			attribution = fmt.Sprintf("from subagent %d", qm.child.ChildID)
+		}
+		for j, line := range strings.Split(ansi.Wrap(attribution, contentWidth, WrapBreakpoints), "\n") {
+			if j == 0 {
+				b.WriteString(gutter)
+			} else {
+				b.WriteString(indent)
+			}
+			b.WriteString(mutedStyle().Render(line))
+			b.WriteString("\n")
+		}
+	}
 	for i, qs := range qm.q.Questions {
 		if ans := qm.answers[i].Answer; ans != "" && ans != session.AnswerUnanswered {
 			for j, line := range strings.Split(ansi.Wrap(qs.Question+" · "+ans, contentWidth, WrapBreakpoints), "\n") {

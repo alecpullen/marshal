@@ -1144,6 +1144,90 @@ func TestWorkGateRejectsAfterQuiesce(t *testing.T) {
 	}
 }
 
+func TestChildQuestionQueueFIFO(t *testing.T) {
+	s := newTestState()
+
+	first := &PendingChildQuestion{ChildID: 1, ChildDesc: "first", Questions: []Question{{Question: "Q1"}}}
+	second := &PendingChildQuestion{ChildID: 2, ChildDesc: "second", Questions: []Question{{Question: "Q2"}}}
+
+	s.PushChildQuestion(first)
+	s.PushChildQuestion(second)
+
+	// Head is the first asker; the second child queued behind it.
+	if head := s.PendingChildQuestion(); head != first {
+		t.Fatalf("head = %p, want the first child's question", head)
+	}
+	queued := s.ChildQuestions()
+	if len(queued) != 2 || queued[0] != first || queued[1] != second {
+		t.Fatalf("queue = [%p, %p], want [first, second]", queued[0], queued[1])
+	}
+
+	// Resolving the head rotates the queue; the sibling becomes head.
+	s.ResolveChildQuestion(first)
+	if head := s.PendingChildQuestion(); head != second {
+		t.Fatalf("after resolving head, head = %p, want the second child's question", head)
+	}
+	if remaining := s.ChildQuestions(); len(remaining) != 1 || remaining[0] != second {
+		t.Fatalf("after resolving head, remaining queue = %v, want [second]", remaining)
+	}
+}
+
+func TestResolveChildQuestionIdentityGuarded(t *testing.T) {
+	s := newTestState()
+
+	first := &PendingChildQuestion{ChildID: 1, ChildDesc: "first", Questions: []Question{{Question: "Q1"}}}
+	second := &PendingChildQuestion{ChildID: 2, ChildDesc: "second", Questions: []Question{{Question: "Q2"}}}
+	s.PushChildQuestion(first)
+	s.PushChildQuestion(second)
+
+	// A timed-out child's teardown resolves a question that was already
+	// removed from the queue (or never queued): the sibling's still-waiting
+	// question must survive.
+	gone := &PendingChildQuestion{ChildID: 3, ChildDesc: "late", Questions: []Question{{Question: "Q3"}}}
+	s.ResolveChildQuestion(gone)
+	if head := s.PendingChildQuestion(); head != first {
+		t.Fatalf("resolving an unqueued question must not disturb the queue head")
+	}
+
+	// Removing the tail leaves the head untouched.
+	s.ResolveChildQuestion(second)
+	if head := s.PendingChildQuestion(); head != first {
+		t.Fatal("resolving the tail must not remove the head")
+	}
+}
+
+func TestResolvePendingForShutdownAnswersAllChildQuestions(t *testing.T) {
+	s := newTestState()
+
+	chans := make([]chan []Answer, 2)
+	for i := range chans {
+		chans[i] = make(chan []Answer, 1)
+		s.PushChildQuestion(&PendingChildQuestion{
+			ChildID:      int64(i + 1),
+			ChildDesc:    fmt.Sprintf("child %d", i+1),
+			Questions:    []Question{{Question: "Which DB?"}},
+			ResponseChan: chans[i],
+		})
+	}
+
+	s.ResolvePendingForShutdown()
+
+	// Every blocked child unblocks with Unanswered, not just the head.
+	for i, ch := range chans {
+		select {
+		case answers := <-ch:
+			if len(answers) != 1 || answers[0].Answer != AnswerUnanswered {
+				t.Fatalf("child %d answers = %v, want [Unanswered]", i, answers)
+			}
+		default:
+			t.Fatalf("child %d channel was not written to", i)
+		}
+	}
+	if queued := s.ChildQuestions(); len(queued) != 0 {
+		t.Fatalf("queue after shutdown = %v, want empty", queued)
+	}
+}
+
 func TestResolvePendingForShutdownReleasesWaiters(t *testing.T) {
 	s := newTestState()
 

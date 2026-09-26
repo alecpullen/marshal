@@ -537,6 +537,47 @@ func TestDefaultAgentLimitsAreZero(t *testing.T) {
 	}
 }
 
+func TestDefaultParentQuestionSettings(t *testing.T) {
+	cfg := Default()
+	wantRoles := []string{"subtask", "implementer", "sdd_implementer"}
+	if !reflect.DeepEqual(cfg.Agent.ParentQuestionRoles, wantRoles) {
+		t.Fatalf("Agent.ParentQuestionRoles = %v, want %v", cfg.Agent.ParentQuestionRoles, wantRoles)
+	}
+	if cfg.Agent.ParentQuestionTimeout != 5*time.Minute {
+		t.Fatalf("Agent.ParentQuestionTimeout = %s, want 5m", cfg.Agent.ParentQuestionTimeout)
+	}
+	if cfg.Agent.ParentQuestionMaxPerTask != 3 {
+		t.Fatalf("Agent.ParentQuestionMaxPerTask = %d, want 3", cfg.Agent.ParentQuestionMaxPerTask)
+	}
+}
+
+func TestLoadParsesParentQuestionSettings(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+
+	writeFile(t, work+"/.marshal/config.toml", `
+[agent]
+parent_question_roles = ["sdd_implementer"]
+parent_question_timeout = "90s"
+parent_question_max_per_task = 7
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	wantRoles := []string{"sdd_implementer"}
+	if !reflect.DeepEqual(cfg.Agent.ParentQuestionRoles, wantRoles) {
+		t.Fatalf("Agent.ParentQuestionRoles = %v, want %v", cfg.Agent.ParentQuestionRoles, wantRoles)
+	}
+	if cfg.Agent.ParentQuestionTimeout != 90*time.Second {
+		t.Fatalf("Agent.ParentQuestionTimeout = %s, want 90s", cfg.Agent.ParentQuestionTimeout)
+	}
+	if cfg.Agent.ParentQuestionMaxPerTask != 7 {
+		t.Fatalf("Agent.ParentQuestionMaxPerTask = %d, want 7", cfg.Agent.ParentQuestionMaxPerTask)
+	}
+}
+
 func TestLoadParsesPlanFirst(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

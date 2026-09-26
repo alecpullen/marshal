@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/llm/pricing"
@@ -103,13 +104,25 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summar
 // tools are visible so the child can perform implementation work; their own
 // Risk levels and the shared policy engine still gate approval for writes,
 // commands, and destructive tools.
+//
+// parent.ask is the one sanctioned exception to the "no live user" rule, and
+// it is deliberately NOT listed here: the child does not ask a user, it asks
+// its own parent agent through the ParentQuestioner seam. It is registered
+// per-child inside NewSubagentTool (not by this view) so the tool carries
+// that child's own view ID and description, and only when the spawning
+// configuration whitelists the child's role.
+//
+// parent.respond and parent.correct are the parent-side halves of that seam
+// and ARE excluded here: their handlers close over the PARENT's state, so a
+// child that called them would answer a sibling's pending question or steer a
+// sibling's runner — decisions that belong to the parent alone.
 func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 	view := registry.New()
 	for _, tool := range src.List() {
 		if tool.Deferred {
 			continue
 		}
-		if tool.Name == "agent.run" || tool.Name == "agent.await" || tool.Name == "agent.output" || tool.Name == "agent.kill" || tool.Name == "question.ask" || tool.Name == "ask_user" {
+		if tool.Name == "agent.run" || tool.Name == "agent.await" || tool.Name == "agent.output" || tool.Name == "agent.kill" || tool.Name == "question.ask" || tool.Name == "ask_user" || tool.Name == "parent.respond" || tool.Name == "parent.correct" {
 			continue
 		}
 		_ = view.Register(tool)
@@ -133,6 +146,19 @@ type subagentToolConfig struct {
 	// ResponseChan. The tool handler is shared across the parent runner's
 	// parallel batch, so the mutex lives on the config (not the handler).
 	consentMu sync.Mutex
+
+	// parentQuestioner, when set together with parentAskAllowed, registers
+	// the parent.ask tool on each child's registry so the child can escalate
+	// a blocking question to its parent agent instead of asking a user it
+	// does not have.
+	parentQuestioner ParentQuestioner
+	parentAskAllowed bool
+	// parentAskTimeout and parentAskMaxPerTask mirror the config's
+	// parent_question_timeout / parent_question_max_per_task. The defaults
+	// below match config.Default() so a caller that sets only the
+	// questioner still gets sane bounds.
+	parentAskTimeout    time.Duration
+	parentAskMaxPerTask int
 }
 
 // WithSubagentExec overrides the default child runner executor. Used in
@@ -159,6 +185,37 @@ func WithSubagentParentModel(model string, p pricing.ModelPricing) SubagentOptio
 	return func(cfg *subagentToolConfig) {
 		cfg.parentModel = model
 		cfg.parentPricing = p
+	}
+}
+
+// WithParentQuestioner supplies the seam a whitelisted child uses to ask its
+// parent agent a question. When nil, no child gets parent.ask regardless of
+// WithParentAskAllowed.
+func WithParentQuestioner(pq ParentQuestioner) SubagentOption {
+	return func(cfg *subagentToolConfig) {
+		cfg.parentQuestioner = pq
+	}
+}
+
+// WithParentAskAllowed gates parent.ask per spawning configuration. The
+// caller decides which roles may ask (config.Agent.ParentQuestionRoles) and
+// passes the decision in; NewSubagentTool cannot make it itself because the
+// child's resolved role is chosen by the factory, which runs after the tool
+// is constructed.
+func WithParentAskAllowed(allowed bool) SubagentOption {
+	return func(cfg *subagentToolConfig) {
+		cfg.parentAskAllowed = allowed
+	}
+}
+
+// WithParentAskLimits overrides the parent.ask tool-level bounds registered
+// on children: the belt-and-braces timeout that fires even if the
+// ParentQuestioner implementation ignores deadlines, and the per-task
+// question cap (0 disables it).
+func WithParentAskLimits(timeout time.Duration, maxPerTask int) SubagentOption {
+	return func(cfg *subagentToolConfig) {
+		cfg.parentAskTimeout = timeout
+		cfg.parentAskMaxPerTask = maxPerTask
 	}
 }
 
@@ -194,7 +251,14 @@ type agentRunArgs struct {
 // factory builds a fresh subagent runner; the state enforces the depth and
 // concurrency guards.
 func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolver, reg *registry.Registry, state *session.State, opts ...SubagentOption) registry.Tool {
-	cfg := subagentToolConfig{exec: runSubagentChild, resolver: resolver}
+	// The defaults mirror config.Default()'s parent-question settings so a
+	// caller that wires only a questioner still gets bounded waits.
+	cfg := subagentToolConfig{
+		exec:                runSubagentChild,
+		resolver:            resolver,
+		parentAskTimeout:    5 * time.Minute,
+		parentAskMaxPerTask: 3,
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -293,6 +357,19 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			meta.Provider = child.Provider.Name()
 		}
 		view := state.RegisterSubagentWithMeta(args.Description, childState, meta)
+		// parent.ask is registered here, not on SubtaskScopeView, because the
+		// tool must carry THIS child's view ID and description and only exists
+		// for whitelisted roles. Registering before the exec goroutine starts
+		// means the child's first turn already sees the tool. A nil Registry
+		// (the bare-Runner test factory) simply skips it.
+		if cfg.parentAskAllowed && cfg.parentQuestioner != nil && child.Registry != nil {
+			_ = child.Registry.Register(NewParentAskTool(
+				cfg.parentQuestioner,
+				cfg.parentAskTimeout,
+				cfg.parentAskMaxPerTask,
+				WithParentAskRef(view.ID, args.Description),
+			))
+		}
 		// The child's context derives from the SESSION, not this tool call:
 		// a background child must survive the parent turn ending normally,
 		// and turn-cancel (Esc) must not kill it. Session Shutdown still

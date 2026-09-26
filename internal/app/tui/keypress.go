@@ -139,7 +139,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// (or mid approval/question/skill-gate/command-edit), ? falls
 		// through to the trailing m.input.Update(msg) below and is typed
 		// literally.
-		if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil {
+		if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && m.state.PendingChildQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil {
 			mm, cmd := m.dispatchCommand("/help")
 			return mm, cmd, true
 		}
@@ -369,7 +369,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if m.acceptCompletion() {
 			return *m, nil, true
 		}
-		if m.hasPendingApproval() || m.state.PendingQuestion() != nil {
+		if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(true)
@@ -378,7 +378,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if m.activeCompletionPopup() != nil {
 			return *m, nil, true
 		}
-		if m.hasPendingApproval() || m.state.PendingQuestion() != nil {
+		if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(false)

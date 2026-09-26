@@ -731,6 +731,34 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// (buildAgentRunnerWithLock passes the runtime's stable lock so a config
 	// reload reuses the same gate in-flight children already hold).
 	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts, watchManager)
+	// Parent/child question bridge: an ad-hoc agent.run child always runs as
+	// RoleSubtask, so the whitelist check here is exactly "may subtasks ask
+	// their parent?". The questioner is the state-backed implementation, so
+	// a question lands in the parent session's PendingChildQuestion queue
+	// (which the TUI/ACP render and the parent loop picks up at loop-top).
+	//
+	// v1 scope: only ad-hoc agent.run children (RoleSubtask) are wired to
+	// the questioner — pipeline/SDD role runners never register parent.ask,
+	// so any other role name in ParentQuestionRoles is inert today (kept in
+	// the default list so a future wiring needs no config change). 0 values
+	// fall back to the built-in defaults (5m / 3 per task) exactly as the
+	// config comments document.
+	parentQuestionTimeout := cfg.Agent.ParentQuestionTimeout
+	if parentQuestionTimeout <= 0 {
+		parentQuestionTimeout = agent.DefaultParentQuestionTimeout
+	}
+	parentQuestionMaxPerTask := cfg.Agent.ParentQuestionMaxPerTask
+	if parentQuestionMaxPerTask <= 0 {
+		parentQuestionMaxPerTask = agent.DefaultParentQuestionMaxPerTask
+	}
+	parentQuestioner := agent.NewStateParentQuestioner(state, parentQuestionTimeout)
+	parentAskAllowed := false
+	for _, role := range cfg.Agent.ParentQuestionRoles {
+		if role == string(routing.RoleSubtask) {
+			parentAskAllowed = true
+			break
+		}
+	}
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
 		subagentResolver,
@@ -738,6 +766,9 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		state,
 		agent.WithSubagentParentModel(route.Preset.Model, parentPricing),
 		agent.WithSubagentParentProvider(resolvedProvider.Name()),
+		agent.WithParentQuestioner(parentQuestioner),
+		agent.WithParentAskAllowed(parentAskAllowed),
+		agent.WithParentAskLimits(parentQuestionTimeout, parentQuestionMaxPerTask),
 	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
@@ -756,6 +787,21 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if err := reg.Register(agent.NewSubagentKillTool(state)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
+	}
+	// parent.respond is the MAIN agent's answer affordance for a subagent
+	// blocked on parent.ask. It is registered only here — a subtask child has
+	// no pending child question, and SubtaskScopeView is not consulted for
+	// this registry — so children cannot call it.
+	if err := reg.Register(agent.NewParentRespondTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register parent.respond: %w", err)
+	}
+	// parent.correct is the override half: when the user says the parent's
+	// answer was wrong, the correction reaches the still-running child as
+	// steering. Main agent only, like parent.respond.
+	if err := reg.Register(agent.NewParentCorrectTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register parent.correct: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock

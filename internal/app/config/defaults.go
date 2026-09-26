@@ -28,6 +28,11 @@ func Default() Config {
 			// headroom as the default margin. 0 would switch to the auto
 			// formula, changing behavior for existing setups.
 			ThinkingBudgetMargin: 4096,
+			// Parent/child question bridge: the worker roles that may ask
+			// their parent mid-task, plus the wait and per-task caps.
+			ParentQuestionRoles:      []string{"subtask", "implementer", "sdd_implementer"},
+			ParentQuestionTimeout:    5 * time.Minute,
+			ParentQuestionMaxPerTask: 3,
 		},
 		Privacy: PrivacyConfig{
 			RemoteProvidersAllowed: false,

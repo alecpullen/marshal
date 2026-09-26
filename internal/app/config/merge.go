@@ -52,6 +52,17 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.MaxTouchedFileBytes, file.Agent.MaxTouchedFileBytes)
 		set(&cfg.Agent.ThinkingBudgetMargin, file.Agent.ThinkingBudgetMargin)
 		set(&cfg.Agent.MaxConcurrentSubagents, file.Agent.MaxConcurrentSubagents)
+		if file.Agent.ParentQuestionRoles != nil {
+			cfg.Agent.ParentQuestionRoles = file.Agent.ParentQuestionRoles
+		}
+		if file.Agent.ParentQuestionTimeout != nil && *file.Agent.ParentQuestionTimeout != "" {
+			d, err := time.ParseDuration(*file.Agent.ParentQuestionTimeout)
+			if err != nil {
+				return fmt.Errorf("parse parent_question_timeout: %w", err)
+			}
+			cfg.Agent.ParentQuestionTimeout = d
+		}
+		set(&cfg.Agent.ParentQuestionMaxPerTask, file.Agent.ParentQuestionMaxPerTask)
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)

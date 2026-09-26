@@ -1487,6 +1487,169 @@ func TestPromptTurnForwardsQuestionToClient(t *testing.T) {
 	}
 }
 
+func TestPromptTurnForwardsChildQuestionToClient(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	answersCh := make(chan []session.Answer, 1)
+	qc := &fakeQuestionClient{resp: QuestionResponse{
+		Answers: []session.Answer{{Question: "pick", Answer: "a"}},
+	}}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingChildQuestion{
+						ChildID:      3,
+						ChildDesc:    "researcher",
+						Questions:    []session.Question{{Question: "pick", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}}},
+						ResponseChan: answersCh,
+					}
+					broker.Publish(session.EventChildQuestionChanged, session.Event{PendingChildQuestion: pending})
+					select {
+					case <-answersCh:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Second):
+						return errors.New("timed out waiting for child answers")
+					}
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: qc,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_cq","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	if qc.calls != 1 {
+		t.Fatalf("RequestQuestion called %d times, want 1", qc.calls)
+	}
+	if qc.lastReq.SessionID != "sess_cq" {
+		t.Fatalf("SessionID = %q", qc.lastReq.SessionID)
+	}
+	if qc.lastReq.FromSubagent != "from subagent researcher" {
+		t.Fatalf("FromSubagent = %q, want %q", qc.lastReq.FromSubagent, "from subagent researcher")
+	}
+}
+
+// TestIdleChildQuestionReachesClient pins the idle-parent path (spec §5.4):
+// a background subagent's parent.ask published while NO turn is running
+// still reaches the client through the session-lifetime forwarder, instead
+// of silently timing out.
+func TestIdleChildQuestionReachesClient(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	answersCh := make(chan []session.Answer, 1)
+	qc := &fakeQuestionClient{resp: QuestionResponse{
+		Answers: []session.Answer{{Question: "Which DB?", Answer: "sqlite"}},
+	}}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: qc,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_idle","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	if qc.calls != 0 {
+		t.Fatalf("no child question existed during the turn; calls = %d, want 0", qc.calls)
+	}
+
+	pending := &session.PendingChildQuestion{
+		ChildID:      3,
+		ChildDesc:    "researcher",
+		Questions:    []session.Question{{Question: "Which DB?"}},
+		ResponseChan: answersCh,
+	}
+	broker.Publish(session.EventChildQuestionChanged, session.Event{PendingChildQuestion: pending})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for qc.calls == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if qc.calls != 1 {
+		t.Fatalf("RequestQuestion called %d times, want 1 (idle forwarder)", qc.calls)
+	}
+	if qc.lastReq.FromSubagent != "from subagent researcher" {
+		t.Fatalf("FromSubagent = %q, want attribution", qc.lastReq.FromSubagent)
+	}
+	select {
+	case got := <-answersCh:
+		if len(got) != 1 || got[0].Answer != "sqlite" {
+			t.Fatalf("child received %+v, want the sqlite answer", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("answers never reached the waiting child")
+	}
+}
+
+// TestMidTurnChildQuestionNotReAskedWhenIdle pins the shared childAsked
+// guard: a child question answered mid-turn (by the turn forwarder) must
+// NOT be asked again when the turn ends and the idle forwarder sees the
+// same identity republished (as a queue rotation would).
+func TestMidTurnChildQuestionNotReAskedWhenIdle(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	answersCh := make(chan []session.Answer, 1)
+	qc := &fakeQuestionClient{resp: QuestionResponse{
+		Answers: []session.Answer{{Question: "Which DB?", Answer: "sqlite"}},
+	}}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingChildQuestion{
+						ChildID:      3,
+						ChildDesc:    "researcher",
+						Questions:    []session.Question{{Question: "Which DB?"}},
+						ResponseChan: answersCh,
+					}
+					broker.Publish(session.EventChildQuestionChanged, session.Event{PendingChildQuestion: pending})
+					select {
+					case <-answersCh:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Second):
+						return errors.New("timed out waiting for child answers")
+					}
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: qc,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_mid","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	if qc.calls != 1 {
+		t.Fatalf("mid-turn calls = %d, want 1", qc.calls)
+	}
+	broker.Publish(session.EventChildQuestionChanged, session.Event{PendingChildQuestion: &session.PendingChildQuestion{
+		ChildID:      3,
+		ChildDesc:    "researcher",
+		Questions:    []session.Question{{Question: "Which DB?"}},
+		ResponseChan: answersCh,
+	}})
+	time.Sleep(200 * time.Millisecond)
+	if qc.calls != 1 {
+		t.Fatalf("client re-asked for the same question identity: calls = %d, want 1", qc.calls)
+	}
+}
+
 func TestPromptTurnQuestionClientErrorAnswersUnanswered(t *testing.T) {
 	broker := pubsub.NewBroker[session.Event]()
 	answersCh := make(chan []session.Answer, 1)

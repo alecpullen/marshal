@@ -85,6 +85,71 @@ func TestQuestionBridgeDeliversAnswers(t *testing.T) {
 	}
 }
 
+func TestQuestionBridgeAskChildAttributesAndDeliversAnswers(t *testing.T) {
+	ch := make(chan []session.Answer, 1)
+	pending := &session.PendingChildQuestion{
+		ChildID:      7,
+		ChildDesc:    "researcher",
+		Questions:    []session.Question{{Question: "pick", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}}},
+		ResponseChan: ch,
+	}
+	client := &fakeQuestionClient{resp: QuestionResponse{
+		Answers: []session.Answer{{Question: "pick", Answer: "a"}},
+	}}
+	bridge := NewQuestionBridge(client)
+
+	if err := bridge.AskChild(context.Background(), "sess_1", pending); err != nil {
+		t.Fatalf("AskChild: %v", err)
+	}
+	if client.lastReq.FromSubagent != "from subagent researcher" {
+		t.Fatalf("FromSubagent = %q, want %q", client.lastReq.FromSubagent, "from subagent researcher")
+	}
+	if client.lastReq.SessionID != "sess_1" || len(client.lastReq.Questions) != 1 {
+		t.Fatalf("question request = %#v", client.lastReq)
+	}
+	got := <-ch
+	if len(got) != 1 || got[0].Answer != "a" {
+		t.Fatalf("answers = %#v, want one answer %q", got, "a")
+	}
+}
+
+func TestQuestionBridgeAskChildNil(t *testing.T) {
+	bridge := NewQuestionBridge(&fakeQuestionClient{})
+	if err := bridge.AskChild(context.Background(), "sess_1", nil); err == nil {
+		t.Fatal("expected error for nil pending child question, got nil")
+	}
+}
+
+func TestQuestionBridgeAskChildEmptyDescStillAttributes(t *testing.T) {
+	if got := childAttribution("  "); got != "from subagent" {
+		t.Fatalf("childAttribution(blank) = %q, want %q", got, "from subagent")
+	}
+	if got := childAttribution(" researcher "); got != "from subagent researcher" {
+		t.Fatalf("childAttribution(trim) = %q, want %q", got, "from subagent researcher")
+	}
+}
+
+// TestQuestionRequestFromSubagentWireShape pins the additive attribution
+// field: a parent-loop question omits it entirely, while a child question
+// carries it so the client can render provenance.
+func TestQuestionRequestFromSubagentWireShape(t *testing.T) {
+	parent, err := json.Marshal(QuestionRequest{SessionID: "s", QuestionID: "q_1"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(parent), "fromSubagent") {
+		t.Fatalf("parent question must omit fromSubagent, got:\n%s", parent)
+	}
+
+	child, err := json.Marshal(QuestionRequest{SessionID: "s", QuestionID: "q_2", FromSubagent: "from subagent researcher"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(child), `"fromSubagent":"from subagent researcher"`) {
+		t.Fatalf("child question missing attribution, got:\n%s", child)
+	}
+}
+
 func TestQuestionBridgeDeclinedMapsToUnanswered(t *testing.T) {
 	pending, ch := newPendingQuestion(session.Question{Question: "pick"})
 	client := &fakeQuestionClient{resp: QuestionResponse{Declined: true}}

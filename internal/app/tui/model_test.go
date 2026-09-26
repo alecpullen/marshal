@@ -3385,6 +3385,93 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	}
 }
 
+func TestChildQuestionEnterSubmitsAnswer(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	child := &session.PendingChildQuestion{
+		ChildID:      3,
+		ChildDesc:    "researcher",
+		Questions:    []session.Question{{Question: "Archive or delete?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	state.PushChildQuestion(child)
+
+	// The idle child form renders with attribution, not the plain textarea.
+	area := stripANSI(m.renderInputArea())
+	if !strings.Contains(area, "from subagent researcher") {
+		t.Fatalf("input area missing the child attribution:\n%s", area)
+	}
+
+	// First Update constructs the form; the keypress is dropped by the
+	// construct-Update, so re-send it (same dance as the runner-question
+	// tests).
+	first, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = first.(Model)
+	if cmd != nil {
+		_ = cmd()
+	}
+	model, _ := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = model.(Model)
+	for _, r := range "rchive" {
+		model, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = model.(Model)
+	}
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	select {
+	case got := <-child.ResponseChan:
+		if len(got) != 1 || got[0].Answer != "archive" || got[0].Question != "Archive or delete?" {
+			t.Fatalf("answer = %+v, want archive for Archive or delete?", got)
+		}
+	default:
+		t.Fatal("no answer sent on Enter")
+	}
+	if queued := state.ChildQuestions(); len(queued) != 0 {
+		t.Fatalf("queue after submit = %d, want 0", len(queued))
+	}
+	var notice string
+	for _, msg := range state.Messages() {
+		if strings.Contains(msg.Content, "You answered subagent 3") {
+			notice = msg.Content
+		}
+	}
+	if notice == "" {
+		t.Fatal("the direct answer must be recorded in the transcript")
+	}
+}
+
+func TestChildQuestionEscDeclines(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	child := &session.PendingChildQuestion{
+		ChildID:      3,
+		ChildDesc:    "researcher",
+		Questions:    []session.Question{{Question: "Archive or delete?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	state.PushChildQuestion(child)
+
+	first, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = first.(Model)
+	if cmd != nil {
+		_ = cmd()
+	}
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+
+	select {
+	case got := <-child.ResponseChan:
+		if len(got) != 1 || got[0].Answer != session.AnswerUnanswered {
+			t.Fatalf("answer = %+v, want single [Unanswered]", got)
+		}
+	default:
+		t.Fatal("no answer sent on Esc")
+	}
+	if queued := state.ChildQuestions(); len(queued) != 0 {
+		t.Fatalf("queue after Esc = %d, want 0", len(queued))
+	}
+}
+
 // TestStatusLineJobCountFromBroker exercises the F19 broker-sourced job
 // count: when a jobBroker is wired, the status line reads m.jobCount
 // instead of m.state.RunningJobsCount().

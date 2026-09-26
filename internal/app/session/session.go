@@ -39,6 +39,7 @@ const (
 	EventAuditAdded              = "audit_added"
 	EventPendingApprovalChanged  = "pending_approval_changed"
 	EventPendingQuestionChanged  = "pending_question_changed"
+	EventChildQuestionChanged    = "child_question_changed"
 	EventPendingSkillGateChanged = "pending_skill_gate_changed"
 	EventBrowserChanged          = "browser_changed"
 )
@@ -52,15 +53,19 @@ const (
 // ResponseChan) for subscribers that need to respond (e.g., the ACP
 // permission bridge).
 type Event struct {
-	Message          *Message
-	Thinking         *InProgressMessage
-	Activity         *Activity
-	ActiveTool       *ActiveToolCall
-	Audit            *registry.AuditEvent
-	PendingApproval  *PendingToolCall
-	PendingQuestion  *PendingQuestion
-	PendingSkillGate *PendingSkillGate
-	Browser          *BrowserInfo
+	Message         *Message
+	Thinking        *InProgressMessage
+	Activity        *Activity
+	ActiveTool      *ActiveToolCall
+	Audit           *registry.AuditEvent
+	PendingApproval *PendingToolCall
+	PendingQuestion *PendingQuestion
+	// PendingChildQuestion carries a background subagent's question to its
+	// parent. Like PendingQuestion it includes ResponseChan so a subscriber
+	// (TUI/ACP) can answer on escalation.
+	PendingChildQuestion *PendingChildQuestion
+	PendingSkillGate     *PendingSkillGate
+	Browser              *BrowserInfo
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -205,13 +210,17 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu                sync.Mutex
-	messages          []Message
-	inProgress        InProgressMessage
-	notice            Notice
-	noticeSet         bool
-	pendingApproval   *PendingToolCall
-	pendingQuestion   *PendingQuestion
+	mu              sync.Mutex
+	messages        []Message
+	inProgress      InProgressMessage
+	notice          Notice
+	noticeSet       bool
+	pendingApproval *PendingToolCall
+	pendingQuestion *PendingQuestion
+	// childQuestions is the FIFO queue of subagent questions waiting for
+	// the parent (spec §7): concurrent children queue behind one another
+	// rather than overwriting a single shared slot.
+	childQuestions    []*PendingChildQuestion
 	pendingSkillGate  *PendingSkillGate
 	skillGateDisabled bool
 	skillGateAllowed  map[string]bool
@@ -1009,6 +1018,8 @@ func (s *State) ResolvePendingForShutdown() {
 	s.pendingApproval = nil
 	question := s.pendingQuestion
 	s.pendingQuestion = nil
+	childQuestions := s.childQuestions
+	s.childQuestions = nil
 	skillGate := s.pendingSkillGate
 	s.pendingSkillGate = nil
 	s.steeringQueue = nil
@@ -1019,6 +1030,7 @@ func (s *State) ResolvePendingForShutdown() {
 	// are unaffected, and those that did get the cleared value.
 	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
 	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: nil})
+	s.publishEvent(EventChildQuestionChanged, Event{PendingChildQuestion: nil})
 	s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: nil})
 	broker := func() *pubsub.Broker[SteeringEvent] {
 		s.mu.Lock()
@@ -1039,6 +1051,13 @@ func (s *State) ResolvePendingForShutdown() {
 	// nil channel and once-only guarantee).
 	if question != nil {
 		question.Respond(UnansweredAnswers(question.Questions))
+	}
+
+	// Answer every pending child question with "Unanswered" so every
+	// blocked subagent unblocks instead of waiting out its timeout
+	// (Respond handles nil channel and once-only guarantee).
+	for _, childQuestion := range childQuestions {
+		childQuestion.Respond(UnansweredAnswers(childQuestion.Questions))
 	}
 
 	// Deny any pending skill gate (Respond handles nil channel and

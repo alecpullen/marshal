@@ -178,6 +178,22 @@ type TurnManager struct {
 	activeTurnsMu sync.Mutex
 	activeTurns   map[string]*activeTurn
 
+	// childForwardersMu guards childForwarders, the per-session
+	// lifetime subscriptions that surface a background subagent's
+	// parent.ask to the client while NO turn is live (the idle-parent
+	// case, spec §5.4). Mid-turn questions are owned by the turn-scoped
+	// forwarder inside runTurn; this one exists precisely because a
+	// turn-scoped subscription dies when the turn ends while background
+	// children keep running.
+	childForwardersMu sync.Mutex
+	childForwarders   map[string]*childForwarder
+
+	// childAsked guards against double-asking the client for one child
+	// question identity (keyed by ResponseChan, F-BUG-51 pattern). It is
+	// manager-scoped, not turn-scoped, so the idle forwarder and a turn
+	// forwarder racing across a turn boundary cannot both ask.
+	childAsked sync.Map
+
 	// pipelineRunnersMu guards pipelineRunners, tracking the in-flight SDD
 	// runner (and the plan path it was built for) per session so
 	// SDDAnswer can resume the same instance a human gate paused.
@@ -216,6 +232,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		notify:          cfg.Notify,
 		perms:           cfg.Perms,
 		activeTurns:     map[string]*activeTurn{},
+		childForwarders: map[string]*childForwarder{},
 		pipelineRunners: map[string]*sddRun{},
 		baseRefs:        map[string]string{},
 	}
@@ -405,7 +422,89 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
 	}
 
+	m.ensureChildForwarder(p.SessionID, rt)
 	return m.runTurn(ctx, p.SessionID, rt, rt.Run, prompt, resultOrError)
+}
+
+// ensureChildForwarder subscribes, once per session per TurnManager
+// lifetime, to the session's event broker for as long as the runtime is
+// alive. The goroutine forwards a background subagent's child question to
+// the client via the question bridge ONLY while no turn is active: with a
+// turn running, runTurn's own subscription delivers it (the parent model
+// or the client answers mid-turn), and double-asking is prevented by the
+// shared childAsked guard.
+
+// childForwarder records one session's idle-question subscription: the
+// cancel ends it, and the broker it subscribed to identifies the runtime
+// generation (a session/load swaps both).
+type childForwarder struct {
+	cancel context.CancelFunc
+	broker *pubsub.Broker[session.Event]
+}
+
+func (m *TurnManager) ensureChildForwarder(sessionID string, rt *TurnRuntime) {
+	if rt == nil || rt.Events == nil || m.qbridge == nil {
+		return
+	}
+	broker := rt.Events
+	m.childForwardersMu.Lock()
+	if existing, ok := m.childForwarders[sessionID]; ok {
+		if existing.broker == broker {
+			m.childForwardersMu.Unlock()
+			return
+		}
+		// Runtime swap (session/load): the old broker's subscription is
+		// dead or dying; replace it with one on the new broker so idle
+		// child questions on the reloaded runtime still surface.
+		existing.cancel()
+	}
+	fwdCtx, cancel := context.WithCancel(context.Background())
+	m.childForwarders[sessionID] = &childForwarder{cancel: cancel, broker: broker}
+	m.childForwardersMu.Unlock()
+
+	sub := rt.Events.Subscribe(fwdCtx, pubsub.WithTerminal[session.Event]())
+	go func() {
+		defer cancel()
+		for ev := range sub {
+			if ev.Type != session.EventChildQuestionChanged {
+				continue
+			}
+			pending := ev.Payload.PendingChildQuestion
+			if pending == nil {
+				continue
+			}
+			// A live turn owns delivery: its forwarder will drive the
+			// bridge with turnCtx so a turn cancel also cancels the ask.
+			if m.turnActive(sessionID) {
+				continue
+			}
+			if _, loaded := m.childAsked.LoadOrStore(pending.ResponseChan, true); loaded {
+				continue
+			}
+			// Each ask runs on its own goroutine so the terminal
+			// subscription keeps draining: a blocking Ask here would block
+			// publishEvent (must-deliver), stalling the child's own
+			// AskParent publish. fwdCtx bounds the ask's lifetime to the
+			// runtime subscription: a session teardown cancels the
+			// in-flight client ask and answers Unanswered below on error.
+			ask := pending
+			go func() {
+				if err := m.qbridge.AskChild(fwdCtx, sessionID, ask); err != nil {
+					slog.Default().Warn("acp: idle child question bridge failed; answering Unanswered",
+						"session", sessionID, "child", ask.ChildID, "err", err)
+					ask.Respond(session.UnansweredAnswers(ask.Questions))
+				}
+			}()
+		}
+	}()
+}
+
+// turnActive reports whether sessionID currently has an in-flight turn.
+func (m *TurnManager) turnActive(sessionID string) bool {
+	m.activeTurnsMu.Lock()
+	defer m.activeTurnsMu.Unlock()
+	_, active := m.activeTurns[sessionID]
+	return active
 }
 
 // SwarmStart handles session/swarm_start. Like session/prompt, this call is
@@ -625,6 +724,34 @@ func (m *TurnManager) runTurn(
 					if err := m.qbridge.Ask(turnCtx, sessionID, pending); err != nil {
 						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
 							"session", sessionID, "err", err)
+						pending.Respond(session.UnansweredAnswers(pending.Questions))
+					}
+				}()
+			}
+		}
+
+		// Drive questions escalated from background subagents through the
+		// same question bridge, tagged with a child attribution so the client
+		// can render "from subagent <desc>". Mirrors the pending-question
+		// branch above and reuses its turnAnswered guard (keyed by
+		// ResponseChan, which is distinct per child) so a duplicate publish
+		// cannot double-ask (F-BUG-51).
+		if ev.Type == session.EventChildQuestionChanged &&
+			ev.Payload.PendingChildQuestion != nil {
+			pending := ev.Payload.PendingChildQuestion
+			// The child-question guard is manager-scoped (m.childAsked),
+			// not turnAnswered: the idle forwarder shares it so the two
+			// paths cannot double-ask across a turn boundary.
+			if _, loaded := m.childAsked.LoadOrStore(pending.ResponseChan, true); loaded {
+				return
+			}
+			if m.qbridge == nil {
+				pending.Respond(session.UnansweredAnswers(pending.Questions))
+			} else {
+				go func() {
+					if err := m.qbridge.AskChild(turnCtx, sessionID, pending); err != nil {
+						slog.Default().Warn("acp: child question bridge failed; answering Unanswered",
+							"session", sessionID, "child", pending.ChildID, "err", err)
 						pending.Respond(session.UnansweredAnswers(pending.Questions))
 					}
 				}()

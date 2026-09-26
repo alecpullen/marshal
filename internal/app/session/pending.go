@@ -206,6 +206,110 @@ func (s *State) PendingQuestion() *PendingQuestion {
 	return s.pendingQuestion
 }
 
+// PendingChildQuestion carries one or more Questions from a background
+// subagent to its parent, awaiting an answer. The child blocks on
+// ResponseChan; the parent (or, on escalation, the user) sends exactly one
+// value, one Answer per Question (in the same order). ResponseChan MUST be
+// buffered (cap 1): Respond uses a non-blocking send, so an unbuffered
+// channel would silently drop a late answer after the child timed out.
+type PendingChildQuestion struct {
+	ChildID      int64
+	ChildDesc    string
+	Questions    []Question
+	ResponseChan chan []Answer
+	responded    sync.Once
+}
+
+// Respond sends answers to the response channel exactly once (guarded by
+// sync.Once). Non-blocking send then close, mirroring PendingQuestion.
+func (p *PendingChildQuestion) Respond(a []Answer) {
+	if p == nil {
+		return
+	}
+	p.responded.Do(func() {
+		if p.ResponseChan != nil {
+			select {
+			case p.ResponseChan <- a:
+			default:
+			}
+			close(p.ResponseChan)
+		}
+	})
+}
+
+// PushChildQuestion appends a subagent question to the parent's FIFO queue
+// and publishes the queue HEAD as the EventChildQuestionChanged snapshot —
+// the head is the answerable question, so subscribers (TUI/ACP) and the
+// parent loop-top hint always target it. Concurrent children queue behind
+// one another; the earlier asker is never displaced (spec §7).
+func (s *State) PushChildQuestion(q *PendingChildQuestion) {
+	s.mu.Lock()
+	s.childQuestions = append(s.childQuestions, q)
+	head := s.childQuestionHeadLocked()
+	snap := snapshotChildQuestionLocked(head)
+	s.mu.Unlock()
+	s.publishEvent(EventChildQuestionChanged, Event{PendingChildQuestion: snap})
+}
+
+// ResolveChildQuestion removes exactly the given question from the queue
+// (by identity) and publishes the new head. Resolving a question that is
+// not queued is a no-op — a timed-out child teardown can never wipe a
+// sibling's still-waiting question.
+func (s *State) ResolveChildQuestion(q *PendingChildQuestion) {
+	s.mu.Lock()
+	for i, queued := range s.childQuestions {
+		if queued == q {
+			s.childQuestions = append(s.childQuestions[:i], s.childQuestions[i+1:]...)
+			break
+		}
+	}
+	head := s.childQuestionHeadLocked()
+	snap := snapshotChildQuestionLocked(head)
+	s.mu.Unlock()
+	s.publishEvent(EventChildQuestionChanged, Event{PendingChildQuestion: snap})
+}
+
+// PendingChildQuestion returns the queue head — the subagent question the
+// parent should answer first. nil when no child is waiting.
+func (s *State) PendingChildQuestion() *PendingChildQuestion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.childQuestionHeadLocked()
+}
+
+// ChildQuestions returns a snapshot of the FIFO queue, head first. Used by
+// the loop-top hint and parent.respond to report queue depth and by
+// ResolvePendingForShutdown to answer every waiter.
+func (s *State) ChildQuestions() []*PendingChildQuestion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*PendingChildQuestion(nil), s.childQuestions...)
+}
+
+// childQuestionHeadLocked returns the queue head, or nil when empty.
+// Callers must hold s.mu.
+func (s *State) childQuestionHeadLocked() *PendingChildQuestion {
+	if len(s.childQuestions) == 0 {
+		return nil
+	}
+	return s.childQuestions[0]
+}
+
+// snapshotChildQuestionLocked builds the event-safe copy of a queued
+// question (Questions copied; ResponseChan shared deliberately so a
+// subscriber can answer). Callers must hold s.mu.
+func snapshotChildQuestionLocked(q *PendingChildQuestion) *PendingChildQuestion {
+	if q == nil {
+		return nil
+	}
+	return &PendingChildQuestion{
+		ChildID:      q.ChildID,
+		ChildDesc:    q.ChildDesc,
+		Questions:    append([]Question(nil), q.Questions...),
+		ResponseChan: q.ResponseChan,
+	}
+}
+
 func (s *State) SetActiveToolCall(atc ActiveToolCall) {
 	s.mu.Lock()
 	s.activeToolCall = &atc

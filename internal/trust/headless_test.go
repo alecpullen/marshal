@@ -71,8 +71,12 @@ func TestHeadlessResolverPermanentTrustHashMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Record permanent trust with the current hash.
-	abs, _ := filepath.Abs(dir)
+	// Record permanent trust with the current hash. Seed the record
+	// under the canonical (symlink-resolved) root, the same key
+	// TerminalResolver.Record uses — filepath.Abs leaves /tmp
+	// unresolved on macOS while Resolve looks up /private/tmp, so an
+	// Abs-keyed record would never be found.
+	abs := Canonicalize(dir)
 	currentHash, err := ConfigHashFor(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -109,8 +113,9 @@ func TestHeadlessResolverHashMismatchDegrades(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Record permanent trust with the v1 hash.
-	abs, _ := filepath.Abs(dir)
+	// Record permanent trust with the v1 hash, keyed canonically
+	// (see TestHeadlessResolverPermanentTrustHashMatch).
+	abs := Canonicalize(dir)
 	v1Hash, err := ConfigHashFor(dir)
 	if err != nil {
 		t.Fatal(err)

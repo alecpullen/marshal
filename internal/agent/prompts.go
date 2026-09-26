@@ -419,6 +419,9 @@ const (
 	ruleFactGathering        = "- Use fact-gathering tools only to obtain facts you don't already have in the transcript or context pack.\n"
 	ruleFinalAnswer          = "- Once the requested change is made and validated, produce a final answer — do not keep exploring.\n"
 	ruleStopAfterValidation  = "- Stop after validation succeeds; do not re-verify work that already passed.\n"
+	ruleDocsArchive          = "- Write specs and plans to .docs-archive/superpowers/{specs,plans}/ (gitignored), never tracked docs/.\n"
+	ruleWorkspaceFinish      = "- Merge sessions with workspace.finish, not shell.run git merge; pop or drop any stash you create before finishing.\n"
+	ruleReplaceTerminator    = "- REPLACE blocks end with >>>>>>> REPLACE; the closing ======= line is a diff-hunk separator the parser has to repair.\n"
 	ruleReviewerSubagent     = "- When the user asks for a review of code or completed work, dispatch a reviewer subagent with agent.run instead of reviewing inline, unless the change is trivially small."
 )
 
@@ -433,6 +436,9 @@ const baseRules = "Rules:\n" +
 	ruleFactGathering +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
+	ruleDocsArchive +
+	ruleWorkspaceFinish +
+	ruleReplaceTerminator +
 	ruleReviewerSubagent
 
 // baseRulesSystem is the system-access composition: identical to baseRules
@@ -448,6 +454,9 @@ const baseRulesSystem = "Rules:\n" +
 	ruleFactGathering +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
+	ruleDocsArchive +
+	ruleWorkspaceFinish +
+	ruleReplaceTerminator +
 	ruleReviewerSubagent
 
 // baseRulesFor selects the rule block for the session's access mode.

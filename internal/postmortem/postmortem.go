@@ -62,6 +62,15 @@ const turnMetricsParseDetail = "turn_metrics"
 // surface "the model keeps getting the format wrong" without synthesis.
 const repairNoteMarker = "the proposal's format was repaired before applying:"
 
+// Coverage records which optional passes ran on this report so a nil
+// section is diagnosable: 'extraction' always runs during Build;
+// 'agent_pass' only runs when the postmortem skill dispatches it.
+type Coverage struct {
+	ExtractionPass  bool   `json:"extraction_pass"`
+	AgentPass       bool   `json:"agent_pass"`
+	AgentPassReason string `json:"agent_pass_reason,omitempty"` // "not_run" | "completed"
+}
+
 // Report is the versioned, machine-readable postmortem for one session.
 // Field names and nesting are the aggregation contract: renaming one is a
 // SchemaVersion bump.
@@ -77,7 +86,8 @@ type Report struct {
 	RunEvents       []RunEventEntry  `json:"run_events"`
 	// AgentObservations is nil until the optional agent pass appends semantic
 	// observations. Extraction never fabricates it.
-	AgentObservations *string `json:"agent_observations"`
+	AgentObservations *string  `json:"agent_observations"`
+	Coverage          Coverage `json:"coverage"`
 }
 
 // SessionInfo identifies the session the report describes.
@@ -164,6 +174,18 @@ type RunEventEntry struct {
 	Count  int    `json:"count"`
 }
 
+// MarkAgentPass records that the optional agent pass ran and appended
+// observations to the report. The agent pass is performed by the model
+// editing the report JSON directly (see the postmortem skill), so this is
+// the Go seam that keeps the coverage contract testable.
+func MarkAgentPass(report *Report) {
+	if report == nil {
+		return
+	}
+	report.Coverage.AgentPass = true
+	report.Coverage.AgentPassReason = "completed"
+}
+
 // Build extracts a report from the live session state and, when database is
 // non-nil, the project-scoped turn_metrics table filtered to this session.
 //
@@ -185,6 +207,7 @@ func Build(state *session.State, database *db.DB) (Report, error) {
 		TurnOutcomes:      []TurnOutcome{},
 		RunEvents:         []RunEventEntry{},
 		AgentObservations: nil,
+		Coverage:          Coverage{ExtractionPass: true, AgentPass: false, AgentPassReason: "not_run"},
 	}
 	report.Session = SessionInfo{
 		ID:         state.SessionID(),

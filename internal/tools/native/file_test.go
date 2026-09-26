@@ -1332,6 +1332,110 @@ func TestFileReadLineClip(t *testing.T) {
 	}
 }
 
+func TestSpecOrPlanDocNudge(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"docs/2026-09-24-design.md", true},
+		{"docs/plan.md", true},
+		{"docs/spec.md", true},
+		{".docs-archive/superpowers/plans/foo.md", false},
+		{"docs/notes.md", false},
+		{"docs/design-foo.txt", false},
+	}
+	for _, tc := range cases {
+		if got := specOrPlanDocNudge(tc.path) != ""; got != tc.want {
+			t.Errorf("specOrPlanDocNudge(%q) nudge=%v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestSpecOrPlanDocNudgesDedupesAndPrefixesPath(t *testing.T) {
+	notes := specOrPlanDocNudges([]string{"docs/a-plan.md", "docs/b.go", "docs/a-plan.md"})
+	if len(notes) != 1 {
+		t.Fatalf("notes = %v, want one deduped note", notes)
+	}
+	if !strings.HasPrefix(notes[0], "docs/a-plan.md: ") {
+		t.Errorf("note = %q, want it prefixed with the path", notes[0])
+	}
+}
+
+// TestFileWriteDocNudge covers the overwrite case the original test used,
+// now without git: the nudge fires on the name shape alone.
+func TestFileWriteDocNudge(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "docs", "2026-09-24-design.md"), "# design\n")
+	// Overwriting an existing file needs a tracker-backed session with a
+	// read on record.
+	reg := changedOnDiskHarness(t, dir, "docs/2026-09-24-design.md")
+
+	res, err := invokeTool(t, reg, "file.write", `{"path":"docs/2026-09-24-design.md","content":"# design v2\n"}`)
+	if err != nil {
+		t.Fatalf("file.write returned error: %v", err)
+	}
+	if !strings.Contains(res.Content, "spec/plan docs belong") {
+		t.Fatalf("expected nudge in Content, got %q", res.Content)
+	}
+}
+
+// TestFileWriteNewDocNudges covers the dominant violation path the tracked
+// check used to miss entirely: a brand-new doc git has never seen.
+func TestFileWriteNewDocNudges(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: dir, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	res, err := invokeTool(t, reg, "file.write", `{"path":"docs/2026-09-24-spec.md","content":"x\n"}`)
+	if err != nil {
+		t.Fatalf("file.write returned error: %v", err)
+	}
+	if !strings.Contains(res.Content, "spec/plan docs belong") {
+		t.Fatalf("expected nudge for a new untracked doc, got %q", res.Content)
+	}
+}
+
+// TestFileWritePatchDocNudges covers the other path the nudge used to miss:
+// a targeted in-place edit through file.write_patch.
+func TestFileWritePatchDocNudges(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "docs", "2026-09-24-plan.md"), "step one\n")
+	reg := changedOnDiskHarness(t, dir, "docs/2026-09-24-plan.md")
+
+	res, err := invokeTool(t, reg, "file.write_patch", `{"patch": "File: docs/2026-09-24-plan.md\n<<<<<<< SEARCH\nstep one\n=======\nstep two\n>>>>>>> REPLACE"}`)
+	if err != nil {
+		t.Fatalf("file.write_patch returned error: %v", err)
+	}
+	if !strings.Contains(res.Content, "spec/plan docs belong") {
+		t.Fatalf("expected nudge on the patch path, got %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "docs/2026-09-24-plan.md: ") {
+		t.Errorf("nudge should name the path, got %q", res.Content)
+	}
+}
+
+func TestFileWriteNonDocNoNudge(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: dir, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	res, err := invokeTool(t, reg, "file.write", `{"path":"docs/notes.md","content":"x\n"}`)
+	if err != nil {
+		t.Fatalf("file.write returned error: %v", err)
+	}
+	if strings.Contains(res.Content, "spec/plan docs belong") {
+		t.Fatalf("unexpected nudge for a non-spec/plan doc: %q", res.Content)
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

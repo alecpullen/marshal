@@ -458,6 +458,40 @@ func TestBuildAgentObservationsNullByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildCoverageDefaults(t *testing.T) {
+	state := testState(t, testConfig(), nil)
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !report.Coverage.ExtractionPass {
+		t.Errorf("Coverage.ExtractionPass = false, want true")
+	}
+	if report.Coverage.AgentPass {
+		t.Errorf("Coverage.AgentPass = true, want false")
+	}
+	if report.Coverage.AgentPassReason != "not_run" {
+		t.Errorf("Coverage.AgentPassReason = %q, want %q", report.Coverage.AgentPassReason, "not_run")
+	}
+}
+
+func TestAgentPassFlipsCoverage(t *testing.T) {
+	state := testState(t, testConfig(), nil)
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	MarkAgentPass(&report)
+	if !report.Coverage.AgentPass {
+		t.Errorf("Coverage.AgentPass = false, want true")
+	}
+	if report.Coverage.AgentPassReason != "completed" {
+		t.Errorf("Coverage.AgentPassReason = %q, want %q", report.Coverage.AgentPassReason, "completed")
+	}
+
+	MarkAgentPass(nil) // must not panic
+}
+
 func TestBuildMapsRunEventKinds(t *testing.T) {
 	state := testState(t, testConfig(), nil)
 	state.AddRunEvent(session.RunEvent{Kind: session.RunEventVerifyFailed, Title: "go test ./..."})

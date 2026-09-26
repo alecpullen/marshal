@@ -787,6 +787,11 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				content += "\n\n" + diag
 			}
 		}
+		// The in-place edit path is the one the docs convention is most often
+		// broken through, so the note rides here too, not just on file.write.
+		if notes := specOrPlanDocNudges(paths); len(notes) > 0 {
+			content += "\n\n" + strings.Join(notes, "\n")
+		}
 
 		return registry.ToolResult{
 			Summary:      fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
@@ -801,6 +806,43 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 type fileWriteArgs struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+}
+
+// specOrPlanDocNudge returns the hygiene note for a markdown doc under docs/
+// whose name suggests spec/plan/design intent. It fires on the name shape
+// alone: whether git tracks the file decides nothing, because a brand-new
+// doc, an in-place edit, and a full overwrite are the same mistake — and
+// asking git here answers the wrong index in worktree sessions, where the
+// write lands in the worktree but the project root holds the index.
+func specOrPlanDocNudge(path string) string {
+	if !strings.HasPrefix(path, "docs/") || !strings.HasSuffix(path, ".md") {
+		return ""
+	}
+	base := strings.ToLower(filepath.Base(path))
+	for _, tok := range []string{"spec", "plan", "design"} {
+		if strings.Contains(base, tok) {
+			return "note: spec/plan docs belong in .docs-archive/superpowers/{specs,plans}/ (gitignored)."
+		}
+	}
+	return ""
+}
+
+// specOrPlanDocNudges returns one path-prefixed note per matching path, in
+// write order, deduped so a multi-block patch that touches the same doc once
+// per block does not repeat itself.
+func specOrPlanDocNudges(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	var notes []string
+	for _, p := range paths {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		if note := specOrPlanDocNudge(p); note != "" {
+			notes = append(notes, p+": "+note)
+		}
+	}
+	return notes
 }
 
 // fileWriteTool creates or overwrites a whole file with the exact content
@@ -945,6 +987,9 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			if diag != "" {
 				result.Content += "\n\n" + diag
 			}
+		}
+		if notes := specOrPlanDocNudges([]string{args.Path}); len(notes) > 0 {
+			result.Content += "\n\n" + notes[0]
 		}
 		return result, nil
 	}

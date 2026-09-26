@@ -13,8 +13,75 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// TestTestRunToolDocumentsCommandOverride verifies that the test.run tool
-// description documents the command parameter override (TOOLS-MOD-F17).
+// TestGitHygieneNote pins which commands earn a hygiene note.
+func TestGitHygieneNote(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		{"git merge feature-x", true},
+		{"git stash push", true},
+		{"git status", false},
+		{"git log", false},
+	}
+	for _, tc := range cases {
+		if got := gitHygieneNote(tc.cmd) != ""; got != tc.want {
+			t.Errorf("gitHygieneNote(%q) nonempty=%v, want %v", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+func TestShellRunGitMergeNote(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeRunner{result: CommandResult{Stdout: "merged\n", ExitCode: 0}}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	res, err := invokeTool(t, reg, "shell.run", `{"command":"git merge feature-x"}`)
+	if err != nil {
+		t.Fatalf("shell.run returned error: %v", err)
+	}
+	if !strings.Contains(res.Content, "workspace.finish") {
+		t.Fatalf("Content = %q", res.Content)
+	}
+}
+
+// TestShellRunGitMergeNoteSurvivesTruncation pins the load-bearing ordering
+// of the note: runShellCommand truncates the command's own output FIRST and
+// appends the note after, so a git merge whose output overflows the budget
+// cannot swallow the advice. Re-applying limitOutput after the append would
+// pass every other test in this file and still break this guarantee.
+func TestShellRunGitMergeNoteSurvivesTruncation(t *testing.T) {
+	root := t.TempDir()
+	const limit = 64
+	runner := &fakeRunner{result: CommandResult{Stdout: strings.Repeat("x", limit*4), ExitCode: 0}}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  runner,
+		Guardrail:      func(string, bool) error { return nil },
+		MaxOutputBytes: limit,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	res, err := invokeTool(t, reg, "shell.run", `{"command":"git merge feature-x"}`)
+	if err != nil {
+		t.Fatalf("shell.run returned error: %v", err)
+	}
+	marker := strings.Index(res.Content, truncationMarker)
+	if marker < 0 {
+		t.Fatalf("expected the output to be truncated, got %q", res.Content)
+	}
+	note := strings.Index(res.Content, "workspace.finish")
+	if note < 0 {
+		t.Fatalf("note was swallowed by truncation: %q", res.Content)
+	}
+	if note < marker {
+		t.Errorf("note must come after the truncation marker, got %q", res.Content)
+	}
+}
+
 func TestTestRunToolDocumentsCommandOverride(t *testing.T) {
 	ts := &toolSet{
 		testCommand: "go test ./...",

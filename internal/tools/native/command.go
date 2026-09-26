@@ -92,6 +92,19 @@ func (t *toolSet) testRunTool() registry.Tool {
 	return tool
 }
 
+// gitHygieneNote returns a nudge line for `git merge` and `git stash`
+// invocations. "" for everything else.
+func gitHygieneNote(cmd string) string {
+	trimmed := strings.TrimSpace(cmd)
+	switch {
+	case strings.HasPrefix(trimmed, "git merge ") || trimmed == "git merge":
+		return "note: for session work prefer workspace.finish over hand-merging; pop or drop any stash you create before finishing."
+	case strings.HasPrefix(trimmed, "git stash"):
+		return "note: remember to pop or drop this stash when done."
+	}
+	return ""
+}
+
 func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout time.Duration) (registry.ToolResult, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -131,9 +144,13 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 	if result.Meta.Enabled && result.Meta.KilledReason != "" {
 		summary = fmt.Sprintf("command %q killed: %s", command, result.Meta.KilledReason)
 	}
+	content = limitOutput(content, t.maxOutputBytes)
+	if note := gitHygieneNote(command); note != "" {
+		content += "\n\n" + note
+	}
 	return registry.ToolResult{
 		Summary:         summary,
-		Content:         limitOutput(content, t.maxOutputBytes),
+		Content:         content,
 		CommandExitCode: &exitCode,
 		Sandbox:         result.Meta,
 	}, err

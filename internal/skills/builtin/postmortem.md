@@ -25,8 +25,9 @@ the transcript can see. You are recording, not judging.
    **short strings** — one observation per string, each a concrete, factual
    statement of what happened. Keep each entry to a single sentence. Use
    `file.write_patch` to edit the report file in place, replacing the `null`
-   value of `agent_observations` with your array. Do not reformat or rewrite
-   the rest of the file.
+   value of `agent_observations` with your array. In the same patch, set
+   `coverage.agent_pass` to `true` and `coverage.agent_pass_reason` to
+   `"completed"`. Do not reformat or rewrite the rest of the file.
 
 Example patch of the field:
 
@@ -55,7 +56,10 @@ that is synthesis, and synthesis is explicitly out of scope.
 
 ## Field discipline
 
-- Modify **only** the `agent_observations` field.
+- Modify **only** the `agent_observations` field and the two coverage fields
+  named above.
+- Set `coverage.agent_pass` to `true` and `coverage.agent_pass_reason` to
+  `"completed"`; leave every other `coverage` field as the extraction wrote it.
 - Never change any other field of the report — not `session`, not
   `tool_failures`, not `token_waste`, not `schema_version`.
 - If there is nothing observable, set `agent_observations` to an empty array

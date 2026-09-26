@@ -60,7 +60,7 @@ func TestLoadSkillsIncludesBuiltInPostmortemSkill(t *testing.T) {
 	if skill.Description == "" {
 		t.Fatalf("built-in postmortem skill has no description: %+v", skill)
 	}
-	for _, want := range []string{"agent_observations", "do not summarize"} {
+	for _, want := range []string{"agent_observations", "do not summarize", "agent_pass"} {
 		if !strings.Contains(skill.Body, want) {
 			t.Errorf("postmortem body missing %q", want)
 		}

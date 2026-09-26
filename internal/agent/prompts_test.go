@@ -326,7 +326,11 @@ func TestBuildSystemPromptNativeModeOmitsJSONEnvelopeScaffolding(t *testing.T) {
 		`"action"`,
 		`"actions"`,
 		"<<<<<<< SEARCH",
-		">>>>>>> REPLACE",
+		// NOTE: ">>>>>>> REPLACE" is no longer listed here: baseRules
+		// now teaches the terminator as a workflow convention, so it is
+		// legitimately present in every mode. A real search/replace
+		// example block still contains "<<<<<<< SEARCH", which the
+		// preceding entry catches.
 		"Do not use unified diff syntax",
 		"Allowed actions for this role: tool_call, patch, final",
 	} {
@@ -1016,6 +1020,48 @@ func TestBaseRulesNudgesReviewerSubagent(t *testing.T) {
 	want := "dispatch a reviewer subagent with agent.run instead of reviewing inline"
 	if !strings.Contains(baseRules, want) {
 		t.Errorf("baseRules missing reviewer subagent nudge %q", want)
+	}
+}
+
+func TestBaseRulesIncludeWorkflowConventions(t *testing.T) {
+	for _, want := range []string{
+		"Write specs and plans to .docs-archive/superpowers/{specs,plans}/",
+		"Merge sessions with workspace.finish, not shell.run git merge",
+		"REPLACE blocks end with >>>>>>> REPLACE",
+	} {
+		if !strings.Contains(baseRules, want) {
+			t.Errorf("baseRules missing workflow convention %q", want)
+		}
+	}
+}
+
+func TestBaseRulesSystemIncludeWorkflowConventions(t *testing.T) {
+	for _, want := range []string{
+		"Write specs and plans to .docs-archive/superpowers/{specs,plans}/",
+		"Merge sessions with workspace.finish, not shell.run git merge",
+		"REPLACE blocks end with >>>>>>> REPLACE",
+	} {
+		if !strings.Contains(baseRulesSystem, want) {
+			t.Errorf("baseRulesSystem missing workflow convention %q", want)
+		}
+	}
+}
+
+func TestWorkflowConventionConstants(t *testing.T) {
+	if !strings.Contains(ruleDocsArchive, ".docs-archive/superpowers/") {
+		t.Errorf("ruleDocsArchive missing .docs-archive/superpowers/ path %q", ruleDocsArchive)
+	}
+	if !strings.Contains(ruleWorkspaceFinish, "workspace.finish") {
+		t.Errorf("ruleWorkspaceFinish missing workspace.finish %q", ruleWorkspaceFinish)
+	}
+	if !strings.Contains(ruleReplaceTerminator, ">>>>>>> REPLACE") {
+		t.Errorf("ruleReplaceTerminator missing >>>>>>> REPLACE terminator %q", ruleReplaceTerminator)
+	}
+}
+
+func TestBaseRulesReviewerRuleIsLast(t *testing.T) {
+	if !strings.HasSuffix(baseRules, ruleReviewerSubagent) {
+		t.Errorf("baseRules should end with the reviewer subagent rule:\n%s", baseRules)
 	}
 }
 

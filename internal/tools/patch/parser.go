@@ -131,13 +131,17 @@ func ParseRepairing(proposal string) (Result, error) {
 			return fmt.Errorf("patch: unclosed REPLACE block for %q: add a %q line to close it",
 				currentPath, ">>>>>>> REPLACE")
 		}
-		marker := ">>>>>>> REPLACE"
 		if droppedDivider {
-			marker = "======="
+			// Name the mistake: the block was closed with the diff-hunk
+			// separator, which is not a patch terminator.
+			repairs = append(repairs, fmt.Sprintf(
+				"%s: REPLACE block closed with %q (diff-hunk separator); must be %q; treated %s as the terminator",
+				currentPath, "=======", ">>>>>>> REPLACE", terminator))
+		} else {
+			repairs = append(repairs, fmt.Sprintf(
+				"%s: REPLACE block closed with %q instead of %q; treated %s as the terminator",
+				currentPath, ">>>>>>> REPLACE", ">>>>>>> REPLACE", terminator))
 		}
-		repairs = append(repairs, fmt.Sprintf(
-			"%s: REPLACE block closed with %q instead of %q; treated %s as the terminator",
-			currentPath, marker, ">>>>>>> REPLACE", terminator))
 		inReplace = false
 		commitChunk()
 		return nil

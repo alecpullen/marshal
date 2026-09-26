@@ -134,6 +134,63 @@ func TestParseRepairsDividerUsedAsTerminator(t *testing.T) {
 	if len(res.Repairs) != 2 {
 		t.Errorf("Repairs = %v, want one note per repaired block", res.Repairs)
 	}
+	for i, note := range res.Repairs {
+		if !strings.Contains(note, "diff-hunk separator") {
+			t.Errorf("note %d = %q, want it to name the diff-hunk separator mistake", i, note)
+		}
+		if !strings.Contains(note, ">>>>>>> REPLACE") {
+			t.Errorf("note %d = %q, want it to name the correct terminator", i, note)
+		}
+	}
+}
+
+// TestParseRepairsDividerUsedAsTerminatorAtEOF is the EOF variant of the
+// divider repair: the block's last line is the diff-hunk separator and the
+// input then ends, so only EOF triggers the flush. It reaches the same
+// flushChunk branch as the two-file case with a different terminator string;
+// the note must still name the separator mistake and the stray divider must
+// not survive into the replacement.
+func TestParseRepairsDividerUsedAsTerminatorAtEOF(t *testing.T) {
+	input := "File: foo.go\n<<<<<<< SEARCH\nhello\n=======\nworld\n=======\n"
+	res, err := ParseRepairing(input)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 1 || len(res.Patches[0].Chunks) != 1 {
+		t.Fatalf("patches = %+v, want one chunk", res.Patches)
+	}
+	if got := res.Patches[0].Chunks[0].Replace; got != "world" {
+		t.Errorf("Replace = %q, want %q (stray divider must not survive)", got, "world")
+	}
+	if len(res.Repairs) != 1 {
+		t.Fatalf("Repairs = %v, want exactly one note", res.Repairs)
+	}
+	if !strings.Contains(res.Repairs[0], "diff-hunk separator") {
+		t.Errorf("note = %q, want it to name the diff-hunk separator mistake", res.Repairs[0])
+	}
+	if !strings.Contains(res.Repairs[0], ">>>>>>> REPLACE") {
+		t.Errorf("note = %q, want it to name the correct terminator", res.Repairs[0])
+	}
+}
+
+// TestParseRepairsReplaceClosedByEOFNoteShape pins the non-divider note: it
+// must stay the "instead of" phrasing and must not claim a diff-hunk
+// separator was involved.
+func TestParseRepairsReplaceClosedByEOFNoteShape(t *testing.T) {
+	input := "File: foo.go\n<<<<<<< SEARCH\nhello\n=======\nworld\n"
+	res, err := ParseRepairing(input)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Repairs) != 1 {
+		t.Fatalf("Repairs = %v, want exactly one note", res.Repairs)
+	}
+	if strings.Contains(res.Repairs[0], "diff-hunk separator") {
+		t.Errorf("EOF note = %q, must not mention a diff-hunk separator", res.Repairs[0])
+	}
+	if !strings.Contains(res.Repairs[0], "instead of") {
+		t.Errorf("EOF note = %q, want the \"instead of\" phrasing", res.Repairs[0])
+	}
 }
 
 func TestParseStillRejectsEmptyReplaceAtEOF(t *testing.T) {

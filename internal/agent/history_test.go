@@ -350,3 +350,99 @@ func TestBuildHistoryMessagesFallsBackToPlaceholderWhenAuditMissing(t *testing.T
 		t.Fatalf("expected legacy placeholder, got %+v", msgs[1])
 	}
 }
+
+// TestBuildHistory_NewestAssistantAnswerNeverStubbed reproduces the
+// approve-and-continue scenario: the operator's most recent proposal is
+// the newest assistant answer, and under a tight budget the old aging
+// logic collapsed it to a one-line stub before the user could approve
+// it. Rule (5) keeps it full regardless of budget.
+func TestBuildHistory_NewestAssistantAnswerNeverStubbed(t *testing.T) {
+	older := strings.Repeat("x ", 4000) // ~8000 chars ~2000 tokens each
+	newest := "newest-answer-marker " + strings.Repeat("y ", 4000)
+	prior := make([]session.Message, 0, 14)
+	for i := 0; i < 5; i++ {
+		prior = append(prior,
+			session.Message{Role: session.RoleUser, Content: fmt.Sprintf("user-%d", i), ContentType: session.ContentTypePlain},
+			session.Message{Role: session.RoleAssistant, Content: older, ContentType: session.ContentTypeMarkdown, Final: true},
+		)
+	}
+	prior = append(prior,
+		session.Message{Role: session.RoleUser, Content: "approve the proposal", ContentType: session.ContentTypePlain},
+		session.Message{Role: session.RoleAssistant, Content: newest, ContentType: session.ContentTypeMarkdown, Final: true},
+	)
+
+	// 6 exchanges of ~2000-token answers under a 6000-token budget. The
+	// first pass can only afford the two oldest in full and the
+	// pinned-window upgrade pass exhausts its budget, so the newest
+	// answer would be stubbed without rule (5).
+	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil)
+
+	joined := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		joined = append(joined, m.Content)
+	}
+	all := strings.Join(joined, "\n")
+	if !strings.Contains(all, newest) {
+		t.Fatalf("newest assistant answer was not emitted in full (rule 5)")
+	}
+
+	stubs := 0
+	for _, m := range msgs {
+		if m.Role == schema.RoleAssistant && strings.HasPrefix(m.Content, "[older assistant answer") {
+			stubs++
+		}
+	}
+	if stubs < 1 {
+		t.Fatalf("expected at least one older assistant answer stubbed, got %d", stubs)
+	}
+}
+
+// TestNewestAssistantExchangeWithTrailingOrphanTurn covers the
+// approve-and-continue boundary directly: when the operator's latest
+// message is an orphan user turn with no answer yet, the "newest
+// assistant answer" is the previous (answered) exchange.
+func TestNewestAssistantExchangeWithTrailingOrphanTurn(t *testing.T) {
+	cands := []candEntry{
+		{role: schema.RoleUser, content: "propose something", kind: "user"},
+		{role: schema.RoleAssistant, content: "here is the proposal", kind: "assistant-full"},
+		{role: schema.RoleUser, content: "approved, continue", kind: "user"},
+	}
+	exchanges := []exchange{{start: 0, end: 2}, {start: 2, end: 3}}
+
+	if got := newestAssistantExchange(exchanges, cands); got != 0 {
+		t.Fatalf("newestAssistantExchange = %d, want 0 (previous answered exchange)", got)
+	}
+
+	// No answered exchange at all: an orphan-only history yields -1.
+	onlyOrphan := []exchange{{start: 0, end: 1}}
+	orphanCands := []candEntry{{role: schema.RoleUser, content: "hello?", kind: "user"}}
+	if got := newestAssistantExchange(onlyOrphan, orphanCands); got != -1 {
+		t.Fatalf("newestAssistantExchange (no answer) = %d, want -1", got)
+	}
+}
+
+// TestBuildHistoryMessagesTrailingOrphanUserTurn asserts an orphan
+// trailing user turn does not panic and survives aging intact.
+func TestBuildHistoryMessagesTrailingOrphanUserTurn(t *testing.T) {
+	big := strings.Repeat("z ", 4000)
+	prior := make([]session.Message, 0, 14)
+	for i := 0; i < 5; i++ {
+		prior = append(prior,
+			session.Message{Role: session.RoleUser, Content: fmt.Sprintf("q-%d", i), ContentType: session.ContentTypePlain},
+			session.Message{Role: session.RoleAssistant, Content: big, ContentType: session.ContentTypeMarkdown, Final: true},
+		)
+	}
+	prior = append(prior, session.Message{Role: session.RoleUser, Content: "the orphan approval", ContentType: session.ContentTypePlain})
+
+	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil)
+
+	found := false
+	for _, m := range msgs {
+		if m.Role == schema.RoleUser && m.Content == "the orphan approval" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("trailing orphan user turn was lost: %+v", msgs)
+	}
+}

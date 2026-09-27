@@ -202,6 +202,10 @@ const (
 //	(3) older assistant answers are stubbed before being dropped
 //	(4) when still over budget, drop oldest stubs first, then
 //	    oldest pairs as a last resort
+//	(5) the newest assistant answer — the exchange the current user
+//	    turn responds to — is never stubbed or dropped. This
+//	    override is not budget-gated: losing the proposal under
+//	    active discussion is worse than a modest over-budget prompt.
 //
 // Rule (1) is honoured because the user's message is the
 // irreducible unit: we never set level below tieredDrop, and
@@ -293,7 +297,29 @@ func tierSelect(exchanges []exchange, cands []candEntry, budgetChars int) []tier
 		}
 	}
 
+	// Rule (5): the newest assistant answer — the one the current user turn is
+	// responding to — is never stubbed or dropped. Losing the proposal under
+	// active discussion is worse than a modest over-budget prompt, so this
+	// override is not budget-gated.
+	if last := newestAssistantExchange(exchanges, cands); last >= 0 {
+		level[last] = tieredFull
+	}
+
 	return level
+}
+
+// newestAssistantExchange returns the index of the newest exchange that
+// contains an assistant-full candidate, or -1 when none exists (e.g. a
+// trailing orphan user turn with no answer yet).
+func newestAssistantExchange(exchanges []exchange, cands []candEntry) int {
+	for i := len(exchanges) - 1; i >= 0; i-- {
+		for _, ce := range cands[exchanges[i].start:exchanges[i].end] {
+			if ce.kind == "assistant-full" {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func stubContentLen(originalLen int) int {

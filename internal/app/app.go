@@ -250,12 +250,12 @@ func logPath(workingDir string) string {
 }
 
 type routedProviderResolver struct {
-	router     *routing.StaticRouter
-	cfg        config.Config
-	dataDir    string
-	mu         *sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
-	providers  map[string]provider.Provider
-	sessionID  string
+	router    *routing.StaticRouter
+	cfg       config.Config
+	dataDir   string
+	mu        *sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
+	providers map[string]provider.Provider
+	sessionID string
 }
 
 // dbMemoryProvider adapts stored project memories for context-pack
@@ -266,12 +266,12 @@ type dbMemoryProvider struct {
 
 func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProviderResolver {
 	return &routedProviderResolver{
-		router:     routing.NewStaticRouter(cfg.RoutingConfig()),
-		cfg:        cfg,
-		dataDir:    dataDir,
-		mu:         &sync.Mutex{},
-		providers:  make(map[string]provider.Provider),
-		sessionID:  "",
+		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
+		cfg:       cfg,
+		dataDir:   dataDir,
+		mu:        &sync.Mutex{},
+		providers: make(map[string]provider.Provider),
+		sessionID: "",
 	}
 }
 
@@ -285,12 +285,12 @@ func (r *routedProviderResolver) withSessionID(sessionID string) *routedProvider
 		return r
 	}
 	return &routedProviderResolver{
-		router:     routing.NewStaticRouter(r.cfg.RoutingConfig()),
-		cfg:        r.cfg,
-		dataDir:    r.dataDir,
-		mu:         r.mu,
-		providers:  r.providers,
-		sessionID:  sessionID,
+		router:    routing.NewStaticRouter(r.cfg.RoutingConfig()),
+		cfg:       r.cfg,
+		dataDir:   r.dataDir,
+		mu:        r.mu,
+		providers: r.providers,
+		sessionID: sessionID,
 	}
 }
 
@@ -307,12 +307,12 @@ func (r *routedProviderResolver) withRoleOverrides(overrides map[routing.AgentRo
 		rc = rc.WithRoleOverride(role, preset)
 	}
 	return &routedProviderResolver{
-		router:     routing.NewStaticRouter(rc),
-		cfg:        r.cfg,
-		dataDir:    r.dataDir,
-		providers:  r.providers, // shared cache
-		mu:         r.mu,        // shared mutex (pointer)
-		sessionID:  r.sessionID,
+		router:    routing.NewStaticRouter(rc),
+		cfg:       r.cfg,
+		dataDir:   r.dataDir,
+		providers: r.providers, // shared cache
+		mu:        r.mu,        // shared mutex (pointer)
+		sessionID: r.sessionID,
 	}
 }
 
@@ -1988,9 +1988,22 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	}
 
 	runOpts := options{
-		now:                    time.Now,
-		configWithLayersLoader: config.LoadWithLayers,
-		programRunner:          runProgram,
+		now: time.Now,
+		configWithLayersLoader: func(lo config.LoadOptions) (config.Config, config.Layers, error) {
+			cfg, layers, err := config.LoadWithLayers(lo)
+			if err != nil {
+				return cfg, layers, err
+			}
+			// Re-apply provider template capability defaults (e.g. an
+			// opencode-go template that gained TemperatureLocked after a
+			// user saved their entry). Merge-by-key lets a stale false
+			// clobber the template's true permanently; the template is
+			// authoritative about what the endpoint accepts.
+			provider.RebindTemplateDefaults(&cfg)
+			provider.RebindTemplateDefaults(&layers.Merged)
+			return cfg, layers, nil
+		},
+		programRunner: runProgram,
 	}
 	for _, opt := range opts {
 		opt(&runOpts)
@@ -2344,6 +2357,9 @@ func layerReloaderFor(homeDir, workingDir string, trusted func() bool) func() (c
 		if err != nil {
 			return config.Layers{}, false
 		}
+		// Same template-default rebind as the startup loader so an
+		// in-session reload can't resurrect a stale false.
+		provider.RebindTemplateDefaults(&layers.Merged)
 		return layers, true
 	}
 }

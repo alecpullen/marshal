@@ -27,7 +27,7 @@ const pinnedRecentExchanges = 4
 // comfortably in the budget. The %d is the original Content length so
 // the model can recognise "this was a big turn" without seeing the
 // content.
-const assistantStubFmt = "[older assistant answer, ~%d chars; re-derive from session log if needed]"
+const assistantStubFmt = "[older assistant answer, ~%d chars; fetch it with the transcript_read tool if needed]"
 
 // buildHistoryMessages converts prior transcript entries into chat
 // messages for cross-turn replay. Only user turns and final

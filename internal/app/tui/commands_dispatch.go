@@ -117,6 +117,15 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	// The old session's changed-files list must never render in the new
 	// session while the railBaseRefMsg round-trips; re-read it below.
 	m.railChanged = nil
+	// Session-scoped interaction state resets. The mouse override drops back
+	// to inherit — a new session follows its own config rather than silently
+	// inheriting an explicit override the user set in the conversation they
+	// just left — and focus returns to the composer so the fresh session is
+	// typable without a keystroke.
+	m.mouseOverride = MouseInherit
+	m.clearToast()
+	m.focus = FocusComposer
+	_ = m.input.Focus()
 
 	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
 	if name != "" {
@@ -144,6 +153,14 @@ func init() {
 		},
 		"settings": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.openSettingsBrowser(strings.Join(args, " "))
+			m.refreshViewport()
+			return m, nil
+		},
+		"actions": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			// /actions and F2 open the same palette. The command exists so
+			// the surface is discoverable by name (and completable); the
+			// palette's pick path never routes back through this dispatch.
+			m.openActionPalette()
 			m.refreshViewport()
 			return m, nil
 		},

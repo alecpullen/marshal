@@ -253,48 +253,45 @@ func TestAgentLaneRowsEqualsRenderedLineCount(t *testing.T) {
 	}
 }
 
-// F6: with an empty input and running children, Down moves the lane cursor
-// and arms it; Enter then drills into the selected subagent.
-func TestLaneCursorDownThenEnterDrills(t *testing.T) {
+// Up/Down belong to the composer, not the agents lane. They used to move an
+// invisible lane cursor whenever the input was empty, which meant a blank Up
+// recalled no prompt history and a blank Enter drilled into a child agent.
+// The lane stays reachable by click, and explicit Ctrl+F is the keyboard
+// route into a running child's transcript.
+func TestUpDownNeverDrillFromTheLane(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.laneCursor != 1 {
-		t.Fatalf("laneCursor = %d, want 1 after two Downs", m.laneCursor)
-	}
-	if !m.laneCursorActive {
-		t.Fatal("laneCursorActive must be set after navigating the lane")
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if len(m.viewStack) != 0 {
+		t.Fatalf("arrows must not drill into the lane, viewStack=%d", len(m.viewStack))
 	}
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if len(m.viewStack) != 1 {
-		t.Fatalf("Enter must drill into the selected subagent, viewStack=%d", len(m.viewStack))
-	}
-	if m.laneCursor != 0 || m.laneCursorActive {
-		t.Fatalf("after drill laneCursor=%d active=%v, want 0/false", m.laneCursor, m.laneCursorActive)
+	if len(m.viewStack) != 0 {
+		t.Fatalf("blank Enter after arrows must not drill, viewStack=%d", len(m.viewStack))
 	}
 }
 
-// F6: Down clamps at the last lane row rather than wrapping.
-func TestLaneCursorClampsAtLastRow(t *testing.T) {
+// Up with a running child still recalls prompt history: the lane takeover is
+// gone and the composer keeps its own key.
+func TestUpRecallsHistoryWithRunningChild(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
-	registerRunningSubagent(t, &m, "review")
+	m.history = []string{"previous prompt"}
+	m.histIdx = -1
 
-	for i := 0; i < 5; i++ {
-		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	}
-	if m.laneCursor != 1 {
-		t.Fatalf("laneCursor = %d, want 1 (clamped at last row)", m.laneCursor)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if m.input.Value() != "previous prompt" {
+		t.Fatalf("Up should recall prompt history, got %q", m.input.Value())
 	}
 }
 
-// F6: a blank Enter with no lane navigation must keep the existing
-// steering-drain behavior and must not drill.
-func TestLaneCursorBlankEnterPreservesSteeringDrain(t *testing.T) {
+// A blank Enter keeps its steering-drain behavior and must not drill.
+func TestLaneBlankEnterPreservesSteeringDrain(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
@@ -305,9 +302,6 @@ func TestLaneCursorBlankEnterPreservesSteeringDrain(t *testing.T) {
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(m.viewStack) != 0 {
 		t.Fatalf("blank Enter must not drill, viewStack=%d", len(m.viewStack))
-	}
-	if m.laneCursorActive {
-		t.Fatal("laneCursorActive must stay false without lane navigation")
 	}
 	if len(m.state.SteeringQueue()) != 1 {
 		t.Fatalf("steering queue = %v, want 1 remaining (drain preserved)", m.state.SteeringQueue())
@@ -321,28 +315,33 @@ func TestLaneCursorBlankEnterPreservesSteeringDrain(t *testing.T) {
 	}
 }
 
-// Review M2: typing any non-navigation key disarms the lane cursor, so a
-// later blank Enter cannot drill from a stale cursor position.
-func TestLaneCursorDisarmsOnTyping(t *testing.T) {
+// Clicking a lane row is still the mouse route into a child transcript; the
+// keyboard takeover is what was removed, not the lane itself.
+func TestAgentLaneClickStillDrills(t *testing.T) {
 	m := newTestModel(t)
+	m.resize(80, 24)
 	registerRunningSubagent(t, &m, "tests")
-	registerRunningSubagent(t, &m, "review")
+	// The lane's rectangle is measured into the frame, and registering the
+	// agent after the resize is what makes it appear; refresh so the band
+	// matches what is now rendered.
+	m.refreshViewport()
 
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if !m.laneCursorActive {
-		t.Fatal("precondition: Down must arm the lane cursor")
+	top, _, ok := m.agentLaneBand()
+	if !ok {
+		t.Fatal("lane did not report a clickable band")
 	}
-
-	// A printable key falls through to the textarea; it must disarm the
-	// cursor on its way past.
-	m = sendKey(m, tea.KeyPressMsg{Code: 'x'})
-	if m.laneCursorActive {
-		t.Fatal("typing must disarm laneCursorActive")
+	entries := m.agentLaneEntries()
+	if len(entries) == 0 {
+		t.Fatal("expected a running lane entry")
 	}
-	// And a subsequent blank Enter must not drill.
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if len(m.viewStack) != 0 {
-		t.Fatalf("stale cursor must not drill, viewStack=%d", len(m.viewStack))
+	// Row 0 is the separator, row 1 the caption; the first agent is row 2.
+	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{
+		Button: tea.MouseLeft, X: 1, Y: top + 2,
+	}); !handled {
+		t.Fatal("lane row click should be consumed")
+	}
+	if len(m.viewStack) != 1 {
+		t.Fatalf("lane click should drill, viewStack=%d", len(m.viewStack))
 	}
 }
 

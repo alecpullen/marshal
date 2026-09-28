@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -11,7 +10,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
-	"marshal/internal/tools/registry"
 )
 
 // handleKeypress routes the global hotkeys and the Enter-submit flow.
@@ -94,18 +92,14 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	readlineShortcutAvailable := func() bool {
 		return m.input.Value() == "" && !m.editingCommand
 	}
-	// Any key other than a second Ctrl+R disarms a pending rollback, so the
-	// armed state can never outlive the keystroke that set it.
-	if m.rollbackArmed && msg.String() != "ctrl+r" {
-		m.rollbackArmed = false
-	}
 
 	// Suggestion accept/dismiss keys are routed before the textarea sees
 	// them, following the existing priority-routing pattern. Right accepts
 	// only at end-of-input; Tab accepts only when the completion popup is
 	// closed (popup priority wins); Esc dismisses only when idle (cancel
-	// takes precedence while busy).
-	if m.suggestion != "" && !m.suggestionDismissed {
+	// takes precedence while busy). The suggestion is composer chrome, so it
+	// only claims keys while the composer owns typing.
+	if m.suggestion != "" && !m.suggestionDismissed && m.composerReceivesTyping() {
 		switch msg.String() {
 		case "right":
 			if m.cursorAtEndOfInput() {
@@ -126,10 +120,42 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 	}
 
-	// Leaving the empty input disarms lane-cursor mode so a later blank
-	// Enter cannot drill from a stale cursor position.
-	if m.laneCursorActive && msg.String() != "up" && msg.String() != "down" && msg.String() != "enter" {
-		m.laneCursorActive = false
+	// Focus dispatch runs before the composer keymap so exactly one surface
+	// owns a key. Nothing here depends on which target is focused, so it runs
+	// regardless — a control key that works while the conversation is focused
+	// should not stop working because focus moved.
+	switch msg.String() {
+	case "ctrl+s":
+		// The capture toggle is deliberately NOT gated on readlineShortcut-
+		// Available(): the draft is the whole point. A user copying part of
+		// the conversation while writing the next prompt was the exact case
+		// the guard broke.
+		mm, cmd := m.toggleMouseCapture()
+		return mm, cmd, true
+	case "f6", "shift+f6":
+		return *m, m.cycleFocus(msg.String() == "f6"), true
+	case "f2":
+		// The palette takes over the dock and lists the available actions
+		// itself, so it is reachable even from a state where a specific
+		// action is unavailable.
+		m.openActionPalette()
+		return *m, nil, true
+	case "esc":
+		// Esc leaves a non-composer focus target before any composer-side
+		// meaning (popup dismissal, drill pop, turn cancel) can claim it: one
+		// press performs one operation, and the outermost thing to back out
+		// of is the focus move itself.
+		if m.effectiveFocus() != FocusComposer {
+			return *m, m.setFocus(FocusComposer), true
+		}
+	}
+
+	// While the conversation owns the keys, its scroll keys are handled here
+	// and every other key is swallowed rather than leaking into the composer
+	// behind it. Reporting "unhandled" would hand the key to the textarea and
+	// give the composer a second, invisible key recipient.
+	if !m.composerReceivesTyping() {
+		return m.handleFocusedSurfaceKey(msg)
 	}
 
 	switch msg.String() {
@@ -147,7 +173,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "esc":
 		// F18: dismiss the active completion popup first. Only if
 		// nothing is up do we fall through to cancelling the in-flight
-		// turn.
+		// turn. (A non-composer focus target was already handled above; the
+		// composer is the only surface left here.)
 		if m.activeCompletionPopup() != nil {
 			m.activeCompletionPopup().dismiss()
 			m.completionSuppressed = true
@@ -161,10 +188,17 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.refreshViewport()
 			return *m, nil, true
 		}
-		// An idle esc dismisses the notice banner: there is no turn to
-		// cancel and the banner is the most recent thing asking for
-		// attention. Busy turns fall through to cancelTurn as before.
+		// An idle esc dismisses the toast (a UI acknowledgement the user has
+		// clearly seen) and then the notice banner: there is no turn to cancel
+		// and those are the most recent things asking for attention. Busy
+		// turns fall through to cancelTurn as before.
 		if !m.busy {
+			if m.toastText() != "" {
+				m.clearToast()
+				m.lastTranscriptHash = 0
+				m.refreshViewport()
+				return *m, nil, true
+			}
 			if _, ok := m.state.Notice(); ok {
 				m.state.DismissNotice()
 				m.refreshViewport()
@@ -183,11 +217,11 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		// Drill into the most recently registered running subagent so
 		// inspecting live work does not require a mouse. Esc pops back.
-		if m.drillIntoLatestRunningSubagent() {
-			m.refreshViewport()
-			return *m, nil, true
-		}
-		return *m, nil, false
+		// Ctrl+F keeps its explicit inspection meaning: the implicit
+		// agent-lane takeover on Up/Down is gone, so this is the keyboard
+		// route into a child transcript.
+		mm, cmd := m.runAction(ActionInspectAgent)
+		return mm, cmd, true
 	case "ctrl+p":
 		if !readlineShortcutAvailable() {
 			return *m, nil, false
@@ -219,22 +253,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// Cycle the pinned todo panel: expanded → collapsed → hidden.
 		// State persists for the session.
 		m.cycleTodoPanelMode()
-		return *m, nil, true
-	case "ctrl+s":
-		if !readlineShortcutAvailable() {
-			return *m, nil, false
-		}
-		// Release the mouse to the terminal (or take it back) for the
-		// session. Capture and native click-drag selection cannot coexist —
-		// the terminal delivers events to one or the other — so copying a
-		// block of output previously meant editing [tui].mouse_capture and
-		// restarting, or knowing the terminal's override modifier.
-		m.mouseReleased = !m.mouseReleased
-		verb := "released to the terminal — click-drag to select, keys to scroll (PgUp/PgDn/Ctrl+U/Ctrl+D/End)"
-		if !m.mouseReleased {
-			verb = "captured — wheel scrolls the transcript"
-		}
-		m.state.AddMessage(session.RoleSystem, "Mouse "+verb+". Ctrl+S to toggle.", session.ContentTypePlain)
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+b":
@@ -247,37 +265,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.resize(m.rawWidth, m.rawHeight)
 		return *m, nil, true
 	case "ctrl+r":
-		if m.state.HasBackup() {
-			// Arm on the first press, revert on the second. Ctrl+R is
-			// reverse-i-search in every readline shell, so it gets pressed
-			// reflexively; without this it silently rewrote the working tree
-			// on a single keystroke. Every other destructive surface here
-			// (tool approval, skill/plugin removal) confirms first.
-			if !m.rollbackArmed {
-				m.rollbackArmed = true
-				m.state.AddMessage(session.RoleSystem,
-					"Press Ctrl+R again to revert the last patch, or any other key to cancel.",
-					session.ContentTypePlain)
-				m.refreshViewport()
-				return *m, nil, true
-			}
-			m.rollbackArmed = false
-			// The error is load-bearing: a partial rollback leaves a mixed
-			// working tree, and reporting success would hide that from both
-			// the user and the audit trail.
-			ev := registry.AuditEvent{
-				Timestamp:     time.Now(),
-				ToolName:      "rollback",
-				ResultSummary: "Rollback applied successfully",
-			}
-			if err := m.state.RollbackBackup(); err != nil {
-				ev.Error = err.Error()
-				ev.ResultSummary = "Rollback failed"
-			}
-			m.state.LogToolCall(ev)
-			m.refreshViewport()
-		}
-		return *m, nil, true
+		mm, cmd := m.runAction(ActionRollback)
+		return mm, cmd, true
 	case "pgup", "pgdown":
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
@@ -312,22 +301,14 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.viewportFollow = true
 		return *m, nil, true
 	case "up":
-		// F6: keyboard drill-in. When the input is empty, the agents lane
-		// is showing, and the user is not already drilled into a subagent,
-		// up/down move the lane cursor instead of recalling prompt history
-		// or popping the drill. This runs before the completion popup
-		// precedence checks so a visible popup still wins.
-		if m.input.Value() == "" && len(m.viewStack) == 0 {
-			entries := m.agentLaneEntries()
-			if len(entries) == 0 {
-				m.laneCursor = 0
-				m.laneCursorActive = false
-			} else {
-				m.laneCursor = max(m.laneCursor-1, 0)
-				m.laneCursorActive = true
-				return *m, nil, true
-			}
-		}
+		// Up/Down belong to the composer: prompt history and textarea
+		// navigation. They used to move a cursor in the agents lane whenever
+		// the input was empty, an invisible mode that made a blank Up key
+		// mean "select an agent" instead of "recall my last prompt" — the
+		// exact muscle memory the key exists for. Explicit Ctrl+F is the
+		// keyboard route into a running child's transcript, and the lane
+		// itself is still click-drillable.
+		//
 		// Completion popups keep precedence over drill exit and prompt
 		// history.
 		if p := m.activeCompletionPopup(); p != nil {
@@ -345,18 +326,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "down":
-		// F6: keyboard drill-in (see the "up" case above).
-		if m.input.Value() == "" && len(m.viewStack) == 0 {
-			entries := m.agentLaneEntries()
-			if len(entries) == 0 {
-				m.laneCursor = 0
-				m.laneCursorActive = false
-			} else {
-				m.laneCursor = min(m.laneCursor+1, len(entries)-1)
-				m.laneCursorActive = true
-				return *m, nil, true
-			}
-		}
+		// Down mirrors Up (see the "up" case above).
 		if p := m.activeCompletionPopup(); p != nil {
 			p.moveDown()
 			return *m, nil, true
@@ -390,46 +360,24 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.cycleModel(false)
 		return *m, nil, true
 	case "ctrl+x":
-		// If the user is drilled into a running subagent, Ctrl+X stops
-		// that specific subagent instead of touching the steering queue.
-		// Esc still pops the drill; Ctrl+C cancels the whole turn.
-		if m.busy && len(m.viewStack) > 0 {
-			if top := m.viewStack[len(m.viewStack)-1]; top.Status == session.SubagentRunning {
-				if m.state.CancelSubagent(top.ID) {
-					m.refreshViewport()
-					return *m, nil, true
-				}
-			}
-		}
-		// F16 R3: clear the steering queue while the agent is
-		// working. Out-of-band so /clear semantics don't collide.
-		if m.busy {
-			m.state.ClearSteering()
-			m.queuedCount = 0
-			m.refreshViewport()
+		// Ctrl+X resolves to exactly one action, from the same context
+		// snapshot the footer renders its hint from — stop the inspected
+		// running child when that is available, otherwise clear a nonempty
+		// queue while the turn is busy. The old code decided this inline
+		// while the footer decided it separately, which is how one key ended
+		// up advertised with two verbs.
+		//
+		// With no resolution the key is simply unbound: the footer omits the
+		// hint in exactly that state, so there is nothing to explain and a
+		// toast would announce a non-event. The key is still consumed, so it
+		// never reaches the textarea as a second recipient.
+		id, ok := m.actionSnapshot().ctrlXID()
+		if !ok {
 			return *m, nil, true
 		}
-		return *m, nil, false
+		mm, cmd := m.runAction(id)
+		return mm, cmd, true
 	case "enter":
-		// F6: keyboard drill-in. Only when the user explicitly navigated
-		// the agents lane (laneCursorActive) with an empty input does
-		// Enter drill into the selected subagent. Otherwise a blank Enter
-		// keeps its existing steering-drain behavior below.
-		if m.laneCursorActive && m.input.Value() == "" {
-			entries := m.agentLaneEntries()
-			if m.laneCursor >= 0 && m.laneCursor < len(entries) {
-				m.drillIntoSubagent(entries[m.laneCursor])
-				m.lastTranscriptHash = 0
-				m.refreshViewport()
-				m.laneCursor = 0
-				m.laneCursorActive = false
-				return *m, nil, true
-			}
-			// The lane emptied under the cursor; fall through to the
-			// normal Enter handling.
-			m.laneCursor = 0
-			m.laneCursorActive = false
-		}
 		// F18: if a popup is visible, accept the selection. Commands
 		// and setting values submit immediately (single Enter = accept
 		// + run); file paths and setting keys accept only so the user

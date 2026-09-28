@@ -141,6 +141,18 @@ func TestRegisterAll(t *testing.T) {
 	if !profCmd.TUIOnly {
 		t.Error("/profiles should be TUIOnly")
 	}
+	// /actions is the named twin of F2 and must be discoverable in /help like
+	// every other interactive surface.
+	actionsCmd, ok := cmdReg.Lookup("actions")
+	if !ok {
+		t.Fatal("/actions not registered")
+	}
+	if actionsCmd.Group != "Settings & info" {
+		t.Errorf("/actions group = %q, want Settings & info", actionsCmd.Group)
+	}
+	if !actionsCmd.TUIOnly {
+		t.Error("/actions should be TUIOnly")
+	}
 }
 
 func TestHelpCommandReturnsGroupedDoc(t *testing.T) {

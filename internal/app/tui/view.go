@@ -53,18 +53,17 @@ func (m Model) View() tea.View {
 	// Mouse capture is a trade, so it is configurable (tui.mouse_capture,
 	// default on). With MouseModeCellMotion the wheel scrolls the
 	// transcript — necessary because AltScreen means there is no terminal
-	// scrollback to fall back on — and native click-drag text selection
-	// needs the terminal's override modifier (Option/Alt in iTerm2, Ghostty,
-	// Kitty, Terminal.app). With MouseModeNone the terminal owns the mouse
-	// entirely and scrolling is keyboard-only (PgUp/PgDn/Ctrl+U/Ctrl+D/End).
-	// Ctrl+S flips this per session without touching config, so a user who
-	// wants to copy a block of output can release the mouse and take it back
-	// again without editing a TOML file or restarting.
-	if m.mouseReleased || (m.state != nil && !m.state.Config.TUI.MouseCapture) {
-		v.MouseMode = tea.MouseModeNone
-	} else {
-		v.MouseMode = tea.MouseModeCellMotion
-	}
+	// scrollback to fall back on. With MouseModeNone the terminal owns the
+	// mouse entirely: plain click-drag selects text and scrolling is
+	// keyboard-only (PgUp/PgDn/Ctrl+U/Ctrl+D/End). Ctrl+S flips this per
+	// session without touching config, so a user who wants to copy a block of
+	// output can release the mouse and take it back again without editing a
+	// TOML file or restarting.
+	//
+	// The mode comes from the resolved capture state, never from the raw
+	// config or the raw override: reading one of them directly is what let
+	// the footer announce a state the terminal was not in.
+	v.MouseMode = m.mouseMode()
 	return v
 }
 

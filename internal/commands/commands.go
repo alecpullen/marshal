@@ -390,6 +390,17 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			// /actions and F2 open the same palette. It is registered so the
+			// command exists in /help and completion like every other
+			// discoverable surface, while the palette itself resolves straight
+			// to an action rather than round-tripping through a command name
+			// (see the TUI dispatch table).
+			Name:        "actions",
+			Description: "Search every action available right now (F2)",
+			Group:       groupSettings,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "set",
 			Description: "Change a setting inline (\"/set\" alone browses)",
 			Args:        "<key> [value]",

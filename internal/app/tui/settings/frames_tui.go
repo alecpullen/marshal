@@ -35,9 +35,17 @@ func interfaceFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
+				// The description states what the setting does and how to get
+				// the other behaviour, both of which are verified: capture on
+				// means the wheel scrolls, and Ctrl+S hands the mouse back for
+				// native selection. It deliberately does NOT name a
+				// per-terminal modifier for selecting while captured — that
+				// shortcut is unverified per terminal and version, and a
+				// blanket "hold Option/Alt" claim is wrong on terminals that
+				// do not implement it.
 				f := &field{ID: "tui.mouse_capture", Title: "Mouse capture", Kind: kindToggle,
 					TomlPath: "tui.mouse_capture",
-					Desc:     "wheel scrolls the transcript; hold Option/Alt to select text",
+					Desc:     "keep the wheel scrolling the transcript; Ctrl+S releases the mouse for click-drag selection",
 					GetBool:  func() bool { return s.cfg.TUI.MouseCapture },
 					SetBool:  func(v bool) { s.cfg.TUI.MouseCapture = v }}
 				SetFieldWriteGlobal(f, true)

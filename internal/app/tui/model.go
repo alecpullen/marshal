@@ -252,13 +252,6 @@ type Model struct {
 	fileIndexLoaded      bool
 	lastInputForPopups   string
 	completionSuppressed bool
-	// laneCursor is the keyboard-selected row in the agents lane (F6).
-	// Up/Down move it while the input is empty and the lane is non-empty;
-	// Enter drills into the selected subagent. laneCursorActive is set
-	// only once the user explicitly navigates the lane, so a blank Enter
-	// keeps its existing steering-drain behavior until then.
-	laneCursor       int
-	laneCursorActive bool
 	// cmdArgMode arms argument completion right after a command is
 	// accepted from the popup. While armed and the input still carries
 	// the accepted "/<cmd> " prefix, commandTrigger keeps firing so
@@ -374,13 +367,30 @@ type Model struct {
 	rail *sidepanel.Rail
 	// railHidden is the session-only Ctrl+B override. Not persisted.
 	railHidden bool
-	// mouseReleased is the session-only Ctrl+S override that hands the mouse
-	// back to the terminal so click-drag text selection works without the
-	// terminal's modifier key. Not persisted; [tui].mouse_capture is the
-	// durable setting. Capture and native selection are mutually exclusive —
-	// the terminal cannot deliver events to both — so this is a toggle rather
-	// than something the two features can share.
-	mouseReleased bool
+	// mouseOverride is the session-only Ctrl+S override. Not persisted;
+	// [tui].mouse_capture is the durable setting. Capture and native
+	// selection are mutually exclusive — the terminal cannot deliver mouse
+	// events to both — so this is a toggle rather than something the two
+	// features can share.
+	//
+	// It is three-state rather than a bool so "follow config" and "force X"
+	// stay distinguishable: with capture configured off, a bool cannot
+	// represent release-vs-inherit, and flipping it announced a release that
+	// had never happened. See mousemode.go.
+	mouseOverride MouseOverride
+	// focus is the non-modal surface that owns keyboard input. It is never
+	// set to FocusPanel: a modal surface's focus is derived from the pending
+	// state (see effectiveFocus), which is why no open/close path has to save
+	// and restore it.
+	focus FocusTarget
+	// toast is transient UI feedback (a three-second line on the status
+	// bar). Deliberately NOT session.Notice: that store is warning/error
+	// only, and a UI mode change must never look like a failure. toastUntil
+	// is the wall-clock deadline; toastGen tags the expiry timer so a
+	// superseded toast's timer cannot clear a newer one.
+	toast      string
+	toastUntil time.Time
+	toastGen   int
 	// railRepoStats is refreshed on turn boundaries, never during render.
 	railRepoStats sidepanel.RepoStats
 	// railTurns is the recent turn-metrics cache, refreshed when a turn
@@ -1560,7 +1570,24 @@ func (m *Model) resize(width, height int) {
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	// A resize is the one event that can remove a focus target: the rail
+	// hides below its width threshold. effectiveFocus already falls back to
+	// the composer in that case, but the textarea's own focus flag has to
+	// follow, or the caret keeps blinking on a surface that no longer owns
+	// the keys. m.focus is left alone so widening restores the user's intent.
+	m.syncComposerFocusFlag()
 	m.computeFrame()
+}
+
+// syncComposerFocusFlag aligns the textarea's focus flag with the resolved
+// focus target. Every non-modal target other than the composer leaves the
+// textarea blurred so exactly one surface shows a focus marker.
+func (m *Model) syncComposerFocusFlag() {
+	if m.effectiveFocus() == FocusComposer {
+		_ = m.input.Focus()
+		return
+	}
+	m.input.Blur()
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1734,6 +1761,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// afterwards. Esc already had the interrupt semantics; the better-known
 	// key just did the more destructive thing.
 	if k, ok := msg.(tea.KeyPressMsg); ok {
+		// Any keypress other than a second Ctrl+R disarms a pending rollback,
+		// so the armed state can never outlive the keystroke that set it.
+		if m.rollbackArmed && k.String() != "ctrl+r" {
+			m.rollbackArmed = false
+		}
 		if k.String() == "ctrl+c" {
 			if m.busy && !m.interruptArmed {
 				m.interruptArmed = true
@@ -1989,7 +2021,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg, toastExpiredMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2085,6 +2117,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.dock.Panel().(type) {
 		case *agents.Panel, connect.Panel, *castlist.Panel:
 			return m, m.dock.Update(pm)
+		}
+		if m.pickerCommand == actionPaletteCommand {
+			// The palette resolves straight to an action rather than
+			// round-tripping through dispatchCommand: there is no /actions
+			// name to dispatch, and a text round-trip would re-parse the
+			// action ID.
+			m.dock.CloseNow()
+			m.pickerCommand = ""
+			return m.runPaletteAction(ActionID(pm.Value))
 		}
 		cmdName := m.pickerCommand
 		m.dock.CloseNow()
@@ -2455,6 +2496,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.PasteMsg:
+		// A paste belongs to the composer: dropping it into a textarea that
+		// does not own the keys would edit a draft the user cannot see.
+		if !m.composerReceivesTyping() {
+			return m, nil
+		}
 		if shouldCondensePaste(msg.Content) {
 			m.addPaste(msg.Content)
 			m.updateViewportHeight()
@@ -2466,6 +2512,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if mm, cmd, handled := m.handleKeypress(msg); handled {
 			return mm, cmd
 		}
+	}
+
+	if !m.composerReceivesTyping() {
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -4881,6 +4931,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkspaceMsg(msg)
 	case subagentMsg:
 		return m.handleSubagentMsg(msg)
+	case toastExpiredMsg:
+		return m.handleToastExpired(msg)
 	case railBaseRefMsg:
 		return m.handleRailBaseRef(msg)
 	case agentTickMsg:

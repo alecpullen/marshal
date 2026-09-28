@@ -53,6 +53,31 @@ func seedTranscript(state *session.State, pairs int) {
 	}
 }
 
+// seedArchive writes one ended generation with the given sequence number and
+// turns. Turn seqs are the caller's business: production archives them
+// 0-based (rollover.Controller.Archive assigns startSeq+i from 0), so tests
+// must seed them that way too or they mask the recall_history numbering.
+func seedArchive(t *testing.T, dbConn *db.DB, sessionID, genID string, seq int, turns []db.ArchivedTurn, now time.Time) {
+	t.Helper()
+	if err := dbConn.BeginGeneration(db.Generation{ID: genID, SessionID: sessionID, Seq: seq, StartedAt: now}); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	if err := dbConn.ArchiveTurns(genID, turns, 1024, now); err != nil {
+		t.Fatalf("ArchiveTurns: %v", err)
+	}
+	if err := dbConn.EndGeneration(genID, now.Add(time.Minute), "completed"); err != nil {
+		t.Fatalf("EndGeneration: %v", err)
+	}
+}
+
+// seedCurrentSession registers the session row the generation FK points at.
+func seedCurrentSession(t *testing.T, dbConn *db.DB, projectID int64, now time.Time) {
+	t.Helper()
+	if err := dbConn.CreateSession("current", projectID, "current", now); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -165,35 +190,163 @@ func TestTranscriptMaxCharsTruncationFooter(t *testing.T) {
 	}
 }
 
+// TestTranscriptOffsetPastEndSignalsNoTurns pins the end-of-transcript
+// signal: a model that pages past the last turn must be told it is past the
+// end, not handed an empty result it could mistake for an empty transcript.
+func TestTranscriptOffsetPastEndSignalsNoTurns(t *testing.T) {
+	ts, _, state := newTranscriptFixture(t)
+	seedTranscript(state, 1) // 2 turns
+
+	res, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"offset":99}`)})
+	if err != nil {
+		t.Fatalf("transcript_read: %v", err)
+	}
+	if !strings.Contains(res.Content, "No turns at offset 99 (2 turn(s) total)") {
+		t.Fatalf("expected an explicit past-the-end message, got:\n%s", res.Content)
+	}
+}
+
+// TestTranscriptArchivedGeneration seeds generation 0 (the seq every session
+// actually starts at, via rollover.Controller.Start) with 0-based turn seqs
+// (what Controller.Archive writes). Both are what production produces, so
+// the test exercises the real numbering rather than a convenient one.
 func TestTranscriptArchivedGeneration(t *testing.T) {
 	ts, dbConn, _ := newTranscriptFixture(t)
 	now := time.Unix(200, 0).UTC()
-	if err := dbConn.CreateSession("current", ts.projectID, "current", now); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	if err := dbConn.BeginGeneration(db.Generation{ID: "gen-1", SessionID: "current", Seq: 1, StartedAt: now}); err != nil {
-		t.Fatalf("BeginGeneration: %v", err)
-	}
-	turns := []db.ArchivedTurn{
-		{TurnSeq: 1, Role: "user", Content: "archived question", CreatedAt: now},
-		{TurnSeq: 2, Role: "assistant", Content: "archived answer text", CreatedAt: now},
-	}
-	if err := dbConn.ArchiveTurns("gen-1", turns, 1024, now); err != nil {
-		t.Fatalf("ArchiveTurns: %v", err)
-	}
-	if err := dbConn.EndGeneration("gen-1", now.Add(time.Minute), "completed"); err != nil {
-		t.Fatalf("EndGeneration: %v", err)
-	}
+	seedCurrentSession(t, dbConn, ts.projectID, now)
+	seedArchive(t, dbConn, "current", "gen-0", 0, []db.ArchivedTurn{
+		{TurnSeq: 0, Role: "system", Content: "archived system prompt", CreatedAt: now},
+		{TurnSeq: 1, Role: "assistant", Content: "archived answer text", CreatedAt: now},
+	}, now)
 
-	res, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":1}`)})
+	res, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0}`)})
 	if err != nil {
 		t.Fatalf("transcript_read archived: %v", err)
+	}
+	if !strings.Contains(res.Content, "Generation 0 (ended)") {
+		t.Fatalf("expected the generation header, got:\n%s", res.Content)
 	}
 	if !strings.Contains(res.Content, "archived answer text") {
 		t.Fatalf("expected archived turn content, got:\n%s", res.Content)
 	}
-	if !strings.Contains(res.Content, "--- turn 2 (assistant) ---") {
-		t.Fatalf("expected archived turn header, got:\n%s", res.Content)
+	if !strings.Contains(res.Content, "--- turn 0 (system) ---") {
+		t.Fatalf("expected the stored turn seq 0 to be printed as-is, got:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "--- turn 1 (assistant) ---") {
+		t.Fatalf("expected stored turn seq 1 to be printed as-is, got:\n%s", res.Content)
+	}
+}
+
+// TestTranscriptArchivedTurnSeqMatchesRecallHistoryNumbering pins the
+// contract the schema advertises: the number recall_history prints next to a
+// turn is the number transcript_read's turn_seq accepts, for archived turns.
+// The first archived turn is seq 0, so 0 must be selectable and must not be
+// mistaken for "field omitted".
+func TestTranscriptArchivedTurnSeqMatchesRecallHistoryNumbering(t *testing.T) {
+	ts, dbConn, _ := newTranscriptFixture(t)
+	now := time.Unix(200, 0).UTC()
+	seedCurrentSession(t, dbConn, ts.projectID, now)
+	seedArchive(t, dbConn, "current", "gen-0", 0, []db.ArchivedTurn{
+		{TurnSeq: 0, Role: "user", Content: "first archived turn", CreatedAt: now},
+		{TurnSeq: 1, Role: "assistant", Content: "second archived turn", CreatedAt: now},
+	}, now)
+
+	// turn_seq 0 selects the turn recall_history reports as turn 0.
+	first, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0,"turn_seq":0}`)})
+	if err != nil {
+		t.Fatalf("transcript_read turn_seq=0: %v", err)
+	}
+	if !strings.Contains(first.Content, "first archived turn") {
+		t.Fatalf("turn_seq 0 should return the first turn, got:\n%s", first.Content)
+	}
+	if strings.Contains(first.Content, "second archived turn") {
+		t.Fatalf("turn_seq 0 should return exactly one turn, got:\n%s", first.Content)
+	}
+
+	second, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0,"turn_seq":1}`)})
+	if err != nil {
+		t.Fatalf("transcript_read turn_seq=1: %v", err)
+	}
+	if !strings.Contains(second.Content, "second archived turn") || strings.Contains(second.Content, "first archived turn") {
+		t.Fatalf("turn_seq 1 should return the second turn, got:\n%s", second.Content)
+	}
+	if !strings.Contains(second.Content, "--- turn 1 (assistant) ---") {
+		t.Fatalf("expected the stored seq in the header, got:\n%s", second.Content)
+	}
+	// The generation header survives the single-turn path so the model knows
+	// which generation it just read.
+	if !strings.Contains(second.Content, "Generation 0 (ended)") {
+		t.Fatalf("expected the generation header on the turn_seq path, got:\n%s", second.Content)
+	}
+}
+
+// TestTranscriptArchivedDoesNotSplitQuotedTurnHeader is the regression the row
+// read exists for: archived content that quotes a turn header must stay one
+// turn. Splitting the rendered dump on that literal fabricated turns, invented
+// a role for each, and renumbered them.
+func TestTranscriptArchivedDoesNotSplitQuotedTurnHeader(t *testing.T) {
+	ts, dbConn, _ := newTranscriptFixture(t)
+	now := time.Unix(200, 0).UTC()
+	seedCurrentSession(t, dbConn, ts.projectID, now)
+	quoted := "here is a transcript excerpt:\n--- turn 7 (assistant) ---\nthat header is quoted literal text"
+	seedArchive(t, dbConn, "current", "gen-0", 0, []db.ArchivedTurn{
+		{TurnSeq: 0, Role: "user", Content: quoted, CreatedAt: now},
+		{TurnSeq: 1, Role: "assistant", Content: "the real answer", CreatedAt: now},
+	}, now)
+
+	res, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0}`)})
+	if err != nil {
+		t.Fatalf("transcript_read: %v", err)
+	}
+	// The quoted header must stay inside turn 0's body — that is, between
+	// turn 0's header and turn 1's — rather than becoming its own turn.
+	quotedAt := strings.Index(res.Content, "that header is quoted literal text")
+	turn0At := strings.Index(res.Content, "--- turn 0 (user) ---")
+	turn1At := strings.Index(res.Content, "--- turn 1 (assistant) ---")
+	if quotedAt < 0 {
+		t.Fatalf("quoted content should survive intact, got:\n%s", res.Content)
+	}
+	if !(turn0At < quotedAt && quotedAt < turn1At) {
+		t.Fatalf("quoted header should remain inside turn 0's body, got:\n%s", res.Content)
+	}
+
+	// The quoted header is not a turn: selecting seq 7 must miss, and the
+	// miss must name only the two stored seqs.
+	miss, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0,"turn_seq":7}`)})
+	if err != nil {
+		t.Fatalf("transcript_read: %v", err)
+	}
+	if !strings.Contains(miss.Content, "No turn 7 in transcript (2 turn(s) available: 0, 1)") {
+		t.Fatalf("the quoted header must not become a selectable turn, got:\n%s", miss.Content)
+	}
+
+	// turn_seq must select by stored seq, not by fabricating turns out of
+	// the quoted header.
+	one, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0,"turn_seq":1}`)})
+	if err != nil {
+		t.Fatalf("transcript_read: %v", err)
+	}
+	if !strings.Contains(one.Content, "the real answer") || strings.Contains(one.Content, "quoted literal text") {
+		t.Fatalf("turn_seq 1 should be the real second turn, got:\n%s", one.Content)
+	}
+}
+
+// TestTranscriptArchivedNotFoundListsStoredSeqs checks that a miss names the
+// numbers the headers actually print, including 0.
+func TestTranscriptArchivedNotFoundListsStoredSeqs(t *testing.T) {
+	ts, dbConn, _ := newTranscriptFixture(t)
+	now := time.Unix(200, 0).UTC()
+	seedCurrentSession(t, dbConn, ts.projectID, now)
+	seedArchive(t, dbConn, "current", "gen-0", 0, []db.ArchivedTurn{
+		{TurnSeq: 0, Role: "user", Content: "only turn", CreatedAt: now},
+	}, now)
+
+	res, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0,"turn_seq":9}`)})
+	if err != nil {
+		t.Fatalf("transcript_read: %v", err)
+	}
+	if !strings.Contains(res.Content, "No turn 9 in transcript (1 turn(s) available: 0)") {
+		t.Fatalf("expected the miss to name the stored seqs, got:\n%s", res.Content)
 	}
 }
 
@@ -203,6 +356,31 @@ func TestTranscriptGenerationSeqWithoutDBErrors(t *testing.T) {
 	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":1}`)})
 	if err == nil {
 		t.Fatal("expected an error when generation_seq is set but no db is available")
+	}
+}
+
+// TestTranscriptGenerationSeqZeroWithoutDBErrors is the pointer plumbing's
+// regression test: an explicit 0 must reach the archived branch (and fail
+// there for want of a db) rather than silently falling through to the live
+// transcript.
+func TestTranscriptGenerationSeqZeroWithoutDBErrors(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0).UTC(), session.Persistence{SessionID: "current"})
+	state.AddMessage(session.RoleUser, "live question", session.ContentTypePlain)
+	tool := NewTranscriptTool(state, nil)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":0}`)})
+	if err == nil {
+		t.Fatal("generation_seq 0 must take the archived path, not the live one")
+	}
+	if !strings.Contains(err.Error(), "generation_seq 0") {
+		t.Fatalf("expected the error to name generation_seq 0, got: %v", err)
+	}
+}
+
+func TestTranscriptNegativeGenerationSeqRejected(t *testing.T) {
+	ts, _, _ := newTranscriptFixture(t)
+	_, err := ts.transcriptReadTool().Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"generation_seq":-1}`)})
+	if err == nil {
+		t.Fatal("expected a negative generation_seq to be rejected")
 	}
 }
 

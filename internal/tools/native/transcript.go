@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
-	"marshal/internal/history"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
@@ -28,6 +28,10 @@ const (
 	// transcript_read exists to recover context that aged out of the
 	// replayed window, so an unbounded result would defeat its own purpose.
 	transcriptMaxCharsCeiling = 64000
+	// transcriptSeqListMax caps how many turn numbers the not-found
+	// message lists, so a long generation cannot turn an error into a
+	// transcript dump of its own.
+	transcriptSeqListMax = 12
 )
 
 // transcriptTool reads the live session transcript, or an archived
@@ -47,16 +51,23 @@ func NewTranscriptTool(state *session.State, database *db.DB) registry.Tool {
 		Description: "Read this session's own conversation transcript, including " +
 			"turns that have aged out of the replayed history window (collapsed to " +
 			"a one-line stub). Reads the live current session by default; pass " +
-			"generation_seq to read an archived generation instead. Returns turns " +
-			"in the same shape the model recognises as its prior turns (user turns " +
-			"and final, non-salvaged assistant answers), with tool-call counts noted.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"generation_seq":{"type":"integer","description":"Read an archived generation by seq. Omit to read the live current session transcript."},"session_id":{"type":"string","description":"Session to read; defaults to the current session."},"turn_seq":{"type":"integer","description":"Return only this one turn (the recall_history follow-up case)."},"offset":{"type":"integer","description":"Skip this many turns (paging)."},"limit":{"type":"integer","description":"Max turns to return (default 20)."},"max_chars":{"type":"integer","description":"Hard cap on returned characters (default 16000)."},"include_all":{"type":"boolean","description":"Also show content types excluded from history replay (narration, skill bodies, system markers) in the live transcript."}},"additionalProperties":false}`),
+			"generation_seq (sequence 0 is the first generation and is a valid " +
+			"value) to read an archived generation instead. Every turn is " +
+			"labelled with the turn number printed in its header — pass that " +
+			"number back as turn_seq to re-read one turn. For archived turns " +
+			"the header number is the same turn number recall_history prints.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"generation_seq":{"type":"integer","description":"Read an archived generation by sequence number. Sequence 0 is the first generation of the session and is a valid value; omit this field entirely to read the live current session transcript."},"session_id":{"type":"string","description":"Session to read; defaults to the current session."},"turn_seq":{"type":"integer","description":"Return only the one turn whose header prints this number (the recall_history follow-up case). 0 is valid for archived generations, whose turn numbers start at 0."},"offset":{"type":"integer","description":"Skip this many turns before emitting (paging). Use the offset named in the continuation footer."},"limit":{"type":"integer","description":"Max turns to return (default 20, max 100)."},"max_chars":{"type":"integer","description":"Hard cap on returned characters (default 16000, max 64000)."},"include_all":{"type":"boolean","description":"Live transcript only: also show turns excluded from history replay, such as non-final assistant narration and system notes. Internal markers (compaction, loaded-skill tags and skill bodies) stay hidden."}},"additionalProperties":false}`),
 		Risk:   registry.RiskReadOnly,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			// generation_seq and turn_seq are pointers so an explicit 0 is
+			// distinguishable from an omitted field: 0 is the first
+			// generation (rollover.Controller.Start opens generation seq
+			// 0), and archived turn numbers are 0-based, so a plain int
+			// would make both unreachable.
 			var args struct {
-				GenerationSeq int    `json:"generation_seq"`
+				GenerationSeq *int   `json:"generation_seq"`
 				SessionID     string `json:"session_id"`
-				TurnSeq       int    `json:"turn_seq"`
+				TurnSeq       *int   `json:"turn_seq"`
 				Offset        int    `json:"offset"`
 				Limit         int    `json:"limit"`
 				MaxChars      int    `json:"max_chars"`
@@ -71,15 +82,18 @@ func NewTranscriptTool(state *session.State, database *db.DB) registry.Tool {
 				sessionID = t.state.SessionID()
 			}
 
-			if args.GenerationSeq > 0 {
-				if t.db == nil {
-					return registry.ToolResult{}, fmt.Errorf("transcript_read: generation_seq %d requested but no database is available for archived generations", args.GenerationSeq)
+			if args.GenerationSeq != nil {
+				seq := *args.GenerationSeq
+				if seq < 0 {
+					return registry.ToolResult{}, fmt.Errorf("transcript_read: generation_seq %d is invalid (sequence numbers start at 0)", seq)
 				}
-				dump, err := history.DumpGeneration(ctx, t.db, history.DumpOptions{SessionID: sessionID, GenerationSeq: args.GenerationSeq})
+				if t.db == nil {
+					return registry.ToolResult{}, fmt.Errorf("transcript_read: generation_seq %d requested but no database is available for archived generations", seq)
+				}
+				preamble, turns, err := t.archivedTurns(sessionID, seq)
 				if err != nil {
 					return registry.ToolResult{}, fmt.Errorf("transcript_read: %w", err)
 				}
-				preamble, turns := parseDumpTurns(dump)
 				return registry.ToolResult{Content: renderTranscript(preamble, turns, args.TurnSeq, args.Offset, args.Limit, args.MaxChars)}, nil
 			}
 
@@ -101,20 +115,87 @@ func (t *toolSet) transcriptReadTool() registry.Tool {
 	return NewTranscriptTool(t.sessionState, t.db)
 }
 
+// archivedTurns loads one archived generation straight from the db rows
+// and renders the generation header itself. Reading rows (rather than
+// splitting history.DumpGeneration's rendering on its turn markers) keeps
+// turn content that happens to contain a turn header literal from being
+// split into fabricated turns, keeps turns whose body is malformed
+// unrepresentable, and preserves each turn's stored TurnSeq so the
+// printed header number matches what recall_history prints.
+func (t *transcriptTool) archivedTurns(sessionID string, seq int) (string, []transcriptTurn, error) {
+	gens, err := t.db.GenerationsForSession(sessionID)
+	if err != nil {
+		return "", nil, fmt.Errorf("load generations for session %s: %w", sessionID, err)
+	}
+	var gen *db.Generation
+	for i := range gens {
+		if gens[i].Seq == seq {
+			gen = &gens[i]
+			break
+		}
+	}
+	if gen == nil {
+		return "", nil, fmt.Errorf("generation seq %d not found in session %s", seq, sessionID)
+	}
+
+	rows, err := t.db.TurnsForGeneration(gen.ID)
+	if err != nil {
+		return "", nil, fmt.Errorf("load generation %d turns: %w", seq, err)
+	}
+	turns := make([]transcriptTurn, 0, len(rows))
+	for _, r := range rows {
+		body := r.Content
+		if strings.TrimSpace(r.ToolCalls) != "" {
+			body += "\n[tool_calls]\n" + strings.TrimRight(r.ToolCalls, "\n")
+		}
+		turns = append(turns, transcriptTurn{seq: r.TurnSeq, role: r.Role, body: body})
+	}
+	return generationPreamble(gen, len(rows)), turns, nil
+}
+
+// generationPreamble reproduces the header history.DumpGeneration writes
+// for a generation, without its trailing blank line (renderTranscript adds
+// the separator). Keeping it identical means a transcript_read of an
+// archive looks the same as the CLI's transcript dump.
+func generationPreamble(gen *db.Generation, turnCount int) string {
+	var b strings.Builder
+	status := "ended"
+	if gen.EndedAt == nil {
+		status = "live"
+	}
+	fmt.Fprintf(&b, "Generation %d (%s)\n", gen.Seq, status)
+	fmt.Fprintf(&b, "  Started: %s\n", gen.StartedAt.UTC().Format(time.RFC3339))
+	if gen.EndedAt != nil {
+		fmt.Fprintf(&b, "  Ended:   %s\n", gen.EndedAt.UTC().Format(time.RFC3339))
+	}
+	if gen.SeedDigest != "" {
+		fmt.Fprintf(&b, "  Digest:  %s\n", gen.SeedDigest)
+	}
+	fmt.Fprintf(&b, "  Turns:   %d", turnCount)
+	return b.String()
+}
+
 // transcriptTurn is one renderable turn of a transcript.
 type transcriptTurn struct {
+	// seq is the turn number printed in the turn's header and the number
+	// turn_seq selects by. Live turns are numbered 1..n by position
+	// (matching the replayed history window); archived turns carry the
+	// TurnSeq their row was stored with, which is 0-based and is the same
+	// number recall_history reports for that turn.
+	seq int
+	// role is the turn's role, as printed beside the turn number.
 	role string
 	// body is everything under the turn header, excluding the header
 	// itself. For live turns it is the message content plus an optional
-	// tool-call note; for archived turns it is the block rendered by
-	// history.DumpGeneration (content plus any [tool_calls] section).
+	// tool-call note; for archived turns it is the archived content plus
+	// any [tool_calls] section.
 	body string
 }
 
 // renderTurn renders one turn in the same shape history.DumpGeneration
 // uses, so live and archived reads look alike.
-func renderTurn(t transcriptTurn, ordinal int) string {
-	return fmt.Sprintf("--- turn %d (%s) ---\n%s", ordinal, t.role, t.body)
+func renderTurn(t transcriptTurn) string {
+	return fmt.Sprintf("--- turn %d (%s) ---\n%s", t.seq, t.role, t.body)
 }
 
 // liveTurns filters the live session's messages to the turns the model
@@ -133,7 +214,7 @@ func liveTurns(msgs []session.Message, includeAll bool) []transcriptTurn {
 		if m.ToolCallCount > 0 {
 			body += fmt.Sprintf("\n[tool_calls: %d]", m.ToolCallCount)
 		}
-		out = append(out, transcriptTurn{role: string(m.Role), body: body})
+		out = append(out, transcriptTurn{seq: len(out) + 1, role: string(m.Role), body: body})
 	}
 	return out
 }
@@ -166,64 +247,39 @@ func transcriptVisible(m session.Message, includeAll bool) bool {
 	return false
 }
 
-// parseDumpTurns splits a history.DumpGeneration rendering into its
-// preamble (the generation header, everything before the first turn) and
-// one transcriptTurn per archived turn. Reusing DumpGeneration's output
-// keeps the archived path's rendering identical to the CLI's transcript
-// dump instead of reimplementing it.
-func parseDumpTurns(dump string) (string, []transcriptTurn) {
-	const marker = "--- turn "
-	parts := strings.Split(dump, marker)
-	if len(parts) <= 1 {
-		return strings.TrimRight(dump, "\n"), nil
-	}
-	preamble := strings.TrimRight(parts[0], "\n")
-	turns := make([]transcriptTurn, 0, len(parts)-1)
-	for _, p := range parts[1:] {
-		// Each block looks like `1 (user) ---\n<content>`; the trailing
-		// newline that preceded the next marker stays on the body.
-		head, body, ok := strings.Cut(p, " ---\n")
-		if !ok {
-			head, body, ok = strings.Cut(p, " ---")
-			if !ok {
-				continue
-			}
-		}
-		role := ""
-		if i := strings.Index(head, " ("); i >= 0 && strings.HasSuffix(head, ")") {
-			role = head[i+2 : len(head)-1]
-		}
-		turns = append(turns, transcriptTurn{role: role, body: strings.TrimRight(body, "\n")})
-	}
-	return preamble, turns
-}
-
 // renderTranscript pages and truncates a set of turns. It is shared by the
 // live and archived paths so both disclose incompleteness the same way.
 //
-// offset is a 0-based count of turns to skip; limit is the maximum number
-// of turns to emit; turn_seq (1-based) selects a single turn and is bounded
-// by construction, so it never emits a continuation footer. maxChars is a
-// hard cap on the rendered result. When turns remain unshown — either
-// because limit was reached or maxChars was hit — the result ends with a
-// continuation footer naming the offset of the next not-yet-shown turn, so
-// the model can page without re-reading what it already has.
-func renderTranscript(preamble string, turns []transcriptTurn, turnSeq, offset, limit, maxChars int) string {
+// turnSeq selects a single turn by the number printed in its header (see
+// transcriptTurn.seq) and ignores offset and limit. Otherwise offset is a
+// 0-based count of turns to skip and limit is the maximum number of turns
+// to emit; maxChars is a hard cap on the rendered result. When turns
+// remain unshown — because limit was reached, maxChars was hit, or offset
+// ran past the end — the model is told, and a continuation footer names
+// the offset of the next not-yet-shown turn so it can page without
+// re-reading what it already has. The generation preamble, when there is
+// one, is returned on every path so the model always knows which
+// generation it is reading.
+func renderTranscript(preamble string, turns []transcriptTurn, turnSeq *int, offset, limit, maxChars int) string {
 	limit = clampTranscriptLimit(limit)
 	maxChars = clampTranscriptMaxChars(maxChars)
 	if offset < 0 {
 		offset = 0
 	}
 
-	if turnSeq > 0 {
-		if turnSeq > len(turns) {
-			return fmt.Sprintf("No turn %d in transcript (%d turn(s) available).", turnSeq, len(turns))
+	if turnSeq != nil {
+		for i := range turns {
+			if turns[i].seq != *turnSeq {
+				continue
+			}
+			block := withPreamble(preamble, renderTurn(turns[i]))
+			if len([]rune(block)) > maxChars {
+				return strutil.Truncate(block, maxChars, false) + "\n[truncated]"
+			}
+			return block
 		}
-		block := renderTurn(turns[turnSeq-1], turnSeq)
-		if len([]rune(block)) > maxChars {
-			return strutil.Truncate(block, maxChars, false) + "\n[truncated]"
-		}
-		return block
+		return withPreamble(preamble, fmt.Sprintf("No turn %d in transcript (%d turn(s) available%s).",
+			*turnSeq, len(turns), availableSeqs(turns)))
 	}
 
 	if len(turns) == 0 {
@@ -232,10 +288,13 @@ func renderTranscript(preamble string, turns []transcriptTurn, turnSeq, offset, 
 		}
 		return "No turns to show."
 	}
+	if offset >= len(turns) {
+		return withPreamble(preamble, fmt.Sprintf("No turns at offset %d (%d turn(s) total).", offset, len(turns)))
+	}
 
 	var b strings.Builder
 	runes := 0
-	if preamble != "" {
+	if strings.TrimSpace(preamble) != "" {
 		b.WriteString(preamble)
 		b.WriteString("\n\n")
 		runes = len([]rune(preamble)) + 2
@@ -243,7 +302,7 @@ func renderTranscript(preamble string, turns []transcriptTurn, turnSeq, offset, 
 
 	shown := 0
 	for i := offset; i < len(turns) && shown < limit; i++ {
-		block := renderTurn(turns[i], i+1)
+		block := renderTurn(turns[i])
 		sep := ""
 		if shown > 0 {
 			sep = "\n\n"
@@ -278,6 +337,34 @@ func renderTranscript(preamble string, turns []transcriptTurn, turnSeq, offset, 
 		fmt.Fprintf(&b, "\n\n[truncated — page with offset=%d]", offset+shown)
 	}
 	return b.String()
+}
+
+// withPreamble prefixes a one-block answer with the generation header, when
+// there is one.
+func withPreamble(preamble, body string) string {
+	if strings.TrimSpace(preamble) == "" {
+		return body
+	}
+	return preamble + "\n\n" + body
+}
+
+// availableSeqs renders the turn numbers a transcript holds, bounded by
+// transcriptSeqListMax, for the not-found message. It is a pointer into the
+// turns' seqs, not their positions, so it names the same numbers the
+// headers print.
+func availableSeqs(turns []transcriptTurn) string {
+	if len(turns) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, transcriptSeqListMax+1)
+	for i := range turns {
+		if i >= transcriptSeqListMax {
+			parts = append(parts, "…")
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%d", turns[i].seq))
+	}
+	return ": " + strings.Join(parts, ", ")
 }
 
 func clampTranscriptLimit(limit int) int {

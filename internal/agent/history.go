@@ -175,46 +175,40 @@ const (
 	tieredFull
 )
 
-// tierSelect classifies each exchange as tieredDrop, tieredStub, or
-// tieredFull against a 4-chars-per-token budget. Algorithm:
+// tierSelect classifies each exchange against a budget of maxTokens*4
+// characters (the caller passes exactly that). An exchange is an
+// indivisible unit: every candidate from exchange.start to exchange.end
+// is emitted together, so the levels are whole-exchange outcomes.
+// tieredFull emits the exchange with its assistant answer intact,
+// tieredStub collapses that answer to assistantStubFmt, and tieredDrop
+// drops the exchange entirely — including its user message, because the
+// emit loop skips the whole exchange (buildHistoryMessages,
+// `if ke == tieredDrop { continue }`).
 //
-//  1. Pin the newest pinnedRecentExchanges as tieredFull (rule 2).
-//     When fewer exchanges than that exist, all are pinned.
-//  2. Older exchanges default to tieredDrop.
-//  3. Promote oldest-up while room permits: tieredDrop -> tieredStub
-//     -> tieredFull.
-//  4. If still over budget, drop oldest stubs first (rule 4), then
-//     the newest-pinned region itself (rule 4's pair eviction).
+// Rules from plan Task 6/C:
 //
-// Rule (1) is honoured by construction: the oldest-unpinned
-// exchanges always receive their user message even when their
-// assistant answer gets stubbed. Only after every assistant is
-// either kept (full or stub) or its pair dropped does the user turn
-// disappear.
-// tierSelect classifies each exchange as tieredDrop (user only),
-// tieredStub (one-line assistant summary), or tieredFull (full
-// assistant answer). Rules from plan Task 6/C:
-//
-//	(1) user messages are never dropped while an assistant turn
-//	    remains droppable — they carry decisions and are small, so
-//	    we keep them and age/drop the assistant content instead.
-//	(2) newest 4 full exchanges stay intact when budget permits
-//	(3) older assistant answers are stubbed before being dropped
-//	(4) when still over budget, drop oldest stubs first, then
-//	    oldest pairs as a last resort
+//	(1) the exchange is the unit of aging. A kept exchange (tieredFull
+//	    or tieredStub) always replays its user message, ledger lines and
+//	    subagent reports; only the assistant answer is collapsed, at
+//	    tieredStub. A drop is whole-exchange, so it takes the user
+//	    message with it.
+//	(2) the newest pinnedRecentExchanges are upgraded to Full in a
+//	    final pass when the remaining budget covers the delta from
+//	    their current tier. Exchanges already at Drop (curCost 0) are
+//	    skipped: the delta would be the whole answer, and rule (2)
+//	    protects recent content rather than spending budget the first
+//	    pass already committed.
+//	(3) older assistant answers are stubbed before being dropped: the
+//	    first pass runs oldest -> newest and each exchange takes the
+//	    best tier the remaining budget affords (Full, else Stub).
+//	(4) exchanges the budget cannot reach at all are tieredDrop.
 //	(5) the newest assistant answer — the exchange the current user
-//	    turn responds to — is never stubbed or dropped. This
-//	    override is not budget-gated: losing the proposal under
-//	    active discussion is worse than a modest over-budget prompt.
-//
-// Rule (1) is honoured because the user's message is the
-// irreducible unit: we never set level below tieredDrop, and
-// tieredDrop keeps the user message. We walk oldest -> newest
-// upgrading where budget allows. The "newest 4 full" rule (2)
-// sits awkwardly with rule (1) under severe budget pressure — the
-// test (TestBuildHistory_TieredAging) demonstrates that case, where
-// 4 full exchanges would blow the budget; in that situation we
-// fall through to stubs and user-only for the older exchanges.
+//	    turn responds to — is forced to tieredFull last and
+//	    unconditionally, even when the budget cannot afford it. Losing
+//	    the proposal under active discussion is worse than a modest
+//	    over-budget prompt, so this override is deliberately not
+//	    budget-gated. It only ever adds content; it never demotes an
+//	    exchange an earlier pass classified.
 func tierSelect(exchanges []exchange, cands []candEntry, budgetChars int) []tierLevel {
 	n := len(exchanges)
 	if n == 0 {
@@ -257,7 +251,7 @@ func tierSelect(exchanges []exchange, cands []candEntry, budgetChars int) []tier
 			level[i] = tieredStub
 			remaining -= stub
 			// Level stays tieredDrop in the else case (already
-			// initialised); the user message survives.
+			// initialised).
 		}
 	}
 

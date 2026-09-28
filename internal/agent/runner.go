@@ -208,6 +208,12 @@ type MemoryProvider interface {
 //     single-caller-at-a-time rule.
 type UsageObserver func(usage schema.TokenUsage)
 
+// QuotaObserver receives subscription quota state from a provider that
+// reports it. Separate from UsageObserver because quota is provider-specific
+// (only OAuth-backed providers emit it) and consumers that care about token
+// accounting do not necessarily care about subscription windows.
+type QuotaObserver func(quota schema.QuotaInfo)
+
 type Runner struct {
 	Provider       provider.Provider
 	Registry       *registry.Registry
@@ -334,6 +340,11 @@ type Runner struct {
 	CacheInvalidator func()
 
 	UsageObserver UsageObserver
+
+	// QuotaObserver, when set, receives subscription quota state after each
+	// chatOnce whose provider reported it (OAuth-backed providers). Nil
+	// disables recording; providers that report no quota never call it.
+	QuotaObserver QuotaObserver
 
 	// CalibrationObserver, when set, receives the wire messages and the
 	// provider-reported prompt-token count after each chatOnce that reports
@@ -579,6 +590,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.WriteGate = other.WriteGate
 	r.WatchTransferrer = other.WatchTransferrer
 	r.UsageObserver = other.UsageObserver
+	r.QuotaObserver = other.QuotaObserver
 	r.CalibrationObserver = other.CalibrationObserver
 	r.MetricsObserver = other.MetricsObserver
 	r.Snapshotter = other.Snapshotter

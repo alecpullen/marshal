@@ -76,6 +76,10 @@ type responsesRequestBody struct {
 	Reasoning       *responsesReasoning  `json:"reasoning,omitempty"`
 	Store           bool                 `json:"store"` // always false: stateless client
 	Text            *responsesText       `json:"text,omitempty"`
+	// Include lists extra response fields to return. The codex backend
+	// requires ["reasoning.encrypted_content"] on every request (it 400s
+	// without it); the openai_compatible path leaves it empty.
+	Include []string `json:"include,omitempty"`
 }
 
 // --- usage ---
@@ -235,6 +239,14 @@ func buildResponsesInput(msgs []schema.ChatMessage) (instructions string, items 
 }
 
 func buildResponsesRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte, error) {
+	return buildResponsesRequestBodyWithInclude(req, reasoningSummary, nil)
+}
+
+// buildResponsesRequestBodyWithInclude is buildResponsesRequestBody with an
+// explicit include list. The codex backend needs
+// ["reasoning.encrypted_content"] on every request; every other caller
+// passes nil and gets the previous wire shape byte for byte.
+func buildResponsesRequestBodyWithInclude(req schema.ChatRequest, reasoningSummary bool, include []string) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
@@ -289,6 +301,7 @@ func buildResponsesRequestBody(req schema.ChatRequest, reasoningSummary bool) ([
 		Reasoning:       reasoning,
 		Store:           false,
 		Text:            text,
+		Include:         include,
 	})
 }
 

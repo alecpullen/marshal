@@ -21,9 +21,13 @@ type ProviderTemplate struct {
 	// endpoints that only accept their own fixed sampling temperature
 	// (e.g. Kimi's coding endpoint accepts only temperature = 1.0).
 	TemperatureLocked bool
-	KeyEnv            string
-	KeyHint           string
-	Models            []string
+	// Auth is the authentication mode this template implies: "" (api key)
+	// or "oauth". An OAuth template has no KeyEnv — the connect flow walks
+	// the browser login instead of prompting for a key.
+	Auth    string
+	KeyEnv  string
+	KeyHint string
+	Models  []string
 }
 
 var templates = map[string]ProviderTemplate{
@@ -92,6 +96,36 @@ var templates = map[string]ProviderTemplate{
 		KeyEnv:            "OPENCODE_API_KEY",
 		KeyHint:           "Get a key from OpenCode Zen (https://opencode.ai/zen)",
 		Models:            []string{"gpt-5.6-luna", "deepseek-v4-pro", "deepseek-v4-flash"},
+	},
+	// openai-codex is the ChatGPT-subscription backend. It is the only
+	// template with Auth = "oauth": there is no API key, and the connect
+	// flow drives a browser login instead. The model list is the
+	// visibility == "list" subset of the live catalog captured in
+	// docs/codex-spike-findings-2026-09-14.md §4; gpt-5.5 is deliberately
+	// excluded (retires 2026-10-14). This list is only the static fallback
+	// — Models() prefers the live catalog, then the disk model cache.
+	//
+	// Reasoning is not a template field: the factory hardcodes the codex
+	// capability set (tool calling, structured output, reasoning, streaming)
+	// from the spike's verified results, the same way the anthropic case
+	// does.
+	//
+	// Instructions: marshal's system prompt rides as the Responses API
+	// `instructions` field, exactly as the openai_compatible backend sends
+	// it. The endpoint does NOT inject a persona of its own and does not
+	// override caller instructions — the spike's A/B test measured
+	// ENFORCED=false, INJECTION_WORKS=true (findings §7). The slim-preamble
+	// fallback the design originally budgeted for is therefore unnecessary.
+	"openai-codex": {
+		ID:               "openai-codex",
+		Label:            "OpenAI (ChatGPT subscription)",
+		Type:             "openai_codex",
+		BaseURL:          "https://chatgpt.com/backend-api",
+		Auth:             "oauth",
+		ToolCalling:      true,
+		StructuredOutput: true,
+		KeyHint:          "Uses your ChatGPT subscription via browser login — no API key required.",
+		Models:           []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 	},
 	"openai_compatible": {
 		ID:      "openai_compatible",

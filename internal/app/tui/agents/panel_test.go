@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
 
@@ -31,6 +32,51 @@ func TestRosterRendersPresetBinding(t *testing.T) {
 	view := p.View(80, 24)
 	if !containsGlyph(view, "●") {
 		t.Fatalf("preset binding should show ● glyph:\n%s", view)
+	}
+}
+
+// TestRosterShowsQuotaWhenSet: the roster footer carries both subscription
+// windows, which the status line deliberately does not.
+func TestRosterShowsQuotaWhenSet(t *testing.T) {
+	cfg := config.Default()
+	p := NewRosterPanel(cfg, "", "", nil)
+	p.SetQuota(&schema.QuotaInfo{
+		PlanType:                "plus",
+		PrimaryUsedPercent:      50,
+		PrimaryResetAfterSecs:   14845, // 4h7m
+		SecondaryUsedPercent:    8,
+		SecondaryResetAfterSecs: 601645, // 6d23h
+	})
+	view := ansi.Strip(p.View(100, 30))
+	for _, want := range []string{"quota 50%", "4h7m", "8%", "6d23h", "plus"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("roster view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestRosterOmitsQuotaWhenUnset: providers that report no quota must not
+// render a quota line.
+func TestRosterOmitsQuotaWhenUnset(t *testing.T) {
+	cfg := config.Default()
+	p := NewRosterPanel(cfg, "", "", nil)
+	view := ansi.Strip(p.View(100, 30))
+	if strings.Contains(view, "quota") {
+		t.Fatalf("roster view should not mention quota:\n%s", view)
+	}
+}
+
+// TestRosterQuotaClearedByNil: a nil reading hides the line again.
+func TestRosterQuotaClearedByNil(t *testing.T) {
+	cfg := config.Default()
+	p := NewRosterPanel(cfg, "", "", nil)
+	p.SetQuota(&schema.QuotaInfo{PrimaryUsedPercent: 50})
+	if view := ansi.Strip(p.View(100, 30)); !strings.Contains(view, "quota") {
+		t.Fatalf("expected a quota line:\n%s", view)
+	}
+	p.SetQuota(nil)
+	if view := ansi.Strip(p.View(100, 30)); strings.Contains(view, "quota") {
+		t.Fatalf("quota line should be gone after SetQuota(nil):\n%s", view)
 	}
 }
 

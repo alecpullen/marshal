@@ -9,6 +9,7 @@ import (
 	"marshal/internal/redact"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,6 +32,12 @@ type tokenResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
+	// EarliestRefreshAt is a server-supplied scheduling hint: the earliest
+	// time the client should refresh. Codex reads it and refreshes
+	// proactively when the current time passes it. It is decoded as a raw
+	// value because servers disagree on the encoding (RFC3339 string or
+	// unix seconds); see ParseEarliestRefresh.
+	EarliestRefreshAt json.RawMessage `json:"earliest_refresh_at,omitempty"`
 }
 
 // oauthError is RFC 6749 §5.2's error body. We only inspect `error` for
@@ -59,6 +66,45 @@ type StoredTokens struct {
 	// one, so a refresh token is never sent to a host that did not
 	// issue it.
 	TokenEndpoint string `json:"token_endpoint,omitempty"`
+
+	// EarliestRefreshAt is the server's refresh scheduling hint, preserved
+	// verbatim from the token response. Empty when the server did not send
+	// one. Consumers parse it with ParseEarliestRefresh.
+	EarliestRefreshAt json.RawMessage `json:"earliest_refresh_at,omitempty"`
+}
+
+// ParseEarliestRefresh decodes the server's earliest_refresh_at hint. It
+// accepts both encodings seen in the wild — an RFC3339 string and unix
+// seconds (as a JSON number or a quoted number) — because codex treats the
+// value as opaque and the endpoint is free to change its encoding.
+//
+// It returns the zero time when the hint is absent or unparsable, which
+// callers treat as "no hint" and fall back to their own schedule.
+func ParseEarliestRefresh(raw json.RawMessage) time.Time {
+	if len(raw) == 0 {
+		return time.Time{}
+	}
+	// Try a JSON string first (RFC3339, or a quoted unix timestamp).
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return time.Time{}
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t
+		}
+		if secs, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return time.Unix(secs, 0)
+		}
+		return time.Time{}
+	}
+	// Then a bare JSON number (unix seconds).
+	var secs int64
+	if err := json.Unmarshal(raw, &secs); err == nil {
+		return time.Unix(secs, 0)
+	}
+	return time.Time{}
 }
 
 // IsExpired reports whether the stored access token is expired or about
@@ -146,12 +192,13 @@ func postToken(ctx context.Context, hc tokenHTTPClient, endpoint string, form ur
 		expiry = now.Add(time.Hour)
 	}
 	return StoredTokens{
-		AccessToken:  tr.AccessToken,
-		RefreshToken: tr.RefreshToken,
-		ExpiresAt:    expiry,
-		IssuedAt:     now,
-		TokenType:    tr.TokenType,
-		Scope:        tr.Scope,
+		AccessToken:       tr.AccessToken,
+		RefreshToken:      tr.RefreshToken,
+		ExpiresAt:         expiry,
+		IssuedAt:          now,
+		TokenType:         tr.TokenType,
+		Scope:             tr.Scope,
+		EarliestRefreshAt: tr.EarliestRefreshAt,
 	}, nil
 }
 

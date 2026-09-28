@@ -17,8 +17,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/credentials"
+	"marshal/internal/oauth"
 	"marshal/internal/redact"
-	"marshal/internal/tools/mcp/oauth"
 	"marshal/internal/tools/registry"
 )
 

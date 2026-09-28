@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/tools/mcp/oauth"
+	"marshal/internal/oauth"
 )
 
 // decodeRequest reads and decodes the JSON-RPC request from an HTTP request.

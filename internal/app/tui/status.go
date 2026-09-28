@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -13,6 +14,7 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
 
@@ -215,6 +217,19 @@ func (m Model) statusLeftSegments() []statusSeg {
 			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
 	}
 
+	// Subscription quota from an OAuth-backed provider. Rendered as
+	// percent-used plus a reset countdown, matching the spike's finding
+	// that the endpoint reports percent-of-window rather than a
+	// remaining-request count. Priority 3 keeps it beside the context
+	// counter: both are consumable budgets that drop together on narrow
+	// terminals.
+	if q := m.state.TurnQuota(); q != nil {
+		segs = append(segs, statusSeg{
+			text:     dimStyle().Render(quotaSegment(q)),
+			priority: 3,
+		})
+	}
+
 	// Generation > 0 means the session has compacted at least once. Show
 	// it so a user who notices the agent "forgetting" can see that a
 	// handoff happened rather than guessing.
@@ -339,6 +354,25 @@ func (m Model) noticeVisible() bool {
 // footerHints snapshots the mode flags the hint cluster needs. This is
 // the FooterHints construction that used to live in the dedicated
 // footer row (deleted in the hairline-gutter redesign).
+// quotaSegment renders the footer's quota text: "⚡ 50% 4h7m" for the
+// primary window, with the plan tier appended when the provider reports one.
+// The secondary window is deliberately omitted here — it is a 7-day budget
+// that rarely moves, and the footer is the scarcest space in the UI; the
+// /agents roster shows both.
+func quotaSegment(q *schema.QuotaInfo) string {
+	if q == nil {
+		return ""
+	}
+	seg := fmt.Sprintf("⚡ %d%%", q.PrimaryUsedPercent)
+	if q.PrimaryResetAfterSecs > 0 {
+		seg += " " + strutil.CompactDuration(time.Duration(q.PrimaryResetAfterSecs)*time.Second)
+	}
+	if q.PlanType != "" {
+		seg += " " + q.PlanType
+	}
+	return seg
+}
+
 func (m Model) footerHints() help.FooterHints {
 	return help.FooterHints{
 		Busy:                 m.busy,

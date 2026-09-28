@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"marshal/internal/tools/mcp/oauth"
+	"marshal/internal/oauth"
 )
 
 // mcpSessionIDHeader is the request/response header used by the Streamable

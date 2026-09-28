@@ -111,6 +111,7 @@ func TestTemplatesAreWellFormed(t *testing.T) {
 		"openai_compatible": true,
 		"ollama":            true,
 		"anthropic":         true,
+		"openai_codex":      true,
 	}
 	for _, tpl := range All() {
 		if tpl.ID == "" {
@@ -120,16 +121,80 @@ func TestTemplatesAreWellFormed(t *testing.T) {
 			t.Errorf("template %q has no label", tpl.ID)
 		}
 		if !knownTypes[tpl.Type] {
-			t.Errorf("template %q type = %q, want one of openai_compatible/ollama/anthropic",
+			t.Errorf("template %q type = %q, want one of openai_compatible/ollama/anthropic/openai_codex",
 				tpl.ID, tpl.Type)
 		}
 		// The generic custom template intentionally has no base URL.
 		if tpl.BaseURL == "" && tpl.ID != "openai_compatible" {
 			t.Errorf("template %q has no base URL", tpl.ID)
 		}
-		if !tpl.Local && tpl.KeyEnv == "" && tpl.ID != "openai_compatible" {
-			t.Errorf("remote template %q has no KeyEnv", tpl.ID)
+		// A remote template needs a credential source: either an env var
+		// for an API key, or Auth = "oauth" for a browser login. The
+		// generic custom template is the one exception (the user supplies
+		// everything).
+		if !tpl.Local && tpl.KeyEnv == "" && tpl.Auth != "oauth" && tpl.ID != "openai_compatible" {
+			t.Errorf("remote template %q has neither KeyEnv nor Auth = \"oauth\"", tpl.ID)
 		}
+		// An OAuth template must not also advertise a key env: the connect
+		// flow would prompt for a key that is never used.
+		if tpl.Auth == "oauth" && tpl.KeyEnv != "" {
+			t.Errorf("template %q sets Auth = \"oauth\" and KeyEnv = %q; they are mutually exclusive",
+				tpl.ID, tpl.KeyEnv)
+		}
+	}
+}
+
+// TestCodexTemplate pins the codex template's contract: it is the only
+// OAuth template, it targets the openai_codex backend, and its static model
+// list is the visibility == "list" subset from the spike (with the retiring
+// gpt-5.5 excluded).
+func TestCodexTemplate(t *testing.T) {
+	tpl, ok := Lookup("openai-codex")
+	if !ok {
+		t.Fatal("openai-codex template missing")
+	}
+	if tpl.Type != "openai_codex" {
+		t.Fatalf("type = %q, want openai_codex", tpl.Type)
+	}
+	if tpl.Auth != "oauth" {
+		t.Fatalf("auth = %q, want oauth", tpl.Auth)
+	}
+	if tpl.BaseURL != "https://chatgpt.com/backend-api" {
+		t.Fatalf("base URL = %q", tpl.BaseURL)
+	}
+	if tpl.KeyEnv != "" {
+		t.Fatalf("key env = %q, want empty (OAuth template)", tpl.KeyEnv)
+	}
+	if !tpl.ToolCalling || !tpl.StructuredOutput {
+		t.Fatalf("capabilities = tool:%v structured:%v, want both true", tpl.ToolCalling, tpl.StructuredOutput)
+	}
+	want := []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+	if len(tpl.Models) != len(want) {
+		t.Fatalf("models = %v, want %v", tpl.Models, want)
+	}
+	for i, m := range want {
+		if tpl.Models[i] != m {
+			t.Fatalf("models[%d] = %q, want %q", i, tpl.Models[i], m)
+		}
+	}
+	for _, m := range tpl.Models {
+		if m == "gpt-5.5" {
+			t.Fatal("gpt-5.5 retires 2026-10-14 and must not be in the static list")
+		}
+	}
+}
+
+// TestOnlyCodexTemplateUsesOAuth guards the invariant the connect flow
+// relies on: exactly one template is OAuth-backed today.
+func TestOnlyCodexTemplateUsesOAuth(t *testing.T) {
+	var oauth []string
+	for _, tpl := range All() {
+		if tpl.Auth == "oauth" {
+			oauth = append(oauth, tpl.ID)
+		}
+	}
+	if len(oauth) != 1 || oauth[0] != "openai-codex" {
+		t.Fatalf("OAuth templates = %v, want exactly [openai-codex]", oauth)
 	}
 }
 

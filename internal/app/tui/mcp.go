@@ -11,7 +11,7 @@ import (
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/commands"
 	"marshal/internal/credentials"
-	"marshal/internal/tools/mcp/oauth"
+	"marshal/internal/oauth"
 )
 
 // handleMCPCommand implements /mcp. Only the "auth <name>" subcommand is

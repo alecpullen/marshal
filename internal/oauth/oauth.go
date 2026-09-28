@@ -1,5 +1,6 @@
 // Package oauth implements an OAuth 2.1 authorization-code flow with
-// PKCE (RFC 7636) for remote Streamable-HTTP MCP servers.
+// PKCE (RFC 7636). It serves both remote Streamable-HTTP MCP servers and
+// LLM providers that authenticate with a subscription login.
 //
 // Engine is the entry point. Wire an Engine with a TokenStore (the same
 // shape used by internal/credentials), an HTTP client, and a
@@ -14,6 +15,14 @@
 // resulting token set. The package never persists secrets to disk
 // outside the supplied TokenStore; the on-disk metadata cache under the
 // project database directory stores only URLs and endpoint names.
+//
+// Two seams adapt the engine to callers whose authorization server is
+// known ahead of time rather than discovered:
+//
+//   - StorageKey overrides the TokenStore key. MCP leaves it empty and
+//     keeps its per-server key; providers set "marshal:provider:<name>".
+//   - Flow pins the endpoints and client identity, skipping discovery
+//     and dynamic registration entirely. See FlowConfig.
 package oauth
 
 import (
@@ -55,9 +64,32 @@ type Display interface {
 	Wait(ctx context.Context) error
 }
 
-// Engine drives the OAuth flow for a single MCP server. One Engine per
-// server URL; it is safe to call TokenSource concurrently — the mutex
-// serializes refresh races.
+// FlowConfig pins the authorization-server endpoints and client identity
+// for callers that know them ahead of time. The zero value preserves the
+// MCP behavior: RFC 8414 discovery plus dynamic client registration.
+type FlowConfig struct {
+	// Issuer is the base URL of the authorization server. When set,
+	// RFC 8414 discovery is skipped and the endpoints below are used
+	// directly.
+	Issuer string
+	// AuthorizeURL and TokenURL pin the authorize and token endpoints;
+	// used when Issuer is set.
+	AuthorizeURL string
+	TokenURL     string
+	// ClientID is a fixed public client_id. When set, dynamic client
+	// registration is skipped (no DCR call).
+	ClientID string
+	// ExtraAuthorizeParams are appended to the authorization URL query.
+	ExtraAuthorizeParams map[string]string
+	// RedirectPorts lists acceptable loopback redirect ports. The first
+	// free port wins; if none are free, an ephemeral port is used. Empty
+	// means the MCP default (PreferredLoopbackPort, then ephemeral).
+	RedirectPorts []int
+}
+
+// Engine drives the OAuth flow for a single authorization server. One
+// Engine per server URL (or per provider entry); it is safe to call
+// TokenSource concurrently — the mutex serializes refresh races.
 type Engine struct {
 	ServerURL  string
 	ClientName string
@@ -65,6 +97,15 @@ type Engine struct {
 	HTTPClient *http.Client
 	Open       func(string)
 	Logger     *slog.Logger
+
+	// StorageKey overrides the TokenStore key used for this engine's
+	// tokens. Empty means the MCP default, "marshal:mcp:<ServerURL>".
+	// Providers set "marshal:provider:<name>".
+	StorageKey string
+
+	// Flow pins the authorization-server endpoints and client identity.
+	// The zero value preserves discovery + dynamic registration.
+	Flow FlowConfig
 
 	// Scopes is the optional set of scopes requested at the
 	// authorization endpoint. An empty slice omits the parameter,
@@ -177,11 +218,46 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
-// storageKey is the TokenStore key used for this engine's tokens. We
-// key on ServerURL since that is the per-server identity in the Engine
-// struct. ClientName is only used in DCR and Display messaging.
+// storageKey is the TokenStore key used for this engine's tokens. An
+// explicit StorageKey wins; otherwise we key on ServerURL, which is the
+// per-server identity for MCP. ClientName is only used in DCR and
+// Display messaging.
 func (e *Engine) storageKey() string {
+	if e.StorageKey != "" {
+		return e.StorageKey
+	}
 	return "marshal:mcp:" + e.ServerURL
+}
+
+// resolveMetadata returns the authorization-server metadata for this
+// engine. A pinned FlowConfig.Issuer short-circuits discovery; otherwise
+// the RFC 8414 / OIDC discovery cache is consulted.
+func (e *Engine) resolveMetadata(ctx context.Context) (AuthorizeServerMetadata, error) {
+	if e.Flow.Issuer != "" {
+		return AuthorizeServerMetadata{
+			Issuer:                e.Flow.Issuer,
+			AuthorizationEndpoint: e.Flow.AuthorizeURL,
+			TokenEndpoint:         e.Flow.TokenURL,
+		}, nil
+	}
+	return e.metadataCache().Lookup(ctx, e.ServerURL)
+}
+
+// startLoopback binds the callback receiver, preferring the configured
+// redirect ports in order and falling back to an ephemeral port when
+// none of them are free.
+func (e *Engine) startLoopback(ctx context.Context, timeout time.Duration) (*Loopback, error) {
+	ports := e.Flow.RedirectPorts
+	if len(ports) == 0 {
+		ports = []int{PreferredLoopbackPort}
+	}
+	for _, port := range ports {
+		loop, err := StartLoopbackOnPort(ctx, port, timeout)
+		if err == nil {
+			return loop, nil
+		}
+	}
+	return StartLoopbackOnPort(ctx, 0, timeout)
 }
 
 // metadataCache returns (creating if necessary) the metadata cache for
@@ -240,6 +316,40 @@ func (e *Engine) TokenSource(ctx context.Context) (string, error) {
 		return stored.AccessToken, nil
 	}
 
+	return e.refreshLocked(ctx, stored, key)
+}
+
+// ForceRefresh refreshes the stored token unconditionally, bypassing the
+// expiry check. It exists for the case where the server rejects a token the
+// client still believes is valid (a 401 on a not-yet-expired token): the
+// caller retries once through this path before surfacing an auth error.
+//
+// It shares the engine mutex with TokenSource, so a forced refresh cannot
+// race a scheduled one. A missing entry or a missing refresh token still
+// yields ErrAuthRequired — there is nothing to force.
+func (e *Engine) ForceRefresh(ctx context.Context) (string, error) {
+	if e.Store == nil {
+		return "", errors.New("oauth: Engine.Store is nil")
+	}
+	key := e.storageKey()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	stored, err := e.loadLocked()
+	if err != nil {
+		return "", err
+	}
+	if stored == nil {
+		return "", &ErrAuthRequired{ServerName: e.ServerURL, Reason: "no stored tokens"}
+	}
+	registerSecretsWithRedact(stored.AccessToken, stored.RefreshToken)
+	return e.refreshLocked(ctx, stored, key)
+}
+
+// refreshLocked performs the refresh_token grant and persists the result.
+// The caller must hold e.mu.
+func (e *Engine) refreshLocked(ctx context.Context, stored *StoredTokens, key string) (string, error) {
 	if stored.RefreshToken == "" {
 		if delErr := e.Store.Delete(key); delErr != nil {
 			e.log().Warn("oauth: failed to delete stale token entry", "server", e.ServerURL, "err", delErr)
@@ -247,7 +357,7 @@ func (e *Engine) TokenSource(ctx context.Context) (string, error) {
 		return "", &ErrAuthRequired{ServerName: e.ServerURL, Reason: "no refresh token"}
 	}
 
-	meta, err := e.metadataCache().Lookup(ctx, e.ServerURL)
+	meta, err := e.resolveMetadata(ctx)
 	if err != nil {
 		return "", fmt.Errorf("oauth: %w", err)
 	}
@@ -283,6 +393,29 @@ func (e *Engine) TokenSource(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return next.AccessToken, nil
+}
+
+// LoadToken returns the stored token set without refreshing it, or nil when
+// no token is stored yet. It exists for background consumers (the refresh
+// worker) that need to inspect the stored state — notably the
+// earliest_refresh_at hint — rather than obtain a usable access token.
+//
+// The returned value is a copy; mutating it does not affect the store.
+func (e *Engine) LoadToken(ctx context.Context) (*StoredTokens, error) {
+	if e.Store == nil {
+		return nil, errors.New("oauth: Engine.Store is nil")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	stored, err := e.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	if stored == nil {
+		return nil, nil
+	}
+	cp := *stored
+	return &cp, nil
 }
 
 // loadLocked reads and decodes the stored token blob. The caller
@@ -336,7 +469,7 @@ func (e *Engine) Authorize(ctx context.Context, d Display) error {
 		return errors.New("oauth: Display is nil")
 	}
 
-	meta, err := e.metadataCache().Lookup(ctx, e.ServerURL)
+	meta, err := e.resolveMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("oauth: discover: %w", err)
 	}
@@ -350,12 +483,9 @@ func (e *Engine) Authorize(ctx context.Context, d Display) error {
 	}
 	// Prefer a stable port so the redirect_uri is the same on every run;
 	// fall back to an ephemeral one when it is already in use.
-	loop, err := StartLoopbackOnPort(ctx, PreferredLoopbackPort, timeout)
+	loop, err := e.startLoopback(ctx, timeout)
 	if err != nil {
-		loop, err = StartLoopbackOnPort(ctx, 0, timeout)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 	defer loop.Close()
 
@@ -364,8 +494,14 @@ func (e *Engine) Authorize(ctx context.Context, d Display) error {
 	// would be rejected by a strict authorization server. A cached
 	// client_id is used only when the server advertises no registration
 	// endpoint at all.
+	//
+	// A pinned FlowConfig.ClientID short-circuits all of this: the caller
+	// has a fixed public client_id (codex does), so no registration call
+	// is made and no client_id is cached.
 	var clientID, clientSecret string
-	if regEndpoint := meta.RegistrationEndpoint; regEndpoint != "" {
+	if e.Flow.ClientID != "" {
+		clientID = e.Flow.ClientID
+	} else if regEndpoint := meta.RegistrationEndpoint; regEndpoint != "" {
 		reg, err := RegisterClient(ctx, e.http(), regEndpoint, loop.RedirectURI, e.ClientName)
 		if err != nil {
 			return fmt.Errorf("oauth: dynamic client registration: %w", err)
@@ -392,7 +528,7 @@ func (e *Engine) Authorize(ctx context.Context, d Display) error {
 		return err
 	}
 
-	authURL, err := buildAuthorizeURL(meta.AuthorizationEndpoint, loop.RedirectURI, clientID, e.Scopes, pkce, state)
+	authURL, err := buildAuthorizeURL(meta.AuthorizationEndpoint, loop.RedirectURI, clientID, e.Scopes, pkce, state, e.Flow.ExtraAuthorizeParams)
 	if err != nil {
 		return err
 	}

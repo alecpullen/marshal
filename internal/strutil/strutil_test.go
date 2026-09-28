@@ -24,6 +24,30 @@ func TestHumanAge(t *testing.T) {
 	}
 }
 
+func TestCompactDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "now"},
+		{-time.Minute, "now"},
+		{45 * time.Second, "45s"},
+		{time.Minute, "1m"},
+		{12 * time.Minute, "12m"},
+		{time.Hour, "1h"},
+		{4*time.Hour + 7*time.Minute, "4h7m"},
+		{23 * time.Hour, "23h"},
+		{24 * time.Hour, "1d"},
+		{6*24*time.Hour + 23*time.Hour, "6d23h"},
+		{7 * 24 * time.Hour, "7d"},
+	}
+	for _, c := range cases {
+		if got := CompactDuration(c.d); got != c.want {
+			t.Errorf("CompactDuration(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name     string

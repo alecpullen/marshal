@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -23,6 +24,8 @@ import (
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -61,7 +64,17 @@ type Panel struct {
 	// layers carries the load-time config snapshots for layer-aware
 	// project saves (see config.SaveProjectConfig).
 	layers config.Layers
+
+	// quota is the session's latest subscription quota reading, when the
+	// active provider reports one (OAuth-backed providers). nil hides the
+	// quota line entirely.
+	quota *schema.QuotaInfo
 }
+
+// SetQuota supplies the session's latest subscription quota reading. A nil
+// value hides the quota line, which is the normal case for providers that
+// report none.
+func (p *Panel) SetQuota(q *schema.QuotaInfo) { p.quota = q }
 
 // SetLayers supplies the load-time config snapshots used by project-scope
 // saves to avoid baking user-layer values into the project file.
@@ -696,6 +709,9 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	body += listView
 	footer := fmt.Sprintf("%d entries", len(settings.FieldListRows(l)))
+	if q := p.quota; q != nil {
+		footer += " · " + quotaLine(q)
+	}
 
 	content := body + "\n" + chrome.TertiaryStyle().Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
@@ -707,6 +723,26 @@ func (p *Panel) View(width, maxHeight int) string {
 		hints = "↑↓ select · ↵ open · ? legend · Esc close"
 	}
 	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, theme.Current())
+}
+
+// quotaLine renders both subscription windows for the roster footer:
+// "quota 50% (4h7m) · 8% (6d23h) plus". The footer is the only place both
+// windows are shown — the status line carries the primary window alone,
+// because it is the one that actually runs out mid-session.
+func quotaLine(q *schema.QuotaInfo) string {
+	if q == nil {
+		return ""
+	}
+	line := fmt.Sprintf("quota %d%% (%s) · %d%% (%s)",
+		q.PrimaryUsedPercent,
+		strutil.CompactDuration(time.Duration(q.PrimaryResetAfterSecs)*time.Second),
+		q.SecondaryUsedPercent,
+		strutil.CompactDuration(time.Duration(q.SecondaryResetAfterSecs)*time.Second),
+	)
+	if q.PlanType != "" {
+		line += " " + q.PlanType
+	}
+	return line
 }
 
 // resolveGlyph returns the glyph and source label for a cast entry.

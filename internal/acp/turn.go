@@ -17,6 +17,7 @@ import (
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/llm/routing"
+	"marshal/internal/oauth"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/strutil"
@@ -918,6 +919,18 @@ func resultOrError(runErr error, slot *activeTurn) (any, error) {
 		return PromptTurnResult{StopReason: "cancelled"}, nil
 	}
 	if runErr != nil {
+		// An OAuth provider with no usable login is recoverable: the
+		// session is fine, the user just has to authenticate. ACP has no
+		// login flow in v1, so the message names the one place that does
+		// — the TUI — rather than leaving the client to guess.
+		var authErr *oauth.ErrAuthRequired
+		if errors.As(runErr, &authErr) {
+			name := authErr.ServerName
+			if name == "" {
+				name = "a configured provider"
+			}
+			return nil, serverErrorf("provider %s requires OAuth login — run marshal in TUI mode and use /connect", name)
+		}
 		// Turn failures (provider errors, malformed model output) are
 		// server-generated, so they are safe to expose per F-SEC-37 —
 		// without this the client gets an opaque -32603 "internal error"

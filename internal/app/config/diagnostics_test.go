@@ -294,6 +294,80 @@ func TestDiagnoseMCPAuthMatchesWriteTimeRule(t *testing.T) {
 	}
 }
 
+// TestDiagnoseSilentOnValidProviderAuth guards the new provider auth check
+// against firing on a correctly configured OAuth provider.
+func TestDiagnoseSilentOnValidProviderAuth(t *testing.T) {
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"codex": {Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth"},
+		"keyed": {Type: "openai_compatible", BaseURL: "https://api.example.com/v1", APIKey: "sk-x"},
+	}
+	if ds := Diagnose(cfg, Layers{}); len(ds) != 0 {
+		t.Errorf("valid provider auth produced %v", diagPaths(ds))
+	}
+}
+
+// TestDiagnoseProviderAuthOAuthOnWrongType: auth = "oauth" on a type with no
+// OAuth backend does nothing at runtime, so it must be reported rather than
+// silently accepted.
+func TestDiagnoseProviderAuthOAuthOnWrongType(t *testing.T) {
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"compat": {Type: "openai_compatible", BaseURL: "https://api.example.com/v1", Auth: "oauth"},
+	}
+	ds := Diagnose(cfg, Layers{})
+	if !hasPath(ds, "providers.compat.auth") {
+		t.Fatalf("got %v, want a diagnostic for oauth on a non-OAuth type", diagPaths(ds))
+	}
+	if ds[0].Severity != SeverityWarning {
+		t.Errorf("severity = %v, want SeverityWarning (the setting is ignored)", ds[0].Severity)
+	}
+	if !strings.Contains(ds[0].Message, "ignored") {
+		t.Errorf("message %q should say the setting is ignored", ds[0].Message)
+	}
+}
+
+// TestDiagnoseProviderAuthOAuthWithAPIKey: a key alongside auth = "oauth" is
+// a contradiction — the user believes a key is in play and it is not.
+func TestDiagnoseProviderAuthOAuthWithAPIKey(t *testing.T) {
+	for _, pc := range []ProviderConfig{
+		{Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth", APIKey: "sk-x"},
+		{Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth", APIKeyEnv: "OPENAI_API_KEY"},
+	} {
+		cfg := Default()
+		cfg.Providers = map[string]ProviderConfig{"codex": pc}
+		ds := Diagnose(cfg, Layers{})
+		if !hasPath(ds, "providers.codex.auth") {
+			t.Fatalf("got %v, want a diagnostic for oauth + key", diagPaths(ds))
+		}
+		if ds[0].Severity != SeverityError {
+			t.Errorf("severity = %v, want SeverityError", ds[0].Severity)
+		}
+		if !strings.Contains(ds[0].Message, "unused") {
+			t.Errorf("message %q should say the key is unused", ds[0].Message)
+		}
+	}
+}
+
+// TestDiagnoseProviderAuthUnknownValue: an unrecognized mode is ignored at
+// runtime, so it must be reported.
+func TestDiagnoseProviderAuthUnknownValue(t *testing.T) {
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"codex": {Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "basic"},
+	}
+	ds := Diagnose(cfg, Layers{})
+	if !hasPath(ds, "providers.codex.auth") {
+		t.Fatalf("got %v, want a diagnostic for the unknown auth value", diagPaths(ds))
+	}
+	if !strings.Contains(ds[0].Message, "basic") {
+		t.Errorf("message %q should quote the bad value", ds[0].Message)
+	}
+	if !strings.Contains(ds[0].Message, "oauth") {
+		t.Errorf("message %q should list the accepted values", ds[0].Message)
+	}
+}
+
 func TestDiagnoseOrdersErrorsBeforeWarnings(t *testing.T) {
 	cfg := Default()
 	cfg.Providers = map[string]ProviderConfig{"broken": {Type: "openai_compatible"}}

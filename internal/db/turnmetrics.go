@@ -75,6 +75,15 @@ type TurnMetricsRow struct {
 	// the thresholds can be tuned from data.
 	FailedRepeatStreak      int
 	HighestFailedRepeatTier int
+	// QuotaUsedPercent and QuotaResetAfterSecs record the subscription
+	// quota reading at the end of the turn, when the provider reported one
+	// (OAuth-backed providers). QuotaPlanType carries the tier. All three
+	// are zero/empty for providers that report no quota, which is
+	// indistinguishable from "not reported" — acceptable because the
+	// columns are telemetry, not state.
+	QuotaUsedPercent    int
+	QuotaResetAfterSecs int
+	QuotaPlanType       string
 }
 
 func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
@@ -90,8 +99,9 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 			salvage_reason, prompt_tokens, completion_tokens,
 			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
 			parse_fail_kind, parse_fail_sample, parse_repairs,
-			failed_repeat_streak, highest_failed_repeat_tier
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			failed_repeat_streak, highest_failed_repeat_tier,
+			quota_used_percent, quota_reset_after_secs, quota_plan_type
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -121,6 +131,9 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.ParseRepairs,
 		row.FailedRepeatStreak,
 		row.HighestFailedRepeatTier,
+		row.QuotaUsedPercent,
+		row.QuotaResetAfterSecs,
+		row.QuotaPlanType,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert turn metrics: %w", err)
@@ -161,7 +174,8 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
 			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
-			parse_fail_kind, parse_fail_sample, parse_repairs
+			parse_fail_kind, parse_fail_sample, parse_repairs,
+			quota_used_percent, quota_reset_after_secs, quota_plan_type
 		 FROM turn_metrics
 		 WHERE project_id = ?
 		 ORDER BY id DESC
@@ -186,6 +200,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			&r.CompletionTokens,
 			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
 			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
+			&r.QuotaUsedPercent, &r.QuotaResetAfterSecs, &r.QuotaPlanType,
 		); err != nil {
 			return nil, fmt.Errorf("scan turn metrics row: %w", err)
 		}
@@ -222,7 +237,8 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
 			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
-			parse_fail_kind, parse_fail_sample, parse_repairs
+			parse_fail_kind, parse_fail_sample, parse_repairs,
+			quota_used_percent, quota_reset_after_secs, quota_plan_type
 		 FROM turn_metrics
 		 WHERE project_id = ? AND session_id = ?
 		 ORDER BY id DESC
@@ -247,6 +263,7 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			&r.CompletionTokens,
 			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
 			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
+			&r.QuotaUsedPercent, &r.QuotaResetAfterSecs, &r.QuotaPlanType,
 		); err != nil {
 			return nil, fmt.Errorf("scan turn metrics row: %w", err)
 		}

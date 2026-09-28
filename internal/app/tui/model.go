@@ -1256,6 +1256,7 @@ func (m *Model) openAgentsRoster(arg string) {
 		m.toolRegistry,
 	)
 	roster.SetLayers(m.state.Layers())
+	roster.SetQuota(m.state.TurnQuota())
 	m.dock.Open(roster)
 }
 

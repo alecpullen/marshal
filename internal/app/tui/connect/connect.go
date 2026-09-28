@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
@@ -15,6 +16,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
+	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
@@ -23,6 +25,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/oauth"
 	"marshal/internal/strutil"
 )
 
@@ -69,6 +72,7 @@ const (
 	stepCancelled
 	stepRemoteGate
 	stepConfirmLimits
+	stepOAuthLogin
 )
 
 type Opts struct {
@@ -114,6 +118,10 @@ type Model struct {
 	detectingCaps    bool
 	capProbeID       uint64
 	cancelCapProbe   context.CancelFunc
+
+	// oauthDisplay receives the authorization URL from the running login
+	// flow so the panel can show it. nil outside stepOAuthLogin.
+	oauthDisplay *oauthDisplay
 }
 
 func New(opts Opts) *Model {
@@ -150,6 +158,8 @@ func (m *Model) InputValue() string { return m.input.Value() }
 
 func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case OAuthDoneMsg:
+		return m.handleOAuthDone(msg)
 	case probe.ResultMsg:
 		return m.handleProbeResult(msg)
 	case picker.PickedMsg:
@@ -234,6 +244,19 @@ func (m *Model) View(maxW, maxH int) string {
 	switch m.step {
 	case stepProbing:
 		b.WriteString(m.renderProbing(pw))
+	case stepOAuthLogin:
+		b.WriteString(hintStyle().Render("Waiting for you to finish signing in…"))
+		b.WriteString("\n")
+		// The URL is the fallback when the browser did not open (headless
+		// session, no xdg-open, a sandboxed terminal). Showing it is not
+		// optional: without it the flow is unrecoverable.
+		if u := m.oauthURL(); u != "" {
+			b.WriteString(mutedStyle().Render("If no browser opened, visit:"))
+			b.WriteString("\n")
+			b.WriteString(mutedStyle().Render(strutil.Truncate(u, pw-2, true)))
+		} else {
+			b.WriteString(mutedStyle().Render("Opening your browser…"))
+		}
 	case stepBaseURL, stepAPIKey:
 		b.WriteString(m.renderInput(pw))
 	case stepSummary:
@@ -310,6 +333,58 @@ type RefreshMsg struct {
 type CancelledMsg struct{}
 
 type TickMsg struct{}
+
+// OAuthDoneMsg reports the outcome of a browser login attempt.
+type OAuthDoneMsg struct {
+	Provider string
+	Err      error
+}
+
+// oauthDisplay adapts the engine's Display interface to the connect panel.
+// ShowURL records the URL so the panel can render it; Wait returns
+// immediately because the engine waits on the loopback callback directly and
+// treats Wait as a hint, not a signal.
+type oauthDisplay struct {
+	mu  sync.Mutex
+	url string
+}
+
+func (d *oauthDisplay) ShowURL(u string) {
+	d.mu.Lock()
+	d.url = u
+	d.mu.Unlock()
+}
+
+func (d *oauthDisplay) Wait(ctx context.Context) error { return nil }
+
+func (d *oauthDisplay) URL() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.url
+}
+
+// oauthLogin runs the browser flow in a tea.Cmd. The engine blocks on the
+// loopback callback, so this Cmd blocks until the user finishes (or the
+// engine's own timeout fires).
+//
+// The engine's Open hook is wired here rather than in the provider package:
+// launching a browser is a UI concern, and internal/llm/provider must not
+// depend on the TUI. Without this the flow would dead-end — Authorize would
+// wait on a loopback callback the user was never told how to trigger.
+func oauthLogin(engine *oauth.Engine, providerName string, display *oauthDisplay) tea.Cmd {
+	engine.Open = func(u string) { _ = mcpauth.OpenBrowser(u) }
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), oauthLoginTimeout)
+		defer cancel()
+		err := engine.Authorize(ctx, display)
+		return OAuthDoneMsg{Provider: providerName, Err: err}
+	}
+}
+
+// oauthLoginTimeout bounds a single browser login. It matches the engine's
+// own default loopback timeout so the two do not disagree about when a login
+// has been abandoned.
+const oauthLoginTimeout = 5 * time.Minute
 
 func tick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return TickMsg{} })
@@ -706,7 +781,7 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		return m, nil
 	}
 	m.template = tpl
-	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling, StructuredOutput: tpl.StructuredOutput, TemperatureLocked: tpl.TemperatureLocked, Template: tpl.ID}
+	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, Auth: tpl.Auth, ToolCalling: tpl.ToolCalling, StructuredOutput: tpl.StructuredOutput, TemperatureLocked: tpl.TemperatureLocked, Template: tpl.ID}
 	if tpl.BaseURL == "" {
 		enterBaseURLStep(m)
 		return m, nil
@@ -718,8 +793,60 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		m.enterRemoteGate()
 		return m, nil
 	}
+	// An OAuth template has no API key: walk the browser login instead.
+	if tpl.Auth == "oauth" {
+		return m.enterOAuthLogin()
+	}
 	m.enterAPIKey()
 	return m, nil
+}
+
+// enterOAuthLogin starts the browser login for an OAuth template.
+//
+// The provider name must be settled before the flow starts, because the
+// token is stored under marshal:provider:<name> — a rename afterwards would
+// orphan the token.
+func (m *Model) enterOAuthLogin() (*Model, tea.Cmd) {
+	if m.providerName == "" {
+		m.providerName = m.uniqueName()
+	}
+	m.step = stepOAuthLogin
+	m.title = "Sign in"
+	m.subtitle = m.template.Label
+	m.footer = "[Esc] cancel"
+	m.err = ""
+	m.picker = nil
+
+	engine, err := provider.CodexOAuthEngine(m.providerName)
+	if err != nil {
+		m.err = err.Error()
+		return m, nil
+	}
+	m.oauthDisplay = &oauthDisplay{}
+	return m, oauthLogin(engine, m.providerName, m.oauthDisplay)
+}
+
+// oauthURL returns the authorization URL the running flow has produced, or
+// "" when it has not been shown yet.
+func (m *Model) oauthURL() string {
+	if m.oauthDisplay == nil {
+		return ""
+	}
+	return m.oauthDisplay.URL()
+}
+
+// handleOAuthDone advances to model selection on success, or shows the
+// failure and stays put so the user can retry or cancel.
+func (m *Model) handleOAuthDone(msg OAuthDoneMsg) (*Model, tea.Cmd) {
+	if msg.Provider != m.providerName || m.step != stepOAuthLogin {
+		return m, nil // stale result from an abandoned flow
+	}
+	if msg.Err != nil {
+		m.err = "sign-in failed: " + msg.Err.Error()
+		m.footer = "[Esc] cancel"
+		return m, nil
+	}
+	return m.enterProbing()
 }
 
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
@@ -841,6 +968,13 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 				m.providerName = m.uniqueName()
 				m.enterRename(stepRemoteGate)
 				return m, nil
+			}
+			// An OAuth template has no API key: enabling remote providers
+			// must route to the login, not to a key prompt the provider
+			// would ignore. Without this branch the wizard would complete
+			// unauthenticated and only fail on the first chat.
+			if m.template.Auth == "oauth" {
+				return m.enterOAuthLogin()
 			}
 			m.enterAPIKey()
 			return m, nil

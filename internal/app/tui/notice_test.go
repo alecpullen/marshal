@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
+	"marshal/internal/oauth"
 )
 
 func TestNoticeForErrorClassifiesProviderHTTPError(t *testing.T) {
@@ -36,6 +37,54 @@ func TestNoticeForErrorDefaultsToInternal(t *testing.T) {
 	n := noticeForError(errors.New("something weird"), "turn")
 	if n.Category != session.NoticeInternal {
 		t.Fatalf("category = %v, want NoticeInternal", n.Category)
+	}
+}
+
+// TestNoticeForErrorClassifiesOAuthAuthRequired: an OAuth provider that
+// needs a login is a provider error, but the hint must name the sign-in
+// action rather than the generic "review the provider" text.
+func TestNoticeForErrorClassifiesOAuthAuthRequired(t *testing.T) {
+	err := &oauth.ErrAuthRequired{ServerName: "codex", Reason: "no stored tokens"}
+	n := noticeForError(err, "turn")
+	if n.Category != session.NoticeProvider {
+		t.Fatalf("category = %v, want NoticeProvider", n.Category)
+	}
+	if !strings.Contains(n.Hint, "/connect") {
+		t.Errorf("hint %q should point at /connect", n.Hint)
+	}
+	if !strings.Contains(n.Hint, "codex") {
+		t.Errorf("hint %q should name the provider entry", n.Hint)
+	}
+	if !strings.Contains(n.Hint, "sign in") {
+		t.Errorf("hint %q should say to sign in", n.Hint)
+	}
+}
+
+// TestNoticeForErrorClassifiesWrappedOAuthAuthRequired: the provider wraps
+// the error on its way up, so classification must survive wrapping.
+func TestNoticeForErrorClassifiesWrappedOAuthAuthRequired(t *testing.T) {
+	err := fmt.Errorf("turn failed: %w", &oauth.ErrAuthRequired{ServerName: "codex", Reason: "refresh rejected"})
+	n := noticeForError(err, "turn")
+	if n.Category != session.NoticeProvider {
+		t.Fatalf("category = %v, want NoticeProvider", n.Category)
+	}
+	if !strings.Contains(n.Hint, "codex") {
+		t.Errorf("hint %q should name the provider entry", n.Hint)
+	}
+}
+
+// TestNoticeForErrorOAuthWithoutNameStillHints: a nameless auth error must
+// still produce a usable hint rather than an empty provider name.
+func TestNoticeForErrorOAuthWithoutNameStillHints(t *testing.T) {
+	n := noticeForError(&oauth.ErrAuthRequired{}, "turn")
+	if n.Category != session.NoticeProvider {
+		t.Fatalf("category = %v, want NoticeProvider", n.Category)
+	}
+	if !strings.Contains(n.Hint, "/connect") {
+		t.Errorf("hint %q should point at /connect", n.Hint)
+	}
+	if strings.Contains(n.Hint, "sign in to .") {
+		t.Errorf("hint %q has an empty provider name", n.Hint)
 	}
 }
 

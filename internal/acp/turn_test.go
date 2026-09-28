@@ -21,6 +21,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/routing"
+	"marshal/internal/oauth"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
@@ -2717,6 +2718,75 @@ func TestSDDStartEmitsSessionTelemetryEvenOnGate(t *testing.T) {
 
 	if len(notifier.telemetryCalls()) != 1 {
 		t.Fatalf("session_telemetry notify count = %d, want 1 even though the run ended on a gate", len(notifier.telemetryCalls()))
+	}
+}
+
+// TestResultOrErrorMapsAuthRequiredToRecoverableMessage: an OAuth provider
+// with no usable login is recoverable — the session is fine, the user just
+// has to authenticate. ACP has no login flow in v1, so the message must name
+// the TUI as the place that does.
+func TestResultOrErrorMapsAuthRequiredToRecoverableMessage(t *testing.T) {
+	slot := &activeTurn{}
+	_, err := resultOrError(&oauth.ErrAuthRequired{ServerName: "codex", Reason: "no stored tokens"}, slot)
+	if err == nil {
+		t.Fatal("expected an error for an auth-required turn")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "codex") {
+		t.Errorf("message %q should name the provider", msg)
+	}
+	if !strings.Contains(msg, "OAuth login") {
+		t.Errorf("message %q should say a login is required", msg)
+	}
+	if !strings.Contains(msg, "/connect") {
+		t.Errorf("message %q should point at /connect", msg)
+	}
+	if !strings.Contains(msg, "TUI") {
+		t.Errorf("message %q should say to use TUI mode", msg)
+	}
+	// It must not be reported as a generic turn failure.
+	if strings.Contains(msg, "turn failed") {
+		t.Errorf("message %q should not read as a generic turn failure", msg)
+	}
+}
+
+// TestResultOrErrorMapsWrappedAuthRequired: the runner wraps the provider
+// error, so the mapping must survive wrapping.
+func TestResultOrErrorMapsWrappedAuthRequired(t *testing.T) {
+	slot := &activeTurn{}
+	wrapped := fmt.Errorf("agent failed: %w", &oauth.ErrAuthRequired{ServerName: "codex", Reason: "refresh rejected"})
+	_, err := resultOrError(wrapped, slot)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "/connect") {
+		t.Errorf("message %q should point at /connect", err.Error())
+	}
+}
+
+// TestResultOrErrorAuthRequiredWithoutName: a nameless auth error must still
+// produce a readable message.
+func TestResultOrErrorAuthRequiredWithoutName(t *testing.T) {
+	slot := &activeTurn{}
+	_, err := resultOrError(&oauth.ErrAuthRequired{}, slot)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "a configured provider") {
+		t.Errorf("message %q should name a placeholder provider", err.Error())
+	}
+}
+
+// TestResultOrErrorStillReportsGenericTurnFailure guards the pre-existing
+// behavior: a non-auth error keeps the generic wording.
+func TestResultOrErrorStillReportsGenericTurnFailure(t *testing.T) {
+	slot := &activeTurn{}
+	_, err := resultOrError(errors.New("boom"), slot)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "turn failed") {
+		t.Errorf("message %q should keep the generic turn-failure wording", err.Error())
 	}
 }
 

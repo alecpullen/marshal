@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -613,5 +614,183 @@ func TestAuthorize_CtxCancel(t *testing.T) {
 	}
 	if store.setCalls != 0 {
 		t.Fatalf("no tokens should be stored on cancel; got %d sets", store.setCalls)
+	}
+}
+
+// ---- Provider seams (StorageKey, FlowConfig) ----
+
+// TestStorageKeyDefaultsToMCP pins the MCP behavior: an engine that does not
+// set StorageKey keeps the per-server key, so the extraction is invisible to
+// existing MCP installs.
+func TestStorageKeyDefaultsToMCP(t *testing.T) {
+	e := &Engine{ServerURL: "https://mcp.example.com/mcp"}
+	if got, want := e.storageKey(), "marshal:mcp:https://mcp.example.com/mcp"; got != want {
+		t.Fatalf("storageKey() = %q, want %q", got, want)
+	}
+}
+
+// TestStorageKeyOverride pins the provider seam: an explicit StorageKey wins
+// over the ServerURL-derived default.
+func TestStorageKeyOverride(t *testing.T) {
+	e := &Engine{
+		ServerURL:  "https://chatgpt.com/backend-api",
+		StorageKey: "marshal:provider:codex",
+	}
+	if got, want := e.storageKey(), "marshal:provider:codex"; got != want {
+		t.Fatalf("storageKey() = %q, want %q", got, want)
+	}
+}
+
+// TestTokenSourceUsesStorageKeyOverride proves the override reaches the store,
+// not just the helper: a token written under the provider key is found, and
+// nothing is written under the MCP key.
+func TestTokenSourceUsesStorageKeyOverride(t *testing.T) {
+	store := newMemStore()
+	e := &Engine{
+		ServerURL:  "https://chatgpt.com/backend-api",
+		StorageKey: "marshal:provider:codex",
+		Store:      store,
+		Logger:     slog.New(quietDiscardHandler{}),
+	}
+	mustSetJSON(t, store, "marshal:provider:codex", StoredTokens{
+		AccessToken: "provider-token",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	})
+
+	got, err := e.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("TokenSource: %v", err)
+	}
+	if got != "provider-token" {
+		t.Fatalf("token = %q, want %q", got, "provider-token")
+	}
+	if _, ok := store.data["marshal:mcp:https://chatgpt.com/backend-api"]; ok {
+		t.Fatal("token was read from the MCP key; StorageKey override did not apply")
+	}
+}
+
+// TestFlowConfigSkipsDiscoveryAndDCR pins the pinned-flow seam: with Issuer
+// and ClientID set, Authorize must not touch the discovery or registration
+// endpoints at all, and must use the pinned authorize/token URLs.
+func TestFlowConfigSkipsDiscoveryAndDCR(t *testing.T) {
+	as := newFakeAS(t)
+	store := newMemStore()
+
+	var discoveryHits, registerHits int
+	var mu sync.Mutex
+	pinned := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		switch {
+		case strings.Contains(r.URL.Path, ".well-known"):
+			discoveryHits++
+		case strings.HasSuffix(r.URL.Path, "/register"):
+			registerHits++
+		}
+		mu.Unlock()
+		as.serveHTTP(w, r, AuthorizeServerMetadata{})
+	}))
+	defer pinned.Close()
+
+	e := &Engine{
+		ServerURL:  "https://chatgpt.com/backend-api",
+		StorageKey: "marshal:provider:codex",
+		ClientName: "marshal",
+		Store:      store,
+		HTTPClient: pinned.Client(),
+		Logger:     slog.New(quietDiscardHandler{}),
+		CacheDir:   t.TempDir(),
+		Flow: FlowConfig{
+			Issuer:       pinned.URL,
+			AuthorizeURL: pinned.URL + "/authorize",
+			TokenURL:     pinned.URL + "/token",
+			ClientID:     "app_fixed_client",
+			ExtraAuthorizeParams: map[string]string{
+				"originator": "codex_cli_rs",
+			},
+		},
+	}
+
+	display := newTestDisplay()
+	// Drive the callback against the pinned server, not the fake AS.
+	go func() {
+		<-display.showCh
+		u, _ := url.Parse(display.URL())
+		redirect := u.Query().Get("redirect_uri")
+		state := u.Query().Get("state")
+		cb := redirect + "?code=CODE-pinned&state=" + url.QueryEscape(state)
+		req, _ := http.NewRequest(http.MethodGet, cb, nil)
+		resp, err := pinned.Client().Do(req)
+		if err != nil {
+			display.waitCh <- err
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		display.waitCh <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := e.Authorize(ctx, display); err != nil {
+		t.Fatalf("Authorize with pinned flow: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if discoveryHits != 0 {
+		t.Fatalf("discovery was called %d times; a pinned Issuer must skip it", discoveryHits)
+	}
+	if registerHits != 0 {
+		t.Fatalf("dynamic registration was called %d times; a pinned ClientID must skip it", registerHits)
+	}
+
+	// The pinned client_id and extra params must appear in the authorize URL.
+	u, _ := url.Parse(display.URL())
+	if got := u.Query().Get("client_id"); got != "app_fixed_client" {
+		t.Fatalf("authorize client_id = %q, want %q", got, "app_fixed_client")
+	}
+	if got := u.Query().Get("originator"); got != "codex_cli_rs" {
+		t.Fatalf("authorize originator = %q, want %q", got, "codex_cli_rs")
+	}
+
+	// The token must land under the provider key.
+	if _, ok := store.data["marshal:provider:codex"]; !ok {
+		t.Fatal("token was not stored under the provider StorageKey")
+	}
+}
+
+// TestFlowConfigRedirectPorts pins that the configured redirect port is the
+// one actually bound, so the redirect_uri matches what the authorization
+// server has registered.
+func TestFlowConfigRedirectPorts(t *testing.T) {
+	as := newFakeAS(t)
+	store := newMemStore()
+
+	// Find a free port to hand to the engine.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	e := engineWithAS(t, as, store, func(en *Engine) {
+		en.Flow = FlowConfig{RedirectPorts: []int{port}}
+	})
+
+	display := newTestDisplay()
+	driveCallback(t, display, as, "CODE-port")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := e.Authorize(ctx, display); err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+
+	u, _ := url.Parse(display.URL())
+	redirect := u.Query().Get("redirect_uri")
+	want := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+	if redirect != want {
+		t.Fatalf("redirect_uri = %q, want %q", redirect, want)
 	}
 }

@@ -600,15 +600,21 @@ type IndexingConfig struct {
 
 // ProviderConfig is one [providers.<name>] entry. Type selects the wire
 // protocol: "openai_compatible" (default when empty), "ollama" (native
-// Ollama /api/* endpoints — chat and embeddings), or "anthropic" (native
-// Messages API).
+// Ollama /api/* endpoints — chat and embeddings), "anthropic" (native
+// Messages API), or "openai_codex" (ChatGPT-subscription Responses API
+// over OAuth).
 type ProviderConfig struct {
-	Type        string `toml:"type"` // "openai_compatible" (default when empty), "ollama", or "anthropic"
+	Type        string `toml:"type"` // "openai_compatible" (default when empty), "ollama", "anthropic", or "openai_codex"
 	BaseURL     string `toml:"base_url"`
 	APIKey      string `toml:"api_key"`            // literal key; wins over APIKeyEnv if both set
 	APIKeyEnv   string `toml:"api_key_env"`        // env var name to resolve at provider-construction time (NOT resolved here)
 	ToolCalling bool   `toml:"tool_calling"`       // provider advertises native tool-calling support
 	Template    string `toml:"template,omitempty"` // optional template ID this provider was created from
+	// Auth is the authentication mode: "" (default, api_key/api_key_env) or
+	// "oauth" (subscription login; tokens live in the OS keyring under
+	// marshal:provider:<name>). "oauth" is only meaningful for the
+	// openai_codex type and is mutually exclusive with api_key/api_key_env.
+	Auth string `toml:"auth,omitempty"`
 	// KeepAlive is honored only by native Ollama backends (chat /api/chat and
 	// embeddings /api/embed): how long a model stays loaded after a request.
 	// Duration string ("30m"), "-1" = never unload, "0" = unload immediately.

@@ -69,6 +69,9 @@ type TurnMetrics struct {
 	// (1/10000 of a dollar), computed from the token counts and the
 	// pricing table at metrics-emission time. 0 for local/unpriced models.
 	EstimatedCostCents int64
+	// Quota is the subscription quota reading reported by an OAuth-backed
+	// provider during this turn. nil for every provider that reports none.
+	Quota *schema.QuotaInfo
 }
 
 // turnStats is the mutable per-turn collector behind TurnMetrics. It has no
@@ -78,6 +81,9 @@ type TurnMetrics struct {
 type turnStats struct {
 	m               TurnMetrics
 	parseFailSample parseSample
+	// quota is the latest subscription quota reading seen this turn. It is
+	// replaced (not accumulated) on each provider report.
+	quota *schema.QuotaInfo
 }
 
 // noteFailedRepeatTelemetry records how far the failure ladder escalated this
@@ -230,5 +236,17 @@ func (r *Runner) emitMetrics(task *Task) {
 	}, r.Pricing)
 	m.ParseFailKind = sample.Kind
 	m.ParseFailSample = sample.Text
+	// The quota reading is per-turn state, not a counter: it is whatever
+	// the provider last reported, so it is read from the runner rather
+	// than accumulated in turnStats.
+	m.Quota = r.turnQuota()
 	r.MetricsObserver(m)
+}
+
+// turnQuota returns the latest quota reading for this turn, or nil when the
+// provider reported none.
+func (r *Runner) turnQuota() *schema.QuotaInfo {
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	return r.stats.quota
 }

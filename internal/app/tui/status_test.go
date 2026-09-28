@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/schema"
 )
 
 func newStatusTestModel(t *testing.T) Model {
@@ -39,6 +40,70 @@ func TestStatusLineShowsRouteAndContext(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Fatalf("status line missing %q:\n%s", want, line)
 		}
+	}
+}
+
+// TestStatusLineShowsQuota: an OAuth provider's quota reading renders as
+// percent-used plus a reset countdown and the plan tier.
+func TestStatusLineShowsQuota(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "gpt-5.6-luna", Provider: "codex"})
+	m.state.SetTurnQuota(&schema.QuotaInfo{
+		PlanType:              "plus",
+		PrimaryUsedPercent:    50,
+		PrimaryResetAfterSecs: 14845, // 4h7m
+		PrimaryWindowMinutes:  300,
+	})
+
+	line := m.renderStatusLine(120)
+	for _, want := range []string{"⚡ 50%", "4h7m", "plus"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("status line missing %q:\n%s", want, line)
+		}
+	}
+}
+
+// TestStatusLineOmitsQuotaWhenAbsent: providers that report no quota must
+// not render an empty or zeroed segment.
+func TestStatusLineOmitsQuotaWhenAbsent(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen3:8b", Provider: "ollama"})
+
+	line := m.renderStatusLine(120)
+	if strings.Contains(line, "⚡") {
+		t.Fatalf("status line should not show a quota segment:\n%s", line)
+	}
+}
+
+// TestStatusLineQuotaClearedByNil: switching to a provider that reports no
+// quota must clear the previous reading rather than leaving it stale.
+func TestStatusLineQuotaClearedByNil(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "gpt-5.6-luna", Provider: "codex"})
+	m.state.SetTurnQuota(&schema.QuotaInfo{PrimaryUsedPercent: 50, PrimaryResetAfterSecs: 600})
+	if line := m.renderStatusLine(120); !strings.Contains(line, "⚡") {
+		t.Fatalf("expected a quota segment:\n%s", line)
+	}
+
+	m.state.SetTurnQuota(nil)
+	if line := m.renderStatusLine(120); strings.Contains(line, "⚡") {
+		t.Fatalf("quota segment should be gone after SetTurnQuota(nil):\n%s", line)
+	}
+}
+
+// TestQuotaSegmentOmitsZeroReset: a reading with no reset countdown must not
+// render a "now" placeholder that reads as a real countdown.
+func TestQuotaSegmentOmitsZeroReset(t *testing.T) {
+	got := quotaSegment(&schema.QuotaInfo{PrimaryUsedPercent: 12})
+	if got != "⚡ 12%" {
+		t.Fatalf("quotaSegment = %q, want %q", got, "⚡ 12%")
+	}
+}
+
+// TestQuotaSegmentNilIsEmpty guards the nil path used by the footer.
+func TestQuotaSegmentNilIsEmpty(t *testing.T) {
+	if got := quotaSegment(nil); got != "" {
+		t.Fatalf("quotaSegment(nil) = %q, want empty", got)
 	}
 }
 

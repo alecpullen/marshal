@@ -17,14 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"marshal/internal/tools/mcp/oauth"
+	"marshal/internal/oauth"
 )
 
 // This file drives the codex authorization flow. It deliberately consumes
-// marshal's existing OAuth machinery (internal/tools/mcp/oauth) rather than
-// forking it: the spike is the proof that the seams the Phase-2 extraction
-// needs actually exist. Extraction to internal/oauth is Phase 2 and is out of
-// scope here.
+// marshal's existing OAuth machinery (now internal/oauth, extracted from
+// internal/tools/mcp/oauth in Phase 2) rather than forking it: the spike was
+// the proof that the seams the extraction needs actually exist.
 //
 // Reused verbatim from the engine: oauth.NewPKCE, oauth.NewState,
 // oauth.VerifyState. Mirrored (not reused) because codex pins its own

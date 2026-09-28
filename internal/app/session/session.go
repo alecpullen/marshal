@@ -15,6 +15,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
@@ -306,6 +307,9 @@ type State struct {
 	// In-memory only, never persisted.
 	jobExits  []JobExit
 	turnUsage turnUsage
+	// turnQuota is the latest subscription quota reading from an
+	// OAuth-backed provider; nil when the active provider reports none.
+	turnQuota *schema.QuotaInfo
 	title     string
 	titleSet  bool
 
@@ -588,6 +592,24 @@ func (s *State) TurnUsage() (used, window int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.turnUsage.used, s.turnUsage.window
+}
+
+// SetTurnQuota records the latest subscription quota reading from an
+// OAuth-backed provider. A nil argument clears it, so switching to a
+// provider that reports no quota stops the footer advertising a stale
+// window from the previous one.
+func (s *State) SetTurnQuota(q *schema.QuotaInfo) {
+	s.mu.Lock()
+	s.turnQuota = q
+	s.mu.Unlock()
+}
+
+// TurnQuota returns the latest quota reading, or nil when the active
+// provider has not reported one.
+func (s *State) TurnQuota() *schema.QuotaInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnQuota
 }
 
 func (s *State) SetTitle(title string) {

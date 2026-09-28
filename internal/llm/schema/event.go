@@ -51,6 +51,34 @@ type ChatEvent struct {
 	// ToolCalls is populated only when Type == ChatEventDone and the provider
 	// returned complete native tool calls.
 	ToolCalls []ToolCall
+
+	// Quota is populated only when Type == ChatEventDone and the provider
+	// reported subscription quota state (OAuth-backed providers). nil for
+	// every provider that does not report it.
+	Quota *QuotaInfo
+}
+
+// QuotaInfo carries subscription quota state from OAuth-backed providers.
+// It is populated from the x-codex-* response headers on every 2xx chat
+// response (see docs/codex-spike-findings-2026-09-14.md §5). Percent values
+// are 0-100; reset times are seconds remaining as of the moment the header
+// was read.
+type QuotaInfo struct {
+	// PlanType is the subscription tier, e.g. "plus".
+	PlanType string
+	// PrimaryUsedPercent is the percent of the primary window consumed.
+	PrimaryUsedPercent int
+	// PrimaryResetAfterSecs is the seconds until the primary window resets.
+	PrimaryResetAfterSecs int
+	// PrimaryWindowMinutes is the length of the primary window (300 = 5h).
+	PrimaryWindowMinutes int
+	// SecondaryUsedPercent is the percent of the secondary window consumed.
+	SecondaryUsedPercent int
+	// SecondaryResetAfterSecs is the seconds until the secondary window resets.
+	SecondaryResetAfterSecs int
+	// SecondaryWindowMinutes is the length of the secondary window
+	// (10080 = 7d).
+	SecondaryWindowMinutes int
 }
 
 type TokenUsage struct {

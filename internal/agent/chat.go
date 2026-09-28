@@ -46,6 +46,9 @@ type chatResult struct {
 	Text         string
 	ToolCalls    []schema.ToolCall
 	FinishReason string
+	// Quota carries subscription quota state when the provider reported it
+	// (OAuth-backed providers). nil for every other provider.
+	Quota *schema.QuotaInfo
 }
 
 // turnRequestOptions carries the resolved per-turn request limits derived from
@@ -407,6 +410,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	var sb strings.Builder
 	var thinkingBuf strings.Builder
 	var usage *schema.TokenUsage
+	var quota *schema.QuotaInfo
 	var toolCalls []schema.ToolCall
 	var finishReason string
 	for event := range events {
@@ -467,6 +471,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			usage = event.Usage
 			toolCalls = event.ToolCalls
 			finishReason = event.FinishReason
+			quota = event.Quota
 		}
 	}
 	if loopSnippet != "" {
@@ -474,6 +479,12 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	}
 	if r.UsageObserver != nil && usage != nil {
 		r.UsageObserver(*usage)
+	}
+	if quota != nil {
+		r.withStats(func(s *turnStats) { s.quota = quota })
+		if r.QuotaObserver != nil {
+			r.QuotaObserver(*quota)
+		}
 	}
 	if r.CalibrationObserver != nil && usage != nil {
 		r.CalibrationObserver(messages, usage.PromptTokens)

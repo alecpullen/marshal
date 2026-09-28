@@ -10,7 +10,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 	"marshal/internal/credentials"
-	"marshal/internal/tools/mcp/oauth"
+	"marshal/internal/oauth"
 )
 
 // headlessCommandImpl is the signature of a command the manager implements

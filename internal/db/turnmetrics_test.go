@@ -47,6 +47,82 @@ func sampleRow(projectID int64, sessionID string) TurnMetricsRow {
 		SalvageReason:    "",
 		PromptTokens:     17,
 		CompletionTokens: 8,
+		// Quota columns: a non-zero reading so the round-trip proves the
+		// values survive both the INSERT and the two SELECT/Scan pairs.
+		QuotaUsedPercent:    50,
+		QuotaResetAfterSecs: 14845,
+		QuotaPlanType:       "plus",
+	}
+}
+
+// TestTurnMetricsQuotaColumnsRoundTrip pins the quota columns through both
+// readers. A column added to the INSERT but not to a SELECT would silently
+// read back as zero, which is indistinguishable from "no quota reported".
+func TestTurnMetricsQuotaColumnsRoundTrip(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	if err := database.CreateSession("sess_q", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	row := sampleRow(projectID, "sess_q")
+	if _, err := database.InsertTurnMetrics(row); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	rows, err := database.RecentTurnMetrics(projectID, 10)
+	if err != nil {
+		t.Fatalf("RecentTurnMetrics: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+	if rows[0].QuotaUsedPercent != 50 {
+		t.Errorf("QuotaUsedPercent = %d, want 50", rows[0].QuotaUsedPercent)
+	}
+	if rows[0].QuotaResetAfterSecs != 14845 {
+		t.Errorf("QuotaResetAfterSecs = %d, want 14845", rows[0].QuotaResetAfterSecs)
+	}
+	if rows[0].QuotaPlanType != "plus" {
+		t.Errorf("QuotaPlanType = %q, want plus", rows[0].QuotaPlanType)
+	}
+
+	sessRows, err := database.RecentTurnMetricsForSession(projectID, "sess_q", 10)
+	if err != nil {
+		t.Fatalf("RecentTurnMetricsForSession: %v", err)
+	}
+	if len(sessRows) != 1 {
+		t.Fatalf("len(sessRows) = %d, want 1", len(sessRows))
+	}
+	if sessRows[0].QuotaUsedPercent != 50 || sessRows[0].QuotaPlanType != "plus" {
+		t.Errorf("session reader lost the quota columns: %+v", sessRows[0])
+	}
+}
+
+// TestTurnMetricsQuotaDefaultsToZero: a provider that reports no quota must
+// persist zero values rather than failing the insert.
+func TestTurnMetricsQuotaDefaultsToZero(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	if err := database.CreateSession("sess_n", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	row := sampleRow(projectID, "sess_n")
+	row.QuotaUsedPercent = 0
+	row.QuotaResetAfterSecs = 0
+	row.QuotaPlanType = ""
+	if _, err := database.InsertTurnMetrics(row); err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+
+	rows, err := database.RecentTurnMetrics(projectID, 10)
+	if err != nil {
+		t.Fatalf("RecentTurnMetrics: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+	if rows[0].QuotaUsedPercent != 0 || rows[0].QuotaPlanType != "" {
+		t.Errorf("expected zero quota values, got %+v", rows[0])
 	}
 }
 

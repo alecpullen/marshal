@@ -130,6 +130,50 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		}
 	}
 
+	// 6b: provider auth mode. merge() copies the field verbatim, so a
+	// hand-edited config.toml can carry a value that is silently ignored at
+	// runtime. Three cases matter:
+	//
+	//   - an unknown mode (only "" and "oauth" are accepted);
+	//   - auth = "oauth" on a type that has no OAuth backend, where the
+	//     setting does nothing and the provider would still demand a key;
+	//   - auth = "oauth" alongside api_key/api_key_env, where the key is
+	//     dead weight the user probably pasted by mistake.
+	//
+	// The last is an error rather than a warning because it is a genuine
+	// contradiction: the user believes a key is in play and it is not.
+	for name, pc := range cfg.Providers {
+		path := "providers." + name + ".auth"
+		source := layers.ProvenanceOf(path).SetBy.String()
+		switch pc.Auth {
+		case "":
+		case "oauth":
+			if pc.Type != "openai_codex" {
+				ds = append(ds, Diagnostic{
+					Severity: SeverityWarning,
+					Path:     path,
+					Message:  "provider " + name + " sets auth = \"oauth\" but its type is " + strconv.Quote(pc.Type) + "; auth is ignored for non-OAuth provider types",
+					Source:   source,
+				})
+			}
+			if pc.APIKey != "" || pc.APIKeyEnv != "" {
+				ds = append(ds, Diagnostic{
+					Severity: SeverityError,
+					Path:     path,
+					Message:  "provider " + name + " sets auth = \"oauth\" and also api_key/api_key_env; the key is unused when auth = \"oauth\"",
+					Source:   source,
+				})
+			}
+		default:
+			ds = append(ds, Diagnostic{
+				Severity: SeverityError,
+				Path:     path,
+				Message:  "provider " + name + " has unknown auth " + strconv.Quote(pc.Auth) + " (accepted: \"\", \"oauth\"); this setting is ignored",
+				Source:   source,
+			})
+		}
+	}
+
 	// 7: legacy settings migrated at load (agent.provider/agent.model, and
 	// the per-profile embedding role binding)
 	if layers.Migrated {

@@ -81,6 +81,9 @@ var migrationColumns = []columnAdd{
 	{"turn_metrics", "parse_repairs", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "failed_repeat_streak", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "highest_failed_repeat_tier", "INTEGER NOT NULL DEFAULT 0"},
+	{"turn_metrics", "quota_used_percent", "INTEGER NOT NULL DEFAULT 0"},
+	{"turn_metrics", "quota_reset_after_secs", "INTEGER NOT NULL DEFAULT 0"},
+	{"turn_metrics", "quota_plan_type", "TEXT NOT NULL DEFAULT ''"},
 	{"symbols", "source", "TEXT"},
 }
 

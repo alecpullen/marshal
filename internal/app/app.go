@@ -33,9 +33,11 @@ import (
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/provider/oauthworker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/lsp"
+	"marshal/internal/oauth"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo"
@@ -47,7 +49,6 @@ import (
 	"marshal/internal/tools/desktop"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/mcp"
-	"marshal/internal/tools/mcp/oauth"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -433,11 +434,38 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 			SalvageReason:           m.SalvageReason,
 			PromptTokens:            m.PromptTokens,
 			CompletionTokens:        m.CompletionTokens,
+			QuotaUsedPercent:        quotaUsedPercent(m.Quota),
+			QuotaResetAfterSecs:     quotaResetAfterSecs(m.Quota),
+			QuotaPlanType:           quotaPlanType(m.Quota),
 		})
 		if err != nil && logger != nil {
 			logger.Warn("failed to persist turn metrics", "error", err)
 		}
 	}
+}
+
+// quotaUsedPercent, quotaResetAfterSecs, and quotaPlanType flatten a quota
+// reading for persistence. A nil reading (the common case — most providers
+// report no quota) yields zero values.
+func quotaUsedPercent(q *schema.QuotaInfo) int {
+	if q == nil {
+		return 0
+	}
+	return q.PrimaryUsedPercent
+}
+
+func quotaResetAfterSecs(q *schema.QuotaInfo) int {
+	if q == nil {
+		return 0
+	}
+	return q.PrimaryResetAfterSecs
+}
+
+func quotaPlanType(q *schema.QuotaInfo) string {
+	if q == nil {
+		return ""
+	}
+	return q.PlanType
 }
 
 // rolloverPolicyFromConfig translates a config.RolloverConfig into a
@@ -890,6 +918,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		if usageCounter != nil {
 			usageCounter.Observe(usage.PromptTokens)
 		}
+	}
+
+	// Subscription quota from OAuth-backed providers. Recorded on the
+	// session so the footer and /agents can render it; providers that
+	// report no quota never call this, so the value stays nil for them.
+	runner.QuotaObserver = func(q schema.QuotaInfo) {
+		state.SetTurnQuota(&q)
 	}
 
 	// Calibration harness: when enabled, record a paired estimator-vs-provider
@@ -1982,6 +2017,34 @@ func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB,
 	return workers
 }
 
+// buildOAuthWorkers returns one token-refresh worker per provider entry that
+// authenticates with OAuth. The worker shares the provider's engine (via
+// provider.CodexOAuthEngine), so a proactive refresh and an inline chat-time
+// refresh serialize on the same mutex rather than racing.
+//
+// A provider whose engine cannot be built (no OS keychain) is skipped with a
+// warning: the provider itself will report the same problem when used, and a
+// missing keychain must not prevent the rest of the app from starting.
+func buildOAuthWorkers(cfg config.Config, logger *slog.Logger) []worker.Worker {
+	var out []worker.Worker
+	for name, pc := range cfg.Providers {
+		if pc.Auth != "oauth" || pc.Type != "openai_codex" {
+			continue
+		}
+		engine, err := provider.CodexOAuthEngine(name)
+		if err != nil {
+			logger.Warn("oauth refresh worker not started", "provider", name, "err", err)
+			continue
+		}
+		out = append(out, &oauthworker.Worker{
+			Engine:   engine,
+			Provider: name,
+			Logger:   logger,
+		})
+	}
+	return out
+}
+
 func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	if ctx.Err() != nil {
 		return nil
@@ -2250,6 +2313,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			workers = buildIndexWorkers(cfg, state, database, projectID, workingDir, lspAdapter,
 				must[*pubsub.Broker[index.Report]](rt.IndexBroker), logger)
 		}
+		workers = append(workers, buildOAuthWorkers(cfg, logger)...)
 		// LSPManager is started inside startRuntime (shared by Run and
 		// StartRuntime) — see runtime.go. Do not start it again here.
 		var workerWG sync.WaitGroup

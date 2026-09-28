@@ -10,6 +10,7 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/provider"
+	"marshal/internal/oauth"
 )
 
 // noticeForError classifies an agent-turn error into a session notice.
@@ -21,6 +22,20 @@ func noticeForError(err error, source string) session.Notice {
 		Severity: session.SeverityError,
 		Message:  firstLine(err.Error()),
 		Source:   source,
+	}
+	// An OAuth provider that needs a login is checked first: it is a
+	// provider error, but the generic "review the provider" hint would
+	// bury the one action that fixes it. The hint names the provider
+	// entry so the user knows which login is missing.
+	var authErr *oauth.ErrAuthRequired
+	if errors.As(err, &authErr) {
+		n.Category = session.NoticeProvider
+		name := authErr.ServerName
+		if name == "" {
+			name = "this provider"
+		}
+		n.Hint = "Run /connect to sign in to " + name + "."
+		return n
 	}
 	var httpErr *provider.ProviderError
 	var reqErr *provider.RequestError

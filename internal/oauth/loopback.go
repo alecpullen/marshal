@@ -193,7 +193,9 @@ func writeLoopbackHTML(w http.ResponseWriter, ok bool, msg string) {
 // buildAuthorizeURL composes the authorization request URL from the
 // authorization endpoint, redirect URI, PKCE challenge, and state. Any
 // caller-provided scopes are joined with a single space per RFC 6749 §3.3.
-func buildAuthorizeURL(authorizationEndpoint, redirectURI, clientID string, scopes []string, pkce PKCE, state string) (string, error) {
+// Extra params are applied last so a caller can add server-specific
+// parameters (codex sends originator and flow-selection flags).
+func buildAuthorizeURL(authorizationEndpoint, redirectURI, clientID string, scopes []string, pkce PKCE, state string, extra map[string]string) (string, error) {
 	u, err := url.Parse(authorizationEndpoint)
 	if err != nil {
 		return "", fmt.Errorf("oauth: parse authorization endpoint: %w", err)
@@ -207,6 +209,9 @@ func buildAuthorizeURL(authorizationEndpoint, redirectURI, clientID string, scop
 	q.Set("state", state)
 	if len(scopes) > 0 {
 		q.Set("scope", strings.Join(scopes, " "))
+	}
+	for k, v := range extra {
+		q.Set(k, v)
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil

@@ -132,7 +132,10 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     outcome TEXT NOT NULL,
     salvage_reason TEXT NOT NULL DEFAULT '',
     prompt_tokens INTEGER NOT NULL,
-    completion_tokens INTEGER NOT NULL
+    completion_tokens INTEGER NOT NULL,
+    quota_used_percent INTEGER NOT NULL DEFAULT 0,
+    quota_reset_after_secs INTEGER NOT NULL DEFAULT 0,
+    quota_plan_type TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_project ON turn_metrics(project_id, id);
 

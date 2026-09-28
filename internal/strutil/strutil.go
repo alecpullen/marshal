@@ -54,6 +54,38 @@ func HumanAge(d time.Duration) string {
 	}
 }
 
+// CompactDuration renders a countdown compactly with two units at most:
+// "45s", "12m", "4h7m", "6d23h". It is for quota reset countdowns, where
+// the exact minute matters but seconds past the first hour do not.
+//
+// A non-positive duration renders as "now" — a reset that has already
+// passed is better described as imminent than as a negative number.
+func CompactDuration(d time.Duration) string {
+	if d <= 0 {
+		return "now"
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		m := int(d.Minutes()) - h*60
+		if m == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh%dm", h, m)
+	default:
+		days := int(d.Hours()) / 24
+		h := int(d.Hours()) - days*24
+		if h == 0 {
+			return fmt.Sprintf("%dd", days)
+		}
+		return fmt.Sprintf("%dd%dh", days, h)
+	}
+}
+
 // TruncateMiddle returns s shortened to at most max runes by replacing the
 // middle with "…" when truncation is needed. The result is at most max runes
 // (the ellipsis replaces characters, it is not appended). Rune-aware:

@@ -113,6 +113,34 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 			ThinkingBudget:       pc.ThinkingBudget,
 			ThinkingBudgetMargin: thinkingBudgetMargin,
 		})
+	case "openai_codex":
+		// The shared engine: the refresh worker holds the same instance, so
+		// their refreshes serialize on one mutex.
+		engine, err := CodexOAuthEngine(name)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		// Capabilities are hardcoded from the spike's verified results
+		// (docs/codex-spike-findings-2026-09-14.md §6): tool calling,
+		// structured output, and reasoning all PASS. Streaming is implied
+		// — the endpoint only accepts stream=true.
+		caps := schema.ProviderCapabilities{
+			ToolCalling:      true,
+			JSONMode:         false,
+			StructuredOutput: true,
+			Reasoning:        true,
+		}
+		return NewOpenAICodex(CodexOptions{
+			Name:             name,
+			BaseURL:          pc.BaseURL,
+			Engine:           engine,
+			Capabilities:     &caps,
+			LimitsTable:      loadLimitsTable(dataDir, remoteLimitDiscovery),
+			ReasoningSummary: pc.ReasoningSummary,
+			StaticModels:     codexStaticModels(pc),
+			DataDir:          dataDir,
+			ProviderConfig:   pc,
+		})
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)
 	}

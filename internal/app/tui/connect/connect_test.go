@@ -993,6 +993,184 @@ func TestConfirmLimitsFetchedFiguresBeatSavedPreset(t *testing.T) {
 
 func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} }
 
+// TestPickCodexTemplateEntersOAuthLogin: the codex template has no API key,
+// so picking it must walk the browser login rather than the key prompt.
+func TestPickCodexTemplateEntersOAuthLogin(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+	if updated.step != stepOAuthLogin {
+		t.Fatalf("codex template should enter the OAuth login step, got %v", updated.step)
+	}
+	if updated.template.Auth != "oauth" {
+		t.Fatalf("template auth = %q, want oauth", updated.template.Auth)
+	}
+	if updated.providerCfg.Auth != "oauth" {
+		t.Fatalf("provider config auth = %q, want oauth", updated.providerCfg.Auth)
+	}
+	if updated.providerCfg.Type != "openai_codex" {
+		t.Fatalf("provider config type = %q, want openai_codex", updated.providerCfg.Type)
+	}
+	// The provider name must be settled before the flow starts: the token
+	// is stored under marshal:provider:<name>.
+	if updated.providerName == "" {
+		t.Fatal("provider name must be set before the OAuth flow starts")
+	}
+}
+
+// TestOAuthTemplateNeverPromptsForAPIKey guards the invariant that an OAuth
+// template cannot reach the API-key step.
+func TestOAuthTemplateNeverPromptsForAPIKey(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+	if updated.step == stepAPIKey {
+		t.Fatal("an OAuth template must not enter the API-key step")
+	}
+}
+
+// TestOAuthDoneFailureStaysOnLoginStep: a failed sign-in must show the error
+// and stay put so the user can retry or cancel, not silently advance.
+func TestOAuthDoneFailureStaysOnLoginStep(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+	name := updated.providerName
+
+	updated, _ = updated.Update(OAuthDoneMsg{Provider: name, Err: errors.New("user cancelled")})
+	if updated.step != stepOAuthLogin {
+		t.Fatalf("step = %v, want stepOAuthLogin after a failed sign-in", updated.step)
+	}
+	if !strings.Contains(updated.err, "sign-in failed") {
+		t.Fatalf("err = %q, want a sign-in failure message", updated.err)
+	}
+}
+
+// TestOAuthDoneSuccessAdvancesToProbing: a successful sign-in proceeds to
+// the model probe, which is where the token is first exercised.
+func TestOAuthDoneSuccessAdvancesToProbing(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+	name := updated.providerName
+
+	updated, _ = updated.Update(OAuthDoneMsg{Provider: name})
+	if updated.step != stepProbing {
+		t.Fatalf("step = %v, want stepProbing after a successful sign-in", updated.step)
+	}
+}
+
+// TestOAuthDoneStaleResultIgnored: a result from an abandoned flow must not
+// advance the wizard.
+func TestOAuthDoneStaleResultIgnored(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+
+	updated, _ = updated.Update(OAuthDoneMsg{Provider: "some-other-provider"})
+	if updated.step != stepOAuthLogin {
+		t.Fatalf("step = %v, want stepOAuthLogin (stale result must be ignored)", updated.step)
+	}
+}
+
+// TestOAuthLoginViewRendersWaitingState: the login step must render
+// something, so the user is not staring at an empty panel while the browser
+// flow runs.
+func TestOAuthLoginViewRendersWaitingState(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+	view := updated.View(80, 24)
+	if !strings.Contains(view, "signing in") {
+		t.Fatalf("view should mention signing in, got:\n%s", view)
+	}
+}
+
+// TestOAuthLoginShowsAuthorizationURL: the panel must surface the
+// authorization URL. Without it the flow is unrecoverable whenever the
+// browser does not open (headless session, no xdg-open, sandboxed terminal).
+func TestOAuthLoginShowsAuthorizationURL(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+
+	// Before the engine reports a URL the panel says it is opening one.
+	if view := updated.View(80, 24); !strings.Contains(view, "Opening your browser") {
+		t.Fatalf("view should say the browser is opening, got:\n%s", view)
+	}
+
+	// Once ShowURL fires, the URL must be rendered.
+	updated.oauthDisplay.ShowURL("https://auth.openai.com/oauth/authorize?client_id=app_test&state=xyz")
+	view := updated.View(80, 24)
+	if !strings.Contains(view, "auth.openai.com") {
+		t.Fatalf("view should show the authorization URL, got:\n%s", view)
+	}
+}
+
+// TestOAuthLoginWiresBrowserOpener: the engine's Open hook must be set, or
+// Authorize waits on a loopback callback the user was never told how to
+// trigger. The provider package deliberately leaves Open nil (launching a
+// browser is a UI concern), so the connect flow is the only place it can be
+// wired.
+func TestOAuthLoginWiresBrowserOpener(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+
+	engine, err := provider.CodexOAuthEngine(updated.providerName)
+	if err != nil {
+		t.Fatalf("CodexOAuthEngine: %v", err)
+	}
+	if engine.Open == nil {
+		t.Fatal("engine.Open is nil; the browser would never open and the flow would dead-end")
+	}
+}
+
+// TestRemoteGateRoutesOAuthTemplateToLogin: chatgpt.com is not localhost and
+// remote providers default to disabled, so the codex template reaches the
+// remote gate on a fresh install. Enabling remote providers there must route
+// to the OAuth login, not to an API-key prompt the provider ignores —
+// otherwise the wizard completes unauthenticated and only fails on the first
+// chat.
+func TestRemoteGateRoutesOAuthTemplateToLogin(t *testing.T) {
+	// Default config: remote providers disabled.
+	m := New(Opts{Cfg: config.Default()})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+	if updated.step != stepRemoteGate {
+		t.Fatalf("step = %v, want stepRemoteGate with remote providers disabled", updated.step)
+	}
+
+	updated, _ = updated.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if updated.step != stepOAuthLogin {
+		t.Fatalf("step = %v, want stepOAuthLogin after enabling remote providers", updated.step)
+	}
+	if updated.step == stepAPIKey {
+		t.Fatal("an OAuth template must never reach the API-key step")
+	}
+}
+
+// TestRemoteGateStillRoutesKeyedTemplateToAPIKey guards the pre-existing
+// behavior for non-OAuth templates.
+func TestRemoteGateStillRoutesKeyedTemplateToAPIKey(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	updated, _ := m.Update(pickerPicked("openrouter"))
+	if updated.step != stepRemoteGate {
+		t.Fatalf("step = %v, want stepRemoteGate", updated.step)
+	}
+	updated, _ = updated.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if updated.step != stepAPIKey {
+		t.Fatalf("step = %v, want stepAPIKey for a keyed template", updated.step)
+	}
+}
+
 func TestAPIKeyInputIsMasked(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true

@@ -37,6 +37,7 @@ import (
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
@@ -364,6 +365,11 @@ type Model struct {
 	leftWidth int
 	// railWidth is the side rail's width, 0 when the rail is not shown.
 	railWidth int
+	// frame is the last measured layout: the rectangles rendering and
+	// pointer routing both consume. Recomputed by computeFrame on resize
+	// and on every state change that can move a region, never from View
+	// (whose value receiver would discard the measurement).
+	frame layout.Frame
 	// rail is the side panel's section stack.
 	rail *sidepanel.Rail
 	// railHidden is the session-only Ctrl+B override. Not persisted.
@@ -1554,6 +1560,7 @@ func (m *Model) resize(width, height int) {
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.computeFrame()
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -3134,6 +3141,10 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
 	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	// The frame is remeasured here rather than in View: every state change
+	// that can move a region funnels through this method, and View's value
+	// receiver would throw the measurement away.
+	m.computeFrame()
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}

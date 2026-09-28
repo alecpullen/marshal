@@ -33,20 +33,29 @@ type clickRegion struct {
 
 // contentLineForClick converts screen coordinates from a tea.MouseClickMsg
 // into a content-line index into the transcript viewport, or false if the
-// click landed outside the viewport. The transcript viewport is always the
-// top-left element of the screen (see viewString in view.go): row
-// scrollHintRows() (0 or 1, for the "↑ scrolled" hint) through
-// scrollHintRows()+viewport.Height(), column 0 through leftWidth.
+// click landed outside the viewport.
+//
+// The transcript's screen rectangle comes from the measured frame (see
+// computeFrame in frame.go), so the row a click resolves to is the row the
+// renderer actually drew — including the SDD top bar, the scroll hint, and
+// the drill-down breadcrumb, all of which shift the content down.
 func (m *Model) contentLineForClick(x, y int) (int, bool) {
-	if x < 0 || x >= m.leftWidth {
+	f := m.frameRect()
+	if !f.Transcript.Contains(x, y) {
 		return 0, false
 	}
-	top := m.scrollHintRows() + m.breadcrumbRows()
-	height := m.viewport.Height()
-	if y < top || y >= top+height {
+	// The hint and breadcrumb rows are inside the transcript rectangle but
+	// above the viewport's content, so they are not content lines.
+	chromeRows := m.scrollHintRows() + m.breadcrumbRows()
+	row, ok := f.Transcript.Row(y)
+	if !ok || row < chromeRows {
 		return 0, false
 	}
-	return m.viewport.YOffset() + (y - top), true
+	line := m.viewport.YOffset() + (row - chromeRows)
+	if line >= m.viewport.YOffset()+m.viewport.Height() {
+		return 0, false
+	}
+	return line, true
 }
 
 // regionAt returns the click target whose range contains line, if any.
@@ -79,7 +88,14 @@ func (m *Model) todoPanelBand() (top, bottom int, ok bool) {
 	if rows == 0 {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() + m.turnSpinnerRows()
+	// The activity band stacks spinner, todos, live strip, and lane in that
+	// order, so the todo panel starts one spinner row below the top of the
+	// band.
+	band := m.frameRect().Activity
+	if band.Empty() {
+		return 0, 0, false
+	}
+	top = band.Y + m.turnSpinnerRows()
 	return top, top + rows, true
 }
 
@@ -114,8 +130,12 @@ func (m *Model) agentLaneBand() (top, bottom int, ok bool) {
 	if rows == 0 {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
-		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows()
+	// The lane is the last element of the activity band.
+	band := m.frameRect().Activity
+	if band.Empty() {
+		return 0, 0, false
+	}
+	top = band.Bottom() - rows
 	return top, top + rows, true
 }
 

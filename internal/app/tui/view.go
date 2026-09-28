@@ -137,7 +137,13 @@ func (m *Model) viewString() string {
 			if child != nil {
 				d = m.childRailData(child)
 			}
-			railHeight := m.height - statusLineRows
+			// The rail is measured against the body, not the whole frame:
+			// the SDD top bar and the status line are full-width rows that
+			// sit outside both columns. Sizing the rail to the full frame
+			// height made the railed row one row taller than the terminal
+			// whenever the top bar was showing, pushing the status line off
+			// the bottom of the screen.
+			railHeight := m.frameRect().Body().Height
 			if rv := m.rail.View(d, m.railWidth, railHeight); rv != "" {
 				rv = chrome.PaintBand(rv, m.railWidth, theme.Current().ChromeBG())
 				left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)

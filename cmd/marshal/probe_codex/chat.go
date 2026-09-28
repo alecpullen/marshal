@@ -84,6 +84,7 @@ type responsesRequestBody struct {
 	Store             bool                 `json:"store"`
 	Stream            bool                 `json:"stream"`
 	Text              *responsesText       `json:"text,omitempty"`
+	Include           []string             `json:"include,omitempty"`
 }
 
 // userMessage builds a single user input item.
@@ -146,10 +147,11 @@ func probeTestChat(args []string) error {
 	}
 
 	body, err := json.Marshal(responsesRequestBody{
-		Model:  *model,
-		Input:  []responsesInputItem{userMessage("Say the word OK")},
-		Store:  false,
-		Stream: true,
+		Model:   *model,
+		Input:   []responsesInputItem{userMessage("Say the word OK")},
+		Store:   false,
+		Stream:  true,
+		Include: []string{"reasoning.encrypted_content"},
 	})
 	if err != nil {
 		return err
@@ -181,9 +183,11 @@ func probeTestChat(args []string) error {
 }
 
 // defaultProbeModel is the model slug the probe uses when none is supplied.
-// It is a probe default, not a claim about the subscription's model list —
-// Task 5 establishes the real list.
-const defaultProbeModel = "gpt-5.2-codex"
+// gpt-5.6-luna: user-preferred lightweight model, visibility=list,
+// supported_in_api=true, minimal_client_version 0.144.0 (Task 5 live run).
+// The earlier default gpt-5.2-codex is rejected by the backend with
+// "not supported when using Codex with a ChatGPT account".
+const defaultProbeModel = "gpt-5.6-luna"
 
 // presentOrAbsent renders a header value for logging without leaking it.
 func presentOrAbsent(v string) string {
@@ -240,10 +244,11 @@ func probeQuota() error {
 	accountID := accountIDFromToken()
 
 	body, err := json.Marshal(responsesRequestBody{
-		Model:  defaultProbeModel,
-		Input:  []responsesInputItem{userMessage("Reply with the single word OK.")},
-		Store:  false,
-		Stream: true,
+		Model:   defaultProbeModel,
+		Input:   []responsesInputItem{userMessage("Reply with the single word OK.")},
+		Store:   false,
+		Stream:  true,
+		Include: []string{"reasoning.encrypted_content"},
 	})
 	if err != nil {
 		return err
@@ -333,6 +338,7 @@ func capToolCalling(tok, accountID, model string) {
 		ToolChoice: "auto",
 		Store:      false,
 		Stream:     true,
+		Include:    []string{"reasoning.encrypted_content"},
 	})
 	if err != nil {
 		fmt.Printf("FAIL (encode request: %v)\n\n", err)
@@ -368,12 +374,15 @@ func capToolCalling(tok, accountID, model string) {
 // checks the reply parses against it.
 func capStructuredOutput(tok, accountID, model string) {
 	fmt.Println("=== 2. structured output ===")
-	schema := json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`)
+	// Responses strict mode requires additionalProperties:false on every
+	// object; omitting it is rejected with invalid_json_schema.
+	schema := json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}`)
 	body, err := json.Marshal(responsesRequestBody{
-		Model:  model,
-		Input:  []responsesInputItem{userMessage("Answer with a JSON object containing the field answer set to the word OK.")},
-		Store:  false,
-		Stream: true,
+		Model:   model,
+		Input:   []responsesInputItem{userMessage("Answer with a JSON object containing the field answer set to the word OK.")},
+		Store:   false,
+		Stream:  true,
+		Include: []string{"reasoning.encrypted_content"},
 		Text: &responsesText{Format: &responsesFormat{
 			Type:   "json_schema",
 			Name:   "probe_output_schema",
@@ -421,6 +430,7 @@ func capReasoning(tok, accountID, model string) {
 		Reasoning: &responsesReasoning{Effort: "low"},
 		Store:     false,
 		Stream:    true,
+		Include:   []string{"reasoning.encrypted_content"},
 	})
 	if err != nil {
 		fmt.Printf("FAIL (encode request: %v)\n\n", err)
@@ -501,14 +511,18 @@ func callArguments(body []byte) string {
 	return ""
 }
 
-// assistantText concatenates the assistant output text from a streamed
-// Responses body (response.output_text.delta events, or a completed item).
+// assistantText extracts the assistant output text from a streamed Responses
+// body. It prefers the complete text from response.output_text.done (or
+// response.output_item.done) over concatenating deltas, because the stream
+// carries both and appending both doubles the text.
 func assistantText(body []byte) string {
-	var sb strings.Builder
+	var deltas strings.Builder
+	var done string
 	for _, payload := range sseDataPayloads(body) {
 		var ev struct {
 			Type  string `json:"type"`
 			Delta string `json:"delta"`
+			Text  string `json:"text"`
 			Item  struct {
 				Type    string `json:"type"`
 				Content []struct {
@@ -522,18 +536,23 @@ func assistantText(body []byte) string {
 		}
 		switch ev.Type {
 		case "response.output_text.delta":
-			sb.WriteString(ev.Delta)
+			deltas.WriteString(ev.Delta)
+		case "response.output_text.done":
+			done = ev.Text
 		case "response.output_item.done":
-			if ev.Item.Type == "message" {
+			if ev.Item.Type == "message" && done == "" {
 				for _, part := range ev.Item.Content {
 					if part.Type == "output_text" {
-						sb.WriteString(part.Text)
+						done = part.Text
 					}
 				}
 			}
 		}
 	}
-	return strings.TrimSpace(sb.String())
+	if done != "" {
+		return strings.TrimSpace(done)
+	}
+	return strings.TrimSpace(deltas.String())
 }
 
 // sseDataPayloads returns the data payload of every SSE event in body.
@@ -565,7 +584,7 @@ func truncateForEvidence(body []byte) string {
 
 // probePromptEnforcement answers D2 — the design's most consequential unknown.
 //
-// Three calls, each printing the model's reply verbatim:
+// Four calls, each printing the model's reply verbatim:
 //
 //  1. Control: instructions = "reply only with 42". A reply of "42" means the
 //     endpoint honours caller instructions; a generic coding-assistant answer
@@ -588,6 +607,13 @@ func probePromptEnforcement() error {
 	accountID := accountIDFromToken()
 
 	fmt.Printf("model: %s\n\n", model)
+
+	// --- 0. baseline: no instructions field at all ---
+	fmt.Println("=== 0. baseline: no instructions, plain question ===")
+	baseReply, baseStatus := enforcementCall(tok, accountID, model, "",
+		[]responsesInputItem{userMessage("What is 2+2? Reply with only the number.")})
+	fmt.Printf("HTTP %d\n", baseStatus)
+	fmt.Printf("reply: %q\n\n", baseReply)
 
 	// --- 1. control ---
 	fmt.Println("=== 1. control: instructions = \"reply only with 42\" ===")
@@ -622,9 +648,9 @@ func probePromptEnforcement() error {
 	// A verdict is only meaningful when all three calls actually reached the
 	// model. A non-2xx body (e.g. a 401 error JSON) would otherwise satisfy
 	// the "contains e" marker and produce a false ENFORCED=true.
-	if !is2xx(controlStatus) || !is2xx(markerStatus) || !is2xx(injectStatus) {
-		fmt.Printf("ENFORCED=INCONCLUSIVE (statuses: control=%d marker=%d injection=%d)\n",
-			controlStatus, markerStatus, injectStatus)
+	if !is2xx(baseStatus) || !is2xx(controlStatus) || !is2xx(markerStatus) || !is2xx(injectStatus) {
+		fmt.Printf("ENFORCED=INCONCLUSIVE (statuses: baseline=%d control=%d marker=%d injection=%d)\n",
+			baseStatus, controlStatus, markerStatus, injectStatus)
 		fmt.Println("INJECTION_WORKS=INCONCLUSIVE")
 		fmt.Println("NOTE: at least one call did not return 2xx; no verdict can be drawn.")
 		return nil
@@ -656,6 +682,7 @@ func enforcementCall(tok, accountID, model, instructions string, input []respons
 		Input:        input,
 		Store:        false,
 		Stream:       true,
+		Include:      []string{"reasoning.encrypted_content"},
 	})
 	if err != nil {
 		return fmt.Sprintf("(encode request: %v)", err), 0

@@ -25,8 +25,9 @@ func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
 	m.refreshViewport()
 
 	found := false
+	want := testItemKey(t, m, session.KindThinking, 0)
 	for _, r := range m.clickRegions {
-		if r.target.key == (itemKey{ts: ts1, kind: session.KindThinking}) {
+		if r.target.key == want {
 			found = true
 			if r.startLine < 0 || r.endLine <= r.startLine {
 				t.Fatalf("invalid region for thinking block: %+v", r)
@@ -68,7 +69,7 @@ func TestContentLineForClickRejectsOutsideViewport(t *testing.T) {
 func TestRegionAtFindsContainingRegion(t *testing.T) {
 	m := newTestModel(t)
 	m.clickRegions = []clickRegion{
-		{startLine: 0, endLine: 2, target: clickTarget{key: itemKey{ts: time.Unix(1, 0), kind: session.KindThinking}}},
+		{startLine: 0, endLine: 2, target: clickTarget{key: itemKey{viewID: "thinking:1", kind: session.KindThinking}}},
 		{startLine: 3, endLine: 5, target: clickTarget{isActiveTool: true}},
 	}
 
@@ -89,7 +90,7 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 
-	key := itemKey{ts: ts, kind: session.KindThinking}
+	key := testItemKey(t, m, session.KindThinking, 0)
 	var region clickRegion
 	found := false
 	for _, r := range m.clickRegions {
@@ -170,7 +171,7 @@ func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	updated, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 10, Y: 0, Button: tea.MouseLeft})
 	mm := asModel(t, updated)
 
-	key := itemKey{ts: ts, kind: session.KindThinking}
+	key := testItemKey(t, m, session.KindThinking, 0)
 	if mm.isExpanded(key) {
 		t.Fatal("expected an out-of-bounds click to be a no-op")
 	}
@@ -189,7 +190,7 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 
-	key := itemKey{ts: ts, kind: session.KindAudit}
+	key := testItemKey(t, m, session.KindAudit, 0)
 	var region clickRegion
 	found := false
 	for _, r := range m.clickRegions {

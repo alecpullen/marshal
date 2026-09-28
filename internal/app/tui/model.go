@@ -32,6 +32,7 @@ import (
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/conversation"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
@@ -451,6 +452,12 @@ type Model struct {
 	// the transcript block occupying them, rebuilt every time refreshViewport
 	// rebuilds blocks. See click.go.
 	clickRegions []clickRegion
+	// blockSpans maps every rendered block to the content-line range it
+	// occupies, including blocks that are not clickable. clickRegions serves
+	// pointer routing and so exists only where a click does something; the
+	// reading anchor needs to name any block the reader can scroll to, so it
+	// uses this instead.
+	blockSpans []blockSpan
 	// viewStack is the subagent drill-down stack: when non-empty, the
 	// transcript viewport renders the top subagent's child session instead
 	// of the orchestrator's. Pushed by clicking a subagent card (see
@@ -464,6 +471,24 @@ type Model struct {
 	// press quits. Cleared by any other keypress.
 	interruptArmed bool
 	viewportFollow bool
+
+	// readingAnchor is where the reader is looking, when they are not
+	// following. It is captured before a reflow and restored after, so new
+	// output arriving above/below, a width change, or opening a panel does
+	// not yank a scrolled reader somewhere else (see anchor.go).
+	//
+	// While viewportFollow is true there is no anchor: the reader is pinned
+	// to the bottom, and anchoring must not fight that.
+	readingAnchor conversation.Anchor
+	// anchorFollow is the follow state that belonged to the view stack entry
+	// whose child is currently on screen. Drilling into a child replaces the
+	// transcript wholesale, so the parent's anchor and follow flag are saved
+	// here and restored when the drill pops — otherwise returning from a
+	// child dumps the reader at the top of the parent.
+	anchorFollow bool
+	// viewStackAnchors holds one saved anchor per viewStack entry, LIFO
+	// parallel to viewStack.
+	viewStackAnchors []conversation.Anchor
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
@@ -3645,8 +3670,14 @@ func (m *Model) drillIntoSubagent(v session.SubagentView) {
 	if v.Child == nil {
 		return
 	}
+	// Save the parent's place and follow state before its transcript is
+	// replaced by the child's. Without this, popping the drill leaves the
+	// reader at whatever row offsets happen to mean in the parent.
+	m.saveDrillAnchor()
 	m.viewStack = append(m.viewStack, v)
 	m.lastTranscriptHash = 0
+	// A freshly drilled child is new content, so start at the bottom of it:
+	// that is where its latest activity is.
 	m.viewportFollow = true
 }
 
@@ -3671,6 +3702,10 @@ func (m *Model) popDrill() bool {
 		return false
 	}
 	m.viewStack = m.viewStack[:len(m.viewStack)-1]
+	// Restore the parent's reading position and follow state that
+	// drillIntoSubagent saved. This must happen before the rebuild so the
+	// restore path sees the parent's follow flag.
+	m.restoreDrillAnchor()
 	m.lastTranscriptHash = 0
 	return true
 }
@@ -3688,6 +3723,10 @@ func (m Model) breadcrumbRows() int {
 
 func (m *Model) refreshViewport() {
 	m.updateViewportHeight()
+	// Capture the reader's place BEFORE any block is re-laid-out. Everything
+	// below this point rebuilds blocks from scratch, so a row offset taken
+	// afterwards would describe the new layout and preserve nothing.
+	m.captureReadingAnchor()
 	// While drilled into a subagent, render the child session's transcript
 	// (and its live blocks) in place of the orchestrator's. The parent
 	// transcript is left untouched so popping back restores it as-is.
@@ -3742,13 +3781,21 @@ func (m *Model) refreshViewport() {
 
 	blocks := make([]string, 0, len(items)+4)
 	regions := make([]clickRegion, 0, len(items))
+	spans := make([]blockSpan, 0, len(items))
 	seenRegions := map[itemKey]bool{}
 	lineCursor := 0
-	// addBlock appends s to blocks (if non-empty) and, when target is
-	// non-nil, records the content-line range it occupies so a later click
-	// can find it (see click.go). strings.Count is exact regardless of a
+	// pendingBlockID carries the identity for the next addBlock when that
+	// block has no click target of its own.
+	pendingBlockID := conversation.BlockID("")
+	// addBlock appends s to blocks (if non-empty) and records the
+	// content-line range it occupies. strings.Count is exact regardless of a
 	// block's internal formatting, because it counts the same "\n"
 	// characters strings.Join below will actually lay out on screen.
+	//
+	// The span is recorded for EVERY block, not only the clickable ones: the
+	// reading anchor needs to know where a plain message sits too, and a
+	// click region deliberately exists only where a click does something.
+	// target is the clickable region, when there is one.
 	addBlock := func(s string, target *clickTarget) {
 		if s == "" {
 			return
@@ -3757,7 +3804,17 @@ func (m *Model) refreshViewport() {
 		n := strings.Count(s, "\n")
 		if target != nil {
 			regions = append(regions, clickRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
+			if target.key.viewID != "" {
+				spans = append(spans, blockSpan{
+					id:        conversation.BlockID(target.key.viewID),
+					startLine: lineCursor,
+					endLine:   lineCursor + n,
+				})
+			}
+		} else if id := pendingBlockID; id != "" {
+			spans = append(spans, blockSpan{id: id, startLine: lineCursor, endLine: lineCursor + n})
 		}
+		pendingBlockID = ""
 		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
 	}
 
@@ -3775,12 +3832,17 @@ func (m *Model) refreshViewport() {
 			firstTurn = false
 		}
 		if entry.Group != nil {
-			key := itemKeyForGroup(entry.Group)
+			key := itemKeyForGroup(entry.GroupIDs)
 			expanded := m.isExpanded(key)
 			s := renderToolGroup(entry.Group, expanded, m.viewport.Width())
 			addBlock(s, &clickTarget{key: key})
 		} else {
 			key := itemKeyFor(entry.Item)
+			// Every item gets a rendered span, whether or not it is
+			// clickable, so the reading anchor can name any block the reader
+			// can scroll to. The switch below overrides this for items that
+			// DO have a click target.
+			pendingBlockID = conversation.BlockID(key.viewID)
 			expanded := m.isExpanded(key)
 			rv := regionView{offset: m.regionOffset[key], minRows: m.regionRows[key]}
 			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
@@ -3883,12 +3945,18 @@ func (m *Model) refreshViewport() {
 	}
 
 	m.clickRegions = regions
+	m.blockSpans = spans
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	m.viewport.SetContent(strings.Join(blocks, "\n"))
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
+		return
 	}
+	// Not following: put the reader back on the block they were reading.
+	// Without this every reflow — a resize, new output above, a panel
+	// opening — moved them, because the rows below the change all shift.
+	m.restoreReadingAnchor()
 }
 
 // openRunPreflight opens the cast list panel for the given kind ("sdd" or
@@ -5817,14 +5885,9 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for k := range regionOffsets {
 		roKeys = append(roKeys, k)
 	}
-	sort.Slice(roKeys, func(i, j int) bool {
-		if !roKeys[i].ts.Equal(roKeys[j].ts) {
-			return roKeys[i].ts.Before(roKeys[j].ts)
-		}
-		return roKeys[i].kind < roKeys[j].kind
-	})
+	sort.Slice(roKeys, func(i, j int) bool { return itemKeyLess(roKeys[i], roKeys[j]) })
 	for _, k := range roKeys {
-		fmt.Fprintf(h, "roff=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionOffsets[k])
+		fmt.Fprintf(h, "roff=%s|%d|%d|", k.viewID, k.kind, regionOffsets[k])
 	}
 	// High-water marks render into the transcript (via MinRows) but live on
 	// the Model rather than in items, so without this a change to the mark
@@ -5834,14 +5897,9 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for k := range regionRows {
 		rrKeys = append(rrKeys, k)
 	}
-	sort.Slice(rrKeys, func(i, j int) bool {
-		if !rrKeys[i].ts.Equal(rrKeys[j].ts) {
-			return rrKeys[i].ts.Before(rrKeys[j].ts)
-		}
-		return rrKeys[i].kind < rrKeys[j].kind
-	})
+	sort.Slice(rrKeys, func(i, j int) bool { return itemKeyLess(rrKeys[i], rrKeys[j]) })
 	for _, k := range rrKeys {
-		fmt.Fprintf(h, "rrows=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionRows[k])
+		fmt.Fprintf(h, "rrows=%s|%d|%d|", k.viewID, k.kind, regionRows[k])
 	}
 	// Cached blast-radius results render into the transcript but live on the
 	// Model rather than in items, so without this an arriving result changes
@@ -5853,17 +5911,15 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for k := range callers {
 		cKeys = append(cKeys, k)
 	}
-	sort.Slice(cKeys, func(i, j int) bool {
-		if !cKeys[i].ts.Equal(cKeys[j].ts) {
-			return cKeys[i].ts.Before(cKeys[j].ts)
-		}
-		return cKeys[i].kind < cKeys[j].kind
-	})
+	sort.Slice(cKeys, func(i, j int) bool { return itemKeyLess(cKeys[i], cKeys[j]) })
 	for _, k := range cKeys {
-		fmt.Fprintf(h, "callers=%d|%d|%d|", k.ts.UnixNano(), k.kind, len(callers[k]))
+		fmt.Fprintf(h, "callers=%s|%d|%d|", k.viewID, k.kind, len(callers[k]))
 	}
 	for _, item := range items {
-		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())
+		// The item's identity is hashed too: a change to what an item IS
+		// must bust the viewport cache even when its timestamp and rendered
+		// content are unchanged.
+		fmt.Fprintf(h, "%d|%d|%s|", item.Kind, item.Timestamp.UnixNano(), item.ViewID)
 		if item.Message != nil {
 			fmt.Fprintf(h, "%s|%s|%s\x00", item.Message.Role, item.Message.ContentType, item.Message.Content)
 		}

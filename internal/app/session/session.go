@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -99,9 +100,16 @@ const (
 type TranscriptItem struct {
 	Timestamp time.Time
 	Kind      TranscriptKind
-	Message   *Message
-	Audit     *registry.AuditEvent
-	Thinking  *ThinkingEntry
+	// ViewID is this item's presentation identity — what a reader's reading
+	// anchor, expand/collapse state and click region are keyed by. It is
+	// assigned per source collection at append time and is presentation-only
+	// (see viewid.go). It exists because (Timestamp, Kind) is not an
+	// identity: same-kind items written in one clock tick, and the several
+	// run events of a fast task, collapsed into one indistinguishable block.
+	ViewID   string
+	Message  *Message
+	Audit    *registry.AuditEvent
+	Thinking *ThinkingEntry
 	// Subagent is set when Kind == KindSubagent: the summary card for one
 	// registered subagent, rendered in place of its full tool log.
 	Subagent *SubagentView
@@ -206,6 +214,10 @@ type State struct {
 	db         *db.DB
 	sessionID  string
 	logger     *slog.Logger
+	// scopeID distinguishes this State's presentation identities from every
+	// other live State's (see viewid.go). Child subagent States coexist with
+	// the parent, so per-State ordinals alone would collide across a drill.
+	scopeID int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -304,10 +316,13 @@ type State struct {
 	runEvents []RunEvent
 	// jobExits is the transcript record of background jobs finishing.
 	// In-memory only, never persisted.
-	jobExits  []JobExit
-	turnUsage turnUsage
-	title     string
-	titleSet  bool
+	jobExits []JobExit
+	// runEventEpoch counts ClearRunEvents resets so a run event added after
+	// a reset cannot reuse a cleared event's identity.
+	runEventEpoch int
+	turnUsage     turnUsage
+	title         string
+	titleSet      bool
 
 	scratchpadConfig config.ScratchpadConfig
 
@@ -713,6 +728,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		db:                     p.DB,
 		sessionID:              p.SessionID,
 		logger:                 p.Logger,
+		scopeID:                stateScopeSeq.Add(1),
 		ctx:                    ctx,
 		cancel:                 cancel,
 		turnToolCache:          make(map[string]registry.ToolResult),
@@ -1570,7 +1586,12 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: msg.CreatedAt,
 			Kind:      KindMessage,
-			Message:   &msg,
+			// Keyed by Message.ID, not by position: a rewind rebuilds
+			// s.messages as a shorter path (rebuildActiveBranch), so an
+			// index would renumber every survivor and move a reader's anchor
+			// onto unrelated content.
+			ViewID:  s.scopePrefix(viewIDMessage) + strconv.FormatInt(msg.ID, 10),
+			Message: &msg,
 		})
 	}
 
@@ -1579,6 +1600,7 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: evt.Timestamp,
 			Kind:      KindAudit,
+			ViewID:    s.scopePrefix(viewIDAudit) + strconv.Itoa(i+1),
 			Audit:     &evt,
 		})
 	}
@@ -1588,6 +1610,7 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: t.StartedAt,
 			Kind:      KindThinking,
+			ViewID:    s.scopePrefix(viewIDThinking) + strconv.Itoa(i+1),
 			Thinking:  &t,
 		})
 	}
@@ -1605,7 +1628,12 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: v.StartedAt,
 			Kind:      KindSubagent,
-			Subagent:  &v,
+			// The subagent registry's own runtime ID, which is what the
+			// drill-down stack and the live tool counters already key by.
+			// Scoped like the rest: the runtime ID is process-wide, but the
+			// identity should not silently depend on that.
+			ViewID:   s.scopePrefix(viewIDSubagent) + strconv.FormatInt(v.ID, 10),
+			Subagent: &v,
 		})
 	}
 
@@ -1614,7 +1642,11 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: ev.At,
 			Kind:      KindRunEvent,
-			RunEvent:  &ev,
+			// Epoch-scoped: ClearRunEvents empties this log mid-session, so
+			// an ordinal alone would let a new event reuse a cleared one's
+			// identity.
+			ViewID:   s.viewIDForRunEvent(i),
+			RunEvent: &ev,
 		})
 	}
 
@@ -1623,6 +1655,7 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: e.At,
 			Kind:      KindJobExit,
+			ViewID:    s.scopePrefix(viewIDJobExit) + strconv.Itoa(i+1),
 			JobExit:   &e,
 		})
 	}

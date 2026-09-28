@@ -23,6 +23,14 @@ const bulletIndent = 4
 type transcriptEntry struct {
 	Item  *session.TranscriptItem // non-nil for ungrouped entries
 	Group []registry.AuditEvent   // len >= 2 for a collapsed run
+	// GroupIDs are the members' presentation identities, parallel to Group.
+	// They are carried because a registry.AuditEvent has no stable identity
+	// of its own — several run events can share a timestamp AND identical
+	// text — so the identity has to come from the transcript item it was
+	// built from. Without them a collapsed run cannot be given a stable
+	// identity, and selecting one member of it cannot be distinguished from
+	// selecting the whole run.
+	GroupIDs []string
 }
 
 // groupTranscript collapses runs of consecutive, mergeable audit items that
@@ -40,15 +48,21 @@ func groupTranscript(items []session.TranscriptItem) []transcriptEntry {
 		}
 		if n := len(entries); n > 0 && len(entries[n-1].Group) > 0 && entries[n-1].Group[0].ToolName == ev.ToolName {
 			entries[n-1].Group = append(entries[n-1].Group, *ev)
+			entries[n-1].GroupIDs = append(entries[n-1].GroupIDs, item.ViewID)
 			continue
 		}
-		entries = append(entries, transcriptEntry{Item: item, Group: []registry.AuditEvent{*ev}})
+		entries = append(entries, transcriptEntry{
+			Item:     item,
+			Group:    []registry.AuditEvent{*ev},
+			GroupIDs: []string{item.ViewID},
+		})
 	}
 	// A lone event renders as the original item, not a group of one.
 	// A group of 2+ events has Item set to nil (the group owns rendering).
 	for i := range entries {
 		if len(entries[i].Group) == 1 {
 			entries[i].Group = nil
+			entries[i].GroupIDs = nil
 		} else if len(entries[i].Group) >= 2 {
 			entries[i].Item = nil
 		}

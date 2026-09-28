@@ -8,12 +8,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
-	"marshal/internal/tools/registry"
 )
 
 func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
 	m := newTestModel(t)
-	key := itemKey{ts: time.Unix(100, 0), kind: session.KindThinking}
+	// A real transcript item, so the key under test is the one the app
+	// actually produces rather than a hand-built literal.
+	m.state.LogThinking(session.ThinkingEntry{Text: "why", StartedAt: time.Unix(100, 0)})
+	key := testItemKey(t, m, session.KindThinking, 0)
 
 	if m.isExpanded(key) {
 		t.Fatal("expected collapsed by default (detailExpanded starts false)")
@@ -37,7 +39,8 @@ func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
 
 func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 	m := newTestModel(t)
-	key := itemKey{ts: time.Unix(100, 0), kind: session.KindThinking}
+	m.state.LogThinking(session.ThinkingEntry{Text: "why", StartedAt: time.Unix(100, 0)})
+	key := testItemKey(t, m, session.KindThinking, 0)
 	m.toggleItemExpanded(key) // override to true (default false -> true)
 	if !m.isExpanded(key) {
 		t.Fatal("precondition: override should read expanded")
@@ -97,7 +100,7 @@ func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
 		t.Fatalf("expected both thinking blocks collapsed by default, got: %s", content)
 	}
 
-	m.toggleItemExpanded(itemKey{ts: ts1, kind: session.KindThinking})
+	m.toggleItemExpanded(testItemKey(t, m, session.KindThinking, 0))
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 
@@ -110,14 +113,75 @@ func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
 	}
 }
 
-func TestItemKeyForGroupUsesFirstEvent(t *testing.T) {
-	events := []registry.AuditEvent{
-		{ToolName: "file.read", Timestamp: time.Unix(200, 0)},
-		{ToolName: "file.read", Timestamp: time.Unix(201, 0)},
-	}
-	key := itemKeyForGroup(events)
-	want := itemKey{ts: time.Unix(200, 0), kind: session.KindAudit}
+func TestItemKeyForGroupUsesFirstMember(t *testing.T) {
+	key := itemKeyForGroup([]string{"audit:1", "audit:2"})
+	want := itemKey{viewID: "audit:1", kind: session.KindAudit}
 	if key != want {
 		t.Fatalf("itemKeyForGroup = %+v, want %+v", key, want)
+	}
+}
+
+// A group's key must not move as the run grows: the first member is the one
+// thing a growing run cannot change.
+func TestItemKeyForGroupStableAsRunGrows(t *testing.T) {
+	short := itemKeyForGroup([]string{"audit:1", "audit:2"})
+	long := itemKeyForGroup([]string{"audit:1", "audit:2", "audit:3"})
+	if short != long {
+		t.Fatalf("group key moved as the run grew: %+v -> %+v", short, long)
+	}
+}
+
+// An empty member list has no identity to derive; the key must not claim one.
+func TestItemKeyForGroupEmpty(t *testing.T) {
+	key := itemKeyForGroup(nil)
+	if key.viewID != "" {
+		t.Fatalf("empty group key carries viewID %q, want empty", key.viewID)
+	}
+}
+
+// testItemKey returns the identity key of the n-th transcript item of a kind,
+// read from the LIVE transcript rather than hand-built. Hand-building a key is
+// how a test stops testing the identity rule and starts asserting on a literal
+// — and under the old (timestamp, kind) identity, a hand-built key is exactly
+// the collision the test was supposed to catch.
+func testItemKey(t *testing.T, m Model, kind session.TranscriptKind, n int) itemKey {
+	t.Helper()
+	seen := 0
+	for _, item := range m.state.Transcript() {
+		if item.Kind != kind {
+			continue
+		}
+		if seen == n {
+			return itemKeyFor(&item)
+		}
+		seen++
+	}
+	t.Fatalf("no %v item at index %d in the transcript", kind, n)
+	return itemKey{}
+}
+
+// Two same-timestamp thinking entries produce DIFFERENT keys. Under the old
+// (timestamp, kind) identity they collided, which is what made expanding one
+// block expand both.
+func TestItemKeysSeparateIdenticalTimestamps(t *testing.T) {
+	m := newTestModel(t)
+	at := time.Unix(900, 0)
+	m.state.LogThinking(session.ThinkingEntry{Text: "first", StartedAt: at})
+	m.state.LogThinking(session.ThinkingEntry{Text: "second", StartedAt: at})
+
+	a := testItemKey(t, m, session.KindThinking, 0)
+	b := testItemKey(t, m, session.KindThinking, 1)
+	if a == b {
+		t.Fatalf("both thinking items produced the same key %+v", a)
+	}
+
+	// And the expand state is genuinely independent: expanding one must not
+	// expand the other.
+	m.toggleItemExpanded(a)
+	if !m.isExpanded(a) {
+		t.Fatal("toggling a must expand it")
+	}
+	if m.isExpanded(b) {
+		t.Fatal("expanding one thought expanded the other: the keys still collide")
 	}
 }

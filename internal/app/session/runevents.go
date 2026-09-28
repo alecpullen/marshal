@@ -69,8 +69,14 @@ func (s *State) RunEvents() []RunEvent {
 
 // ClearRunEvents empties the run log. The TUI calls this when a new user
 // turn clears the collapsed run summary.
+//
+// The collection epoch advances with the reset. Run-event identities are
+// (epoch, ordinal) pairs (see viewid.go), so without the bump the first event
+// after a clear would carry the identity of the first event before it — an
+// unrelated entry a reader may still be anchored to.
 func (s *State) ClearRunEvents() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runEvents = nil
+	s.runEventEpoch++
 }

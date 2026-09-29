@@ -48,7 +48,7 @@ func TestAllTabsIsTheFullProductSet(t *testing.T) {
 // each task that lands a tab adds it here, and the assertion that matters is
 // that nothing unimplemented is offered.
 func TestVisibleTabsOffersOnlyImplementedTabs(t *testing.T) {
-	implemented := map[Tab]bool{TabOverview: true, TabChanges: true}
+	implemented := map[Tab]bool{TabOverview: true, TabChanges: true, TabAgents: true}
 
 	got := VisibleTabs()
 	if len(got) != len(implemented) {
@@ -70,7 +70,7 @@ func TestVisibleTabsOffersOnlyImplementedTabs(t *testing.T) {
 		}
 	}
 	// The tabs with no renderer stay out.
-	for _, tab := range []Tab{TabAgents, TabContext} {
+	for _, tab := range []Tab{TabContext} {
 		for _, vis := range got {
 			if vis == tab {
 				t.Errorf("VisibleTabs() offers %q, which is not implemented yet", tab)
@@ -100,14 +100,14 @@ func TestOpenIgnoresUnimplementedTab(t *testing.T) {
 	if start != TabOverview {
 		t.Fatalf("New() selected %q, want %q", start, TabOverview)
 	}
-	for _, tab := range []Tab{TabAgents, TabContext, Tab("nonsense")} {
+	for _, tab := range []Tab{TabContext, Tab("nonsense")} {
 		m.Open(tab)
 		if got := m.SelectedTab(); got != start {
 			t.Errorf("Open(%q) switched to %q; an unimplemented tab must not be offered", tab, got)
 		}
 	}
 	// The implemented tabs DO switch.
-	for _, tab := range []Tab{TabOverview, TabChanges} {
+	for _, tab := range []Tab{TabOverview, TabChanges, TabAgents} {
 		m.Open(tab)
 		if got := m.SelectedTab(); got != tab {
 			t.Errorf("Open(%q) selected %q, want %q", tab, got, tab)

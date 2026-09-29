@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/conversation"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/tools/registry"
 )
@@ -249,6 +250,15 @@ type actionContext struct {
 	// action enabled on the selection alone would promise a patch that does
 	// not exist yet.
 	InspectedPatchLoaded bool
+	// InspectorAgentRunningID is the runtime ID of the running agent selected
+	// on the inspector's Agents tab, or 0.
+	//
+	// It is a SEPARATE field from DrilledRunningChildID because they are
+	// different targets: drilling in puts a child's transcript in the
+	// conversation viewport, while the inspector shows a child beside it. A
+	// single field would make Ctrl+X stop whichever child the other surface
+	// happened to be on.
+	InspectorAgentRunningID int64
 }
 
 // Action is a resolved catalog entry: the descriptor plus the availability
@@ -296,6 +306,14 @@ func (m Model) actionSnapshot() actionContext {
 	if v, ok := m.drilledInto(); ok && v.Status == session.SubagentRunning {
 		ctx.DrilledRunningChildID = v.ID
 	}
+	// The inspector's own selection is a second, independent target: the
+	// Agents tab can be showing a running child while the transcript is
+	// drilled into a different one, and only the runtime ID identifies which
+	// the user means.
+	if m.inspector != nil && m.inspector.model.SelectedTab() == inspector.TabAgents &&
+		m.inspector.model.AgentDetailOpen() && m.inspector.model.SelectedAgentRunning() {
+		ctx.InspectorAgentRunningID = m.inspector.model.AgentIDSelected()
+	}
 	// The copy actions resolve their block through the same path dispatch
 	// uses, so availability and behaviour cannot describe different blocks.
 	ctx.CopyBlock, ctx.CopyBlockFound = m.copyBlock()
@@ -331,6 +349,13 @@ func (m Model) effectiveQueueLen() int {
 // all read; it is the fix for the footer advertising "clear queue" twice
 // while key dispatch could have stopped an agent instead.
 func (ctx actionContext) ctrlXID() (ActionID, bool) {
+	// The inspector's selection comes first. While the reader is looking at a
+	// child in the Agents tab, that child is the one Ctrl+X means — the
+	// transcript behind the panel may be drilled into someone else entirely,
+	// or into nobody.
+	if ctx.InspectorAgentRunningID != 0 {
+		return ActionStopAgent, true
+	}
 	if ctx.DrilledRunningChildID != 0 {
 		return ActionStopAgent, true
 	}
@@ -345,8 +370,8 @@ func (ctx actionContext) ctrlXID() (ActionID, bool) {
 func availability(ctx actionContext, id ActionID) (disabled bool, reason string) {
 	switch id {
 	case ActionStopAgent:
-		if ctx.DrilledRunningChildID == 0 {
-			return true, "no running agent is being inspected — Ctrl+F inspects one"
+		if ctx.DrilledRunningChildID == 0 && ctx.InspectorAgentRunningID == 0 {
+			return true, "no running agent is being inspected — Ctrl+F inspects one, or open the Agents tab"
 		}
 	case ActionClearQueue:
 		if !ctx.Busy {
@@ -479,7 +504,14 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 	}
 	switch id {
 	case ActionStopAgent:
-		m.state.CancelSubagent(ctx.DrilledRunningChildID)
+		// The inspector's selection wins when it has one, matching ctrlXID's
+		// resolution: the action the footer advertised and the action that runs
+		// must be the same action, on the same child.
+		target := ctx.InspectorAgentRunningID
+		if target == 0 {
+			target = ctx.DrilledRunningChildID
+		}
+		m.state.CancelSubagent(target)
 		m.refreshViewport()
 	case ActionClearQueue:
 		m.state.ClearSteering()

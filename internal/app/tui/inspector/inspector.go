@@ -35,7 +35,7 @@ var allTabs = []Tab{TabOverview, TabChanges, TabAgents, TabContext}
 // is populated in this task: an unimplemented tab must not be offered, because
 // selecting it would present an empty panel the user cannot distinguish from a
 // bug. Task 10 makes the full set available.
-var visibleTabs = []Tab{TabOverview, TabChanges}
+var visibleTabs = []Tab{TabOverview, TabChanges, TabAgents}
 
 // AllTabs is the full product set, in display order. The returned slice is a
 // copy; callers may keep or mutate it freely.
@@ -128,6 +128,9 @@ type Model struct {
 	// changes is the Changes tab's own state: its list, its selection (keyed by
 	// path), its in-flight request, and whether a read has landed.
 	changes changesState
+	// agents is the Agents tab's own state: the copied runtime roster, its
+	// selection (keyed by runtime ID), and whether that selection has left.
+	agents agentsState
 	// detail is the scrollable body a tab opens to show one thing in full. It
 	// lives on the Model rather than inside a tab so switching tabs does not
 	// discard what the reader was studying, and so the Agents tab can use the
@@ -261,9 +264,30 @@ func (m *Model) SetData(d Data) { m.data = d }
 // SetScope records the session/state identity this inspector is bound to and
 // resets the request sequence. Any reply issued under the previous scope is
 // rejected from here on, even if the sequence were to restart at the same id.
+//
+// It is IDEMPOTENT for an unchanged scope, and that is load-bearing. Callers
+// re-stamp the scope on every refresh so a session swap is picked up without
+// having to remember to tell the inspector; if re-stamping an unchanged scope
+// reset the sequence, request ids would restart at 1 on every refresh. Two
+// requests for the same path would then carry the same id, and a superseded
+// reply would be accepted as the current one — the exact defect the id exists
+// to prevent.
 func (m *Model) SetScope(scope string) {
+	if scope == m.scope {
+		return
+	}
 	m.scope = scope
 	m.seq = 0
+	// The detail stack describes the conversation that was replaced. Leaving
+	// it standing would show a child transcript from a session the user has
+	// left, with nothing on screen to say so — the same failure the request-id
+	// reset exists to prevent for a diff.
+	m.ClearStack()
+	// The per-tab navigation state goes with it, for the same reason: a cursor
+	// is a position in a list that belonged to the old conversation. The
+	// selection is re-derived from the new roster, which arrives with the next
+	// refresh.
+	m.agents = agentsState{}
 }
 
 // Scope reports the identity recorded by SetScope.
@@ -329,6 +353,12 @@ func (m *Model) View(data Data) string {
 		// number would lose which file the reader is on.
 		m.detail.Resize(m.width, m.height)
 		return m.viewChanges()
+	case TabAgents:
+		// The Agents tab shares that shape and that shared body: a cursor over
+		// runtime IDs plus the child's conversation. It gets the same treatment
+		// for the same reason.
+		m.detail.Resize(m.width, m.height)
+		return m.viewAgents()
 	default:
 		// A tab with no renderer yet. Returning "" is honest: the tab is not
 		// offered, so this is only reachable through the unexported open.

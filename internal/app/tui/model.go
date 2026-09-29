@@ -1819,13 +1819,197 @@ func (m *Model) refreshInspector() {
 	// snapshot rather than the rail's lossy row list, because the tab has to be
 	// able to say "the read failed" — which a row list cannot express.
 	m.inspector.model.SetChanges(m.railSnapshot)
+	m.inspector.model.SetAgents(m.agentRoster())
 	// The scope is re-stamped from the live State on every refresh, not once at
 	// construction: /new and /clear replace m.state, and a reply issued under
 	// the old conversation must be refused rather than drawn over the new one.
+	// SetScope is idempotent for an unchanged scope, so this does not churn the
+	// request sequence it guards.
 	if m.state != nil {
 		m.inspector.model.SetScope(m.state.ScopeID())
 	}
 	m.inspector.setSideAvailable(m.inspectorSideAvailable())
+}
+
+// agentRoster converts the runtime's subagent views into the inspector's
+// presentation copies.
+//
+// The conversion happens HERE rather than in the inspector because this is
+// where the session package and the conversation adapter are both reachable,
+// and the inspector is deliberately free of both. Everything the panel needs is
+// flattened into a value: a status, a pre-formatted duration, and the child's
+// already-rendered conversation.
+//
+// The child body is built from the CHILD's own state, never the parent's. When
+// the child is gone (the runtime releases completed children after a bound),
+// HasChild is false and the panel says so instead of showing the parent's
+// transcript under the child's name — on screen the two are indistinguishable.
+func (m *Model) agentRoster() []inspector.Agent {
+	if m.state == nil {
+		return nil
+	}
+	views := m.state.Subagents()
+	if len(views) == 0 {
+		return nil
+	}
+	out := make([]inspector.Agent, 0, len(views))
+	for _, v := range views {
+		a := inspector.Agent{
+			ID:             v.ID,
+			Label:          v.Label,
+			Status:         agentStatusFor(v.Status),
+			Role:           string(v.Role),
+			Provider:       v.Provider,
+			Model:          v.Model,
+			Fallback:       v.Fallback,
+			Elapsed:        agentElapsed(v),
+			ToolCalls:      v.ToolCalls,
+			CurrentTool:    v.CurrentTool,
+			Summary:        v.Summary,
+			Error:          v.Error,
+			SalvagedReason: v.SalvagedReason,
+		}
+		if v.Child != nil {
+			a.HasChild = true
+			body, truncated := m.childTranscriptBody(v.Child)
+			a.ChildBody = body
+			a.ChildTruncated = truncated
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// agentStatusFor maps the runtime's status onto the inspector's.
+//
+// The mapping is explicit rather than a cast: the two enums are independent on
+// purpose, and a cast would silently renumber the panel if the runtime ever
+// gained a status in the middle of its range.
+func agentStatusFor(s session.SubagentStatus) inspector.AgentStatus {
+	switch s {
+	case session.SubagentRunning:
+		return inspector.AgentRunning
+	case session.SubagentFailed:
+		return inspector.AgentFailed
+	default:
+		return inspector.AgentCompleted
+	}
+}
+
+// agentElapsed renders an agent's duration: elapsed while running, total once
+// finished. It is formatted here so the panel never reads a clock — a panel
+// that called time.Now would render differently on every frame, which makes its
+// own scroll position meaningless.
+func agentElapsed(v session.SubagentView) string {
+	if v.Status == session.SubagentRunning {
+		return formatElapsed(max(time.Since(v.StartedAt), 0))
+	}
+	if !v.EndedAt.IsZero() {
+		return formatElapsed(max(v.EndedAt.Sub(v.StartedAt), 0))
+	}
+	return ""
+}
+
+// childTranscriptBody renders a child session's conversation as plain text for
+// the inspector's detail view, reporting whether the result was bounded.
+//
+// The child's OWN transcript is the source. There is no fallback to the parent
+// here, and that is the point: a fallback would produce a body that looks
+// exactly like a child transcript on screen while being the parent's, and the
+// reader has no way to tell. An empty result with the "available" flag set is
+// the honest answer, and the panel renders it as an empty conversation rather
+// than as someone else's.
+func (m *Model) childTranscriptBody(child *session.State) (string, bool) {
+	if child == nil {
+		return "", false
+	}
+	items := child.Transcript()
+	if len(items) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	truncated := false
+	for _, item := range items {
+		line := childTranscriptLine(item)
+		if line == "" {
+			continue
+		}
+		if b.Len()+len(line) > maxChildTranscriptBytes {
+			// Bounded, and the caller is told: a child that ran for an hour has
+			// more conversation than a panel should hold, and presenting a
+			// prefix as the whole is the failure the flag prevents.
+			truncated = true
+			break
+		}
+		b.WriteString(line)
+		if !strings.HasSuffix(line, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return b.String(), truncated
+}
+
+// maxChildTranscriptBytes bounds one child transcript handed to the inspector.
+//
+// It is a display bound, not a memory bound: the child's transcript is already
+// in memory. What it prevents is a detail view whose content is so large that
+// every scroll is a re-layout, which makes the panel feel broken.
+const maxChildTranscriptBytes = 256 * 1024
+
+// childTranscriptLine renders one child transcript item as a plain line, or ""
+// for an item with nothing to read.
+//
+// It is deliberately plain text with a role prefix rather than the transcript's
+// styled rendering: the detail view is a copy source as well as a reading
+// surface, and ANSI sequences copied to a clipboard are invisible corruption.
+func childTranscriptLine(item session.TranscriptItem) string {
+	switch item.Kind {
+	case session.KindMessage:
+		if item.Message == nil || strings.TrimSpace(item.Message.Content) == "" {
+			return ""
+		}
+		role := string(item.Message.Role)
+		return role + ": " + item.Message.Content
+	case session.KindAudit:
+		if item.Audit == nil {
+			return ""
+		}
+		return auditLineText(*item.Audit)
+	case session.KindThinking:
+		if item.Thinking == nil {
+			return ""
+		}
+		return "thinking: " + item.Thinking.Text
+	case session.KindSubagent:
+		if item.Subagent == nil {
+			return ""
+		}
+		return "agent: " + item.Subagent.Summary
+	case session.KindRunEvent:
+		if item.RunEvent == nil {
+			return ""
+		}
+		return "run: " + item.RunEvent.Body
+	case session.KindJobExit:
+		if item.JobExit == nil {
+			return ""
+		}
+		return "job: " + item.JobExit.Command
+	}
+	return ""
+}
+
+// auditLineText renders one tool call as a readable line.
+func auditLineText(ev registry.AuditEvent) string {
+	var b strings.Builder
+	b.WriteString("tool: " + ev.ToolName)
+	if ev.ResultContent != "" {
+		b.WriteString("\n" + ev.ResultContent)
+	}
+	if len(ev.FilesChanged) > 0 {
+		b.WriteString("\nfiles: " + strings.Join(ev.FilesChanged, ", "))
+	}
+	return b.String()
 }
 
 // inspectorDiffCommand returns the command that reads the patch for the
@@ -1914,6 +2098,52 @@ func (m *Model) handleInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 				m.inspector.model.DetailTop()
 			case "end":
 				m.inspector.model.DetailBottom()
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		}
+	}
+	if m.inspector.model.SelectedTab() == inspector.TabAgents {
+		switch msg.String() {
+		case "up", "k":
+			m.inspector.model.MoveAgentSelection(-1)
+			// An OPEN detail follows the cursor onto the new agent, so the body
+			// and its label never describe different children. A CLOSED one
+			// stays closed: a key that also opened a panel would make the panel
+			// impossible to avoid while browsing.
+			m.inspector.model.SyncAgentDetail()
+			m.refreshInspector()
+			return *m, nil, true
+		case "down", "j":
+			m.inspector.model.MoveAgentSelection(1)
+			m.inspector.model.SyncAgentDetail()
+			m.refreshInspector()
+			return *m, nil, true
+		case "enter":
+			// Enter opens the selected child's transcript. The command that
+			// performs it is the refresh callers already make: the body is
+			// built from state the model holds, so there is nothing
+			// asynchronous to await.
+			_ = m.inspector.model.EnterAgent()
+			m.refreshInspector()
+			return *m, nil, true
+		case "pgup", "pgdown", "home", "end":
+			// Once a child transcript is open, the long thing on screen is that
+			// transcript, so these keys move it. With no detail open they fall
+			// through to the adapter, which scrolls the tab body — the only
+			// thing there is to move.
+			if !m.inspector.model.AgentDetailOpen() {
+				break
+			}
+			switch msg.String() {
+			case "pgup":
+				m.inspector.model.PageAgentDetail(-1)
+			case "pgdown":
+				m.inspector.model.PageAgentDetail(1)
+			case "home":
+				m.inspector.model.AgentDetailTop()
+			case "end":
+				m.inspector.model.AgentDetailBottom()
 			}
 			m.refreshInspector()
 			return *m, nil, true

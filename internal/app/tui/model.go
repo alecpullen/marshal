@@ -416,6 +416,13 @@ type Model struct {
 	railBaseRef string
 	// railChanged is the changed-files cache, refreshed on turn boundaries.
 	railChanged []sidepanel.ChangedFile
+	// railSnapshot is the full reading the changed-files cache came from. It
+	// is kept alongside the cache because the cache is lossy: it cannot
+	// express "clean tree" versus "git failed", and it has nowhere to record
+	// which commit the comparison used. The rail needs the first so it never
+	// claims a clean tree when git errored; the Changes view needs the second
+	// to label what it is showing.
+	railSnapshot changedfiles.Snapshot
 	// railFleet is the agent-worktree cache, refreshed on turn boundaries
 	// (ListFleet shells out to git per worktree). Ahead/behind is against
 	// the project root's HEAD.
@@ -1687,14 +1694,40 @@ func (m *Model) refreshRailTurns() {
 	}
 }
 
-// refreshRailChanged reloads the changed-files cache. Shells out to git,
-// so it runs on turn boundaries only — never from View.
+// refreshRailChanged reloads the changed-files cache. Shells out to git, so it
+// runs on turn boundaries only — never from View.
+//
+// It reads a full Snapshot rather than the bare file list so the two facts the
+// list cannot carry are kept: whether git actually succeeded, and which commit
+// the comparison used. Deriving the list from the snapshot is what keeps the
+// rail and the Changes inspector showing the same numbers — one reading, two
+// presentations.
 func (m *Model) refreshRailChanged() {
-	if !m.railEnabled() {
+	if !m.railEnabled() && !m.inspectorShowsChanges() {
 		return
 	}
-	m.railChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.railBaseRef)
+	ctx, cancel := context.WithTimeout(context.Background(), railSnapshotTimeout)
+	defer cancel()
+	m.railSnapshot = changedfiles.ReadSnapshot(ctx, m.state.Workspace().ActiveRoot, m.railBaseRef)
+	m.railChanged = changedfiles.RailFiles(m.railSnapshot)
 }
+
+// inspectorShowsChanges reports whether anything on screen needs the
+// changed-files reading beyond the rail.
+//
+// It exists so a narrow terminal with the inspector open still gets a
+// snapshot: gating the refresh on the rail's width alone would leave the
+// Changes view empty below the rail threshold, where the inspector is at its
+// most useful — a narrow terminal is exactly where a diff is hardest to reach
+// any other way.
+func (m Model) inspectorShowsChanges() bool {
+	return m.inspector != nil && m.inspector.isRendering()
+}
+
+// railSnapshotTimeout bounds one changed-files reading. It is longer than the
+// old per-command budget because a snapshot runs several git commands and had
+// been reporting a timeout as an empty tree.
+const railSnapshotTimeout = 5 * time.Second
 
 // refreshRailFleet reloads the agent-worktree cache the side panel reads.
 // Shells out to git (ListFleet runs several subprocesses per worktree), so
@@ -5070,9 +5103,12 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 
 // handleRailBaseRef handles a railBaseRefMsg: a freshly-read HEAD SHA for
 // the changed-files rail. It rebases the base ref and refreshes the cache.
-// refreshRailChanged runs two git diff subprocesses synchronously here; that
-// matches the existing turn-boundary behavior and happens at most once per
-// workspace change, so it is acceptable on the UI thread.
+// refreshRailChanged now runs a whole snapshot — a rev-parse, a numstat, a
+// name-status and an ls-files — synchronously here. That matches the existing
+// turn-boundary behaviour and happens at most once per workspace change, so it
+// is acceptable on the UI thread. It is bounded by railSnapshotTimeout, and a
+// failure is recorded on the Snapshot rather than being flattened into an empty
+// list.
 func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 	// Drop msgs whose dir is no longer the active root: linked worktrees
 	// share the object store, so a stale in-flight cmd from a previous

@@ -42,12 +42,40 @@ func TestAllTabsIsTheFullProductSet(t *testing.T) {
 	}
 }
 
-// Only Overview is populated in this task. Offering an unimplemented tab
-// would present an empty panel the user cannot distinguish from a bug.
+// VisibleTabs must offer exactly the tabs that HAVE a renderer. An
+// unimplemented tab that opens an empty panel is indistinguishable from a bug,
+// so the set is asserted as a membership question rather than a frozen list:
+// each task that lands a tab adds it here, and the assertion that matters is
+// that nothing unimplemented is offered.
 func TestVisibleTabsOffersOnlyImplementedTabs(t *testing.T) {
-	want := []Tab{TabOverview}
-	if got := VisibleTabs(); !reflect.DeepEqual(got, want) {
-		t.Errorf("VisibleTabs() = %v, want %v", got, want)
+	implemented := map[Tab]bool{TabOverview: true, TabChanges: true}
+
+	got := VisibleTabs()
+	if len(got) != len(implemented) {
+		t.Fatalf("VisibleTabs() = %v, want exactly %d tabs", got, len(implemented))
+	}
+	for _, tab := range got {
+		if !implemented[tab] {
+			t.Errorf("VisibleTabs() offers %q, which has no renderer", tab)
+		}
+	}
+	// Every tab offered must actually render something, which is the property
+	// the list exists to promise.
+	for _, tab := range got {
+		m := New()
+		m.Resize(80, 20)
+		m.Open(tab)
+		if view := m.View(Data{}); view == "" {
+			t.Errorf("VisibleTabs() offers %q but it renders nothing", tab)
+		}
+	}
+	// The tabs with no renderer stay out.
+	for _, tab := range []Tab{TabAgents, TabContext} {
+		for _, vis := range got {
+			if vis == tab {
+				t.Errorf("VisibleTabs() offers %q, which is not implemented yet", tab)
+			}
+		}
 	}
 }
 
@@ -68,18 +96,22 @@ func TestTabListsAreCopies(t *testing.T) {
 
 func TestOpenIgnoresUnimplementedTab(t *testing.T) {
 	m := New()
-	if m.SelectedTab() != TabOverview {
-		t.Fatalf("New() selected %q, want %q", m.SelectedTab(), TabOverview)
+	start := m.SelectedTab()
+	if start != TabOverview {
+		t.Fatalf("New() selected %q, want %q", start, TabOverview)
 	}
-	for _, tab := range []Tab{TabChanges, TabAgents, TabContext, Tab("nonsense")} {
+	for _, tab := range []Tab{TabAgents, TabContext, Tab("nonsense")} {
 		m.Open(tab)
-		if got := m.SelectedTab(); got != TabOverview {
+		if got := m.SelectedTab(); got != start {
 			t.Errorf("Open(%q) switched to %q; an unimplemented tab must not be offered", tab, got)
 		}
 	}
-	m.Open(TabOverview)
-	if got := m.SelectedTab(); got != TabOverview {
-		t.Errorf("Open(TabOverview) selected %q, want %q", got, TabOverview)
+	// The implemented tabs DO switch.
+	for _, tab := range []Tab{TabOverview, TabChanges} {
+		m.Open(tab)
+		if got := m.SelectedTab(); got != tab {
+			t.Errorf("Open(%q) selected %q, want %q", tab, got, tab)
+		}
 	}
 }
 
@@ -114,8 +146,11 @@ func TestPerTabStateSurvivesRepeatedResize(t *testing.T) {
 	m := New()
 	want := TabState{Cursor: 4, Filter: "ctx", Scroll: 9}
 	m.SetState(TabOverview, want)
+	// A target whose owning tab is visible, so OpenTarget genuinely navigates.
+	// (A changed-file target routes to Changes now that it exists.)
 	target := Target{Kind: TargetChangedFile, Scope: "s1", ID: "file:1"}
 	m.OpenTarget(target)
+	routedTab := m.SelectedTab()
 
 	sizes := []struct{ w, h int }{{80, 24}, {120, 40}, {200, 60}}
 	for i := 0; i < 20; i++ {
@@ -131,8 +166,8 @@ func TestPerTabStateSurvivesRepeatedResize(t *testing.T) {
 		if got, ok := m.ActiveTarget(); !ok || !sameTarget(got, target) {
 			t.Fatalf("resize %d (%dx%d): ActiveTarget = %+v/%v, want %+v", i, s.w, s.h, got, ok, target)
 		}
-		if got := m.SelectedTab(); got != TabOverview {
-			t.Fatalf("resize %d (%dx%d): SelectedTab = %q, want %q", i, s.w, s.h, got, TabOverview)
+		if got := m.SelectedTab(); got != routedTab {
+			t.Fatalf("resize %d (%dx%d): SelectedTab = %q, want the routed tab %q", i, s.w, s.h, got, routedTab)
 		}
 	}
 }
@@ -301,14 +336,44 @@ func TestAcceptReplyRejectsStaleAndForeignScope(t *testing.T) {
 }
 
 func TestNextPrevTabCycleVisibleTabsOnly(t *testing.T) {
+	// Cycling is asserted as a PROPERTY rather than against a frozen pair of
+	// tab names: each task that lands a tab must not have to rewrite this test,
+	// and the property that matters is that cycling stays inside the visible
+	// set and comes back to where it started.
 	m := New()
-	m.NextTab()
-	if got := m.SelectedTab(); got != TabOverview {
-		t.Errorf("NextTab() from the only visible tab selected %q, want %q", got, TabOverview)
+	first := m.SelectedTab()
+	if !m.visible(first) {
+		t.Fatalf("New() selected %q, which is not visible", first)
 	}
-	m.PrevTab()
-	if got := m.SelectedTab(); got != TabOverview {
-		t.Errorf("PrevTab() from the only visible tab selected %q, want %q", got, TabOverview)
+
+	// One full lap returns to the start, and every step is visible.
+	for i := 0; i < len(VisibleTabs()); i++ {
+		m.NextTab()
+		if got := m.SelectedTab(); !m.visible(got) {
+			t.Fatalf("NextTab() step %d landed on %q, which is not visible", i, got)
+		}
+	}
+	if got := m.SelectedTab(); got != first {
+		t.Errorf("a full lap of NextTab ended on %q, want %q", got, first)
+	}
+	for i := 0; i < len(VisibleTabs()); i++ {
+		m.PrevTab()
+		if got := m.SelectedTab(); !m.visible(got) {
+			t.Fatalf("PrevTab() step %d landed on %q, which is not visible", i, got)
+		}
+	}
+	if got := m.SelectedTab(); got != first {
+		t.Errorf("a full lap of PrevTab ended on %q, want %q", got, first)
+	}
+
+	// A single cycle from the first tab actually MOVES when more than one tab
+	// is visible, which is what makes the key worth binding.
+	if len(VisibleTabs()) > 1 {
+		m.open(first)
+		m.NextTab()
+		if got := m.SelectedTab(); got == first {
+			t.Errorf("NextTab() did not move with %d visible tabs", len(VisibleTabs()))
+		}
 	}
 
 	// A tab outside the visible set (forced here, as a future task's Open
@@ -375,13 +440,17 @@ func TestDockAdapterKeysNavigate(t *testing.T) {
 		t.Errorf("after home Scroll = %d, want 0", got)
 	}
 
+	// Tab cycles forward and Shift+Tab back, so a round trip returns to where
+	// it started. Asserted as a round trip rather than against a named tab, so
+	// landing a third tab does not require editing this test.
+	startTab := m.SelectedTab()
 	a.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if got := m.SelectedTab(); got != TabOverview {
-		t.Errorf("Tab selected %q, want %q", got, TabOverview)
+	if got := m.SelectedTab(); !m.visible(got) {
+		t.Errorf("Tab selected %q, which is not visible", got)
 	}
 	a.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if got := m.SelectedTab(); got != TabOverview {
-		t.Errorf("Shift+Tab selected %q, want %q", got, TabOverview)
+	if got := m.SelectedTab(); got != startTab {
+		t.Errorf("Tab then Shift+Tab ended on %q, want %q", got, startTab)
 	}
 }
 

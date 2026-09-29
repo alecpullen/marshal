@@ -35,7 +35,7 @@ var allTabs = []Tab{TabOverview, TabChanges, TabAgents, TabContext}
 // is populated in this task: an unimplemented tab must not be offered, because
 // selecting it would present an empty panel the user cannot distinguish from a
 // bug. Task 10 makes the full set available.
-var visibleTabs = []Tab{TabOverview}
+var visibleTabs = []Tab{TabOverview, TabChanges}
 
 // AllTabs is the full product set, in display order. The returned slice is a
 // copy; callers may keep or mutate it freely.
@@ -125,6 +125,17 @@ type Model struct {
 	// parameter in its View signature, so the model has to hold one.
 	data Data
 
+	// changes is the Changes tab's own state: its list, its selection (keyed by
+	// path), its in-flight request, and whether a read has landed.
+	changes changesState
+	// detail is the scrollable body a tab opens to show one thing in full. It
+	// lives on the Model rather than inside a tab so switching tabs does not
+	// discard what the reader was studying, and so the Agents tab can use the
+	// same body without duplicating the scroll/follow rules.
+	detail *DetailView
+	// detailLabel is the heading the detail renders under.
+	detailLabel string
+
 	// scope and seq implement stale-reply rejection. seq is the id of the
 	// most recently issued request; a reply is applicable only when it
 	// carries the current scope and that exact id. SetScope resets seq, so an
@@ -135,7 +146,7 @@ type Model struct {
 
 // New returns an inspector showing the first visible tab.
 func New() *Model {
-	return &Model{tab: visibleTabs[0], perTab: map[Tab]TabState{}}
+	return &Model{tab: visibleTabs[0], perTab: map[Tab]TabState{}, detail: NewDetailView()}
 }
 
 // SelectedTab reports the tab on display.
@@ -311,6 +322,13 @@ func (m *Model) View(data Data) string {
 	switch m.tab {
 	case TabOverview:
 		return m.viewOverview(data)
+	case TabChanges:
+		// The Changes tab renders its own list and detail rather than going
+		// through the generic per-tab scroll offset: its navigation is a cursor
+		// over PATHS plus a separate body, and flattening that into one scroll
+		// number would lose which file the reader is on.
+		m.detail.Resize(m.width, m.height)
+		return m.viewChanges()
 	default:
 		// A tab with no renderer yet. Returning "" is honest: the tab is not
 		// offered, so this is only reachable through the unexported open.

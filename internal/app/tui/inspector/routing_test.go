@@ -65,10 +65,13 @@ func TestClearStackPreservesTabState(t *testing.T) {
 	m.SetState(TabOverview, TabState{Scroll: 9, Filter: "app"})
 	m.OpenTarget(Target{Kind: TargetChangedFile, Scope: "s1", ID: "a.go"})
 
+	before := m.SelectedTab()
 	m.ClearStack()
 
-	if m.SelectedTab() != TabOverview {
-		t.Fatalf("tab = %q after ClearStack, want overview", m.SelectedTab())
+	// Clearing the detail stack must not change which tab the user is on —
+	// whatever OpenTarget routed them to.
+	if m.SelectedTab() != before {
+		t.Fatalf("tab = %q after ClearStack, want %q unchanged", m.SelectedTab(), before)
 	}
 	if got := m.State(TabOverview); got.Scroll != 9 || got.Filter != "app" {
 		t.Fatalf("state = %+v after ClearStack, want scroll 9 filter app", got)

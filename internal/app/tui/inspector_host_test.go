@@ -56,23 +56,53 @@ func TestExplicitOpenUsesTheSideWhenAvailable(t *testing.T) {
 // TestOpenSelectsTheRequestedTabOnlyWhenVisible pins that /inspect cannot open
 // a tab that has no implementation yet. An empty panel is indistinguishable
 // from a broken one, so the tab has to stay unselectable until it is real.
+//
+// It is written against VisibleTabs() rather than a fixed list, so each task
+// that lands a tab promotes it here automatically instead of requiring this
+// test to be rewritten.
 func TestOpenSelectsTheRequestedTabOnlyWhenVisible(t *testing.T) {
-	h := newInspectorHost()
-	h.open(inspector.TabOverview, true)
-	if got := h.model.SelectedTab(); got != inspector.TabOverview {
-		t.Fatalf("selected tab = %q, want overview", got)
+	isVisible := func(tab inspector.Tab) bool {
+		for _, v := range inspector.VisibleTabs() {
+			if v == tab {
+				return true
+			}
+		}
+		return false
 	}
 
-	// TabChanges is part of the product set but not yet populated, so
-	// opening it must not switch to it.
-	h.open(inspector.TabChanges, true)
-	if got := h.model.SelectedTab(); got == inspector.TabChanges {
-		t.Fatalf("opened the unimplemented tab %q", got)
-	}
-	for _, visible := range inspector.VisibleTabs() {
-		if visible == inspector.TabChanges {
-			t.Fatal("TabChanges is advertised as visible; it has no implementation yet")
+	for _, tab := range inspector.AllTabs() {
+		h := newInspectorHost()
+		h.open(inspector.TabOverview, true)
+
+		accepted := h.open(tab, true)
+		got := h.model.SelectedTab()
+
+		if isVisible(tab) {
+			if !accepted {
+				t.Errorf("open(%q) refused a tab that is advertised as visible", tab)
+			}
+			if got != tab {
+				t.Errorf("open(%q) selected %q, want it", tab, got)
+			}
+			continue
 		}
+		// No renderer yet: refusing is the honest answer.
+		if accepted {
+			t.Errorf("open(%q) accepted a tab with no renderer", tab)
+		}
+		if got == tab {
+			t.Errorf("open(%q) switched to an unimplemented tab", tab)
+		}
+	}
+
+	// An unknown name is refused too, and never becomes the selection.
+	h := newInspectorHost()
+	h.open(inspector.TabOverview, true)
+	if h.open(inspector.Tab("nonsense"), true) {
+		t.Error("open() accepted an unknown tab name")
+	}
+	if got := h.model.SelectedTab(); got != inspector.TabOverview {
+		t.Errorf("an unknown tab became the selection: %q", got)
 	}
 }
 

@@ -490,6 +490,10 @@ type Model struct {
 	// from the other would put the two in step only while every block happened
 	// to be rendered through the mapped path.
 	blockRenderSpans []renderedBlockSpan
+	// selection is the reader's selection on the transcript surface. It holds
+	// LOGICAL positions, so it survives the reflow that every rebuild performs;
+	// see selection.go for why a row could not.
+	selection surfaceSelection
 	// viewStack is the subagent drill-down stack: when non-empty, the
 	// transcript viewport renders the top subagent's child session instead
 	// of the orchestrator's. Pushed by clicking a subagent card (see
@@ -3113,6 +3117,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+	case tea.MouseMotionMsg:
+		// Motion is only ours while a selection drag is in progress; see
+		// handleTranscriptMotion.
+		if cmd, handled := m.handleTranscriptMotion(msg); handled {
+			return m, cmd
+		}
+		return m, nil
+	case tea.MouseReleaseMsg:
+		if cmd, handled := m.handleTranscriptRelease(msg); handled {
+			return m, cmd
+		}
+		return m, nil
 	case tea.PasteMsg:
 		// A paste belongs to the composer: dropping it into a textarea that
 		// does not own the keys would edit a draft the user cannot see.
@@ -3586,6 +3602,20 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			}
 		}
 		return *m, vpCmd, true
+	case tea.MouseMotionMsg:
+		// A drag must keep extending while an approval or question panel is
+		// open: the panel does not take the pointer away from the transcript,
+		// and a gesture that silently stopped halfway would be worse than one
+		// that never began.
+		if cmd, handled := m.handleTranscriptMotion(msg); handled {
+			return *m, cmd, true
+		}
+		return *m, nil, false
+	case tea.MouseReleaseMsg:
+		if cmd, handled := m.handleTranscriptRelease(msg); handled {
+			return *m, cmd, true
+		}
+		return *m, nil, false
 	case tea.MouseClickMsg:
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
 			return *m, cmd, true
@@ -4632,9 +4662,20 @@ func (m *Model) refreshViewport() {
 	// carrying one forward from a previous build would point at rows that may no
 	// longer exist.
 	m.blockRenderSpans = renders
+	// A selection whose block is gone is dropped before anything is drawn:
+	// highlighting a neighbour would look like it worked. Doing it here — after
+	// the new mappings exist and before the content is set — is the only point
+	// where both facts are known.
+	if m.hasSelection() && !m.selectionIsLive() {
+		m.clearSelection()
+	}
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
-	m.viewport.SetContent(strings.Join(blocks, "\n"))
+	content := strings.Join(blocks, "\n")
+	if m.hasSelection() {
+		content = m.highlightSelection(content)
+	}
+	m.viewport.SetContent(content)
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 		return

@@ -141,10 +141,9 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.openActionPalette()
 		return *m, nil, true
 	case "y":
-		// `y` copies the block the reader is on. It is claimed only while
-		// the conversation owns the keys: with the composer focused a bare
-		// `y` is a letter, and swallowing it would put a hole in the
-		// keyboard.
+		// `y` copies. It is claimed only while the conversation owns the
+		// keys: with the composer focused a bare `y` is a letter, and
+		// swallowing it would put a hole in the keyboard.
 		//
 		// It must be dispatched HERE rather than in handleFocusedSurfaceKey,
 		// which runs later in this function: that handler reports handled
@@ -154,6 +153,15 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// case could see it.
 		if m.effectiveFocus() != FocusConversation {
 			return *m, nil, false
+		}
+		// A SELECTION wins over the block the reader is on. Somebody who
+		// dragged over a phrase means that phrase, and handing them the whole
+		// block would make the careful gesture pointless — so the selection is
+		// copied directly rather than through the block-target resolver,
+		// which would look for a copy TARGET on the block and find the whole
+		// answer.
+		if m.hasSelection() {
+			return *m, m.copySelectionText(), true
 		}
 		mm, cmd := m.runAction(ActionCopyAnswer)
 		return mm, cmd, true
@@ -175,6 +183,21 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 				m.refreshInspector()
 				return *m, nil, true
 			}
+		}
+		// A SELECTION is the innermost thing to back out of on the transcript:
+		// the reader drew it last, and pressing Esc means "not that". It is
+		// handled before the focus move so one press clears the highlight
+		// rather than moving focus away from it — which would leave the
+		// selection on screen, unowned.
+		//
+		// It is deliberately NOT handled before the inspector's Esc: the
+		// inspector's own depth is nearer to the user when the inspector owns
+		// the keys.
+		if m.effectiveFocus() == FocusConversation && m.selectionActive() {
+			m.clearSelection()
+			m.lastTranscriptHash = 0
+			m.refreshViewport()
+			return *m, nil, true
 		}
 		// Esc leaves a non-composer focus target before any composer-side
 		// meaning (popup dismissal, drill pop, turn cancel) can claim it: one

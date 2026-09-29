@@ -1,0 +1,469 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/tui/conversation"
+	"marshal/internal/app/tui/theme"
+)
+
+// th is a short alias for the active theme, used only in this file's
+// highlight helpers.
+func th() theme.Theme { return theme.Current() }
+
+// This file owns the reader's selection on the transcript surface: the state a
+// pointer gesture builds, the text it yields, and how it interacts with the
+// reading anchor and the copy action.
+//
+// The pure arithmetic lives in conversation/selection.go. What is here is the
+// MODEL's half: which surface owns the selection, what a pointer event does to
+// it, and what happens when the transcript is rebuilt underneath it.
+//
+// Two rules shape the whole file:
+//
+//   - A selection is a READING state, not a mode. Beginning one does not change
+//     what keys do elsewhere, does not touch the agent, and does not survive
+//     losing focus. A reader who drags over a phrase and then types has not
+//     changed their session.
+//   - An offset survives a reflow and a row does not, so nothing here stores a
+//     row. Rows are converted to offsets on entry to a gesture and never
+//     travelled with.
+
+// surfaceSelection is the transcript's selection state.
+type surfaceSelection struct {
+	// sel is the selection itself, in logical coordinates.
+	sel conversation.Selection
+	// dragging is true while the primary button is held. A drag is a
+	// CANDIDATE: it becomes a real selection only if it covers something when
+	// released, which is what lets a stationary press focus a block without
+	// leaving an empty selection behind.
+	dragging bool
+	// frozen holds the block's text as it was when the drag ENDED, for the
+	// blocks the selection touches.
+	//
+	// This is what stops streaming output from changing bytes the reader has
+	// already chosen. It is deliberately populated on RELEASE rather than on
+	// every motion: freezing during the drag would pin a half-finished
+	// selection to text that is still being written, and the reader would be
+	// selecting words that never existed together.
+	frozen map[conversation.BlockID]conversation.RenderedBlock
+}
+
+// hasSelection reports whether the reader has selected any TEXT.
+//
+// This is the question a copy action asks, so a zero-width selection reports
+// false: a reader who pressed and released without moving has not selected a
+// phrase, and `y` must not copy an empty string over their clipboard.
+func (m Model) hasSelection() bool {
+	return !m.selection.sel.Empty() && m.selection.sel.Block != ""
+}
+
+// selectionActive reports whether a selection GESTURE is in progress or has
+// produced text.
+//
+// It is the question a renderer asks — "should I draw a selection?" — and it is
+// wider than hasSelection on purpose: during a drag whose ends have not diverged
+// yet there is nothing selected but the reader is unmistakably mid-gesture, and a
+// renderer that showed nothing would make the first pixels of every drag appear
+// to do nothing.
+func (m Model) selectionActive() bool {
+	return m.selection.dragging || m.hasSelection()
+}
+
+// selectionAnchorBlock returns the block a gesture is anchored to, whether or not
+// it covers text yet.
+func (m Model) selectionAnchorBlock() conversation.BlockID {
+	return m.selection.sel.Block
+}
+
+// clearSelection drops the selection and its frozen copies.
+//
+// The frozen copies are dropped with it because they exist only to serve the
+// selection: keeping them would hold a copy of a block's text alive for the rest
+// of the session, which is exactly the unbounded snapshot the plan warns about.
+func (m *Model) clearSelection() {
+	m.selection.sel = conversation.Selection{}
+	m.selection.dragging = false
+	m.selection.frozen = nil
+}
+
+// beginSelectionAt starts a drag at a transcript display position.
+//
+// It reports whether the position was inside a mapped block. A press on chrome
+// (the welcome banner, a turn rule) begins nothing, so the reader cannot select
+// text that is not there.
+func (m *Model) beginSelectionAt(row, cell int) bool {
+	span, off, ok := m.mappedBlockAt(row, cell)
+	if !ok {
+		return false
+	}
+	pos := conversation.PositionAt(span.rendered, off.Row, off.Cell)
+	m.selection.sel = conversation.Selection{
+		Block:    span.id,
+		Revision: span.rendered.Revision,
+		Anchor:   pos.Offset,
+		Focus:    pos.Offset,
+	}
+	m.selection.dragging = true
+	m.selection.frozen = nil
+	return true
+}
+
+// extendSelectionTo extends an in-progress drag to a transcript display position.
+//
+// It does NOTHING when no drag is in progress, so ordinary motion without a held
+// button cannot create a selection. And it REFUSES to leave the anchor's block:
+// the alternative is concatenating two unrelated documents into one clipboard
+// payload, and the reader has no way to see that happened.
+func (m *Model) extendSelectionTo(row, cell int) bool {
+	if !m.selection.dragging {
+		return false
+	}
+	span, off, ok := m.mappedBlockAt(row, cell)
+	if !ok {
+		// The pointer left the mapped area. Keep the focus where it was rather
+		// than clearing it: dragging up out of the block and back in is one
+		// gesture, and dropping the focus would end the selection the moment
+		// the pointer crossed a turn separator.
+		return false
+	}
+	if span.id != m.selection.sel.Block {
+		// Outside the anchor's block. Extend to the block's NEAREST end, which
+		// is the behaviour a reader expects from a drag that ran past the
+		// bottom of the text: it selects to the end rather than stopping.
+		return m.extendSelectionToBlockEdge(span, row)
+	}
+	pos := conversation.PositionAt(span.rendered, off.Row, off.Cell)
+	m.selection.sel.Focus = pos.Offset
+	return true
+}
+
+// extendSelectionToBlockEdge extends the selection to the near or far end of the
+// anchored block, depending on which side the pointer left it.
+func (m *Model) extendSelectionToBlockEdge(span renderedBlockSpan, row int) bool {
+	anchorSpan, ok := m.mappedBlockSpan(m.selection.sel.Block)
+	if !ok {
+		return false
+	}
+	if row < anchorSpan.blockRow {
+		// Above the block: select to its start.
+		m.selection.sel.Focus = 0
+		return true
+	}
+	// Below it: select to its end.
+	m.selection.sel.Focus = len(anchorSpan.rendered.Logical)
+	return true
+}
+
+// endSelection finishes a drag.
+//
+// A drag that covered nothing is DISCARDED rather than kept as a zero-width
+// selection: a stationary click is a focus gesture, and leaving an empty
+// selection behind would make the next `y` copy nothing at all.
+func (m *Model) endSelection() {
+	if !m.selection.dragging {
+		return
+	}
+	m.selection.dragging = false
+	if m.selection.sel.Empty() {
+		m.clearSelection()
+		return
+	}
+	m.freezeSelection()
+}
+
+// freezeSelection pins the blocks the selection touches to the text they have
+// now.
+//
+// It is called when a selection is COMPLETED (on release), not during the drag.
+// The copy a reader asked for is then the text they saw, even if the answer was
+// still streaming.
+func (m *Model) freezeSelection() {
+	if !m.hasSelection() {
+		m.selection.frozen = nil
+		return
+	}
+	span, ok := m.mappedBlockSpan(m.selection.sel.Block)
+	if !ok {
+		m.selection.frozen = nil
+		return
+	}
+	m.selection.frozen = map[conversation.BlockID]conversation.RenderedBlock{
+		span.id: span.rendered,
+	}
+}
+
+// selectedBlock returns the block a selection resolves against.
+//
+// It prefers the FROZEN copy, which is what makes the bytes stable across a
+// rebuild: the live mapping is replaced on every refresh, so resolving against it
+// would return whatever the block says now.
+//
+// It answers for a GESTURE as well as a finished selection, so a caller can ask
+// where a drag is anchored while it is still in progress — which is what the
+// extend path needs to know it has left the anchor's block.
+func (m Model) selectedBlock() (conversation.RenderedBlock, bool) {
+	if m.selection.sel.Block == "" {
+		return conversation.RenderedBlock{}, false
+	}
+	if frozen, ok := m.selection.frozen[m.selection.sel.Block]; ok {
+		return frozen, true
+	}
+	if span, ok := m.mappedBlockSpan(m.selection.sel.Block); ok {
+		return span.rendered, true
+	}
+	return conversation.RenderedBlock{}, false
+}
+
+// selectedText returns the text the selection covers.
+func (m Model) selectedText() (string, bool) {
+	block, ok := m.selectedBlock()
+	if !ok {
+		return "", false
+	}
+	return m.selection.sel.Text(block)
+}
+
+// copyableText returns the text a copy action should put on the clipboard.
+//
+// The SELECTION wins over the reading anchor: a reader who dragged over a phrase
+// means that phrase, and handing them the whole block would make the careful
+// gesture pointless. With no selection the anchor path is unchanged.
+func (m Model) copyableText() (string, bool) {
+	if m.hasSelection() {
+		block, ok := m.selectedBlock()
+		if !ok {
+			return "", false
+		}
+		text, ok := m.selection.sel.Text(block)
+		if !ok {
+			return "", false
+		}
+		// A selection that ended at a soft wrap ends with the space the wrap
+		// consumed, which is not visible on screen. Trimming it here — and only
+		// here, where the block is known — is what keeps a pasted phrase from
+		// carrying an invisible trailing space.
+		if text != "" && block.EndsAtSoftWrap(selectionEnd(m.selection.sel, block)) {
+			text = conversation.TrimSelectedSpace(text)
+		}
+		return text, text != ""
+	}
+	return m.ancestorCopyText()
+}
+
+// selectionEnd returns the selection's later offset, for the soft-wrap check.
+func selectionEnd(sel conversation.Selection, block conversation.RenderedBlock) int {
+	from, to := sel.Anchor, sel.Focus
+	if from > to {
+		from, to = to, from
+	}
+	if to > len(block.Logical) {
+		to = len(block.Logical)
+	}
+	return to
+}
+
+// ancestorCopyText is the pre-existing copy path: the reading anchor's block.
+//
+// It is kept as its own function so the selection logic above cannot silently
+// replace it: with no selection, `y` must behave exactly as it did before.
+func (m Model) ancestorCopyText() (string, bool) {
+	if m.readingAnchor.Block == "" {
+		return "", false
+	}
+	span, ok := m.mappedBlockSpan(m.readingAnchor.Block)
+	if !ok {
+		return "", false
+	}
+	return span.rendered.Logical, span.rendered.Logical != ""
+}
+
+// copySelectionText puts the reader's selection on the clipboard.
+//
+// It copies the SELECTION rather than a block's copy TARGET, and the difference
+// matters: a block's targets are its whole answer, its code, its path. A
+// selection is a phrase inside the readable text, which has no target — so
+// routing it through the target resolver would silently copy the entire answer
+// instead of the words the reader dragged over.
+//
+// The payload goes through the same clipboard path as every other copy, so the
+// backend, the fallback and the feedback are identical; only the text differs.
+func (m *Model) copySelectionText() tea.Cmd {
+	text, ok := m.copyableText()
+	if !ok || text == "" {
+		m.showToast(copyResolveFailure(conversation.SourceAnswer, nil))
+		return nil
+	}
+	return m.beginCopy(conversation.CopyTarget{
+		Source: conversation.SourceAnswer,
+		Text:   text,
+		Label:  selectionCopyLabel(m.selection.sel, text),
+	})
+}
+
+// selectionCopyLabel states what a selection copy will contain, including how
+// much of it there is.
+//
+// The count is the point: the reader made a precise gesture and the feedback
+// should let them check it landed, so a payload of ninety characters reads
+// differently from one of four. It counts RUNES rather than bytes, because a
+// byte count would be wrong for exactly the multi-byte text this work is careful
+// about elsewhere.
+func selectionCopyLabel(sel conversation.Selection, text string) string {
+	n := utf8.RuneCountInString(text)
+	if n == 1 {
+		return "Copy selection (1 character)"
+	}
+	return fmt.Sprintf("Copy selection (%d characters)", n)
+}
+
+// selectionStatus renders the selection indicator for the status line, so a
+// reader can see that a selection exists without moving the pointer back to it.
+//
+// It reports "" when there is no selection or none of it resolves, which is what
+// the status line uses to decide whether to show the segment at all.
+func (m Model) selectionStatus() string {
+	if !m.hasSelection() {
+		return ""
+	}
+	text, ok := m.selectedText()
+	if !ok {
+		return ""
+	}
+	n := utf8.RuneCountInString(text)
+	if n == 1 {
+		return "1 selected"
+	}
+	return fmt.Sprintf("%d selected", n)
+}
+
+// mappedBlockAt resolves a transcript display position to a block and the
+// position inside it.
+//
+// It is the ONE place a pointer event becomes a logical position, so it is the
+// one place that has to convert the transcript's row into the block's own row.
+// Every other function in this file works in offsets.
+func (m Model) mappedBlockAt(row, cell int) (renderedBlockSpan, conversation.TextPosition, bool) {
+	span, ok := m.renderedBlockAt(row)
+	if !ok {
+		return renderedBlockSpan{}, conversation.TextPosition{}, false
+	}
+	// The block's own row, which is what its mapping is expressed in. Getting
+	// this wrong is how a click resolves one block's cell against another
+	// block's text.
+	blockRow := row - span.blockRow
+	pos := conversation.PositionAt(span.rendered, blockRow, cell)
+	return span, pos, true
+}
+
+// mappedBlockSpan finds the placed mapping for a block.
+func (m Model) mappedBlockSpan(id conversation.BlockID) (renderedBlockSpan, bool) {
+	for _, s := range m.blockRenderSpans {
+		if s.id == id {
+			return s, true
+		}
+	}
+	return renderedBlockSpan{}, false
+}
+
+// selectionHighlight returns the display cells a selection covers on a given
+// transcript row, so the renderer can style it.
+//
+// It works in TRANSCRIPT rows, not block rows: the caller is a renderer that has
+// a row of the assembled transcript. Reporting false for an uncovered row is what
+// keeps a caret from being drawn on every line.
+func (m Model) selectionHighlight(row int) (startCell, endCell int, ok bool) {
+	if !m.hasSelection() {
+		return 0, 0, false
+	}
+	block, hasBlock := m.selectedBlock()
+	if !hasBlock {
+		return 0, 0, false
+	}
+	span, hasSpan := m.mappedBlockSpan(m.selection.sel.Block)
+	if !hasSpan {
+		return 0, 0, false
+	}
+	blockRow := row - span.blockRow
+	if blockRow < 0 || blockRow >= len(block.Rows) {
+		return 0, 0, false
+	}
+	from, to := m.selection.sel.Anchor, m.selection.sel.Focus
+	if from > to {
+		from, to = to, from
+	}
+	return block.HighlightRange(blockRow, from, to)
+}
+
+// highlightSelection paints the selection onto assembled transcript content.
+//
+// It works on the CONTENT STRING rather than on the renderer, because by this
+// point every block has already been rendered and joined: re-rendering the whole
+// transcript to add a background colour would double the work on every drag
+// motion, and a drag emits motion events at pointer rate.
+//
+// The styling is applied per LINE, and only to the cells the mapping says the
+// selection covers, so the highlight and the offsets agree by construction —
+// both come from the same HighlightRange.
+func (m Model) highlightSelection(content string) string {
+	lines := strings.Split(content, "\n")
+	for row := range lines {
+		start, end, ok := m.selectionHighlight(row)
+		if !ok || end <= start {
+			continue
+		}
+		lines[row] = highlightCells(lines[row], start, end)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// highlightCells wraps cells [start, end) of one rendered line in the selection
+// background.
+//
+// The line is ANSI-styled already, so the range is cut by VISIBLE CELLS rather
+// than by bytes: ansi.Cut walks escape sequences without counting them, and
+// slicing the raw string would land in the middle of a colour code. The three
+// pieces are then rejoined with the middle one restyled.
+func highlightCells(line string, start, end int) string {
+	w := ansi.StringWidth(line)
+	if start >= w {
+		return line
+	}
+	if end > w {
+		end = w
+	}
+	if end <= start {
+		return line
+	}
+	style := lipgloss.NewStyle().
+		Foreground(th().FGEmphasis).
+		Background(th().BGSelection)
+	before := ansi.Cut(line, 0, start)
+	mid := ansi.Cut(line, start, end)
+	after := ansi.Cut(line, end, w)
+	// The selection's style is applied to the STRIPPED middle, so the
+	// background the reader sees is the selection's rather than a fight
+	// between it and the colours underneath. The text itself is unchanged:
+	// stripping removes escapes, not characters.
+	return before + style.Render(ansi.Strip(mid)) + after
+}
+
+// selectionIsLive reports whether the selection should still be drawn for a
+// block, which is the same question as "does the block still exist".
+//
+// A selection whose block vanished (a branch rewind, ClearRunEvents) is dropped
+// rather than drawn against a neighbour: a highlight on the wrong block is worse
+// than none, because it looks like it worked.
+func (m *Model) selectionIsLive() bool {
+	if !m.hasSelection() {
+		return false
+	}
+	_, ok := m.mappedBlockSpan(m.selection.sel.Block)
+	return ok
+}

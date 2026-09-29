@@ -197,8 +197,18 @@ func TestClickOnCopyChipCopiesWithoutExpanding(t *testing.T) {
 }
 
 // TestClickOnBlockBodyStillExpands pins the other half: the chip took nothing
-// away from the existing click behaviour on the block itself.
-func TestClickOnBlockBodyStillExpands(t *testing.T) {
+// A click on a block's BODY begins a selection; a click on its HEADER toggles it.
+//
+// This test used to assert the opposite — that a body click toggled expansion —
+// and that contract is the reason dragging never worked: the press was consumed
+// by the toggle before a drag could exist, so a reader trying to select a phrase
+// in a collapsed block opened the block instead.
+//
+// The replacement keeps BOTH behaviours, each on the target it belongs to: the
+// header is the disclosure control and still opens the block, and the body is
+// text and becomes selectable. Asserting only one of them would let the other
+// regress silently.
+func TestClickOnBlockBodyBeginsASelectionWhileTheHeaderStillToggles(t *testing.T) {
 	w := &copyTestWriter{}
 	m := copyTestModel(t, w)
 	m.state.AddMessageFinal(session.RoleAssistant, "a body\n\nwith a second paragraph", session.ContentTypeMarkdown)
@@ -210,29 +220,51 @@ func TestClickOnBlockBodyStillExpands(t *testing.T) {
 	if !ok {
 		t.Fatal("no block region for the answer")
 	}
-	before := m.isExpanded(key)
 
-	// A line in the block that is NOT the chip.
+	// A line in the block that is NOT the header and NOT the chip.
 	bodyLine := block.startLine + 1
 	if chip, ok := copyChipRegionFor(m); ok && chip.startLine == bodyLine {
 		bodyLine++
 	}
 
-	mm, cmd := m.Update(tea.MouseClickMsg{
-		X:      1,
-		Y:      m.scrollHintRows() + bodyLine - m.viewport.YOffset(),
-		Button: tea.MouseLeft,
-	})
-	got := asModel(t, mm)
-	if cmd != nil {
-		applied, _ := got.Update(cmd())
-		got = asModel(t, applied)
+	clickAt := func(line int) Model {
+		t.Helper()
+		mm, cmd := m.Update(tea.MouseClickMsg{
+			X:      m.frameRect().Transcript.X + 1,
+			Y:      m.scrollHintRows() + line - m.viewport.YOffset(),
+			Button: tea.MouseLeft,
+		})
+		got := asModel(t, mm)
+		if cmd != nil {
+			applied, _ := got.Update(cmd())
+			got = asModel(t, applied)
+		}
+		return got
 	}
 
+	before := m.isExpanded(key)
+
+	// The body: a selection begins, nothing is copied, and the block does NOT
+	// toggle.
+	body := clickAt(bodyLine)
 	if len(w.written) != 0 {
 		t.Fatalf("clicking the block body copied %d times; the body is not a copy button", len(w.written))
 	}
-	if got.isExpanded(key) == before {
-		t.Fatalf("expansion stayed %v; clicking the block body must still toggle it", before)
+	if body.isExpanded(key) != before {
+		t.Fatalf("clicking the body toggled expansion to %v; it must only begin a selection",
+			!before)
+	}
+	if !body.selectionActive() {
+		t.Fatal("clicking the block body began no selection")
+	}
+
+	// The header: still the disclosure control. A selection left over from the
+	// body click must not stop it.
+	header := clickAt(block.startLine)
+	if header.isExpanded(key) == before {
+		t.Fatalf("expansion stayed %v; clicking the block HEADER must still toggle it", before)
+	}
+	if len(w.written) != 0 {
+		t.Fatalf("clicking the header copied %d times", len(w.written))
 	}
 }

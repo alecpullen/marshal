@@ -344,6 +344,37 @@ func TestNewAndClearAreTUIOnly(t *testing.T) {
 	}
 }
 
+// /find must be registered, documented, and TUI-only.
+//
+// It is TUI-only for a reason worth stating in a test: its result is a POSITION
+// in the rendered transcript. An ACP client has no viewport to scroll, so a
+// handler that returned rows would be describing a surface the caller does not
+// have — and marking it TUIOnly is what makes the agent say so instead.
+func TestFindCommandRegistered(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, ok := cmdReg.Lookup("find")
+	if !ok {
+		t.Fatal("/find not registered")
+	}
+	if !cmd.TUIOnly {
+		t.Error("/find should be TUIOnly: its result is a position in the rendered transcript")
+	}
+	// The argument is documented as a PHRASE, because it is joined rather than
+	// treated as a list of terms — a reader who assumes one term per word would
+	// get a different search from the one they asked for.
+	if !strings.Contains(cmd.Args, "phrase") {
+		t.Errorf("/find Args = %q, want it to document that the argument is a phrase", cmd.Args)
+	}
+	// And the description should say how to reach it without typing a command,
+	// because `/` is the route most readers use.
+	if !strings.Contains(cmd.Description, "/") {
+		t.Errorf("/find Description = %q, want it to mention the `/` route", cmd.Description)
+	}
+}
+
 func TestInspectCommandRegistered(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

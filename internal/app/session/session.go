@@ -243,6 +243,10 @@ type State struct {
 	thinkingLog       []ThinkingEntry
 	lastBackup        []BackupFile
 	contextPack       contextpack.Pack
+	// requestInspection is the bounded snapshot of the last conversation
+	// attempt Marshal submitted to its provider adapter. It is in-memory only
+	// (see request_inspection.go): nothing persists it, and it is never logged.
+	requestInspection *RequestInspection
 	activeRoute       RouteInfo
 	turnToolCache     map[string]registry.ToolResult
 	toolCacheOrder    []string

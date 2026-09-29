@@ -158,6 +158,24 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		mm, cmd := m.runAction(ActionCopyAnswer)
 		return mm, cmd, true
 	case "esc":
+		// The inspector backs out of its own depth first: a body-expanded
+		// panel returns to its shared placement, and an open detail pops one
+		// level. Both are "undo the last thing I opened", which is what Esc
+		// means, and both must be tried BEFORE the focus move — otherwise the
+		// first press would only move focus and the user would need two.
+		//
+		// The inspector is consulted when it owns the keys, or when it is
+		// body-expanded (where it visibly owns the body regardless of where
+		// m.focus points). A side-placed inspector while the composer has
+		// focus leaves Esc alone: the composer's own meanings are nearer to
+		// the user in that state.
+		if m.inspector != nil && m.inspector.isRendering() {
+			owns := m.effectiveFocus() == FocusInspector || m.inspector.replacesBodyOnly()
+			if owns && m.inspector.esc() {
+				m.refreshInspector()
+				return *m, nil, true
+			}
+		}
 		// Esc leaves a non-composer focus target before any composer-side
 		// meaning (popup dismissal, drill pop, turn cancel) can claim it: one
 		// press performs one operation, and the outermost thing to back out
@@ -172,6 +190,16 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	// behind it. Reporting "unhandled" would hand the key to the textarea and
 	// give the composer a second, invisible key recipient.
 	if !m.composerReceivesTyping() {
+		if m.inspector != nil && m.effectiveFocus() == FocusInspector {
+			// The inspector is a real owner of the keys, not a marker: Tab
+			// cycles its tabs, the scroll keys move it, and Esc backs out of
+			// its depth (handled above). Always reporting handled is the same
+			// contract handleFocusedSurfaceKey keeps — a key that fell through
+			// would reach the textarea behind it.
+			cmd := m.inspector.adapter.Update(msg)
+			m.refreshInspector()
+			return *m, cmd, true
+		}
 		return m.handleFocusedSurfaceKey(msg)
 	}
 
@@ -273,12 +301,23 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+b":
-		if !readlineShortcutAvailable() {
-			return *m, nil, false
+		// The toggle is deliberately NOT gated on readlineShortcutAvailable(),
+		// for the same reason the capture toggle above is not: the draft is the
+		// whole point. Inspecting what changed while writing the next prompt is
+		// the case the guard broke, and it made the key mean two different
+		// things depending on whether the user had typed — the kind of
+		// conditional binding that teaches people not to trust a key.
+		//
+		// Ctrl+B toggles the INSPECTOR, not the bare rail. The inspector's
+		// Overview is the rail's content made scrollable and navigable, so this
+		// key yields a strictly more capable surface than the read-only strip.
+		// The rail's own visibility remains a setting ([tui.side_panel].enabled);
+		// the inspector is a session toggle that also works below the rail's
+		// width threshold, by falling back to the dock.
+		if m.inspector != nil {
+			m.inspector.toggle(m.inspectorSideAvailable())
+			m.refreshInspector()
 		}
-		// Toggle the widescreen side rail for the session. Not persisted;
-		// [tui.side_panel].enabled is the durable setting.
-		m.railHidden = !m.railHidden
 		m.resize(m.rawWidth, m.rawHeight)
 		return *m, nil, true
 	case "ctrl+r":

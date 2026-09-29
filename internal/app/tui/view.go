@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
@@ -74,6 +75,13 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
+	// The dock is a single shared slot. A dock-placed inspector claims it here,
+	// from the render path, because View is the one place that knows which
+	// placement is actually being drawn this frame — and a panel that stopped
+	// wanting the slot must release it before another panel looks at it.
+	if m.inspector != nil {
+		m.inspector.installInDock(&m.dock)
+	}
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
 
@@ -87,6 +95,14 @@ func (m *Model) viewString() string {
 		// A FullFrame panel owns everything above the status line: the
 		// transcript, todo panel, run panel, live strip, and input area are hidden.
 		left = dockView
+	} else if m.inspector != nil && m.inspector.replacesBodyOnly() {
+		// Body-expanded: the inspector replaces the BODY only. The composer
+		// and footer below stay exactly where they are, so the user keeps
+		// their draft while reading a panel that took the conversation's
+		// space. That is the whole point of this placement — the dock's
+		// FullFrame mode hides the composer, and a read-only panel must never
+		// cost the user their work.
+		left = m.renderInspectorBody()
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
 		// The spinner groups with the transcript whose progress it
@@ -129,7 +145,17 @@ func (m *Model) viewString() string {
 	// breadcrumb already identifies the drilled-in state). It stays hidden
 	// for pipeline/SDD card drill-ins, whose transcript is still the
 	// parent's and which have no child state to scope to.
-	if m.railEnabled() {
+	// A side-placed inspector replaces the rail in the second column. It is
+	// strictly more capable — scrollable, keyboard-navigable, and with a
+	// detail stack — and it renders from the SAME data, so showing both would
+	// duplicate every number on screen.
+	inspectorOnSide := m.inspector != nil && m.inspector.placement() == inspectorSide
+	if inspectorOnSide {
+		if rv := m.renderInspectorColumn(); rv != "" {
+			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
+		}
+	}
+	if m.railEnabled() && !inspectorOnSide {
 		child := m.drilledRailState()
 		if child != nil || len(m.viewStack) == 0 {
 			d := m.railData()
@@ -153,6 +179,44 @@ func (m *Model) viewString() string {
 		return lipgloss.JoinVertical(lipgloss.Left, topBar, left, m.renderStatusLine(m.width))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+}
+
+// renderInspectorColumn renders the inspector into the second column,
+// band-painted like the rail it replaces so the two are visually
+// interchangeable at the same width.
+func (m Model) renderInspectorColumn() string {
+	r := m.frameRect().Inspector
+	if r.Empty() {
+		return ""
+	}
+	body := m.inspector.model.View(m.inspectorData())
+	if body == "" {
+		return ""
+	}
+	return chrome.PaintBand(body, r.Width, theme.Current().ChromeBG())
+}
+
+// renderInspectorBody renders the body-expanded inspector: the conversation's
+// rows, but the composer's row left alone by the caller.
+func (m Model) renderInspectorBody() string {
+	body := m.frameRect().Body()
+	if body.Empty() {
+		return ""
+	}
+	inner := lipgloss.NewStyle().Width(max(body.Width, 1)).Height(max(body.Height, 1))
+	return inner.Render(m.inspector.model.View(m.inspectorData()))
+}
+
+// inspectorData is the snapshot the inspector renders from. It is the same
+// value handed in by refreshInspector, read back rather than rebuilt: View
+// runs on every frame and must not assemble a second, possibly different,
+// snapshot.
+func (m Model) inspectorData() inspector.Data {
+	hidden := make(map[string]bool)
+	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
+		hidden[id] = true
+	}
+	return inspector.Data{Side: m.railData(), Hidden: hidden}
 }
 
 // clipLeftColumn trims s to at most maxRows, dropping surplus lines from

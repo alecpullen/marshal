@@ -344,6 +344,29 @@ func TestNewAndClearAreTUIOnly(t *testing.T) {
 	}
 }
 
+func TestInspectCommandRegistered(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, ok := cmdReg.Lookup("inspect")
+	if !ok {
+		t.Fatal("/inspect not registered")
+	}
+	if cmd.Args != "[tab|close]" {
+		t.Errorf("/inspect Args = %q, want %q", cmd.Args, "[tab|close]")
+	}
+	if cmd.Group != "Settings & info" {
+		t.Errorf("/inspect group = %q, want Settings & info", cmd.Group)
+	}
+	if !cmd.TUIOnly {
+		t.Error("/inspect should be TUIOnly")
+	}
+	if cmd.Handler != nil {
+		t.Error("/inspect must not have a headless Handler")
+	}
+}
+
 func TestConfigCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

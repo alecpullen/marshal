@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
@@ -140,6 +141,70 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
 	return m, railBaseRefCmd(m.state.Workspace().ActiveRoot)
+}
+
+// inspectEffect is /inspect. It is the named twin of Ctrl+B: the key toggles
+// the inspector, the command opens it on a named tab, and both drive the same
+// placement host so the two entry points cannot disagree about what is open.
+//
+// The tab names are read from inspector.VisibleTabs() rather than listed here.
+// A tab that lands in a later task becomes reachable through /inspect the
+// moment it is offered, and — more importantly — a tab that is NOT offered
+// cannot be opened by a stale name in this file.
+func inspectEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
+	if m.inspector == nil {
+		m.state.AddMessage(session.RoleSystem, "The conversation inspector is not available in this build.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	arg := strings.TrimSpace(strings.Join(args, " "))
+	if arg == "" {
+		// Bare /inspect opens on the tab the inspector is already showing.
+		// A successful open is visible on screen, so it says nothing: a
+		// transcript line or a toast for "the panel you can see appeared"
+		// is noise, and noise is what teaches users to ignore feedback.
+		m.inspector.open(m.inspector.model.SelectedTab(), m.inspectorSideAvailable())
+		m.refreshViewport()
+		return m, nil
+	}
+
+	if strings.EqualFold(arg, "close") {
+		m.inspector.close()
+		m.refreshViewport()
+		return m, nil
+	}
+
+	tab := inspector.Tab(arg)
+	for _, visible := range inspector.VisibleTabs() {
+		if visible == tab {
+			m.inspector.open(tab, m.inspectorSideAvailable())
+			m.refreshViewport()
+			return m, nil
+		}
+	}
+
+	// The tab was not offered. Say which one, and say what is: silently
+	// doing nothing leaves the user pressing the same command again, and
+	// opening some other panel answers a question they did not ask.
+	available := make([]string, 0, len(inspector.VisibleTabs()))
+	for _, visible := range inspector.VisibleTabs() {
+		available = append(available, string(visible))
+	}
+	known := false
+	for _, all := range inspector.AllTabs() {
+		if all == tab {
+			known = true
+			break
+		}
+	}
+	var text string
+	if known {
+		text = fmt.Sprintf("The %s view is not available yet. Available now: %s.", tab, strings.Join(available, ", "))
+	} else {
+		text = fmt.Sprintf("Unknown inspector view %q. Available now: %s.", arg, strings.Join(available, ", "))
+	}
+	return m, m.showToast(text)
 }
 
 func init() {
@@ -431,7 +496,8 @@ func init() {
 			}
 			return m.beginResume(id)
 		},
-		"new":   newSessionEffect,
-		"clear": newSessionEffect,
+		"inspect": inspectEffect,
+		"new":     newSessionEffect,
+		"clear":   newSessionEffect,
 	}
 }

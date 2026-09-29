@@ -401,6 +401,19 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			// /inspect is the named entry point to the conversation
+			// inspector, which Ctrl+B toggles. It is registered so the
+			// surface is discoverable in /help and completion like every
+			// other interactive view; the tab names it accepts come from
+			// inspector.VisibleTabs(), so a tab that lands in a later task
+			// is reachable without a change here.
+			Name:        "inspect",
+			Description: "Open the conversation inspector (overview, changes, agents, context)",
+			Args:        "[tab|close]",
+			Group:       groupSettings,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "set",
 			Description: "Change a setting inline (\"/set\" alone browses)",
 			Args:        "<key> [value]",

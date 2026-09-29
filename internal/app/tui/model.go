@@ -39,6 +39,7 @@ import (
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/memory"
@@ -367,8 +368,16 @@ type Model struct {
 	frame layout.Frame
 	// rail is the side panel's section stack.
 	rail *sidepanel.Rail
-	// railHidden is the session-only Ctrl+B override. Not persisted.
+	// railHidden is the session-only side-panel visibility override. Not
+	// persisted.
 	railHidden bool
+	// inspector is the conversation inspector's placement host. It owns the
+	// inspector's tab/scroll/detail state and decides whether it renders
+	// beside the conversation, in the dock slot, or over the body. Ctrl+B
+	// now toggles the inspector rather than the bare rail: the inspector's
+	// Overview is the rail's content, made scrollable and navigable (see
+	// inspector_host.go).
+	inspector *inspectorHost
 	// mouseOverride is the session-only Ctrl+S override. Not persisted;
 	// [tui].mouse_capture is the durable setting. Capture and native
 	// selection are mutually exclusive — the terminal cannot deliver mouse
@@ -1545,6 +1554,10 @@ func New(state *session.State, opts ...Option) Model {
 		}
 	}
 	m.rebuildRail()
+	// The inspector starts closed: a session opens with the conversation
+	// unencumbered, and Ctrl+B or /inspect is how it appears.
+	m.inspector = newInspectorHost()
+	m.refreshInspector()
 
 	if database := state.DB(); database != nil {
 		if projectID := m.memoryProject; projectID != 0 {
@@ -1632,6 +1645,17 @@ func (m *Model) resize(width, height int) {
 	// the keys. m.focus is left alone so widening restores the user's intent.
 	m.syncComposerFocusFlag()
 	m.computeFrame()
+	// The inspector is measured against its own column, not the frame: a
+	// side-placed inspector is a narrow tall strip, and sizing it to the whole
+	// terminal would wrap every line it renders.
+	if m.inspector != nil {
+		if r := m.frame.Inspector; !r.Empty() {
+			m.inspector.resize(r.Width, r.Height)
+		} else if rows := m.dockRows(); rows > 0 {
+			m.inspector.resize(m.leftWidth, rows)
+		}
+		m.inspector.setSideAvailable(m.inspectorSideAvailable())
+	}
 }
 
 // syncComposerFocusFlag aligns the textarea's focus flag with the resolved
@@ -1726,6 +1750,38 @@ func (m *Model) rebuildRail() {
 		}
 	}
 	m.rail = sidepanel.New(visible...)
+}
+
+// inspectorSideAvailable reports whether the terminal has room for the
+// inspector's own column.
+//
+// It is the rail's width policy, reused rather than reinvented: the inspector
+// and the rail occupy the same strip, so a second threshold would be a second
+// answer to "is there room?" and the two would disagree at the margin.
+func (m Model) inspectorSideAvailable() bool {
+	return m.railWidth > 0
+}
+
+// refreshInspector hands the inspector its render snapshot.
+//
+// It is called on turn boundaries, not from View: the same rule the rail
+// follows. The snapshot is the rail's own data, so the Overview and the rail
+// cannot show different numbers.
+//
+// Hidden is a FRESH map each time. Handing the inspector the config's own
+// slice-backed state would let a render mutate configuration, which would
+// surface as a settings write the user never made — the inspector's contract
+// is that it reads the hidden set and never writes it.
+func (m *Model) refreshInspector() {
+	if m.inspector == nil {
+		return
+	}
+	hidden := make(map[string]bool)
+	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
+		hidden[id] = true
+	}
+	m.inspector.model.SetData(inspector.Data{Side: m.railData(), Hidden: hidden})
+	m.inspector.setSideAvailable(m.inspectorSideAvailable())
 }
 
 // railData assembles the side panel's render snapshot. Everything here is
@@ -1996,6 +2052,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case docpanel.ClosedMsg:
 		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
+	case inspector.CloseMsg:
+		// The inspector's own "close me" request, emitted by its Esc at the
+		// root of the detail stack. It is the adapter's way of saying "this key
+		// is mine, and it means close" without the model having to decode keys
+		// a second time — the panel already decided.
+		if m.inspector != nil {
+			m.inspector.close()
+			m.refreshInspector()
+		}
+		if m.inspector != nil && m.dock.Panel() == dock.Panel(m.inspector.adapter) {
+			m.dock.CloseNow()
+		}
 		m.refreshViewport()
 		return m, nil
 	case docpanel.ActionMsg:

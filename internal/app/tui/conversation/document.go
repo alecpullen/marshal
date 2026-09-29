@@ -222,9 +222,29 @@ func blockID(b Block) BlockID {
 		return ""
 	}
 	if b.Kind == BlockToolGroup {
-		return BlockID("group:" + b.Members[0])
+		return GroupBlockID(b.Members[0])
 	}
 	return BlockID(b.Members[0])
+}
+
+// GroupBlockID derives a collapsed group's identity from its first member.
+//
+// It is exported because the identity has to be derived in TWO places — here,
+// where a document is built from blocks, and in the transcript builder, which
+// records where each rendered block sits on screen — and the two derivations
+// must agree exactly. They did not: the builder used the first member's raw
+// identity for a group, so the group was recorded in the rendered-span table
+// under a name the document never uses. Every lookup by the group's own
+// identity then missed, and the reader's anchor fell through to a
+// nearest-position guess that landed them at the top of the transcript.
+//
+// The rule therefore lives in one place and both callers call it. A prefix
+// written twice is a prefix that will eventually be written differently.
+func GroupBlockID(firstMember string) BlockID {
+	if firstMember == "" {
+		return ""
+	}
+	return BlockID("group:" + firstMember)
 }
 
 // Blocks returns the document's outermost blocks in order.

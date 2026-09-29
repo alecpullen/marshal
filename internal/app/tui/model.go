@@ -494,6 +494,15 @@ type Model struct {
 	// LOGICAL positions, so it survives the reflow that every rebuild performs;
 	// see selection.go for why a row could not.
 	selection surfaceSelection
+	// find is the current-conversation search: its query, results and cursor.
+	// It is a READING state like the selection, and it owns its own entry
+	// anchor so closing it returns the reader to where they opened it rather
+	// than to the last hit they visited. See find.go.
+	find findState
+	// findIndex caches the projections search reads, so a keystroke does not
+	// reproject every block in a long conversation. It is reset on a session
+	// switch, like the render cache, because block identities are per-session.
+	findIndex *conversation.SearchIndex
 	// viewStack is the subagent drill-down stack: when non-empty, the
 	// transcript viewport renders the top subagent's child session instead
 	// of the orchestrator's. Pushed by clicking a subagent card (see
@@ -4456,8 +4465,17 @@ func (m *Model) refreshViewport() {
 		blockID := pendingBlockID
 		if target != nil {
 			regions = append(regions, clickRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
-			if target.key.viewID != "" {
-				blockID = conversation.BlockID(target.key.viewID)
+			// A region's target can name a document identity explicitly, which
+			// a collapsed group must: its key is the first MEMBER's identity,
+			// while the document's name for the group is "group:<member>". The
+			// explicit id wins when present; otherwise the key's identity is
+			// the block's, which covers every single-item block.
+			id := target.blockID
+			if id == "" && target.key.viewID != "" {
+				id = conversation.BlockID(target.key.viewID)
+			}
+			if id != "" {
+				blockID = id
 				spans = append(spans, blockSpan{
 					id:        blockID,
 					startLine: lineCursor,
@@ -4508,7 +4526,15 @@ func (m *Model) refreshViewport() {
 			key := itemKeyForGroup(entry.GroupIDs)
 			expanded := m.isExpanded(key)
 			s := renderToolGroup(entry.Group, expanded, m.viewport.Width())
-			addBlock(s, &clickTarget{key: key})
+			// The span carries the group's DOCUMENT identity, derived by the
+			// same function the document uses to name it. Falling back to the
+			// key would record the group under its first member's name, which
+			// no lookup for the group would ever find.
+			id := conversation.BlockID("")
+			if len(entry.GroupIDs) > 0 {
+				id = conversation.GroupBlockID(entry.GroupIDs[0])
+			}
+			addBlock(s, &clickTarget{key: key, blockID: id})
 		} else {
 			key := itemKeyFor(entry.Item)
 			// Every item gets a rendered span, whether or not it is

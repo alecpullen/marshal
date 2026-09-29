@@ -6,6 +6,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/conversation"
+	"marshal/internal/tools/registry"
 )
 
 // readerAtThinkingBlock builds a model whose transcript is long enough to
@@ -290,6 +291,109 @@ func TestModelAnchorIsReresolvedAfterVanish(t *testing.T) {
 		if _, ok := doc.Block(m.readingAnchor.Block); !ok {
 			t.Fatalf("model anchor still names the vanished block %q", m.readingAnchor.Block)
 		}
+	}
+}
+
+// A reader anchored on a COLLAPSED GROUP must stay there across a reflow.
+//
+// This was a real defect, found while wiring find onto the same table. A group
+// is recorded in the rendered-span table under its FIRST MEMBER's identity,
+// while the document names it "group:<first member>" — so the lookup missed,
+// blockIndex reported 0, and Resolve's index-clamped fallback sent the reader to
+// the TOP OF THE TRANSCRIPT on the next reflow. The group's members are also the
+// ids of the group's CHILDREN, which is what made the collision silent: the
+// member exists in the document, just not as a top-level block.
+func TestAnchorOnACollapsedGroupSurvivesAReflow(t *testing.T) {
+	m := newTestModel(t)
+	at := time.Unix(900, 0)
+	// Two same-tool reads collapse into one group. They must be CONSECUTIVE in
+	// the transcript, which is ordered by timestamp.
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", Timestamp: at, ResultContent: "one"})
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", Timestamp: at.Add(time.Second), ResultContent: "two"})
+	m.refreshViewport()
+
+	doc := m.conversationDocument()
+	var group conversation.Block
+	for _, b := range doc.Blocks() {
+		if b.Kind == conversation.BlockToolGroup {
+			group = b
+		}
+	}
+	if group.ID == "" {
+		t.Fatal("precondition: the reads did not collapse into a group")
+	}
+
+	// The group must be reachable by its DOCUMENT identity, which is what every
+	// consumer of blockSpans is asking about.
+	row, ok := m.blockStartRow(group.ID)
+	if !ok {
+		t.Fatalf("the group %q is not in the rendered-span table, so nothing can scroll to it", group.ID)
+	}
+
+	// And an anchor on the group must RESOLVE to the group rather than falling
+	// through to the nearest-position guess. This is the consequence that
+	// matters: the fallback is what moved the reader to the top of the
+	// transcript, and it is reached only when the block cannot be found by
+	// identity.
+	anchor := conversation.Anchor{Block: group.ID, Offset: 0, Index: m.blockIndex(group.ID)}
+	res := anchor.Resolve(doc)
+	if !res.Found {
+		t.Fatalf("an anchor on the group did not resolve to it; it landed on %q (approximate=%v)",
+			res.Anchor.Block, res.Approximate)
+	}
+	if res.Anchor.Block != group.ID {
+		t.Fatalf("the anchor resolved to %q, want the group %q", res.Anchor.Block, group.ID)
+	}
+
+	// The index the model reports for the group must be the group's document
+	// position, because that index is what the fallback uses when the group
+	// genuinely vanishes. Reporting 0 sends the reader to the first block.
+	if want, _ := doc.IndexOf(group.ID); m.blockIndex(group.ID) != want {
+		t.Fatalf("blockIndex(%q) = %d, want its document position %d",
+			group.ID, m.blockIndex(group.ID), want)
+	}
+	_ = row
+}
+
+// The rendered-span table and the document must agree on EVERY block's
+// identity, not just on the easy ones.
+//
+// This is the general form of the group defect: the transcript builder derived
+// a block's identity from its CLICK KEY, and a collapsed group's key is its
+// first member's identity while the document calls the group
+// "group:<member>". The group's members are also its children, so the member
+// identity resolves to something in the document — which is what let the
+// mismatch hide. Asserting agreement over the whole transcript catches the
+// class, not just the instance.
+func TestEveryRenderedBlockIsAKnownDocumentBlock(t *testing.T) {
+	m := newTestModel(t)
+	// The transcript is ordered by TIMESTAMP, so the items here are spaced a
+	// minute apart. Two calls only group when nothing sorts between them: with
+	// the thinking entry at the same instant as the first read it landed in the
+	// middle of the run, and no group formed at all.
+	base := time.Unix(902, 0)
+	m.state.AddMessage(session.RoleUser, "a prompt", session.ContentTypePlain)
+	m.state.LogThinking(session.ThinkingEntry{Text: "hmm", StartedAt: base})
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", Timestamp: base.Add(time.Minute), ResultContent: "one"})
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", Timestamp: base.Add(2 * time.Minute), ResultContent: "two"})
+	m.state.AddMessage(session.RoleAssistant, "an answer", session.ContentTypeMarkdown)
+	m.refreshViewport()
+
+	doc := m.conversationDocument()
+	if len(m.blockSpans) == 0 {
+		t.Fatal("precondition: nothing was rendered")
+	}
+	var sawGroup bool
+	for _, span := range m.blockSpans {
+		if _, ok := doc.Block(span.id); !ok {
+			t.Fatalf("the rendered-span table names %q, which is not a document block", span.id)
+		}
+		if len(span.id) > 6 && span.id[:6] == "group:" {
+			sawGroup = true
+		}
+	}
+	if !sawGroup {
+		t.Fatal("precondition: no collapsed group was rendered, so the case this test exists for was not exercised")
 	}
 }
 

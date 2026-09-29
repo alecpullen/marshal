@@ -28,6 +28,14 @@ type clickTarget struct {
 	// apart. A target with a copy source never toggles expansion: one click
 	// must mean one thing.
 	copySource *conversation.CopySource
+	// blockID, when set, is the DOCUMENT identity of the block this region
+	// renders. It exists because a click key is not always a document identity:
+	// a collapsed group's key carries its FIRST MEMBER's identity, since an
+	// itemKey has no way to name a group, while the document names the group
+	// "group:<member>". Deriving the rendered span's identity from the key
+	// alone put the group in the table under the member's name, so every lookup
+	// by the group's real identity missed.
+	blockID conversation.BlockID
 }
 
 // copyTarget resolves the target a copy click should put on the clipboard.

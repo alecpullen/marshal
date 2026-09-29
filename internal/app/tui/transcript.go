@@ -341,6 +341,24 @@ func renderCodeBlock(content string, width int) string {
 	return b.String()
 }
 
+// renderCopyChip renders the copy affordance for a block that can be copied.
+//
+// It is a single restrained line on its own, indented inside the gutter like
+// every other content line. It is deliberately NOT inline with the answer's
+// first line: an inline chip would shift the prose, and the chip doubles as
+// the click region that keeps a click on the body meaning "expand".
+//
+// It returns "" when there is nothing to copy, so the caller can render
+// unconditionally and a block without targets gets no affordance.
+func renderCopyChip(width int) string {
+	return gutterPrefix(glyph.Copy, theme.Current().FGMuted) +
+		mutedStyle().Render("copy") +
+		"\n"
+}
+
+// copyChipWidth is the cells the chip needs: the " X " gutter plus the verb.
+const copyChipWidth = gutterWidth + len("copy")
+
 func renderFinalAnswer(msg session.Message, width int) string {
 	if width < 10 {
 		width = 10
@@ -367,6 +385,13 @@ func renderFinalAnswer(msg session.Message, width int) string {
 		b.WriteString(gutter)
 		b.WriteString(line)
 		b.WriteString("\n")
+	}
+	// The copy affordance is appended LAST, as its own line. It is the only
+	// part of this block whose click means something other than "expand", so
+	// keeping it on a line of its own is what lets the click router give it a
+	// region distinct from the body's.
+	if width >= copyChipWidth && strings.TrimSpace(msg.Content) != "" {
+		b.WriteString(renderCopyChip(width))
 	}
 	return b.String()
 }

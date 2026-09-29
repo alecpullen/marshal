@@ -67,8 +67,14 @@ func TestTranscriptIndentContract(t *testing.T) {
 		{"plan block", renderPlanBlock("step one\nstep two", width)},
 		{"plain prose", renderPlainProse("some fallback prose", width)},
 		{"queued messages", renderQueuedMessages([]string{"do the thing"}, width)},
-		{"final answer", renderFinalAnswer(session.Message{
+		// A final answer now carries the copy chip as a trailing line, so
+		// both the plain and the salvaged paths (which writes its own header
+		// line) have to satisfy the contract with it present.
+		{"final answer with copy chip", renderFinalAnswer(session.Message{
 			Content: "the answer", Final: true,
+		}, width)},
+		{"salvaged answer with copy chip", renderFinalAnswer(session.Message{
+			Content: "the answer", Final: true, Salvaged: true, SalvageReason: "truncated",
 		}, width)},
 		{"completed tool call", renderCompletedToolCall(registry.AuditEvent{
 			ToolName: "file.read", ResultSummary: "ok",
@@ -103,6 +109,9 @@ func TestTranscriptContentFitsWidth(t *testing.T) {
 			renderPlanBlock(long, width),
 			renderPlainProse(long, width),
 			renderSkillTag(long, width),
+			// The copy chip is a fixed-width trailing line, so a long body
+			// above it is exactly the case where it could overflow.
+			renderFinalAnswer(session.Message{Content: long, Final: true}, width),
 		}
 		for i, r := range rendered {
 			for _, line := range strings.Split(stripANSI(r), "\n") {

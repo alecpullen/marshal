@@ -20,6 +20,7 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
@@ -2121,6 +2122,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
+		// Clipboard: a local helper when one exists and the session is not
+		// remote, otherwise the terminal via OSC 52. Wired unconditionally —
+		// a model with no usable writer still copies, it just asks the
+		// terminal, and the adapter is what decides which.
+		tuiOpts = append(tuiOpts, tui.WithClipboard(
+			&clipboard.LocalWriter{},
+			func() bool { return clipboard.Remote(os.Getenv) },
+		))
 		if rt.LSPManager != nil {
 			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewQueryAdapter(rt.LSPManager)))
 		}

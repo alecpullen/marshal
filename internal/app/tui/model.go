@@ -25,6 +25,7 @@ import (
 	"github.com/google/shlex"
 
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
@@ -490,6 +491,21 @@ type Model struct {
 	// parallel to viewStack.
 	viewStackAnchors []conversation.Anchor
 
+	// copyState guards asynchronous copy results: a result whose session or
+	// request no longer matches is dropped rather than shown (see
+	// copy_action.go).
+	copyState copyState
+	// copyWriter is the local clipboard backend. It is a seam so tests can
+	// assert exact bytes without touching a real clipboard, and so a build
+	// without one degrades to OSC 52 rather than failing. Nil means no local
+	// backend, which is the correct default: the app wires the real writer
+	// at construction.
+	copyWriter clipboard.Writer
+	// copyRemote reports whether this session is remote (SSH), where the
+	// local clipboard is the wrong destination and the terminal is the right
+	// one. Nil reports false.
+	copyRemote func() bool
+
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	discovered   map[string][]schema.ModelInfo
@@ -705,6 +721,20 @@ func WithTrustRefresh(refresh func(workingDir string)) Option {
 func WithCommandRegistry(reg *commands.Registry) Option {
 	return func(m *Model) {
 		m.cmdRegistry = reg
+	}
+}
+
+// WithClipboard wires the local clipboard backend the copy actions write to.
+//
+// It is an option rather than a field the model constructs itself so the
+// clipboard stays a leaf dependency of the app wiring, and so tests can
+// substitute a recorder. A model built WITHOUT it still copies: the adapter
+// falls back to the terminal (OSC 52), which is the correct behaviour on a
+// machine with no clipboard helper.
+func WithClipboard(w clipboard.Writer, remote func() bool) Option {
+	return func(m *Model) {
+		m.copyWriter = w
+		m.copyRemote = remote
 	}
 }
 
@@ -2046,7 +2076,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg, toastExpiredMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg, toastExpiredMsg, copyResultMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2170,6 +2200,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dock.Open(modeloptions.New(m.state.Config, pm.Value, m.resolveReasoningSupport(pm.Value)))
 			m.refreshViewport()
 			return m, nil
+		case cmdName == copyPickerCommand:
+			// The code chooser. The picked value is the index into the
+			// block's code targets, re-resolved here rather than captured in
+			// the picker: nothing can have changed the block while a modal
+			// owned the keys, and re-resolving means an index that no longer
+			// fits resolves to nothing instead of copying the wrong block.
+			return m, m.copyPickedCode(pm.Value)
 		case cmdName == "mode" && pm.Value == "sdd":
 			m.openSDDPlanPicker()
 			m.refreshViewport()
@@ -3796,6 +3833,22 @@ func (m *Model) refreshViewport() {
 	// reading anchor needs to know where a plain message sits too, and a
 	// click region deliberately exists only where a click does something.
 	// target is the clickable region, when there is one.
+	// addBlockTail records a region covering the LAST `tailLines` content
+	// lines of the block just added, so a block can carry two intents: the
+	// body toggles, the tail line copies.
+	addBlockTail := func(tailLines int, target clickTarget) {
+		if len(regions) == 0 || tailLines <= 0 {
+			return
+		}
+		last := &regions[len(regions)-1]
+		if last.endLine-last.startLine <= tailLines {
+			return
+		}
+		tailStart := last.endLine - tailLines
+		last.endLine = tailStart
+		regions = append(regions, clickRegion{startLine: tailStart, endLine: tailStart + tailLines, target: target})
+	}
+
 	addBlock := func(s string, target *clickTarget) {
 		if s == "" {
 			return
@@ -3845,7 +3898,12 @@ func (m *Model) refreshViewport() {
 			pendingBlockID = conversation.BlockID(key.viewID)
 			expanded := m.isExpanded(key)
 			rv := regionView{offset: m.regionOffset[key], minRows: m.regionRows[key]}
+			// The block's content-line range is captured BEFORE addBlock
+			// advances the cursor: the chip's region is carved out of the
+			// block's tail, and the ordinary region must cover the rest.
+			blockStart := lineCursor
 			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
+			blockLines := strings.Count(s, "\n")
 			// Record the tallest this region has been, so a later shrink in
 			// the child's activity tail cannot shrink the card.
 			if n := strings.Count(s, "\n"); n > m.regionRows[key] {
@@ -3854,6 +3912,20 @@ func (m *Model) refreshViewport() {
 				}
 				m.regionRows[key] = n
 			}
+			// A copyable answer renders its chip as the LAST line of the
+			// block, so the chip's region is the block's final content line
+			// and the body keeps its own region. The chip is registered as a
+			// SEPARATE region because a click on it must copy, while a click
+			// on the body must still expand — two intents, one block.
+			var chip *clickTarget
+			if entry.Item.Kind == session.KindMessage && entry.Item.Message != nil &&
+				entry.Item.Message.Final && entry.Item.Message.Role == session.RoleAssistant &&
+				strings.TrimSpace(entry.Item.Message.Content) != "" &&
+				m.viewport.Width() >= copyChipWidth {
+				source := conversation.SourceAnswer
+				chip = &clickTarget{key: key, copySource: &source}
+			}
+
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
@@ -3873,6 +3945,25 @@ func (m *Model) refreshViewport() {
 				}
 			}
 			addBlock(s, target)
+			// The chip's region overrides the block's LAST content line.
+			// addBlock has already consumed the block, so the override is
+			// applied to the tail of the region just recorded: a click on
+			// that one line copies, and every other line still expands.
+			if chip != nil {
+				if target == nil {
+					// A plain answer has no click target of its own, but the
+					// chip needs a region to live in. Register the whole block
+					// as a toggle region — which is the meaning an answer body
+					// already carries — and then carve the chip's line out of
+					// its tail below.
+					regions = append(regions, clickRegion{
+						startLine: blockStart,
+						endLine:   blockStart + blockLines,
+						target:    clickTarget{key: key},
+					})
+				}
+				addBlockTail(1, *chip)
+			}
 			seenRegions[key] = true
 		}
 	}
@@ -5001,6 +5092,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSubagentMsg(msg)
 	case toastExpiredMsg:
 		return m.handleToastExpired(msg)
+	case copyResultMsg:
+		return m.handleCopyResult(msg)
 	case railBaseRefMsg:
 		return m.handleRailBaseRef(msg)
 	case agentTickMsg:

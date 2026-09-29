@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/conversation"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/tools/registry"
 )
@@ -34,6 +35,15 @@ const (
 	ActionThinking      ActionID = "thinking"
 	ActionRollback      ActionID = "rollback"
 	ActionHelp          ActionID = "help"
+
+	// Copy actions are separate IDs rather than one "copy" with an argument:
+	// "Copy answer" and "Copy output" are different promises about different
+	// bytes, and the palette must be able to offer, disable, and explain each
+	// one on its own terms.
+	ActionCopyAnswer ActionID = "copy-answer"
+	ActionCopyCode   ActionID = "copy-code"
+	ActionCopyOutput ActionID = "copy-output"
+	ActionCopyPath   ActionID = "copy-path"
 )
 
 // Action priorities order the palette: a user opening it in an emergency
@@ -163,6 +173,26 @@ var actionCatalog = []actionDef{
 		desc: "print the command and keybinding cheatsheet",
 		key:  "?", priority: actionPriorityOptional,
 	},
+	{
+		id: ActionCopyAnswer, label: "Copy answer",
+		desc: "copy the answer the reader is on, as its original Markdown",
+		key:  "y", priority: actionPriorityLikely,
+	},
+	{
+		id: ActionCopyCode, label: "Copy code block",
+		desc:     "copy a code block from the answer the reader is on",
+		priority: actionPriorityOptional,
+	},
+	{
+		id: ActionCopyOutput, label: "Copy tool output",
+		desc:     "copy the captured output of the tool call the reader is on",
+		priority: actionPriorityOptional,
+	},
+	{
+		id: ActionCopyPath, label: "Copy file path",
+		desc:     "copy the path the tool call the reader is on referred to",
+		priority: actionPriorityOptional,
+	},
 }
 
 // actionContext is one snapshot of the root state every action resolution
@@ -185,6 +215,13 @@ type actionContext struct {
 	RollbackEligible      bool
 	MemoryAvailable       bool
 	MouseCaptured         bool
+	// CopyBlock is the block a copy action would act on: the one under the
+	// reading anchor, or the newest when the reader is following. It is the
+	// resolved block rather than the sources it offers, so availability and
+	// dispatch cannot disagree about which block was meant.
+	CopyBlock conversation.Block
+	// CopyBlockFound reports whether CopyBlock resolved at all.
+	CopyBlockFound bool
 }
 
 // Action is a resolved catalog entry: the descriptor plus the availability
@@ -232,6 +269,9 @@ func (m Model) actionSnapshot() actionContext {
 	if v, ok := m.drilledInto(); ok && v.Status == session.SubagentRunning {
 		ctx.DrilledRunningChildID = v.ID
 	}
+	// The copy actions resolve their block through the same path dispatch
+	// uses, so availability and behaviour cannot describe different blocks.
+	ctx.CopyBlock, ctx.CopyBlockFound = m.copyBlock()
 	return ctx
 }
 
@@ -309,6 +349,34 @@ func availability(ctx actionContext, id ActionID) (disabled bool, reason string)
 	case ActionPalette, ActionSettings, ActionModels, ActionMode:
 		if ctx.OtherPanelOpen {
 			return true, "resolve the open panel or decision first"
+		}
+	case ActionCopyAnswer:
+		if !ctx.CopyBlockFound {
+			return true, "the conversation is empty"
+		}
+		if len(ctx.CopyBlock.CopyTargets) == 0 {
+			return true, "the block under the reading position has no text to copy"
+		}
+	case ActionCopyCode:
+		if !ctx.CopyBlockFound {
+			return true, "the conversation is empty"
+		}
+		if len(codeTargets(ctx.CopyBlock)) == 0 {
+			return true, "the block under the reading position contains no code block"
+		}
+	case ActionCopyOutput:
+		if !ctx.CopyBlockFound {
+			return true, "the conversation is empty"
+		}
+		if !hasCopyTarget(ctx.CopyBlock, conversation.SourceOutput) {
+			return true, "the block under the reading position is not a tool call with captured output"
+		}
+	case ActionCopyPath:
+		if !ctx.CopyBlockFound {
+			return true, "the conversation is empty"
+		}
+		if !hasCopyTarget(ctx.CopyBlock, conversation.SourcePath) {
+			return true, "the block under the reading position refers to no file path"
 		}
 	}
 	return false, ""
@@ -422,6 +490,14 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 		return m.runRollback()
 	case ActionHelp:
 		return m.dispatchCommand("/help")
+	case ActionCopyAnswer:
+		return *m, m.copySelection(conversation.SourceAnswer)
+	case ActionCopyCode:
+		return *m, m.copySelection(conversation.SourceCode)
+	case ActionCopyOutput:
+		return *m, m.copySelection(conversation.SourceOutput)
+	case ActionCopyPath:
+		return *m, m.copySelection(conversation.SourcePath)
 	}
 	return *m, nil
 }

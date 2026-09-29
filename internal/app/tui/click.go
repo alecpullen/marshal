@@ -4,6 +4,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/conversation"
 )
 
 // clickTarget identifies what a click region toggles: either a keyed
@@ -21,6 +22,22 @@ type clickTarget struct {
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
+	// copySource marks a click that COPIES rather than toggles, and names
+	// which thing it copies. It is a pointer so "no copy" is distinguishable
+	// from the answer source, whose zero value a plain bool could not tell
+	// apart. A target with a copy source never toggles expansion: one click
+	// must mean one thing.
+	copySource *conversation.CopySource
+}
+
+// copyTarget resolves the target a copy click should put on the clipboard.
+//
+// It re-resolves against the block rather than capturing bytes at render time,
+// so the chip always copies what the block says NOW — a render is not a
+// promise about content, and a block whose text changed must not paste the
+// text it used to have.
+func (t clickTarget) copyTarget(block conversation.Block, source conversation.CopySource) (conversation.CopyTarget, bool) {
+	return blockTarget(block, source)
 }
 
 // clickRegion is a half-open [startLine, endLine) range of content lines in
@@ -230,6 +247,15 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 		m.drillIntoSubagent(*target.subagent)
 	} else if target.isActiveTool {
 		m.toggleActiveToolExpanded(target.toolKey)
+	} else if target.copySource != nil {
+		// A copy click copies and does NOT toggle. Routing it through the
+		// toggle path is how one click would both copy and change what is on
+		// screen, and the user would have no way to tell which happened.
+		//
+		// The click is NOT followed by refreshViewport: a copy changes no
+		// transcript content, and a rebuild here would drop the reader's
+		// anchor for no reason.
+		return m.copySelection(*target.copySource), true
 	} else {
 		m.toggleItemExpanded(target.key)
 	}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"marshal/internal/app/session"
@@ -155,6 +156,13 @@ func toolGroupBlock(events []registry.AuditEvent, memberIDs []string) conversati
 // offering to copy it back to them is noise. An assistant answer is, and it
 // carries its ORIGINAL Markdown — the copy target is labelled "Copy answer"
 // so the scope is stated rather than inferred from what the text looks like.
+//
+// An answer that contains fenced code offers each block as its own target as
+// well. The answer target is the whole message, fences included, because that
+// is what "Copy answer" promises; a reader who wants the code alone should
+// not have to strip the prose and the fence lines out of the clipboard
+// afterwards. The block text comes from ParseCodeFences, which slices the
+// source bytes, so what lands on the clipboard is what the author wrote.
 func withMessageContent(block conversation.Block, msg *session.Message) conversation.Block {
 	if msg == nil {
 		return block
@@ -172,7 +180,50 @@ func withMessageContent(block conversation.Block, msg *session.Message) conversa
 		Text:   msg.Content,
 		Label:  "Copy answer",
 	})
+	codeBlocks := conversation.ParseCodeFences(msg.Content)
+	for i, cb := range codeBlocks {
+		block.CopyTargets = append(block.CopyTargets, conversation.CopyTarget{
+			Source: conversation.SourceCode,
+			Text:   cb.Text,
+			Label:  codeTargetLabel(i, len(codeBlocks), cb.Language),
+		})
+	}
 	return block
+}
+
+// codeTargetLabel names one code block's copy action.
+//
+// A single block needs no number: there is nothing to distinguish it from, so
+// the label is the plain scope statement. Several blocks do, because a menu
+// of three identical "Copy code" entries is a menu the reader cannot use —
+// hence the 1-based source-order number. The language hint is surfaced
+// whenever the fence carried one, so a reader choosing between a go block and
+// a bash block can tell which is which.
+func codeTargetLabel(index, total int, language string) string {
+	label := "Copy code"
+	if total > 1 {
+		label = fmt.Sprintf("Copy code %d", index+1)
+	}
+	if language == "" {
+		return label
+	}
+	return fmt.Sprintf("%s (%s)", label, truncateHint(language))
+}
+
+// truncateHint bounds an author-supplied fence info string so a pathological
+// fence cannot produce an unbounded menu label. The hint is otherwise
+// surfaced as written: it is the author's text, and trimming it would hide
+// the metadata ("go title=main.go") that makes it legible.
+//
+// The bound counts runes, not bytes: cutting mid-rune would put invalid UTF-8
+// in a label the TUI has to render.
+func truncateHint(hint string) string {
+	const maxHint = 32
+	runes := []rune(hint)
+	if len(runes) <= maxHint {
+		return hint
+	}
+	return string(runes[:maxHint]) + "…"
 }
 
 // withAuditContent attaches a tool call's captured output and the paths it

@@ -140,6 +140,23 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// action is unavailable.
 		m.openActionPalette()
 		return *m, nil, true
+	case "y":
+		// `y` copies the block the reader is on. It is claimed only while
+		// the conversation owns the keys: with the composer focused a bare
+		// `y` is a letter, and swallowing it would put a hole in the
+		// keyboard.
+		//
+		// It must be dispatched HERE rather than in handleFocusedSurfaceKey,
+		// which runs later in this function: that handler reports handled
+		// for every key while the conversation is focused (deliberately — a
+		// key that fell through would reach the textarea as a second,
+		// invisible recipient), so it would swallow `y` before any copy
+		// case could see it.
+		if m.effectiveFocus() != FocusConversation {
+			return *m, nil, false
+		}
+		mm, cmd := m.runAction(ActionCopyAnswer)
+		return mm, cmd, true
 	case "esc":
 		// Esc leaves a non-composer focus target before any composer-side
 		// meaning (popup dismissal, drill pop, turn cancel) can claim it: one

@@ -126,6 +126,12 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.clearToast()
 	m.focus = FocusComposer
 	_ = m.input.Focus()
+	// Outstanding copy results belong to the session being left. Dropping
+	// them here is belt-and-braces: the token comparison in handleCopyResult
+	// already invalidates them, but bumping the sequence means a result that
+	// happens to carry the same token cannot match either.
+	m.copyState.requestSeq++
+	m.copyState.session = ""
 
 	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
 	if name != "" {

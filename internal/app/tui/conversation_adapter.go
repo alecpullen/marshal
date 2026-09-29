@@ -96,8 +96,10 @@ func conversationBlock(entry transcriptEntry) (conversation.Block, bool) {
 	switch item.Kind {
 	case session.KindMessage:
 		block = withMessageContent(block, item.Message)
+		block.Hidden = messageIsHidden(item.Message)
 	case session.KindAudit:
 		block = withAuditContent(block, item.Audit)
+		block.Truncated = auditTruncated(item.Audit)
 	case session.KindThinking:
 		if item.Thinking != nil {
 			block.Text = item.Thinking.Text
@@ -141,6 +143,7 @@ func toolGroupBlock(events []registry.AuditEvent, memberIDs []string) conversati
 			Members: []string{members[i]},
 		}
 		child = withAuditContent(child, &events[i])
+		child.Truncated = auditTruncated(&events[i])
 		children = append(children, child)
 	}
 	return conversation.Block{
@@ -168,6 +171,18 @@ func withMessageContent(block conversation.Block, msg *session.Message) conversa
 		return block
 	}
 	if msg.Role != session.RoleAssistant {
+		// A user or system message carries no COPY TARGET — offering to copy
+		// the user's own prompt back to them is noise, and a system notice is
+		// not a document they chose. Its TEXT is still attached, because text
+		// is what the reader can SEE: a prompt is drawn in the transcript, and
+		// a find that could not match the question the reader typed — right
+		// above the answer they are searching for it in — would be broken in
+		// the most ordinary possible use.
+		//
+		// Source stays empty for these, which is what keeps the copy actions
+		// away from them: the copy path resolves through a block's targets and
+		// its Source, and an empty Source with no targets offers nothing.
+		block.Text = msg.Content
 		return block
 	}
 	block.Source = conversation.SourceAnswer
@@ -253,6 +268,56 @@ func withAuditContent(block conversation.Block, ev *registry.AuditEvent) convers
 		})
 	}
 	return block
+}
+
+// messageIsHidden reports whether a message reaches the model but is not drawn.
+//
+// This mirrors the early returns in renderMessageWithSink, and the two must
+// agree: a block marked hidden that IS drawn would silently drop out of search,
+// and a block drawn but not marked would offer the reader a jump to text they
+// cannot see. The list is deliberately short and named rather than derived from
+// the content type's name, because the rendering decision is what matters and
+// it lives in the renderer.
+//
+// The compact markers are NOT hidden: a skill load, a compaction point and a
+// steering message each render a one-line trace, and that trace is on screen
+// and searchable like anything else.
+func messageIsHidden(msg *session.Message) bool {
+	if msg == nil {
+		return false
+	}
+	switch msg.ContentType {
+	case session.ContentTypeSkillBody,
+		session.ContentTypeSubagentReport,
+		session.ContentTypeWatchReport:
+		return true
+	}
+	return false
+}
+
+// auditTruncated reports whether a tool event's captured output was capped by
+// its source, so a search over its text can say what it actually covered.
+//
+// Both signals are the tool's own structural report, not prose: a notice for a
+// slice/result cap, and the sandbox's flag for a killed or truncated command.
+// Looking for the word "truncated" in the text instead would misfire on a
+// message that merely discusses truncation, which is exactly the kind of
+// message this transcript is full of.
+func auditTruncated(ev *registry.AuditEvent) bool {
+	if ev == nil {
+		return false
+	}
+	if ev.Sandbox.OutputTruncated {
+		return true
+	}
+	if ev.Notice == nil {
+		return false
+	}
+	switch ev.Notice.Kind {
+	case registry.NoticeOversizeFallback, registry.NoticeSliceTruncated, registry.NoticeCappedResults:
+		return true
+	}
+	return false
 }
 
 // blockKindFor maps a transcript kind to a block kind.

@@ -95,6 +95,17 @@ type Block struct {
 	Source CopySource
 	// Text is the block's source text as handed in by the caller.
 	Text string
+	// Hidden marks a block whose text is model context rather than something
+	// the transcript draws. A skill body and a subagent's report reach the
+	// model and are deliberately not rendered, so they are not reachable by
+	// scrolling and a search must not offer to jump to them. It is a property
+	// of the BLOCK rather than of its kind because the same kind renders
+	// visibly in one place and is hidden in another.
+	Hidden bool
+	// Truncated marks a block whose captured text was capped by its source, so
+	// a search over it can say what it actually covered rather than implying
+	// the whole thing was searched.
+	Truncated bool
 	// CopyTargets are the clipboard payloads this block offers.
 	CopyTargets []CopyTarget
 	// Revision counts semantic change to this block's content. A consumer

@@ -475,6 +475,21 @@ type Model struct {
 	// reading anchor needs to name any block the reader can scroll to, so it
 	// uses this instead.
 	blockSpans []blockSpan
+	// convRender caches mapped renderings of conversation blocks, keyed by the
+	// block, its revision, the width, the rendering mode and the theme tier.
+	// Without it, every resize reparses every visible answer; with a key that
+	// missed an input, a resize would serve the previous width's wrapping.
+	convRender *conversationRenderCache
+	// blockRenderSpans records, for every rendered block, the display rows it
+	// occupies and the RenderedBlock they came from. It is the selection
+	// mapping's input: a click names a row and a cell, and only this table can
+	// turn that into a logical offset.
+	//
+	// It is deliberately separate from blockSpans: that one is in transcript
+	// lines used for scrolling, and this one is per BLOCK in ROWS. Deriving one
+	// from the other would put the two in step only while every block happened
+	// to be rendered through the mapped path.
+	blockRenderSpans []renderedBlockSpan
 	// viewStack is the subagent drill-down stack: when non-empty, the
 	// transcript viewport renders the top subagent's child session instead
 	// of the orchestrator's. Pushed by clicking a subagent card (see
@@ -4360,8 +4375,20 @@ func (m *Model) refreshViewport() {
 	blocks := make([]string, 0, len(items)+4)
 	regions := make([]clickRegion, 0, len(items))
 	spans := make([]blockSpan, 0, len(items))
+	renders := make([]renderedBlockSpan, 0, len(items))
+	// The sink collects mapped renderings produced during THIS build. It is
+	// created here rather than stored on the model because a stale mapping is
+	// worse than none: a click resolved against last layout's rows lands in the
+	// wrong place, and nothing on screen would show it.
+	sink := &mappedMessageSink{}
 	seenRegions := map[itemKey]bool{}
 	lineCursor := 0
+	// displayRow tracks the block's first display row, which is the coordinate
+	// pointer events use. It runs alongside lineCursor rather than being derived
+	// from it: lineCursor counts transcript lines for scrolling and includes the
+	// blank separator between blocks, and a mapping built from it would be off by
+	// however many separators came before.
+	displayRow := 0
 	// pendingBlockID carries the identity for the next addBlock when that
 	// block has no click target of its own.
 	pendingBlockID := conversation.BlockID("")
@@ -4396,11 +4423,13 @@ func (m *Model) refreshViewport() {
 		}
 		blocks = append(blocks, s)
 		n := strings.Count(s, "\n")
+		blockID := pendingBlockID
 		if target != nil {
 			regions = append(regions, clickRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
 			if target.key.viewID != "" {
+				blockID = conversation.BlockID(target.key.viewID)
 				spans = append(spans, blockSpan{
-					id:        conversation.BlockID(target.key.viewID),
+					id:        blockID,
 					startLine: lineCursor,
 					endLine:   lineCursor + n,
 				})
@@ -4408,8 +4437,28 @@ func (m *Model) refreshViewport() {
 		} else if id := pendingBlockID; id != "" {
 			spans = append(spans, blockSpan{id: id, startLine: lineCursor, endLine: lineCursor + n})
 		}
+		// A mapped rendering produced while this block was being rendered is
+		// claimed here, where the block's identity and its position on screen are
+		// both known. Claiming it in the renderer would require the renderer to
+		// know where it is about to be drawn, which is exactly the coupling the
+		// sink exists to avoid.
+		//
+		// The claim is unconditional on identity: whatever the sink holds was
+		// produced by the render call that produced THIS string, so it belongs to
+		// this block even when the block has no click target (a prose answer has
+		// none, and it is the block a reader most wants to select).
+		if rendered, ok := sink.take(); ok {
+			rendered.BlockID = blockID
+			renders = append(renders, renderedBlockSpan{
+				id:       blockID,
+				blockRow: displayRow,
+				rows:     len(rendered.Rows),
+				rendered: rendered,
+			})
+		}
 		pendingBlockID = ""
 		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
+		displayRow += n + 1
 	}
 
 	if !hasConversationTurns(items) {
@@ -4443,7 +4492,7 @@ func (m *Model) refreshViewport() {
 			// advances the cursor: the chip's region is carved out of the
 			// block's tail, and the ordinary region must cover the rest.
 			blockStart := lineCursor
-			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
+			s := renderTranscriptItemWithSink(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width(), sink)
 			blockLines := strings.Count(s, "\n")
 			// Record the tallest this region has been, so a later shrink in
 			// the child's activity tail cannot shrink the card.
@@ -4578,6 +4627,11 @@ func (m *Model) refreshViewport() {
 
 	m.clickRegions = regions
 	m.blockSpans = spans
+	// The mapped renderings for this build. They are replaced wholesale rather
+	// than merged: a mapping describes where a block sits in THIS layout, and
+	// carrying one forward from a previous build would point at rows that may no
+	// longer exist.
+	m.blockRenderSpans = renders
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	m.viewport.SetContent(strings.Join(blocks, "\n"))

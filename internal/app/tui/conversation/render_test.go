@@ -1,0 +1,570 @@
+package conversation
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/x/ansi"
+)
+
+// rowsText joins a rendered block's rows for assertions that care about the
+// whole display form.
+func rowsText(rows []DisplayRow) string {
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, r.Text())
+	}
+	return strings.Join(parts, "\n")
+}
+
+// contentText joins only the non-decorative parts, which is the readable
+// projection.
+func contentText(rows []DisplayRow) string {
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, r.ContentText())
+	}
+	return strings.Join(parts, "\n")
+}
+
+// reassembled joins a display form the way a reader would read it off the
+// screen, using each row's own declared separator.
+//
+// This is the plan's central rendering invariant expressed as an assertion — a
+// soft wrap contributes a space or nothing, only the AUTHOR's break contributes
+// a newline. Joining every row with "\n" (contentText) would hide a violation of
+// it, because it puts a newline everywhere regardless.
+func reassembled(rows []DisplayRow) string {
+	var b strings.Builder
+	for i, r := range rows {
+		b.WriteString(r.ContentText())
+		if i < len(rows)-1 {
+			b.WriteString(r.Separator())
+		}
+	}
+	return b.String()
+}
+
+// The first invariant everything else depends on: layout cannot change the
+// bytes a copy yields. A soft wrap, an indent and an expanded tab are all
+// display concerns.
+func TestLayoutNeverChangesTheLogicalText(t *testing.T) {
+	for _, f := range textFixtures {
+		t.Run(f.name, func(t *testing.T) {
+			block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+				Width: 40, Indent: 3, Breakpoints: "/-:",
+			})
+			if block.LogicalText() != f.text {
+				t.Fatalf("logical text changed:\n got %q\nwant %q", block.LogicalText(), f.text)
+			}
+		})
+	}
+}
+
+// A row never exceeds its budget, for any fixture at any width. This is the
+// property a golden fixture can only spot-check; asserting it across widths is
+// what catches the arithmetic.
+func TestRowsNeverExceedTheWidthBudget(t *testing.T) {
+	for _, f := range textFixtures {
+		if f.name == "empty" {
+			continue
+		}
+		for _, width := range []int{8, 20, 40, 79, 120} {
+			t.Run(f.name, func(t *testing.T) {
+				block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+					Width: width, Indent: 3, Breakpoints: "/-:",
+				})
+				for i, row := range block.Rows {
+					if row.Cells > width {
+						t.Fatalf("width %d: row %d is %d cells: %q",
+							width, i, row.Cells, row.Text())
+					}
+					if got := ansi.StringWidth(row.Text()); got > width {
+						t.Fatalf("width %d: row %d measures %d cells by ansi.StringWidth: %q",
+							width, i, got, row.Text())
+					}
+				}
+			})
+		}
+	}
+}
+
+// A hard break is the author's; a soft break is the renderer's. Copy uses the
+// author's breaks and must never invent one, which is why the distinction is
+// recorded on the row rather than inferred later from the display text.
+func TestHardBreaksComeFromTheAuthorAndSoftBreaksDoNot(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: "one two three four five\nsecond line"}, LayoutOptions{
+		Width: 14, Breakpoints: " ",
+	})
+	// One hard break per author line: the first author line's row and the
+	// second (which is also the last row).
+	var hard []int
+	for i, row := range block.Rows {
+		if row.HardBreak {
+			hard = append(hard, i)
+		}
+	}
+	if len(hard) != 2 {
+		t.Fatalf("want 2 hard-broken rows (one per author line), got %d: %v", len(hard), hard)
+	}
+	if hard[0] == 0 {
+		t.Fatalf("line one wraps at width 14, so row 0 must be a soft break: %q", rowsText(block.Rows))
+	}
+	// The row the break is ON ends the author's first line, and the row after
+	// it starts the second — the break is the author's, placed where they put it.
+	if got := block.Rows[hard[0]].Text(); !strings.HasSuffix(got, "five") {
+		t.Fatalf("the first hard break should end the author's first line, got %q", got)
+	}
+	if !strings.HasPrefix(block.Rows[hard[1]].Text(), "second line") {
+		t.Fatalf("the last row should be the second author line, got %q", block.Rows[hard[1]].Text())
+	}
+}
+
+// The plan's central rendering invariant: what comes back off the rows is the
+// text that went in, with the author's newlines and no others.
+//
+// The trailing newline of a fixture is excluded from the comparison rather than
+// from the property: it is inside the last row's range (so the ranges still
+// partition the text) but produces no display span, because a terminal shows
+// nothing for it. Copy reads Logical, so the byte is not lost either way.
+func TestReassembledRowsReproduceTheTextWithOnlyTheAuthorsNewlines(t *testing.T) {
+	for _, f := range textFixtures {
+		t.Run(f.name, func(t *testing.T) {
+			for _, width := range []int{10, 24, 80} {
+				block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+					Width: width, Indent: 2, Breakpoints: "/-:",
+				})
+				want := strings.TrimSuffix(f.text, "\n")
+				if got := reassembled(block.Rows); got != want {
+					t.Fatalf("width %d:\n got %q\nwant %q", width, got, want)
+				}
+			}
+		})
+	}
+}
+
+// Every logical byte is accounted for by exactly one row. Gaps would make a
+// drag skip text; overlaps would make it select text twice.
+func TestRowsCoverTheLogicalTextExactlyOnce(t *testing.T) {
+	for _, f := range textFixtures {
+		t.Run(f.name, func(t *testing.T) {
+			block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+				Width: 24, Indent: 2, Breakpoints: "/-:",
+			})
+			seen := make([]int, len(f.text))
+			for _, row := range block.Rows {
+				if !row.Range.HasText() {
+					continue
+				}
+				for i := row.Range.Start; i < row.Range.End; i++ {
+					if i < 0 || i >= len(seen) {
+						t.Fatalf("row range %+v is outside the text (%d bytes)", row.Range, len(f.text))
+					}
+					seen[i]++
+				}
+			}
+			for i, n := range seen {
+				if n != 1 {
+					t.Fatalf("byte %d (%.10q) is covered %d times", i, f.text[i:], n)
+				}
+			}
+		})
+	}
+}
+
+// Decoration is on screen but not in the document: a selection of table cells
+// must omit the borders, and a quote's marker must not become part of a copy.
+func TestDecorationIsMarkedAndExcludedFromTheReadableProjection(t *testing.T) {
+	rows := Layout(Spans{
+		Text: "A1|B1",
+		Runs: []Run{
+			{Range: Range{0, 2}, Kind: SpanPlain},       // A1
+			{Range: Range{2, 3}, Kind: SpanTableBorder}, // the separator
+			{Range: Range{3, 5}, Kind: SpanPlain},       // B1
+		},
+	}, LayoutOptions{Width: 40})
+
+	if got := contentText(rows); got != "A1B1" {
+		t.Fatalf("readable projection = %q, want %q", got, "A1B1")
+	}
+	if got := rowsText(rows); got != "A1|B1" {
+		t.Fatalf("display text = %q, want %q", got, "A1|B1")
+	}
+	if rows[0].Cells != 5 {
+		t.Fatalf("row cells = %d, want 5", rows[0].Cells)
+	}
+}
+
+// A decoration carries no logical range. Zero is a real offset, so a decoration
+// claiming it would make "the start of the block" refer to two different places.
+func TestDecorationCarriesNoLogicalRange(t *testing.T) {
+	rows := Layout(Spans{
+		Text: "quoted",
+		Runs: []Run{{Range: Range{0, 6}, Kind: SpanPlain}},
+	}, LayoutOptions{Width: 40, Indent: 3})
+
+	if len(rows) != 1 || len(rows[0].Spans) < 2 {
+		t.Fatalf("want an indent span plus content, got %+v", rows)
+	}
+	indent := rows[0].Spans[0]
+	if indent.Kind != SpanIndent {
+		t.Fatalf("first span kind = %v, want SpanIndent", indent.Kind)
+	}
+	if indent.Range.HasText() {
+		t.Fatalf("indent span claims logical range %+v; decoration must claim none", indent.Range)
+	}
+	if got := rows[0].Range; got.Start != 0 || got.End != 6 {
+		t.Fatalf("row logical range = %+v, want {0 6}", got)
+	}
+}
+
+// An expanded tab is display only. A copy of indented code keeps the author's
+// tab; a row shows the spaces the terminal would.
+func TestTabsExpandForDisplayAndSurviveInLogicalText(t *testing.T) {
+	const text = "a\tb"
+	block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{Width: 40})
+
+	if block.LogicalText() != text {
+		t.Fatalf("logical text = %q, want %q", block.LogicalText(), text)
+	}
+	if got := rowsText([]DisplayRow{block.Rows[0]}); got != "a       b" {
+		t.Fatalf("display text = %q, want %q", got, "a       b")
+	}
+	if got := block.Rows[0].Cells; got != 9 {
+		t.Fatalf("row cells = %d, want 9", got)
+	}
+	// The tab is its own span, because its display text and its logical range
+	// have different lengths.
+	var tab *Span
+	for i := range block.Rows[0].Spans {
+		if block.Rows[0].Spans[i].Range.Len() == 1 && block.Rows[0].Spans[i].Cells == 7 {
+			tab = &block.Rows[0].Spans[i]
+		}
+	}
+	if tab == nil {
+		t.Fatalf("no span carries the expanded tab: %+v", block.Rows[0].Spans)
+	}
+	if got := block.Logical[tab.Range.Start:tab.Range.End]; got != "\t" {
+		t.Fatalf("the tab span's logical text = %q, want a tab", got)
+	}
+}
+
+// A click maps to an offset, and the offset it names must be a grapheme
+// boundary. This is the property that keeps half an emoji off the clipboard.
+func TestEveryCellOnARowMapsToAGraphemeBoundary(t *testing.T) {
+	for _, f := range textFixtures {
+		t.Run(f.name, func(t *testing.T) {
+			block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+				Width: 16, Indent: 2, Breakpoints: "/-:",
+			})
+			for i, row := range block.Rows {
+				for cell := -2; cell <= row.Cells+2; cell++ {
+					off := block.OffsetAt(i, cell)
+					if off < 0 || off > len(f.text) {
+						t.Fatalf("row %d cell %d -> offset %d, outside the text", i, cell, off)
+					}
+					if got := SnapToBoundary(f.text, off); got != off {
+						t.Fatalf("row %d cell %d -> offset %d is not a grapheme boundary (snaps to %d) in %q",
+							i, cell, off, got, f.text)
+					}
+				}
+			}
+		})
+	}
+}
+
+// CellAt and OffsetAt are inverses at every offset a reader can point at.
+//
+// Two families of offset are excluded, and neither is a weakening: the
+// coordinate genuinely cannot name them.
+//
+//   - An offset INSIDE a multi-byte grapheme is not a place text can be cut, so
+//     no cell maps to it.
+//   - An offset at a HARD break — the "\n" itself and the position just after
+//     it — is the boundary between two rows. A cell is a position within one
+//     row, so it cannot name a byte that is only visible as the reason the row
+//     ended.
+func TestCellAtRoundTripsThroughOffsetAt(t *testing.T) {
+	for _, f := range textFixtures {
+		t.Run(f.name, func(t *testing.T) {
+			block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+				Width: 20, Indent: 3, Breakpoints: "/-:",
+			})
+			for i, row := range block.Rows {
+				if !row.Range.HasText() || row.Range.Empty() {
+					continue
+				}
+				for off := row.Range.Start; off < row.Range.End; off++ {
+					if got := SnapToBoundary(f.text, off); got != off {
+						continue // a continuation byte is not a place text can be cut
+					}
+					if f.text[off] == '\n' {
+						continue // the break itself belongs to no single row
+					}
+					cell, ok := block.CellAt(i, off)
+					if !ok {
+						continue
+					}
+					if back := block.OffsetAt(i, cell); back != off {
+						t.Fatalf("row %d: offset %d (%q) -> cell %d -> offset %d in %q",
+							i, off, f.text[off], cell, back, f.text)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A cell past the last visible character resolves to where that text ends —
+// the offset just after it — and never falls through to a byte the reader
+// cannot see at all.
+//
+// The distinction matters because a soft wrap puts an invisible byte (the
+// consumed space) at exactly the offset where the visible text ends. Returning
+// the row's END instead would report that space's successor, which is one byte
+// further right than anything on screen: a drag to the right edge of a wrapped
+// line would select a character from the next row.
+func TestACellPastTheLastVisibleCharacterResolvesToWhereThatTextEnds(t *testing.T) {
+	// Wrapped: row 0 is "hello" plus an invisible consumed space.
+	wrapped := LayoutBlock(Block{ID: "msg:1", Text: "hello world"}, LayoutOptions{Width: 8})
+	row := wrapped.Rows[0]
+	got := wrapped.OffsetAt(0, row.Cells)
+	if got != row.Range.End-1 {
+		t.Fatalf("a click at the row's right edge resolved to %d, want the offset of the "+
+			"consumed space %d (the row range is %+v)", got, row.Range.End-1, row.Range)
+	}
+	if wrapped.Logical[got] != ' ' {
+		t.Fatalf("offset %d is %q, want the consumed space", got, wrapped.Logical[got])
+	}
+	if got >= row.Range.End {
+		t.Fatalf("offset %d is past the row's range %+v", got, row.Range)
+	}
+
+	// Unwrapped: there is no consumed space, so the offset is simply row end.
+	plain := LayoutBlock(Block{ID: "msg:2", Text: "hello world"}, LayoutOptions{Width: 40})
+	prow := plain.Rows[0]
+	if got := plain.OffsetAt(0, prow.Cells+5); got != prow.Range.End {
+		t.Fatalf("a click past an unwrapped row resolved to %d, want the row end %d",
+			got, prow.Range.End)
+	}
+}
+
+// A cell past the end of a row names the end of that row, so a drag that runs
+// off the right edge selects to the end of the line rather than nothing.
+func TestACellPastTheEndOfARowNamesTheEndOfItsRange(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: "alpha beta"}, LayoutOptions{Width: 40})
+	row := block.Rows[0]
+	if got := block.OffsetAt(0, 500); got != row.Range.End {
+		t.Fatalf("OffsetAt(0, 500) = %d, want the row end %d", got, row.Range.End)
+	}
+	if got := block.OffsetAt(99, 0); got != len(block.Logical) {
+		t.Fatalf("OffsetAt on a nonexistent row = %d, want %d", got, len(block.Logical))
+	}
+}
+
+// A 300-character token has no break opportunity in it, so the wrap has to
+// break mid-token rather than overflow. The fixture exists because the failure
+// mode is a row wider than the terminal, which is unreachable on screen.
+func TestAnUnbreakableTokenWrapsMidToken(t *testing.T) {
+	text := strings.Repeat("a", 300)
+	block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{Width: 20})
+	if len(block.Rows) < 15 {
+		t.Fatalf("300 chars at width 20 should need many rows, got %d", len(block.Rows))
+	}
+	for i, row := range block.Rows {
+		if row.Cells > 20 {
+			t.Fatalf("row %d is %d cells", i, row.Cells)
+		}
+	}
+	// A soft wrap must not insert a newline, so the token comes back whole.
+	if got := reassembled(block.Rows); got != text {
+		t.Fatalf("reassembled content is %d bytes, want %d", len(got), len(text))
+	}
+}
+
+// A path or flag breaks at its own separators, so the pieces stay recognisable
+// and a copy of the whole still reconstructs exactly.
+func TestBreakpointsKeepReferencesReconstructible(t *testing.T) {
+	const text = "/Users/alec/projects/marshal/internal/app/tui/wrap.go"
+	block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{
+		Width: 24, Breakpoints: "/-:",
+	})
+	if len(block.Rows) < 2 {
+		t.Fatalf("the path should wrap at width 24, got %d row(s)", len(block.Rows))
+	}
+	if got := reassembled(block.Rows); got != text {
+		t.Fatalf("reassembled path:\n got %q\nwant %q", got, text)
+	}
+	// A break after "/" keeps the separator on the row it ends, so the next
+	// row starts with the path segment rather than with a stray slash.
+	for i, row := range block.Rows[:len(block.Rows)-1] {
+		if !row.Range.HasText() || row.Range.Empty() {
+			continue
+		}
+		last := text[row.Range.End-1]
+		if last != '/' {
+			t.Fatalf("row %d breaks after %q, not after a breakpoint", i, string(last))
+		}
+	}
+}
+
+// A wrap that consumes a word boundary must be able to put that boundary back.
+// Without it, reading text off the rows either glues two words together
+// ("helloworld") or has to invent a separator, and an invented one cannot be
+// told apart from a space the author wrote.
+func TestASoftWrapAtASpaceDeclaresTheSeparatorItConsumed(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: "hello world"}, LayoutOptions{Width: 8})
+	if len(block.Rows) != 2 {
+		t.Fatalf("want the line to wrap into 2 rows at width 8, got %d: %q",
+			len(block.Rows), rowsText(block.Rows))
+	}
+	if !block.Rows[0].ConsumedSpace {
+		t.Fatalf("the first row wrapped at a space and must say so: %+v", block.Rows[0])
+	}
+	if got := block.Rows[0].Separator(); got != " " {
+		t.Fatalf("separator = %q, want a space", got)
+	}
+	// A wrap that fell mid-token consumed nothing, so no separator is invented.
+	midToken := LayoutBlock(Block{ID: "msg:2", Text: strings.Repeat("a", 20)}, LayoutOptions{Width: 8})
+	if midToken.Rows[0].ConsumedSpace {
+		t.Fatalf("a mid-token wrap must not claim a consumed space: %+v", midToken.Rows[0])
+	}
+	if got := midToken.Rows[0].Separator(); got != "" {
+		t.Fatalf("separator after a mid-token wrap = %q, want none", got)
+	}
+}
+
+// Trailing whitespace before the AUTHOR's newline belongs to the author. It is
+// not a wrap artefact, so it must still be displayed: eliding it would silently
+// delete bytes from the middle of a block.
+func TestTrailingWhitespaceBeforeAHardBreakIsKept(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: "keep   \nnext"}, LayoutOptions{Width: 40})
+	if got := block.Rows[0].ContentText(); got != "keep   " {
+		t.Fatalf("the author's trailing spaces were dropped: %q", got)
+	}
+	if block.Rows[0].ConsumedSpace {
+		t.Fatalf("a hard-broken row must not claim a consumed wrap space")
+	}
+	if got := reassembled(block.Rows); got != "keep   \nnext" {
+		t.Fatalf("reassembled %q, want the trailing spaces kept", got)
+	}
+}
+
+// TextAcross is what a drag-selection copy is built on: it must return the
+// LOGICAL text between two display positions, with no soft-wrap newline and no
+// decoration.
+func TestTextAcrossReturnsLogicalTextBetweenDisplayPositions(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: "hello world"}, LayoutOptions{
+		Width: 8, Indent: 2,
+	})
+	// Rows: "  hello" (cells 2..6 = hello), "  world". The range is half-open,
+	// so the end cell names the offset just past the last character selected.
+	got := block.TextAcross(0, 2, 0, 7)
+	if got != "hello" {
+		t.Fatalf("TextAcross over the first row = %q, want %q", got, "hello")
+	}
+	// Across the wrap: the consumed space is restored, not turned into a
+	// newline and not dropped.
+	got = block.TextAcross(0, 2, 1, 8)
+	if got != "hello world" {
+		t.Fatalf("TextAcross across the wrap = %q, want %q", got, "hello world")
+	}
+	// A reversed drag yields the same text as a forward one.
+	if back := block.TextAcross(1, 8, 0, 2); back != got {
+		t.Fatalf("a backwards drag gave %q, want %q", back, got)
+	}
+	// The end cell is exclusive: stopping at the start of "world" leaves it out.
+	if got := block.TextAcross(0, 2, 1, 2); got != "hello " {
+		t.Fatalf("TextAcross up to the start of the next row = %q, want %q", got, "hello ")
+	}
+	// A drag that runs off both ends is clamped, not a panic.
+	if got := block.TextAcross(-5, -5, 99, 99); got != "hello world" {
+		t.Fatalf("an out-of-range drag gave %q, want the whole text", got)
+	}
+}
+
+// A drag across an indented row must not pick up the indent: it is decoration
+// the renderer added, and a copy that included it would paste stray spaces.
+func TestTextAcrossSkipsDecoration(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: "code"}, LayoutOptions{Width: 40, Indent: 4})
+	if got := block.TextAcross(0, 0, 0, 8); got != "code" {
+		t.Fatalf("a drag over the indent and the text gave %q, want %q", got, "code")
+	}
+}
+
+// An empty block lays out as no rows rather than as one empty row, so a caller
+// does not render a blank line for content that is not there.
+func TestEmptyTextLaysOutAsNoRows(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: ""}, LayoutOptions{Width: 40, Indent: 3})
+	if len(block.Rows) != 0 {
+		t.Fatalf("empty text produced %d rows: %+v", len(block.Rows), block.Rows)
+	}
+	if got := block.LogicalText(); got != "" {
+		t.Fatalf("logical text = %q, want empty", got)
+	}
+}
+
+// A blank line between paragraphs is a row with no content, not a missing row:
+// dropping it would glue two paragraphs together in a copy.
+//
+// Its logical range covers exactly the author's newline. An earlier version kept
+// such a row's range empty, which read well and was wrong: the newline is a real
+// byte of the block, and leaving it out of every range would mean the ranges no
+// longer partition the text — the property the drag-selection mapping is built
+// on.
+func TestABlankLineIsARowShowingNothingThatStillCoversItsNewline(t *testing.T) {
+	block := LayoutBlock(Block{ID: "msg:1", Text: "para one\n\npara two"}, LayoutOptions{Width: 40})
+	if len(block.Rows) != 3 {
+		t.Fatalf("want 3 rows (two paragraphs and the blank between), got %d: %q",
+			len(block.Rows), rowsText(block.Rows))
+	}
+	blank := block.Rows[1]
+	if got := blank.ContentText(); got != "" {
+		t.Fatalf("the blank row shows %q, want nothing", got)
+	}
+	if got := blank.Range; got.Len() != 1 || block.Logical[got.Start:got.End] != "\n" {
+		t.Fatalf("the blank row's range is %+v, want exactly the author's newline", got)
+	}
+	if !blank.HardBreak {
+		t.Fatalf("the blank row ends at an author newline, so it is a hard break")
+	}
+	if got := reassembled(block.Rows); got != "para one\n\npara two" {
+		t.Fatalf("reassembled %q, want the paragraphs kept apart", got)
+	}
+}
+
+// An unmeasured width (0) must not wrap everything into single characters: a
+// panel renders before it is measured, and shredding its text then would show a
+// column of letters on the first frame.
+func TestAnUnmeasuredWidthDoesNotWrap(t *testing.T) {
+	const text = "a line that is longer than any zero-width budget could hold"
+	block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{Width: 0})
+	if len(block.Rows) != 1 {
+		t.Fatalf("unmeasured width produced %d rows, want 1", len(block.Rows))
+	}
+	if got := contentText(block.Rows); got != text {
+		t.Fatalf("content = %q, want the text unchanged", got)
+	}
+}
+
+// A row that would be broken inside a grapheme must not be: the break lands at
+// a grapheme boundary, so a wide character is never split across two rows.
+func TestWrappingNeverSplitsAGrapheme(t *testing.T) {
+	const text = "日本語日本語日本語"
+	for _, width := range []int{5, 6, 7, 8} {
+		block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{Width: width})
+		for i, row := range block.Rows {
+			if row.Range.Empty() {
+				continue
+			}
+			start := SnapToBoundary(text, row.Range.Start)
+			end := SnapToBoundary(text, row.Range.End)
+			if start != row.Range.Start || end != row.Range.End {
+				t.Fatalf("width %d row %d breaks inside a grapheme: %+v", width, i, row.Range)
+			}
+		}
+		if got := reassembled(block.Rows); got != text {
+			t.Fatalf("width %d reassembled %q, want %q", width, got, text)
+		}
+	}
+}

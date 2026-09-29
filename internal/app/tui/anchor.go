@@ -12,6 +12,54 @@ type blockSpan struct {
 	endLine   int
 }
 
+// renderedBlockSpan is one block's mapped rendering, placed in the transcript.
+//
+// It records BOTH coordinate systems for the same block, because the two are
+// needed by different questions and neither can be derived from the other:
+//
+//   - blockRow is the block's first DISPLAY row index in the transcript, which
+//     is what a pointer event's row is compared against. blockSpans measures the
+//     same block in transcript lines for scrolling, and a block that renders to
+//     three lines holds three entries there — so the two agree only by accident.
+//   - rendered carries the block's own rows and their logical ranges, which is
+//     what turns a cell inside the block into an offset in the block's text.
+//
+// Keeping them together is what makes a click resolve in one step: find the
+// block by row, then ask that block where the cell is. Splitting them across two
+// slices keyed differently is how an offset ends up computed against the wrong
+// block's text.
+type renderedBlockSpan struct {
+	id       conversation.BlockID
+	blockRow int
+	rows     int
+	rendered conversation.RenderedBlock
+}
+
+// renderedBlockAt returns the block covering a transcript display row.
+func (m Model) renderedBlockAt(row int) (renderedBlockSpan, bool) {
+	for _, s := range m.blockRenderSpans {
+		if row >= s.blockRow && row < s.blockRow+s.rows {
+			return s, true
+		}
+	}
+	return renderedBlockSpan{}, false
+}
+
+// OffsetAtTranscriptCell turns a transcript (row, cell) into a logical offset in
+// the block at that row.
+//
+// It reports false when no rendered block covers the row: the transcript also
+// renders chrome (the welcome banner, a turn rule, a subagent card) that is not
+// a mapped block, and a call there must decline rather than guess an offset in
+// some other block's text.
+func (m Model) OffsetAtTranscriptCell(row, cell int) (conversation.BlockID, int, bool) {
+	s, ok := m.renderedBlockAt(row)
+	if !ok {
+		return "", 0, false
+	}
+	return s.id, s.rendered.OffsetAt(row-s.blockRow, cell), true
+}
+
 // captureReadingAnchor records where the reader is, before the transcript is
 // rebuilt.
 //

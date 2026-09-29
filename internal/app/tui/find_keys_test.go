@@ -56,6 +56,8 @@ func keyPressNamed(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyF6}
 	case "ctrl+f":
 		return tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}
+	case "ctrl+c":
+		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	}
 	if r := []rune(name); len(r) == 1 {
 		// A printable character carries its Text, which is what a real

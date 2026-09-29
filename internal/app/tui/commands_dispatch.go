@@ -252,6 +252,18 @@ func init() {
 			m.refreshViewport()
 			return m, nil
 		},
+		"find": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			// The argument is ONE query, joined rather than taken from args[0]:
+			// /find is about finding a phrase, and searching for the first word
+			// of "the parser drops" would be a different search from the one
+			// the reader asked for.
+			//
+			// dispatchCommand has already been through shlex, so a quoted
+			// argument arrives here intact.
+			m.openFind(strings.Join(args, " "))
+			m.afterFindQueryChange()
+			return m, nil
+		},
 		"actions": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			// /actions and F2 open the same palette. The command exists so
 			// the surface is discoverable by name (and completable); the

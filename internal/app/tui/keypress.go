@@ -120,6 +120,23 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 	}
 
+	// An OPEN SEARCH owns the keyboard outright, and this is the one place that
+	// is true: find is a small text entry, so every printable key, backspace and
+	// the two ways out belong to the query rather than to whatever surface was
+	// focused when it opened.
+	//
+	// It is checked before the focus dispatch below because that dispatch would
+	// otherwise claim Esc, and before the composer's own path because typing
+	// must edit the QUERY rather than a draft the reader cannot see. The
+	// alternative — routing find's keys through the composer and trying to undo
+	// the draft afterwards — is how a search silently rewrites the prompt
+	// somebody was halfway through.
+	if m.find.open {
+		if mm, cmd, handled := m.handleFindKey(msg); handled {
+			return mm, cmd, true
+		}
+	}
+
 	// Focus dispatch runs before the composer keymap so exactly one surface
 	// owns a key. Nothing here depends on which target is focused, so it runs
 	// regardless — a control key that works while the conversation is focused
@@ -132,6 +149,31 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// the guard broke.
 		mm, cmd := m.toggleMouseCapture()
 		return mm, cmd, true
+	case "/":
+		// `/` opens find while the CONVERSATION owns the keys, and stays a
+		// slash while the composer does. The two are not in conflict: a slash
+		// typed into the composer is how every command is entered, and a
+		// conversation that owns the keys has no composer to type into.
+		if m.openFindForSlashKey() {
+			return *m, nil, true
+		}
+		return *m, nil, false
+	case "f3":
+		// F3 is the terminal's find key, and it STEPS rather than opens. With
+		// no search running it does nothing: opening an empty search on a key
+		// the reader pressed reflexively would put them in a mode they did not
+		// choose, and the query they would be typing into is not visible.
+		if m.find.open && len(m.find.matches) > 0 {
+			m.stepFind(1)
+			return *m, nil, true
+		}
+		return *m, nil, false
+	case "shift+f3":
+		if m.find.open && len(m.find.matches) > 0 {
+			m.stepFind(-1)
+			return *m, nil, true
+		}
+		return *m, nil, false
 	case "f6", "shift+f6":
 		return *m, m.cycleFocus(msg.String() == "f6"), true
 	case "f2":

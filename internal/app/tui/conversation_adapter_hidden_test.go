@@ -69,6 +69,18 @@ func TestConversationAdapterMarksUndrawnMessagesHidden(t *testing.T) {
 	}
 }
 
+// auditEventWithNotice returns a tool event whose captured output was capped,
+// which is the only way a document reports that a search could not cover all of
+// it.
+func auditEventWithNotice() registry.AuditEvent {
+	return registry.AuditEvent{
+		ToolName:      "file.read",
+		Timestamp:     time.Unix(702, 0),
+		ResultContent: "captured output",
+		Notice:        &registry.ToolNotice{Kind: registry.NoticeOversizeFallback},
+	}
+}
+
 // conversationBlockForLastItem resolves the document block for whatever is
 // already at the end of the transcript.
 //

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/app/tui/conversation"
 )
 
@@ -375,6 +377,120 @@ func (m Model) findStatus() string {
 		b.WriteString(" · searched captured output, which may itself be truncated")
 	}
 	return b.String()
+}
+
+// handleFindKey routes one keystroke while the search is open.
+//
+// It reports handled for every key it recognises and UNHANDLED for the ones that
+// are not find's business at all. Unhandled keys fall through to the rest of the
+// keymap, which is what keeps Ctrl+S, F6 and the palette working while a search
+// is open — a search that swallowed every key would take the mouse toggle with
+// it.
+//
+// Printable input is handled here rather than by the composer for one reason:
+// what the reader is typing belongs to the QUERY. Routing it through the
+// composer and undoing the draft afterwards is how a search silently edits the
+// prompt somebody was halfway through writing.
+func (m *Model) handleFindKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "esc":
+		// Esc puts the reader back where they opened the search. Enter keeps
+		// them on the match. Both close; only the position differs, and that
+		// difference is the entire reason both keys exist.
+		m.closeFind()
+		m.lastTranscriptHash = 0
+		m.refreshViewport()
+		return m, nil, true
+	case "enter":
+		m.acceptFind()
+		m.lastTranscriptHash = 0
+		m.refreshViewport()
+		return m, nil, true
+	case "backspace", "ctrl+h":
+		m.setFindQuery(dropLastRune(m.find.query))
+		m.afterFindQueryChange()
+		return m, nil, true
+	case "f3":
+		m.stepFind(1)
+		return m, nil, true
+	case "shift+f3":
+		m.stepFind(-1)
+		return m, nil, true
+	}
+	if !isPrintableKey(msg) {
+		return m, nil, false
+	}
+	m.setFindQuery(m.find.query + msg.Text)
+	m.afterFindQueryChange()
+	return m, nil, true
+}
+
+// isPrintableKey reports whether a keypress inserts text.
+//
+// It requires Text to be non-empty, which is what distinguishes a character key
+// from a control chord: a terminal sends "ctrl+s" with no Text and a bare "s"
+// with Text "s". Accepting anything with a printable Code instead would swallow
+// every control chord whose letter happens to be printable.
+func isPrintableKey(msg tea.KeyPressMsg) bool {
+	return msg.Text != "" && msg.Mod&(tea.ModCtrl|tea.ModAlt) == 0
+}
+
+// dropLastRune removes one character from the end of a query.
+//
+// It cuts by RUNE, not by byte: a reader searching for a phrase with an accent
+// in it would otherwise delete a fragment of a character and put invalid UTF-8
+// into the search, which then matches nothing and looks like the query was
+// silently lost.
+func dropLastRune(s string) string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return ""
+	}
+	return string(runes[:len(runes)-1])
+}
+
+// afterFindQueryChange updates the pieces that follow from a query edit.
+func (m *Model) afterFindQueryChange() {
+	// The transcript hash includes the query, so the highlight follows it as it
+	// is typed. Resetting the hash is what makes the new match appear without
+	// waiting for unrelated output.
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+}
+
+// stepFind moves the cursor and scrolls to the new match.
+//
+// Scrolling is part of the step rather than the caller's job: a key that moved
+// the cursor without moving the view would leave the reader looking at the
+// previous match, which reads as the key having done nothing.
+func (m *Model) stepFind(delta int) {
+	if len(m.find.matches) == 0 {
+		return
+	}
+	if delta >= 0 {
+		m.nextFindMatch()
+	} else {
+		m.prevFindMatch()
+	}
+	m.gotoFindMatch()
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+}
+
+// openFindForSlashKey opens the search when `/` is pressed with the conversation
+// focused, and reports whether it did.
+//
+// It is a method rather than an inline case in the keymap so the guard — `/`
+// belongs to the composer while the composer owns the keys — lives beside the
+// rest of find's wiring and cannot drift from the command that does the same
+// thing.
+func (m *Model) openFindForSlashKey() bool {
+	if m.composerReceivesTyping() {
+		return false
+	}
+	m.openFind("")
+	m.afterFindQueryChange()
+	return true
 }
 
 // findInputPrompt is the placeholder the input shows while find owns the

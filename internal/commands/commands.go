@@ -190,6 +190,23 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			// /find searches the conversation currently on screen. It is
+			// TUI-only because the result is a position in the rendered
+			// transcript: an ACP client has no viewport to scroll, and a
+			// handler that returned rows would be describing a surface the
+			// caller does not have.
+			//
+			// Its argument is a PHRASE, not a list of terms: the query is
+			// joined by the effect, and the description says so, because a
+			// reader who assumes one term per word would get a different
+			// search from the one they asked for.
+			Name:        "find",
+			Description: "Find text in the current conversation (/ opens it while reading)",
+			Args:        "[phrase]",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			// /context is the transcript-panel summary and keeps that meaning:
 			// scripts and muscle memory depend on it, and a command that
 			// silently became an inspector opener would break both. The

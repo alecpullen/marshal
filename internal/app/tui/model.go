@@ -4405,7 +4405,7 @@ func (m *Model) refreshViewport() {
 	}
 	queued := m.state.SteeringQueue()
 	notice, noticeUp := m.state.Notice()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows)
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows, m.readingState())
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -4700,6 +4700,13 @@ func (m *Model) refreshViewport() {
 	content := strings.Join(blocks, "\n")
 	if m.hasSelection() {
 		content = m.highlightSelection(content)
+	}
+	// The search is painted AFTER the selection, so a match shows through on
+	// top of a selected region: the reader is searching right now, and a
+	// highlight hidden underneath the selection tint is worse than one that
+	// overrides it.
+	if m.find.open {
+		content = m.highlightFindMatches(content)
 	}
 	m.viewport.SetContent(content)
 	if m.viewportFollow {
@@ -6621,7 +6628,7 @@ func browserGlyphStyle() lipgloss.Style {
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string, regionRows map[itemKey]int) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string, regionRows map[itemKey]int, reading readingState) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
 	// The notice banner is rendered into the transcript, so its presence
@@ -6694,7 +6701,48 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for _, q := range queued {
 		fmt.Fprintf(h, "q=%s\x00", q)
 	}
+	// The reading states render INTO the transcript but live on the Model, so
+	// without this the early-return below freezes them: closing a search would
+	// leave its highlights painted, and moving the cursor would not move the
+	// current-match mark. Same class of bug as the notice banner and the region
+	// offsets above, and the same fix.
+	//
+	// The search's QUERY and CURSOR are hashed, not its results: the results are
+	// derived from the transcript (already hashed above) plus the query, and
+	// hashing them too would only rebuild the viewport more than necessary.
+	fmt.Fprintf(h, "find=%t|%s|%d|sel=%s|%d|%d|",
+		reading.findOpen, reading.findQuery, reading.findCurrent,
+		reading.selectionBlock, reading.selectionAnchor, reading.selectionFocus)
 	return h.Sum64()
+}
+
+// readingState is the part of the Model's reading state that renders INTO the
+// transcript but is not derived from it.
+//
+// It is passed to transcriptHash as a value rather than reaching for the Model
+// because transcriptHash is a free function: it is called from tests that have
+// no Model, and giving it one would make the hash depend on the whole model
+// rather than on the inputs that change what is drawn.
+type readingState struct {
+	findOpen    bool
+	findQuery   string
+	findCurrent int
+
+	selectionBlock  conversation.BlockID
+	selectionAnchor int
+	selectionFocus  int
+}
+
+// readingState captures the Model's reading state for the transcript hash.
+func (m Model) readingState() readingState {
+	return readingState{
+		findOpen:        m.find.open,
+		findQuery:       m.find.query,
+		findCurrent:     m.find.current,
+		selectionBlock:  m.selection.sel.Block,
+		selectionAnchor: m.selection.sel.Anchor,
+		selectionFocus:  m.selection.sel.Focus,
+	}
 }
 
 // flags packs boolean/len state into a single uint64 for the hash.

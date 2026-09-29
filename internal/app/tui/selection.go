@@ -494,6 +494,80 @@ func (m Model) selectionHighlight(row int) (startCell, endCell int, ok bool) {
 	return block.HighlightRange(blockRow, from, to)
 }
 
+// highlightFindMatches paints the search's matches onto assembled transcript
+// content.
+//
+// It runs AFTER the selection, so a match shows through on top of a selected
+// region rather than being hidden by it: the reader is searching right now, and
+// a highlight they cannot see is worse than one that only overrides the
+// selection tint underneath it.
+//
+// It works on the CONTENT STRING for the same reason highlightSelection does.
+// Every block is already rendered and joined, and re-rendering the whole
+// transcript to add a background would double the work on every keystroke.
+//
+// A match in a block with no cell mapping is simply not painted: the search can
+// still jump to it, because the jump uses block spans, which cover every block.
+// That limit is real and is pinned by a test rather than left to be discovered.
+func (m Model) highlightFindMatches(content string) string {
+	lines := strings.Split(content, "\n")
+	for row := range lines {
+		spans := m.findMatchHighlights(row)
+		if len(spans) == 0 {
+			continue
+		}
+		// The non-current matches go on first and the current one last, so the
+		// cursor's hit is never repainted by a neighbour that happens to
+		// overlap it.
+		for _, current := range []bool{false, true} {
+			for i := len(spans) - 1; i >= 0; i-- {
+				if spans[i].current != current {
+					continue
+				}
+				lines[row] = highlightFindCells(lines[row], spans[i].start, spans[i].end, current)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// highlightFindCells wraps cells [start, end) of one rendered line in the match
+// background.
+//
+// The line is ANSI-styled already, so the range is cut by VISIBLE CELLS rather
+// than by bytes — ansi.Cut walks escape sequences without counting them, and
+// slicing the raw string would land inside a colour code. The middle piece is
+// restyled from its stripped form: the underlying foreground is kept from
+// fighting the match background, and the CHARACTERS, which are what the reader
+// is looking for, are unchanged.
+//
+// The two match kinds take DIFFERENT colours, and the current one is the one
+// with more contrast against the body text. A reader needs to see both which
+// lines matched and which hit the cursor is counting from; a single colour
+// would leave them unable to tell, and the position in the results ("3/7") is
+// not visible while they are reading the line.
+func highlightFindCells(line string, start, end int, current bool) string {
+	w := ansi.StringWidth(line)
+	if start >= w {
+		return line
+	}
+	if end > w {
+		end = w
+	}
+	if end <= start {
+		return line
+	}
+	bg, fg := th().BGFind, th().FGDefault
+	if current {
+		bg, fg = th().BGFindCurrent, th().FGEmphasis
+	}
+	style := lipgloss.NewStyle().Foreground(fg).Background(bg)
+	before := ansi.Cut(line, 0, start)
+	mid := ansi.Cut(line, start, end)
+	after := ansi.Cut(line, end, w)
+	return before + style.Render(ansi.Strip(mid)) + after
+}
+
 // highlightSelection paints the selection onto assembled transcript content.
 //
 // It works on the CONTENT STRING rather than on the renderer, because by this

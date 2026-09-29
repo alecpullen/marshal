@@ -91,9 +91,9 @@ func TestTranscriptHashStableAcrossIdenticalOffsets(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		offsets[itemKey{viewID: fmt.Sprintf("subagent:s%d", i), kind: session.KindSubagent}] = i
 	}
-	first := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil)
+	first := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil, readingState{})
 	for i := 0; i < 200; i++ {
-		if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil); got != first {
+		if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil, readingState{}); got != first {
 			t.Fatalf("hash unstable across identical offsets (iteration %d) — sort the keys before hashing", i)
 		}
 	}
@@ -101,8 +101,8 @@ func TestTranscriptHashStableAcrossIdenticalOffsets(t *testing.T) {
 
 func TestTranscriptHashChangesWithOffset(t *testing.T) {
 	k := itemKey{viewID: "subagent:1", kind: session.KindSubagent}
-	a := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 0}, nil, nil)
-	b := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 1}, nil, nil)
+	a := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 0}, nil, nil, readingState{})
+	b := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 1}, nil, nil, readingState{})
 	if a == b {
 		t.Fatal("hash must change when a region offset changes")
 	}

@@ -306,6 +306,24 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
 	}
 
+	// The reading surfaces report themselves here, at priority 2, because the
+	// question they answer — "what will this key do, and what is this app
+	// tracking for me?" — is nearer to the reader than the session's identity.
+	// They outrank the route name, the context counter and the directory, and
+	// they sit BELOW the priority-0 cues so a reader who has moved focus or is
+	// on an untrusted tree still sees those.
+	//
+	// Priority 2 is deliberately not 1: 1 is the essential-hint slot, and a
+	// hint that gets a stuck user out of a modal state must survive longer than
+	// a search counter. Both are still shed after the mode cue and the
+	// untrusted warning.
+	if s := m.findStatus(); s != "" {
+		segs = append(segs, statusSeg{text: warningStyle().Render(glyph.Search + " " + s), priority: 2})
+	}
+	if s := m.selectionStatus(); s != "" {
+		segs = append(segs, statusSeg{text: dimStyle().Render(s), priority: 2})
+	}
+
 	route := m.state.ActiveRoute()
 	if route.Active {
 		segs = append(segs, statusSeg{text: identityStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})

@@ -45,15 +45,23 @@ func findTestModel(t *testing.T) Model {
 func findScrollableModel(t *testing.T) Model {
 	t.Helper()
 	m := findTestModel(t)
+	// The filler is a run of FINAL answers, not ordinary messages. Only a final
+	// answer is rendered through the mapped path, so filler that was not final
+	// would leave this fixture with no cell mapping at all — and every test that
+	// selects or highlights in it would be asserting against something that
+	// cannot exist.
 	for i := 0; i < 20; i++ {
-		m.state.AddMessage(session.RoleAssistant,
-			"filler line to make the transcript taller than the viewport", session.ContentTypeMarkdown)
+		m.state.AddMessageFinal(session.RoleAssistant,
+			"filler answer to make the transcript taller than the viewport", session.ContentTypeMarkdown)
 	}
 	m.state.AddMessage(session.RoleUser, "the final prompt mentions tokens", session.ContentTypePlain)
 	m.refreshViewport()
 	if m.viewport.TotalLineCount() <= m.viewport.Height() {
 		t.Fatalf("fixture is stale: %d lines fit in a %d-row viewport, so nothing can scroll",
 			m.viewport.TotalLineCount(), m.viewport.Height())
+	}
+	if len(m.blockRenderSpans) == 0 {
+		t.Fatal("fixture is stale: no block carries a cell mapping, so nothing can be selected or highlighted")
 	}
 	return m
 }

@@ -57,6 +57,12 @@ const (
 	SourceOutput CopySource = "output"
 	// SourcePath is a filesystem path the block refers to.
 	SourcePath CopySource = "path"
+	// SourcePatch is a patch (diff) as fetched, not as rendered. It is a
+	// source of its own rather than a kind of code: a patch carries line
+	// markers and hunk headers that are part of what it IS, and stripping
+	// them the way SourceCode strips a fence is exactly what makes a copied
+	// diff stop applying.
+	SourcePatch CopySource = "patch"
 )
 
 // CopyTarget is one thing a block can put on the clipboard, with the label

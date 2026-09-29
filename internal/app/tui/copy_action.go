@@ -149,6 +149,51 @@ func blockSourceTarget(block conversation.Block, source conversation.CopySource)
 	return conversation.CopyTarget{}, false
 }
 
+// copyInspectedPath copies the path selected on the inspector's Changes tab.
+//
+// It is a separate entry point from the conversation's path copy because it
+// has a different source: the conversation action reads the block under the
+// reading anchor, and this one reads the inspector's own selection. One action
+// with two sources would have to guess.
+func (m *Model) copyInspectedPath() tea.Cmd {
+	if m.inspector == nil {
+		m.showToast(copyResolveFailure(conversation.SourcePath, nil))
+		return nil
+	}
+	path, ok := m.inspector.model.CapturePath()
+	if !ok {
+		m.showToast("no changed file is selected — /inspect changes lists them")
+		return nil
+	}
+	return m.beginCopy(conversation.CopyTarget{
+		Source: conversation.SourcePath,
+		Text:   path,
+		Label:  "Copy path",
+	})
+}
+
+// copyInspectedPatch copies the patch as FETCHED for the inspected file.
+//
+// The label states when the fetch was capped, because a copied patch that is a
+// prefix must not be pasted as though it were whole — that failure surfaces in
+// another program, long after the feedback that said "Copied".
+func (m *Model) copyInspectedPatch() tea.Cmd {
+	if m.inspector == nil {
+		m.showToast(copyResolveFailure(conversation.SourcePatch, nil))
+		return nil
+	}
+	text, label, _, ok := m.inspector.model.CapturedPatch()
+	if !ok {
+		m.showToast("no patch is loaded — press Enter on a changed file first")
+		return nil
+	}
+	return m.beginCopy(conversation.CopyTarget{
+		Source: conversation.SourcePatch,
+		Text:   text,
+		Label:  label,
+	})
+}
+
 // copyBlock returns the block the copy action applies to.
 //
 // It is the block at the top of the viewport, which is where the reading
@@ -268,6 +313,8 @@ func copyResolveFailure(source conversation.CopySource, err error) string {
 		what = "this block has no captured output to copy"
 	case conversation.SourcePath:
 		what = "this block refers to no file path"
+	case conversation.SourcePatch:
+		what = "there is no captured patch to copy"
 	case conversation.SourceAnswer:
 		what = "this block has no text to copy"
 	}

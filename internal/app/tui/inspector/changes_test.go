@@ -382,6 +382,120 @@ func TestChangesTruncatedFetchIsDisclosed(t *testing.T) {
 	}
 }
 
+// --- copying ------------------------------------------------------------
+
+// TestCapturedPatchIsTheFetchedBytesNotTheRenderedView is the copy-integrity
+// rule: the clipboard must receive the patch as fetched, not the rendered,
+// coloured, marker-prefixed body the reader sees. Putting the rendered form on
+// the clipboard produces something that no longer applies.
+func TestCapturedPatchIsTheFetchedBytesNotTheRenderedView(t *testing.T) {
+	patch := "--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n-old line\n+new line\n"
+	m := New()
+	m.SetScope("s1")
+	m.SetChanges(changesSnapshot(changedfiles.StatusOK, "a.go"))
+	m.Resize(80, 20)
+	if !m.EnterSelected() {
+		t.Fatal("EnterSelected refused the selection")
+	}
+	req, _ := m.PendingDiffRequest()
+	if !m.ApplyDiffLoaded(DiffLoadedMsg{Scope: req.Scope, Request: req.Request, Path: "a.go",
+		Diff: changedfiles.Diff{Path: "a.go", Patch: patch}}) {
+		t.Fatal("the reply was rejected")
+	}
+
+	text, label, truncated, ok := m.CapturedPatch()
+	if !ok {
+		t.Fatal("CapturedPatch reported nothing to copy after a diff was loaded")
+	}
+	if text != patch {
+		t.Fatalf("captured patch =\n%q\nwant the fetched bytes\n%q", text, patch)
+	}
+	if truncated {
+		t.Fatal("an un-truncated fetch was labelled truncated")
+	}
+	if !strings.Contains(label, "a.go") {
+		t.Fatalf("label %q does not name the file it copied", label)
+	}
+	if strings.Contains(text, "\x1b") {
+		t.Fatalf("the captured patch carries ANSI escapes, which are not patch bytes:\n%q", text)
+	}
+}
+
+// TestCapturedPatchSaysWhenTheFetchWasCapped pins the honesty rule for a copy:
+// a patch that is a prefix must be labelled as one, because the reader finds
+// out otherwise when they paste it somewhere it does not apply.
+func TestCapturedPatchSaysWhenTheFetchWasCapped(t *testing.T) {
+	m := New()
+	m.SetScope("s1")
+	m.SetChanges(changesSnapshot(changedfiles.StatusOK, "big.go"))
+	m.Resize(80, 20)
+	m.EnterSelected()
+	req, _ := m.PendingDiffRequest()
+	m.ApplyDiffLoaded(DiffLoadedMsg{Scope: req.Scope, Request: req.Request, Path: "big.go",
+		Diff: changedfiles.Diff{Path: "big.go", Patch: "--- a/big.go\n+partial\n", Truncated: true}})
+
+	_, label, truncated, ok := m.CapturedPatch()
+	if !ok {
+		t.Fatal("nothing to copy")
+	}
+	if !truncated {
+		t.Fatal("a capped fetch was reported as complete")
+	}
+	lower := strings.ToLower(label)
+	if !strings.Contains(lower, "prefix") && !strings.Contains(lower, "truncat") && !strings.Contains(lower, "partial") {
+		t.Fatalf("the label %q does not disclose the cap", label)
+	}
+}
+
+// TestCapturedPatchIsEmptyUntilAReadLands pins that a copy cannot grab the
+// PREVIOUS file's bytes. Selecting a new file clears the captured patch, so a
+// copy taken mid-load copies nothing rather than the wrong file.
+func TestCapturedPatchIsEmptyUntilAReadLands(t *testing.T) {
+	m := New()
+	m.SetScope("s1")
+	m.SetChanges(changesSnapshot(changedfiles.StatusOK, "a.go", "b.go"))
+	m.Resize(80, 20)
+
+	m.EnterSelected()
+	req, _ := m.PendingDiffRequest()
+	m.ApplyDiffLoaded(DiffLoadedMsg{Scope: req.Scope, Request: req.Request, Path: "a.go",
+		Diff: changedfiles.Diff{Path: "a.go", Patch: "--- a/a.go\n+a\n"}})
+	if _, _, _, ok := m.CapturedPatch(); !ok {
+		t.Fatal("precondition: a.go's patch must be captured")
+	}
+
+	// Move to b.go and open it: the read is now in flight.
+	m.MoveChangesSelection(1)
+	m.EnterSelected()
+	if text, _, _, ok := m.CapturedPatch(); ok {
+		t.Fatalf("a copy during the load would have grabbed a.go's bytes: %q", text)
+	}
+	if path, ok := m.CapturePath(); !ok || path != "b.go" {
+		t.Fatalf("CapturePath = %q/%v during the load, want b.go to stay copyable", path, ok)
+	}
+}
+
+// TestCapturePathIsTheSelectedChangedFile pins that the path copy follows the
+// cursor rather than a stale selection.
+func TestCapturePathIsTheSelectedChangedFile(t *testing.T) {
+	m := New()
+	m.SetChanges(changesSnapshot(changedfiles.StatusOK, "a.go", "b.go"))
+	m.Resize(80, 20)
+
+	if got, _ := m.CapturePath(); got != "a.go" {
+		t.Fatalf("CapturePath = %q, want the first row", got)
+	}
+	m.MoveChangesSelection(1)
+	if got, _ := m.CapturePath(); got != "b.go" {
+		t.Fatalf("CapturePath = %q after moving, want b.go", got)
+	}
+
+	empty := New()
+	if _, ok := empty.CapturePath(); ok {
+		t.Fatal("CapturePath offered a path with nothing selected")
+	}
+}
+
 // TestChangesBinaryDeletedRenamedUntrackedHaveDistinctCopy pins that each file
 // kind says something specific. "Binary", "deleted", "renamed" and "untracked"
 // need different words, because the reader's next action differs for each.

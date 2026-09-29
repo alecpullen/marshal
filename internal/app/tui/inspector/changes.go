@@ -50,6 +50,26 @@ type changesState struct {
 	currentReq uint64
 	// currentPath is the path that request was for.
 	currentPath string
+
+	// patch is the FETCHED patch text for currentPath, before rendering, and
+	// patchTruncated records that the fetch was capped.
+	//
+	// The diff on screen is not what a copy must put on the clipboard: it
+	// carries diffview's own markers, separators and colour, none of which are
+	// patch bytes. Keeping the fetched text is what lets "copy the patch" mean
+	// the patch.
+	patch          string
+	patchTruncated bool
+	// currentDiff is the reply the patch came from, so a copy can explain a
+	// file that has no patch text (binary, deleted, untracked) without a
+	// second read.
+	currentDiff changedfiles.Diff
+	// loaded records that a reply has landed for the current request. It is
+	// what distinguishes "the read is still in flight" from "the read came
+	// back and there are no bytes": without it, a copy taken mid-load would
+	// have to guess, and guessing produces either the previous file's patch or
+	// a confident "no changes".
+	loaded bool
 }
 
 // ChangesSnapshot returns the snapshot the list came from.
@@ -182,6 +202,14 @@ func (m *Model) requestDiff(path string) {
 	m.changes.currentReq = m.NextRequest()
 	m.changes.currentPath = path
 	m.changes.loading = true
+	// The previous file's patch is discarded here rather than left in place
+	// until the reply lands. Keeping it would mean a copy taken during the load
+	// grabbed the PREVIOUS file's bytes while labelled with the new path — the
+	// worst kind of wrong, because it looks right.
+	m.changes.patch = ""
+	m.changes.patchTruncated = false
+	m.changes.currentDiff = changedfiles.Diff{}
+	m.changes.loaded = false
 	m.changes.pending = DiffRequest{
 		Scope:   m.Scope(),
 		Request: m.changes.currentReq,
@@ -242,8 +270,79 @@ func (m *Model) ApplyDiffLoaded(msg DiffLoadedMsg) bool {
 	}
 
 	m.changes.loading = false
+	m.changes.patch = msg.Diff.Patch
+	m.changes.patchTruncated = msg.Diff.Truncated
+	m.changes.currentDiff = msg.Diff
+	m.changes.loaded = true
 	m.applyDiff(msg.Path, msg.Diff)
 	return true
+}
+
+// HasDiff reports whether a diff is on screen for the current selection.
+//
+// The key router reads it to decide whether the paging keys mean "move through
+// the patch" or "scroll the tab body": two things are scrollable in this tab,
+// and a key that silently moved the wrong one is how a reader loses their
+// place in a long diff.
+func (m *Model) HasDiff() bool { return m.changes.currentReq != 0 }
+
+// PageDetail moves the diff body by whole viewports. Positive is forward.
+func (m *Model) PageDetail(delta int) { m.detail.Page(delta) }
+
+// DetailScroll reports the diff body's scroll offset, so a caller can tell
+// whether a key actually moved the patch it was looking at.
+func (m *Model) DetailScroll() int { return m.detail.ScrollOffset() }
+
+// DetailTop jumps the diff body to its first line.
+func (m *Model) DetailTop() { m.detail.Top() }
+
+// DetailBottom jumps the diff body to its last line and resumes following.
+func (m *Model) DetailBottom() { m.detail.Bottom() }
+
+// CapturedPatch returns the patch text as FETCHED, with the note explaining
+// what it is, and whether the fetch was capped.
+//
+// This — not the rendered body — is what "copy the patch" must put on the
+// clipboard. The rendered body carries markers, separators and colour that are
+// not patch bytes, and putting those on the clipboard produces something that
+// no longer applies.
+//
+// It reports false when nothing has been fetched, so the caller does not
+// silently copy an empty string.
+func (m *Model) CapturedPatch() (text string, label string, truncated bool, ok bool) {
+	// Nothing has been fetched for this selection yet. Reporting "nothing to
+	// copy" is the only honest answer: there ARE bytes coming, but a copy taken
+	// before they arrive would either be empty or, worse, be the previous
+	// file's.
+	if m.changes.currentReq == 0 || m.changes.currentPath == "" || !m.changes.loaded {
+		return "", "", false, false
+	}
+	body := m.changes.patch
+	if strings.TrimSpace(body) == "" {
+		// No patch text, but the reason is on the Diff. Copying the
+		// explanation is more useful than copying nothing, and it is honest
+		// about why there is no patch.
+		body = changeAbsenceNote(m.changes.currentDiff)
+	}
+	if strings.TrimSpace(body) == "" {
+		return "", "", false, false
+	}
+	label = "Copy patch: " + m.changes.currentPath
+	if m.changes.patchTruncated {
+		// Say so in the label, because the paste will need finishing by hand
+		// and the reader must not discover that in another program.
+		label += " (captured prefix only)"
+	}
+	return body, label, m.changes.patchTruncated, true
+}
+
+// CapturePath returns the selected file's path, for a copy.
+func (m *Model) CapturePath() (string, bool) {
+	path, _ := m.SelectedPath()
+	if path == "" {
+		return "", false
+	}
+	return path, true
 }
 
 // applyDiff renders one file's diff into the detail view.
@@ -281,6 +380,14 @@ func (m *Model) applyDiff(path string, diff changedfiles.Diff) {
 	// and neither may be presented as the whole patch.
 	m.detail.SetNoLongerChanged(m.changes.vanished)
 	m.detail.SetContent(rendered.Text, diff.Truncated || rendered.Truncated)
+	// A patch the reader asked to open starts at its FIRST line.
+	//
+	// The detail view follows by default, which is right for a stream that
+	// grows underneath the reader and wrong here: a diff is fetched whole, and
+	// opening it at the bottom hides the hunk header that says what changed.
+	// It is also what makes the paging keys work at all — a view already pinned
+	// to the end has nowhere to page forward to, so PageDown would look broken.
+	m.detail.Top()
 	m.detailLabel = title
 }
 

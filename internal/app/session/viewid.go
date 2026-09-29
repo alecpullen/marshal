@@ -89,7 +89,23 @@ func ordinalViewID(prefix string, index int) string {
 // or ordinals, so a scoped identity can never be mistaken for an unscoped one
 // or for a different scope.
 func (s *State) scopePrefix(kind string) string {
-	return kind + "@s" + strconv.FormatInt(s.scopeID, 10) + ":"
+	return kind + "@" + s.ScopeID() + ":"
+}
+
+// ScopeID is this State's scope token, e.g. "s3".
+//
+// It exists so a caller outside the session package can name the conversation
+// an asynchronous result belongs to. That comparison is how a reply from a
+// conversation the user has left is recognised and dropped — an inspector
+// target carries it as its Scope, and a panel comparing it refuses anything
+// issued under a different State.
+//
+// Unlike SessionID it is ALWAYS set: every State is numbered at construction,
+// including the in-memory-only ones (tests, subagent children) that never had
+// a session row. A caller therefore never has to special-case "no session yet"
+// and, more importantly, can never mistake it for "the same session".
+func (s *State) ScopeID() string {
+	return "s" + strconv.FormatInt(s.scopeID, 10)
 }
 
 // viewIDForRunEvent builds a run-event identity from the collection epoch and

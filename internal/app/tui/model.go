@@ -1814,7 +1814,114 @@ func (m *Model) refreshInspector() {
 		hidden[id] = true
 	}
 	m.inspector.model.SetData(inspector.Data{Side: m.railData(), Hidden: hidden})
+	// The Changes tab renders from the SAME reading the rail does, so the two
+	// cannot show different numbers for the same tree. It is handed the full
+	// snapshot rather than the rail's lossy row list, because the tab has to be
+	// able to say "the read failed" — which a row list cannot express.
+	m.inspector.model.SetChanges(m.railSnapshot)
+	// The scope is re-stamped from the live State on every refresh, not once at
+	// construction: /new and /clear replace m.state, and a reply issued under
+	// the old conversation must be refused rather than drawn over the new one.
+	if m.state != nil {
+		m.inspector.model.SetScope(m.state.ScopeID())
+	}
 	m.inspector.setSideAvailable(m.inspectorSideAvailable())
+}
+
+// inspectorDiffCommand returns the command that reads the patch for the
+// inspector's current Changes selection, or nil when there is nothing to read.
+//
+// It is drained by construction: PendingDiffRequest hands out each request once,
+// so a key repeat cannot start a second git process for the same file.
+func (m *Model) inspectorDiffCommand() tea.Cmd {
+	if m.inspector == nil {
+		return nil
+	}
+	req, ok := m.inspector.model.PendingDiffRequest()
+	if !ok {
+		return nil
+	}
+	snap := m.railSnapshot
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), inspectorDiffTimeout)
+		defer cancel()
+		return inspector.DiffLoadedMsg{
+			Scope:   req.Scope,
+			Request: req.Request,
+			Path:    req.Path,
+			Diff:    changedfiles.ReadDiff(ctx, snap, req.Path),
+		}
+	}
+}
+
+// inspectorDiffTimeout bounds one per-file diff read. It is its own budget
+// rather than the snapshot's, because a large text file takes longer to read
+// than it takes to list, and reporting a timeout as an empty diff would look
+// exactly like a file with no changes.
+const inspectorDiffTimeout = 5 * time.Second
+
+// handleInspectorKey routes a keypress to the conversation inspector while it
+// owns the keys.
+//
+// It exists so the tab-specific navigation lives in the same place as the
+// global key routing, rather than being buried in the dock adapter: the Changes
+// tab's cursor is the model's, and a key that reached the adapter would scroll
+// a body the reader is not looking at.
+//
+// It ALWAYS reports handled. A key that fell through would reach the textarea
+// behind the inspector as a second, invisible recipient — the contract
+// handleFocusedSurfaceKey keeps for the same reason.
+func (m *Model) handleInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	if m.inspector == nil {
+		return *m, nil, true
+	}
+	if m.inspector.model.SelectedTab() == inspector.TabChanges {
+		switch msg.String() {
+		case "up", "k":
+			m.inspector.model.MoveChangesSelection(-1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "down", "j":
+			m.inspector.model.MoveChangesSelection(1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "enter":
+			// Enter is the ONLY way a diff read is started, so the keyboard and
+			// the direct API agree on what opens a diff. Browsing the list must
+			// not spawn a git process per keystroke.
+			if !m.inspector.model.EnterSelected() {
+				return *m, nil, true
+			}
+			m.refreshInspector()
+			return *m, m.inspectorDiffCommand(), true
+		case "pgup", "pgdown", "home", "end":
+			// Once a diff is open, the long thing on screen is the PATCH, and
+			// these keys mean "move through it". The list is short and already
+			// has its own keys, so page keys that scrolled the tab body while a
+			// diff was open would move a scroll offset the reader cannot see.
+			//
+			// With no diff open they fall through to the adapter, which scrolls
+			// the tab body — the only thing there is to move.
+			if !m.inspector.model.HasDiff() {
+				break
+			}
+			switch msg.String() {
+			case "pgup":
+				m.inspector.model.PageDetail(-1)
+			case "pgdown":
+				m.inspector.model.PageDetail(1)
+			case "home":
+				m.inspector.model.DetailTop()
+			case "end":
+				m.inspector.model.DetailBottom()
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		}
+	}
+	cmd := m.inspector.adapter.Update(msg)
+	m.refreshInspector()
+	return *m, cmd, true
 }
 
 // railData assembles the side panel's render snapshot. Everything here is
@@ -2100,6 +2207,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dock.CloseNow()
 		}
 		m.refreshViewport()
+		return m, nil
+	case inspector.DiffLoadedMsg:
+		// An async diff read came back. The inspector itself decides whether
+		// the reply is still wanted — an older completion, a read for a path
+		// the cursor has left, and one issued under a conversation the user has
+		// closed are all refused. Drawing any of them would show a patch for a
+		// file that is not selected.
+		//
+		// A refused reply is silent by design. The request it belonged to has
+		// already been superseded by one that will answer the same question.
+		if m.inspector != nil {
+			m.inspector.model.ApplyDiffLoaded(msg)
+			m.refreshInspector()
+			m.refreshViewport()
+		}
 		return m, nil
 	case docpanel.ActionMsg:
 		m.dock.CloseNow()

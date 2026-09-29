@@ -44,6 +44,14 @@ const (
 	ActionCopyCode   ActionID = "copy-code"
 	ActionCopyOutput ActionID = "copy-output"
 	ActionCopyPath   ActionID = "copy-path"
+
+	// The inspected-change copies act on the inspector's Changes tab rather
+	// than on the conversation, so they are separate actions rather than a
+	// second meaning for the conversation ones: two actions with one key each
+	// is an ambiguous action, and the palette is where a user finds out which
+	// is which.
+	ActionCopyInspectedPath ActionID = "copy-inspected-path"
+	ActionCopyPatch         ActionID = "copy-patch"
 )
 
 // Action priorities order the palette: a user opening it in an emergency
@@ -193,6 +201,16 @@ var actionCatalog = []actionDef{
 		desc:     "copy the path the tool call the reader is on referred to",
 		priority: actionPriorityOptional,
 	},
+	{
+		id: ActionCopyInspectedPath, label: "Copy inspected path",
+		desc:     "copy the path selected on the inspector's Changes tab",
+		priority: actionPriorityOptional,
+	},
+	{
+		id: ActionCopyPatch, label: "Copy captured patch",
+		desc:     "copy the patch fetched for the inspected file, as fetched",
+		priority: actionPriorityOptional,
+	},
 }
 
 // actionContext is one snapshot of the root state every action resolution
@@ -222,6 +240,15 @@ type actionContext struct {
 	CopyBlock conversation.Block
 	// CopyBlockFound reports whether CopyBlock resolved at all.
 	CopyBlockFound bool
+	// InspectedPathSelected reports that the inspector's Changes tab has a
+	// selected path, so a copy of it has something to copy.
+	InspectedPathSelected bool
+	// InspectedPatchLoaded reports that a patch has been fetched for the
+	// inspected file. It is separate from the selection because selecting a
+	// file reads nothing: the two facts arrive at different times, and an
+	// action enabled on the selection alone would promise a patch that does
+	// not exist yet.
+	InspectedPatchLoaded bool
 }
 
 // Action is a resolved catalog entry: the descriptor plus the availability
@@ -272,6 +299,12 @@ func (m Model) actionSnapshot() actionContext {
 	// The copy actions resolve their block through the same path dispatch
 	// uses, so availability and behaviour cannot describe different blocks.
 	ctx.CopyBlock, ctx.CopyBlockFound = m.copyBlock()
+	// The inspected-change actions read the inspector's own state, which is
+	// the only place that knows what is selected and what has been fetched.
+	if m.inspector != nil {
+		_, ctx.InspectedPathSelected = m.inspector.model.CapturePath()
+		_, _, _, ctx.InspectedPatchLoaded = m.inspector.model.CapturedPatch()
+	}
 	return ctx
 }
 
@@ -377,6 +410,14 @@ func availability(ctx actionContext, id ActionID) (disabled bool, reason string)
 		}
 		if !hasCopyTarget(ctx.CopyBlock, conversation.SourcePath) {
 			return true, "the block under the reading position refers to no file path"
+		}
+	case ActionCopyInspectedPath:
+		if !ctx.InspectedPathSelected {
+			return true, "no changed file is selected in the inspector"
+		}
+	case ActionCopyPatch:
+		if !ctx.InspectedPatchLoaded {
+			return true, "no patch is loaded — press Enter on a changed file in the inspector"
 		}
 	}
 	return false, ""
@@ -498,6 +539,10 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 		return *m, m.copySelection(conversation.SourceOutput)
 	case ActionCopyPath:
 		return *m, m.copySelection(conversation.SourcePath)
+	case ActionCopyInspectedPath:
+		return *m, m.copyInspectedPath()
+	case ActionCopyPatch:
+		return *m, m.copyInspectedPatch()
 	}
 	return *m, nil
 }

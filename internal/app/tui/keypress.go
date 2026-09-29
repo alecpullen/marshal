@@ -191,14 +191,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	// give the composer a second, invisible key recipient.
 	if !m.composerReceivesTyping() {
 		if m.inspector != nil && m.effectiveFocus() == FocusInspector {
-			// The inspector is a real owner of the keys, not a marker: Tab
-			// cycles its tabs, the scroll keys move it, and Esc backs out of
-			// its depth (handled above). Always reporting handled is the same
-			// contract handleFocusedSurfaceKey keeps — a key that fell through
-			// would reach the textarea behind it.
-			cmd := m.inspector.adapter.Update(msg)
-			m.refreshInspector()
-			return *m, cmd, true
+			// The inspector is a real owner of the keys, not a marker, and it
+			// is the inspector's own handler that decides what a key means on
+			// the tab on display. Always reporting handled is the same contract
+			// handleFocusedSurfaceKey keeps — a key that fell through would
+			// reach the textarea behind it.
+			return m.handleInspectorKey(msg)
 		}
 		return m.handleFocusedSurfaceKey(msg)
 	}

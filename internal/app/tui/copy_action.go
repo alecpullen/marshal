@@ -194,6 +194,29 @@ func (m *Model) copyInspectedPatch() tea.Cmd {
 	})
 }
 
+// copyInspectedContext copies the Context row the reader has open.
+//
+// The text is the REDACTED body, and the label names the row and states when it
+// was capped. Redaction happens at the source (the inspector builds every
+// request body through redact.Secrets), so the clipboard and the panel cannot
+// disagree — a masked panel beside an unmasked clipboard is worse than neither.
+func (m *Model) copyInspectedContext() tea.Cmd {
+	if m.inspector == nil {
+		m.showToast("the conversation inspector is not available in this build")
+		return nil
+	}
+	text, label, _, ok := m.inspector.model.CaptureContextCopy()
+	if !ok {
+		m.showToast("no context entry is open — press Enter on a row in the inspector's Context tab")
+		return nil
+	}
+	return m.beginCopy(conversation.CopyTarget{
+		Source: conversation.SourceOutput,
+		Text:   text,
+		Label:  label,
+	})
+}
+
 // copyBlock returns the block the copy action applies to.
 //
 // It is the block at the top of the viewport, which is where the reading

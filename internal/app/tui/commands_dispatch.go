@@ -175,7 +175,32 @@ func inspectEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	tab := inspector.Tab(arg)
+	// "/inspect context pack" and "/inspect context request" name a SCOPE as
+	// well as a tab. The scope is parsed before the tab, because "context" is
+	// itself a valid tab name and splitting afterwards would leave the scope
+	// argument looking like an unknown tab.
+	tabName, scopeName := arg, ""
+	if fields := strings.Fields(arg); len(fields) == 2 && inspector.Tab(fields[0]) == inspector.TabContext {
+		tabName, scopeName = fields[0], fields[1]
+	}
+	if scopeName != "" {
+		scope, ok := inspector.ParseContextScope(scopeName)
+		if !ok {
+			// An unknown scope is named back rather than ignored. Switching to
+			// the tab and silently keeping the previous scope would answer a
+			// question the user did not ask, with nothing on screen to say so.
+			return m, m.showToast(fmt.Sprintf(
+				"Unknown context scope %q. Available now: pack, request.", scopeName))
+		}
+		if !m.inspector.open(inspector.TabContext, m.inspectorSideAvailable()) {
+			return m, m.showToast("The context view is not available in this build.")
+		}
+		m.inspector.model.SetContextScope(scope)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	tab := inspector.Tab(tabName)
 	for _, visible := range inspector.VisibleTabs() {
 		if visible == tab {
 			m.inspector.open(tab, m.inspectorSideAvailable())

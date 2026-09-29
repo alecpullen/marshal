@@ -1828,6 +1828,13 @@ func (m *Model) refreshInspector() {
 	if m.state != nil {
 		m.inspector.model.SetScope(m.state.ScopeID())
 	}
+	// The context snapshot is filled AFTER SetScope, and the order is
+	// load-bearing. SetScope discards per-conversation state when the scope
+	// actually changes — agent roster, detail stack, context rows — so filling
+	// the context first would have it thrown away by the very refresh that
+	// produced it, leaving the tab empty until something else happened to
+	// refresh it.
+	m.refreshInspectorContext()
 	m.inspector.setSideAvailable(m.inspectorSideAvailable())
 }
 
@@ -2103,6 +2110,69 @@ func (m *Model) handleInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 			return *m, nil, true
 		}
 	}
+	if m.inspector.model.SelectedTab() == inspector.TabContext {
+		switch msg.String() {
+		case "right", "l":
+			// Left/Right cycle the SCOPE. This tab has two things to move
+			// through — which question you are asking, and which row you are
+			// on — and giving the scope one of them must not take Tab away
+			// from the tab bar, where it means "next tab" on every other tab.
+			// A panel whose Tab means "leave" on three tabs and "stay" on the
+			// fourth is a panel whose keys cannot be learned.
+			m.inspector.model.NextContextScope()
+			m.refreshInspector()
+			return *m, nil, true
+		case "left", "h":
+			m.inspector.model.PrevContextScope()
+			m.refreshInspector()
+			return *m, nil, true
+		case "up", "k":
+			m.inspector.model.MoveContextSelection(-1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "down", "j":
+			m.inspector.model.MoveContextSelection(1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "enter":
+			// Enter opens the selected row. A second Enter on the row already
+			// open re-adopts its body from the current snapshot, which is the
+			// explicit refresh for a body a later snapshot has moved on from.
+			index := m.inspector.model.ContextCursor()
+			if !m.inspector.model.OpenContextRow(index) {
+				return *m, nil, true
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		// Esc is deliberately NOT handled here. The keypress router consumes
+		// Esc before any per-tab handler runs (keypress.go's Esc branch), so a
+		// case here would be unreachable. The child-scope exit lives in
+		// inspectorHost.esc, which is what that branch actually calls.
+		case "pgup", "pgdown", "home", "end", "g", "G":
+			// With a row open, the long thing on screen is its BODY, so these
+			// keys move it. With nothing open there is nothing to move: the
+			// list is rendered whole, so falling through to the adapter would
+			// write a scroll offset nothing reads — against a bound computed
+			// from the OVERVIEW's document. Consuming the key is the honest
+			// answer, and it keeps `g`/`G` from storing a number that belongs
+			// to a different tab.
+			if !m.inspector.model.ContextDetailOpen() {
+				return *m, nil, true
+			}
+			switch msg.String() {
+			case "pgup":
+				m.inspector.model.PageContextDetail(-1)
+			case "pgdown":
+				m.inspector.model.PageContextDetail(1)
+			case "home", "g":
+				m.inspector.model.ContextDetailTop()
+			case "end", "G":
+				m.inspector.model.ContextDetailBottom()
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		}
+	}
 	if m.inspector.model.SelectedTab() == inspector.TabAgents {
 		switch msg.String() {
 		case "up", "k":
@@ -2125,6 +2195,22 @@ func (m *Model) handleInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 			// built from state the model holds, so there is nothing
 			// asynchronous to await.
 			_ = m.inspector.model.EnterAgent()
+			m.refreshInspector()
+			return *m, nil, true
+		case "c":
+			// `c` scopes the Context tab to the selected agent's OWN context,
+			// which is how a child's context is reached: it is an explicit
+			// scope rather than something the Context tab guesses at from
+			// whichever agent happens to be selected elsewhere. It opens the
+			// tab, so the reader can see that something happened.
+			//
+			// Nothing happens for an agent with no child state (a pipeline
+			// card, or one whose State the runtime has released): the panel
+			// would otherwise show the PARENT's context under the child's name,
+			// which on screen is indistinguishable from the child's.
+			if !m.enterInspectedChildContext() {
+				return *m, m.showToast("this agent has no child context to inspect"), true
+			}
 			m.refreshInspector()
 			return *m, nil, true
 		case "pgup", "pgdown", "home", "end":

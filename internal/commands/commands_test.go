@@ -353,8 +353,15 @@ func TestInspectCommandRegistered(t *testing.T) {
 	if !ok {
 		t.Fatal("/inspect not registered")
 	}
-	if cmd.Args != "[tab|close]" {
-		t.Errorf("/inspect Args = %q, want %q", cmd.Args, "[tab|close]")
+	// The argument list is asserted by SHAPE rather than verbatim, because it
+	// documents the subcommands the TUI dispatcher accepts and grows as those
+	// subcommands land. What matters here is that it is documented at all and
+	// that it names the tab form, which is the one a user types most.
+	if !strings.Contains(cmd.Args, "[tab|close]") {
+		t.Errorf("/inspect Args = %q, want it to document the tab form", cmd.Args)
+	}
+	if !strings.Contains(cmd.Args, "context") {
+		t.Errorf("/inspect Args = %q, want it to document the context scope form", cmd.Args)
 	}
 	if cmd.Group != "Settings & info" {
 		t.Errorf("/inspect group = %q, want Settings & info", cmd.Group)

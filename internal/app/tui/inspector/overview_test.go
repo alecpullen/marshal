@@ -80,13 +80,25 @@ func overviewLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
+// overviewModel builds an inspector showing the OVERVIEW tab.
+//
+// It exists because Overview is no longer the tab a new inspector opens on:
+// the product's tab bar leads with Changes, and these tests are about the
+// Overview renderer rather than about the default. They say which tab they
+// mean instead of inheriting one.
+func overviewModel(d Data, width, height int) *Model {
+	m := New()
+	m.Resize(width, height)
+	m.SetData(d)
+	m.open(TabOverview)
+	return m
+}
+
 // Overview is the retained telemetry view: it must render the same section
 // content the rail does, from the same Data.
 func TestOverviewRendersChangedFilesAndRepoStats(t *testing.T) {
 	d := overviewData(overviewNow)
-	m := New()
-	m.Resize(120, 60)
-	m.SetData(d)
+	m := overviewModel(d, 120, 60)
 
 	out := sidepanel.StripANSI(m.View(d))
 	if !strings.Contains(out, "internal/app/tui/inspector/overview.go") {
@@ -119,7 +131,7 @@ func TestOverviewSummaryUsesSectionPriority(t *testing.T) {
 	// context is priority 1, changed 2, repo 5. Their digests must appear in
 	// that order, and each must be the section's real OneLine rather than a
 	// truncation of its body.
-	ctx := strings.Index(summary, "ctx 4k/128k")
+	ctx := strings.Index(summary, "pack 4k/128k")
 	changed := strings.Index(summary, "± 6 files")
 	repo := strings.Index(summary, "⎇ main")
 	if ctx < 0 || changed < 0 || repo < 0 {
@@ -136,9 +148,7 @@ func TestOverviewSummaryUsesSectionPriority(t *testing.T) {
 // contain it — otherwise the test would pass without scrolling at all.
 func TestOverviewScrollsLongContent(t *testing.T) {
 	d := overviewData(overviewNow)
-	m := New()
-	m.Resize(80, 10)
-	m.SetData(d)
+	m := overviewModel(d, 80, 10)
 
 	top := sidepanel.StripANSI(m.View(d))
 	if !strings.Contains(top, "CONTEXT") {
@@ -173,9 +183,7 @@ func TestOverviewHiddenSectionsArePreserved(t *testing.T) {
 		before[k] = v
 	}
 
-	m := New()
-	m.Resize(120, 60)
-	m.SetData(d)
+	m := overviewModel(d, 120, 60)
 
 	out := sidepanel.StripANSI(m.View(d))
 	if strings.Contains(out, "CHANGED") {
@@ -207,9 +215,7 @@ func TestOverviewNeverPanicsAtSillySizes(t *testing.T) {
 		{0, 0}, {0, 24}, {80, 0}, {-5, 10}, {10, -3}, {1, 1}, {3, 2}, {2, 40}, {200, 60},
 	}
 	for _, s := range sizes {
-		m := New()
-		m.Resize(s.w, s.h)
-		m.SetData(d)
+		m := overviewModel(d, s.w, s.h)
 
 		out := m.View(d) // must not panic
 		if s.w <= 0 || s.h <= 0 {

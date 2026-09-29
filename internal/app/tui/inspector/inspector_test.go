@@ -3,6 +3,7 @@ package inspector
 import (
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +36,12 @@ var (
 	_ dock.MessageOwner = (*DockAdapter)(nil)
 )
 
+// The product's tab bar, in the order Tab and Shift+Tab walk it: Changes,
+// Agents, Context, Overview. The order is a product contract — Changes leads
+// because it is the tab a developer opens the inspector for — so it is pinned
+// rather than asserted as a set.
 func TestAllTabsIsTheFullProductSet(t *testing.T) {
-	want := []Tab{TabOverview, TabChanges, TabAgents, TabContext}
+	want := []Tab{TabChanges, TabAgents, TabContext, TabOverview}
 	if got := AllTabs(); !reflect.DeepEqual(got, want) {
 		t.Errorf("AllTabs() = %v, want %v", got, want)
 	}
@@ -47,8 +52,15 @@ func TestAllTabsIsTheFullProductSet(t *testing.T) {
 // so the set is asserted as a membership question rather than a frozen list:
 // each task that lands a tab adds it here, and the assertion that matters is
 // that nothing unimplemented is offered.
+//
+// This task lands the last tab, so the visible set and the product set now
+// coincide. They stay separate lists — a future tab lands in VisibleTabs only
+// once it renders — and the property asserted here is still the membership
+// one, not "the lists are equal".
 func TestVisibleTabsOffersOnlyImplementedTabs(t *testing.T) {
-	implemented := map[Tab]bool{TabOverview: true, TabChanges: true, TabAgents: true}
+	implemented := map[Tab]bool{
+		TabOverview: true, TabChanges: true, TabAgents: true, TabContext: true,
+	}
 
 	got := VisibleTabs()
 	if len(got) != len(implemented) {
@@ -60,7 +72,9 @@ func TestVisibleTabsOffersOnlyImplementedTabs(t *testing.T) {
 		}
 	}
 	// Every tab offered must actually render something, which is the property
-	// the list exists to promise.
+	// the list exists to promise. The data is deliberately EMPTY here: a tab
+	// that renders nothing until it has data is a tab that looks broken to a
+	// reader who opens it in a fresh session.
 	for _, tab := range got {
 		m := New()
 		m.Resize(80, 20)
@@ -69,55 +83,61 @@ func TestVisibleTabsOffersOnlyImplementedTabs(t *testing.T) {
 			t.Errorf("VisibleTabs() offers %q but it renders nothing", tab)
 		}
 	}
-	// The tabs with no renderer stay out.
-	for _, tab := range []Tab{TabContext} {
-		for _, vis := range got {
-			if vis == tab {
-				t.Errorf("VisibleTabs() offers %q, which is not implemented yet", tab)
-			}
+	// Nothing outside the product set is offered.
+	for _, tab := range got {
+		if !slices.Contains(AllTabs(), tab) {
+			t.Errorf("VisibleTabs() offers %q, which is not in the product set", tab)
 		}
 	}
 }
 
 // The returned slice is the caller's; mutating it must not change what the
 // next caller sees.
+//
+// The written value is deliberately NOT a valid tab: a sentinel that happens
+// to be one of the real tabs makes the assertion pass for the wrong reason the
+// moment the tab order changes, which is exactly what happened when Changes
+// moved to the front.
 func TestTabListsAreCopies(t *testing.T) {
+	const sentinel Tab = "not-a-real-tab"
 	all := AllTabs()
-	all[0] = TabChanges
-	if AllTabs()[0] != TabOverview {
+	all[0] = sentinel
+	if AllTabs()[0] == sentinel {
 		t.Error("AllTabs() handed out the package's own slice")
 	}
 	vis := VisibleTabs()
-	vis[0] = TabChanges
-	if VisibleTabs()[0] != TabOverview {
+	vis[0] = sentinel
+	if VisibleTabs()[0] == sentinel {
 		t.Error("VisibleTabs() handed out the package's own slice")
 	}
 }
 
-func TestOpenIgnoresUnimplementedTab(t *testing.T) {
+// Every tab in the product set opens, and an unknown name does not. This task
+// lands the last tab, so the "refused because unimplemented" half of the old
+// assertion is gone; what remains is the rule that actually matters — a name
+// the renderer cannot draw is never adopted as the selection.
+func TestOpenAcceptsEveryProductTabAndRefusesAnUnknownOne(t *testing.T) {
 	m := New()
-	start := m.SelectedTab()
-	if start != TabOverview {
-		t.Fatalf("New() selected %q, want %q", start, TabOverview)
+	if start := m.SelectedTab(); start != TabChanges {
+		t.Fatalf("New() selected %q, want the initial tab %q", start, TabChanges)
 	}
-	for _, tab := range []Tab{TabContext, Tab("nonsense")} {
-		m.Open(tab)
-		if got := m.SelectedTab(); got != start {
-			t.Errorf("Open(%q) switched to %q; an unimplemented tab must not be offered", tab, got)
-		}
-	}
-	// The implemented tabs DO switch.
-	for _, tab := range []Tab{TabOverview, TabChanges, TabAgents} {
+	for _, tab := range AllTabs() {
 		m.Open(tab)
 		if got := m.SelectedTab(); got != tab {
 			t.Errorf("Open(%q) selected %q, want %q", tab, got, tab)
 		}
 	}
+
+	before := m.SelectedTab()
+	m.Open(Tab("nonsense"))
+	if got := m.SelectedTab(); got != before {
+		t.Errorf("Open(%q) switched to %q; an unknown tab must be ignored", "nonsense", got)
+	}
 }
 
 // Each tab keeps its own navigation state, so switching away and back never
-// loses where the user was. Only Overview is visible today, so the switch is
-// driven through the visibility-free helper Open guards.
+// loses where the user was. The switch is driven through the visibility-free
+// helper that Open guards.
 func TestPerTabStateSurvivesTabSwitch(t *testing.T) {
 	m := New()
 	overview := TabState{Cursor: 3, Filter: "go", Scroll: 7}
@@ -408,9 +428,9 @@ func TestDockAdapterPresentsTheModel(t *testing.T) {
 }
 
 func TestDockAdapterKeysNavigate(t *testing.T) {
-	m := New()
-	m.Resize(80, 24)
-	m.SetData(overviewData(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)))
+	// The scroll assertions are about the OVERVIEW tab's own scroll state, so
+	// the tab is named rather than inherited from the default.
+	m := overviewModel(overviewData(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)), 80, 24)
 	a := NewDockAdapter(m)
 
 	a.Update(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -478,9 +498,8 @@ func TestDockAdapterEscBacksOutThenCloses(t *testing.T) {
 }
 
 func TestDockAdapterViewRendersAtTheDockSize(t *testing.T) {
-	m := New()
+	m := overviewModel(overviewData(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)), 1, 1)
 	a := NewDockAdapter(m)
-	m.SetData(overviewData(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)))
 
 	out := sidepanel.StripANSI(a.View(80, 24))
 	if !strings.Contains(out, "CHANGED") || !strings.Contains(out, "internal/app/tui/model.go") {

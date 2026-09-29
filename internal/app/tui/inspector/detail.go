@@ -2,6 +2,8 @@ package inspector
 
 import (
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // DetailView is a read-only, scrollable body of text with its own scroll state
@@ -198,13 +200,13 @@ func (d *DetailView) View(label string) string {
 		header += "  " + mutedDetailNote("(no longer changed)")
 	}
 	if header != "" {
-		b.WriteString(header)
+		b.WriteString(d.clampLine(header))
 		b.WriteString("\n")
 	}
 
 	lines := d.lines()
 	if len(lines) == 0 {
-		b.WriteString(mutedDetailNote("Nothing to show."))
+		b.WriteString(d.note("Nothing to show."))
 		return b.String()
 	}
 
@@ -217,14 +219,47 @@ func (d *DetailView) View(label string) string {
 
 	if d.scroll+height < len(lines) {
 		// More of the body remains to scroll to. This is not truncation.
-		b.WriteString(mutedDetailNote("… scroll for more"))
+		b.WriteString(d.note("… scroll for more"))
 		b.WriteString("\n")
 	}
 	if d.truncatedBySource {
-		b.WriteString(mutedDetailNote("… captured patch is incomplete; more bytes exist and are not shown"))
+		// The wording is deliberately not patch-specific. This body is shared
+		// by the Changes, Agents and Context tabs, and "captured patch" on a
+		// context section would name the wrong thing — a reader who is told
+		// their patch was cut when they were reading a pack section has been
+		// given a fact about something else entirely.
+		//
+		// What survives is the part that is true for all three: the source was
+		// capped, so what is on screen is a prefix and the rest is NOT
+		// reachable by scrolling. That distinction — "scroll for more" versus
+		// "there is no more" — is the whole reason this footer exists.
+		b.WriteString(d.note("… incomplete; more content exists and is not shown"))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// note renders a footer note, in the muted styling, clamped to the width.
+func (d *DetailView) note(s string) string { return d.clampLine(mutedDetailNote(s)) }
+
+// clampLine bounds a line to the recorded width.
+//
+// Everything this view emits goes through it — the caller-supplied label and
+// its own footer notes. Both are unbounded: a pack section's title is author
+// text, and the notes are longer than the narrowest panel the rail is allowed
+// to open at (tui.side_panel.min_cols, default 30). An unclamped line wraps and
+// pushes the panel's chrome off the bottom, so the reader loses the body in
+// order to read a sentence about it.
+//
+// An UNMEASURED view (width 0) is not clamped at all, following the same rule
+// as viewportHeight: before the first resize the view renders everything rather
+// than nothing, and clamping to a width nobody measured would replace every line
+// with an ellipsis.
+func (d *DetailView) clampLine(s string) string {
+	if d.width <= 0 {
+		return s
+	}
+	return ansi.Truncate(s, d.width, "…")
 }
 
 // mutedDetailNote is the detail view's one styling hook. It is kept as a

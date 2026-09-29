@@ -26,16 +26,25 @@ const (
 	TabContext  Tab = "context"
 )
 
-// allTabs is the full product set, in display order. Overview is last in the
-// product's tab bar but first here because it is the only one implemented;
-// see VisibleTabs.
-var allTabs = []Tab{TabOverview, TabChanges, TabAgents, TabContext}
+// allTabs is the full tab bar, in display order: Changes, Agents, Context,
+// Overview. Changes leads because it is the tab a developer opens the
+// inspector for; Overview is last because it is the retained telemetry view
+// rather than a working surface.
+//
+// The order is the product contract, not an implementation detail: it is what
+// Tab/Shift+Tab walks and what the rendered tab bar shows, so the two cannot
+// drift.
+var allTabs = []Tab{TabChanges, TabAgents, TabContext, TabOverview}
 
-// visibleTabs is the subset a user may actually open right now. Only Overview
-// is populated in this task: an unimplemented tab must not be offered, because
-// selecting it would present an empty panel the user cannot distinguish from a
-// bug. Task 10 makes the full set available.
-var visibleTabs = []Tab{TabOverview, TabChanges, TabAgents}
+// visibleTabs is the subset a user may actually open right now. An
+// unimplemented tab must not be offered, because selecting it would present an
+// empty panel the user cannot distinguish from a bug.
+//
+// This task lands the last of the four, so the visible set is now the whole
+// product set. The two lists stay separate because the distinction is still
+// the rule — a future tab lands here before it lands in allTabs — and because
+// Tests assert on VisibleTabs() to mean "what the user can reach".
+var visibleTabs = []Tab{TabChanges, TabAgents, TabContext, TabOverview}
 
 // AllTabs is the full product set, in display order. The returned slice is a
 // copy; callers may keep or mutate it freely.
@@ -131,6 +140,9 @@ type Model struct {
 	// agents is the Agents tab's own state: the copied runtime roster, its
 	// selection (keyed by runtime ID), and whether that selection has left.
 	agents agentsState
+	// context is the Context tab's own state: its scope selection, the copied
+	// pack and request snapshots, and the explicitly-scoped child's context.
+	context contextState
 	// detail is the scrollable body a tab opens to show one thing in full. It
 	// lives on the Model rather than inside a tab so switching tabs does not
 	// discard what the reader was studying, and so the Agents tab can use the
@@ -147,9 +159,21 @@ type Model struct {
 	seq   uint64
 }
 
-// New returns an inspector showing the first visible tab.
+// New returns an inspector showing the first visible tab, which is Changes.
+//
+// The Context tab starts on the "current pack" scope rather than on the last
+// request: the pack exists before the first request does, so a fresh session
+// opens on content rather than on an empty state the reader has to interpret.
 func New() *Model {
-	return &Model{tab: visibleTabs[0], perTab: map[Tab]TabState{}, detail: NewDetailView()}
+	return &Model{
+		tab:    visibleTabs[0],
+		perTab: map[Tab]TabState{},
+		detail: NewDetailView(),
+		context: contextState{
+			scope:  ContextScopePack,
+			cursor: map[string]int{},
+		},
+	}
 }
 
 // SelectedTab reports the tab on display.
@@ -288,6 +312,14 @@ func (m *Model) SetScope(scope string) {
 	// selection is re-derived from the new roster, which arrives with the next
 	// refresh.
 	m.agents = agentsState{}
+	// The Context tab's data and detail belong to the conversation that was
+	// replaced, so both go. The SCOPE selection survives: it is a preference
+	// about which question the reader is asking, not a position in a list that
+	// no longer exists, and resetting it would move them without their asking.
+	// (The child scope does NOT survive: it names an agent of the conversation
+	// that just ended.)
+	contextScope := m.context.scope
+	m.context = contextState{scope: contextScope, cursor: map[string]int{}}
 }
 
 // Scope reports the identity recorded by SetScope.
@@ -359,6 +391,11 @@ func (m *Model) View(data Data) string {
 		// for the same reason.
 		m.detail.Resize(m.width, m.height)
 		return m.viewAgents()
+	case TabContext:
+		// The Context tab shares that shape a third time: a cursor over the
+		// scope's rows plus the shared body.
+		m.detail.Resize(m.width, m.height)
+		return m.viewContext()
 	default:
 		// A tab with no renderer yet. Returning "" is honest: the tab is not
 		// offered, so this is only reachable through the unexported open.

@@ -227,7 +227,11 @@ func (h *inspectorHost) restore() {
 // conversation but not the composer.
 func (h *inspectorHost) expandBody() {
 	if h.place == inspectorClosed {
-		h.open(inspector.TabOverview, h.sideAvailable)
+		// The tab the inspector would open on is the one it is showing, which
+		// is Changes for a fresh one. Naming Overview here would open a
+		// body-expanded telemetry view, which is the opposite of what a reader
+		// who pressed the "expand this" key asked for.
+		h.open(h.model.SelectedTab(), h.sideAvailable)
 	}
 	if h.place == inspectorClosed || h.place == inspectorSuspended {
 		return
@@ -251,14 +255,25 @@ func (h *inspectorHost) leaveBodyExpanded() bool {
 }
 
 // esc handles Esc while the inspector owns focus. It backs out of the deepest
-// thing first — body-expanded, then the detail stack — and reports whether it
-// consumed the key.
+// thing first — body-expanded, then the Context tab's child scope, then the
+// detail stack — and reports whether it consumed the key.
 //
-// Falling through matters: Esc also cancels a turn and dismisses popups, and
-// an inspector that ate the key unconditionally would break those.
+// The child scope is handled HERE rather than in the model's per-tab key
+// handler, and that placement is load-bearing. Esc is consumed by the keypress
+// router before any tab handler runs (keypress.go's Esc branch calls esc() and,
+// when it returns false but the inspector is rendering, falls into the focus
+// move). A child-scope case in the tab handler was therefore unreachable: the
+// reader who scoped to a child from Agents had no key that returned them to the
+// conversation's own context.
+//
+// Falling through matters: Esc also cancels a turn and dismisses popups, and an
+// inspector that ate the key unconditionally would break those.
 func (h *inspectorHost) esc() bool {
 	if h.place == inspectorBodyExpanded {
 		return h.leaveBodyExpanded()
+	}
+	if h.model.ClearChildContext() {
+		return true
 	}
 	return h.model.Back()
 }

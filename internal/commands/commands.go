@@ -190,8 +190,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			// /context is the transcript-panel summary and keeps that meaning:
+			// scripts and muscle memory depend on it, and a command that
+			// silently became an inspector opener would break both. The
+			// inspector's richer view is /inspect context.
 			Name:        "context",
-			Description: "Show context window usage",
+			Description: "Show context pack and turn budget usage",
 			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) Result {
 				msgs := state.Messages()
@@ -408,8 +412,8 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			// inspector.VisibleTabs(), so a tab that lands in a later task
 			// is reachable without a change here.
 			Name:        "inspect",
-			Description: "Open the conversation inspector (overview, changes, agents, context)",
-			Args:        "[tab|close]",
+			Description: "Open the conversation inspector (changes, agents, context, overview)",
+			Args:        "[tab|close] · context [pack|request]",
 			Group:       groupSettings,
 			TUIOnly:     true,
 		},

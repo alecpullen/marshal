@@ -53,6 +53,11 @@ const (
 	// is which.
 	ActionCopyInspectedPath ActionID = "copy-inspected-path"
 	ActionCopyPatch         ActionID = "copy-patch"
+	// ActionCopyContext copies the open Context row. It is its own action for
+	// the same reason the two above are: it reads a different source (the
+	// inspector's Context tab rather than the conversation or the Changes
+	// list), and one action with three sources would have to guess which.
+	ActionCopyContext ActionID = "copy-context"
 )
 
 // Action priorities order the palette: a user opening it in an emergency
@@ -212,6 +217,11 @@ var actionCatalog = []actionDef{
 		desc:     "copy the patch fetched for the inspected file, as fetched",
 		priority: actionPriorityOptional,
 	},
+	{
+		id: ActionCopyContext, label: "Copy context detail",
+		desc:     "copy the context section or request entry open in the inspector, redacted",
+		priority: actionPriorityOptional,
+	},
 }
 
 // actionContext is one snapshot of the root state every action resolution
@@ -250,6 +260,11 @@ type actionContext struct {
 	// action enabled on the selection alone would promise a patch that does
 	// not exist yet.
 	InspectedPatchLoaded bool
+	// ContextDetailOpen reports that a row's body is open on the inspector's
+	// Context tab, so the context copy has something to copy. It is only ever
+	// set while that tab is the one on display: a body left open behind a tab
+	// the reader switched away from is not what they are looking at.
+	ContextDetailOpen bool
 	// InspectorAgentRunningID is the runtime ID of the running agent selected
 	// on the inspector's Agents tab, or 0.
 	//
@@ -322,6 +337,13 @@ func (m Model) actionSnapshot() actionContext {
 	if m.inspector != nil {
 		_, ctx.InspectedPathSelected = m.inspector.model.CapturePath()
 		_, _, _, ctx.InspectedPatchLoaded = m.inspector.model.CapturedPatch()
+		// Only when the Context tab is on display: a body left open under a
+		// tab the reader has switched away from is not "the context entry they
+		// are looking at", and enabling the action on it would offer a copy of
+		// something off screen.
+		if m.inspector.model.SelectedTab() == inspector.TabContext {
+			ctx.ContextDetailOpen = m.inspector.model.ContextDetailOpen()
+		}
 	}
 	return ctx
 }
@@ -443,6 +465,10 @@ func availability(ctx actionContext, id ActionID) (disabled bool, reason string)
 	case ActionCopyPatch:
 		if !ctx.InspectedPatchLoaded {
 			return true, "no patch is loaded — press Enter on a changed file in the inspector"
+		}
+	case ActionCopyContext:
+		if !ctx.ContextDetailOpen {
+			return true, "no context entry is open — press Enter on a row in the inspector's Context tab"
 		}
 	}
 	return false, ""
@@ -575,6 +601,8 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 		return *m, m.copyInspectedPath()
 	case ActionCopyPatch:
 		return *m, m.copyInspectedPatch()
+	case ActionCopyContext:
+		return *m, m.copyInspectedContext()
 	}
 	return *m, nil
 }

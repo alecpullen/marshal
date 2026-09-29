@@ -10,6 +10,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/native"
+	"marshal/internal/watch"
 )
 
 func TestLaneItemPluralizes(t *testing.T) {
@@ -94,75 +95,53 @@ func TestRenderLaneBridgesTodoPanelRail(t *testing.T) {
 	}
 }
 
-// Agents must be planned before jobs, and the caption counts must include
-// overflow.
-func TestLanePlanAgentsBeforeJobs(t *testing.T) {
+// The plan counts every kind, and keeps the running agents as a slice because
+// the renderer decides from it whether to offer the inspector.
+//
+// This replaces TestLanePlanAgentsBeforeJobs and TestLanePlanOverflowShared,
+// which pinned the per-kind visible rows and the shared overflow row Task 14
+// removes. The counts they asserted are still asserted here: losing one while
+// dropping the rows is exactly the failure this guards against.
+func TestLanePlanCountsEveryKind(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "agent-a")
 	registerRunningSubagent(t, &m, "agent-b")
 	m.jobs = []native.JobInfo{runningJob(1, "cmd", time.Second)}
+	m.watches = []watch.Event{watchEvent("w1", "build", watch.KindCommand, watch.StateWatching)}
+
 	plan := m.lanePlan()
+	if plan.nAgents != 2 || plan.nJobs != 1 || plan.nWatches != 1 {
+		t.Fatalf("counts = agents %d jobs %d watches %d, want 2/1/1",
+			plan.nAgents, plan.nJobs, plan.nWatches)
+	}
+	if plan.total != 4 {
+		t.Fatalf("total = %d, want 4", plan.total)
+	}
+	// The agents slice is the inspector's source, so it must carry EVERY running
+	// child — a count with an empty slice offers a tab with nothing in it.
 	if len(plan.agents) != 2 {
-		t.Fatalf("expected 2 visible agents, got %d", len(plan.agents))
-	}
-	if len(plan.jobTexts) != 1 {
-		t.Fatalf("expected 1 job row, got %d", len(plan.jobTexts))
-	}
-	if plan.nAgents != 2 || plan.nJobs != 1 {
-		t.Fatalf("caption counts = agents %d jobs %d, want 2/1", plan.nAgents, plan.nJobs)
-	}
-	if plan.total != 3 {
-		t.Fatalf("total = %d, want 3", plan.total)
+		t.Fatalf("plan carries %d agents, want both running children", len(plan.agents))
 	}
 }
 
-// When total exceeds the cap, one slot is surrendered to a single shared
-// overflow row; agents keep priority.
-func TestLanePlanOverflowShared(t *testing.T) {
-	m := newTestModel(t)
-	for i := 0; i < 3; i++ {
-		registerRunningSubagent(t, &m, "agent")
-	}
-	for i := 0; i < 3; i++ {
-		m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
-	}
-	plan := m.lanePlan()
-	if plan.total != 6 {
-		t.Fatalf("total = %d, want 6", plan.total)
-	}
-	// Agents take all 3 visible slots; jobs are all overflow.
-	if len(plan.agents) != 3 {
-		t.Fatalf("visible agents = %d, want 3", len(plan.agents))
-	}
-	if len(plan.jobTexts) != 0 {
-		t.Fatalf("visible jobs = %d, want 0", len(plan.jobTexts))
-	}
-	if plan.overflow != 3 {
-		t.Fatalf("overflow = %d, want 3", plan.overflow)
-	}
-}
-
-// laneRows must agree with the lanePlan geometry for every total 0..9:
-// 2 chrome rows + shown items (+1 overflow) <= laneMaxRows.
+// laneRows must agree with what the renderer draws for every total 0..9. The
+// budget is a constant while anything runs, which is what makes the agreement
+// provable rather than arithmetic kept in step by hand.
 func TestLaneRowsMatchesRenderPlan(t *testing.T) {
 	for total := 0; total <= 9; total++ {
 		m := newTestModel(t)
 		for i := 0; i < total; i++ {
 			registerRunningSubagent(t, &m, "agent")
 		}
-		plan := m.lanePlan()
 		want := 0
-		if plan.total > 0 {
-			want = 2 + len(plan.agents) + len(plan.jobTexts)
-			if plan.overflow > 0 {
-				want++
-			}
+		if m.lanePlan().total > 0 {
+			want = laneActivityRows
 		}
 		if got := m.laneRows(); got != want {
 			t.Fatalf("total=%d: laneRows()=%d, want %d", total, got, want)
 		}
-		if want > laneMaxRows {
-			t.Fatalf("total=%d: laneRows()=%d exceeds laneMaxRows %d", total, want, laneMaxRows)
+		if want > laneActivityRows {
+			t.Fatalf("total=%d: laneRows()=%d exceeds the lane's ceiling %d", total, want, laneActivityRows)
 		}
 	}
 }

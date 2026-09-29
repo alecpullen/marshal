@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/db"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
@@ -314,7 +315,15 @@ func TestMouseClickTodoPanelNeverHides(t *testing.T) {
 	}
 }
 
-func TestAgentLaneClickDrillsIn(t *testing.T) {
+// A lane click is the mouse route to the running children. Task 14 changed where
+// it goes — it opened one child's transcript directly, and now it opens the
+// Agents tab that lists them all — so this asserts the destination rather than
+// the drill.
+//
+// This replaces TestAgentLaneClickDrillsIn. The property worth keeping from it is
+// the one it really guarded: the band announces itself as clickable and then does
+// something when clicked.
+func TestAgentLaneClickOpensTheAgentsTabViaTheClickRouter(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
@@ -324,28 +333,42 @@ func TestAgentLaneClickDrillsIn(t *testing.T) {
 	if !ok {
 		t.Fatal("expected an agent lane band")
 	}
-	// Row 0 is the separator rule, row 1 the caption, row 2 the first agent.
-	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 2}); !handled {
-		t.Fatal("a click on an agent row must be handled")
+	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top}); !handled {
+		t.Fatal("a click on the lane must be handled")
 	}
-	if len(m.viewStack) != 1 {
-		t.Fatalf("expected to drill into the subagent, viewStack=%d", len(m.viewStack))
+	if !m.inspector.isRendering() {
+		t.Fatal("a lane click must open the inspector")
+	}
+	if got := m.inspector.model.SelectedTab(); got != inspector.TabAgents {
+		t.Fatalf("the lane click opened %q, want the Agents tab", got)
 	}
 }
 
-// The separator and caption rows are not agents; clicking them must not drill.
-func TestAgentLaneClickOnChromeDoesNothing(t *testing.T) {
-	m := newTestModel(t)
-	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	m.state.RegisterSubagent("reviewer", child)
-	m.refreshViewport()
-	top, _, _ := m.agentLaneBand()
-	// Rows 0 (separator) and 1 (caption) are chrome.
-	for _, y := range []int{top, top + 1} {
-		m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: y})
-	}
-	if len(m.viewStack) != 0 {
-		t.Fatal("clicking the chrome rows must not drill in")
+// EVERY row of the band opens the inspector, including the separator and the
+// count.
+//
+// Before Task 14 those two rows were chrome and did nothing, while the agent
+// rows below them drilled in. With one count row there is no "below them", so a
+// reader who clicks the rule — an unsurprising thing to do — must not find the
+// band half dead.
+//
+// This replaces TestAgentLaneClickOnChromeDoesNothing.
+func TestAgentLaneClickOnEveryRowDoesSomething(t *testing.T) {
+	for _, offset := range []int{0, 1} {
+		m := newTestModel(t)
+		child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+		m.state.RegisterSubagent("reviewer", child)
+		m.refreshViewport()
+		top, _, _ := m.agentLaneBand()
+
+		if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{
+			Button: tea.MouseLeft, X: 1, Y: top + offset,
+		}); !handled {
+			t.Fatalf("a click on lane row %d must be handled", offset)
+		}
+		if !m.inspector.isRendering() {
+			t.Fatalf("a click on lane row %d must open the inspector", offset)
+		}
 	}
 }
 

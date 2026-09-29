@@ -164,9 +164,18 @@ func (m *Model) agentLaneBand() (top, bottom int, ok bool) {
 	return top, top + rows, true
 }
 
-// handleAgentLaneClick drills into the subagent whose row was clicked.
-// The lane is often the only handle on a running child: its transcript card
-// can scroll far out of view while the parent keeps working.
+// handleAgentLaneClick opens the inspector's Agents tab when the lane's count
+// row is clicked.
+//
+// The lane is often the only handle on running work: a child's transcript card
+// can scroll far out of view while the parent keeps working. Before the
+// consolidation each row drilled into one child; now the whole band opens the
+// tab that lists them all, which reaches the same information and more — the
+// per-child model, elapsed time, and the child's own transcript.
+//
+// EVERY row of the band is the target, including the separator above the count.
+// A one-row band with a dead half would be a trap: a reader has no way to know
+// which half responds, and clicking the rule is an unsurprising thing to do.
 func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return nil, false
@@ -178,16 +187,13 @@ func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok || msg.Y < top || msg.Y >= bottom {
 		return nil, false
 	}
-	// Row 0 is the separator rule, row 1 the caption; agents start at row 2.
-	const chromeRows = 2
-	idx := msg.Y - top - chromeRows
-	entries := m.agentLaneEntries()
-	if idx < 0 || idx >= len(entries) {
-		// The header line or the overflow row. Consume the click
-		// so it does not fall through to the transcript underneath.
+	if !m.openAgentLaneInspector() {
+		// Nothing to inspect, or the terminal cannot show the panel. Consume
+		// the click so it does not fall through to the transcript underneath:
+		// a click on the band is a click on the band, and letting it reach the
+		// transcript would act on a row the reader did not aim at.
 		return nil, true
 	}
-	m.drillIntoSubagent(entries[idx])
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 	return nil, true

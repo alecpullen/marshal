@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/tools/native"
 )
 
@@ -37,15 +38,24 @@ func TestAgentLaneEmptyWithNoRunningSubagents(t *testing.T) {
 	}
 }
 
-func TestAgentLaneShowsRunningSubagents(t *testing.T) {
+// The lane must report that running work exists, and it must reach the reader at
+// a glance. Task 14 replaced the per-child rows with a count, so the LABELS are
+// no longer on this row — a reader who wants to know which children are running
+// opens the Agents tab, which the row names.
+//
+// This replaces TestAgentLaneShowsRunningSubagents. Keeping a version of it that
+// demanded "tests" and "review" on the row would be demanding the behaviour the
+// consolidation removes.
+func TestAgentLaneShowsRunningWorkAsACount(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
 	plain := ansi.Strip(m.renderActivityLane())
-	for _, want := range []string{"2 agents", "tests", "review"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("lane missing %q:\n%s", want, plain)
-		}
+	if !strings.Contains(plain, "2 agents") {
+		t.Errorf("lane missing the running count:\n%s", plain)
+	}
+	if !strings.Contains(plain, "agents") {
+		t.Errorf("lane does not name the surface that lists them:\n%s", plain)
 	}
 }
 
@@ -79,17 +89,26 @@ func TestAgentLaneRowsMatchesRender(t *testing.T) {
 	}
 }
 
-func TestAgentLaneCapsWithOverflowRow(t *testing.T) {
+// The lane used to cap its per-child rows and add an "… N more" overflow row.
+// Task 14 consolidated the band to ONE count row, so the cap and the overflow
+// row are gone — the count is always complete, because it is the only thing the
+// row says.
+//
+// This test replaces TestAgentLaneCapsWithOverflowRow, which pinned the
+// behaviour the consolidation removes.
+func TestAgentLaneStaysOneRowWithManyChildren(t *testing.T) {
 	m := newTestModel(t)
 	for i := 0; i < 9; i++ {
 		registerRunningSubagent(t, &m, "task")
 	}
 	out := m.renderActivityLane()
-	if got := strings.Count(out, "\n"); got > laneMaxRows {
-		t.Fatalf("lane rendered %d rows, cap is %d", got, laneMaxRows)
+	if got := strings.Count(out, "\n"); got > laneActivityRows {
+		t.Fatalf("lane rendered %d rows with 9 children, want at most %d:\n%s",
+			got, laneActivityRows, ansi.Strip(out))
 	}
-	if !strings.Contains(ansi.Strip(out), "more") {
-		t.Fatalf("expected an overflow row:\n%s", ansi.Strip(out))
+	// The count must be the FULL count: there is no overflow to hide it in.
+	if !strings.Contains(ansi.Strip(out), "9 agents") {
+		t.Fatalf("the count is not the full nine:\n%s", ansi.Strip(out))
 	}
 }
 
@@ -196,45 +215,41 @@ func TestAgentLaneShowsSpinnerWhileRunning(t *testing.T) {
 	}
 }
 
-// The lane renders a separator rule row, then a caption row, then the agent
-// rows. The caption must carry both the count text and the rule; the first
-// agent row follows on the next line.
-func TestAgentLaneStructureHeaderThenRuleThenRows(t *testing.T) {
+// The lane renders a separator rule row, then ONE count row. There are no
+// per-child rows after it, and no blank row between them: every row the lane
+// occupies is subtracted from the transcript viewport, so a blank one costs a
+// line of the conversation.
+//
+// This replaces TestAgentLaneStructureHeaderThenRuleThenRows, which asserted the
+// per-child "#id" rows the consolidation removes.
+func TestAgentLaneStructureIsRuleThenCount(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "tests")
 	registerRunningSubagent(t, &m, "review")
 	plain := ansi.Strip(m.renderActivityLane())
 	if !strings.Contains(plain, "2 agents") {
-		t.Fatalf("header must be count-first and pluralized, got:\n%s", plain)
-	}
-	// Rows carry #-prefixed ids (the ids are global sequence numbers, so
-	// only the "#" prefix is stable across runs).
-	if !strings.Contains(plain, "#") {
-		t.Fatalf("rows must carry #-prefixed ids, got:\n%s", plain)
+		t.Fatalf("the count must be first and pluralized, got:\n%s", plain)
 	}
 	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
-	headerIdx, firstRowIdx := -1, -1
+	if len(lines) != laneActivityRows {
+		t.Fatalf("the lane has %d rows, want %d:\n%s", len(lines), laneActivityRows, plain)
+	}
+	// No blank content row: an empty row is chrome the reader pays for and
+	// cannot read.
 	for i, l := range lines {
-		switch {
-		case strings.Contains(l, "2 agents"):
-			headerIdx = i
-		case strings.Contains(l, "#"):
-			if firstRowIdx < 0 {
-				firstRowIdx = i
-			}
+		if strings.TrimSpace(strings.TrimPrefix(l, glyph.Rail)) == "" {
+			t.Fatalf("lane row %d is empty:\n%s", i, plain)
 		}
 	}
-	if headerIdx < 0 || firstRowIdx < 0 {
-		t.Fatalf("lane missing header/row:\n%s", plain)
+	if !strings.Contains(lines[laneActivityRows-1], "2 agents") {
+		t.Fatalf("the count is not on the last row:\n%s", plain)
 	}
-	// The rule lives on the separator line (row 0), not the caption line.
+	// The rule lives on the SEPARATOR line (row 0), not on the count line.
 	if !strings.Contains(lines[0], "─") {
 		t.Fatalf("separator line must carry the rule, got %q:\n%s", lines[0], plain)
 	}
-	// The first agent row must follow the header.
-	if firstRowIdx <= headerIdx {
-		t.Fatalf("expected header < first row, got header=%d row=%d:\n%s",
-			headerIdx, firstRowIdx, plain)
+	if strings.Contains(lines[laneActivityRows-1], "─") {
+		t.Fatalf("the count line must not carry the rule (this reads as a double line):\n%s", plain)
 	}
 }
 
@@ -317,7 +332,15 @@ func TestLaneBlankEnterPreservesSteeringDrain(t *testing.T) {
 
 // Clicking a lane row is still the mouse route into a child transcript; the
 // keyboard takeover is what was removed, not the lane itself.
-func TestAgentLaneClickStillDrills(t *testing.T) {
+// Task 14 changed what a lane click DOES: it opened one child's transcript
+// directly, and now it opens the Agents tab that lists them all — which reaches
+// the same information and more.
+//
+// This test replaces TestAgentLaneClickStillDrills. It is worth keeping the
+// shape of the old assertion — "a click at this position is consumed and
+// something opens" — because the failure it guards against is a band that
+// reports itself clickable and then does nothing.
+func TestAgentLaneClickOpensTheAgentsTab(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	registerRunningSubagent(t, &m, "tests")
@@ -330,18 +353,20 @@ func TestAgentLaneClickStillDrills(t *testing.T) {
 	if !ok {
 		t.Fatal("lane did not report a clickable band")
 	}
-	entries := m.agentLaneEntries()
-	if len(entries) == 0 {
+	if len(m.agentLaneEntries()) == 0 {
 		t.Fatal("expected a running lane entry")
 	}
-	// Row 0 is the separator, row 1 the caption; the first agent is row 2.
+	// Either row of the band is the target now; the separator is row 0.
 	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{
-		Button: tea.MouseLeft, X: 1, Y: top + 2,
+		Button: tea.MouseLeft, X: 1, Y: top,
 	}); !handled {
 		t.Fatal("lane row click should be consumed")
 	}
-	if len(m.viewStack) != 1 {
-		t.Fatalf("lane click should drill, viewStack=%d", len(m.viewStack))
+	if !m.inspector.isRendering() {
+		t.Fatal("lane click should open the inspector")
+	}
+	if got := m.inspector.model.SelectedTab(); got != inspector.TabAgents {
+		t.Fatalf("lane click opened %q, want the Agents tab", got)
 	}
 }
 
@@ -380,8 +405,12 @@ func TestAgentLaneHeaderFillsExactlyOneRow(t *testing.T) {
 	}
 }
 
-// The agent lane body rows must start their label text at the same column
-// as the todo panel body rows, so the two panels look aligned when stacked.
+// The agent lane's count row must start its text at the same column as the todo
+// panel's body rows, so the two panels look aligned when stacked.
+//
+// It used to compare the last AGENT row against the last todo row. The lane now
+// has one content row, so the comparison is against that row — the gutter
+// arithmetic being checked is the same either way.
 func TestAgentLaneBodyTextAlignsWithTodoPanelBody(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
@@ -397,8 +426,9 @@ func TestAgentLaneBodyTextAlignsWithTodoPanelBody(t *testing.T) {
 
 	laneRows := strings.Split(strings.TrimRight(m.renderActivityLane(), "\n"), "\n")
 	todoRows := strings.Split(strings.TrimRight(m.renderTodoPanel(), "\n"), "\n")
-	if len(laneRows) < 3 || len(todoRows) < 2 {
-		t.Fatalf("need at least 3 lane rows and 2 todo rows; lane=%d todo=%d", len(laneRows), len(todoRows))
+	if len(laneRows) < laneActivityRows || len(todoRows) < 2 {
+		t.Fatalf("need at least %d lane rows and 2 todo rows; lane=%d todo=%d",
+			laneActivityRows, len(laneRows), len(todoRows))
 	}
 
 	// Find the text-start column (first non-space, non-rail char) in a body row.
@@ -442,25 +472,38 @@ func TestAgentLaneBodyTextAlignsWithTodoPanelBody(t *testing.T) {
 	}
 }
 
-// A dispatched subagent carries its model in the lane row, and its provider
-// when that provider differs from the parent's active route.
-func TestAgentLaneRowShowsModel(t *testing.T) {
+// A dispatched subagent's model, provider and label are no longer on the lane
+// row — Task 14 moved the per-child detail to the inspector's Agents tab, which
+// is what the row now names.
+//
+// What still has to hold is that such a child IS counted and IS reachable, so
+// this replaces TestAgentLaneRowShowsModel with the contract that survives.
+func TestAgentLaneCountsADispatchedSubagent(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagentWithMeta("fleet-reviewer", child, session.SubagentMeta{
 		Model: "glm-5.2", Provider: "zhipu",
 	})
 	plain := ansi.Strip(m.renderActivityLane())
-	for _, want := range []string{"fleet-reviewer", "glm-5.2", "@ zhipu"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("lane missing %q:\n%s", want, plain)
-		}
+	if !strings.Contains(plain, "1 agent") {
+		t.Errorf("the dispatched child is not counted:\n%s", plain)
+	}
+	if !strings.Contains(plain, "agents") {
+		t.Errorf("the lane does not name where the child's detail is:\n%s", plain)
+	}
+	// And the child must actually be reachable: the inspector is opened from
+	// this row, so a count with nothing behind it would be a dead end.
+	if got := len(m.lanePlan().agents); got != 1 {
+		t.Fatalf("the plan carries %d agents, want the one child", got)
 	}
 }
 
-// When the child's provider matches the parent's active route, the provider
-// collapses away — the model alone is shown.
-func TestAgentLaneRowHidesOffParent(t *testing.T) {
+// A child whose provider matches the parent's is still counted, exactly like any
+// other: the count is about WORK, not about where the work is running.
+//
+// This replaces TestAgentLaneRowHidesOffParent, which asserted the collapse of
+// the provider segment on a row that no longer exists.
+func TestAgentLaneCountsASameProviderChild(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetActiveRoute(session.RouteInfo{Provider: "zhipu"})
 	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
@@ -468,31 +511,30 @@ func TestAgentLaneRowHidesOffParent(t *testing.T) {
 		Model: "glm-5.2", Provider: "zhipu",
 	})
 	plain := ansi.Strip(m.renderActivityLane())
-	if !strings.Contains(plain, "glm-5.2") {
-		t.Fatalf("lane must show the model:\n%s", plain)
+	if !strings.Contains(plain, "1 agent") {
+		t.Fatalf("a same-provider child must still be counted:\n%s", plain)
 	}
-	if strings.Contains(plain, " @ ") {
-		t.Fatalf("same-provider child must not show the provider:\n%s", plain)
+	// The provider never appears on this row at all now, for either case: the
+	// row has one job, and it is the count.
+	if strings.Contains(plain, "zhipu") {
+		t.Fatalf("the lane row names a provider, which is per-child detail:\n%s", plain)
 	}
 }
 
-// A subagent registered without meta keeps the legacy #ID Label Elapsed
-// shape, with no empty segments.
-func TestAgentLaneRowWithoutMetaKeepsLegacyShape(t *testing.T) {
+// A subagent registered without meta is counted the same as one with meta. The
+// row shape is now the count, so what must hold is that the count is complete
+// and free of empty segments.
+//
+// This replaces TestAgentLaneRowWithoutMetaKeepsLegacyShape.
+func TestAgentLaneRowWithoutMetaCountsTheSame(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "review")
 	plain := ansi.Strip(m.renderActivityLane())
-	if !strings.Contains(plain, "#") {
-		t.Fatalf("row must carry the #-prefixed id:\n%s", plain)
+	if !strings.Contains(plain, "1 agent") {
+		t.Fatalf("the child is not counted:\n%s", plain)
 	}
-	if !strings.Contains(plain, "review") {
-		t.Fatalf("row must carry the label:\n%s", plain)
-	}
-	if !strings.Contains(plain, "s") {
-		t.Fatalf("row must carry an elapsed seconds suffix:\n%s", plain)
-	}
-	if strings.Contains(plain, "·  ·") {
-		t.Fatalf("row must not contain empty segments:\n%s", plain)
+	if strings.Contains(plain, "·  ·") || strings.Contains(plain, "  ·") {
+		t.Fatalf("the row contains an empty segment:\n%s", plain)
 	}
 }
 

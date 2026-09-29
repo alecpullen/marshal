@@ -172,13 +172,49 @@ func (m *Model) handleFocusedSurfaceKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 	}
 	switch msg.String() {
 	case "up":
+		// While a selection GESTURE is live, the arrows extend it instead of
+		// scrolling: the reader is placing an end, and scrolling the view out
+		// from under the caret would move the thing they are aiming at.
+		if m.selectionActive() {
+			m.extendSelectionByKey(selectionKeyUp)
+			m.refreshViewport()
+			return *m, nil, true
+		}
 		m.viewport.ScrollUp(1)
 		m.viewportFollow = false
 	case "down":
+		if m.selectionActive() {
+			m.extendSelectionByKey(selectionKeyDown)
+			m.refreshViewport()
+			return *m, nil, true
+		}
 		m.viewport.ScrollDown(1)
 		if m.viewport.AtBottom() {
 			m.viewportFollow = true
 		}
+	case "left":
+		if m.selectionActive() {
+			m.extendSelectionByKey(selectionKeyLeft)
+			m.refreshViewport()
+			return *m, nil, true
+		}
+		// Horizontal movement is meaningless in a vertical-only transcript, so
+		// it is consumed rather than falling through to the textarea.
+		return *m, nil, true
+	case "right":
+		if m.selectionActive() {
+			m.extendSelectionByKey(selectionKeyRight)
+			m.refreshViewport()
+			return *m, nil, true
+		}
+		return *m, nil, true
+	case "v":
+		// `v` begins a keyboard selection at the reading anchor, which is the
+		// line the reader's eye is on. It is the keyboard's counterpart to a
+		// press: without it, selecting text requires the trackpad.
+		m.beginSelectionAtReadingAnchor()
+		m.refreshViewport()
+		return *m, nil, true
 	case "pgup":
 		m.viewport.PageUp()
 		m.viewportFollow = false

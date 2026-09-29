@@ -42,6 +42,7 @@ const (
 	// bytes, and the palette must be able to offer, disable, and explain each
 	// one on its own terms.
 	ActionCopyAnswer ActionID = "copy-answer"
+	ActionSelectText ActionID = "select-text"
 	ActionCopyCode   ActionID = "copy-code"
 	ActionCopyOutput ActionID = "copy-output"
 	ActionCopyPath   ActionID = "copy-path"
@@ -189,8 +190,13 @@ var actionCatalog = []actionDef{
 	},
 	{
 		id: ActionCopyAnswer, label: "Copy answer",
-		desc: "copy the answer the reader is on, as its original Markdown",
+		desc: "copy the selection if there is one, otherwise the answer the reader is on",
 		key:  "y", priority: actionPriorityLikely,
+	},
+	{
+		id: ActionSelectText, label: "Select text",
+		desc: "begin selecting in the conversation; arrows extend, y copies, esc clears",
+		key:  "v", priority: actionPriorityLikely,
 	},
 	{
 		id: ActionCopyCode, label: "Copy code block",
@@ -251,6 +257,15 @@ type actionContext struct {
 	CopyBlock conversation.Block
 	// CopyBlockFound reports whether CopyBlock resolved at all.
 	CopyBlockFound bool
+	// HasSelection reports that the reader has selected text on the
+	// conversation surface, so a copy would take that text rather than the
+	// block's own targets.
+	HasSelection bool
+	// ConversationFocused reports that the conversation owns the keys, which
+	// is what a selection gesture needs.
+	ConversationFocused bool
+	// TranscriptEmpty reports that there is nothing to select in.
+	TranscriptEmpty bool
 	// InspectedPathSelected reports that the inspector's Changes tab has a
 	// selected path, so a copy of it has something to copy.
 	InspectedPathSelected bool
@@ -332,6 +347,9 @@ func (m Model) actionSnapshot() actionContext {
 	// The copy actions resolve their block through the same path dispatch
 	// uses, so availability and behaviour cannot describe different blocks.
 	ctx.CopyBlock, ctx.CopyBlockFound = m.copyBlock()
+	ctx.HasSelection = m.hasSelection()
+	ctx.ConversationFocused = m.effectiveFocus() == FocusConversation
+	ctx.TranscriptEmpty = len(m.blockRenderSpans) == 0
 	// The inspected-change actions read the inspector's own state, which is
 	// the only place that knows what is selected and what has been fetched.
 	if m.inspector != nil {
@@ -431,11 +449,26 @@ func availability(ctx actionContext, id ActionID) (disabled bool, reason string)
 			return true, "resolve the open panel or decision first"
 		}
 	case ActionCopyAnswer:
+		// A selection is copyable on its own terms: it needs no block TARGET,
+		// because it is a phrase inside the readable text rather than one of
+		// the block's offered payloads. Without this, `y` over a selection
+		// would be greyed out with "no text to copy" while the text sat
+		// highlighted on screen.
+		if ctx.HasSelection {
+			return false, ""
+		}
 		if !ctx.CopyBlockFound {
 			return true, "the conversation is empty"
 		}
 		if len(ctx.CopyBlock.CopyTargets) == 0 {
 			return true, "the block under the reading position has no text to copy"
+		}
+	case ActionSelectText:
+		if !ctx.ConversationFocused {
+			return true, "focus the conversation to select text in it"
+		}
+		if ctx.TranscriptEmpty {
+			return true, "the conversation is empty"
 		}
 	case ActionCopyCode:
 		if !ctx.CopyBlockFound {
@@ -590,7 +623,16 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 	case ActionHelp:
 		return m.dispatchCommand("/help")
 	case ActionCopyAnswer:
+		// Mirror the availability check above: a live selection is copied
+		// directly, because it is not a target on a block.
+		if m.hasSelection() {
+			return *m, m.copySelectionText()
+		}
 		return *m, m.copySelection(conversation.SourceAnswer)
+	case ActionSelectText:
+		m.beginSelectionAtReadingAnchor()
+		m.refreshViewport()
+		return *m, nil
 	case ActionCopyCode:
 		return *m, m.copySelection(conversation.SourceCode)
 	case ActionCopyOutput:

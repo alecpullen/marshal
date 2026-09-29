@@ -343,6 +343,99 @@ func (m Model) selectionStatus() string {
 	return fmt.Sprintf("%d selected", n)
 }
 
+// selectionKey names a direction a keyboard selection extends in.
+type selectionKey int
+
+const (
+	selectionKeyLeft selectionKey = iota
+	selectionKeyRight
+	selectionKeyUp
+	selectionKeyDown
+)
+
+// beginSelectionAtReadingAnchor starts a keyboard selection at the reader's
+// place.
+//
+// The anchor is the block covering the top of the viewport, which is where the
+// reader's eye is. It is the keyboard's counterpart to a pointer press: the same
+// state, reached without a mouse, so `v` then arrows then `y` selects text
+// exactly as a drag does.
+//
+// Starting from the anchor's FIRST character rather than an arbitrary column is
+// deliberate: a keyboard selection has to start somewhere, and the beginning of
+// the block the reader is looking at is the only place that is obviously right.
+func (m *Model) beginSelectionAtReadingAnchor() {
+	block, _ := m.blockAtViewportTop()
+	if block == "" {
+		return
+	}
+	span, ok := m.mappedBlockSpan(block)
+	if !ok {
+		return
+	}
+	// Land on the block's first CHARACTER, not the first byte of its range: a
+	// range can begin with chrome (an indent) or with a byte the reader cannot
+	// see, and a caret placed there would look like nothing happened.
+	start := 0
+	for _, row := range span.rendered.Rows {
+		if !row.Range.HasText() {
+			continue
+		}
+		start = row.Range.Start
+		break
+	}
+	start = conversation.SnapToBoundary(span.rendered.Logical, start)
+	m.selection.sel = conversation.Selection{
+		Block:    span.id,
+		Revision: span.rendered.Revision,
+		Anchor:   start,
+		Focus:    start,
+	}
+	m.selection.dragging = true
+	m.selection.frozen = nil
+}
+
+// extendSelectionByKey moves the selection's focus by one step in a direction.
+//
+// Left and right move by GRAPHEME, not by byte or rune: a step that stopped
+// between a base character and its combining mark would be a position copy
+// cannot name, and the reader would see the highlight refuse to move.
+//
+// Up and down move a ROW and keep the display column, which is what a reader
+// expects from an arrow key — the character under the caret stays under it —
+// and it is the reason the row/column conversion lives in the mapping rather
+// than being re-derived here.
+func (m *Model) extendSelectionByKey(dir selectionKey) {
+	if m.selection.sel.Block == "" {
+		return
+	}
+	span, ok := m.mappedBlockSpan(m.selection.sel.Block)
+	if !ok {
+		return
+	}
+	text := span.rendered.Logical
+	focus := m.selection.sel.Focus
+	switch dir {
+	case selectionKeyLeft:
+		focus = conversation.PrevGrapheme(text, focus)
+	case selectionKeyRight:
+		focus = conversation.NextGrapheme(text, focus)
+	case selectionKeyUp:
+		focus = conversation.GraphemeLineUp(span.rendered, focus, 0)
+	case selectionKeyDown:
+		focus = conversation.GraphemeLineDown(span.rendered, focus, 0)
+	}
+	m.selection.sel.Focus = conversation.SnapToBoundary(text, focus)
+	// A keyboard selection is COMPLETE as soon as it covers something: unlike a
+	// drag, there is no release to wait for, and the reader expects `y` to work
+	// immediately. Freezing here is what makes that text stable while they keep
+	// extending it — each step re-freezes the block at its current revision, so
+	// the bytes track what is on screen.
+	if !m.selection.sel.Empty() {
+		m.freezeSelection()
+	}
+}
+
 // mappedBlockAt resolves a transcript display position to a block and the
 // position inside it.
 //

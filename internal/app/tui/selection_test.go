@@ -510,6 +510,159 @@ func TestAWheelOverAScrollableLiveRegionStillScrollsTheRegion(t *testing.T) {
 	}
 }
 
+// `v` begins a selection at the reader's place, so selecting text does not
+// require a trackpad.
+//
+// The key is driven through the REAL handler rather than by calling the method,
+// because the failure this would miss is the one that matters: a key that never
+// reaches the selection code.
+func TestVKeyBeginsASelectionAtTheReadingAnchor(t *testing.T) {
+	m, _ := modelWithAnswer(t, "alpha beta gamma")
+	m.setFocus(FocusConversation)
+	m.viewport.SetYOffset(0)
+	m.captureReadingAnchor()
+
+	got := selKey(t, &m, "v")
+	if !got.selectionActive() {
+		t.Fatal("v began no selection")
+	}
+	if got.selection.sel.Block == "" {
+		t.Fatal("v anchored no block")
+	}
+	// It starts at the block's first character, so the caret is somewhere the
+	// reader can see.
+	if got.selection.sel.Anchor != 0 {
+		t.Fatalf("the selection anchored at offset %d, want 0", got.selection.sel.Anchor)
+	}
+}
+
+// Arrow keys extend the selection by grapheme while a selection is live, and
+// scroll the viewport when none is.
+//
+// Both halves matter. Extending is the keyboard's way to place an end; scrolling
+// is what the arrows have always done, and a change that made the arrows
+// selection-only would break reading.
+func TestArrowsExtendASelectionButScrollWithoutOne(t *testing.T) {
+	m, _ := modelWithAnswer(t, "alpha beta gamma")
+	for i := 0; i < 200; i++ {
+		m.state.AddMessage(session.RoleSystem, "filler line", session.ContentTypePlain)
+	}
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+	m.setFocus(FocusConversation)
+
+	// No selection: an arrow scrolls.
+	m.viewport.SetYOffset(m.viewport.TotalLineCount() / 2)
+	before := m.viewport.YOffset()
+	scrolled := selKey(t, &m, "up")
+	if scrolled.viewport.YOffset() == before {
+		t.Fatal("an arrow with no selection did not scroll the transcript")
+	}
+	if scrolled.selectionActive() {
+		t.Fatal("an arrow with no selection began one")
+	}
+
+	// With a selection: an arrow extends it and does not scroll.
+	//
+	// The viewport is returned to the answer first. `v` anchors to the block at
+	// the top of the viewport, and the scroll above left it on filler rows that
+	// are not mapped blocks — mid-document there is nothing to anchor to, which
+	// is the CORRECT behaviour and would make this half of the test vacuous.
+	m.viewport.SetYOffset(0)
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+	m.viewport.SetYOffset(0)
+	withSel := selKey(t, &m, "v")
+	if !withSel.selectionActive() {
+		t.Fatal("the fixture could not begin a selection")
+	}
+	start := withSel.selection.sel.Focus
+	extended := selKey(t, &withSel, "right")
+	if extended.selection.sel.Focus == start {
+		t.Fatalf("right arrow did not extend the selection (focus stayed at %d)", start)
+	}
+	if extended.selection.sel.Focus != conversation.NextGrapheme(
+		mustLogicalText(t, extended), start) {
+		t.Fatalf("right arrow moved the focus to %d, want one grapheme from %d",
+			extended.selection.sel.Focus, start)
+	}
+}
+
+// A keyboard selection is COPYABLE as soon as it covers something: there is no
+// release to wait for, so `y` must work immediately.
+func TestAKeyboardSelectionIsCopyableImmediately(t *testing.T) {
+	m, _ := modelWithAnswer(t, "alpha beta gamma")
+	m.setFocus(FocusConversation)
+	m.viewport.SetYOffset(0)
+	m.captureReadingAnchor()
+
+	m = selKey(t, &m, "v")
+	for i := 0; i < 5; i++ {
+		m = selKey(t, &m, "right")
+	}
+	if !m.hasSelection() {
+		t.Fatal("five right-arrows selected nothing")
+	}
+	got, ok := m.copyableText()
+	if !ok {
+		t.Fatal("a keyboard selection was not copyable")
+	}
+	if got != "alpha" {
+		t.Fatalf("the keyboard selection copied %q, want %q", got, "alpha")
+	}
+}
+
+// selKey drives one key through the model's real key handler.
+//
+// It is deliberately separate from the existing pressKey helper (which sends a
+// rune and reports handled): these tests need the RESULTING model, and they need
+// real key CODES for the arrows rather than runes — the arrow keys are
+// tea.KeyPressMsg.Code values, and sending them as runes would test a key nobody
+// can press.
+func selKey(t *testing.T, m *Model, key string) Model {
+	t.Helper()
+	msg := tea.KeyPressMsg{Code: rune(key[0]), Text: key}
+	switch key {
+	case "up":
+		msg = tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		msg = tea.KeyPressMsg{Code: tea.KeyDown}
+	case "left":
+		msg = tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "right":
+		msg = tea.KeyPressMsg{Code: tea.KeyRight}
+	}
+	out, cmd := m.Update(msg)
+	got, ok := out.(Model)
+	if !ok {
+		if mp, isPtr := out.(*Model); isPtr {
+			got = *mp
+		} else {
+			t.Fatalf("Update returned %T, not a Model", out)
+		}
+	}
+	if cmd != nil {
+		applied, _ := got.Update(cmd())
+		if a, ok := applied.(Model); ok {
+			got = a
+		} else if ap, isPtr := applied.(*Model); isPtr {
+			got = *ap
+		}
+	}
+	return got
+}
+
+// mustLogicalText returns the logical text of the block a selection is anchored
+// to, so a test can assert against the text the offsets are into.
+func mustLogicalText(t *testing.T, m Model) string {
+	t.Helper()
+	block, ok := m.selectedBlock()
+	if !ok {
+		t.Fatal("the selection does not resolve to a block")
+	}
+	return block.Logical
+}
+
 // modelWithAnswer builds a model whose transcript holds one prose answer, and
 // returns the display row that answer occupies.
 func modelWithAnswer(t *testing.T, answer string) (Model, int) {

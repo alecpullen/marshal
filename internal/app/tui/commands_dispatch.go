@@ -133,6 +133,7 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	// happens to carry the same token cannot match either.
 	m.copyState.requestSeq++
 	m.copyState.session = ""
+	m.resetSessionScopedUIState()
 
 	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
 	if name != "" {

@@ -501,6 +501,42 @@ const findInputPrompt = "find: "
 // surface owns their keystrokes.
 const findInputTitle = "Find"
 
+// resetSessionScopedUIState drops the UI state that belongs to the session being
+// left.
+//
+// It exists as its own function because /new and /clear both need it AND because
+// a test must be able to drive the SAME code the production path runs: a test
+// that reimplemented the reset would pass against a reset the app never does.
+//
+// Four things are dropped, and each would otherwise serve one conversation's
+// data to another:
+//
+//   - the search index and the render cache are keyed by BLOCK IDENTITY, which
+//     is scoped per session. Both conversations number their blocks from 1, so a
+//     collision is likely rather than rare, and the symptom is one
+//     conversation's text appearing in another's search results or rendering.
+//   - an open search names blocks that are gone and an entry anchor that is a
+//     position in a transcript that no longer exists. Left open, it would paint
+//     highlights for the old conversation onto the new one and then "restore"
+//     the reader to a line that is not there.
+//   - the reading anchor names a block from the old transcript. Carried over,
+//     the next reflow resolves it against unrelated content and moves the reader
+//     somewhere they never chose.
+//   - a selection has the same problem, and it is worse: it would highlight
+//     text that no longer exists and copy bytes from the wrong conversation.
+func (m *Model) resetSessionScopedUIState() {
+	m.resetFindIndex()
+	if m.convRender != nil {
+		m.convRender.reset()
+	}
+	if m.find.open {
+		m.closeFind()
+	}
+	m.readingAnchor = conversation.Anchor{}
+	m.viewportFollow = true
+	m.clearSelection()
+}
+
 // resetFindIndex drops the search's projection cache.
 //
 // It is called on a session switch, for the same reason the render cache is

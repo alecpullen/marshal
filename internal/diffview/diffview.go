@@ -69,14 +69,47 @@ type Hunk struct {
 	FilePath string
 }
 
+// Result is a rendered diff plus the facts about that rendering which a string
+// cannot carry.
+//
+// It exists because the renderer CAPS its output at maxRenderLines. A caller
+// that only receives the string cannot tell a complete patch from its first 500
+// lines, and the Changes inspector has to state which one the reader is looking
+// at: labelling a truncated diff as the whole thing is a claim the bytes do not
+// support.
+type Result struct {
+	// Text is the styled output, identical to what Render returns.
+	Text string
+	// Lines is the number of diff content lines the renderer consumed.
+	Lines int
+	// Truncated reports that content was dropped, so Text is a prefix of the
+	// real diff and the reader is not seeing all of it.
+	Truncated bool
+}
+
 // Render produces a styled string for the TUI. It never returns an error —
 // on parse failure it falls back to rendering the raw input as plain text
 // (F17 R1: "falls back to plain text below a width floor or when
 // highlighting fails").
+//
+// It is a thin wrapper over RenderResult, kept so existing callers are
+// unaffected by the richer return type.
 func Render(diff string, opts Options) string {
+	return RenderResult(diff, opts).Text
+}
+
+// RenderResult renders a diff and reports whether content was dropped.
+func RenderResult(diff string, opts Options) Result {
 	hunks, err := parseUnifiedDiff(diff)
 	if err != nil {
-		return plainTextFallback(diff, opts.Width)
+		// The fallback caps on its own line count and says so inline, so its
+		// flag comes from the same condition it uses.
+		total := strings.Count(diff, "\n")
+		return Result{
+			Text:      plainTextFallback(diff, opts.Width),
+			Lines:     min(total, maxRenderLines),
+			Truncated: total > maxRenderLines,
+		}
 	}
 	mode := opts.Mode
 	if mode == ModeAuto {
@@ -102,13 +135,24 @@ func Render(diff string, opts Options) string {
 			b.WriteString("\n")
 		}
 		var written int
+		var capped bool
 		if mode == ModeSideBySide {
-			written = renderSideBySide(&b, h, opts)
+			written, capped = renderSideBySide(&b, h, opts)
 		} else {
-			written = renderUnified(&b, h, opts)
+			written, capped = renderUnified(&b, h, opts)
 		}
 		lineCount += written
-		if lineCount > maxRenderLines {
+		// A hunk reports whether IT dropped content. The previous code inferred
+		// truncation from lineCount exceeding the cap, but the renderers stop AT
+		// the cap rather than crossing it — so a single hunk larger than the cap
+		// lost its tail with no notice and no flag. Asking the hunk is the only
+		// way to tell "the budget is exactly spent" from "content was dropped".
+		if capped {
+			truncated = true
+			break
+		}
+		if lineCount >= maxRenderLines && i < len(hunks)-1 {
+			// The budget is spent and more hunks remained.
 			truncated = true
 			break
 		}
@@ -117,7 +161,7 @@ func Render(diff string, opts Options) string {
 		fmt.Fprintf(&b, "\n%s\n",
 			mutedStyle.Render("... (truncated; rerun /diff for full output)"))
 	}
-	return b.String()
+	return Result{Text: b.String(), Lines: lineCount, Truncated: truncated}
 }
 
 func parseUnifiedDiff(diff string) ([]Hunk, error) {
@@ -265,7 +309,7 @@ var (
 
 // --- unified -----------------------------------------------------------
 
-func renderUnified(b *strings.Builder, h Hunk, opts Options) int {
+func renderUnified(b *strings.Builder, h Hunk, opts Options) (int, bool) {
 	lang := detectLanguage(h)
 	count := 0
 	// Unified lines are prefixed with two visible cells ("+ ", "- ", "  ").
@@ -276,7 +320,8 @@ func renderUnified(b *strings.Builder, h Hunk, opts Options) int {
 	}
 	for _, ln := range h.Lines {
 		if count >= maxRenderLines {
-			return count
+			// Lines remain in this hunk, so content is being dropped.
+			return count, true
 		}
 		switch ln.Kind {
 		case LineHunkHeader:
@@ -306,7 +351,7 @@ func renderUnified(b *strings.Builder, h Hunk, opts Options) int {
 		b.WriteString("\n")
 		count++
 	}
-	return count
+	return count, false
 }
 
 // --- side-by-side ------------------------------------------------------
@@ -397,7 +442,7 @@ func computeEmphasis(left, right string) (*lineEmphasis, *lineEmphasis) {
 	return &le, &re
 }
 
-func renderSideBySide(b *strings.Builder, h Hunk, opts Options) int {
+func renderSideBySide(b *strings.Builder, h Hunk, opts Options) (int, bool) {
 	// Reserve 3 for the " │ " separator. Give the left side
 	// floor(remaining/2) and the right side ceil(remaining/2) so the full
 	// width is used without wasting a character on even-width terminals.
@@ -410,9 +455,12 @@ func renderSideBySide(b *strings.Builder, h Hunk, opts Options) int {
 	lang := detectLanguage(h)
 	pairs := pairLines(h.Lines)
 	count := 0
-	for _, p := range pairs {
+	for i, p := range pairs {
 		if count >= maxRenderLines {
-			return count
+			// Capped only if pairs remain. A diff that ends exactly at the
+			// budget is complete, and claiming otherwise would teach the reader
+			// to distrust a full render.
+			return count, i < len(pairs)
 		}
 		lstr := renderSideColumn(p.left, leftHalf, removedStyle, remEmphStyle, p.leftEmph, opts.Highlight, lang)
 		rstr := renderSideColumn(p.right, rightHalf, addedStyle, addEmphStyle, p.rightEmph, opts.Highlight, lang)
@@ -422,7 +470,7 @@ func renderSideBySide(b *strings.Builder, h Hunk, opts Options) int {
 		b.WriteString("\n")
 		count++
 	}
-	return count
+	return count, false
 }
 
 func renderSideColumn(ln *Line, width int, baseStyle, emphStyle lipgloss.Style, emph *lineEmphasis, highlight bool, lang string) string {

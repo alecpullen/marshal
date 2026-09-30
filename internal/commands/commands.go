@@ -190,8 +190,29 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			// /find searches the conversation currently on screen. It is
+			// TUI-only because the result is a position in the rendered
+			// transcript: an ACP client has no viewport to scroll, and a
+			// handler that returned rows would be describing a surface the
+			// caller does not have.
+			//
+			// Its argument is a PHRASE, not a list of terms: the query is
+			// joined by the effect, and the description says so, because a
+			// reader who assumes one term per word would get a different
+			// search from the one they asked for.
+			Name:        "find",
+			Description: "Find text in the current conversation (/ opens it while reading)",
+			Args:        "[phrase]",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
+			// /context is the transcript-panel summary and keeps that meaning:
+			// scripts and muscle memory depend on it, and a command that
+			// silently became an inspector opener would break both. The
+			// inspector's richer view is /inspect context.
 			Name:        "context",
-			Description: "Show context window usage",
+			Description: "Show context pack and turn budget usage",
 			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) Result {
 				msgs := state.Messages()
@@ -386,6 +407,30 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "settings",
 			Description: "Open settings panel",
+			Group:       groupSettings,
+			TUIOnly:     true,
+		},
+		{
+			// /actions and F2 open the same palette. It is registered so the
+			// command exists in /help and completion like every other
+			// discoverable surface, while the palette itself resolves straight
+			// to an action rather than round-tripping through a command name
+			// (see the TUI dispatch table).
+			Name:        "actions",
+			Description: "Search every action available right now (F2)",
+			Group:       groupSettings,
+			TUIOnly:     true,
+		},
+		{
+			// /inspect is the named entry point to the conversation
+			// inspector, which Ctrl+B toggles. It is registered so the
+			// surface is discoverable in /help and completion like every
+			// other interactive view; the tab names it accepts come from
+			// inspector.VisibleTabs(), so a tab that lands in a later task
+			// is reachable without a change here.
+			Name:        "inspect",
+			Description: "Open the conversation inspector (changes, agents, context, overview)",
+			Args:        "[tab|close] · context [pack|request]",
 			Group:       groupSettings,
 			TUIOnly:     true,
 		},

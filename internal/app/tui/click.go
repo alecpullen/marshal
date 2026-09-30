@@ -4,6 +4,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/conversation"
 )
 
 // clickTarget identifies what a click region toggles: either a keyed
@@ -21,6 +22,30 @@ type clickTarget struct {
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
+	// copySource marks a click that COPIES rather than toggles, and names
+	// which thing it copies. It is a pointer so "no copy" is distinguishable
+	// from the answer source, whose zero value a plain bool could not tell
+	// apart. A target with a copy source never toggles expansion: one click
+	// must mean one thing.
+	copySource *conversation.CopySource
+	// blockID, when set, is the DOCUMENT identity of the block this region
+	// renders. It exists because a click key is not always a document identity:
+	// a collapsed group's key carries its FIRST MEMBER's identity, since an
+	// itemKey has no way to name a group, while the document names the group
+	// "group:<member>". Deriving the rendered span's identity from the key
+	// alone put the group in the table under the member's name, so every lookup
+	// by the group's real identity missed.
+	blockID conversation.BlockID
+}
+
+// copyTarget resolves the target a copy click should put on the clipboard.
+//
+// It re-resolves against the block rather than capturing bytes at render time,
+// so the chip always copies what the block says NOW — a render is not a
+// promise about content, and a block whose text changed must not paste the
+// text it used to have.
+func (t clickTarget) copyTarget(block conversation.Block, source conversation.CopySource) (conversation.CopyTarget, bool) {
+	return blockTarget(block, source)
 }
 
 // clickRegion is a half-open [startLine, endLine) range of content lines in
@@ -33,20 +58,29 @@ type clickRegion struct {
 
 // contentLineForClick converts screen coordinates from a tea.MouseClickMsg
 // into a content-line index into the transcript viewport, or false if the
-// click landed outside the viewport. The transcript viewport is always the
-// top-left element of the screen (see viewString in view.go): row
-// scrollHintRows() (0 or 1, for the "↑ scrolled" hint) through
-// scrollHintRows()+viewport.Height(), column 0 through leftWidth.
+// click landed outside the viewport.
+//
+// The transcript's screen rectangle comes from the measured frame (see
+// computeFrame in frame.go), so the row a click resolves to is the row the
+// renderer actually drew — including the SDD top bar, the scroll hint, and
+// the drill-down breadcrumb, all of which shift the content down.
 func (m *Model) contentLineForClick(x, y int) (int, bool) {
-	if x < 0 || x >= m.leftWidth {
+	f := m.frameRect()
+	if !f.Transcript.Contains(x, y) {
 		return 0, false
 	}
-	top := m.scrollHintRows() + m.breadcrumbRows()
-	height := m.viewport.Height()
-	if y < top || y >= top+height {
+	// The hint and breadcrumb rows are inside the transcript rectangle but
+	// above the viewport's content, so they are not content lines.
+	chromeRows := m.scrollHintRows() + m.breadcrumbRows()
+	row, ok := f.Transcript.Row(y)
+	if !ok || row < chromeRows {
 		return 0, false
 	}
-	return m.viewport.YOffset() + (y - top), true
+	line := m.viewport.YOffset() + (row - chromeRows)
+	if line >= m.viewport.YOffset()+m.viewport.Height() {
+		return 0, false
+	}
+	return line, true
 }
 
 // regionAt returns the click target whose range contains line, if any.
@@ -79,7 +113,14 @@ func (m *Model) todoPanelBand() (top, bottom int, ok bool) {
 	if rows == 0 {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() + m.turnSpinnerRows()
+	// The activity band stacks spinner, todos, live strip, and lane in that
+	// order, so the todo panel starts one spinner row below the top of the
+	// band.
+	band := m.frameRect().Activity
+	if band.Empty() {
+		return 0, 0, false
+	}
+	top = band.Y + m.turnSpinnerRows()
 	return top, top + rows, true
 }
 
@@ -114,14 +155,27 @@ func (m *Model) agentLaneBand() (top, bottom int, ok bool) {
 	if rows == 0 {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
-		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows()
+	// The lane is the last element of the activity band.
+	band := m.frameRect().Activity
+	if band.Empty() {
+		return 0, 0, false
+	}
+	top = band.Bottom() - rows
 	return top, top + rows, true
 }
 
-// handleAgentLaneClick drills into the subagent whose row was clicked.
-// The lane is often the only handle on a running child: its transcript card
-// can scroll far out of view while the parent keeps working.
+// handleAgentLaneClick opens the inspector's Agents tab when the lane's count
+// row is clicked.
+//
+// The lane is often the only handle on running work: a child's transcript card
+// can scroll far out of view while the parent keeps working. Before the
+// consolidation each row drilled into one child; now the whole band opens the
+// tab that lists them all, which reaches the same information and more — the
+// per-child model, elapsed time, and the child's own transcript.
+//
+// EVERY row of the band is the target, including the separator above the count.
+// A one-row band with a dead half would be a trap: a reader has no way to know
+// which half responds, and clicking the rule is an unsurprising thing to do.
 func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return nil, false
@@ -133,29 +187,31 @@ func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok || msg.Y < top || msg.Y >= bottom {
 		return nil, false
 	}
-	// Row 0 is the separator rule, row 1 the caption; agents start at row 2.
-	const chromeRows = 2
-	idx := msg.Y - top - chromeRows
-	entries := m.agentLaneEntries()
-	if idx < 0 || idx >= len(entries) {
-		// The header line or the overflow row. Consume the click
-		// so it does not fall through to the transcript underneath.
+	if !m.openAgentLaneInspector() {
+		// Nothing to inspect, or the terminal cannot show the panel. Consume
+		// the click so it does not fall through to the transcript underneath:
+		// a click on the band is a click on the band, and letting it reach the
+		// transcript would act on a row the reader did not aim at.
 		return nil, true
 	}
-	m.laneCursorActive = false
-	m.drillIntoSubagent(entries[idx])
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 	return nil, true
 }
 
 // scrollLiveRegionAt routes a wheel event to a bounded live region when the
-// cursor is over one, and reports whether it consumed the event.
+// cursor is over one AND the region has somewhere to scroll, and reports whether
+// it consumed the event.
 //
-// It returns true even when the region is already at the end of its travel:
-// the alternative is that scrolling past a region's top silently starts
-// scrolling the transcript underneath it, which reads as the region
-// "jumping" out from under the cursor.
+// The gate is the scrollability, not the cursor position. Routing on position
+// alone — the previous behaviour — is the implicit consumption path the plan
+// removes: the wheel silently stopped scrolling the transcript whenever it
+// happened to be over a card, so a reader whose pointer rested on a subagent
+// card could not scroll the conversation at all, and nothing on screen said why.
+//
+// Now the region consumes the wheel only when it has somewhere to go and reports
+// not-handled otherwise, so the transcript scrolls. A region's history is
+// reached by OPENING it, where scrolling is explicit and carries a position cue.
 func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 	line, ok := m.contentLineForClick(msg.X, msg.Y)
 	if !ok {
@@ -174,6 +230,9 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 	default:
 		return false
 	}
+	if !m.liveRegionCanScroll(target.key, msg.Button) {
+		return false
+	}
 	if m.regionOffset == nil {
 		m.regionOffset = map[itemKey]int{}
 	}
@@ -190,6 +249,26 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 	return true
 }
 
+// liveRegionCanScroll reports whether a live region has anywhere to scroll in
+// the direction the wheel asked for.
+//
+// Scrolling back through a region's history is unbounded (a ring buffer holds
+// it), and scrolling forward is bounded by the newest end: the offset counts how
+// far back the region's body is scrolled, so zero means "at the newest end" and
+// a wheel-down there has nothing to do.
+func (m Model) liveRegionCanScroll(key itemKey, button tea.MouseButton) bool {
+	cur := m.regionOffset[key]
+	switch button {
+	case tea.MouseWheelUp:
+		// Back through history, which the region retains.
+		return cur < maxRegionOffset
+	case tea.MouseWheelDown:
+		// Forward, toward the newest end.
+		return cur > 0
+	}
+	return false
+}
+
 // handleTranscriptClick toggles the expand state of the transcript block
 // under a left click, if any. handled reports whether the click landed on a
 // region (regardless of whether that region was already at its target state
@@ -203,6 +282,23 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
+
+	// A press on a block's BODY begins a selection; a press on its HEADER (or
+	// on a control like the copy chip) still performs its own action.
+	//
+	// The split is what makes dragging possible at all. Before it, a press on a
+	// block toggled its expansion, so a reader trying to select a phrase in a
+	// collapsed group opened the group instead — and a drag that began on body
+	// text could not exist, because the press had already done something else.
+	cell := m.columnForClick(msg.X)
+	if m.pressBeginsSelection(line, cell) {
+		if m.beginSelectionAt(line, cell) {
+			m.lastTranscriptHash = 0
+			m.refreshViewport()
+			return nil, true
+		}
+	}
+
 	target, ok := m.regionAt(line)
 	if !ok {
 		return nil, false
@@ -211,9 +307,126 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 		m.drillIntoSubagent(*target.subagent)
 	} else if target.isActiveTool {
 		m.toggleActiveToolExpanded(target.toolKey)
+	} else if target.copySource != nil {
+		// A copy click copies and does NOT toggle. Routing it through the
+		// toggle path is how one click would both copy and change what is on
+		// screen, and the user would have no way to tell which happened.
+		//
+		// The click is NOT followed by refreshViewport: a copy changes no
+		// transcript content, and a rebuild here would drop the reader's
+		// anchor for no reason.
+		return m.copySelection(*target.copySource), true
 	} else {
 		m.toggleItemExpanded(target.key)
 	}
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+	return nil, true
+}
+
+// pressBeginsSelection reports whether a press at a transcript position should
+// start a selection rather than perform the region's action.
+//
+// The rule is positive and narrow: the press must be inside a MAPPED block (so
+// there is text to select) and must NOT be on one of the block's own controls.
+// Everything else falls through to the region's action, so a click on a subagent
+// card, the copy chip, or a collapsed tool group's header still does what it
+// always did.
+func (m *Model) pressBeginsSelection(row, cell int) bool {
+	if _, _, ok := m.mappedBlockAt(row, cell); !ok {
+		return false
+	}
+	// A control inside the block — the copy chip, a subagent card, the
+	// active-tool row — keeps its own click meaning. A press there is aimed at
+	// the control, not at the text behind it.
+	if target, ok := m.regionAt(row); ok {
+		if target.copySource != nil || target.subagent != nil || target.isActiveTool {
+			return false
+		}
+	}
+	// A press on a block's HEADER line opens or closes it. The header is the
+	// block's first line and carries the disclosure affordance; treating the
+	// whole block as selectable would make a collapsed group impossible to
+	// open with the mouse.
+	if m.onBlockHeader(row) {
+		return false
+	}
+	return true
+}
+
+// onBlockHeader reports whether a transcript row is the first line of a mapped
+// block, which is where its disclosure control lives.
+//
+// A block with lines above its body — a reasoning summary, a salvage note —
+// carries its disclosure control on the FIRST of them, not on the body's first
+// row. The check is against blockRow for that reason: treating the body's first
+// row as the header would make a press there toggle the block instead of
+// starting a selection, which is the opposite of what that row is for.
+func (m Model) onBlockHeader(row int) bool {
+	for _, s := range m.blockRenderSpans {
+		if row == s.blockRow {
+			return true
+		}
+	}
+	return false
+}
+
+// columnForClick converts a screen column to a column inside the transcript's
+// viewport.
+//
+// The transcript rectangle's left edge is the viewport's column 0, so the cell a
+// click names is its offset from that edge. Doing the arithmetic in one place is
+// what keeps a click's cell and the mapping's cell the same number — and a
+// negative column (a click on the frame's own border) clamps to 0 rather than
+// indexing backwards.
+func (m *Model) columnForClick(x int) int {
+	f := m.frameRect()
+	col := x - f.Transcript.X
+	if col < 0 {
+		col = 0
+	}
+	return col
+}
+
+// handleTranscriptMotion extends an in-progress selection.
+//
+// It reports handled only while a drag is active: motion with no button held is
+// ordinary pointer travel, and consuming it would break every hover behaviour
+// that comes later.
+func (m *Model) handleTranscriptMotion(msg tea.MouseMotionMsg) (tea.Cmd, bool) {
+	if !m.selection.dragging {
+		return nil, false
+	}
+	line, ok := m.contentLineForClick(msg.X, msg.Y)
+	if !ok {
+		// The pointer left the transcript entirely. Keep the drag alive so
+		// coming back continues it; the transcript is not the only rectangle on
+		// screen, and a drag that passed over the status line should survive.
+		return nil, true
+	}
+	// The hash is deliberately NOT reset here. A motion event moves only the
+	// selection's OFFSETS, which are no longer part of the transcript hash, so
+	// leaving it alone lets refreshViewport take its paint-only path and restyle
+	// the retained base. Resetting it would force a full rebuild of every block
+	// per motion event — the cost this split exists to remove — for a change
+	// that alters no text.
+	if m.extendSelectionTo(line, m.columnForClick(msg.X)) {
+		m.refreshViewport()
+	}
+	return nil, true
+}
+
+// handleTranscriptRelease ends a selection drag.
+func (m *Model) handleTranscriptRelease(msg tea.MouseReleaseMsg) (tea.Cmd, bool) {
+	if !m.selection.dragging {
+		return nil, false
+	}
+	// Update to the release position first: a fast drag can deliver motion
+	// events the runtime coalesces, and the release is the authoritative end.
+	if line, ok := m.contentLineForClick(msg.X, msg.Y); ok {
+		m.extendSelectionTo(line, m.columnForClick(msg.X))
+	}
+	m.endSelection()
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 	return nil, true

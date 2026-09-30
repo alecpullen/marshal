@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -377,7 +378,15 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		requestTemperature = nil
 	}
 
-	events, err := p.Chat(ctx, schema.ChatRequest{
+	// The request is built as a VALUE and captured before it is sent.
+	//
+	// It is a local rather than an inline literal so the inspection snapshot
+	// describes exactly what went on the wire — after every capability gate
+	// above has had its say. Re-deriving the request for display would show the
+	// CONFIGURED temperature to a user whose backend locks it and the preset
+	// thinking effort to a provider that dropped it, which is a description of
+	// a request that was never sent.
+	req := schema.ChatRequest{
 		Model:          model,
 		Messages:       messages,
 		Stream:         true,
@@ -387,10 +396,29 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		Tools:          tools,
 		Thinking:       thinking,
 		Temperature:    requestTemperature,
-	})
+	}
+
+	// The snapshot is written immediately BEFORE the call, and it is the last
+	// conversation attempt rather than a log of every model call: the title,
+	// summarizer, knowledge and rollback-digest helpers all call a provider
+	// too, and folding those in would make "the last request" mean whichever
+	// of a dozen internal helpers ran most recently.
+	attemptID := r.captureRequestInspection(p, model, req)
+
+	events, err := p.Chat(ctx, req)
 	if err != nil {
+		// Synchronous rejection: the adapter refused before any stream
+		// existed. Recording it is what makes "why did this turn fail?" a
+		// question the Context tab can answer.
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: inspectionStatusFor(ctx, err),
+			Err:    err.Error(),
+		})
 		return chatResult{}, err
 	}
+	r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+		Status: session.InspectionStreaming,
+	})
 
 	r.State.BeginStreaming()
 	started := r.Now()
@@ -462,6 +490,10 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			// SSE chunk aborts the stream (openai_compatible.go:338), and the
 			// deltas before it can amount to a complete, parseable action.
 			// Discarding them turns a recoverable hiccup into a failed turn.
+			r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+				Status: inspectionStatusFor(ctx, event.Err),
+				Err:    event.Err.Error(),
+			})
 			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, event.Err
 		case schema.ChatEventDone:
 			usage = event.Usage
@@ -470,8 +502,24 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		}
 	}
 	if loopSnippet != "" {
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: session.InspectionCancelled,
+			Err:    errThinkingLoop.Error(),
+		})
 		return chatResult{}, fmt.Errorf("%w: %q", errThinkingLoop, truncateForLog(loopSnippet))
 	}
+	// The stream ran to its end. That is completion as far as the ADAPTER is
+	// concerned — not an acknowledgement from a remote server, and the status
+	// vocabulary is deliberately worded so it cannot be read as one.
+	//
+	// The status still goes through inspectionStatusFor with a nil error, so a
+	// cancelled context wins over "the stream ended". A provider that ignores
+	// cancellation and finishes anyway has served a request the user abandoned,
+	// and reporting that as completed would tell them a turn succeeded that
+	// they stopped.
+	r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+		Status: inspectionStatusFor(ctx, nil),
+	})
 	if r.UsageObserver != nil && usage != nil {
 		r.UsageObserver(*usage)
 	}
@@ -547,6 +595,138 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 		})
 	}
 	return defs
+}
+
+// requestAttemptSeq numbers conversation attempts process-wide.
+//
+// The id only has to be unique per State — that is the scope the outcome guard
+// compares against — but a process-wide counter costs nothing and means two
+// states' snapshots are distinguishable in a debugger or a test.
+var requestAttemptSeq atomic.Uint64
+
+// captureRequestInspection copies the request into the state's inspection
+// snapshot and returns the attempt ID the outcome must carry.
+//
+// The copy is bounded by the session package, not here: the caps live where the
+// snapshot is stored so no call site can forget them, and so the numbers are
+// reviewable in one place.
+//
+// Nothing here logs. A request's content is the user's conversation, and
+// writing it to a log file would put it somewhere they did not ask for and
+// cannot redact.
+// r.State is required, and deliberately not guarded here: this is called from
+// chatOnceAttempt, which already dereferences r.State unconditionally
+// (BeginStreaming/SetActivity and five SetRequestInspectionOutcome calls), so a
+// nil state panics there whether or not this returns early. A guard that cannot
+// change the outcome is not defensiveness — it is a second, divergent copy of
+// the rule for what a Runner needs, and it invites a reader to believe nil is
+// survivable.
+func (r *Runner) captureRequestInspection(p provider.Provider, model string, req schema.ChatRequest) uint64 {
+	attemptID := requestAttemptSeq.Add(1)
+	r.State.SetRequestInspection(requestInspectionFor(r, p, model, req, attemptID))
+	return attemptID
+}
+
+// requestInspectionFor converts a wire request into the inspection snapshot.
+func requestInspectionFor(r *Runner, p provider.Provider, model string, req schema.ChatRequest, attemptID uint64) session.RequestInspection {
+	snap := session.RequestInspection{
+		AttemptID:  attemptID,
+		At:         r.Now(),
+		Provider:   p.Name(),
+		Model:      model,
+		Generation: r.State.Generation().ID,
+		LeafID:     r.State.LeafID(),
+		Options: session.InspectionOptions{
+			Thinking:    req.Thinking,
+			Streaming:   req.Stream,
+			MaxTokens:   req.MaxTokens,
+			Temperature: req.Temperature,
+			ToolChoice:  req.ToolChoice,
+		},
+	}
+	if req.ResponseFormat != nil {
+		snap.Options.ResponseFormat = req.ResponseFormat.Type
+	}
+
+	snap.Messages = make([]session.InspectionMessage, 0, len(req.Messages))
+	for i := range req.Messages {
+		m := req.Messages[i]
+		im := session.InspectionMessage{
+			Role:       string(m.Role),
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			calls := make([]session.InspectionToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				calls = append(calls, session.InspectionToolCall{
+					ID:   tc.ID,
+					Name: tc.Name,
+					Args: string(tc.Args),
+				})
+			}
+			im.ToolCalls = calls
+		}
+		snap.Messages = append(snap.Messages, im)
+	}
+
+	snap.Tools = make([]session.InspectionTool, 0, len(req.Tools))
+	for i := range req.Tools {
+		t := req.Tools[i]
+		snap.Tools = append(snap.Tools, session.InspectionTool{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  string(t.Parameters),
+		})
+	}
+
+	// The pack is recorded as it stood at dispatch, alongside the request it
+	// was assembled into. A reader comparing this against the CURRENT pack is
+	// asking "did the pack change after this was sent?", which is only
+	// answerable if the old value was kept.
+	//
+	// EstimatedTokens is kept as an ESTIMATE and stored as its own field: it is
+	// not the model's context window, and only one of the two is knowable
+	// before the request goes out.
+	pack := r.State.ContextPack()
+	snap.PackKnown = true
+	snap.PackTokens = pack.TokenUsage.EstimatedTokens
+	snap.PackWindow = pack.TokenUsage.MaxTokens
+	snap.PackTruncated = pack.TokenUsage.Truncated
+	snap.PackSections = len(pack.Sections)
+	return snap
+}
+
+// inspectionStatusFor classifies an error into the inspection vocabulary.
+//
+// A cancellation is not a failure: the user stopping a turn, or the per-request
+// timeout firing, means something different to the reader than "it broke", and
+// a reader who cannot tell them apart looks for a bug that is not there.
+//
+// Both the ERROR and the CONTEXT are consulted, and either can decide.
+//
+// The error is examined FIRST, so an adapter that surfaces a cancellation as
+// context.Canceled or context.DeadlineExceeded — the ordinary way one arrives —
+// is read as a cancellation rather than as a failure.
+//
+// The context is then examined as a backstop, for a cancellation the error
+// path loses entirely: a provider that ignores cancellation and finishes its
+// stream anyway, or an adapter that swallows context.Canceled behind its own
+// error value. Such a call has still served a request the user abandoned, and
+// only ctx.Err() knows it: labelling that turn
+// "completed" tells the user a turn succeeded that they stopped, and labelling
+// it "failed" sends them looking for a bug that is not there.
+func inspectionStatusFor(ctx context.Context, err error) session.InspectionStatus {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return session.InspectionCancelled
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return session.InspectionCancelled
+	}
+	if err != nil {
+		return session.InspectionFailed
+	}
+	return session.InspectionCompleted
 }
 
 // truncateForLog bounds model output for a single log line. Parse failures log

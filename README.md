@@ -102,6 +102,7 @@ internal/worktree/             — git worktree helpers
 - **Role-based routing** — use small models for search, strong models for patches.
 - **Repository intelligence** — tree-sitter symbol index, repo map, and file summaries.
 - **Context management** — pack builder with token budgets; inspect usage at `/context`.
+- **Reading-first conversation** — an anchored reading position that survives resizes and streaming output, application-owned drag and keyboard selection, copying, current-conversation find with match navigation, and a four-tab inspector (changes, agents, context, overview). See [docs/tui-interactions.md](docs/tui-interactions.md).
 - **Safe, sandboxed tools** — shell commands classified, approval-gated, and run isolated by default.
 - **Git integration** — automatically checkpoint the working tree before tooling.
 - **Persistent sessions** — project state, messages, and memory stored in SQLite.

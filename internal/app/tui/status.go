@@ -75,41 +75,35 @@ func identityStyle() lipgloss.Style {
 // · ctx usage), right cluster shows what the agent is doing right now.
 func (m Model) renderStatusLine(width int) string {
 	segs := m.statusLeftSegments()
-	left := joinSegs(segs)
-	right := m.statusRightSegment()
 
-	// When the terminal is narrow, drop the button-hint cluster first so
-	// that project path, worktree, and other identity segments remain
-	// visible. Approval/error indicators are never dropped this way.
-	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() {
-		fits := func(s string) bool {
-			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
-		}
-		// Shed the optional Ctrl+S mouse hint before sacrificing the whole
-		// cluster: dropping "clear queue" to keep a mouse-mode reminder is
-		// the wrong trade, and the cluster is one string that goes as a unit.
-		if !fits(right) {
-			hints := m.footerHints()
-			hints.SuppressMouseHint = true
-			right = help.Footer(hints)
-		}
-		if !fits(right) {
-			right = ""
-		}
-	}
-
-	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
-		// drop the lowest-priority segment (highest priority number), but
-		// always preserve the first segment (the mode cue).
-		worst := 1
-		for i := 2; i < len(segs); i++ {
-			if segs[i].priority > segs[worst].priority {
-				worst = i
+	var right string
+	if indicator := m.statusRightSegment(); indicator != "" {
+		// An approval, warning/error, or transient toast replaces the hint
+		// cluster and is never shed: it is the reason the row is interesting.
+		// The left chrome yields to make room, then the indicator itself is
+		// cut only if the row still cannot hold it.
+		right = indicator
+		for len(segs) > 1 && visibleRunes(joinSegs(segs))+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
+			idx := worstStatusSeg(segs)
+			// Stop when nothing is droppable. The mode cue and the untrusted
+			// warning are both priority 0, so a narrow row showing an
+			// indicator can reach a state where no segment may go — and
+			// dropStatusSeg(segs, -1) is a deliberate no-op, so retrying
+			// would spin forever on an unchanged row. The final ansi.Cut
+			// below clips what is left.
+			if idx < 0 {
+				break
 			}
+			segs = dropStatusSeg(segs, idx)
 		}
-		segs = append(segs[:worst], segs[worst+1:]...)
-		left = joinSegs(segs)
+		right = ansi.Cut(right, 0, max(width-visibleRunes(joinSegs(segs))-statusHorizontalPadding-statusMinGap, 1))
+	} else {
+		hints := help.FooterParts(m.footerHints())
+		segs, hints = shedStatusToFit(segs, hints, width)
+		right = renderHints(hints)
 	}
+
+	left := joinSegs(segs)
 	gap := width - visibleRunes(left) - visibleRunes(right) - statusHorizontalPadding
 	if gap < statusMinGap {
 		gap = statusMinGap
@@ -117,6 +111,127 @@ func (m Model) renderStatusLine(width int) string {
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
 	out := statusBarStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 	return chrome.PaintBand(out, width, theme.Current().ChromeBG())
+}
+
+// The status line sheds content to fit one row. Left segments and footer
+// hints share a single priority scale so the row can drop whichever is
+// globally least important, rather than dropping one whole cluster and then
+// the other.
+//
+// This is the fix for "essential help being lost at 80 columns". The hint
+// cluster used to be one string: too narrow for all of it meant too narrow
+// for any of it, so "clear queue" and "? help" disappeared together while
+// the model name stayed. Now a convenience reminder goes before the identity
+// of the session, and an action that gets the user out of the state they are
+// in is the last thing to leave the row.
+//
+// The two ends of the scale are the load-bearing part. Essential hints (1)
+// outrank every droppable segment, so a stuck user always keeps the key that
+// resolves their state. Optional hints (12) outrank even the browser URL
+// (9), which is what stops "Tab mode" from outliving the swarm's browser
+// segment — the failure mode is easy to hit and looks like the URL vanished
+// for no reason. Likely sits at 6, tied with the worktree rather than with
+// the branch: Ctrl+S is reachable and the worktree name is not more
+// important than it, but the branch answers "where am I".
+const (
+	// statusPriorityHintEssential keeps essential action hints alongside the
+	// mode cue and the route.
+	statusPriorityHintEssential = 1
+	// statusPriorityHintLikely sits with the worktree: reachable, but not
+	// worth dropping the branch or the session identity for.
+	statusPriorityHintLikely = 6
+	// statusPriorityHintOptional outranks every droppable segment: pure
+	// convenience, shed before anything that identifies the session.
+	statusPriorityHintOptional = 12
+)
+
+// statusHintPriority places a hint on the shared drop scale. Lower survives
+// longer; the mapping is what makes an essential hint outrank an optional
+// identity segment.
+func statusHintPriority(h help.Hint) int {
+	switch h.Priority {
+	case help.PriorityEssential:
+		return statusPriorityHintEssential
+	case help.PriorityLikely:
+		return statusPriorityHintLikely
+	default:
+		return statusPriorityHintOptional
+	}
+}
+
+// worstStatusSeg returns the index of the least important droppable left
+// segment, or -1 when every segment is protected. Priority 0 segments (the
+// mode cue, the untrusted warning) are never dropped: they answer "where am
+// I" and "is this safe", which no amount of width pressure makes optional.
+// The rightmost of equal priorities wins, so the row trims from its right
+// edge the way a reader expects.
+func worstStatusSeg(segs []statusSeg) int {
+	worst := -1
+	for i := 1; i < len(segs); i++ {
+		if segs[i].priority <= 0 {
+			continue
+		}
+		if worst < 0 || segs[i].priority >= segs[worst].priority {
+			worst = i
+		}
+	}
+	return worst
+}
+
+// worstHint returns the index of the least important hint, or -1 when there
+// are none.
+func worstHint(hints []help.Hint) int {
+	worst := -1
+	for i := range hints {
+		if worst < 0 || statusHintPriority(hints[i]) >= statusHintPriority(hints[worst]) {
+			worst = i
+		}
+	}
+	return worst
+}
+
+// dropStatusSeg removes the segment at idx. A negative index is a no-op.
+func dropStatusSeg(segs []statusSeg, idx int) []statusSeg {
+	if idx < 0 || idx >= len(segs) {
+		return segs
+	}
+	return append(segs[:idx], segs[idx+1:]...)
+}
+
+// dropHint removes the hint at idx. A negative index is a no-op.
+func dropHint(hints []help.Hint, idx int) []help.Hint {
+	if idx < 0 || idx >= len(hints) {
+		return hints
+	}
+	return append(hints[:idx], hints[idx+1:]...)
+}
+
+// shedStatusToFit removes the globally least important item until the row
+// fits. On an equal priority it sheds a left segment before a hint: an
+// action the user can take is worth more than a second identity token.
+func shedStatusToFit(segs []statusSeg, hints []help.Hint, width int) ([]statusSeg, []help.Hint) {
+	fits := func() bool {
+		return visibleRunes(joinSegs(segs))+visibleRunes(renderHints(hints))+
+			statusHorizontalPadding+statusMinGap <= width
+	}
+	for !fits() {
+		segIdx := worstStatusSeg(segs)
+		hintIdx := worstHint(hints)
+		switch {
+		case segIdx < 0 && hintIdx < 0:
+			// Nothing left to drop; the final ansi.Cut clips the row.
+			return segs, hints
+		case hintIdx < 0:
+			segs = dropStatusSeg(segs, segIdx)
+		case segIdx < 0:
+			hints = dropHint(hints, hintIdx)
+		case segs[segIdx].priority >= statusHintPriority(hints[hintIdx]):
+			segs = dropStatusSeg(segs, segIdx)
+		default:
+			hints = dropHint(hints, hintIdx)
+		}
+	}
+	return segs, hints
 }
 
 // joinSegs joins status segments with the dim separator.
@@ -172,8 +287,41 @@ func (m Model) statusLeftSegments() []statusSeg {
 		{text: modeStyle().Render(m.modeSegment()), priority: 0},
 	}
 
+	// Focus marker. It sits immediately after the mode cue because it answers
+	// the same question — "what will this key do?" — and it carries a glyph
+	// and a label, not just a color: the input bar's color shift was the only
+	// cue that a surface other than the composer owned the keys, which is
+	// invisible under NO_COLOR and to a color-blind reader.
+	//
+	// Priority 0 keeps it: a user who moved focus needs to see where it went
+	// more than they need the model name.
+	if f := m.effectiveFocus(); f != FocusComposer {
+		segs = append(segs, statusSeg{
+			text:     keyHintStyle().Render(f.marker()),
+			priority: 0,
+		})
+	}
+
 	if !m.state.Trusted() {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
+	}
+
+	// The reading surfaces report themselves here, at priority 2, because the
+	// question they answer — "what will this key do, and what is this app
+	// tracking for me?" — is nearer to the reader than the session's identity.
+	// They outrank the route name, the context counter and the directory, and
+	// they sit BELOW the priority-0 cues so a reader who has moved focus or is
+	// on an untrusted tree still sees those.
+	//
+	// Priority 2 is deliberately not 1: 1 is the essential-hint slot, and a
+	// hint that gets a stuck user out of a modal state must survive longer than
+	// a search counter. Both are still shed after the mode cue and the
+	// untrusted warning.
+	if s := m.findStatus(); s != "" {
+		segs = append(segs, statusSeg{text: warningStyle().Render(glyph.Search + " " + s), priority: 2})
+	}
+	if s := m.selectionStatus(); s != "" {
+		segs = append(segs, statusSeg{text: dimStyle().Render(s), priority: 2})
 	}
 
 	route := m.state.ActiveRoute()
@@ -325,7 +473,20 @@ func (m Model) statusRightSegment() string {
 		}
 		return errorStyle().Render("✘ error")
 	}
-	return help.Footer(m.footerHints())
+	if t := m.toastText(); t != "" {
+		return statusBusyStyle().Render(t)
+	}
+	return ""
+}
+
+// renderHints joins hint pairs with the dim separator, matching the
+// keybinding footer's styling.
+func renderHints(hints []help.Hint) string {
+	parts := make([]string, 0, len(hints))
+	for _, h := range hints {
+		parts = append(parts, helpPair(h.Key, h.Label))
+	}
+	return strings.Join(parts, dimSeparator)
 }
 
 // noticeVisible reports whether a session notice is currently up. The
@@ -336,34 +497,52 @@ func (m Model) noticeVisible() bool {
 	return ok
 }
 
-// footerHints snapshots the mode flags the hint cluster needs. This is
-// the FooterHints construction that used to live in the dedicated
-// footer row (deleted in the hairline-gutter redesign).
+// footerHints snapshots everything the hint cluster needs.
+//
+// The key-driven hints are resolved from the same action context the
+// dispatcher reads (see actions.go). That is the fix for the footer printing
+// Ctrl+X twice with two different verbs: there is now one resolution, and the
+// footer renders its result rather than re-deriving the decision from
+// overlapping booleans.
 func (m Model) footerHints() help.FooterHints {
+	ctx := m.actionSnapshot()
 	return help.FooterHints{
-		Busy:                 m.busy,
-		EditingCommand:       m.editingCommand,
-		ApprovalPending:      m.hasPendingApproval(),
-		QuestionPending:      m.state.PendingQuestion() != nil,
-		SkillGatePending:     m.state.PendingSkillGate() != nil,
-		PopupOpen:            m.activeCompletionPopup() != nil,
-		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
-		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
-		TodosActive:          len(m.state.Todos()) > 0,
-		RailEnabled:          m.railEnabled(),
-		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
-		RunActive:            m.hasRunningSubagent(),
-		DrilledRunActive:     m.drilledIntoRunningSubagent(),
+		Busy:             m.busy,
+		EditingCommand:   m.editingCommand,
+		ApprovalPending:  m.hasPendingApproval(),
+		QuestionPending:  m.state.PendingQuestion() != nil,
+		SkillGatePending: m.state.PendingSkillGate() != nil,
+		PopupOpen:        m.activeCompletionPopup() != nil,
+		Actions:          ctx.footerActionHints(),
 	}
 }
 
-// drilledIntoRunningSubagent reports whether the top of the view stack
-// is a running subagent, which makes the Ctrl+X stop-agent hint actionable.
-func (m Model) drilledIntoRunningSubagent() bool {
-	if len(m.viewStack) == 0 {
-		return false
+// footerActionHints lists the key-bound actions that are actionable right
+// now, in the order the footer renders them. An action with no footer verb
+// (F6, F2, Tab mode) is omitted: the footer is the L0 surface and stays
+// minimal, while the palette and /help carry the full set.
+func (ctx actionContext) footerActionHints() []help.Hint {
+	var out []help.Hint
+	for _, a := range resolveActions(ctx) {
+		if a.KeyHint == "" || a.HintVerb == "" || a.Disabled {
+			continue
+		}
+		if a.KeyHint == "Ctrl+X" {
+			// Exactly one Ctrl+X action is the live one; the other is
+			// suppressed rather than printed beside it.
+			if id, ok := ctx.ctrlXID(); !ok || id != a.ID {
+				continue
+			}
+		}
+		out = append(out, help.Hint{Key: a.KeyHint, Label: a.HintVerb, Priority: a.Priority})
 	}
-	return m.viewStack[len(m.viewStack)-1].Status == session.SubagentRunning
+	return out
+}
+
+// helpPair renders one key/verb hint pair, sharing the help package's
+// styling so the footer and the status line cannot drift apart visually.
+func helpPair(key, label string) string {
+	return help.Pair(key, label)
 }
 
 // hasRunningSubagent reports whether any registered subagent is currently

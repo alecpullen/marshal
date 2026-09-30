@@ -9,13 +9,20 @@ import (
 	"marshal/internal/strutil"
 )
 
-// contextWarnThreshold is the fraction of the context window past which
+// contextWarnThreshold is the fraction of the context PACK's budget past which
 // usage renders in StatusWarning.
 const contextWarnThreshold = 0.80
 
-// ContextSection shows what is actually in the model's context window:
-// the fill bar and the per-kind token breakdown. The status line shows
-// only the aggregate; this is the composition behind it.
+// ContextSection shows what is actually in the context pack: the fill bar and
+// the per-kind token breakdown. The status line shows only the aggregate; this
+// is the composition behind it.
+//
+// Every number here is the PACK's own. Pack.TokenUsage.MaxTokens is the budget
+// the pack was assembled against, which is derived from the model's window but
+// is not the window itself — see internal/agent/route.go, where a role's
+// explicit ContextBudget overrides the window-derived default. Calling it "the
+// context window" names a different number that this section never reads, and
+// a reader who budgets against it is budgeting against the wrong figure.
 type ContextSection struct{}
 
 func (ContextSection) ID() string      { return "context" }
@@ -108,13 +115,16 @@ func pct(fraction float64) string {
 	return fmt.Sprintf("%d%%", int(fraction*100+0.5))
 }
 
+// OneLine is the compact digest. "pack" is spelled out rather than left as
+// "ctx", because this figure shares the digest line with the status line's own
+// window-derived count and the two must not read as the same number.
 func (ContextSection) OneLine(d Data, width int) string {
 	u := d.Pack.TokenUsage
 	frac := 0.0
 	if u.MaxTokens > 0 {
 		frac = float64(u.EstimatedTokens) / float64(u.MaxTokens)
 	}
-	return ansi.Truncate(fmt.Sprintf("ctx %s/%s · %s",
+	return ansi.Truncate(fmt.Sprintf("pack %s/%s · %s",
 		strutil.CompactTokens(u.EstimatedTokens),
 		strutil.CompactTokens(u.MaxTokens), pct(frac)), width, "…")
 }

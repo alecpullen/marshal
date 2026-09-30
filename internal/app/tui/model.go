@@ -26,6 +26,7 @@ import (
 	"github.com/google/shlex"
 
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
@@ -33,11 +34,14 @@ import (
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/conversation"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/inspector"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
@@ -252,13 +256,6 @@ type Model struct {
 	fileIndexLoaded      bool
 	lastInputForPopups   string
 	completionSuppressed bool
-	// laneCursor is the keyboard-selected row in the agents lane (F6).
-	// Up/Down move it while the input is empty and the lane is non-empty;
-	// Enter drills into the selected subagent. laneCursorActive is set
-	// only once the user explicitly navigates the lane, so a blank Enter
-	// keeps its existing steering-drain behavior until then.
-	laneCursor       int
-	laneCursorActive bool
 	// cmdArgMode arms argument completion right after a command is
 	// accepted from the popup. While armed and the input still carries
 	// the accepted "/<cmd> " prefix, commandTrigger keeps firing so
@@ -365,17 +362,47 @@ type Model struct {
 	leftWidth int
 	// railWidth is the side rail's width, 0 when the rail is not shown.
 	railWidth int
+	// frame is the last measured layout: the rectangles rendering and
+	// pointer routing both consume. Recomputed by computeFrame on resize
+	// and on every state change that can move a region, never from View
+	// (whose value receiver would discard the measurement).
+	frame layout.Frame
 	// rail is the side panel's section stack.
 	rail *sidepanel.Rail
-	// railHidden is the session-only Ctrl+B override. Not persisted.
+	// railHidden is the session-only side-panel visibility override. Not
+	// persisted.
 	railHidden bool
-	// mouseReleased is the session-only Ctrl+S override that hands the mouse
-	// back to the terminal so click-drag text selection works without the
-	// terminal's modifier key. Not persisted; [tui].mouse_capture is the
-	// durable setting. Capture and native selection are mutually exclusive —
-	// the terminal cannot deliver events to both — so this is a toggle rather
-	// than something the two features can share.
-	mouseReleased bool
+	// inspector is the conversation inspector's placement host. It owns the
+	// inspector's tab/scroll/detail state and decides whether it renders
+	// beside the conversation, in the dock slot, or over the body. Ctrl+B
+	// now toggles the inspector rather than the bare rail: the inspector's
+	// Overview is the rail's content, made scrollable and navigable (see
+	// inspector_host.go).
+	inspector *inspectorHost
+	// mouseOverride is the session-only Ctrl+S override. Not persisted;
+	// [tui].mouse_capture is the durable setting. Capture and native
+	// selection are mutually exclusive — the terminal cannot deliver mouse
+	// events to both — so this is a toggle rather than something the two
+	// features can share.
+	//
+	// It is three-state rather than a bool so "follow config" and "force X"
+	// stay distinguishable: with capture configured off, a bool cannot
+	// represent release-vs-inherit, and flipping it announced a release that
+	// had never happened. See mousemode.go.
+	mouseOverride MouseOverride
+	// focus is the non-modal surface that owns keyboard input. It is never
+	// set to FocusPanel: a modal surface's focus is derived from the pending
+	// state (see effectiveFocus), which is why no open/close path has to save
+	// and restore it.
+	focus FocusTarget
+	// toast is transient UI feedback (a three-second line on the status
+	// bar). Deliberately NOT session.Notice: that store is warning/error
+	// only, and a UI mode change must never look like a failure. toastUntil
+	// is the wall-clock deadline; toastGen tags the expiry timer so a
+	// superseded toast's timer cannot clear a newer one.
+	toast      string
+	toastUntil time.Time
+	toastGen   int
 	// railRepoStats is refreshed on turn boundaries, never during render.
 	railRepoStats sidepanel.RepoStats
 	// railTurns is the recent turn-metrics cache, refreshed when a turn
@@ -390,6 +417,13 @@ type Model struct {
 	railBaseRef string
 	// railChanged is the changed-files cache, refreshed on turn boundaries.
 	railChanged []sidepanel.ChangedFile
+	// railSnapshot is the full reading the changed-files cache came from. It
+	// is kept alongside the cache because the cache is lossy: it cannot
+	// express "clean tree" versus "git failed", and it has nowhere to record
+	// which commit the comparison used. The rail needs the first so it never
+	// claims a clean tree when git errored; the Changes view needs the second
+	// to label what it is showing.
+	railSnapshot changedfiles.Snapshot
 	// railFleet is the agent-worktree cache, refreshed on turn boundaries
 	// (ListFleet shells out to git per worktree). Ahead/behind is against
 	// the project root's HEAD.
@@ -436,6 +470,80 @@ type Model struct {
 	// the transcript block occupying them, rebuilt every time refreshViewport
 	// rebuilds blocks. See click.go.
 	clickRegions []clickRegion
+	// blockSpans maps every rendered block to the content-line range it
+	// occupies, including blocks that are not clickable. clickRegions serves
+	// pointer routing and so exists only where a click does something; the
+	// reading anchor needs to name any block the reader can scroll to, so it
+	// uses this instead.
+	blockSpans []blockSpan
+	// dockMeas caches the dock slot's last measured height and the geometry it
+	// was measured at. The height can only be learned by RENDERING the panel —
+	// the dock host measures what the panel emits — and the Update path needs
+	// it to populate the frame's Dock rectangle, so the cache is what keeps the
+	// frame honest without re-rendering the panel on every 80ms tick. See
+	// measureDock for the invalidation rules.
+	//
+	// It is a POINTER because View holds a value receiver: View is the one
+	// place that renders the panel and therefore the one place that learns its
+	// true height, and a struct field would be written to View's copy and
+	// discarded. The pointer is allocated by New and never replaced, so every
+	// copy of the model shares the same measurement.
+	dockMeas *dockMeasurement
+	// transcriptVersion increments on every transcript REBUILD — not on every
+	// refresh — so a consumer that derives something expensive from the
+	// transcript can memoize it without polling the whole conversation. It is
+	// what the action snapshot's cache keys on; see actionSnapshot.
+	transcriptVersion uint64
+	// actionCache holds the last resolved action snapshot and the cheap state it
+	// was resolved from. See actionSnapshot for why the footer needs one.
+	//
+	// A POINTER for the same reason as dockMeas: the footer renders through
+	// View's value receiver, and a struct field would be written to the copy.
+	actionCache *actionSnapshotCache
+	// transcriptBase is the assembled transcript content BEFORE the selection
+	// and search highlights are painted onto it, retained only while something
+	// is painted. It is what lets a pointer-motion event during a drag restyle
+	// the selection without rebuilding every block: the base is the same bytes
+	// every time, so re-painting from it is exact. It is dropped as soon as
+	// nothing is painted, so a session with no selection holds no copy.
+	transcriptBase string
+	// paintedReading is the reading state the current viewport content was
+	// painted from. A mismatch with no transcript change means only the paint
+	// moved, which is the drag case; see repaintReadingState.
+	paintedReading readingState
+	// blockRenderCache memoizes settled transcript blocks by their full
+	// render-input identity (blockMemoKey): a block whose identity and
+	// inputs are unchanged is served from the cache instead of re-rendered.
+	// Stored as blockMemoEntry rather than a bare string because a memo HIT
+	// must not skip the mapped-rendering claim: the cached TEXT is replayed
+	// and the cached MAPPING (span) is re-recorded for this build, so
+	// selection, click and find mappings survive a hit. See refreshViewport.
+	// The map write through m is safe under View's value receiver because
+	// the map header travels with the model the Update chain returns.
+	blockRenderCache map[blockKey]blockMemoEntry
+	// blockRenderSpans records, for every rendered block, the display rows it
+	// occupies and the RenderedBlock they came from. It is the selection
+	// mapping's input: a click names a row and a cell, and only this table can
+	// turn that into a logical offset.
+	//
+	// It is deliberately separate from blockSpans: that one is in transcript
+	// lines used for scrolling, and this one is per BLOCK in ROWS. Deriving one
+	// from the other would put the two in step only while every block happened
+	// to be rendered through the mapped path.
+	blockRenderSpans []renderedBlockSpan
+	// selection is the reader's selection on the transcript surface. It holds
+	// LOGICAL positions, so it survives the reflow that every rebuild performs;
+	// see selection.go for why a row could not.
+	selection surfaceSelection
+	// find is the current-conversation search: its query, results and cursor.
+	// It is a READING state like the selection, and it owns its own entry
+	// anchor so closing it returns the reader to where they opened it rather
+	// than to the last hit they visited. See find.go.
+	find findState
+	// findIndex caches the projections search reads, so a keystroke does not
+	// reproject every block in a long conversation. It is reset on a session
+	// switch, like the render cache, because block identities are per-session.
+	findIndex *conversation.SearchIndex
 	// viewStack is the subagent drill-down stack: when non-empty, the
 	// transcript viewport renders the top subagent's child session instead
 	// of the orchestrator's. Pushed by clicking a subagent card (see
@@ -449,6 +557,39 @@ type Model struct {
 	// press quits. Cleared by any other keypress.
 	interruptArmed bool
 	viewportFollow bool
+
+	// readingAnchor is where the reader is looking, when they are not
+	// following. It is captured before a reflow and restored after, so new
+	// output arriving above/below, a width change, or opening a panel does
+	// not yank a scrolled reader somewhere else (see anchor.go).
+	//
+	// While viewportFollow is true there is no anchor: the reader is pinned
+	// to the bottom, and anchoring must not fight that.
+	readingAnchor conversation.Anchor
+	// anchorFollow is the follow state that belonged to the view stack entry
+	// whose child is currently on screen. Drilling into a child replaces the
+	// transcript wholesale, so the parent's anchor and follow flag are saved
+	// here and restored when the drill pops — otherwise returning from a
+	// child dumps the reader at the top of the parent.
+	anchorFollow bool
+	// viewStackAnchors holds one saved anchor per viewStack entry, LIFO
+	// parallel to viewStack.
+	viewStackAnchors []conversation.Anchor
+
+	// copyState guards asynchronous copy results: a result whose session or
+	// request no longer matches is dropped rather than shown (see
+	// copy_action.go).
+	copyState copyState
+	// copyWriter is the local clipboard backend. It is a seam so tests can
+	// assert exact bytes without touching a real clipboard, and so a build
+	// without one degrades to OSC 52 rather than failing. Nil means no local
+	// backend, which is the correct default: the app wires the real writer
+	// at construction.
+	copyWriter clipboard.Writer
+	// copyRemote reports whether this session is remote (SSH), where the
+	// local clipboard is the wrong destination and the terminal is the right
+	// one. Nil reports false.
+	copyRemote func() bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
@@ -490,18 +631,6 @@ type Model struct {
 	successPulseAt time.Time
 	now            func() time.Time
 
-	// blockRenderCache memoizes transcript blocks by their full render-input
-	// identity (the fields each block's renderer actually consumes: content,
-	// width, expanded state, callers result, region offset/rows, spinner
-	// glyph, and for live cards the child tail). The transcript can hold
-	// thousands of items while a turn runs, and refreshViewport is woken at
-	// the spinner tick (80ms) — so without the memo, every 80ms re-renders
-	// every block from scratch: glamour markdown, diffs, wraps.
-	// Keyed by blockKey, which hashes those fields. Evicted to
-	// entries that participated in the last build, so nothing accumulates
-	// beyond the current transcript.
-	blockRenderCache map[blockKey]string
-
 	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
 	// todosDismissed hides the all-done summary from the next turn
 	// onward; todosSig detects the agent rewriting the list, which
@@ -518,7 +647,6 @@ type Model struct {
 
 	// customAgentFactory builds a one-shot AgentRunner for a named custom
 	// agent. Wired from app.go; used by buildCustomAgentRunner for Run-now.
-	// (memo: blockKey lives below activeToolKeyFor.)
 	customAgentFactory CustomAgentRunnerFactory
 
 	// subagentFactory builds a fresh child *agent.Runner for a one-shot
@@ -582,12 +710,14 @@ func activeToolKeyFor(atc session.ActiveToolCall) activeToolKey {
 	return activeToolKey{startedAt: atc.StartedAt, name: atc.Name}
 }
 
-// blockKey is the full identity of ONE rendered transcript block: a block's
-// own identity (transcript item timestamp+kind, or the active tool row's
-// StartedAt+name) plus everything its renderer consumes that is NOT already
-// folded into that identity — content, width, expanded state, caller count,
-// region scroll offset and high-water rows, the spinner glyph, and for live
-// subagent cards the child's activity tail.
+// blockKey is the memo identity of one transcript block: everything the
+// block's rendering is a function of, except the leading-prefix state the
+// claim path re-derives (see blockMemoEntry). Elapsed wall-clock time is
+// deliberately NOT part of the key: the only blocks that display an
+// advancing clock (active tool call, live thinking, running subagent) also
+// carry the spinner glyph in their key, which already flips every 80ms
+// tick — so their elapsed label advances at the spinner cadence without
+// defeating the memo for the settled blocks.
 type blockKey struct {
 	kind        session.TranscriptKind
 	ts          int64
@@ -601,11 +731,18 @@ type blockKey struct {
 	subTailHash uint64
 }
 
-// Elapsed wall-clock time is deliberately NOT part of the key: the only
-// blocks that display an advancing clock (active tool call, live thinking,
-// running subagent) also carry the spinner glyph in their key, which
-// already flips every 80ms tick — so their elapsed label advances at the
-// spinner cadence without defeating the memo for the settled blocks.
+// blockMemoEntry is one memo slot: the rendered text and the mapped
+// rendering it produced, if any.
+//
+// The span is stored (not a copy) because the claim path mutates it in
+// place — it re-stamps blockRow for the current build and re-appends it
+// to the new build's renders. Storing a copy would fork the identity the
+// selection mapping resolves through; sharing the pointer keeps one
+// source of truth per block.
+type blockMemoEntry struct {
+	text string
+	span *renderedBlockSpan
+}
 
 // blockMemoKey builds the memo identity for one per-item block.
 func blockMemoKey(entry transcriptEntry, expanded bool, spinnerFrame string, rv regionView, callers []string, width int) blockKey {
@@ -620,14 +757,20 @@ func blockMemoKey(entry transcriptEntry, expanded bool, spinnerFrame string, rv 
 	if entry.Group != nil {
 		// A merged run renders head + count + one bullet per event; every
 		// event's identity and result text is part of the block's content.
+		// GroupIDs ride along in the group path's identity the same way a
+		// lone item's identity does below: GroupID[0] anchors a group the
+		// way Timestamp anchors a lone item, and without it two merged runs
+		// of identical events would share a slot.
 		out.kind = session.KindAudit
 		out.ts = entry.Group[0].Timestamp.UnixNano()
+		out.subTailHash = fnvStrings(entry.GroupIDs...)
 		out.contentHash = fnvAuditEvents(entry.Group)
 		return out
 	}
 	item := entry.Item
 	out.kind = item.Kind
 	out.ts = item.Timestamp.UnixNano()
+	out.subTailHash = fnvStrings(item.ViewID)
 	switch item.Kind {
 	case session.KindMessage:
 		if item.Message != nil {
@@ -639,10 +782,10 @@ func blockMemoKey(entry transcriptEntry, expanded bool, spinnerFrame string, rv 
 		}
 	case session.KindSubagent:
 		if item.Subagent != nil {
-			// transcriptHash folds status/label/tool calls/summary/current
-			// tool; the memo needs the same identity PLUS the live tail,
-			// which transcriptHash never covered (the card's body streams
-			// without a State mutation).
+			// The wholesale hash folds status/label/tool calls/summary/
+			// current tool; the memo needs the same identity PLUS the live
+			// tail, which the wholesale hash never covered (the card's
+			// body streams without a State mutation).
 			v := item.Subagent
 			out.contentHash = fnvStrings(v.Label, fmt.Sprint(v.Status), v.Summary,
 				fmt.Sprint(v.ToolCalls), v.CurrentTool, fmt.Sprint(v.TokensUsed))
@@ -702,13 +845,8 @@ func fnvStrings(parts ...string) uint64 {
 	return h.Sum64()
 }
 
-// fnvAuditEvents hashes the fields of audit events renderToolGroup /
-// renderCompletedToolCall actually draw on: identity, result text, exit
-// code, sandbox status, and hook metadata. Errors, diffs and symbol rows
-// are excluded from groups, so the diff-heavy fields (ResultContent for
-// isDiffTool events) matter only on their own rows — folding ResultContent
-// here keeps expanded diffs correct after ResultContent arrives late
-// (spilled results load it on demand).
+// fnvAuditEvents hashes a run of audit events — every field the tool-group
+// and audit renderers consume.
 func fnvAuditEvents(events []registry.AuditEvent) uint64 {
 	h := fnv.New64a()
 	for _, ev := range events {
@@ -819,6 +957,20 @@ func WithCommandRegistry(reg *commands.Registry) Option {
 	}
 }
 
+// WithClipboard wires the local clipboard backend the copy actions write to.
+//
+// It is an option rather than a field the model constructs itself so the
+// clipboard stays a leaf dependency of the app wiring, and so tests can
+// substitute a recorder. A model built WITHOUT it still copies: the adapter
+// falls back to the terminal (OSC 52), which is the correct behaviour on a
+// machine with no clipboard helper.
+func WithClipboard(w clipboard.Writer, remote func() bool) Option {
+	return func(m *Model) {
+		m.copyWriter = w
+		m.copyRemote = remote
+	}
+}
+
 func WithHomeDir(homeDir string) Option {
 	return func(m *Model) {
 		m.homeDir = homeDir
@@ -847,6 +999,12 @@ func WithSkillIndex(idx *skills.Index) Option {
 	}
 }
 
+// WithFileIndex seeds the F18 @file completion popup with a snapshot of
+// the repo's file paths. Eager seeding is preferred when the model is
+// constructed in a context that already holds a db.DB (avoids a
+// per-keystroke DB hit on the first `@`); if the model is constructed
+// without it, the popup falls back to a lazy load on the first `@`
+// keystroke (see updateCompletionPopups).
 // WithNow overrides the model's clock. Tests inject a fixed clock for
 // elapsed-time assertions; app.Run threads the runtime clock through so
 // the TUI's spinners agree with injected state timestamps.
@@ -858,12 +1016,6 @@ func WithNow(now func() time.Time) Option {
 	}
 }
 
-// WithFileIndex seeds the F18 @file completion popup with a snapshot of
-// the repo's file paths. Eager seeding is preferred when the model is
-// constructed in a context that already holds a db.DB (avoids a
-// per-keystroke DB hit on the first `@`); if the model is constructed
-// without it, the popup falls back to a lazy load on the first `@`
-// keystroke (see updateCompletionPopups).
 func WithFileIndex(paths []string) Option {
 	return func(m *Model) {
 		m.fileIndex = buildFileIndexItems(paths)
@@ -1540,6 +1692,13 @@ func New(state *session.State, opts ...Option) Model {
 		state:          state,
 		input:          input,
 		editingCommand: false,
+		// The dock measurement is shared by pointer between this model and the
+		// copies View renders on, because View is the one place the panel's
+		// height is known and its value receiver would discard a struct field.
+		dockMeas: &dockMeasurement{},
+		// The action snapshot is memoized for the same reason: the footer
+		// resolves it every frame from View's copy.
+		actionCache: &actionSnapshotCache{},
 		// Seed from config, not a hardcoded ModeDefault. app.Run wires the
 		// policy engine from this same value, so hardcoding here made the
 		// status line claim "default" while the engine was auto-approving
@@ -1637,6 +1796,10 @@ func New(state *session.State, opts ...Option) Model {
 		}
 	}
 	m.rebuildRail()
+	// The inspector starts closed: a session opens with the conversation
+	// unencumbered, and Ctrl+B or /inspect is how it appears.
+	m.inspector = newInspectorHost()
+	m.refreshInspector()
 
 	if database := state.DB(); database != nil {
 		if projectID := m.memoryProject; projectID != 0 {
@@ -1717,6 +1880,40 @@ func (m *Model) resize(width, height int) {
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	// A resize is the one event that can remove a focus target: the rail
+	// hides below its width threshold. effectiveFocus already falls back to
+	// the composer in that case, but the textarea's own focus flag has to
+	// follow, or the caret keeps blinking on a surface that no longer owns
+	// the keys. m.focus is left alone so widening restores the user's intent.
+	m.syncComposerFocusFlag()
+	// Reconcile the dock BEFORE measuring the frame. A resize is the event that
+	// moves a side-placed inspector into the dock (and back), and the geometry
+	// changed, so the cached dock height describes the old frame and must be
+	// re-measured.
+	m.syncDock()
+	m.computeFrame()
+	// The inspector is measured against its own column, not the frame: a
+	// side-placed inspector is a narrow tall strip, and sizing it to the whole
+	// terminal would wrap every line it renders.
+	if m.inspector != nil {
+		if r := m.frame.Inspector; !r.Empty() {
+			m.inspector.resize(r.Width, r.Height)
+		} else if rows := m.dockRows(); rows > 0 {
+			m.inspector.resize(m.leftWidth, rows)
+		}
+		m.inspector.setSideAvailable(m.inspectorSideAvailable())
+	}
+}
+
+// syncComposerFocusFlag aligns the textarea's focus flag with the resolved
+// focus target. Every non-modal target other than the composer leaves the
+// textarea blurred so exactly one surface shows a focus marker.
+func (m *Model) syncComposerFocusFlag() {
+	if m.effectiveFocus() == FocusComposer {
+		_ = m.input.Focus()
+		return
+	}
+	m.input.Blur()
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1737,14 +1934,40 @@ func (m *Model) refreshRailTurns() {
 	}
 }
 
-// refreshRailChanged reloads the changed-files cache. Shells out to git,
-// so it runs on turn boundaries only — never from View.
+// refreshRailChanged reloads the changed-files cache. Shells out to git, so it
+// runs on turn boundaries only — never from View.
+//
+// It reads a full Snapshot rather than the bare file list so the two facts the
+// list cannot carry are kept: whether git actually succeeded, and which commit
+// the comparison used. Deriving the list from the snapshot is what keeps the
+// rail and the Changes inspector showing the same numbers — one reading, two
+// presentations.
 func (m *Model) refreshRailChanged() {
-	if !m.railEnabled() {
+	if !m.railEnabled() && !m.inspectorShowsChanges() {
 		return
 	}
-	m.railChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.railBaseRef)
+	ctx, cancel := context.WithTimeout(context.Background(), railSnapshotTimeout)
+	defer cancel()
+	m.railSnapshot = changedfiles.ReadSnapshot(ctx, m.state.Workspace().ActiveRoot, m.railBaseRef)
+	m.railChanged = changedfiles.RailFiles(m.railSnapshot)
 }
+
+// inspectorShowsChanges reports whether anything on screen needs the
+// changed-files reading beyond the rail.
+//
+// It exists so a narrow terminal with the inspector open still gets a
+// snapshot: gating the refresh on the rail's width alone would leave the
+// Changes view empty below the rail threshold, where the inspector is at its
+// most useful — a narrow terminal is exactly where a diff is hardest to reach
+// any other way.
+func (m Model) inspectorShowsChanges() bool {
+	return m.inspector != nil && m.inspector.isRendering()
+}
+
+// railSnapshotTimeout bounds one changed-files reading. It is longer than the
+// old per-command budget because a snapshot runs several git commands and had
+// been reporting a timeout as an empty tree.
+const railSnapshotTimeout = 5 * time.Second
 
 // refreshRailFleet reloads the agent-worktree cache the side panel reads.
 // Shells out to git (ListFleet runs several subprocesses per worktree), so
@@ -1800,6 +2023,537 @@ func (m *Model) rebuildRail() {
 		}
 	}
 	m.rail = sidepanel.New(visible...)
+}
+
+// inspectorSideAvailable reports whether the terminal has room for the
+// inspector's own column.
+//
+// It is the rail's width policy, reused rather than reinvented: the inspector
+// and the rail occupy the same strip, so a second threshold would be a second
+// answer to "is there room?" and the two would disagree at the margin.
+func (m Model) inspectorSideAvailable() bool {
+	return m.railWidth > 0
+}
+
+// refreshInspector hands the inspector its render snapshot.
+//
+// It is called on turn boundaries, not from View: the same rule the rail
+// follows. The snapshot is the rail's own data, so the Overview and the rail
+// cannot show different numbers.
+//
+// Hidden is a FRESH map each time. Handing the inspector the config's own
+// slice-backed state would let a render mutate configuration, which would
+// surface as a settings write the user never made — the inspector's contract
+// is that it reads the hidden set and never writes it.
+func (m *Model) refreshInspector() {
+	if m.inspector == nil {
+		return
+	}
+	hidden := make(map[string]bool)
+	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
+		hidden[id] = true
+	}
+	m.inspector.model.SetData(inspector.Data{Side: m.railData(), Hidden: hidden})
+	// The Changes tab renders from the SAME reading the rail does, so the two
+	// cannot show different numbers for the same tree. It is handed the full
+	// snapshot rather than the rail's lossy row list, because the tab has to be
+	// able to say "the read failed" — which a row list cannot express.
+	m.inspector.model.SetChanges(m.railSnapshot)
+	m.inspector.model.SetAgents(m.agentRoster())
+	// The scope is re-stamped from the live State on every refresh, not once at
+	// construction: /new and /clear replace m.state, and a reply issued under
+	// the old conversation must be refused rather than drawn over the new one.
+	// SetScope is idempotent for an unchanged scope, so this does not churn the
+	// request sequence it guards.
+	if m.state != nil {
+		m.inspector.model.SetScope(m.state.ScopeID())
+	}
+	// The context snapshot is filled AFTER SetScope, and the order is
+	// load-bearing. SetScope discards per-conversation state when the scope
+	// actually changes — agent roster, detail stack, context rows — so filling
+	// the context first would have it thrown away by the very refresh that
+	// produced it, leaving the tab empty until something else happened to
+	// refresh it.
+	m.refreshInspectorContext()
+	m.inspector.setSideAvailable(m.inspectorSideAvailable())
+	// The action snapshot is invalidated here, and this is the right hook rather
+	// than a scatter of calls at each mutation site: refreshInspector runs after
+	// EVERY change to the inspector's data or selection, and the snapshot's key
+	// deliberately carries only the cheap state (the tab, whether a detail is
+	// open) — not the resolved path, the fetched patch or the opened context row,
+	// which would cost more to read than the memo saves. Without this, a copy
+	// action's availability would be judged on whatever the inspector held when
+	// the key last changed.
+	m.invalidateActionSnapshot()
+}
+
+// agentRoster converts the runtime's subagent views into the inspector's
+// presentation copies.
+//
+// The conversion happens HERE rather than in the inspector because this is
+// where the session package and the conversation adapter are both reachable,
+// and the inspector is deliberately free of both. Everything the panel needs is
+// flattened into a value: a status, a pre-formatted duration, and the child's
+// already-rendered conversation.
+//
+// The child body is built from the CHILD's own state, never the parent's. When
+// the child is gone (the runtime releases completed children after a bound),
+// HasChild is false and the panel says so instead of showing the parent's
+// transcript under the child's name — on screen the two are indistinguishable.
+func (m *Model) agentRoster() []inspector.Agent {
+	if m.state == nil {
+		return nil
+	}
+	views := m.state.Subagents()
+	if len(views) == 0 {
+		return nil
+	}
+	out := make([]inspector.Agent, 0, len(views))
+	for _, v := range views {
+		a := inspector.Agent{
+			ID:             v.ID,
+			Label:          v.Label,
+			Status:         agentStatusFor(v.Status),
+			Role:           string(v.Role),
+			Provider:       v.Provider,
+			Model:          v.Model,
+			Fallback:       v.Fallback,
+			Elapsed:        agentElapsed(v),
+			ToolCalls:      v.ToolCalls,
+			CurrentTool:    v.CurrentTool,
+			Summary:        v.Summary,
+			Error:          v.Error,
+			SalvagedReason: v.SalvagedReason,
+		}
+		if v.Child != nil {
+			a.HasChild = true
+			body, truncated := m.childTranscriptBody(v.Child)
+			a.ChildBody = body
+			a.ChildTruncated = truncated
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// agentStatusFor maps the runtime's status onto the inspector's.
+//
+// The mapping is explicit rather than a cast: the two enums are independent on
+// purpose, and a cast would silently renumber the panel if the runtime ever
+// gained a status in the middle of its range.
+func agentStatusFor(s session.SubagentStatus) inspector.AgentStatus {
+	switch s {
+	case session.SubagentRunning:
+		return inspector.AgentRunning
+	case session.SubagentFailed:
+		return inspector.AgentFailed
+	default:
+		return inspector.AgentCompleted
+	}
+}
+
+// agentElapsed renders an agent's duration: elapsed while running, total once
+// finished. It is formatted here so the panel never reads a clock — a panel
+// that called time.Now would render differently on every frame, which makes its
+// own scroll position meaningless.
+func agentElapsed(v session.SubagentView) string {
+	if v.Status == session.SubagentRunning {
+		return formatElapsed(max(time.Since(v.StartedAt), 0))
+	}
+	if !v.EndedAt.IsZero() {
+		return formatElapsed(max(v.EndedAt.Sub(v.StartedAt), 0))
+	}
+	return ""
+}
+
+// childTranscriptBody renders a child session's conversation as plain text for
+// the inspector's detail view, reporting whether the result was bounded.
+//
+// The child's OWN transcript is the source. There is no fallback to the parent
+// here, and that is the point: a fallback would produce a body that looks
+// exactly like a child transcript on screen while being the parent's, and the
+// reader has no way to tell. An empty result with the "available" flag set is
+// the honest answer, and the panel renders it as an empty conversation rather
+// than as someone else's.
+func (m *Model) childTranscriptBody(child *session.State) (string, bool) {
+	if child == nil {
+		return "", false
+	}
+	items := child.Transcript()
+	if len(items) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	truncated := false
+	for _, item := range items {
+		line := childTranscriptLine(item)
+		if line == "" {
+			continue
+		}
+		if b.Len()+len(line) > maxChildTranscriptBytes {
+			// Bounded, and the caller is told: a child that ran for an hour has
+			// more conversation than a panel should hold, and presenting a
+			// prefix as the whole is the failure the flag prevents.
+			truncated = true
+			break
+		}
+		b.WriteString(line)
+		if !strings.HasSuffix(line, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return b.String(), truncated
+}
+
+// maxChildTranscriptBytes bounds one child transcript handed to the inspector.
+//
+// It is a display bound, not a memory bound: the child's transcript is already
+// in memory. What it prevents is a detail view whose content is so large that
+// every scroll is a re-layout, which makes the panel feel broken.
+const maxChildTranscriptBytes = 256 * 1024
+
+// childTranscriptLine renders one child transcript item as a plain line, or ""
+// for an item with nothing to read.
+//
+// It is deliberately plain text with a role prefix rather than the transcript's
+// styled rendering: the detail view is a copy source as well as a reading
+// surface, and ANSI sequences copied to a clipboard are invisible corruption.
+func childTranscriptLine(item session.TranscriptItem) string {
+	switch item.Kind {
+	case session.KindMessage:
+		if item.Message == nil || strings.TrimSpace(item.Message.Content) == "" {
+			return ""
+		}
+		role := string(item.Message.Role)
+		return role + ": " + item.Message.Content
+	case session.KindAudit:
+		if item.Audit == nil {
+			return ""
+		}
+		return auditLineText(*item.Audit)
+	case session.KindThinking:
+		if item.Thinking == nil {
+			return ""
+		}
+		return "thinking: " + item.Thinking.Text
+	case session.KindSubagent:
+		if item.Subagent == nil {
+			return ""
+		}
+		return "agent: " + item.Subagent.Summary
+	case session.KindRunEvent:
+		if item.RunEvent == nil {
+			return ""
+		}
+		return "run: " + item.RunEvent.Body
+	case session.KindJobExit:
+		if item.JobExit == nil {
+			return ""
+		}
+		return "job: " + item.JobExit.Command
+	}
+	return ""
+}
+
+// auditLineText renders one tool call as a readable line.
+func auditLineText(ev registry.AuditEvent) string {
+	var b strings.Builder
+	b.WriteString("tool: " + ev.ToolName)
+	if ev.ResultContent != "" {
+		b.WriteString("\n" + ev.ResultContent)
+	}
+	if len(ev.FilesChanged) > 0 {
+		b.WriteString("\nfiles: " + strings.Join(ev.FilesChanged, ", "))
+	}
+	return b.String()
+}
+
+// inspectorDiffCommand returns the command that reads the patch for the
+// inspector's current Changes selection, or nil when there is nothing to read.
+//
+// It is drained by construction: PendingDiffRequest hands out each request once,
+// so a key repeat cannot start a second git process for the same file.
+func (m *Model) inspectorDiffCommand() tea.Cmd {
+	if m.inspector == nil {
+		return nil
+	}
+	req, ok := m.inspector.model.PendingDiffRequest()
+	if !ok {
+		return nil
+	}
+	snap := m.railSnapshot
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), inspectorDiffTimeout)
+		defer cancel()
+		return inspector.DiffLoadedMsg{
+			Scope:   req.Scope,
+			Request: req.Request,
+			Path:    req.Path,
+			Diff:    changedfiles.ReadDiff(ctx, snap, req.Path),
+		}
+	}
+}
+
+// inspectorDiffTimeout bounds one per-file diff read. It is its own budget
+// rather than the snapshot's, because a large text file takes longer to read
+// than it takes to list, and reporting a timeout as an empty diff would look
+// exactly like a file with no changes.
+const inspectorDiffTimeout = 5 * time.Second
+
+// inspectorDockOwnsSlot reports whether the panel holding the dock slot is the
+// inspector's own adapter.
+//
+// It is the guard for every exemption from the dock's "the open panel owns
+// every key" rule: a DIFFERENT panel in the slot must never see the inspector's
+// keys, and a dock-placed inspector must never have them dropped.
+func (m Model) inspectorDockOwnsSlot() bool {
+	return m.inspector != nil && m.dock.Panel() == dock.Panel(m.inspector.adapter)
+}
+
+// handleDockGlobalKey resolves a key that keeps its GLOBAL meaning while the
+// inspector's adapter holds the dock slot, and runs it through runAction.
+//
+// The set is deliberately explicit and small: these are the keys whose meaning
+// does not depend on which surface is focused, so a panel that swallowed them
+// would leave the user with a dead key that the footer is still advertising.
+// Everything else — tab bars, list navigation, `c`, Enter — belongs to the
+// panel, and a key the panel does not claim is a no-op rather than a global.
+//
+// Ctrl+X is resolved through ctrlXID rather than hard-coded to the stop action,
+// because it is one key with a resolved meaning: the same resolution the
+// footer prints and the palette lists. A hard-coded stop here would be a second
+// answer to "what does Ctrl+X do", which is the drift the action catalog exists
+// to prevent.
+//
+// It reports handled=false for a key that is not global, so the caller can hand
+// it to the panel.
+func (m *Model) handleDockGlobalKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	var id ActionID
+	switch k.String() {
+	case "ctrl+b":
+		// The toggle, not the bare rail: Ctrl+B opened this panel and Ctrl+B is
+		// what closes it. Resolved from the catalog so the key, the footer and
+		// the palette row cannot disagree.
+		id = ActionToggleInspector
+	case "ctrl+x":
+		resolved, ok := m.actionSnapshot().ctrlXID()
+		if !ok {
+			// Unbound in this state: the footer omits the hint, so there is
+			// nothing to explain. The key is still consumed, so it cannot fall
+			// through to the panel's keymap as a second, hidden meaning.
+			return *m, nil, true
+		}
+		id = resolved
+	case "ctrl+s":
+		id = ActionToggleMouse
+	case "ctrl+r":
+		id = ActionRollback
+	case "f6":
+		id = ActionFocusNext
+	case "shift+f6":
+		id = ActionFocusPrevious
+	case "f2":
+		// The palette's catalog entry is gated on no other panel owning the
+		// keys, so in this state it resolves to a refusal — and routing it
+		// through the catalog is what turns that refusal into a sentence the
+		// reader can act on. Swallowing the key silently (what the dock branch
+		// did) left them pressing a documented key with no answer at all, which
+		// is the failure this exemption exists to remove.
+		id = ActionPalette
+	default:
+		return *m, nil, false
+	}
+	mm, cmd := m.runAction(id)
+	return mm, cmd, true
+}
+
+// handleInspectorKey routes a keypress to the conversation inspector while it
+// owns the keys.
+//
+// It exists so the tab-specific navigation lives in the same place as the
+// global key routing, rather than being buried in the dock adapter: the Changes
+// tab's cursor is the model's, and a key that reached the adapter would scroll
+// a body the reader is not looking at.
+//
+// It ALWAYS reports handled. A key that fell through would reach the textarea
+// behind the inspector as a second, invisible recipient — the contract
+// handleFocusedSurfaceKey keeps for the same reason.
+func (m *Model) handleInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	if m.inspector == nil {
+		return *m, nil, true
+	}
+	if m.inspector.model.SelectedTab() == inspector.TabChanges {
+		switch msg.String() {
+		case "up", "k":
+			m.inspector.model.MoveChangesSelection(-1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "down", "j":
+			m.inspector.model.MoveChangesSelection(1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "enter":
+			// Enter is the ONLY way a diff read is started, so the keyboard and
+			// the direct API agree on what opens a diff. Browsing the list must
+			// not spawn a git process per keystroke.
+			if !m.inspector.model.EnterSelected() {
+				return *m, nil, true
+			}
+			m.refreshInspector()
+			return *m, m.inspectorDiffCommand(), true
+		case "pgup", "pgdown", "home", "end":
+			// Once a diff is open, the long thing on screen is the PATCH, and
+			// these keys mean "move through it". The list is short and already
+			// has its own keys, so page keys that scrolled the tab body while a
+			// diff was open would move a scroll offset the reader cannot see.
+			//
+			// With no diff open they fall through to the adapter, which scrolls
+			// the tab body — the only thing there is to move.
+			if !m.inspector.model.HasDiff() {
+				break
+			}
+			switch msg.String() {
+			case "pgup":
+				m.inspector.model.PageDetail(-1)
+			case "pgdown":
+				m.inspector.model.PageDetail(1)
+			case "home":
+				m.inspector.model.DetailTop()
+			case "end":
+				m.inspector.model.DetailBottom()
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		}
+	}
+	if m.inspector.model.SelectedTab() == inspector.TabContext {
+		switch msg.String() {
+		case "right", "l":
+			// Left/Right cycle the SCOPE. This tab has two things to move
+			// through — which question you are asking, and which row you are
+			// on — and giving the scope one of them must not take Tab away
+			// from the tab bar, where it means "next tab" on every other tab.
+			// A panel whose Tab means "leave" on three tabs and "stay" on the
+			// fourth is a panel whose keys cannot be learned.
+			m.inspector.model.NextContextScope()
+			m.refreshInspector()
+			return *m, nil, true
+		case "left", "h":
+			m.inspector.model.PrevContextScope()
+			m.refreshInspector()
+			return *m, nil, true
+		case "up", "k":
+			m.inspector.model.MoveContextSelection(-1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "down", "j":
+			m.inspector.model.MoveContextSelection(1)
+			m.refreshInspector()
+			return *m, nil, true
+		case "enter":
+			// Enter opens the selected row. A second Enter on the row already
+			// open re-adopts its body from the current snapshot, which is the
+			// explicit refresh for a body a later snapshot has moved on from.
+			index := m.inspector.model.ContextCursor()
+			if !m.inspector.model.OpenContextRow(index) {
+				return *m, nil, true
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		// Esc is deliberately NOT handled here. The keypress router consumes
+		// Esc before any per-tab handler runs (keypress.go's Esc branch), so a
+		// case here would be unreachable. The child-scope exit lives in
+		// inspectorHost.esc, which is what that branch actually calls.
+		case "pgup", "pgdown", "home", "end", "g", "G":
+			// With a row open, the long thing on screen is its BODY, so these
+			// keys move it. With nothing open there is nothing to move: the
+			// list is rendered whole, so falling through to the adapter would
+			// write a scroll offset nothing reads — against a bound computed
+			// from the OVERVIEW's document. Consuming the key is the honest
+			// answer, and it keeps `g`/`G` from storing a number that belongs
+			// to a different tab.
+			if !m.inspector.model.ContextDetailOpen() {
+				return *m, nil, true
+			}
+			switch msg.String() {
+			case "pgup":
+				m.inspector.model.PageContextDetail(-1)
+			case "pgdown":
+				m.inspector.model.PageContextDetail(1)
+			case "home", "g":
+				m.inspector.model.ContextDetailTop()
+			case "end", "G":
+				m.inspector.model.ContextDetailBottom()
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		}
+	}
+	if m.inspector.model.SelectedTab() == inspector.TabAgents {
+		switch msg.String() {
+		case "up", "k":
+			m.inspector.model.MoveAgentSelection(-1)
+			// An OPEN detail follows the cursor onto the new agent, so the body
+			// and its label never describe different children. A CLOSED one
+			// stays closed: a key that also opened a panel would make the panel
+			// impossible to avoid while browsing.
+			m.inspector.model.SyncAgentDetail()
+			m.refreshInspector()
+			return *m, nil, true
+		case "down", "j":
+			m.inspector.model.MoveAgentSelection(1)
+			m.inspector.model.SyncAgentDetail()
+			m.refreshInspector()
+			return *m, nil, true
+		case "enter":
+			// Enter opens the selected child's transcript. The command that
+			// performs it is the refresh callers already make: the body is
+			// built from state the model holds, so there is nothing
+			// asynchronous to await.
+			_ = m.inspector.model.EnterAgent()
+			m.refreshInspector()
+			return *m, nil, true
+		case "c":
+			// `c` scopes the Context tab to the selected agent's OWN context,
+			// which is how a child's context is reached: it is an explicit
+			// scope rather than something the Context tab guesses at from
+			// whichever agent happens to be selected elsewhere. It opens the
+			// tab, so the reader can see that something happened.
+			//
+			// Nothing happens for an agent with no child state (a pipeline
+			// card, or one whose State the runtime has released): the panel
+			// would otherwise show the PARENT's context under the child's name,
+			// which on screen is indistinguishable from the child's.
+			if !m.enterInspectedChildContext() {
+				return *m, m.showToast("this agent has no child context to inspect"), true
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		case "pgup", "pgdown", "home", "end":
+			// Once a child transcript is open, the long thing on screen is that
+			// transcript, so these keys move it. With no detail open they fall
+			// through to the adapter, which scrolls the tab body — the only
+			// thing there is to move.
+			if !m.inspector.model.AgentDetailOpen() {
+				break
+			}
+			switch msg.String() {
+			case "pgup":
+				m.inspector.model.PageAgentDetail(-1)
+			case "pgdown":
+				m.inspector.model.PageAgentDetail(1)
+			case "home":
+				m.inspector.model.AgentDetailTop()
+			case "end":
+				m.inspector.model.AgentDetailBottom()
+			}
+			m.refreshInspector()
+			return *m, nil, true
+		}
+	}
+	cmd := m.inspector.adapter.Update(msg)
+	m.refreshInspector()
+	return *m, cmd, true
 }
 
 // railData assembles the side panel's render snapshot. Everything here is
@@ -1879,6 +2633,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.interruptArmed = false
 		}
 	}
+	// Reconcile the dock slot before this message is routed. Routing reads
+	// m.dock.IsOpen() to decide who owns the keys, and the placement that
+	// decides it is set by the PREVIOUS message — so applying it here is what
+	// makes a dock-placed inspector reachable by the very next key, rather than
+	// only by the frame after the one that rendered it.
+	//
+	// View cannot do this: it holds a value receiver, so a claim made while
+	// rendering lands on a copy that is discarded, leaving the canonical model
+	// with a free slot and every key and click routed to the composer behind a
+	// panel that is visibly open.
+	m.syncDock()
 	// Ctrl+C interrupts an in-flight turn on the first press and quits on the
 	// second. Checked before any overlay routing so it can never be captured
 	// by a form's keymap.
@@ -1890,6 +2655,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// afterwards. Esc already had the interrupt semantics; the better-known
 	// key just did the more destructive thing.
 	if k, ok := msg.(tea.KeyPressMsg); ok {
+		// Any keypress other than a second Ctrl+R disarms a pending rollback,
+		// so the armed state can never outlive the keystroke that set it.
+		if m.rollbackArmed && k.String() != "ctrl+r" {
+			m.rollbackArmed = false
+		}
 		if k.String() == "ctrl+c" {
 			if m.busy && !m.interruptArmed {
 				m.interruptArmed = true
@@ -2067,6 +2837,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
+	case inspector.CloseMsg:
+		// The inspector's own "close me" request, emitted by its Esc at the
+		// root of the detail stack. It is the adapter's way of saying "this key
+		// is mine, and it means close" without the model having to decode keys
+		// a second time — the panel already decided.
+		if m.inspector != nil {
+			m.inspector.close()
+			m.refreshInspector()
+		}
+		if m.inspector != nil && m.dock.Panel() == dock.Panel(m.inspector.adapter) {
+			m.dock.CloseNow()
+		}
+		m.refreshViewport()
+		return m, nil
+	case inspector.DiffLoadedMsg:
+		// An async diff read came back. The inspector itself decides whether
+		// the reply is still wanted — an older completion, a read for a path
+		// the cursor has left, and one issued under a conversation the user has
+		// closed are all refused. Drawing any of them would show a patch for a
+		// file that is not selected.
+		//
+		// A refused reply is silent by design. The request it belonged to has
+		// already been superseded by one that will answer the same question.
+		if m.inspector != nil {
+			m.inspector.model.ApplyDiffLoaded(msg)
+			m.refreshInspector()
+			m.refreshViewport()
+		}
+		return m, nil
 	case docpanel.ActionMsg:
 		m.dock.CloseNow()
 		if msg.Result.Doc != nil {
@@ -2145,7 +2944,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg, toastExpiredMsg, copyResultMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2242,6 +3041,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case *agents.Panel, connect.Panel, *castlist.Panel:
 			return m, m.dock.Update(pm)
 		}
+		if m.pickerCommand == actionPaletteCommand {
+			// The palette resolves straight to an action rather than
+			// round-tripping through dispatchCommand: there is no /actions
+			// name to dispatch, and a text round-trip would re-parse the
+			// action ID.
+			m.dock.CloseNow()
+			m.pickerCommand = ""
+			return m.runPaletteAction(ActionID(pm.Value))
+		}
 		cmdName := m.pickerCommand
 		m.dock.CloseNow()
 		m.pickerCommand = ""
@@ -2260,6 +3068,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dock.Open(modeloptions.New(m.state.Config, pm.Value, m.resolveReasoningSupport(pm.Value)))
 			m.refreshViewport()
 			return m, nil
+		case cmdName == copyPickerCommand:
+			// The code chooser. The picked value is the index into the
+			// block's code targets, re-resolved here rather than captured in
+			// the picker: nothing can have changed the block while a modal
+			// owned the keys, and re-resolving means an index that no longer
+			// fits resolves to nothing instead of copying the wrong block.
+			return m, m.copyPickedCode(pm.Value)
 		case cmdName == "mode" && pm.Value == "sdd":
 			m.openSDDPlanPicker()
 			m.refreshViewport()
@@ -2467,6 +3282,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.dock.IsOpen() {
 		switch msg.(type) {
 		case tea.KeyPressMsg, tea.PasteMsg:
+			// The INSPECTOR is the one dock panel that is a real keyboard
+			// surface rather than a form, so it gets two exemptions from the
+			// "the open panel owns every key" rule, in this order:
+			//
+			//  1. The keys that mean the same thing on every surface, resolved
+			//     from the action catalog (see inspectorDockOwnsSlot and
+			//     handleDockGlobalKey). Ctrl+X is the one that matters: stopping
+			//     the agent is precisely the state a docked Agents tab is
+			//     showing, and the footer went on advertising it while the key
+			//     was dead.
+			//  2. Its per-tab keys, through the same handleInspectorKey the
+			//     side placement uses. Without this the Changes/Agents/Context
+			//     contract (Enter opens the selected diff or detail, `c` scopes
+			//     the Context tab, page keys move an open body) was unreachable
+			//     in the dock placement — and below the side threshold the dock
+			//     is the ONLY placement there is. Routing through it also keeps
+			//     the action snapshot honest for free: every tab key ends in
+			//     refreshInspector, which invalidates the memo.
+			//
+			// Everything neither claims still belongs to the panel, exactly as
+			// the contract promises for every other panel in the slot.
+			//
+			// The GLOBAL keys are tried first and that order is load-bearing:
+			// handleInspectorKey deliberately reports "handled" for every key it
+			// is given (a key that fell through would reach the textarea as a
+			// second, invisible recipient), so a global tried after it would
+			// never run. The two sets do not overlap — the globals are all
+			// modified or function keys, the inspector's are plain navigation —
+			// so no key loses a meaning it had.
+			if k, ok := msg.(tea.KeyPressMsg); ok && m.inspectorDockOwnsSlot() {
+				if mm, cmd, handled := m.handleDockGlobalKey(k); handled {
+					return mm, cmd
+				}
+				mm, cmd, _ := m.handleInspectorKey(k)
+				return mm, cmd
+			}
 			// Offer-to-fill: while the /sdd preflight is open and the verify
 			// gate is unknown, `f` dispatches a one-shot proposal task instead
 			// of falling through to the dock.
@@ -2610,7 +3461,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+	case tea.MouseMotionMsg:
+		// Motion is only ours while a selection drag is in progress; see
+		// handleTranscriptMotion.
+		if cmd, handled := m.handleTranscriptMotion(msg); handled {
+			return m, cmd
+		}
+		return m, nil
+	case tea.MouseReleaseMsg:
+		if cmd, handled := m.handleTranscriptRelease(msg); handled {
+			return m, cmd
+		}
+		return m, nil
 	case tea.PasteMsg:
+		// A paste belongs to the composer: dropping it into a textarea that
+		// does not own the keys would edit a draft the user cannot see.
+		if !m.composerReceivesTyping() {
+			return m, nil
+		}
 		if shouldCondensePaste(msg.Content) {
 			m.addPaste(msg.Content)
 			m.updateViewportHeight()
@@ -2622,6 +3490,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if mm, cmd, handled := m.handleKeypress(msg); handled {
 			return mm, cmd
 		}
+	}
+
+	if !m.composerReceivesTyping() {
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -3074,6 +3946,20 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			}
 		}
 		return *m, vpCmd, true
+	case tea.MouseMotionMsg:
+		// A drag must keep extending while an approval or question panel is
+		// open: the panel does not take the pointer away from the transcript,
+		// and a gesture that silently stopped halfway would be worse than one
+		// that never began.
+		if cmd, handled := m.handleTranscriptMotion(msg); handled {
+			return *m, cmd, true
+		}
+		return *m, nil, false
+	case tea.MouseReleaseMsg:
+		if cmd, handled := m.handleTranscriptRelease(msg); handled {
+			return *m, cmd, true
+		}
+		return *m, nil, false
 	case tea.MouseClickMsg:
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
 			return *m, cmd, true
@@ -3290,13 +4176,27 @@ func (m Model) ShouldShowStatusURL() bool {
 	return !m.stripShowsBrowser()
 }
 
-// dockRows reports the rows the docked panel occupied at last render, so the
-// transcript viewport shrinks while a panel is open.
-func (m Model) dockRows() int { return m.dock.Rows() }
+// dockRows reports the rows the docked panel occupies, so the transcript
+// viewport shrinks while a panel is open.
+//
+// The number is the MEASURED height (see dockMeasurement), not m.dock.Rows():
+// the latter is only non-zero once the dock's renderer has run, so before this
+// the canonical model answered 0 for every open panel and the frame's Dock
+// rectangle stayed empty while a panel was drawn over the transcript.
+func (m Model) dockRows() int { return m.dockHeight() }
 
 func (m *Model) updateViewportHeight() bool {
+	// Reconcile the dock before anything reads its height: this is the funnel
+	// nearly every state change passes through, so a placement toggled by a
+	// command or a key is applied to the canonical slot here rather than on
+	// View's discarded copy.
+	m.syncDock()
 	m.input.MaxHeight = m.maxInputHeight()
 	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	// The frame is remeasured here rather than in View: every state change
+	// that can move a region funnels through this method, and View's value
+	// receiver would throw the measurement away.
+	m.computeFrame()
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -3747,8 +4647,14 @@ func (m *Model) drillIntoSubagent(v session.SubagentView) {
 	if v.Child == nil {
 		return
 	}
+	// Save the parent's place and follow state before its transcript is
+	// replaced by the child's. Without this, popping the drill leaves the
+	// reader at whatever row offsets happen to mean in the parent.
+	m.saveDrillAnchor()
 	m.viewStack = append(m.viewStack, v)
 	m.lastTranscriptHash = 0
+	// A freshly drilled child is new content, so start at the bottom of it:
+	// that is where its latest activity is.
 	m.viewportFollow = true
 }
 
@@ -3773,6 +4679,10 @@ func (m *Model) popDrill() bool {
 		return false
 	}
 	m.viewStack = m.viewStack[:len(m.viewStack)-1]
+	// Restore the parent's reading position and follow state that
+	// drillIntoSubagent saved. This must happen before the rebuild so the
+	// restore path sees the parent's follow flag.
+	m.restoreDrillAnchor()
 	m.lastTranscriptHash = 0
 	return true
 }
@@ -3790,6 +4700,10 @@ func (m Model) breadcrumbRows() int {
 
 func (m *Model) refreshViewport() {
 	m.updateViewportHeight()
+	// Capture the reader's place BEFORE any block is re-laid-out. Everything
+	// below this point rebuilds blocks from scratch, so a row offset taken
+	// afterwards would describe the new layout and preserve nothing.
+	m.captureReadingAnchor()
 	// While drilled into a subagent, render the child session's transcript
 	// (and its live blocks) in place of the orchestrator's. The parent
 	// transcript is left untouched so popping back restores it as-is.
@@ -3817,8 +4731,8 @@ func (m *Model) refreshViewport() {
 		}
 		items = filtered
 	}
-
 	inProgress := transcriptState.InProgress()
+	streamLen := len(inProgress.Reasoning)
 	atc, activeTool := transcriptState.ActiveToolCall()
 	if activeTool {
 		if atc.StartedAt != m.activeToolStartedAt {
@@ -3827,52 +4741,219 @@ func (m *Model) refreshViewport() {
 	} else {
 		m.activeToolStartedAt = time.Time{}
 	}
-	queued := m.state.SteeringQueue()
+	busy := m.busy || activeTool || streamLen > 0
 
-	// Per-block memo: every block whose (identity + inputs) is unchanged is
-	// served from blockRenderCache instead of re-rendered. The wholesale
-	// transcriptHash early-return this replaces could only answer
-	// "nothing changed — skip everything": with the spinner frame folded
-	// into it, that meant one unchanged frame per tick rebuild the ENTIRE
-	// transcript (glamour markdown, diffs, ANSI wraps over the whole
-	// history) 12.5 times a second, which is the long-session stall the
-	// spinner tick was paying for. Invalidating per render-input flips that
-	// around: an unchanged history costs map lookups, streaming/live blocks
-	// (whose keys changed) still re-render.
+	todos := m.viewedTodos()
+	if sig := todoSignature(todos); sig != m.todosSig {
+		m.todosSig = sig
+		m.todosDismissed = false
+	}
+	queued := m.state.SteeringQueue()
+	notice, noticeUp := m.state.Notice()
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows, m.readingState())
+	if hash == m.lastTranscriptHash {
+		// The transcript itself is unchanged. If something merely PAINTED onto
+		// it moved, restyle from the retained unpainted base rather than
+		// rebuilding every block: a drag emits motion events at pointer rate,
+		// and rebuilding the whole conversation per event is the cost this path
+		// exists to avoid. See repaintReadingState.
+		m.repaintReadingState()
+		return
+	}
+	m.lastTranscriptHash = hash
+	// A rebuild is what the action snapshot's cache keys on: the copy actions
+	// reach the conversation document, which is rebuilt from the same items, so
+	// one counter covers every content change those actions can observe.
+	m.transcriptVersion++
+	// The rebuild invalidates the retained base: it describes a layout that no
+	// longer exists. It is re-retained below if anything is painted onto the
+	// new content.
+	m.transcriptBase = ""
+
+	// displayRow tracks the block's first display row, which is the coordinate
+	// pointer events use. It runs alongside lineCursor rather than being derived
+	// from it: lineCursor counts transcript lines for scrolling and includes the
+	// blank separator between blocks, and a mapping built from it would be off by
+	// however many separators came before. Declared here, before the memo
+	// bootstrap, because the memoize closure below reads it to restamp a cached
+	// block's placed row.
+	displayRow := 0
+	// The sink collects mapped renderings produced during THIS build. It is
+	// created here rather than stored on the model because a stale mapping is
+	// worse than none: a click resolved against last layout's rows lands in the
+	// wrong place, and nothing on screen would show it. Declared before the
+	// memo bootstrap too, because the memoize closure republishes the mapping
+	// it consumes back into the sink on a miss.
+	sink := &mappedMessageSink{}
+
+	// Per-block memo, reconciled WITH the wholesale hash rather than instead
+	// of it: the hash early-return above still answers "nothing changed at
+	// all — repaint only", and when it misses, the memo below answers the
+	// finer question "WHICH blocks changed". That combination is what fixes
+	// the long-session stall: the wholesale hash folds the spinner frame,
+	// so a steady-state tick (spinner moved, nothing else) misses the hash
+	// every 80ms — and under the pre-memo rebuild path that tick re-rendered
+	// the ENTIRE transcript (glamour markdown, diffs, ANSI wraps over the
+	// whole history) 12.5 times a second. Here the tick's rebuild still runs,
+	// but every settled block is served from blockRenderCache and only the
+	// live blocks (whose keys moved with the spinner or the stream) render.
 	if m.blockRenderCache == nil {
-		m.blockRenderCache = map[blockKey]string{}
+		m.blockRenderCache = map[blockKey]blockMemoEntry{}
 	}
 	seenBlocks := map[blockKey]struct{}{} // participation set: the eviction pass below keeps only these
-	memoize := func(key blockKey, render func() string) string {
-		if s, ok := m.blockRenderCache[key]; ok {
+	// A memo HIT must not skip the sink claim: the with-sink render call is
+	// also what publishes the block's mapped rendering (the selection, click
+	// and find mapping). On a hit the render does not run, so the PREVIOUS
+	// build's mapping is replayed instead — it is identical to what today's
+	// render would publish because every mapping input is either part of the
+	// memo key (block content, width — see blockKey) or re-derived outside it
+	// (the placed row, re-stamped below; the leading prefix, carried in the
+	// stored span's bodyOffset). See blockMemoEntry.
+	prevRendered := make(map[string]*renderedBlockSpan, len(m.blockRenderSpans))
+	for i := range m.blockRenderSpans {
+		r := &m.blockRenderSpans[i]
+		prevRendered[string(r.id)] = r
+	}
+	// memoize returns the block's text for THIS build, from the cache when
+	// the key matches. render is called only on a miss and returns the text
+	// plus the mapped span the with-sink render left in the sink (nil when
+	// the block has no mapped path, like a tool group or a separator).
+	memoize := func(key blockKey, render func() (string, *renderedBlockSpan)) string {
+		if entry, ok := m.blockRenderCache[key]; ok {
 			seenBlocks[key] = struct{}{}
-			return s
+			if entry.span != nil {
+				// Promote the entry's span to prevRendered so the claim
+				// below finds it, and refresh the placed row recorded for
+				// THIS build: the block's identity is stable but its row
+				// moves as blocks above it appear, change or vanish.
+				span := entry.span
+				prevRendered[string(span.id)] = span
+				span.blockRow = displayRow
+			}
+			return entry.text
 		}
-		s := render()
+		text, span := render()
 		seenBlocks[key] = struct{}{}
-		m.blockRenderCache[key] = s
-		return s
+		if span != nil {
+			m.blockRenderCache[key] = blockMemoEntry{text: text, span: span}
+			// Re-publish the mapping the closure just TAKEed so the claim
+			// below still finds it: the closure consumed the sink's pending
+			// value in order to cache the span, and without republishing, the
+			// FIRST build of a block would drop its mapping — while later
+			// builds replayed it from the cache, so every assertion about
+			// selection and highlight availability would break. The claimed
+			// body offset is the total the render chain accumulated.
+			r := span.rendered
+			sink.pending = &r
+			sink.pendingOffset = span.bodyOffset
+		} else {
+			m.blockRenderCache[key] = blockMemoEntry{text: text, span: span}
+		}
+		return text
 	}
 
 	blocks := make([]string, 0, len(items)+4)
 	regions := make([]clickRegion, 0, len(items))
+	spans := make([]blockSpan, 0, len(items))
+	renders := make([]renderedBlockSpan, 0, len(items))
 	seenRegions := map[itemKey]bool{}
 	lineCursor := 0
-	// addBlock appends s to blocks (if non-empty) and, when target is
-	// non-nil, records the content-line range it occupies so a later click
-	// can find it (see click.go). strings.Count is exact regardless of a
+	// pendingBlockID carries the identity for the next addBlock when that
+	// block has no click target of its own.
+	pendingBlockID := conversation.BlockID("")
+	// addBlock appends s to blocks (if non-empty) and records the
+	// content-line range it occupies. strings.Count is exact regardless of a
 	// block's internal formatting, because it counts the same "\n"
 	// characters strings.Join below will actually lay out on screen.
+	//
+	// The span is recorded for EVERY block, not only the clickable ones: the
+	// reading anchor needs to know where a plain message sits too, and a
+	// click region deliberately exists only where a click does something.
+	// target is the clickable region, when there is one.
+	// addBlockTail records a region covering the LAST `tailLines` content
+	// lines of the block just added, so a block can carry two intents: the
+	// body toggles, the tail line copies.
+	addBlockTail := func(tailLines int, target clickTarget) {
+		if len(regions) == 0 || tailLines <= 0 {
+			return
+		}
+		last := &regions[len(regions)-1]
+		if last.endLine-last.startLine <= tailLines {
+			return
+		}
+		tailStart := last.endLine - tailLines
+		last.endLine = tailStart
+		regions = append(regions, clickRegion{startLine: tailStart, endLine: tailStart + tailLines, target: target})
+	}
+
 	addBlock := func(s string, target *clickTarget) {
 		if s == "" {
 			return
 		}
 		blocks = append(blocks, s)
 		n := strings.Count(s, "\n")
+		blockID := pendingBlockID
 		if target != nil {
 			regions = append(regions, clickRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
+			// A region's target can name a document identity explicitly, which
+			// a collapsed group must: its key is the first MEMBER's identity,
+			// while the document's name for the group is "group:<member>". The
+			// explicit id wins when present; otherwise the key's identity is
+			// the block's, which covers every single-item block.
+			id := target.blockID
+			if id == "" && target.key.viewID != "" {
+				id = conversation.BlockID(target.key.viewID)
+			}
+			if id != "" {
+				blockID = id
+				spans = append(spans, blockSpan{
+					id:        blockID,
+					startLine: lineCursor,
+					endLine:   lineCursor + n,
+				})
+			}
+		} else if id := pendingBlockID; id != "" {
+			spans = append(spans, blockSpan{id: id, startLine: lineCursor, endLine: lineCursor + n})
 		}
+		// A mapped rendering produced while this block was being rendered is
+		// claimed here, where the block's identity and its position on screen are
+		// both known. Claiming it in the renderer would require the renderer to
+		// know where it is about to be drawn, which is exactly the coupling the
+		// sink exists to avoid.
+		//
+		// The claim is unconditional on identity: whatever the sink holds was
+		// produced by the render call that produced THIS string, so it belongs to
+		// this block even when the block has no click target (a prose answer has
+		// none, and it is the block a reader most wants to select).
+		//
+		// bodyOffset travels with it because the mapping's rows are the BODY's
+		// rows while blockRow is the block's first line, and a block whose
+		// renderer wrote a reasoning summary or a salvage note above the prose
+		// has lines the mapping does not cover. Without it every row-based hit
+		// test in the block resolved one line too high.
+		if rendered, bodyOffset, ok := sink.take(); ok {
+			// Fresh render: the mapping the render just published.
+			rendered.BlockID = blockID
+			renders = append(renders, renderedBlockSpan{
+				id:         blockID,
+				blockRow:   displayRow,
+				rows:       len(rendered.Rows),
+				bodyOffset: bodyOffset,
+				rendered:   rendered,
+			})
+		} else if span := prevRendered[string(blockID)]; span != nil {
+			// Memo hit: the render did not run, so the sink holds nothing and
+			// the block's mapping from the PREVIOUS build is re-claimed here.
+			// The block's identity and all mapping inputs are unchanged (part
+			// of the memo key), so the mapping is today's too; only the placed
+			// row has moved, and the memoize hit re-stamped it already. It is
+			// re-appended here (same pointer) so THIS build's renders carries
+			// it — the next build's prevRendered seeds from that.
+			renders = append(renders, *span)
+		}
+		pendingBlockID = ""
 		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
+		displayRow += n + 1
 	}
 
 	if !hasConversationTurns(items) {
@@ -3889,20 +4970,52 @@ func (m *Model) refreshViewport() {
 			firstTurn = false
 		}
 		if entry.Group != nil {
-			key := itemKeyForGroup(entry.Group)
+			key := itemKeyForGroup(entry.GroupIDs)
 			expanded := m.isExpanded(key)
 			s := renderToolGroup(entry.Group, expanded, m.viewport.Width())
-			addBlock(s, &clickTarget{key: key})
+			// The span carries the group's DOCUMENT identity, derived by the
+			// same function the document uses to name it. Falling back to the
+			// key would record the group under its first member's name, which
+			// no lookup for the group would ever find.
+			id := conversation.BlockID("")
+			if len(entry.GroupIDs) > 0 {
+				id = conversation.GroupBlockID(entry.GroupIDs[0])
+			}
+			addBlock(s, &clickTarget{key: key, blockID: id})
 		} else {
 			key := itemKeyFor(entry.Item)
+			// Every item gets a rendered span, whether or not it is
+			// clickable, so the reading anchor can name any block the reader
+			// can scroll to. The switch below overrides this for items that
+			// DO have a click target.
+			pendingBlockID = conversation.BlockID(key.viewID)
 			expanded := m.isExpanded(key)
 			rv := regionView{offset: m.regionOffset[key], minRows: m.regionRows[key]}
-			// entry.Item is *T: the closure dereferences at call time, so the
-			// slice-reuse filtered[:0] cannot corrupt a cached render — the
-			// key captures the same content the render call reads.
-			s := memoize(blockMemoKey(entry, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width()), func() string {
-				return renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
+			// The block's content-line range is captured BEFORE addBlock
+			// advances the cursor: the chip's region is carved out of the
+			// block's tail, and the ordinary region must cover the rest.
+			blockStart := lineCursor
+			// The with-sink render is the MEMO'S MISS path: it renders AND
+			// publishes the mapped rendering into the sink. On a memo hit the
+			// render does not run, so the sink is left undisturbed and the
+			// claim inside addBlock is satisfied from prevRendered instead.
+			// The placed row is read inside addBlock from displayRow, which
+			// has not advanced yet at either claim site.
+			s := memoize(blockMemoKey(entry, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width()), func() (string, *renderedBlockSpan) {
+				text := renderTranscriptItemWithSink(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width(), sink)
+				if rendered, bodyOffset, ok := sink.take(); ok {
+					id := conversation.BlockID(key.viewID)
+					rendered.BlockID = id
+					return text, &renderedBlockSpan{
+						id:         id,
+						rows:       len(rendered.Rows),
+						bodyOffset: bodyOffset,
+						rendered:   rendered,
+					}
+				}
+				return text, nil
 			})
+			blockLines := strings.Count(s, "\n")
 			// Record the tallest this region has been, so a later shrink in
 			// the child's activity tail cannot shrink the card.
 			if n := strings.Count(s, "\n"); n > m.regionRows[key] {
@@ -3911,6 +5024,20 @@ func (m *Model) refreshViewport() {
 				}
 				m.regionRows[key] = n
 			}
+			// A copyable answer renders its chip as the LAST line of the
+			// block, so the chip's region is the block's final content line
+			// and the body keeps its own region. The chip is registered as a
+			// SEPARATE region because a click on it must copy, while a click
+			// on the body must still expand — two intents, one block.
+			var chip *clickTarget
+			if entry.Item.Kind == session.KindMessage && entry.Item.Message != nil &&
+				entry.Item.Message.Final && entry.Item.Message.Role == session.RoleAssistant &&
+				strings.TrimSpace(entry.Item.Message.Content) != "" &&
+				m.viewport.Width() >= copyChipWidth {
+				source := conversation.SourceAnswer
+				chip = &clickTarget{key: key, copySource: &source}
+			}
+
 			var target *clickTarget
 			switch entry.Item.Kind {
 			case session.KindThinking, session.KindAudit:
@@ -3930,6 +5057,37 @@ func (m *Model) refreshViewport() {
 				}
 			}
 			addBlock(s, target)
+			// The chip's region overrides the block's LAST content line.
+			// addBlock has already consumed the block, so the override is
+			// applied to the tail of the region just recorded: a click on
+			// that one line copies, and every other line still expands.
+			if chip != nil {
+				if target == nil {
+					// A plain answer has no click target of its own, but the
+					// chip needs a region to live in. Register the block as a
+					// toggle region and then carve the chip's line out of its
+					// tail below.
+					//
+					// This region is NOT unreachable, which a code review
+					// supposed. A press on the block's BODY does begin a
+					// selection and never reaches a region lookup (see
+					// pressBeginsSelection) — but a press on the block's HEADER
+					// is deliberately excluded from that path, precisely so the
+					// header stays the disclosure control. The press therefore
+					// falls through to regionAt, and this is the region it finds.
+					// Removing it would make the header of every plain answer a
+					// dead cell and would also break the coverage invariant the
+					// chip's own geometry rests on: the body region and the chip
+					// region must jointly cover the block's lines, which is what
+					// TestCopyChipRegionIsNarrowerThanItsBlock pins.
+					regions = append(regions, clickRegion{
+						startLine: blockStart,
+						endLine:   blockStart + blockLines,
+						target:    clickTarget{key: key},
+					})
+				}
+				addBlockTail(1, *chip)
+			}
 			seenRegions[key] = true
 		}
 	}
@@ -3967,8 +5125,8 @@ func (m *Model) refreshViewport() {
 		if !suppress {
 			k := activeToolKeyFor(atc)
 			expanded := m.activeToolIsExpanded(k)
-			s := memoize(activeToolBlockKey(atc, m.activeSpinnerFrame(session.ActivityTool), expanded, m.viewport.Width()), func() string {
-				return renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), expanded, m.viewport.Width())
+			s := memoize(activeToolBlockKey(atc, m.activeSpinnerFrame(session.ActivityTool), expanded, m.viewport.Width()), func() (string, *renderedBlockSpan) {
+				return renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), expanded, m.viewport.Width()), nil
 			})
 			addBlock(s, &clickTarget{isActiveTool: true, toolKey: k})
 		}
@@ -4006,9 +5164,45 @@ func (m *Model) refreshViewport() {
 	}
 
 	m.clickRegions = regions
+	m.blockSpans = spans
+	// The mapped renderings for this build. They are replaced wholesale rather
+	// than merged: a mapping describes where a block sits in THIS layout, and
+	// carrying one forward from a previous build would point at rows that may no
+	// longer exist.
+	m.blockRenderSpans = renders
+	// A selection whose block is gone is dropped before anything is drawn:
+	// highlighting a neighbour would look like it worked. Doing it here — after
+	// the new mappings exist and before the content is set — is the only point
+	// where both facts are known.
+	if m.hasSelection() && !m.selectionIsLive() {
+		m.clearSelection()
+	}
+	// Rebuild the search results for the CURRENT transcript, before anything is
+	// painted from them. Without this an open search keeps the result list it
+	// was built with while the conversation moves on beneath it: the count in
+	// the status line, the match the cursor is on, and the painted hits all
+	// describe a transcript that no longer exists, and F3 can step onto a block
+	// that is gone. The rebuild is guarded by m.find.open inside refreshFind, so
+	// a session with no search open pays nothing.
+	//
+	// It runs AFTER the new mappings exist (they are what FindInDocument reads)
+	// and BEFORE the highlights are painted from m.find.matches, which is the
+	// only window in which both facts are true.
+	m.refreshFind()
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
-	m.viewport.SetContent(strings.Join(blocks, "\n"))
+	content := strings.Join(blocks, "\n")
+	// The unpainted text is retained whenever anything is about to be painted
+	// onto it, so a later paint-only change (a drag motion, a find cursor step)
+	// can restyle these exact bytes instead of rebuilding every block. It is
+	// dropped when nothing is painted, so a session with no selection and no
+	// search holds no second copy of its transcript.
+	if m.selectionActive() || m.find.open {
+		m.transcriptBase = content
+	}
+	content = m.paintReadingState(content)
+	m.paintedReading = m.readingState()
+	m.viewport.SetContent(content)
 
 	// Evict memo entries that did not participate in this build, so the
 	// cache tracks the live transcript instead of growing without bound:
@@ -4027,7 +5221,54 @@ func (m *Model) refreshViewport() {
 	}
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
+		return
 	}
+	// Not following: put the reader back on the block they were reading.
+	// Without this every reflow — a resize, new output above, a panel
+	// opening — moved them, because the rows below the change all shift.
+	m.restoreReadingAnchor()
+}
+
+// paintReadingState applies the selection and search highlights to unpainted
+// transcript content.
+//
+// The order matters and is the reason this is one function rather than two call
+// sites: the search is painted AFTER the selection, so a match shows through on
+// top of a selected region. The reader is searching right now, and a highlight
+// hidden underneath the selection tint is worse than one that overrides it.
+func (m Model) paintReadingState(content string) string {
+	if m.hasSelection() {
+		content = m.highlightSelection(content)
+	}
+	if m.find.open {
+		content = m.highlightFindMatches(content)
+	}
+	return content
+}
+
+// repaintReadingState restyles the retained transcript from its unpainted base.
+//
+// It is the fast path for a change that alters only the PAINT: a drag extending
+// the selection, a find cursor stepping to another match, a selection being
+// cleared. The block mappings are unchanged, so the cells are recomputed against
+// the same rows — and the base is the same bytes the last full rebuild produced,
+// so the result is byte-identical to what a rebuild would have drawn.
+//
+// It declines whenever there is nothing to repaint from. That is the honest
+// answer rather than a fallback: without a base the content on screen may
+// already be painted, and painting it a second time would restyle the escapes
+// the first pass emitted. The caller's next full rebuild re-establishes it.
+func (m *Model) repaintReadingState() {
+	if m.transcriptBase == "" {
+		return
+	}
+	if m.paintedReading == m.readingState() {
+		// Nothing moved. This is the common case for a repeated message that
+		// changed no hashed input, and doing nothing keeps the paint stable.
+		return
+	}
+	m.viewport.SetContent(m.paintReadingState(m.transcriptBase))
+	m.paintedReading = m.readingState()
 }
 
 // openRunPreflight opens the cast list panel for the given kind ("sdd" or
@@ -4672,6 +5913,11 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.refreshRailTurns()
 	m.refreshRailChanged()
 	m.refreshRailFleet()
+	// The inspector's copies of the fleet and the changed tree are refreshed
+	// HERE, at the turn boundary, for the same reason the rail's caches are:
+	// the roster and the snapshot both changed while the turn ran, and an open
+	// panel must not describe the session as it was before the turn started.
+	m.refreshInspector()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
@@ -4971,6 +6217,13 @@ func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
 // or changed status, so refresh the transcript viewport to reflect the
 // new card state, then re-arm the pump.
 func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
+	// The inspector holds a COPY of the roster, so a card registering or
+	// changing status has to be pushed into it here. Refreshing only on user
+	// interaction — which is what the panel used to do — meant an open Agents
+	// tab described the fleet as it was when the reader last pressed a key, and
+	// a reader with no reason to press one watched a completed agent stay
+	// "running".
+	m.refreshInspector()
 	m.refreshViewport()
 	if m.subagentEvents == nil {
 		return m, nil
@@ -4980,9 +6233,12 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 
 // handleRailBaseRef handles a railBaseRefMsg: a freshly-read HEAD SHA for
 // the changed-files rail. It rebases the base ref and refreshes the cache.
-// refreshRailChanged runs two git diff subprocesses synchronously here; that
-// matches the existing turn-boundary behavior and happens at most once per
-// workspace change, so it is acceptable on the UI thread.
+// refreshRailChanged now runs a whole snapshot — a rev-parse, a numstat, a
+// name-status and an ls-files — synchronously here. That matches the existing
+// turn-boundary behaviour and happens at most once per workspace change, so it
+// is acceptable on the UI thread. It is bounded by railSnapshotTimeout, and a
+// failure is recorded on the Snapshot rather than being flattened into an empty
+// list.
 func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 	// Drop msgs whose dir is no longer the active root: linked worktrees
 	// share the object store, so a stale in-flight cmd from a previous
@@ -4995,6 +6251,11 @@ func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 		m.railBaseRef = msg.ref
 	}
 	m.refreshRailChanged()
+	// The inspector holds a copy of the snapshot, so the freshly-read tree has
+	// to be pushed into it: the rail reads m.railChanged directly in View, but
+	// the Changes tab would otherwise keep rendering the snapshot it was last
+	// handed and show the previous base's files.
+	m.refreshInspector()
 	// No explicit refreshViewport here: Bubble Tea re-renders after every
 	// Update, and the rail reads m.railChanged directly in View, so the
 	// updated cache is picked up on the next frame. refreshViewport only
@@ -5044,10 +6305,8 @@ func (m Model) handleSpinnerTick(msg spinnerTickMsg) (Model, tea.Cmd) {
 	m.spinnerFrame = m.spinner.Next()
 	// The spinner tick is at 80ms (smoother than the 150ms layout tick);
 	// the activity strip and the in-progress thinking/tool rows read
-	// m.spinnerFrame via activeSpinnerFrame, so refreshViewport runs here
-	// or their animation stays at the 150ms cadence. Rebuilding is
-	// memoized per block (see refreshViewport): steady-state ticks cost one
-	// map probe per history block; only live blocks re-render.
+	// m.spinnerFrame via activeSpinnerFrame, so the viewport must
+	// re-render here or the animation stays at the 150ms cadence.
 	m.refreshViewport()
 	return m, spinnerTickCmd()
 }
@@ -5072,6 +6331,10 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkspaceMsg(msg)
 	case subagentMsg:
 		return m.handleSubagentMsg(msg)
+	case toastExpiredMsg:
+		return m.handleToastExpired(msg)
+	case copyResultMsg:
+		return m.handleCopyResult(msg)
 	case railBaseRefMsg:
 		return m.handleRailBaseRef(msg)
 	case agentTickMsg:
@@ -5934,7 +7197,7 @@ func browserGlyphStyle() lipgloss.Style {
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string, regionRows map[itemKey]int) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string, regionRows map[itemKey]int, reading readingState) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
 	// The notice banner is rendered into the transcript, so its presence
@@ -5956,14 +7219,9 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for k := range regionOffsets {
 		roKeys = append(roKeys, k)
 	}
-	sort.Slice(roKeys, func(i, j int) bool {
-		if !roKeys[i].ts.Equal(roKeys[j].ts) {
-			return roKeys[i].ts.Before(roKeys[j].ts)
-		}
-		return roKeys[i].kind < roKeys[j].kind
-	})
+	sort.Slice(roKeys, func(i, j int) bool { return itemKeyLess(roKeys[i], roKeys[j]) })
 	for _, k := range roKeys {
-		fmt.Fprintf(h, "roff=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionOffsets[k])
+		fmt.Fprintf(h, "roff=%s|%d|%d|", k.viewID, k.kind, regionOffsets[k])
 	}
 	// High-water marks render into the transcript (via MinRows) but live on
 	// the Model rather than in items, so without this a change to the mark
@@ -5973,14 +7231,9 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for k := range regionRows {
 		rrKeys = append(rrKeys, k)
 	}
-	sort.Slice(rrKeys, func(i, j int) bool {
-		if !rrKeys[i].ts.Equal(rrKeys[j].ts) {
-			return rrKeys[i].ts.Before(rrKeys[j].ts)
-		}
-		return rrKeys[i].kind < rrKeys[j].kind
-	})
+	sort.Slice(rrKeys, func(i, j int) bool { return itemKeyLess(rrKeys[i], rrKeys[j]) })
 	for _, k := range rrKeys {
-		fmt.Fprintf(h, "rrows=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionRows[k])
+		fmt.Fprintf(h, "rrows=%s|%d|%d|", k.viewID, k.kind, regionRows[k])
 	}
 	// Cached blast-radius results render into the transcript but live on the
 	// Model rather than in items, so without this an arriving result changes
@@ -5992,17 +7245,15 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for k := range callers {
 		cKeys = append(cKeys, k)
 	}
-	sort.Slice(cKeys, func(i, j int) bool {
-		if !cKeys[i].ts.Equal(cKeys[j].ts) {
-			return cKeys[i].ts.Before(cKeys[j].ts)
-		}
-		return cKeys[i].kind < cKeys[j].kind
-	})
+	sort.Slice(cKeys, func(i, j int) bool { return itemKeyLess(cKeys[i], cKeys[j]) })
 	for _, k := range cKeys {
-		fmt.Fprintf(h, "callers=%d|%d|%d|", k.ts.UnixNano(), k.kind, len(callers[k]))
+		fmt.Fprintf(h, "callers=%s|%d|%d|", k.viewID, k.kind, len(callers[k]))
 	}
 	for _, item := range items {
-		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())
+		// The item's identity is hashed too: a change to what an item IS
+		// must bust the viewport cache even when its timestamp and rendered
+		// content are unchanged.
+		fmt.Fprintf(h, "%d|%d|%s|", item.Kind, item.Timestamp.UnixNano(), item.ViewID)
 		if item.Message != nil {
 			fmt.Fprintf(h, "%s|%s|%s\x00", item.Message.Role, item.Message.ContentType, item.Message.Content)
 		}
@@ -6019,7 +7270,59 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	for _, q := range queued {
 		fmt.Fprintf(h, "q=%s\x00", q)
 	}
+	// The reading states render INTO the transcript but live on the Model, so
+	// without this the early-return below freezes them: closing a search would
+	// leave its highlights painted, and moving the cursor would not move the
+	// current-match mark. Same class of bug as the notice banner and the region
+	// offsets above, and the same fix.
+	//
+	// The search's QUERY and CURSOR are hashed, not its results: the results are
+	// derived from the transcript (already hashed above) plus the query, and
+	// hashing them too would only rebuild the viewport more than necessary.
+	//
+	// The selection's IDENTITY is hashed but its OFFSETS are not, and that split
+	// is load-bearing. Offsets move at POINTER RATE during a drag, so hashing
+	// them made every motion event a full rebuild of the conversation — grouping
+	// every item, re-rendering every block, re-mapping every row — for a change
+	// that only restyles some cells. Leaving them out means a motion event
+	// leaves this hash alone, and refreshViewport then takes its paint-only path
+	// (repaintReadingState), which restyles the retained base instead. The
+	// identity stays in because it is what a rebuild genuinely needs: a
+	// selection whose block vanished must be dropped, and that check runs during
+	// the rebuild.
+	fmt.Fprintf(h, "find=%t|%s|%d|sel=%s|",
+		reading.findOpen, reading.findQuery, reading.findCurrent,
+		reading.selectionBlock)
 	return h.Sum64()
+}
+
+// readingState is the part of the Model's reading state that renders INTO the
+// transcript but is not derived from it.
+//
+// It is passed to transcriptHash as a value rather than reaching for the Model
+// because transcriptHash is a free function: it is called from tests that have
+// no Model, and giving it one would make the hash depend on the whole model
+// rather than on the inputs that change what is drawn.
+type readingState struct {
+	findOpen    bool
+	findQuery   string
+	findCurrent int
+
+	selectionBlock  conversation.BlockID
+	selectionAnchor int
+	selectionFocus  int
+}
+
+// readingState captures the Model's reading state for the transcript hash.
+func (m Model) readingState() readingState {
+	return readingState{
+		findOpen:        m.find.open,
+		findQuery:       m.find.query,
+		findCurrent:     m.find.current,
+		selectionBlock:  m.selection.sel.Block,
+		selectionAnchor: m.selection.sel.Anchor,
+		selectionFocus:  m.selection.sel.Focus,
+	}
 }
 
 // flags packs boolean/len state into a single uint64 for the hash.

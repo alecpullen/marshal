@@ -431,8 +431,19 @@ func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
 		t.Fatalf("breadcrumbRows = %d, want 1 while drilled in", m.breadcrumbRows())
 	}
 
-	// Find the click region for the child's thinking block.
-	key := itemKey{ts: ts, kind: session.KindThinking}
+	// Find the click region for the child's thinking block. The identity
+	// comes from the CHILD's transcript, since that is what is on screen.
+	childItems := child.Transcript()
+	var key itemKey
+	for _, item := range childItems {
+		if item.Kind == session.KindThinking {
+			key = itemKeyFor(&item)
+			break
+		}
+	}
+	if key.viewID == "" {
+		t.Fatal("precondition: child has no thinking item")
+	}
 	var region clickRegion
 	found := false
 	for _, r := range m.clickRegions {

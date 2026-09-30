@@ -393,12 +393,78 @@ func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 
 func TestStatusLineShowsQueueHint(t *testing.T) {
 	m := newStatusTestModel(t)
+	// The hint is only truthful while a turn is running: Ctrl+X clears the
+	// queue, and the queue is drained by a blank Enter once the turn ends. A
+	// stale count with no turn running must not advertise a key that does
+	// nothing.
+	m.busy = true
 	m.queuedCount = 2
 	line := stripANSI(m.renderStatusLine(120))
 	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
 		t.Fatalf("status line missing queue hint:\n%s", line)
 	}
 }
+
+// With no running turn, Ctrl+X performs nothing, so the footer must not
+// advertise it — a hint the user cannot act on is worse than no hint.
+func TestStatusLineOmitsQueueHintWhenIdle(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.queuedCount = 2
+	line := stripANSI(m.renderStatusLine(120))
+	if strings.Contains(line, "clear queue") {
+		t.Fatalf("idle status line advertises an inoperative Ctrl+X:\n%s", line)
+	}
+}
+
+// The duplicate Ctrl+X hint bug: busy + drilled-running-agent + queued input
+// used to print "clear queue" twice alongside "stop agent". Exactly one
+// Ctrl+X action is live, so exactly one hint is rendered.
+func TestStatusLineShowsOneCtrlXHintWhileDrilledAndQueued(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.busy = true
+	m.state.PushSteering("queued")
+	m.queuedCount = 1
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+
+	line := stripANSI(m.renderStatusLine(140))
+	if got := strings.Count(line, "Ctrl+X"); got != 1 {
+		t.Fatalf("expected exactly one Ctrl+X hint, got %d:\n%s", got, line)
+	}
+	if !strings.Contains(line, "stop agent") {
+		t.Fatalf("the inspected running child should own Ctrl+X:\n%s", line)
+	}
+	if strings.Contains(line, "clear queue") {
+		t.Fatalf("footer still advertises the losing Ctrl+X action:\n%s", line)
+	}
+}
+
+// Essential action hints must survive a narrow terminal. The cluster used to
+// be rendered all-or-nothing, so "clear queue" and "? help" both vanished
+// wholesale when the row would not fit.
+func TestStatusLineKeepsEssentialHintsAt80Columns(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.resize(80, 24)
+	m.busy = true
+	m.queuedCount = 1
+	m.state.PushSteering("queued")
+
+	line := stripANSI(m.renderStatusLine(80))
+	if !strings.Contains(line, "clear queue") {
+		t.Fatalf("essential hint dropped at 80 columns:\n%s", line)
+	}
+	if !strings.Contains(line, "? help") {
+		t.Fatalf("help hint dropped at 80 columns:\n%s", line)
+	}
+	if visibleRunes(firstStatusLineRow(m)) > 80 {
+		t.Fatalf("status line exceeds 80 columns:\n%s", line)
+	}
+}
+
+// firstStatusLineRow returns the rendered row for a width assertion; the
+// status line is a single row, so the whole render is the row.
+func firstStatusLineRow(m Model) string { return m.renderStatusLine(m.width) }
 
 func TestStatusLineShowsGitBranch(t *testing.T) {
 	m := newStatusTestModel(t)
@@ -769,5 +835,60 @@ func TestStatusHidesGenerationBeforeAnyCompaction(t *testing.T) {
 	// Generation 0 is the session's first window — not a compaction.
 	if out := m.renderStatusLine(100); strings.Contains(out, "gen ") {
 		t.Errorf("generation 0 should not be shown: %q", out)
+	}
+}
+
+// An indicator (approval, warning/error notice, transient toast) is never
+// shed, so the left segments yield to it. But the mode cue and the untrusted
+// warning are both priority-0 and protected, and on a narrow row they can be
+// all that is left. The collapse loop must then stop and let the final cut
+// clip the row: dropStatusSeg was a deliberate no-op on a -1 index, so
+// retrying spun forever and froze the whole TUI inside View.
+//
+// This is a real, reachable state — Ctrl+S shows a toast, and the toast path
+// is what surfaced the hang (TestMouseToggleReleasesAndReclaims).
+func TestStatusLineTerminatesWhenOnlyProtectedSegmentsRemain(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetTrusted(false) // the priority-0 "untrusted" warning
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder-7b", Provider: "ollama"})
+	m.state.SetTurnBudget(128000, 100000, "derived")
+	m.state.SetTurnUsage(42000)
+
+	// A toast is the narrowest of the three indicators and needs no session
+	// machinery, so it isolates the collapse loop from unrelated state.
+	_ = m.showToast("Mouse released to the terminal · click-drag selects text")
+
+	// The test completing at all is the assertion; a hang fails the package
+	// on timeout rather than here. The row must still be a single line.
+	done := make(chan string, 1)
+	go func() { done <- m.renderStatusLine(40) }()
+
+	select {
+	case line := <-done:
+		if !strings.Contains(line, "untrusted") {
+			t.Fatalf("protected untrusted segment was dropped:\n%s", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("renderStatusLine did not terminate: the collapse loop is spinning on protected segments")
+	}
+}
+
+// The same loop must terminate with a *notice* indicator, which is a wider
+// string than the toast and routes through the notice accessor instead.
+func TestStatusLineTerminatesWithNoticeIndicator(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetTrusted(false)
+	m.state.SetNotice(session.Notice{Severity: session.SeverityWarn, Message: "provider unreachable"})
+
+	done := make(chan string, 1)
+	go func() { done <- m.renderStatusLine(30) }()
+
+	select {
+	case line := <-done:
+		if !strings.Contains(line, "untrusted") {
+			t.Fatalf("protected untrusted segment was dropped:\n%s", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("renderStatusLine did not terminate with a notice indicator")
 	}
 }

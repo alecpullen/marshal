@@ -31,17 +31,25 @@ func TestJobLaneEmptyWhenNoRunningJobs(t *testing.T) {
 	}
 }
 
-func TestJobLaneShowsRunningJobs(t *testing.T) {
+// Running jobs must be visible as a COUNT. Task 14 removed the per-job rows, so
+// the command and job id are no longer on this row — the job-exit card in the
+// transcript is where a reader finds which job it was.
+//
+// This replaces TestJobLaneShowsRunningJobs, which demanded the per-job rows the
+// consolidation removes. The count it asserted is still asserted.
+func TestJobLaneShowsRunningJobsAsACount(t *testing.T) {
 	m := newTestModel(t)
 	m.jobs = []native.JobInfo{
 		runningJob(1, "npm run dev", 4*time.Minute),
 		runningJob(2, "go test ./...", 47*time.Second),
 	}
-	plain := ansi.Strip(m.renderActivityLane())
-	for _, want := range []string{"2 jobs", "job-1", "npm run dev", "job-2", "go test ./..."} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("lane missing %q:\n%s", want, plain)
-		}
+	out := m.renderActivityLane()
+	plain := ansi.Strip(out)
+	if !strings.Contains(plain, "2 jobs") {
+		t.Errorf("lane missing the running count:\n%s", plain)
+	}
+	if got := strings.Count(out, "\n"); got != laneActivityRows {
+		t.Errorf("lane rendered %d rows for two jobs, want %d:\n%s", got, laneActivityRows, plain)
 	}
 }
 
@@ -74,17 +82,24 @@ func TestJobLaneRowsMatchesRender(t *testing.T) {
 	}
 }
 
-func TestJobLaneCapsWithOverflowRow(t *testing.T) {
+// Task 14 consolidated the lane to one count row, so jobs are COUNTED rather
+// than listed and the cap-and-overflow behaviour is gone. The count is complete
+// because it is the only thing the row says.
+//
+// This replaces TestJobLaneCapsWithOverflowRow, which pinned the removed
+// behaviour.
+func TestJobLaneCountsJobsOnOneRow(t *testing.T) {
 	m := newTestModel(t)
 	for i := 0; i < 9; i++ {
 		m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
 	}
 	out := m.renderActivityLane()
-	if got := strings.Count(out, "\n"); got > laneMaxRows {
-		t.Fatalf("lane rendered %d rows, cap is %d", got, laneMaxRows)
+	if got := strings.Count(out, "\n"); got > laneActivityRows {
+		t.Fatalf("lane rendered %d rows with 9 jobs, want at most %d:\n%s",
+			got, laneActivityRows, ansi.Strip(out))
 	}
-	if !strings.Contains(ansi.Strip(out), "more") {
-		t.Fatalf("expected an overflow row:\n%s", ansi.Strip(out))
+	if !strings.Contains(ansi.Strip(out), "9 jobs") {
+		t.Fatalf("the count is not the full nine:\n%s", ansi.Strip(out))
 	}
 }
 
@@ -144,31 +159,27 @@ func TestJobLaneSeparatorBridgesTheRail(t *testing.T) {
 	}
 }
 
-// Jobs render after agents in the consolidated lane, and the caption omits
-// the job part when none run.
-func TestJobLaneRendersAfterAgents(t *testing.T) {
+// A job and an agent share the ONE row, and the caption combines both counts.
+// The order the old per-row lane expressed is gone with the rows — there is one
+// row, so "after" has no meaning — and what must hold instead is that neither
+// count is dropped when the other is present.
+func TestJobLaneAndAgentShareTheOneRow(t *testing.T) {
 	m := newTestModel(t)
 	registerRunningSubagent(t, &m, "reviewer")
 	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
-	plain := ansi.Strip(m.renderActivityLane())
+	out := m.renderActivityLane()
+	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "1 agent · 1 job") {
 		t.Fatalf("caption must combine both parts, got:\n%s", plain)
 	}
-	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
-	agentIdx, jobIdx := -1, -1
-	for i, l := range lines {
-		switch {
-		case strings.Contains(l, "reviewer"):
-			agentIdx = i
-		case strings.Contains(l, "npm run dev"):
-			jobIdx = i
-		}
+	if got := strings.Count(out, "\n"); got != laneActivityRows {
+		t.Fatalf("lane rendered %d rows, want %d:\n%s", got, laneActivityRows, plain)
 	}
-	if agentIdx < 0 || jobIdx < 0 {
-		t.Fatalf("lane missing agent/job row:\n%s", plain)
-	}
-	if jobIdx <= agentIdx {
-		t.Fatalf("expected job row after agent row, got agent=%d job=%d:\n%s", agentIdx, jobIdx, plain)
+	// The inspector is reachable because an AGENT is running, even though a job
+	// also is: the job has no tab of its own, so the hint must not appear
+	// without one.
+	if !strings.Contains(plain, "agents") {
+		t.Fatalf("the lane does not offer the inspector for the running agent:\n%s", plain)
 	}
 }
 

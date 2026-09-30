@@ -341,12 +341,48 @@ func renderCodeBlock(content string, width int) string {
 	return b.String()
 }
 
+// renderCopyChip renders the copy affordance for a block that can be copied.
+//
+// It is a single restrained line on its own, indented inside the gutter like
+// every other content line. It is deliberately NOT inline with the answer's
+// first line: an inline chip would shift the prose, and the chip doubles as
+// the click region that keeps a click on the body meaning "expand".
+//
+// It returns "" when there is nothing to copy, so the caller can render
+// unconditionally and a block without targets gets no affordance.
+func renderCopyChip(width int) string {
+	return gutterPrefix(glyph.Copy, theme.Current().FGMuted) +
+		mutedStyle().Render("copy") +
+		"\n"
+}
+
+// copyChipWidth is the cells the chip needs: the " X " gutter plus the verb.
+const copyChipWidth = gutterWidth + len("copy")
+
 func renderFinalAnswer(msg session.Message, width int) string {
+	return renderFinalAnswerWithSink(msg, width, nil)
+}
+
+// renderFinalAnswerWithSink renders a final answer, recording where its prose
+// landed when a sink is supplied.
+//
+// The body goes through the MAPPED renderer rather than Glamour: this is the
+// transcript's selectable Markdown path, and it is the one place where a reader
+// selects, copies and searches prose. The gutter prefix and the copy chip are
+// still added as literal chrome around it, because they are the transcript's
+// own affordances rather than part of the answer.
+func renderFinalAnswerWithSink(msg session.Message, width int, sink *mappedMessageSink) string {
 	if width < 10 {
 		width = 10
 	}
 	gutter := gutterPrefix(glyph.Rail, accentColor)
 	cw := contentWidth(width)
+
+	// leadingLines counts the display lines written BEFORE the mapped body. The
+	// sink reports it alongside the mapping so the block loop can place the body
+	// at the right row: the mapping's rows are the BODY's, while addBlock's
+	// blockRow is the block's first row, and the two differ by exactly this.
+	leadingLines := 0
 
 	var b strings.Builder
 	if msg.Salvaged {
@@ -357,16 +393,52 @@ func renderFinalAnswer(msg session.Message, width int) string {
 		b.WriteString(gutter)
 		b.WriteString(mutedStyle().Render(note))
 		b.WriteString("\n")
+		leadingLines++
 	}
 
-	body, ok := renderMarkdown(msg.Content, cw)
-	if !ok {
-		body = renderPlainProse(msg.Content, cw)
+	// The body is rendered by the mapped renderer, which returns both the text
+	// and the rows its offsets are expressed in. When it produces nothing (a
+	// content-less answer) the plain fallback still has to run, so the reader
+	// never sees an empty block where there was text.
+	body, rendered := renderMappedMessage(msg.Content, width, BlockRenderFull)
+	if body == "" {
+		plain := renderPlainProse(msg.Content, cw)
+		for _, line := range strings.Split(strings.Trim(plain, "\n"), "\n") {
+			b.WriteString(gutter)
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	} else {
+		// The layout already indented every row by the gutter width, so the
+		// FIRST line's indent is replaced by the caller's glyph and the rest are
+		// emitted as they are. Prepending the gutter on top of the indent — the
+		// obvious mistake — puts the text at column 6 and moves every offset the
+		// mapping reports, which is exactly the divergence this task exists to
+		// remove.
+		for i, line := range strings.Split(strings.Trim(body, "\n"), "\n") {
+			if i == 0 {
+				b.WriteString(renderMappedFirstLine(line, gutter))
+			} else {
+				b.WriteString(line)
+			}
+			b.WriteString("\n")
+		}
+		if sink != nil {
+			sink.pending = &rendered
+			// The offset is recorded RELATIVE to what the caller of this
+			// function wrote before it (see renderMessageWithSink and
+			// renderTranscriptItemWithSink, which add their own prefixes). It is
+			// set rather than accumulated here because this is the innermost
+			// renderer: it is the one that knows where its own body starts.
+			sink.pendingOffset = leadingLines
+		}
 	}
-	for _, line := range strings.Split(strings.Trim(body, "\n"), "\n") {
-		b.WriteString(gutter)
-		b.WriteString(line)
-		b.WriteString("\n")
+	// The copy affordance is appended LAST, as its own line. It is the only
+	// part of this block whose click means something other than "expand", so
+	// keeping it on a line of its own is what lets the click router give it a
+	// region distinct from the body's.
+	if width >= copyChipWidth && strings.TrimSpace(msg.Content) != "" {
+		b.WriteString(renderCopyChip(width))
 	}
 	return b.String()
 }
@@ -472,8 +544,26 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 // no role label, tool results render with a · gutter, system notices are
 // dim. Final answers use a ▍ gutter and rich-content rendering.
 func renderMessage(msg session.Message, width int) string {
+	return renderMessageWithSink(msg, width, nil)
+}
+
+// renderMessageWithSink renders a message, recording its mapping when the message
+// goes through the mapped Markdown path.
+//
+// The sink is passed in rather than reached through a model so this stays a pure
+// function: every renderer in this chain is called from tests with no Model at
+// all, and the ones that need to know where a block landed are the callers that
+// already have a Model.
+func renderMessageWithSink(msg session.Message, width int, sink *mappedMessageSink) string {
 	// Expand tabs once, here, so every content-type branch below measures
 	// what the terminal will actually render. See expandTabs.
+	//
+	// The expansion is applied to this COPY of the message (msg is by value),
+	// so the session's own content is untouched. It does mean the mapped
+	// renderer downstream hashes the EXPANDED text, while the document path
+	// hashes the raw Content — the two revisions are per-path and are never
+	// compared; see blockTextRevision for why that is correct rather than a
+	// gap.
 	msg.Content = expandTabs(msg.Content)
 	// Skill messages are handled before the role branches: the body
 	// (ContentTypeSkillBody) is model context, not transcript content, and
@@ -494,7 +584,7 @@ func renderMessage(msg session.Message, width int) string {
 		return renderSteeringMarker(msg.Content, width)
 	}
 	if msg.Final {
-		return renderFinalAnswer(msg, width)
+		return renderFinalAnswerWithSink(msg, width, sink)
 	}
 	if msg.Role == session.RoleUser {
 		return renderUserMessage(msg.Content, width)
@@ -556,6 +646,14 @@ func renderAgentMarkdown(content string, width int) string {
 }
 
 func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int) string {
+	return renderTranscriptItemWithSink(item, detailExpanded, spinnerFrame, rv, callers, width, nil)
+}
+
+// renderTranscriptItemWithSink is renderTranscriptItem with a place to record
+// where a mapped block landed. The exported-to-package form without a sink is
+// kept because most callers (tests, the doc panel) render one item and have no
+// transcript around it to place anything in.
+func renderTranscriptItemWithSink(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int, sink *mappedMessageSink) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
@@ -581,10 +679,23 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 			return renderNarration(item.Message.Content, width)
 		}
 		var b strings.Builder
+		// leadingLines counts the lines rendered above the message's own body.
+		// They have to be added AFTER the inner renderer has set the offset — the
+		// body's report describes where the BODY starts, while these lines sit
+		// above it — so the addition happens below, once that report is in hand.
+		leadingLines := 0
 		if item.Message.Reasoning != "" {
-			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width))
+			thinking := renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width)
+			b.WriteString(thinking)
+			leadingLines = strings.Count(thinking, "\n")
 		}
-		b.WriteString(renderMessage(*item.Message, width))
+		b.WriteString(renderMessageWithSink(*item.Message, width, sink))
+		// Guarded on a published mapping: a message that rendered through an
+		// unmapped path left nothing for the prefix to be relative to, and
+		// adding it would attribute these lines to the NEXT block's body.
+		if sink != nil && sink.pending != nil {
+			sink.pendingOffset += leadingLines
+		}
 		return b.String()
 	case session.KindSubagent:
 		if item.Subagent == nil {

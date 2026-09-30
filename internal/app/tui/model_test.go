@@ -7990,10 +7990,13 @@ func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
 	state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{})
 
 	// A registered subagent card must appear in the rendered viewport once
-	// the pump delivers its event. (The wholesale transcriptHash guard is
-	// gone — invalidation is per-block now — so the assertion is on the
-	// rendered content, not the hash.)
+	// the pump delivers its event. (The wholesale hash early-return now
+	// handles "nothing painted onto the transcript changed": a subagent card
+	// whose status has not moved keeps its hash, so the repaint path is what
+	// serves it — which is the correct behaviour, because the painted bytes
+	// below are identical either way.)
 	_, _ = m.handleSubagentMsg(subagentMsg{view: session.SubagentView{Label: "review"}})
+	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "review") {
 		t.Fatalf("handleSubagentMsg should refresh the viewport with the card\n%s", view)

@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
@@ -53,18 +54,17 @@ func (m Model) View() tea.View {
 	// Mouse capture is a trade, so it is configurable (tui.mouse_capture,
 	// default on). With MouseModeCellMotion the wheel scrolls the
 	// transcript — necessary because AltScreen means there is no terminal
-	// scrollback to fall back on — and native click-drag text selection
-	// needs the terminal's override modifier (Option/Alt in iTerm2, Ghostty,
-	// Kitty, Terminal.app). With MouseModeNone the terminal owns the mouse
-	// entirely and scrolling is keyboard-only (PgUp/PgDn/Ctrl+U/Ctrl+D/End).
-	// Ctrl+S flips this per session without touching config, so a user who
-	// wants to copy a block of output can release the mouse and take it back
-	// again without editing a TOML file or restarting.
-	if m.mouseReleased || (m.state != nil && !m.state.Config.TUI.MouseCapture) {
-		v.MouseMode = tea.MouseModeNone
-	} else {
-		v.MouseMode = tea.MouseModeCellMotion
-	}
+	// scrollback to fall back on. With MouseModeNone the terminal owns the
+	// mouse entirely: plain click-drag selects text and scrolling is
+	// keyboard-only (PgUp/PgDn/Ctrl+U/Ctrl+D/End). Ctrl+S flips this per
+	// session without touching config, so a user who wants to copy a block of
+	// output can release the mouse and take it back again without editing a
+	// TOML file or restarting.
+	//
+	// The mode comes from the resolved capture state, never from the raw
+	// config or the raw override: reading one of them directly is what let
+	// the footer announce a state the terminal was not in.
+	v.MouseMode = m.mouseMode()
 	return v
 }
 
@@ -75,7 +75,27 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
+	// The dock slot is reconciled from the Update paths (see syncDock), and that
+	// is what makes the CANONICAL model hold the panel: Update routes keys and
+	// clicks on m.dock.IsOpen(), so a claim made only here would land on the copy
+	// View renders on — the frame would draw a panel that no key or click could
+	// reach.
+	//
+	// The call is repeated here for one narrower reason: this method has a
+	// POINTER receiver, so when it is reached directly on the canonical model
+	// (the shape most tests use) the claim has to still be made, exactly as it
+	// was before the Update-path sync existed. Through View it is a no-op, since
+	// Update has already applied the same placement.
+	//
+	// Rendering is also the one moment the panel's TRUE height is known — the
+	// dock host measures what the panel emits — so the height is recorded
+	// through the shared measurement (see dockMeasurement). A struct field could
+	// not carry it back through View: it would be written to that copy and
+	// discarded, and the canonical model's frame would go on describing a
+	// Transcript rectangle that extends over the rows the panel is drawn on.
+	m.syncDock()
 	dockView := m.dock.View(m.leftWidth, m.height)
+	m.recordDockRows()
 	m.updateViewportHeight()
 
 	// The SDD run panel is a full-width top bar rendered above the left
@@ -88,6 +108,14 @@ func (m *Model) viewString() string {
 		// A FullFrame panel owns everything above the status line: the
 		// transcript, todo panel, run panel, live strip, and input area are hidden.
 		left = dockView
+	} else if m.inspector != nil && m.inspector.replacesBodyOnly() {
+		// Body-expanded: the inspector replaces the BODY only. The composer
+		// and footer below stay exactly where they are, so the user keeps
+		// their draft while reading a panel that took the conversation's
+		// space. That is the whole point of this placement — the dock's
+		// FullFrame mode hides the composer, and a read-only panel must never
+		// cost the user their work.
+		left = m.renderInspectorBody()
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
 		// The spinner groups with the transcript whose progress it
@@ -130,14 +158,40 @@ func (m *Model) viewString() string {
 	// breadcrumb already identifies the drilled-in state). It stays hidden
 	// for pipeline/SDD card drill-ins, whose transcript is still the
 	// parent's and which have no child state to scope to.
-	if m.railEnabled() {
+	// A side-placed inspector replaces the rail in the second column. It is
+	// strictly more capable — scrollable, keyboard-navigable, and with a
+	// detail stack — and it renders from the SAME data, so showing both would
+	// duplicate every number on screen.
+	inspectorOnSide := m.inspector != nil && m.inspector.placement() == inspectorSide
+	if inspectorOnSide {
+		if rv := m.renderInspectorColumn(leftHeight); rv != "" {
+			// The inspector column must be clipped to the SAME budget as the
+			// left column, and it must be clipped BEFORE the join.
+			// lipgloss.JoinHorizontal pads the shorter column to the taller
+			// one, so an over-tall right column makes the joined row as tall
+			// as the inspector regardless of how well the left column was
+			// clipped — and the status line and composer are placed below the
+			// joined row. That is the identical failure clipLeftColumn exists
+			// to prevent, one column to the right, so it gets the identical
+			// treatment: both columns are bounded, then joined.
+			rv = clipLeftColumn(rv, leftHeight)
+			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
+		}
+	}
+	if m.railEnabled() && !inspectorOnSide {
 		child := m.drilledRailState()
 		if child != nil || len(m.viewStack) == 0 {
 			d := m.railData()
 			if child != nil {
 				d = m.childRailData(child)
 			}
-			railHeight := m.height - statusLineRows
+			// The rail is measured against the body, not the whole frame:
+			// the SDD top bar and the status line are full-width rows that
+			// sit outside both columns. Sizing the rail to the full frame
+			// height made the railed row one row taller than the terminal
+			// whenever the top bar was showing, pushing the status line off
+			// the bottom of the screen.
+			railHeight := m.frameRect().Body().Height
 			if rv := m.rail.View(d, m.railWidth, railHeight); rv != "" {
 				rv = chrome.PaintBand(rv, m.railWidth, theme.Current().ChromeBG())
 				left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
@@ -148,6 +202,65 @@ func (m *Model) viewString() string {
 		return lipgloss.JoinVertical(lipgloss.Left, topBar, left, m.renderStatusLine(m.width))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+}
+
+// renderInspectorColumn renders the inspector into the second column,
+// band-painted like the rail it replaces so the two are visually
+// interchangeable at the same width.
+//
+// It takes the row budget explicitly and RESIZES the inspector to the measured
+// frame rectangle before rendering. Both halves matter:
+//
+//   - The rectangle is the authority on the column's size, not the height the
+//     inspector recorded at the last resize event. The body shrinks without any
+//     resize event — the composer grows to a second line, the dock claims rows,
+//     the run panel appears — and a panel still rendering to its stale, larger
+//     height would overflow the frame it is joined into.
+//   - The inspector is told the SAME budget the caller is about to clip to, so
+//     it windows its own list to fit rather than relying on the clip to hide the
+//     surplus. The clip is the guarantee; windowing is what stops the reader
+//     losing the rows at the top of the list to it.
+//
+// The model is a pointer, so this resize persists into the next frame's state
+// even though View holds a value receiver.
+func (m Model) renderInspectorColumn(budget int) string {
+	r := m.frameRect().Inspector
+	if r.Empty() {
+		return ""
+	}
+	height := min(r.Height, budget)
+	if height < 1 {
+		height = 1
+	}
+	m.inspector.resize(r.Width, height)
+	body := m.inspector.model.View(m.inspectorData())
+	if body == "" {
+		return ""
+	}
+	return chrome.PaintBand(body, r.Width, theme.Current().ChromeBG())
+}
+
+// renderInspectorBody renders the body-expanded inspector: the conversation's
+// rows, but the composer's row left alone by the caller.
+func (m Model) renderInspectorBody() string {
+	body := m.frameRect().Body()
+	if body.Empty() {
+		return ""
+	}
+	inner := lipgloss.NewStyle().Width(max(body.Width, 1)).Height(max(body.Height, 1))
+	return inner.Render(m.inspector.model.View(m.inspectorData()))
+}
+
+// inspectorData is the snapshot the inspector renders from. It is the same
+// value handed in by refreshInspector, read back rather than rebuilt: View
+// runs on every frame and must not assemble a second, possibly different,
+// snapshot.
+func (m Model) inspectorData() inspector.Data {
+	hidden := make(map[string]bool)
+	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
+		hidden[id] = true
+	}
+	return inspector.Data{Side: m.railData(), Hidden: hidden}
 }
 
 // clipLeftColumn trims s to at most maxRows, dropping surplus lines from

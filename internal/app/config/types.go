@@ -192,10 +192,15 @@ type TUIConfig struct {
 	Palette map[string]string `toml:"palette"`
 	Mode    string            `toml:"mode"`
 	// MouseCapture puts the terminal in mouse-reporting mode so the wheel
-	// scrolls the transcript. It is a trade: with capture on, native
-	// click-drag text selection needs the terminal's override modifier
-	// (Option/Alt in iTerm2, Ghostty, Kitty and Terminal.app). Turn it off
-	// to get plain click-drag selection back and scroll by keyboard.
+	// scrolls the transcript, which AltScreen would otherwise make
+	// impossible — there is no terminal scrollback to fall back on. It is a
+	// trade, because the terminal delivers mouse events to exactly one of
+	// (application, native selection): turn it off to get plain click-drag
+	// selection back and scroll with the keyboard (PgUp/PgDn/Ctrl+U/Ctrl+D/
+	// End). Ctrl+S toggles the effective mode for the current session without
+	// editing this value. No per-terminal modifier for selecting while
+	// captured is documented here: that shortcut varies by terminal and
+	// version, and a blanket claim would be wrong for some of them.
 	MouseCapture bool            `toml:"mouse_capture"`
 	SidePanel    SidePanelConfig `toml:"side_panel"`
 	// Suggestions controls the next-prompt autosuggestion mode: "off"

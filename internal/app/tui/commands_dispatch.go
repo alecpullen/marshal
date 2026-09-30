@@ -10,9 +10,11 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
@@ -116,7 +118,35 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.clickRegions = nil
 	// The old session's changed-files list must never render in the new
 	// session while the railBaseRefMsg round-trips; re-read it below.
+	//
+	// The SNAPSHOT is cleared beside the row list, because the list is only one
+	// of its two readers: the inspector's Changes tab renders from the snapshot
+	// itself, so clearing the rows alone left the previous conversation's files
+	// on that tab until something else happened to refresh it.
 	m.railChanged = nil
+	m.railSnapshot = changedfiles.Snapshot{}
+	// The inspector is re-pointed at the new conversation. refreshInspector is
+	// what stamps the new scope (SetScope), which is how a reply issued under
+	// the old conversation is refused rather than drawn over the new one — and
+	// it re-reads the roster, the changes and the context from state that now
+	// describes the new session.
+	m.refreshInspector()
+	// Session-scoped interaction state resets. The mouse override drops back
+	// to inherit — a new session follows its own config rather than silently
+	// inheriting an explicit override the user set in the conversation they
+	// just left — and focus returns to the composer so the fresh session is
+	// typable without a keystroke.
+	m.mouseOverride = MouseInherit
+	m.clearToast()
+	m.focus = FocusComposer
+	_ = m.input.Focus()
+	// Outstanding copy results belong to the session being left. Dropping
+	// them here is belt-and-braces: the token comparison in handleCopyResult
+	// already invalidates them, but bumping the sequence means a result that
+	// happens to carry the same token cannot match either.
+	m.copyState.requestSeq++
+	m.copyState.session = ""
+	m.resetSessionScopedUIState()
 
 	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
 	if name != "" {
@@ -125,6 +155,95 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
 	return m, railBaseRefCmd(m.state.Workspace().ActiveRoot)
+}
+
+// inspectEffect is /inspect. It is the named twin of Ctrl+B: the key toggles
+// the inspector, the command opens it on a named tab, and both drive the same
+// placement host so the two entry points cannot disagree about what is open.
+//
+// The tab names are read from inspector.VisibleTabs() rather than listed here.
+// A tab that lands in a later task becomes reachable through /inspect the
+// moment it is offered, and — more importantly — a tab that is NOT offered
+// cannot be opened by a stale name in this file.
+func inspectEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
+	if m.inspector == nil {
+		m.state.AddMessage(session.RoleSystem, "The conversation inspector is not available in this build.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	arg := strings.TrimSpace(strings.Join(args, " "))
+	if arg == "" {
+		// Bare /inspect opens on the tab the inspector is already showing.
+		// A successful open is visible on screen, so it says nothing: a
+		// transcript line or a toast for "the panel you can see appeared"
+		// is noise, and noise is what teaches users to ignore feedback.
+		m.inspector.open(m.inspector.model.SelectedTab(), m.inspectorSideAvailable())
+		m.refreshViewport()
+		return m, nil
+	}
+
+	if strings.EqualFold(arg, "close") {
+		m.inspector.close()
+		m.refreshViewport()
+		return m, nil
+	}
+
+	// "/inspect context pack" and "/inspect context request" name a SCOPE as
+	// well as a tab. The scope is parsed before the tab, because "context" is
+	// itself a valid tab name and splitting afterwards would leave the scope
+	// argument looking like an unknown tab.
+	tabName, scopeName := arg, ""
+	if fields := strings.Fields(arg); len(fields) == 2 && inspector.Tab(fields[0]) == inspector.TabContext {
+		tabName, scopeName = fields[0], fields[1]
+	}
+	if scopeName != "" {
+		scope, ok := inspector.ParseContextScope(scopeName)
+		if !ok {
+			// An unknown scope is named back rather than ignored. Switching to
+			// the tab and silently keeping the previous scope would answer a
+			// question the user did not ask, with nothing on screen to say so.
+			return m, m.showToast(fmt.Sprintf(
+				"Unknown context scope %q. Available now: pack, request.", scopeName))
+		}
+		if !m.inspector.open(inspector.TabContext, m.inspectorSideAvailable()) {
+			return m, m.showToast("The context view is not available in this build.")
+		}
+		m.inspector.model.SetContextScope(scope)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	tab := inspector.Tab(tabName)
+	for _, visible := range inspector.VisibleTabs() {
+		if visible == tab {
+			m.inspector.open(tab, m.inspectorSideAvailable())
+			m.refreshViewport()
+			return m, nil
+		}
+	}
+
+	// The tab was not offered. Say which one, and say what is: silently
+	// doing nothing leaves the user pressing the same command again, and
+	// opening some other panel answers a question they did not ask.
+	available := make([]string, 0, len(inspector.VisibleTabs()))
+	for _, visible := range inspector.VisibleTabs() {
+		available = append(available, string(visible))
+	}
+	known := false
+	for _, all := range inspector.AllTabs() {
+		if all == tab {
+			known = true
+			break
+		}
+	}
+	var text string
+	if known {
+		text = fmt.Sprintf("The %s view is not available yet. Available now: %s.", tab, strings.Join(available, ", "))
+	} else {
+		text = fmt.Sprintf("Unknown inspector view %q. Available now: %s.", arg, strings.Join(available, ", "))
+	}
+	return m, m.showToast(text)
 }
 
 func init() {
@@ -144,6 +263,26 @@ func init() {
 		},
 		"settings": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.openSettingsBrowser(strings.Join(args, " "))
+			m.refreshViewport()
+			return m, nil
+		},
+		"find": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			// The argument is ONE query, joined rather than taken from args[0]:
+			// /find is about finding a phrase, and searching for the first word
+			// of "the parser drops" would be a different search from the one
+			// the reader asked for.
+			//
+			// dispatchCommand has already been through shlex, so a quoted
+			// argument arrives here intact.
+			m.openFind(strings.Join(args, " "))
+			m.afterFindQueryChange()
+			return m, nil
+		},
+		"actions": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			// /actions and F2 open the same palette. The command exists so
+			// the surface is discoverable by name (and completable); the
+			// palette's pick path never routes back through this dispatch.
+			m.openActionPalette()
 			m.refreshViewport()
 			return m, nil
 		},
@@ -408,7 +547,8 @@ func init() {
 			}
 			return m.beginResume(id)
 		},
-		"new":   newSessionEffect,
-		"clear": newSessionEffect,
+		"inspect": inspectEffect,
+		"new":     newSessionEffect,
+		"clear":   newSessionEffect,
 	}
 }

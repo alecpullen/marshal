@@ -84,6 +84,18 @@ type Theme struct {
 	StatusSuccess   color.Color
 	StatusInfo      color.Color
 
+	// BGFind and BGFindCurrent mark a search match on the transcript. Two
+	// slots rather than one because they answer different questions and a
+	// reader needs both: which lines matched, and which one "next" is counting
+	// from. A single colour would leave the reader unable to tell how many
+	// other hits a query had, or where the cursor was in them.
+	//
+	// They are backgrounds, not foregrounds, because the text underneath is
+	// already coloured by the block's own rendering — a match must be visible
+	// without overriding what the renderer said about it.
+	BGFind        color.Color
+	BGFindCurrent color.Color
+
 	// Tier records the colour tier this Theme was resolved for. See
 	// tier.go; the zero value is Tier256.
 	Tier ColorTier
@@ -112,6 +124,13 @@ var warmSunset256 = Theme{
 	StatusWarning:   lipgloss.Color("215"),
 	StatusSuccess:   lipgloss.Color("43"),
 	StatusInfo:      lipgloss.Color("81"),
+	// A match is a NEUTRAL dark plane, deliberately not an accent: it sits
+	// under arbitrary body text, so it must read as a marking rather than as
+	// a colour that competes with the prose. The current match is the lighter
+	// of the two so that the hit the cursor is on stands out from its
+	// neighbours without a second hue.
+	BGFind:        lipgloss.Color("238"),
+	BGFindCurrent: lipgloss.Color("101"),
 }
 
 // warmSunset16 maps the Warm Sunset palette onto the 16-ANSI relative set
@@ -138,7 +157,14 @@ var warmSunset16 = Theme{
 	StatusWarning:   lipgloss.Color("3"),
 	StatusSuccess:   lipgloss.Color("2"),
 	StatusInfo:      lipgloss.Color("6"),
-	Tier:            Tier16,
+	// 16-colour has no spare neutrals — the four it has are already spent on
+	// background text contrast (see the comment above) — so the match uses
+	// the ANSI colours whose conventional meaning is closest: a dim white for
+	// the match and yellow for the current one, which is the same
+	// match/current distinction the 256-colour theme draws.
+	BGFind:        lipgloss.Color("8"),
+	BGFindCurrent: lipgloss.Color("3"),
+	Tier:          Tier16,
 }
 
 // monochromeTheme returns a Theme where every slot is lipgloss.NoColor{},
@@ -163,6 +189,8 @@ func monochromeTheme() Theme {
 		StatusWarning:   lipgloss.NoColor{},
 		StatusSuccess:   lipgloss.NoColor{},
 		StatusInfo:      lipgloss.NoColor{},
+		BGFind:          lipgloss.NoColor{},
+		BGFindCurrent:   lipgloss.NoColor{},
 		Tier:            TierMono,
 	}
 }

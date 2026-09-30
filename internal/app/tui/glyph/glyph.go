@@ -85,4 +85,23 @@ const (
 	// watch is a monitor, not a running process. U+25CB (○, White Circle,
 	// Geometric Shapes) — single-cell, broad terminal-font coverage.
 	Watch = "○"
+
+	// Copy marks the copy affordance on a transcript block header.
+	//
+	// It cannot reuse Agent (⧉, Two Joined Squares) — the conventional
+	// "duplicate" mark — because one shape meaning two things is exactly
+	// what this package exists to prevent.
+	//
+	// U+2398 (⎘, Next Page) carries the right "send these bytes elsewhere"
+	// reading, but it sits in Miscellaneous Technical, the block ⌕ was
+	// retired from above for macOS font fallback. ⇥ (U+21E5, Rightwards
+	// Arrow to Bar) is in the Arrows block, whose coverage is as broad as
+	// Box Drawing and Geometric Shapes — the two blocks the rest of this
+	// vocabulary already draws from.
+	//
+	// Width alone cannot tell these apart: every candidate above measures
+	// one cell, including the retired ⌕ (see glyph_test.go, which pins that
+	// limit explicitly). The block choice is the judgement; the arrow is the
+	// conservative side of it.
+	Copy = "⇥"
 )

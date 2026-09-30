@@ -38,7 +38,7 @@ func TestSubagentCardDoesNotShrinkWhenTailSourceFlips(t *testing.T) {
 
 func TestRegionRowsArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := itemKey{ts: time.Now().Add(-time.Hour), kind: session.KindSubagent}
+	gone := itemKey{viewID: "subagent:gone", kind: session.KindSubagent}
 	m.regionRows = map[itemKey]int{gone: 6}
 	m.refreshViewport()
 	if _, still := m.regionRows[gone]; still {
@@ -58,7 +58,7 @@ func TestRegionScrollRepaintsViewport(t *testing.T) {
 	m.refreshViewport()
 	before := m.viewport.GetContent()
 
-	key := itemKey{ts: v.StartedAt, kind: session.KindSubagent}
+	key := regionKeyFor(t, m, v)
 	m.regionOffset = map[itemKey]int{key: 5}
 	m.refreshViewport()
 	after := m.viewport.GetContent()
@@ -68,27 +68,41 @@ func TestRegionScrollRepaintsViewport(t *testing.T) {
 	}
 }
 
+// regionKeyFor returns the live-region identity key of a registered subagent,
+// read from the transcript rather than hand-built from its start time: the
+// start time is not the identity, and two subagents registered in the same
+// clock tick would collide under it.
+func regionKeyFor(t *testing.T, m Model, v session.SubagentView) itemKey {
+	t.Helper()
+	for _, item := range m.state.Transcript() {
+		if item.Kind == session.KindSubagent && item.Subagent != nil && item.Subagent.ID == v.ID {
+			return itemKeyFor(&item)
+		}
+	}
+	t.Fatalf("no transcript item for subagent %d", v.ID)
+	return itemKey{}
+}
+
 // The hash must be stable across repeated calls with identical offsets.
 // Go randomises map iteration order, so an unsorted loop makes this flaky
 // rather than failing outright — run it enough times to catch that.
 func TestTranscriptHashStableAcrossIdenticalOffsets(t *testing.T) {
 	offsets := map[itemKey]int{}
-	base := time.Now()
 	for i := 0; i < 12; i++ {
-		offsets[itemKey{ts: base.Add(time.Duration(i) * time.Second), kind: session.KindSubagent}] = i
+		offsets[itemKey{viewID: fmt.Sprintf("subagent:s%d", i), kind: session.KindSubagent}] = i
 	}
-	first := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil)
+	first := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil, readingState{})
 	for i := 0; i < 200; i++ {
-		if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil); got != first {
+		if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, offsets, nil, nil, readingState{}); got != first {
 			t.Fatalf("hash unstable across identical offsets (iteration %d) — sort the keys before hashing", i)
 		}
 	}
 }
 
 func TestTranscriptHashChangesWithOffset(t *testing.T) {
-	k := itemKey{ts: time.Now(), kind: session.KindSubagent}
-	a := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 0}, nil, nil)
-	b := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 1}, nil, nil)
+	k := itemKey{viewID: "subagent:1", kind: session.KindSubagent}
+	a := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 0}, nil, nil, readingState{})
+	b := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, map[itemKey]int{k: 1}, nil, nil, readingState{})
 	if a == b {
 		t.Fatal("hash must change when a region offset changes")
 	}
@@ -132,7 +146,7 @@ func TestWheelOutsideRegionScrollsTranscript(t *testing.T) {
 
 func TestStaleRegionOffsetsArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := itemKey{ts: time.Now().Add(-time.Hour), kind: session.KindSubagent}
+	gone := itemKey{viewID: "subagent:gone", kind: session.KindSubagent}
 	m.regionOffset = map[itemKey]int{gone: 3}
 	m.refreshViewport()
 	if _, still := m.regionOffset[gone]; still {
@@ -147,7 +161,7 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	child.AppendThinking("line\n")
 	v := m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
-	key := itemKey{ts: v.StartedAt, kind: session.KindSubagent}
+	key := regionKeyFor(t, m, v)
 	m.regionOffset = map[itemKey]int{key: 0}
 	for i := 0; i < 5; i++ {
 		m.scrollLiveRegionAt(tea.MouseWheelMsg{X: 1, Y: 1, Button: tea.MouseWheelDown})
@@ -173,7 +187,7 @@ func TestWheelOverLiveRegionScrollsRegionAndRepaints(t *testing.T) {
 	v := m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 
-	key := itemKey{ts: v.StartedAt, kind: session.KindSubagent}
+	key := regionKeyFor(t, m, v)
 	var region clickRegion
 	found := false
 	for _, r := range m.clickRegions {

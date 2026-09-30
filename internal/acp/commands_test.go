@@ -3,11 +3,33 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 )
+
+// newTestCommandState builds a session State through the package's constructor
+// rather than as a struct literal. `&session.State{}` bypasses the scope
+// numbering (it leaves scopeID at 0, so ScopeID() reports "s0" — the identity a
+// State that was never numbered shares with every other one) and leaves
+// nextMsgID at 0, both of which falsify ScopeID's documented promise that the
+// token is always set and per-State unique. The constructor is what other tests
+// in this package use (see skills_test.go's newTestState).
+//
+// EVERY runtime in this file is built with it, not only the tests that happen to
+// read State today. A zero State is a state the package's own contract says
+// cannot exist, and a test that hands one to the code under test is asserting
+// something false about the input even when the assertion it is making is about
+// something else. Keeping all of them identical also means the next test added
+// here cannot inherit a state whose ScopeID silently collides with every other
+// unnumbered one — the failure that made this helper necessary.
+func newTestCommandState() *session.State {
+	return session.New(config.Default(), "/tmp", time.Unix(100, 0), session.Persistence{})
+}
 
 func newTestCommandRegistry(t *testing.T) *commands.Registry {
 	t.Helper()
@@ -35,6 +57,14 @@ func newTestCommandRegistry(t *testing.T) *commands.Registry {
 	}); err != nil {
 		t.Fatalf("register someplugincmd: %v", err)
 	}
+	if err := reg.Register(commands.Command{
+		Name:        "find",
+		Description: "search the transcript",
+		Args:        "<phrase>",
+		TUIOnly:     true,
+	}); err != nil {
+		t.Fatalf("register find: %v", err)
+	}
 	return reg
 }
 
@@ -42,7 +72,7 @@ func TestCommandManagerCommandListReturnsKinds(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -101,7 +131,7 @@ func TestCommandManagerCommandRunsHeadlessHandler(t *testing.T) {
 
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -140,7 +170,7 @@ func TestCommandManagerCommandSerializesDoc(t *testing.T) {
 
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -169,7 +199,7 @@ func TestCommandManagerCommandRejectsTUIOnly(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -184,7 +214,7 @@ func TestCommandManagerCommandRejectsUnknownName(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -199,7 +229,7 @@ func TestCommandManagerCommandRejectsDuringActiveTurn(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return sessionID == "sess_busy" },
 	})
@@ -226,7 +256,7 @@ func TestCommandManagerCommandRejectsMalformedParams(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -239,7 +269,10 @@ func TestCommandManagerCommandRejectsMalformedParams(t *testing.T) {
 func TestCommandManagerCommandRejectsNilRegistry(t *testing.T) {
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: nil}, true
+			// The runtime is otherwise well-formed — the point is the nil
+			// Registry — so the State comes from the constructor like every
+			// other one here.
+			return &CommandRuntime{State: newTestCommandState(), Registry: nil}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -250,11 +283,53 @@ func TestCommandManagerCommandRejectsNilRegistry(t *testing.T) {
 	}
 }
 
+// /find is TUIOnly with no Handler and no manager-owned headless
+// implementation (supportsHeadless is keyed on the fixed
+// headlessCommandNames map, which contains only "mcp"), so the documented
+// rule in mcpauth.go — a command is headless-capable only via TUIOnly AND a
+// handler, or a manager implementation — must reject it as TUI-only rather
+// than route it anywhere. The rejection is the contract the /find reviewer
+// finding asks to pin: /find's result is a position in the rendered
+// transcript, which an ACP client has no way to consume.
+func TestCommandManagerCommandRejectsFindAsTUIOnly(t *testing.T) {
+	reg := newTestCommandRegistry(t)
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
+		},
+		HasActive: func(sessionID string) bool { return false },
+	})
+	// The command_list catalog must also agree: /find is offered as
+	// tui_only, never as headless — a client must not even be tempted to
+	// run it.
+	craw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := mgr.CommandList(context.Background(), craw)
+	if err != nil {
+		t.Fatalf("CommandList: %v", err)
+	}
+	for _, c := range res.(CommandListResult).Commands {
+		if c.Name == "find" && (c.Kind == "headless" || c.Kind == "prompt") {
+			t.Errorf("command_list kind for /find = %q, want \"tui_only\"", c.Kind)
+		}
+	}
+	if mgr.supportsHeadless("find") {
+		t.Error("supportsHeadless(find) = true, want false")
+	}
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_1", Name: "find", Args: []string{"needle"}})
+	_, err = mgr.Command(context.Background(), raw)
+	if err == nil {
+		t.Fatal("Command(find): got nil error, want the TUI-only rejection")
+	}
+	if !strings.Contains(err.Error(), "not available over ACP") || !strings.Contains(err.Error(), "TUI-only") {
+		t.Errorf("Command(find) error = %q, want the TUI-only rejection sentence (headless routing would produce a different failure)", err.Error())
+	}
+}
+
 func TestCommandManagerCommandRejectsPromptBodyOnly(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})

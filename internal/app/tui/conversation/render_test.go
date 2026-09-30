@@ -122,15 +122,21 @@ func TestTabbedRowsNeverExceedTheWidthBudget(t *testing.T) {
 					for _, width := range []int{8, 10, 12, 16, 20, 40, 79} {
 						startCol, need, hasTab := firstTabWidth(f.text, indent, eff)
 						if hasTab && need > width-indent {
-							// The tab's FIRST start column is the most
-							// favourable one it ever has (a later tab starts
-							// further right), so if the first one cannot fit,
-							// the row genuinely cannot honour the budget and
-							// overflow is the recorded minimum-overflow outcome
-							// rather than a bug —
+							// CONSERVATIVE, not exact: the tab's in-line start
+							// column is measured against the whole prefix, but
+							// the wrap RESETS the column at a break, so a tab
+							// can also open the NEXT row at column indent and
+							// cost less there than it does in line. The guard
+							// skips only a case that MIGHT not be honourable;
+							// over the shipped fixture matrix it provably skips
+							// nothing (TestFirstTabWidthSkipsOnlyWhatCannotFit
+							// pins its arithmetic). Cases with a tab that may
+							// not fit in line are excluded here because the
+							// recorded minimum-overflow outcome — not a budget
+							// violation — is the expected shape;
 							// TestATabWiderThanTheBudgetDoesNotWedgeTheWrap
-							// covers it.
-							t.Logf("stop %d indent %d width %d: the first tab opens at column %d and needs %d content cells, which do not fit",
+							// covers that shape.
+							t.Logf("stop %d indent %d width %d: the in-line tab opens at column %d and needs %d content cells, which may not fit; skipping",
 								eff, indent, width, startCol, need)
 							continue
 						}
@@ -163,15 +169,16 @@ func TestTabbedRowsNeverExceedTheWidthBudget(t *testing.T) {
 	}
 }
 
-// firstTabWidth measures a fixture's first tab: the column it opens at and the
-// content cells it needs there, at this indent and stop.
+// firstTabWidth measures a fixture's first tab: its IN-LINE start column (the
+// prefix before it on its own hard line, measured from the indent exactly as
+// rowEnd measures the walk) and the content cells it needs there at this stop.
 //
-// It exists to make the test's skip EXACT. The conservative version of that
-// guard — "width < indent + stop" — discarded cases that verifiably fit: a
-// tab's width at the start of a row is the distance to the next stop from where
-// it starts, which is at most the stop and usually less, so a width one cell
-// past the indent is already a case the layout must honour. The start column is
-// measured from the indent, exactly as rowEnd measures it.
+// The guard this feeds is CONSERVATIVE, not exact: it measures the tab where it
+// opens in line, but rowEnd also resets the column at a break, so the tab can
+// open a LATER row at column indent and cost less there. Over the shipped
+// fixture matrix the guard skips nothing (verified by enumeration), so no
+// coverage is lost — it exists to justify, in one place, the shapes the sweep
+// would otherwise have to argue case by case.
 func firstTabWidth(text string, indent, ts int) (startCol, need int, ok bool) {
 	i := strings.IndexByte(text, '\t')
 	if i < 0 {
@@ -202,8 +209,8 @@ func TestFirstTabWidthSkipsOnlyWhatCannotFit(t *testing.T) {
 	}{
 		{"leading tab at indent 1 fits a width of 8", "\tab\tcd", 1, 8, 8, 1, 7, false},
 		{"tab at column 0 needs the whole stop", "\tab\tcd", 0, 8, 8, 0, 8, false},
-		{"tab at column 0 of a narrower width cannot fit", "\tab\tcd", 0, 7, 8, 0, 8, true},
-		{"narrow width at indent 3 cannot fit", "1234567\tword", 3, 8, 8, 10, 6, true},
+		{"in-line tab wider than width 7 at column 0", "\tab\tcd", 0, 7, 8, 0, 8, true},
+		{"in-line need 6 exceeds width-indent 5", "1234567\tword", 3, 8, 8, 10, 6, true},
 		{"no tab is never skipped", "plain words", 3, 8, 8, 0, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

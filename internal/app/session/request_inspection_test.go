@@ -544,11 +544,24 @@ func sharesStorage(a, b string) bool {
 // covered — the entry cap and the total budget — because they are separate code
 // paths and only pinning one would leave the other free to regress.
 func TestRequestInspectionToolDropsAreByteAccounted(t *testing.T) {
-	// originalBytes is the same measure the snapshot's own accounting uses, so
-	// the assertion is about the arithmetic rather than about a second opinion
-	// on what a tool's bytes are.
+	// originalBytes is written with the package's countMessageBytes plus an
+	// INDEPENDENT measure of a tool's bytes, so the test is a second opinion
+	// rather than the production counter agreeing with itself: if countToolBytes
+	// ever forgot a field, this helper would not forget it the same way, and the
+	// reconstruction would come up short instead of agreeing with the bug.
+	//
+	// The independent measure must enumerate exactly the fields the budget loop
+	// charges; if the budget loop ever gains a field, BOTH the loop, the
+	// production counter and this literal have to move together, and a mismatch
+	// fails here rather than silently shortening the sum.
 	originalBytes := func(msgs []InspectionMessage, tools []InspectionTool) int {
-		return countMessageBytes(msgs) + countToolBytes(tools)
+		toolBytes := 0
+		for _, tool := range tools {
+			// Name + Description + Parameters, written out rather than delegated
+			// to countToolBytes, which is one of the things under test.
+			toolBytes += len(tool.Name) + len(tool.Description) + len(tool.Parameters)
+		}
+		return countMessageBytes(msgs) + toolBytes
 	}
 
 	t.Run("entry cap", func(t *testing.T) {

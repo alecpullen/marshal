@@ -709,10 +709,11 @@ func requestInspectionFor(r *Runner, p provider.Provider, model string, req sche
 // context.Canceled or context.DeadlineExceeded — the ordinary way one arrives —
 // is read as a cancellation rather than as a failure.
 //
-// The context is then examined as well, because the error is not the only
-// evidence. A provider that reports a cancellation as some unrelated error, or
-// that ignores cancellation and finishes its stream anyway, has still served a
-// request the user abandoned, and only ctx.Err() knows it: labelling that turn
+// The context is then examined as a backstop, for a cancellation the error
+// path loses entirely: a provider that ignores cancellation and finishes its
+// stream anyway, or an adapter that swallows context.Canceled behind its own
+// error value. Such a call has still served a request the user abandoned, and
+// only ctx.Err() knows it: labelling that turn
 // "completed" tells the user a turn succeeded that they stopped, and labelling
 // it "failed" sends them looking for a bug that is not there.
 func inspectionStatusFor(ctx context.Context, err error) session.InspectionStatus {

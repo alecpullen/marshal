@@ -449,11 +449,27 @@ func (m *Model) viewChanges() string {
 	// the list below it would otherwise be empty and read as "nothing changed"
 	// — the exact claim the reader cannot verify and must not be given.
 	if note, ok := changeStatusNote(m.changes.snapshot); ok {
-		return note
+		// An UNMEASURED panel renders everything, the same rule the list below
+		// follows. Once the panel has a height the note goes through one row of
+		// the same budgeted path as everything else: it carries the base ref,
+		// which is author-controlled, and a bare-string return here would wrap
+		// at a narrow width exactly as the header once did. The note's own
+		// trailing newline is dropped because the budget appends one.
+		if m.height <= 0 {
+			return note
+		}
+		rb := newRowBudget(1, m.width)
+		rb.line(strings.TrimRight(note, "\n"))
+		return rb.String()
 	}
 
 	if len(m.changes.rows) == 0 {
-		return "No changes against " + baseLabel(m.changes.snapshot) + ".\n"
+		if m.height <= 0 {
+			return "No changes against " + baseLabel(m.changes.snapshot) + ".\n"
+		}
+		rb := newRowBudget(1, m.width)
+		rb.line("No changes against " + baseLabel(m.changes.snapshot) + ".")
+		return rb.String()
 	}
 
 	// An UNMEASURED panel renders everything. That is the same rule the detail
@@ -533,10 +549,17 @@ func (m *Model) viewChanges() string {
 		case avail-vanishRows >= 3:
 			loadingRows = 2 // blank + the loading line
 		case avail-vanishRows >= 1:
-			// One row left: the separator is decoration and the sentence is
-			// not. A panel that shows nothing at all while a git read is in
-			// flight is indistinguishable from a frozen one, so the loading
-			// line degrades to the sentence alone rather than being dropped.
+			// One or two rows left: the separator is decoration and the
+			// sentence is not. A panel that shows nothing at all while a git
+			// read is in flight is indistinguishable from a frozen one, so the
+			// loading line degrades to the sentence alone rather than being
+			// dropped.
+			//
+			// KNOWN LIMIT, not a path worth engineering for: at heights 1-2 the
+			// header pair spends the whole budget first and no arrangeable
+			// layout has a row for the loading line at all. A one-row Changes
+			// panel cannot show both a header and a status; the header loses,
+			// as the non-optional chrome.
 			loadingRows = 1
 		}
 	}

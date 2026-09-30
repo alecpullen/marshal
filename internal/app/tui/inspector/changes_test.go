@@ -318,6 +318,82 @@ func TestChangesRejectsStaleAndForeignDiffReplies(t *testing.T) {
 
 // --- rendering rules ----------------------------------------------------
 
+// TestChangesRejectsAStaleReplyForThePathStillSelected is the case the request id
+// actually exists for, and it was MISSING.
+//
+// TestChangesRejectsStaleAndForeignDiffReplies above sends the late reply with
+// Path "a.go" while the current selection is "b.go", so the PATH guard rejects it
+// and the request-id guard is never exercised. Mutation testing confirmed the
+// gap: deleting the `msg.Request != m.changes.currentReq` check from
+// ApplyDiffLoaded left the whole TUI suite passing.
+//
+// The unguarded case is select a.go → move to b.go → come back to a.go. Now the
+// late reply's path MATCHES the current selection, so only the request id can
+// stop it — and it must, because that reply describes a read issued for the
+// reader's FIRST visit to a.go, not the one they are on.
+func TestChangesRejectsAStaleReplyForThePathStillSelected(t *testing.T) {
+	m := New()
+	m.SetScope("s1")
+	m.SetChanges(changesSnapshot(changedfiles.StatusOK, "a.go", "b.go"))
+	m.Resize(80, 20)
+
+	// Visit 1: a.go.
+	if !m.EnterSelected() {
+		t.Fatal("EnterSelected refused a.go")
+	}
+	staleReq, ok := m.PendingDiffRequest()
+	if !ok || staleReq.Path != "a.go" {
+		t.Fatalf("first request = %+v/%v, want a.go", staleReq, ok)
+	}
+
+	// Move away to b.go and ask for it.
+	m.MoveChangesSelection(1)
+	if !m.EnterSelected() {
+		t.Fatal("EnterSelected refused b.go")
+	}
+	if _, ok := m.PendingDiffRequest(); !ok {
+		t.Fatal("no request for b.go")
+	}
+
+	// Come BACK to a.go and ask again. The path is the same as visit 1; the
+	// request id is not.
+	m.MoveChangesSelection(-1)
+	if !m.EnterSelected() {
+		t.Fatal("EnterSelected refused the second a.go visit")
+	}
+	freshReq, ok := m.PendingDiffRequest()
+	if !ok || freshReq.Path != "a.go" {
+		t.Fatalf("second a.go request = %+v/%v, want a.go", freshReq, ok)
+	}
+	if freshReq.Request == staleReq.Request {
+		t.Fatalf("both a.go requests carry the id %d, so no guard could tell them apart",
+			freshReq.Request)
+	}
+
+	// The CURRENT a.go reply lands.
+	if !m.ApplyDiffLoaded(DiffLoadedMsg{
+		Scope: freshReq.Scope, Request: freshReq.Request, Path: freshReq.Path,
+		Diff: changedfiles.Diff{Path: "a.go", Patch: "+++ b/a.go\n+fresh\n"},
+	}) {
+		t.Fatal("the current reply was rejected")
+	}
+
+	// Now visit 1's reply arrives late. Same scope, same PATH, superseded id —
+	// the path guard cannot help, so this asserts the id guard on its own.
+	if m.ApplyDiffLoaded(DiffLoadedMsg{
+		Scope: staleReq.Scope, Request: staleReq.Request, Path: staleReq.Path,
+		Diff: changedfiles.Diff{Path: "a.go", Patch: "+++ b/a.go\n+stale\n"},
+	}) {
+		t.Error("a superseded reply for the SAME path was accepted — the request-id guard is not doing its job")
+	}
+	if got := m.detail.View(""); strings.Contains(got, "stale") {
+		t.Fatalf("the stale reply replaced the current content:\n%s", got)
+	}
+	if !strings.Contains(m.detail.View(""), "fresh") {
+		t.Fatalf("the current content is no longer on screen:\n%s", m.detail.View(""))
+	}
+}
+
 // TestChangesDiffRenderingUsesTheDetailWidth pins the layout rule: unified by
 // default, side-by-side only when the actual detail width meets diffview's
 // threshold. The width used must be the DETAIL's, not the inspector's whole

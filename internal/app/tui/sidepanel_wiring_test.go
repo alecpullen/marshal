@@ -102,7 +102,17 @@ func TestHiddenSectionsAreNotBuilt(t *testing.T) {
 	}
 }
 
-func TestCtrlBTogglesRail(t *testing.T) {
+// TestHidingTheRailReclaimsItsWidth pins what the rail's visibility actually
+// controls: the transcript column widens by the rail's share when the rail is
+// hidden.
+//
+// It is named for the STATE, not for a key. It used to be called
+// TestCtrlBTogglesRail, which was wrong twice over: it never pressed Ctrl+B, and
+// Ctrl+B belongs to the INSPECTOR. The rail's own visibility is a session
+// setting plus the palette's Side rail action; that is asserted by
+// TestSideRailWithoutAKeyIsStillReachableFromThePalette and
+// TestCtrlBAndThePaletteAgreeNowToggleTheInspector.
+func TestHidingTheRailReclaimsItsWidth(t *testing.T) {
 	m := newTestModelForRail(t, 160, 40, true)
 	if !m.railEnabled() {
 		t.Fatal("rail should start enabled")

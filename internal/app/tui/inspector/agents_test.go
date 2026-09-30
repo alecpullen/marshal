@@ -3,6 +3,8 @@ package inspector
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // agentsFixture builds a roster with the given IDs, all completed, so a test
@@ -261,8 +263,8 @@ func TestAgentsDetailShowsTheChildConversation(t *testing.T) {
 	if !m.AgentDetailOpen() {
 		t.Fatal("the detail did not open")
 	}
-	if !strings.Contains(m.detail.Content(), "I read three files") {
-		t.Fatalf("the child body is not in the detail:\n%s", m.detail.Content())
+	if !strings.Contains(m.agentsDetail().Content(), "I read three files") {
+		t.Fatalf("the child body is not in the detail:\n%s", m.agentsDetail().Content())
 	}
 }
 
@@ -284,7 +286,7 @@ func TestAgentsDetailNeverPresentsTheParentAsTheChild(t *testing.T) {
 	if !m.EnterAgent() {
 		t.Fatal("EnterAgent refused an agent whose metadata exists")
 	}
-	body := m.detail.Content()
+	body := m.agentsDetail().Content()
 	if !strings.Contains(body, "No child transcript available") {
 		t.Fatalf("the detail does not state that no child transcript exists:\n%s", body)
 	}
@@ -310,10 +312,10 @@ func TestAgentsDetailDisclosesATruncatedChildBody(t *testing.T) {
 	if !m.EnterAgent() {
 		t.Fatal("EnterAgent refused the agent")
 	}
-	if !m.detail.Truncated() {
+	if !m.agentsDetail().Truncated() {
 		t.Fatal("a truncated child body reached the detail without its truncation flag")
 	}
-	rendered := m.detail.View("")
+	rendered := m.agentsDetail().View("")
 	if !strings.Contains(strings.ToLower(rendered), "incomplete") {
 		t.Fatalf("the truncated child body is not disclosed:\n%s", rendered)
 	}
@@ -491,27 +493,29 @@ func TestAgentsResizeLosesNoState(t *testing.T) {
 // TestAgentsRowsNeverExceedThePanelWidth pins that an author-supplied label or
 // summary cannot produce a line wider than the panel it is rendered into. A row
 // that overflows wraps and pushes the panel's own chrome off the bottom.
+//
+// It is measured in CELLS, not runes. The previous version used len([]rune(s)),
+// which is the exact unit wrapToWidth's own comment warns about: a rune is not a
+// column, so a CJK label was counted as half its real width and the test could
+// not see the row overflow it was written to catch.
 func TestAgentsRowsNeverExceedThePanelWidth(t *testing.T) {
 	long := strings.Repeat("very-long-label-", 40)
-	m := New()
-	m.Resize(60, 20)
-	m.SetAgents([]Agent{{
-		ID: 1, Label: long, Status: AgentRunning, CurrentTool: long,
-		Role: string(long), Model: long, Provider: long,
-	}})
+	wide := strings.Repeat("漢字", 60)
+	for _, label := range []string{long, wide} {
+		m := New()
+		m.Resize(60, 20)
+		m.SetAgents([]Agent{{
+			ID: 1, Label: label, Status: AgentRunning, CurrentTool: label,
+			Role: label, Model: label, Provider: label,
+		}})
 
-	view := stripANSIForTest(m.viewAgents())
-	for i, line := range strings.Split(view, "\n") {
-		if w := lineWidth(line); w > 60 {
-			t.Fatalf("line %d is %d cells wide, want <= 60:\n%s", i, w, line)
+		view := stripANSIForTest(m.viewAgents())
+		for i, line := range strings.Split(view, "\n") {
+			if w := ansi.StringWidth(line); w > 60 {
+				t.Fatalf("label %q: line %d is %d cells wide, want <= 60:\n%s", label, i, w, line)
+			}
 		}
 	}
-}
-
-// lineWidth counts the visible cells of a line, ignoring nothing: the test
-// strips ANSI first, so what is left is what the terminal draws.
-func lineWidth(s string) int {
-	return len([]rune(s))
 }
 
 // TestAgentsRosterHasACursorMarker pins that the reader can see which row is

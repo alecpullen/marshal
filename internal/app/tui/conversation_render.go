@@ -19,8 +19,7 @@ import (
 // shifting every offset in a block by a column.
 const mappedIndent = 3
 
-// This file turns a projected block into styled screen text, and caches that by
-// the things that can change it.
+// This file turns a projected block into styled screen text.
 //
 // The rendering itself is deliberately thin: the projection (conversation's
 // markdown parser) already decided what the text IS and which spans are which
@@ -29,31 +28,16 @@ const mappedIndent = 3
 // divergences this task exists to remove: text that wraps differently from the
 // offsets a click maps to, and a copy that contains the renderer's own padding.
 //
-// The cache is keyed on everything that can change the output. Missing a key
-// does not produce a wrong render, it produces a STALE one, which is worse: it
-// looks correct until the terminal is resized or the theme changes, and then it
-// stays wrong until the block's text changes. So the key is written as a struct
-// rather than a string, and its fields are the four inputs the function actually
-// reads.
-
-// blockRenderKey identifies one rendering of one block.
-//
-// The fields are the inputs the mapped renderer reads, and nothing else.
-// Rendering mode is here because the transcript renders some blocks as a
-// one-line summary and others in full; expansion is here because a collapsed
-// group and an expanded one differ without their text changing; revision is here
-// so a block whose content changed is reparsed even at the same width.
-type blockRenderKey struct {
-	block    conversation.BlockID
-	revision int
-	width    int
-	mode     BlockRenderMode
-	// themeTier is part of the key because the same text under a different
-	// colour tier renders to different escapes, and a cache that ignored it
-	// would keep 256-colour escapes after the theme dropped to a terminal that
-	// cannot show them.
-	themeTier theme.ColorTier
-}
+// There is deliberately NO per-block render cache here. There was one, keyed on
+// (block, revision, width, mode, theme tier), and nothing ever constructed or
+// read it: the transcript path builds its blocks through the sink and the
+// document path is called only by tests, so the cache was dead weight whose only
+// live effect was a reset guard in the session-switch path. A cache that no
+// caller populates cannot make anything faster, and its key — a struct listing
+// every input that can change the output — is a silent-staleness hazard the
+// moment somebody wires it up without also wiring the invalidation. If block
+// rendering ever needs memoizing it should be added together with the caller
+// that populates it and a test that pins the invalidation.
 
 // BlockRenderMode selects how much of a block is rendered.
 type BlockRenderMode int
@@ -65,102 +49,14 @@ const (
 	BlockRenderSummary
 )
 
-// conversationRenderCache is a bounded cache of rendered blocks.
-//
-// It is bounded because a long session has thousands of blocks and every resize
-// multiplies them: an unbounded cache is a slow leak that only shows up in the
-// sessions that matter most. Eviction is least-recently-used, which matches how
-// a transcript is read — the newest blocks are the ones being re-rendered — and
-// the bound is generous enough that ordinary use never evicts.
-type conversationRenderCache struct {
-	entries map[blockRenderKey]string
-	// order is the LRU list of keys, oldest first.
-	order []blockRenderKey
-	max   int
-}
-
-// newConversationRenderCache returns a cache holding at most max renderings.
-func newConversationRenderCache(max int) *conversationRenderCache {
-	if max <= 0 {
-		max = 512
-	}
-	return &conversationRenderCache{entries: map[blockRenderKey]string{}, max: max}
-}
-
-// Len reports how many renderings are held, for a test asserting boundedness.
-func (c *conversationRenderCache) Len() int {
-	if c == nil {
-		return 0
-	}
-	return len(c.entries)
-}
-
-// get returns a cached rendering, marking it as recently used.
-func (c *conversationRenderCache) get(k blockRenderKey) (string, bool) {
-	if c == nil {
-		return "", false
-	}
-	v, ok := c.entries[k]
-	if !ok {
-		return "", false
-	}
-	c.touch(k)
-	return v, true
-}
-
-// put stores a rendering, evicting the least recently used entry when full.
-func (c *conversationRenderCache) put(k blockRenderKey, v string) {
-	if c == nil {
-		return
-	}
-	if _, exists := c.entries[k]; !exists && len(c.entries) >= c.max {
-		c.evictOldest()
-	}
-	c.entries[k] = v
-	c.touch(k)
-}
-
-// touch moves a key to the most-recent end of the order.
-func (c *conversationRenderCache) touch(k blockRenderKey) {
-	for i, existing := range c.order {
-		if existing == k {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			break
-		}
-	}
-	c.order = append(c.order, k)
-}
-
-// evictOldest drops the least recently used entry.
-func (c *conversationRenderCache) evictOldest() {
-	if len(c.order) == 0 {
-		return
-	}
-	oldest := c.order[0]
-	c.order = c.order[1:]
-	delete(c.entries, oldest)
-}
-
-// reset empties the cache, which is what a session switch requires: a
-// blockRenderKey names a block by its transcript identity, and identities are
-// scoped per session, so carrying entries across a switch would serve one
-// conversation's rendering for another's block.
-func (c *conversationRenderCache) reset() {
-	if c == nil {
-		return
-	}
-	c.entries = map[blockRenderKey]string{}
-	c.order = nil
-}
-
 // renderConversationBlock renders one block to styled screen text at a width.
 //
 // It delegates to the mapped renderer, and that is the point: this function and
-// the live transcript path used to be TWO layout paths, and they disagreed. This
-// one laid out with no indent; the live one laid out with `mappedIndent` and let
-// the caller substitute its gutter glyph on the first line. Wiring this path up
-// as it was would have drawn every block three columns to the left of where the
-// transcript draws it and shifted every cell offset in the RenderedBlock by
+// the live transcript path used to be TWO layout paths, and they disagreed. One
+// laid out with no indent; the live one laid out with `mappedIndent` and let the
+// caller substitute its gutter glyph on the first line. Wiring the document path
+// up as it was would have drawn every block three columns to the left of where
+// the transcript draws it and shifted every cell offset in the RenderedBlock by
 // three.
 //
 // There is now exactly one layout, so that class of divergence cannot come back.
@@ -178,7 +74,7 @@ func (m *Model) renderConversationBlock(block conversation.Block, width int, mod
 	return strings.TrimSuffix(text, "\n")
 }
 
-// renderConversationBlock is the pure rendering, with no cache and no model.
+// renderConversationBlock is the pure rendering, with no model and no indent.
 //
 // It exists for callers that have a Block and no Model, and it is the indent-free
 // form of the mapped layout (a Block has no transcript gutter — it is a document
@@ -213,16 +109,41 @@ type mappedMessageSink struct {
 	// to be claimed by the block loop that knows the block's identity and its
 	// position in the transcript.
 	pending *conversation.RenderedBlock
+	// pendingOffset is how many display lines the block renders BEFORE the
+	// mapped body starts.
+	//
+	// It exists because a block is not only its body. A final answer with
+	// captured reasoning renders the `⚙ thought for Ns ▹` summary above it, a
+	// salvaged answer renders a "salvaged" note above it, and every copyable
+	// answer renders the copy chip BELOW it. The mapping describes the body's
+	// rows, so a caller that places the block at its FIRST row must know how
+	// many lines to skip — otherwise the summary line maps onto body row 0 and
+	// every selection, click, copy and find-highlight in the block is off by the
+	// number of leading lines.
+	//
+	// Each renderer in the chain adds the prefix it wrote, so the total is
+	// relative to the block's first line however many layers wrapped it.
+	pendingOffset int
 }
 
-// take returns and clears the pending mapping.
-func (s *mappedMessageSink) take() (conversation.RenderedBlock, bool) {
-	if s == nil || s.pending == nil {
-		return conversation.RenderedBlock{}, false
+// take returns and clears the pending mapping and its row offset.
+//
+// The offset is cleared even when no mapping is pending. A renderer that wrote
+// leading lines but published nothing — an answer whose body rendered empty, so
+// the plain fallback ran instead — leaves its prefix in the accumulator, and
+// carrying that into the next block would shift its body by a prefix it never
+// wrote.
+func (s *mappedMessageSink) take() (conversation.RenderedBlock, int, bool) {
+	if s == nil {
+		return conversation.RenderedBlock{}, 0, false
 	}
-	out := *s.pending
-	s.pending = nil
-	return out, true
+	if s.pending == nil {
+		s.pendingOffset = 0
+		return conversation.RenderedBlock{}, 0, false
+	}
+	out, off := *s.pending, s.pendingOffset
+	s.pending, s.pendingOffset = nil, 0
+	return out, off, true
 }
 
 // renderMappedMessage renders an assistant's prose through the mapped path, and
@@ -277,9 +198,18 @@ func renderMappedBlock(
 	rows := conversation.Layout(sp, opts)
 	rendered := conversation.RenderedBlock{
 		BlockID: "", // the caller stamps the block identity
-		Width:   width,
-		Logical: sp.Text,
-		Rows:    rows,
+		// Revision is stamped from the block's own text, and this is the ONLY
+		// place that can stamp it: the document path copies Block.Revision onto
+		// the mapping, but the transcript renders a message straight to rows and
+		// has no Block to copy from. Leaving it zero made
+		// Selection.MatchesRevision compare 0 == 0 — always true — so a
+		// selection's offsets were painted over text that had changed beneath it
+		// instead of the highlight being dropped, which is what
+		// docs/tui-interactions.md promises and what a streaming answer needs.
+		Revision: blockTextRevision(sp.Text),
+		Width:    width,
+		Logical:  sp.Text,
+		Rows:     rows,
 	}
 	var b strings.Builder
 	for i, row := range rows {

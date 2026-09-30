@@ -378,6 +378,12 @@ func renderFinalAnswerWithSink(msg session.Message, width int, sink *mappedMessa
 	gutter := gutterPrefix(glyph.Rail, accentColor)
 	cw := contentWidth(width)
 
+	// leadingLines counts the display lines written BEFORE the mapped body. The
+	// sink reports it alongside the mapping so the block loop can place the body
+	// at the right row: the mapping's rows are the BODY's, while addBlock's
+	// blockRow is the block's first row, and the two differ by exactly this.
+	leadingLines := 0
+
 	var b strings.Builder
 	if msg.Salvaged {
 		note := "salvaged"
@@ -387,6 +393,7 @@ func renderFinalAnswerWithSink(msg session.Message, width int, sink *mappedMessa
 		b.WriteString(gutter)
 		b.WriteString(mutedStyle().Render(note))
 		b.WriteString("\n")
+		leadingLines++
 	}
 
 	// The body is rendered by the mapped renderer, which returns both the text
@@ -418,6 +425,12 @@ func renderFinalAnswerWithSink(msg session.Message, width int, sink *mappedMessa
 		}
 		if sink != nil {
 			sink.pending = &rendered
+			// The offset is recorded RELATIVE to what the caller of this
+			// function wrote before it (see renderMessageWithSink and
+			// renderTranscriptItemWithSink, which add their own prefixes). It is
+			// set rather than accumulated here because this is the innermost
+			// renderer: it is the one that knows where its own body starts.
+			sink.pendingOffset = leadingLines
 		}
 	}
 	// The copy affordance is appended LAST, as its own line. It is the only
@@ -659,10 +672,23 @@ func renderTranscriptItemWithSink(item session.TranscriptItem, detailExpanded bo
 			return renderNarration(item.Message.Content, width)
 		}
 		var b strings.Builder
+		// leadingLines counts the lines rendered above the message's own body.
+		// They have to be added AFTER the inner renderer has set the offset — the
+		// body's report describes where the BODY starts, while these lines sit
+		// above it — so the addition happens below, once that report is in hand.
+		leadingLines := 0
 		if item.Message.Reasoning != "" {
-			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width))
+			thinking := renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width)
+			b.WriteString(thinking)
+			leadingLines = strings.Count(thinking, "\n")
 		}
 		b.WriteString(renderMessageWithSink(*item.Message, width, sink))
+		// Guarded on a published mapping: a message that rendered through an
+		// unmapped path left nothing for the prefix to be relative to, and
+		// adding it would attribute these lines to the NEXT block's body.
+		if sink != nil && sink.pending != nil {
+			sink.pendingOffset += leadingLines
+		}
 		return b.String()
 	case session.KindSubagent:
 		if item.Subagent == nil {

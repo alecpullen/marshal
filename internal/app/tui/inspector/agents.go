@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-
-	"marshal/internal/strutil"
 )
 
 // AgentStatus is the Agents tab's own classification of an agent's state.
@@ -101,6 +99,17 @@ type agentsState struct {
 	// told, because the roster on screen no longer contains the agent whose
 	// detail they may be reading.
 	vanished bool
+
+	// detail is THIS tab's own scrollable body, and detailLabel is the heading
+	// it renders under.
+	//
+	// Both are per-tab rather than shared with Changes and Context because the
+	// three tabs write their content at different moments: a single shared view
+	// holds whichever tab wrote last, so a child transcript could appear under
+	// a diff's path, or be overwritten by a Context body before the Agents tab
+	// drew again. One body per tab makes that mislabelling impossible.
+	detail      *DetailView
+	detailLabel string
 }
 
 // SetAgents replaces the roster, preserving a selection that still exists.
@@ -273,27 +282,35 @@ func (m *Model) SyncAgentDetail() bool {
 	return true
 }
 
+// agentsDetail reports the Agents tab's own body, allocating it on first use.
+func (m *Model) agentsDetail() *DetailView {
+	if m.agents.detail == nil {
+		m.agents.detail = NewDetailView()
+	}
+	return m.agents.detail
+}
+
 // PageAgentDetail moves the child transcript body by whole viewports.
 func (m *Model) PageAgentDetail(delta int) {
 	m.syncAgentDetail()
-	m.detail.Page(delta)
+	m.agentsDetail().Page(delta)
 }
 
 // AgentDetailTop jumps the child transcript to its first line.
 func (m *Model) AgentDetailTop() {
 	m.syncAgentDetail()
-	m.detail.Top()
+	m.agentsDetail().Top()
 }
 
 // AgentDetailBottom jumps the child transcript to its last line.
 func (m *Model) AgentDetailBottom() {
 	m.syncAgentDetail()
-	m.detail.Bottom()
+	m.agentsDetail().Bottom()
 }
 
 // AgentDetailScroll reports the body's scroll offset, so a caller can tell
 // whether a key actually moved the transcript it was looking at.
-func (m *Model) AgentDetailScroll() int { return m.detail.ScrollOffset() }
+func (m *Model) AgentDetailScroll() int { return m.agentsDetail().ScrollOffset() }
 
 // syncAgentDetail sizes the detail body from the model's own recorded area.
 //
@@ -302,7 +319,7 @@ func (m *Model) AgentDetailScroll() int { return m.detail.ScrollOffset() }
 // scrolls before the first frame) must not be paging a viewport with no height
 // — which would silently move nothing and look like a broken key.
 func (m *Model) syncAgentDetail() {
-	m.detail.Resize(m.width, m.height)
+	m.agentsDetail().Resize(m.width, m.height)
 }
 
 // renderAgentDetail fills the shared detail view with one agent.
@@ -325,15 +342,16 @@ func (m *Model) renderAgentDetail(agent Agent) {
 	// Marked as no-longer-present when the roster dropped it, so a reader
 	// returning to an already-open detail is told the agent is gone rather
 	// than reading it as current.
-	m.detail.SetNoLongerChanged(m.agents.vanished)
+	detail := m.agentsDetail()
+	detail.SetNoLongerChanged(m.agents.vanished)
 	// A child body the caller bounded is disclosed through the detail's own
 	// truncation flag: the two kinds of "more" (scroll for it / it does not
 	// exist) must not be conflated, and the detail already draws the line.
-	m.detail.SetContent(b.String(), agent.ChildTruncated)
+	detail.SetContent(b.String(), agent.ChildTruncated)
 	// A whole transcript opens at its beginning. Following the end would hide
 	// what the agent was asked to do, which is the first thing a reader wants.
-	m.detail.Top()
-	m.detailLabel = agentDetailLabel(agent)
+	detail.Top()
+	m.agents.detailLabel = agentDetailLabel(agent)
 }
 
 // agentDetailLabel names the agent whose detail is on screen.
@@ -381,35 +399,36 @@ func agentMetadata(agent Agent) string {
 // viewAgents renders the Agents tab.
 func (m *Model) viewAgents() string {
 	width := max(m.width, 20)
-	var b strings.Builder
+
 	// The header explains the distinction from /agents, which is the one thing
 	// a reader arriving here can get wrong. It is wrapped to the panel rather
 	// than truncated at one line, because a half-sentence explanation is worse
 	// than none — but it is still bounded, since a header that reflows the list
 	// off the panel is a header that costs the reader the content.
-	headerRows := 0
+	//
+	// The header WRAPS, so its row count depends on the panel's width and is
+	// measured rather than assumed.
+	headerLines := make([]string, 0, len(agentsHeaderLines()))
 	for _, line := range agentsHeaderLines() {
-		wrapped := wrapToWidth(line, width)
-		headerRows += len(wrapped)
-		for _, w := range wrapped {
-			b.WriteString(w)
-			b.WriteString("\n")
-		}
+		headerLines = append(headerLines, wrapToWidth(line, width)...)
 	}
-
-	if len(m.agents.roster) == 0 {
-		b.WriteString("\n")
-		b.WriteString("No agents have run in this conversation yet.\n")
-		return b.String()
-	}
-
-	b.WriteString("\n")
 
 	// An UNMEASURED panel renders the whole roster, following the same rule the
 	// detail body uses for an unmeasured width: a caller that has not laid its
 	// frame out gets the content rather than a window off a height nobody
 	// measured.
 	if m.height <= 0 {
+		var b strings.Builder
+		for _, line := range headerLines {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		if len(m.agents.roster) == 0 {
+			b.WriteString("\n")
+			b.WriteString("No agents have run in this conversation yet.\n")
+			return b.String()
+		}
+		b.WriteString("\n")
 		for i, a := range m.agents.roster {
 			cursor := "  "
 			if i == m.agents.cursor {
@@ -429,56 +448,81 @@ func (m *Model) viewAgents() string {
 	// The tab is BUDGETED end to end: the panel is joined into the frame as a
 	// second column, and a join pads the shorter column to the taller one, so
 	// anything emitted beyond m.height escapes into the frame and pushes the
-	// status line off the bottom. The roster is WINDOWED to the rows left over,
-	// and the window reserves its own note rows so they ride INSIDE the list's
-	// share rather than being added to it.
-	//
-	// The header is measured by wrapping it, not assumed: it wraps, so its row
-	// count depends on the panel's width.
-	rows := m.height - headerRows - 1 // the blank line before the roster
-	if m.agents.vanished {
-		rows -= 2
+	// status line off the bottom. Every row goes through a budget rather than
+	// being counted by hand — the blank line before the detail body is a ROW,
+	// and an uncounted one is how this panel used to emit more rows than the
+	// height it recorded.
+	rb := newRowBudget(m.height)
+
+	// The header WRAPS, so at a degenerate height it may not fully fit. A header
+	// that is cut by the budget is still honest — the alternative is emitting
+	// past the frame — but it must not consume the roster's or the body's rows.
+	for _, line := range headerLines {
+		rb.line(line)
+	}
+	if len(m.agents.roster) == 0 {
+		if rb.left() >= 2 {
+			rb.blank()
+			rb.line("No agents have run in this conversation yet.")
+		}
+		return rb.String()
+	}
+	if rb.left() >= 2 {
+		// The blank line before the roster, plus at least one roster row: a
+		// separator with nothing under it is worse than no separator.
+		rb.blank()
 	}
 
+	// The roster and the detail body SHARE what is left. The trailing notes are
+	// reserved FIRST, because they are conditional and their rows must not be
+	// handed to the list or the body.
+	rows := rb.left()
+	if m.agents.vanished {
+		rows -= 2 // blank + the note line
+	}
+	rows = max(rows, 1)
+
 	bodyRows := 0
-	if m.AgentDetailOpen() {
-		bodyRows = max(rows/2, 1)
-		rows -= bodyRows
+	if m.AgentDetailOpen() && rows >= 3 {
+		bodyShare := max((rows-1)/2, 1)
+		bodyRows = min(bodyShare, rows-2)
+		rows -= bodyRows + 1
 	}
 	listRows := max(rows, 1)
 
+	// The window reserves its own note rows, so they ride INSIDE the list's
+	// share rather than being added to it.
 	w := windowList(len(m.agents.roster), listRows, m.agents.cursor, m.State(TabAgents).Scroll, 2)
-	if note := aboveNote(w.Above(), m.width); note != "" {
-		b.WriteString(note)
-		b.WriteString("\n")
+	if w.ShowAbove() {
+		rb.line(aboveNote(w.Above(), m.width))
 	}
 	for i := w.Start; i < w.End; i++ {
 		cursor := "  "
 		if i == m.agents.cursor {
 			cursor = "▸ "
 		}
-		b.WriteString(cursor)
-		b.WriteString(agentRowText(m.agents.roster[i], m.width))
-		b.WriteString("\n")
+		rb.line(cursor + agentRowText(m.agents.roster[i], m.width))
 	}
-	if note := belowNote(w.Below(), m.width); note != "" {
-		b.WriteString(note)
-		b.WriteString("\n")
+	if w.ShowBelow() {
+		rb.line(belowNote(w.Below(), m.width))
 	}
 
-	if m.agents.vanished {
+	if m.agents.vanished && rb.left() >= 2 {
 		// The reader's agent left the roster. Say so rather than letting them
-		// study a row that is no longer there.
-		b.WriteString("\n")
-		b.WriteString("The agent you were on is no longer in the roster; showing its nearest neighbour.\n")
+		// study a row that is no longer there. A separator plus its line is two
+		// rows, so at a degenerate height the note is dropped rather than left
+		// as an empty gap.
+		rb.blank()
+		rb.line("The agent you were on is no longer in the roster; showing its nearest neighbour.")
 	}
 
-	if m.AgentDetailOpen() {
-		m.detail.Resize(m.width, bodyRows)
-		b.WriteString("\n")
-		b.WriteString(m.detail.View(m.detailLabel))
+	if m.AgentDetailOpen() && bodyRows > 0 && rb.left() >= 2 {
+		detail := m.agentsDetail()
+		detail.Resize(m.width, bodyRows)
+		rb.blank()
+		rb.body(detail.View(m.agents.detailLabel))
 	}
-	return b.String()
+	return rb.String()
 }
 
 // agentsHeaderLines is the header the Agents tab renders, in one place so its
@@ -497,16 +541,21 @@ func agentsHeaderLines() []string {
 // agentRowText renders one roster row: status marker, id, label, route, timing
 // and live activity.
 //
-// Every variable-length part is truncated to the panel's width. A row that
-// overflows wraps, which shifts every row below it and pushes the panel's own
-// chrome off the bottom — the reader then loses the thing they were reading
-// because an agent had a long name.
+// Every variable-length part is clamped to the panel's width in display CELLS.
+// A row that overflows wraps, which shifts every row below it and pushes the
+// panel's own chrome off the bottom — the reader then loses the thing they were
+// reading because an agent had a long name.
+//
+// clampToWidth, not strutil.Truncate. Truncate cuts to N RUNES and THEN appends
+// the ellipsis, so it returns N+1 cells and counts a CJK ideograph as one when
+// it occupies two: a label of wide characters produced a roster row twice its
+// budget, which is the exact overflow this bound exists to prevent.
 func agentRowText(a Agent, width int) string {
-	// Three cells are reserved, not two: the cursor marker and its space, plus
-	// the ellipsis strutil.Truncate appends when it cuts. Budgeting two would
-	// let marker + cut text + ellipsis add up to width+1 — the exact overflow
-	// the bound exists to prevent.
-	budget := max(width-3, 20)
+	// Two cells are reserved for the cursor marker and its space. clampToWidth
+	// budgets its own ellipsis INSIDE the width, so no third cell is needed —
+	// the previous budget of width-3 was sized for strutil.Truncate's appended
+	// ellipsis, which is no longer appended.
+	budget := max(width-2, 1)
 	parts := []string{
 		agentStatusMarker(a.Status),
 		"#" + strconv.FormatInt(a.ID, 10),
@@ -550,7 +599,12 @@ func agentRowText(a Agent, width int) string {
 		}
 	}
 	line := strings.Join(parts, "  ")
-	return strutil.Truncate(line, budget, true)
+	// An UNMEASURED panel (width 0) is not clamped at all, following the rule
+	// every other renderer in this package uses.
+	if width <= 0 {
+		return line
+	}
+	return clampToWidth(line, budget)
 }
 
 // wrapToWidth breaks a line into display rows that each fit width CELLS.

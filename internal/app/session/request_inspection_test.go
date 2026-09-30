@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"marshal/internal/app/config"
 )
@@ -470,6 +471,64 @@ func TestRequestInspectionToolCallArgumentsAreBounded(t *testing.T) {
 	if !strings.HasPrefix(`{"content":"`+huge+`"}`, tc.Args) {
 		t.Fatal("the retained args are not a leading prefix")
 	}
+}
+
+// TestRequestInspectionCappedFieldDoesNotRetainTheOriginal pins the memory
+// property the cap's own rationale claims. MaxInspectionTotalBytes is documented
+// as "the number that makes the snapshot's memory use something a caller can
+// reason about", and that is only true if a capped field releases the bytes it
+// dropped. capBytes returns a substring, and a Go substring shares its backing
+// array — so the naive s[:cut] kept the entire original resident while
+// TotalContentBytes (which measures the retained prefix) reported the capped
+// size and saw nothing wrong.
+//
+// Retention is observable because a substring and its parent share the SAME
+// bytes: unsafe.StringData points into the backing array, so a reslice reports
+// the original's address and a clone reports a new allocation's. That makes the
+// assertion below a real regression guard — revert capBytes to `return s[:cut]`
+// and it fails — rather than a restatement of the value being correct, which a
+// reslice also satisfies.
+func TestRequestInspectionCappedFieldDoesNotRetainTheOriginal(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+
+	// Shaped like the reported case: a message several times the field cap whose
+	// capped prefix is a small fraction of it.
+	huge := strings.Repeat("x", MaxInspectionFieldBytes*3)
+	s.SetRequestInspection(inspectionRequest(InspectionMessage{Role: "user", Content: huge}))
+
+	got, _ := s.RequestInspection()
+	kept := got.Messages[0].Content
+
+	if want := huge[:MaxInspectionFieldBytes]; kept != want {
+		t.Fatalf("the capped field kept %d bytes, want the leading %d", len(kept), MaxInspectionFieldBytes)
+	}
+	if sharesStorage(kept, huge) {
+		t.Fatalf("the capped %d-byte field still references the original %d-byte string's storage, so the snapshot pins it",
+			len(kept), len(huge))
+	}
+	// The documented accounting: the snapshot holds the capped content, not the
+	// original, so the byte budget is enforced against what it retains.
+	if total := got.TotalContentBytes(); total != len(kept) {
+		t.Fatalf("TotalContentBytes = %d, want the capped %d", total, len(kept))
+	}
+	if total := got.TotalContentBytes(); total > MaxInspectionTotalBytes {
+		t.Fatalf("TotalContentBytes = %d, want <= %d", total, MaxInspectionTotalBytes)
+	}
+
+	// The original stays untouched by the cap and by the snapshot: bounding a
+	// field must not rewrite the request the runtime still holds.
+	if len(huge) != MaxInspectionFieldBytes*3 {
+		t.Fatalf("the caller's string changed length to %d", len(huge))
+	}
+}
+
+// sharesStorage reports whether two non-empty strings are views over the same
+// backing bytes — the property that makes a capped prefix pin its parent.
+func sharesStorage(a, b string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	return unsafe.StringData(a) == unsafe.StringData(b)
 }
 
 // TestRequestInspectionHasNoPersistenceSideEffects pins the plan's constraint:

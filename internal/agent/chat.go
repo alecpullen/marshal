@@ -614,13 +614,14 @@ var requestAttemptSeq atomic.Uint64
 // Nothing here logs. A request's content is the user's conversation, and
 // writing it to a log file would put it somewhere they did not ask for and
 // cannot redact.
+// r.State is required, and deliberately not guarded here: this is called from
+// chatOnceAttempt, which already dereferences r.State unconditionally
+// (BeginStreaming/SetActivity and five SetRequestInspectionOutcome calls), so a
+// nil state panics there whether or not this returns early. A guard that cannot
+// change the outcome is not defensiveness — it is a second, divergent copy of
+// the rule for what a Runner needs, and it invites a reader to believe nil is
+// survivable.
 func (r *Runner) captureRequestInspection(p provider.Provider, model string, req schema.ChatRequest) uint64 {
-	if r.State == nil {
-		// A runner without a state has nowhere to record a snapshot. Returning
-		// a fresh id keeps every SetRequestInspectionOutcome call a harmless
-		// refusal rather than a nil dereference.
-		return requestAttemptSeq.Add(1)
-	}
 	attemptID := requestAttemptSeq.Add(1)
 	r.State.SetRequestInspection(requestInspectionFor(r, p, model, req, attemptID))
 	return attemptID

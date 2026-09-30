@@ -76,8 +76,14 @@ func (m Model) renderActivityLane() string {
 // It is a function rather than a constant so the key and the surface are
 // described in ONE place: the row has to agree with the click handler and with
 // the Agents tab, and two literals would eventually describe different things.
+//
+// It names the CLICK only. It used to read "click or ⏎ inspect agents", but no
+// Enter binding opened the inspector from the lane — the key the hint
+// advertised did nothing, which is worse than not advertising it. Ctrl+F is the
+// keyboard route (it drills into a running child), and the /inspect command is
+// documented in /help; neither belongs in a two-word suffix.
 func laneDetailsHint() string {
-	return dimStyle().Render("click or ⏎ inspect agents")
+	return dimStyle().Render("click to inspect agents")
 }
 
 // laneGlyph is the row's leading glyph: the live spinner while anything runs,
@@ -126,5 +132,15 @@ func (m *Model) openAgentLaneInspector() bool {
 	if m.inspector == nil {
 		return false
 	}
-	return m.inspector.open(inspector.TabAgents, m.inspectorSideAvailable())
+	if !m.inspector.open(inspector.TabAgents, m.inspectorSideAvailable()) {
+		return false
+	}
+	// The roster is pushed in BEFORE the panel is drawn. The inspector renders
+	// a COPY of it, so opening the tab without refreshing would show the roster
+	// as it was the last time something else refreshed it — and on a session
+	// whose first interaction is this click, that copy is the empty one built
+	// at construction: the reader clicks a lane reporting running agents and
+	// gets a panel that says none are.
+	m.refreshInspector()
+	return true
 }

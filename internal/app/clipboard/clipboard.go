@@ -7,10 +7,10 @@
 package clipboard
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -143,14 +143,60 @@ func (w *LocalWriter) Write(ctx context.Context, text string) error {
 	return nil
 }
 
+// maxStderrBytes caps how much of a helper's diagnostics are kept. All the
+// caller does with them is append them to an error message, so a few KiB is more
+// than enough; the point is that a misbehaving binary cannot grow the buffer for
+// the whole timeout window.
+const maxStderrBytes = 4 * 1024
+
+// boundedBuffer is an io.Writer that keeps at most limit bytes and silently
+// discards the rest.
+//
+// It bounds MEMORY DURING the run, which is the property that matters: buffering
+// a bytes.Buffer and truncating afterwards still lets the binary allocate its
+// whole output first. Overflow is not reported to the caller — the truncation is
+// already visible to the reader as the message simply ending, and an error here
+// would replace the helper's real failure with a bookkeeping one.
+type boundedBuffer struct {
+	buf   []byte
+	limit int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - len(b.buf); room > 0 {
+		if len(p) > room {
+			b.buf = append(b.buf, p[:room]...)
+		} else {
+			b.buf = append(b.buf, p...)
+		}
+	}
+	// Report every byte as written: a short count would surface as a write
+	// error at the far end of the process's pipe and turn a diagnostics problem
+	// into a failed clipboard write.
+	return len(p), nil
+}
+
+func (b *boundedBuffer) String() string { return string(b.buf) }
+
 // execRun is the real Run implementation: it starts path with exactly args and
 // feeds stdin, with no shell in between.
+//
+// Both output streams are set explicitly rather than left nil. A nil Stdout and
+// Stderr both mean os.DevNull (os/exec writerDescriptor) and not inherited
+// descriptors, so the previous code was not leaking terminal output — but it was
+// relying on that default for STDOUT while attaching an UNBOUNDED bytes.Buffer to
+// stderr, and a helper that failed in a loop could grow that buffer for the whole
+// timeout window. Stdout is io.Discard (a clipboard helper has nothing useful to
+// say there; the intent is now on the page rather than inferred from a default)
+// and stderr is bounded so the memory a misbehaving binary can commit is capped
+// during the run.
 func execRun(ctx context.Context, path string, args []string, stdin string) error {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout = io.Discard
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &boundedBuffer{limit: maxStderrBytes}
+	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {

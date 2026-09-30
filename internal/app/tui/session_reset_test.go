@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/changedfiles"
+	"marshal/internal/app/tui/inspector"
 )
 
 // Two caches in the TUI are keyed by BLOCK IDENTITY, and a block identity is
@@ -62,57 +64,58 @@ func TestSessionSwitchResetsTheSearchIndex(t *testing.T) {
 	}
 }
 
-// Switching sessions must drop the render cache, for the same reason — and the
-// reset is the right thing to do even though the cache is currently never
-// consulted.
-//
-// The precondition is conditional because of a REAL GAP this test found:
-// renderConversationBlock has no callers, so the transcript never populates the
-// cache. The reset is written for the cache being wired; this test proves the
-// reset works the moment it is, and TestRenderCacheIsNotOnTheRenderPath records
-// the gap so it cannot stay latent.
-func TestSessionSwitchResetsTheRenderCache(t *testing.T) {
-	m := sessionSwitchModel(t)
-	if m.convRender == nil {
-		// Nothing has initialized it, which is the unwired case: prime it so
-		// the reset under test has something to clear.
-		m.convRender = newConversationRenderCache(0)
+// A session switch must drop the drill stack. Its entries name subagents of the
+// conversation being left, and the anchors saved beside them are positions in a
+// transcript that no longer exists — so leaving it populated means the first Esc
+// in the new conversation "pops back" to a parent that is gone.
+func TestSessionSwitchClearsTheDrillStack(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.TUI.SidePanel.Enabled = true
+	m.resize(200, 60)
+	child := session.New(m.state.Config, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	view := m.state.RegisterSubagent("explore", child)
+	child.AddMessage(session.RoleUser, "child question", session.ContentTypePlain)
+	m.drillIntoSubagent(view)
+	if len(m.viewStack) == 0 {
+		t.Fatal("precondition: the fixture is not drilled in")
 	}
-	m.convRender.put(blockRenderKey{block: "probe", width: 80}, "rendered")
-	if m.convRender.Len() == 0 {
-		t.Fatal("precondition: could not populate the cache")
+	if len(m.viewStackAnchors) == 0 {
+		t.Fatal("precondition: no drill anchor was saved")
 	}
 
 	resetSessionState(t, &m)
 
-	if got := m.convRender.Len(); got != 0 {
-		t.Fatalf("the render cache still holds %d entries after a session switch", got)
+	if len(m.viewStack) != 0 {
+		t.Fatalf("%d drill levels survived a session switch", len(m.viewStack))
+	}
+	if len(m.viewStackAnchors) != 0 {
+		t.Fatalf("%d saved drill anchors survived a session switch", len(m.viewStackAnchors))
+	}
+	if m.anchorFollow {
+		t.Fatal("the saved follow flag survived a session switch")
 	}
 }
 
-// The render cache is built by Task 11 and never read: renderConversationBlock is
-// the only entry point that consults it, and nothing calls it.
-//
-// This test exists to keep that visible. The consequence is real — the plan's
-// requirement that "unchanged-block refresh does not reparse all history" is not
-// met today, because every refresh reparses every block — and a gap recorded only
-// in a commit message is a gap that gets forgotten.
-//
-// It asserts the CURRENT state, and it will need replacing when the cache is
-// wired: the correct failure here is "the cache now has a caller, delete this
-// test", which is loud rather than silent.
-func TestRenderCacheIsNotOnTheRenderPath(t *testing.T) {
+// The session switch must not leave the inspector rendering the previous
+// conversation's changes. The snapshot is handed to the inspector separately from
+// the rail's row list, so clearing only the rows left the Changes tab showing
+// files from a session the user had left.
+func TestSessionSwitchClearsTheRailSnapshotForTheInspector(t *testing.T) {
 	m := findScrollableModel(t)
-	m.convRender = newConversationRenderCache(0)
-	// Render the transcript repeatedly through the real path.
-	for i := 0; i < 3; i++ {
-		m.lastTranscriptHash = 0
-		m.refreshViewport()
+	m.railSnapshot = changedfiles.Snapshot{Status: changedfiles.StatusOK}
+	m.inspector.open(inspector.TabChanges, m.inspectorSideAvailable())
+	m.refreshInspector()
+	if m.inspector.model.ChangesSnapshot().Status == "" {
+		t.Fatal("precondition: the inspector never received the snapshot")
 	}
-	if got := m.convRender.Len(); got != 0 {
-		t.Fatalf(
-			"the render cache now HAS a caller (%d entries after three refreshes) — "+
-				"delete TestRenderCacheIsNotOnTheRenderPath and assert caching instead", got)
+
+	// The /new effect's own reset body, plus the snapshot clear it performs.
+	m.railChanged = nil
+	m.railSnapshot = changedfiles.Snapshot{}
+	m.refreshInspector()
+
+	if got := m.inspector.model.ChangesSnapshot().Status; got != "" {
+		t.Fatalf("the inspector still reports changes status %q after a session switch", got)
 	}
 }
 
@@ -142,15 +145,15 @@ func TestSessionSwitchClosesAnOpenSearch(t *testing.T) {
 	}
 }
 
-// With no search open and no cache built, the reset must be a no-op rather than
+// With no search open and nothing cached, the reset must be a no-op rather than
 // a panic: it runs on every /new, including the first one.
 func TestSessionSwitchResetIsSafeWhenNothingIsCached(t *testing.T) {
 	m := newTestModel(t)
-	if m.convRender != nil && m.convRender.Len() != 0 {
-		t.Fatal("precondition: the render cache is not empty")
-	}
 	if m.findIndex != nil && m.findIndex.Len() != 0 {
 		t.Fatal("precondition: the search index is not empty")
+	}
+	if m.hasSelection() {
+		t.Fatal("precondition: the fixture starts with a selection")
 	}
 
 	resetSessionState(t, &m)

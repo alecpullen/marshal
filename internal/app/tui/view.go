@@ -75,14 +75,27 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
-	// The dock is a single shared slot. A dock-placed inspector claims it here,
-	// from the render path, because View is the one place that knows which
-	// placement is actually being drawn this frame — and a panel that stopped
-	// wanting the slot must release it before another panel looks at it.
-	if m.inspector != nil {
-		m.inspector.installInDock(&m.dock)
-	}
+	// The dock slot is reconciled from the Update paths (see syncDock), and that
+	// is what makes the CANONICAL model hold the panel: Update routes keys and
+	// clicks on m.dock.IsOpen(), so a claim made only here would land on the copy
+	// View renders on — the frame would draw a panel that no key or click could
+	// reach.
+	//
+	// The call is repeated here for one narrower reason: this method has a
+	// POINTER receiver, so when it is reached directly on the canonical model
+	// (the shape most tests use) the claim has to still be made, exactly as it
+	// was before the Update-path sync existed. Through View it is a no-op, since
+	// Update has already applied the same placement.
+	//
+	// Rendering is also the one moment the panel's TRUE height is known — the
+	// dock host measures what the panel emits — so the height is recorded
+	// through the shared measurement (see dockMeasurement). A struct field could
+	// not carry it back through View: it would be written to that copy and
+	// discarded, and the canonical model's frame would go on describing a
+	// Transcript rectangle that extends over the rows the panel is drawn on.
+	m.syncDock()
 	dockView := m.dock.View(m.leftWidth, m.height)
+	m.recordDockRows()
 	m.updateViewportHeight()
 
 	// The SDD run panel is a full-width top bar rendered above the left

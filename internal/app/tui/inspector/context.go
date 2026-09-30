@@ -243,6 +243,14 @@ type contextState struct {
 	// the row on screen. The reader is told; the body is not replaced, because
 	// yanking text out from under someone mid-sentence is the failure.
 	stale bool
+
+	// detail is THIS tab's own scrollable body. It is per-tab rather than a
+	// single view shared with Changes and Agents because each tab re-asserts
+	// its content on a different schedule: with one shared view, opening a
+	// diff on Changes and then drawing the Context tab left the context body
+	// under the diff's label — and the paging keys still pointed at the context
+	// body. One body per tab removes the class of mislabelling.
+	detail *DetailView
 }
 
 // ContextScope reports the scope on display.
@@ -469,17 +477,28 @@ func (m *Model) openContextRow(row contextRow) {
 	// Re-opening a row is the explicit refresh, so whatever staleness the
 	// previous snapshot recorded is answered by adopting the new body.
 	m.context.stale = false
-	m.detail.SetNoLongerChanged(false)
+	// The heading is recorded BEFORE the body is wrapped, because the label is
+	// a ROW of the detail's budget and the content window is derived from it.
+	// The heading lives on contextState, not on the shared model, so a diff
+	// opened on another tab cannot relabel this body; View is handed it again
+	// at render time.
+	m.context.openLabel = row.label
+	detail := m.contextDetail()
+	detail.SetNoLongerChanged(false)
 	m.contextWrapBody()
 	// A section or a request body opens at its FIRST line. The detail view
 	// follows by default, which is right for a stream that grows underneath
 	// the reader and wrong here: these bodies are fetched whole, and opening
 	// one at the bottom hides the head that says what it is.
-	m.detail.Top()
-	m.context.openLabel = row.label
-	// The shared field is still set, so a caller that reads it (the dock's own
-	// chrome) sees the same heading the body renders under.
-	m.detailLabel = row.label
+	detail.Top()
+}
+
+// contextDetail reports the Context tab's own body, allocating it on first use.
+func (m *Model) contextDetail() *DetailView {
+	if m.context.detail == nil {
+		m.context.detail = NewDetailView()
+	}
+	return m.context.detail
 }
 
 // contextWrapBody hands the detail view the stored body wrapped to the panel's
@@ -493,7 +512,9 @@ func (m *Model) contextWrapBody() {
 	if !m.context.hasOpen {
 		return
 	}
-	m.detail.SetContent(wrapContextBody(m.context.body, m.width), m.context.bodyTruncated)
+	detail := m.contextDetail()
+	detail.SetLabel(m.context.openLabel)
+	detail.SetContent(wrapContextBody(m.context.body, m.width), m.context.bodyTruncated)
 }
 
 // wrapContextBody soft-wraps every line of a body to width cells.
@@ -612,25 +633,25 @@ func (m *Model) ContextDetailTruncated() bool { return m.context.bodyTruncated }
 
 // ContextDetailScroll reports the detail body's scroll offset, so a caller can
 // tell whether a key actually moved what the reader was looking at.
-func (m *Model) ContextDetailScroll() int { return m.detail.ScrollOffset() }
+func (m *Model) ContextDetailScroll() int { return m.contextDetail().ScrollOffset() }
 
 // PageContextDetail moves the detail body by whole viewports.
 func (m *Model) PageContextDetail(delta int) {
 	m.syncContextDetail()
-	m.detail.Page(delta)
+	m.contextDetail().Page(delta)
 }
 
 // ContextDetailTop jumps the detail body to its first line.
 func (m *Model) ContextDetailTop() {
 	m.syncContextDetail()
-	m.detail.Top()
+	m.contextDetail().Top()
 }
 
 // ContextDetailBottom jumps the detail body to its last line and resumes
 // following.
 func (m *Model) ContextDetailBottom() {
 	m.syncContextDetail()
-	m.detail.Bottom()
+	m.contextDetail().Bottom()
 }
 
 // syncContextDetail sizes the detail body from the model's own recorded area.
@@ -639,7 +660,7 @@ func (m *Model) ContextDetailBottom() {
 // a caller driving the body directly — a key handler in a test, or a caller
 // that pages before the first frame — must not be paging a viewport with no
 // height, which would silently move nothing and look like a broken key.
-func (m *Model) syncContextDetail() { m.detail.Resize(m.width, m.height) }
+func (m *Model) syncContextDetail() { m.contextDetail().Resize(m.width, m.height) }
 
 // CaptureContextCopy returns the open row's body for the clipboard, with a
 // label naming what it is and whether it was capped.
@@ -1239,33 +1260,23 @@ func (m *Model) viewContext() string {
 	d := m.activeContextData()
 	scope := m.context.scope
 	width := max(m.width, 20)
-
-	var b strings.Builder
 	heading := contextHeading(d, scope, m.context.childName, width)
-	for _, line := range heading {
-		b.WriteString(m.contextLine(line, width))
-		b.WriteString("\n")
-	}
-
-	if len(m.context.rows) == 0 {
-		b.WriteString(m.contextLine(contextEmptyNote(d, scope), width))
-		b.WriteString("\n")
-		return b.String()
-	}
 
 	// An UNMEASURED panel renders every row, following the same rule the detail
 	// body uses for an unmeasured width.
 	if m.height <= 0 {
-		for i, row := range m.context.rows {
-			cursor := "  "
-			if i == m.ContextCursor() {
-				cursor = "▸ "
-			}
-			line := cursor + row.label
-			if row.detail != "" {
-				line += "  " + row.detail
-			}
+		var b strings.Builder
+		for _, line := range heading {
 			b.WriteString(m.contextLine(line, width))
+			b.WriteString("\n")
+		}
+		if len(m.context.rows) == 0 {
+			b.WriteString(m.contextLine(contextEmptyNote(d, scope), width))
+			b.WriteString("\n")
+			return b.String()
+		}
+		for i, row := range m.context.rows {
+			b.WriteString(m.contextLine(m.contextRowLine(i, row), width))
 			b.WriteString("\n")
 		}
 		return b.String()
@@ -1274,62 +1285,81 @@ func (m *Model) viewContext() string {
 	// The tab is BUDGETED end to end, for the same reason the other two are:
 	// the panel is joined into the frame as a second column, and a join pads the
 	// shorter column to the taller one, so rows emitted beyond m.height escape
-	// into the frame and push the status line off the bottom.
-	rows := m.height - len(heading)
+	// into the frame and push the status line off the bottom. Every row goes
+	// through the budget, including the blank line before the body and the stale
+	// note after it — an uncounted row is how this panel used to overshoot.
+	rb := newRowBudget(m.height)
+	for _, line := range heading {
+		rb.line(m.contextLine(line, width))
+	}
+
+	if len(m.context.rows) == 0 {
+		rb.line(m.contextLine(contextEmptyNote(d, scope), width))
+		return rb.String()
+	}
+
+	// The list and the detail body SHARE what is left. The stale note (one row)
+	// is reserved FIRST, because it is conditional and its row must not be
+	// handed to the list or the body.
+	rows := rb.left()
+	if m.context.hasOpen && m.context.stale {
+		rows--
+	}
+	rows = max(rows, 1)
 
 	bodyRows := 0
-	if m.context.hasOpen {
-		// The stale note, if it will show, is a row of its own.
-		if m.context.stale {
-			rows -= 1
-		}
-		bodyRows = max(rows/2, 1)
-		rows -= bodyRows
+	if m.context.hasOpen && rows >= 3 {
+		// The body wants a blank separator row plus at least one content row.
+		bodyShare := max((rows-1)/2, 1)
+		bodyRows = min(bodyShare, rows-2)
+		rows -= bodyRows + 1
 	}
 	listRows := max(rows, 1)
 
 	w := windowList(len(m.context.rows), listRows, m.ContextCursor(), m.State(TabContext).Scroll, 2)
-	if note := aboveNote(w.Above(), m.width); note != "" {
-		b.WriteString(m.contextLine(note, width))
-		b.WriteString("\n")
+	if w.ShowAbove() {
+		rb.line(m.contextLine(aboveNote(w.Above(), m.width), width))
 	}
 	for i := w.Start; i < w.End; i++ {
-		row := m.context.rows[i]
-		cursor := "  "
-		if i == m.ContextCursor() {
-			cursor = "▸ "
-		}
-		line := cursor + row.label
-		if row.detail != "" {
-			line += "  " + row.detail
-		}
-		b.WriteString(m.contextLine(line, width))
-		b.WriteString("\n")
+		rb.line(m.contextLine(m.contextRowLine(i, m.context.rows[i]), width))
 	}
-	if note := belowNote(w.Below(), m.width); note != "" {
-		b.WriteString(m.contextLine(note, width))
-		b.WriteString("\n")
+	if w.ShowBelow() {
+		rb.line(m.contextLine(belowNote(w.Below(), m.width), width))
 	}
 
-	if m.context.hasOpen {
-		b.WriteString("\n")
+	if m.context.hasOpen && bodyRows > 0 {
+		rb.blank()
 		// The body gets ITS share, so it windows its own content to what it was
 		// given rather than to the whole panel.
-		m.detail.Resize(m.width, bodyRows)
+		detail := m.contextDetail()
+		detail.Resize(m.width, bodyRows)
 		// Re-wrapped per frame so a resize reflows the body rather than
 		// leaving rows cut for the old width.
 		m.contextWrapBody()
-		b.WriteString(m.detail.View(m.context.openLabel))
+		rb.body(detail.View(m.context.openLabel))
 		if m.context.stale {
 			// The reader is told rather than moved: the body on screen is
 			// theirs to finish reading, and the note says the snapshot behind
 			// it has moved on.
-			b.WriteString(m.contextLine(
+			rb.line(m.contextLine(
 				"[this snapshot changed since you opened it — press Enter again to refresh]", width))
-			b.WriteString("\n")
 		}
 	}
-	return b.String()
+	return rb.String()
+}
+
+// contextRowLine renders one list row: the cursor marker, its label, and the
+// row's one-line detail.
+func (m *Model) contextRowLine(index int, row contextRow) string {
+	cursor := "  "
+	if index == m.ContextCursor() {
+		cursor = "▸ "
+	}
+	line := cursor + row.label
+	if row.detail != "" {
+		line += "  " + row.detail
+	}
+	return line
 }
 
 // contextLine truncates a rendered line to the panel width.

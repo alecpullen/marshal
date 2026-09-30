@@ -212,12 +212,12 @@ func TestContextPackLabelsTruncatedSectionsOnly(t *testing.T) {
 	// The amount missing is disclosed in the LIST row, not spliced into the
 	// body: the body is a copy source, and a marker appended to it would land
 	// in the reader's file as content that was never in their repository.
-	m.detail.Top()
+	m.contextDetail().Top()
 	if view := stripANSIForTest(m.viewContext()); !strings.Contains(view, "3k") {
 		t.Errorf("the truncated section does not say how much is missing:\n%s", view)
 	}
 	// The detail still tells the two kinds of "more" apart.
-	if detail := stripANSIForTest(m.detail.View(m.detailLabel)); !strings.Contains(detail, "not shown") {
+	if detail := stripANSIForTest(m.contextDetail().View(m.contextDetail().Label())); !strings.Contains(detail, "not shown") {
 		t.Errorf("the detail does not disclose that the rest is unreachable:\n%s", detail)
 	}
 
@@ -498,7 +498,7 @@ func TestContextNewSnapshotDoesNotReplaceTheOpenDetail(t *testing.T) {
 	if !m.OpenContextRowByLabel("repo map") {
 		t.Fatal("could not open the repo-map section")
 	}
-	before := m.detail.Content()
+	before := m.contextDetail().Content()
 	if before == "" {
 		t.Fatal("the opened detail is empty, so this test proves nothing")
 	}
@@ -508,7 +508,7 @@ func TestContextNewSnapshotDoesNotReplaceTheOpenDetail(t *testing.T) {
 	updated.Pack.Sections[1].Content = "internal/\ncmd/\nweb/\n"
 	m.SetContext(updated)
 
-	if got := m.detail.Content(); got != before {
+	if got := m.contextDetail().Content(); got != before {
 		t.Fatalf("the open detail was replaced by a new snapshot:\n--- before ---\n%s\n--- after ---\n%s", before, got)
 	}
 	if !m.ContextDetailStale() {
@@ -521,7 +521,7 @@ func TestContextNewSnapshotDoesNotReplaceTheOpenDetail(t *testing.T) {
 	if m.ContextDetailStale() {
 		t.Error("the detail still reports stale after an explicit re-open")
 	}
-	if got := m.detail.Content(); got != updated.Pack.Sections[1].Content {
+	if got := m.contextDetail().Content(); got != updated.Pack.Sections[1].Content {
 		t.Fatalf("the refreshed detail = %q, want the new body %q", got, updated.Pack.Sections[1].Content)
 	}
 }

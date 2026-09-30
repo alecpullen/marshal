@@ -450,7 +450,13 @@ func (m Model) mappedBlockAt(row, cell int) (renderedBlockSpan, conversation.Tex
 	// The block's own row, which is what its mapping is expressed in. Getting
 	// this wrong is how a click resolves one block's cell against another
 	// block's text.
-	blockRow := row - span.blockRow
+	//
+	// The origin is bodyRow, not blockRow: the mapping's rows describe the BODY,
+	// while blockRow is the block's first line — and a block with captured
+	// reasoning or a salvage note has lines above the body that the mapping does
+	// not cover. Subtracting blockRow put the summary line at body row 0 and
+	// shifted every offset in the block by the number of leading lines.
+	blockRow := row - span.bodyRow()
 	pos := conversation.PositionAt(span.rendered, blockRow, cell)
 	return span, pos, true
 }
@@ -503,7 +509,10 @@ func (m Model) selectionHighlight(row int) (startCell, endCell int, ok bool) {
 		// (via the frozen copy) but it can no longer point at cells.
 		return 0, 0, false
 	}
-	blockRow := row - span.blockRow
+	// bodyRow, not blockRow: the mapping's rows are the BODY's, and a block with
+	// a reasoning summary or a salvage note above it has rows the mapping does
+	// not cover.
+	blockRow := row - span.bodyRow()
 	if blockRow < 0 || blockRow >= len(span.rendered.Rows) {
 		return 0, 0, false
 	}
@@ -581,11 +590,29 @@ func highlightFindCells(line string, start, end int, current bool) string {
 	if current {
 		bg, fg = th().BGFindCurrent, th().FGEmphasis
 	}
-	style := lipgloss.NewStyle().Foreground(fg).Background(bg)
 	before := ansi.Cut(line, 0, start)
 	mid := ansi.Cut(line, start, end)
 	after := ansi.Cut(line, end, w)
+	if theme.IsMonochrome() {
+		// Under NO_COLOR every slot is NoColor, so a background-only mark emits
+		// no SGR at all and the match is invisible — the reader is told there are
+		// results and can see none of them. Inversion is the one non-colour cue
+		// available, and it distinguishes the current hit from the others by
+		// making it BOLD as well.
+		return before + matchMarkFallbackStyle(current).Render(ansi.Strip(mid)) + after
+	}
+	style := lipgloss.NewStyle().Foreground(fg).Background(bg)
 	return before + style.Render(ansi.Strip(mid)) + after
+}
+
+// matchMarkFallbackStyle is the monochrome replacement for a match background.
+//
+// Reverse video is used rather than an underline because a find mark covers a
+// PHRASE, and an underline on every match in a long line reads as decoration
+// rather than as "this span matched". Reverse is unmistakable and, like every
+// other cue in the interface, survives having all colour removed.
+func matchMarkFallbackStyle(current bool) lipgloss.Style {
+	return lipgloss.NewStyle().Reverse(true).Bold(current)
 }
 
 // highlightSelection paints the selection onto assembled transcript content.
@@ -628,9 +655,6 @@ func highlightCells(line string, start, end int) string {
 	if end <= start {
 		return line
 	}
-	style := lipgloss.NewStyle().
-		Foreground(th().FGEmphasis).
-		Background(th().BGSelection)
 	before := ansi.Cut(line, 0, start)
 	mid := ansi.Cut(line, start, end)
 	after := ansi.Cut(line, end, w)
@@ -638,6 +662,17 @@ func highlightCells(line string, start, end int) string {
 	// background the reader sees is the selection's rather than a fight
 	// between it and the colours underneath. The text itself is unchanged:
 	// stripping removes escapes, not characters.
+	if theme.IsMonochrome() {
+		// A background-only tint emits nothing under NO_COLOR, which would leave
+		// a reader who just dragged over a phrase with no evidence that anything
+		// happened — and `y` about to copy text they cannot see selected.
+		// Reverse video is the non-colour equivalent, and it is used for the
+		// selection as well as the find marks so the two read as one family.
+		return before + matchMarkFallbackStyle(false).Render(ansi.Strip(mid)) + after
+	}
+	style := lipgloss.NewStyle().
+		Foreground(th().FGEmphasis).
+		Background(th().BGSelection)
 	return before + style.Render(ansi.Strip(mid)) + after
 }
 

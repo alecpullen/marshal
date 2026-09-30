@@ -508,6 +508,52 @@ func TestExecRunHonoursContext(t *testing.T) {
 	}
 }
 
+// TestBoundedBufferKeepsAtMostLimitBytes pins the bound directly, including the
+// short-write trap: a Write that reported fewer bytes than the child handed over
+// would surface at the far end of the pipe as a write error, turning a
+// diagnostics problem into a failed clipboard write.
+func TestBoundedBufferKeepsAtMostLimitBytes(t *testing.T) {
+	b := &boundedBuffer{limit: 8}
+
+	n, err := b.Write([]byte("0123456789"))
+	if err != nil {
+		t.Fatalf("Write() error = %v, want nil", err)
+	}
+	if n != 10 {
+		t.Fatalf("Write() = %d, want the full 10 bytes reported as written", n)
+	}
+	if n, err := b.Write([]byte("abcdef")); err != nil || n != 6 {
+		t.Fatalf("second Write() = (%d, %v), want (6, nil)", n, err)
+	}
+	if got := b.String(); got != "01234567" {
+		t.Fatalf("buffer = %q, want the first 8 bytes and no more", got)
+	}
+}
+
+// TestExecRunBoundsChildStderr proves the bound holds against a REAL process. A
+// clipboard helper is a binary this code does not control, and the failure path
+// is where it can be loudest: an unbounded buffer there lets one that fails in a
+// loop commit memory for the whole timeout window. What the caller does with
+// stderr is append it to an error, so a bounded prefix loses nothing that
+// matters.
+func TestExecRunBoundsChildStderr(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skipf("sh not available: %v", err)
+	}
+
+	// Half a MiB of diagnostics, then a non-zero exit so execRun returns them.
+	const script = `i=0; while [ $i -lt 512 ]; do printf '%01024d\n' 0 >&2; i=$((i+1)); done; exit 3`
+
+	if err := execRun(context.Background(), sh, []string{"-c", script}, ""); err == nil {
+		t.Fatal("execRun() error = nil, want the helper's non-zero exit")
+	} else if len(err.Error()) > maxStderrBytes+256 {
+		// The slack covers the "exit status 3" wrapping around the capped text.
+		t.Fatalf("the error carries %d bytes of stderr, want the %d-byte cap plus wrapping",
+			len(err.Error()), maxStderrBytes)
+	}
+}
+
 func TestZeroValueResolvesRealDefaults(t *testing.T) {
 	var w LocalWriter
 	r := w.resolve()

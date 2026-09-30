@@ -197,8 +197,18 @@ func (d *Document) isNarrowerThan(prev, candidate int) bool {
 // can declare children without having to know the derivation rule. It is
 // applied at construction rather than by the accessor so that two lookups of
 // the same child cannot disagree about its identity.
+//
+// It also takes OWNERSHIP of the caller's slices. The document claims to be
+// immutable, and a slice stored by reference is not: a caller that keeps its
+// Members slice and later does members[0] = "other" would rename a block
+// through the back door — the identity index would still say "msg:7" while the
+// block's Members said something else, and every resolution would then name a
+// member the block does not cover. Cloning at construction is the cheap end of
+// the trade: it costs one copy per block, once, against a class of desync that
+// is invisible until it corrupts an anchor.
 func normalizeBlock(b Block) Block {
 	b.ID = blockID(b)
+	b.Members = cloneStrings(b.Members)
 	if len(b.Children) == 0 {
 		return b
 	}
@@ -208,6 +218,24 @@ func normalizeBlock(b Block) Block {
 	}
 	b.Children = children
 	return b
+}
+
+// cloneStrings returns an independent copy of a string slice, or nil for an
+// empty one: the document's blocks must share no array with their caller.
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]string(nil), in...)
+}
+
+// cloneBlocks returns an independent copy of a block slice, so a caller cannot
+// reach the document's own array by appending to what it was handed.
+func cloneBlocks(in []Block) []Block {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]Block(nil), in...)
 }
 
 // blockID derives a block's identity from its members.
@@ -247,8 +275,23 @@ func GroupBlockID(firstMember string) BlockID {
 	return BlockID("group:" + firstMember)
 }
 
-// Blocks returns the document's outermost blocks in order.
-func (d *Document) Blocks() []Block { return d.blocks }
+// Blocks returns the document's outermost blocks in order, as a COPY.
+//
+// A copy rather than the document's own slice because the document is
+// immutable and a handed-out slice is not: a caller doing
+// append(doc.Blocks(), b) with spare capacity would write into the document's
+// tail, and the next lookup would then resolve against a block the index never
+// saw. Blocks are small (identities, a text string and its slice headers), so
+// the copy is cheap next to the walk that consumes it.
+//
+// The copy is SHALLOW: a block's own Members, Children and CopyTargets slices
+// are shared, read-only. Members and Children are cloned at construction, so a
+// caller cannot reach the document through the slice it passed in; the
+// remaining sharing is the returned blocks' own slices, and a consumer must
+// treat them as read-only. Deep-copying every block's slices on every call
+// would buy protection against a mutation no caller performs, at a cost paid
+// by every render.
+func (d *Document) Blocks() []Block { return cloneBlocks(d.blocks) }
 
 // Len reports how many blocks the document holds.
 func (d *Document) Len() int { return len(d.blocks) }

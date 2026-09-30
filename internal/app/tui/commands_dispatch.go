@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gitinfo"
@@ -117,7 +118,19 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.clickRegions = nil
 	// The old session's changed-files list must never render in the new
 	// session while the railBaseRefMsg round-trips; re-read it below.
+	//
+	// The SNAPSHOT is cleared beside the row list, because the list is only one
+	// of its two readers: the inspector's Changes tab renders from the snapshot
+	// itself, so clearing the rows alone left the previous conversation's files
+	// on that tab until something else happened to refresh it.
 	m.railChanged = nil
+	m.railSnapshot = changedfiles.Snapshot{}
+	// The inspector is re-pointed at the new conversation. refreshInspector is
+	// what stamps the new scope (SetScope), which is how a reply issued under
+	// the old conversation is refused rather than drawn over the new one — and
+	// it re-reads the roster, the changes and the context from state that now
+	// describes the new session.
+	m.refreshInspector()
 	// Session-scoped interaction state resets. The mouse override drops back
 	// to inherit — a new session follows its own config rather than silently
 	// inheriting an explicit override the user set in the conversation they

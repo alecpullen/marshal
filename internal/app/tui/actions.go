@@ -350,54 +350,181 @@ func (a Action) Detail() string {
 	return a.Desc
 }
 
-// actionSnapshot takes the single context snapshot every resolution path
-// uses.
-func (m Model) actionSnapshot() actionContext {
-	ctx := actionContext{
-		Busy:               m.busy,
-		QueueLen:           m.effectiveQueueLen(),
-		HasRunningSubagent: m.hasRunningSubagent(),
-		SideRailAvailable:  m.railEnabled(),
-		TodosActive:        m.state != nil && len(m.state.Todos()) > 0,
-		RollbackEligible:   m.state != nil && m.state.HasBackup(),
-		MemoryAvailable:    m.memoryDB != nil,
-		MouseCaptured:      m.effectiveMouseCapture(),
+// actionSnapshotCache memoizes the resolved action snapshot between frames.
+//
+// The footer renders on EVERY frame — a spinner tick is 80ms — and resolving the
+// snapshot is not free: the copy actions read m.copyBlock(), which builds the
+// whole conversation document (grouping every transcript item and FNV-hashing
+// every block's full text). Doing that per frame made the hint cluster's cost
+// O(total conversation text) per tick, which a long session pays forever for a
+// string that only changes when the state behind it does.
+//
+// key is the CHEAP state the snapshot is derived from. Anything expensive — the
+// document, the roster, the inspector's selection — is reached through the key
+// rather than hashed into it: the key must be cheaper than the work it guards or
+// the cache is a pessimisation.
+type actionSnapshotCache struct {
+	ctx actionContext
+	key actionSnapshotKey
+	// valid distinguishes "resolved, and it was empty" from "not resolved yet".
+	valid bool
+}
+
+// actionSnapshotKey is the cheap state actionSnapshot's result depends on.
+//
+// Every field is a value the snapshot reads directly. A field MISSING from here
+// does not corrupt anything — the snapshot is a pure function of the key plus
+// the model — but it does mean a stale answer is served until something else in
+// the key changes, which for availability is a disabled action that should be
+// enabled. So the key errs towards being too wide: the fields are all ints,
+// bools and strings already in memory, and comparing a dozen of them is nothing
+// next to building a document.
+type actionSnapshotKey struct {
+	busy             bool
+	queueLen         int
+	runningSubagents bool
+	railEnabled      bool
+	todosActive      bool
+	rollbackEligible bool
+	memoryAvailable  bool
+	mouseCaptured    bool
+	// transcriptVersion stands in for the document and the block spans: both are
+	// rebuilt by the same refresh, so one counter covers every content change
+	// that could alter what a copy action resolves to.
+	transcriptVersion uint64
+	// pickerCommand distinguishes the palette from any other dock panel, which
+	// is what OtherPanelOpen is computed from.
+	pickerCommand string
+	panelOwnsKeys bool
+	drilledID     int64
+	hasSelection  bool
+	conversation  bool
+	inspector     bool
+	inspTab       inspector.Tab
+	inspRendering bool
+	inspExpanded  bool
+	inspAgentOpen bool
+	// inspAgentID is the selected agent's runtime ID. It is only meaningful
+	// while inspAgentOpen, and it is the value the snapshot actually reads, so
+	// including the "open" flag above is bookkeeping and this is the data.
+	inspAgentID int64
+}
+
+// actionSnapshotKeyOf reads the cheap key from the model.
+func (m Model) actionSnapshotKeyOf() actionSnapshotKey {
+	k := actionSnapshotKey{
+		busy:              m.busy,
+		queueLen:          m.effectiveQueueLen(),
+		runningSubagents:  m.hasRunningSubagent(),
+		railEnabled:       m.railEnabled(),
+		todosActive:       m.state != nil && len(m.state.Todos()) > 0,
+		rollbackEligible:  m.state != nil && m.state.HasBackup(),
+		memoryAvailable:   m.memoryDB != nil,
+		mouseCaptured:     m.effectiveMouseCapture(),
+		transcriptVersion: m.transcriptVersion,
+		pickerCommand:     m.pickerCommand,
+		panelOwnsKeys:     m.panelOwnsKeys(),
+		hasSelection:      m.hasSelection(),
+		conversation:      m.effectiveFocus() == FocusConversation,
+	}
+	if v, ok := m.drilledInto(); ok && v.Status == session.SubagentRunning {
+		k.drilledID = v.ID
 	}
 	if m.inspector != nil {
+		k.inspector = true
+		k.inspRendering = m.inspector.isRendering()
+		k.inspExpanded = m.inspector.replacesBodyOnly()
+		k.inspTab = m.inspector.model.SelectedTab()
+		k.inspAgentOpen = m.inspector.model.AgentDetailOpen()
+		if k.inspAgentOpen {
+			k.inspAgentID = m.inspector.model.AgentIDSelected()
+		}
+	}
+	return k
+}
+
+// actionSnapshot takes the single context snapshot every resolution path
+// uses.
+//
+// The result is memoized against actionSnapshotKey, because the footer resolves
+// it on every frame and one of its inputs — the conversation document, reached
+// through the copy actions — costs a full rebuild of the conversation's blocks.
+// The cache lives on the model rather than in a package variable so two models
+// (a test and a live session, or the parent and a drilled child's render) can
+// never share an answer.
+func (m Model) actionSnapshot() actionContext {
+	key := m.actionSnapshotKeyOf()
+	if m.actionCache != nil && m.actionCache.valid && m.actionCache.key == key {
+		return m.actionCache.ctx
+	}
+	ctx := m.resolveActionSnapshot(key)
+	// The write goes through the shared pointer: the footer calls this from
+	// View's value receiver, and a struct field would be written to a copy and
+	// discarded — the cache would never hit.
+	if m.actionCache != nil {
+		m.actionCache.ctx, m.actionCache.key, m.actionCache.valid = ctx, key, true
+	}
+	return ctx
+}
+
+// invalidateActionSnapshot drops the memoized snapshot.
+//
+// It exists for the paths that change an input the key does not carry — most
+// importantly an inspector whose data changed without any keyed field moving,
+// so a copy action's availability would otherwise be judged on the previous
+// tab's selection.
+func (m *Model) invalidateActionSnapshot() {
+	if m.actionCache != nil {
+		m.actionCache.valid = false
+	}
+}
+
+// resolveActionSnapshot builds the snapshot from the model. It takes the key so
+// the fields already read for it are not read twice.
+func (m Model) resolveActionSnapshot(key actionSnapshotKey) actionContext {
+	ctx := actionContext{
+		Busy:                  key.busy,
+		QueueLen:              key.queueLen,
+		HasRunningSubagent:    key.runningSubagents,
+		SideRailAvailable:     key.railEnabled,
+		TodosActive:           key.todosActive,
+		RollbackEligible:      key.rollbackEligible,
+		MemoryAvailable:       key.memoryAvailable,
+		MouseCaptured:         key.mouseCaptured,
+		DrilledRunningChildID: key.drilledID,
+		HasSelection:          key.hasSelection,
+		ConversationFocused:   key.conversation,
+	}
+	if key.inspector {
 		ctx.InspectorAvailable = true
-		ctx.InspectorOnScreen = m.inspector.isRendering()
-		ctx.InspectorExpanded = m.inspector.replacesBodyOnly()
+		ctx.InspectorOnScreen = key.inspRendering
+		ctx.InspectorExpanded = key.inspExpanded
 	}
 	// The dock holds one panel; the palette is one of them, so it is excluded
 	// or every action in the list would read as "resolve the open panel".
-	ctx.OtherPanelOpen = m.panelOwnsKeys() && m.pickerCommand != actionPaletteCommand
-	if v, ok := m.drilledInto(); ok && v.Status == session.SubagentRunning {
-		ctx.DrilledRunningChildID = v.ID
-	}
+	ctx.OtherPanelOpen = key.panelOwnsKeys && m.pickerCommand != actionPaletteCommand
 	// The inspector's own selection is a second, independent target: the
 	// Agents tab can be showing a running child while the transcript is
 	// drilled into a different one, and only the runtime ID identifies which
 	// the user means.
-	if m.inspector != nil && m.inspector.model.SelectedTab() == inspector.TabAgents &&
-		m.inspector.model.AgentDetailOpen() && m.inspector.model.SelectedAgentRunning() {
-		ctx.InspectorAgentRunningID = m.inspector.model.AgentIDSelected()
+	if key.inspector && key.inspTab == inspector.TabAgents && key.inspAgentOpen &&
+		m.inspector.model.SelectedAgentRunning() {
+		ctx.InspectorAgentRunningID = key.inspAgentID
 	}
 	// The copy actions resolve their block through the same path dispatch
 	// uses, so availability and behaviour cannot describe different blocks.
 	ctx.CopyBlock, ctx.CopyBlockFound = m.copyBlock()
-	ctx.HasSelection = m.hasSelection()
-	ctx.ConversationFocused = m.effectiveFocus() == FocusConversation
 	ctx.TranscriptEmpty = len(m.blockRenderSpans) == 0
 	// The inspected-change actions read the inspector's own state, which is
 	// the only place that knows what is selected and what has been fetched.
-	if m.inspector != nil {
+	if key.inspector {
 		_, ctx.InspectedPathSelected = m.inspector.model.CapturePath()
 		_, _, _, ctx.InspectedPatchLoaded = m.inspector.model.CapturedPatch()
 		// Only when the Context tab is on display: a body left open under a
 		// tab the reader has switched away from is not "the context entry they
 		// are looking at", and enabling the action on it would offer a copy of
 		// something off screen.
-		if m.inspector.model.SelectedTab() == inspector.TabContext {
+		if key.inspTab == inspector.TabContext {
 			ctx.ContextDetailOpen = m.inspector.model.ContextDetailOpen()
 		}
 	}

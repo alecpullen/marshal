@@ -15,6 +15,7 @@ package inspector
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -32,10 +33,23 @@ type listWindow struct {
 	Total int
 	// Available is the row budget the window was computed against.
 	Available int
+	// aboveShown and belowShown record whether the caller may spend a row on
+	// the note disclosing hidden rows above or below. They are decided HERE
+	// rather than left to the caller, because the notes come out of the SAME
+	// budget as the rows: with a two-row budget and the cursor mid-list there
+	// is no arrangement that fits both notes and the cursor's own row, so one
+	// note is dropped rather than the frame overflowed.
+	aboveShown, belowShown bool
 }
 
 // Rows reports how many list rows the window covers.
 func (w listWindow) Rows() int { return max(w.End-w.Start, 0) }
+
+// ShowAbove reports whether the above note may be emitted inside the budget.
+func (w listWindow) ShowAbove() bool { return w.aboveShown }
+
+// ShowBelow reports whether the below note may be emitted inside the budget.
+func (w listWindow) ShowBelow() bool { return w.belowShown }
 
 // Above reports how many rows are hidden above the window.
 func (w listWindow) Above() int { return max(w.Start, 0) }
@@ -73,12 +87,36 @@ func windowList(total, avail, cursor, scroll, noteRows int) listWindow {
 	// The notes only exist when something is actually hidden, so they are
 	// reserved only when they will be shown. A list that fits gets the whole
 	// budget for its rows.
+	noteCap := min(max(noteRows, 0), 2)
 	rows := w.Available
 	if w.Total > rows {
-		rows = max(rows-min(max(noteRows, 0), rows-1), 1)
+		rows = max(rows-min(noteCap, rows-1), 1)
 	}
+	w.Start, w.End = windowRange(w.Total, rows, cursor, scroll)
 
-	start := cursor - rows + 1
+	// The notes the caller renders come out of the SAME budget as the rows, so
+	// they are allowed only up to what the window left over. The reservation
+	// above cannot express this on its own: it deducts a fixed noteRows, while
+	// the notes that will actually appear depend on which sides the window
+	// turned out to hide. At a two-row budget with the cursor mid-list, both
+	// notes plus the cursor row is three rows for two — so one note is dropped
+	// rather than the frame overflowed, because a row past the frame hides the
+	// panel's chrome and costs the reader more than the missing disclosure.
+	allow := w.Available - w.Rows()
+	if w.Start > 0 && allow > 0 {
+		w.aboveShown = true
+		allow--
+	}
+	if w.End < w.Total && allow > 0 {
+		w.belowShown = true
+	}
+	return w
+}
+
+// windowRange picks the [start,end) rows for a window of rows rows that keeps
+// cursor inside it and honours scroll when that does not push the cursor out.
+func windowRange(total, rows, cursor, scroll int) (start, end int) {
+	start = cursor - rows + 1
 	if start < 0 {
 		start = 0
 	}
@@ -88,13 +126,68 @@ func windowList(total, avail, cursor, scroll, noteRows int) listWindow {
 			start = scroll
 		}
 	}
-	if start+rows > w.Total {
-		start = max(w.Total-rows, 0)
+	if start+rows > total {
+		start = max(total-rows, 0)
 	}
-	w.Start = start
-	w.End = min(start+rows, w.Total)
-	return w
+	end = min(start+rows, total)
+	return start, end
 }
+
+// rowBudget writes rows while a row budget lasts, so a panel's emission can
+// never exceed the height it was given.
+//
+// The three list tabs each lay out a header, a windowed list, trailing notes
+// and a detail body. Budgeting that by hand is exactly where a blank line
+// before the body — or a header that wrapped to more rows than its author
+// counted — goes uncounted, and the surplus escapes into the column the panel
+// is joined into (clipLeftColumn hides it, so the reader loses content with no
+// sign that anything was dropped). Writing through this type makes the total
+// an invariant rather than an arithmetic hope.
+type rowBudget struct {
+	b     strings.Builder
+	limit int
+	used  int
+}
+
+// newRowBudget returns a budget that will emit at most limit rows.
+func newRowBudget(limit int) *rowBudget {
+	return &rowBudget{limit: max(limit, 0)}
+}
+
+// line writes s as one row, reporting false when the budget is spent.
+func (r *rowBudget) line(s string) bool {
+	if r.used >= r.limit {
+		return false
+	}
+	r.b.WriteString(s)
+	r.b.WriteString("\n")
+	r.used++
+	return true
+}
+
+// blank writes an empty row.
+func (r *rowBudget) blank() bool { return r.line("") }
+
+// left reports how many of the budget's rows are unspent.
+func (r *rowBudget) left() int { return max(r.limit-r.used, 0) }
+
+// body writes an already-rendered multi-row block, clipping it to what is
+// left. It is the safety net under a sub-render that was handed its own
+// height: the detail view budgets itself exactly, and this makes an error in
+// that arithmetic cost content rather than a row past the frame.
+func (r *rowBudget) body(s string) {
+	if s == "" {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(s, "\n"), "\n") {
+		if !r.line(line) {
+			return
+		}
+	}
+}
+
+// String returns the rows written so far.
+func (r *rowBudget) String() string { return r.b.String() }
 
 // windowNote rows report what the window left out.
 //

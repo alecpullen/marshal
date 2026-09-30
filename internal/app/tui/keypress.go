@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
 )
@@ -260,6 +261,25 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			// handleFocusedSurfaceKey keeps — a key that fell through would
 			// reach the textarea behind it.
 			return m.handleInspectorKey(msg)
+		}
+		// A DOCKED inspector owns every key, exactly like any other dock panel,
+		// and that would swallow its own toggle: Ctrl+B opened it and Ctrl+B is
+		// what closes it. Forwarding the key to the panel's keymap does nothing
+		// (the adapter has no binding for it), so without this the inspector
+		// would be impossible to dismiss from the keyboard at the one placement
+		// where it takes the whole slot.
+		//
+		// The exemption is narrow: only the toggle, and only when the panel
+		// holding the dock is the inspector's own adapter. Every other key still
+		// belongs to the panel. Esc is deliberately NOT exempted — the adapter
+		// already implements it as "back out of the detail, then close", which is
+		// strictly better than closing outright.
+		//
+		// The action is resolved through the catalog so this path and the
+		// composer-focused one below cannot disagree about what Ctrl+B means.
+		if m.inspector != nil && m.dock.Panel() == dock.Panel(m.inspector.adapter) && msg.String() == "ctrl+b" {
+			mm, cmd := m.runAction(ActionToggleInspector)
+			return mm, cmd, true
 		}
 		return m.handleFocusedSurfaceKey(msg)
 	}

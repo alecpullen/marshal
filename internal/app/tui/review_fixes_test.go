@@ -202,8 +202,24 @@ func TestInspectorListWindowsWithTheCursor(t *testing.T) {
 	if cursorRow < 0 {
 		t.Fatalf("no cursor row in the window, so the reader cannot see where they are:\n%s", body)
 	}
-	if !strings.Contains(stripANSI(rows[cursorRow]), sel) {
-		t.Fatalf("the cursor row %d does not name the selected file %q:\n%s", cursorRow, sel, body)
+	// The row identifies the selected file, and the comparison allows for the
+	// row being CLAMPED to the panel width: a long, author-controlled path whose
+	// row wrapped would shift every row below it and push the panel's own chrome
+	// off the bottom, so the list truncates it with an ellipsis. The assertion is
+	// therefore "the visible part of the cursor row is a prefix of the selection"
+	// rather than "the whole path is on screen" — the latter would fail for any
+	// path longer than the panel, which is the case the clamp exists for.
+	cursorText := stripANSI(rows[cursorRow])
+	for _, prefix := range []string{"▸", "M", " "} {
+		cursorText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cursorText), prefix))
+	}
+	visible := strings.TrimSuffix(strings.TrimSpace(cursorText), "…")
+	if visible == "" {
+		t.Fatalf("the cursor row %d names nothing:\n%s", cursorRow, body)
+	}
+	if !strings.HasPrefix(sel, visible) {
+		t.Fatalf("the cursor row %d names %q, which is not the selected file %q:\n%s",
+			cursorRow, visible, sel, body)
 	}
 }
 

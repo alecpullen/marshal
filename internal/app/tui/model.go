@@ -475,11 +475,41 @@ type Model struct {
 	// reading anchor needs to name any block the reader can scroll to, so it
 	// uses this instead.
 	blockSpans []blockSpan
-	// convRender caches mapped renderings of conversation blocks, keyed by the
-	// block, its revision, the width, the rendering mode and the theme tier.
-	// Without it, every resize reparses every visible answer; with a key that
-	// missed an input, a resize would serve the previous width's wrapping.
-	convRender *conversationRenderCache
+	// dockMeas caches the dock slot's last measured height and the geometry it
+	// was measured at. The height can only be learned by RENDERING the panel —
+	// the dock host measures what the panel emits — and the Update path needs
+	// it to populate the frame's Dock rectangle, so the cache is what keeps the
+	// frame honest without re-rendering the panel on every 80ms tick. See
+	// measureDock for the invalidation rules.
+	//
+	// It is a POINTER because View holds a value receiver: View is the one
+	// place that renders the panel and therefore the one place that learns its
+	// true height, and a struct field would be written to View's copy and
+	// discarded. The pointer is allocated by New and never replaced, so every
+	// copy of the model shares the same measurement.
+	dockMeas *dockMeasurement
+	// transcriptVersion increments on every transcript REBUILD — not on every
+	// refresh — so a consumer that derives something expensive from the
+	// transcript can memoize it without polling the whole conversation. It is
+	// what the action snapshot's cache keys on; see actionSnapshot.
+	transcriptVersion uint64
+	// actionCache holds the last resolved action snapshot and the cheap state it
+	// was resolved from. See actionSnapshot for why the footer needs one.
+	//
+	// A POINTER for the same reason as dockMeas: the footer renders through
+	// View's value receiver, and a struct field would be written to the copy.
+	actionCache *actionSnapshotCache
+	// transcriptBase is the assembled transcript content BEFORE the selection
+	// and search highlights are painted onto it, retained only while something
+	// is painted. It is what lets a pointer-motion event during a drag restyle
+	// the selection without rebuilding every block: the base is the same bytes
+	// every time, so re-painting from it is exact. It is dropped as soon as
+	// nothing is painted, so a session with no selection holds no copy.
+	transcriptBase string
+	// paintedReading is the reading state the current viewport content was
+	// painted from. A mismatch with no transcript change means only the paint
+	// moved, which is the drag case; see repaintReadingState.
+	paintedReading readingState
 	// blockRenderSpans records, for every rendered block, the display rows it
 	// occupies and the RenderedBlock they came from. It is the selection
 	// mapping's input: a click names a row and a cell, and only this table can
@@ -1492,6 +1522,13 @@ func New(state *session.State, opts ...Option) Model {
 		state:          state,
 		input:          input,
 		editingCommand: false,
+		// The dock measurement is shared by pointer between this model and the
+		// copies View renders on, because View is the one place the panel's
+		// height is known and its value receiver would discard a struct field.
+		dockMeas: &dockMeasurement{},
+		// The action snapshot is memoized for the same reason: the footer
+		// resolves it every frame from View's copy.
+		actionCache: &actionSnapshotCache{},
 		// Seed from config, not a hardcoded ModeDefault. app.Run wires the
 		// policy engine from this same value, so hardcoding here made the
 		// status line claim "default" while the engine was auto-approving
@@ -1679,6 +1716,11 @@ func (m *Model) resize(width, height int) {
 	// follow, or the caret keeps blinking on a surface that no longer owns
 	// the keys. m.focus is left alone so widening restores the user's intent.
 	m.syncComposerFocusFlag()
+	// Reconcile the dock BEFORE measuring the frame. A resize is the event that
+	// moves a side-placed inspector into the dock (and back), and the geometry
+	// changed, so the cached dock height describes the old frame and must be
+	// re-measured.
+	m.syncDock()
 	m.computeFrame()
 	// The inspector is measured against its own column, not the frame: a
 	// side-placed inspector is a narrow tall strip, and sizing it to the whole
@@ -1864,6 +1906,15 @@ func (m *Model) refreshInspector() {
 	// refresh it.
 	m.refreshInspectorContext()
 	m.inspector.setSideAvailable(m.inspectorSideAvailable())
+	// The action snapshot is invalidated here, and this is the right hook rather
+	// than a scatter of calls at each mutation site: refreshInspector runs after
+	// EVERY change to the inspector's data or selection, and the snapshot's key
+	// deliberately carries only the cheap state (the tab, whether a detail is
+	// open) — not the resolved path, the fetched patch or the opened context row,
+	// which would cost more to read than the memo saves. Without this, a copy
+	// action's availability would be judged on whatever the inspector held when
+	// the key last changed.
+	m.invalidateActionSnapshot()
 }
 
 // agentRoster converts the runtime's subagent views into the inspector's
@@ -2345,6 +2396,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.interruptArmed = false
 		}
 	}
+	// Reconcile the dock slot before this message is routed. Routing reads
+	// m.dock.IsOpen() to decide who owns the keys, and the placement that
+	// decides it is set by the PREVIOUS message — so applying it here is what
+	// makes a dock-placed inspector reachable by the very next key, rather than
+	// only by the frame after the one that rendered it.
+	//
+	// View cannot do this: it holds a value receiver, so a claim made while
+	// rendering lands on a copy that is discarded, leaving the canonical model
+	// with a free slot and every key and click routed to the composer behind a
+	// panel that is visibly open.
+	m.syncDock()
 	// Ctrl+C interrupts an in-flight turn on the first press and quits on the
 	// second. Checked before any overlay routing so it can never be captured
 	// by a form's keymap.
@@ -2983,6 +3045,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.dock.IsOpen() {
 		switch msg.(type) {
 		case tea.KeyPressMsg, tea.PasteMsg:
+			// The inspector is the ONE dock panel whose own toggle key must
+			// survive being open: Ctrl+B opened it, and Ctrl+B is what closes it
+			// (the adapter's own keymap has no binding for it, so forwarding the
+			// key would make the panel impossible to dismiss from the keyboard).
+			// Every other panel keeps the slot's keys exclusively, which is what
+			// the "modal surface owns every key" contract promises.
+			//
+			// The exemption is checked before the ownership branch rather than
+			// inside the adapter because the binding is a GLOBAL action: it is
+			// resolved from the catalog by runAction so the footer, the palette
+			// and this key cannot disagree about what Ctrl+B means.
+			if k, ok := msg.(tea.KeyPressMsg); ok && m.inspector != nil &&
+				m.dock.Panel() == dock.Panel(m.inspector.adapter) && k.String() == "ctrl+b" {
+				break
+			}
 			// Offer-to-fill: while the /sdd preflight is open and the verify
 			// gate is unknown, `f` dispatches a one-shot proposal task instead
 			// of falling through to the dock.
@@ -3841,11 +3918,21 @@ func (m Model) ShouldShowStatusURL() bool {
 	return !m.stripShowsBrowser()
 }
 
-// dockRows reports the rows the docked panel occupied at last render, so the
-// transcript viewport shrinks while a panel is open.
-func (m Model) dockRows() int { return m.dock.Rows() }
+// dockRows reports the rows the docked panel occupies, so the transcript
+// viewport shrinks while a panel is open.
+//
+// The number is the MEASURED height (see dockMeasurement), not m.dock.Rows():
+// the latter is only non-zero once the dock's renderer has run, so before this
+// the canonical model answered 0 for every open panel and the frame's Dock
+// rectangle stayed empty while a panel was drawn over the transcript.
+func (m Model) dockRows() int { return m.dockHeight() }
 
 func (m *Model) updateViewportHeight() bool {
+	// Reconcile the dock before anything reads its height: this is the funnel
+	// nearly every state change passes through, so a placement toggled by a
+	// command or a key is applied to the canonical slot here rather than on
+	// View's discarded copy.
+	m.syncDock()
 	m.input.MaxHeight = m.maxInputHeight()
 	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
 	// The frame is remeasured here rather than in View: every state change
@@ -4407,9 +4494,23 @@ func (m *Model) refreshViewport() {
 	notice, noticeUp := m.state.Notice()
 	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows, m.readingState())
 	if hash == m.lastTranscriptHash {
+		// The transcript itself is unchanged. If something merely PAINTED onto
+		// it moved, restyle from the retained unpainted base rather than
+		// rebuilding every block: a drag emits motion events at pointer rate,
+		// and rebuilding the whole conversation per event is the cost this path
+		// exists to avoid. See repaintReadingState.
+		m.repaintReadingState()
 		return
 	}
 	m.lastTranscriptHash = hash
+	// A rebuild is what the action snapshot's cache keys on: the copy actions
+	// reach the conversation document, which is rebuilt from the same items, so
+	// one counter covers every content change those actions can observe.
+	m.transcriptVersion++
+	// The rebuild invalidates the retained base: it describes a layout that no
+	// longer exists. It is re-retained below if anything is painted onto the
+	// new content.
+	m.transcriptBase = ""
 
 	blocks := make([]string, 0, len(items)+4)
 	regions := make([]clickRegion, 0, len(items))
@@ -4495,13 +4596,20 @@ func (m *Model) refreshViewport() {
 		// produced by the render call that produced THIS string, so it belongs to
 		// this block even when the block has no click target (a prose answer has
 		// none, and it is the block a reader most wants to select).
-		if rendered, ok := sink.take(); ok {
+		//
+		// bodyOffset travels with it because the mapping's rows are the BODY's
+		// rows while blockRow is the block's first line, and a block whose
+		// renderer wrote a reasoning summary or a salvage note above the prose
+		// has lines the mapping does not cover. Without it every row-based hit
+		// test in the block resolved one line too high.
+		if rendered, bodyOffset, ok := sink.take(); ok {
 			rendered.BlockID = blockID
 			renders = append(renders, renderedBlockSpan{
-				id:       blockID,
-				blockRow: displayRow,
-				rows:     len(rendered.Rows),
-				rendered: rendered,
+				id:         blockID,
+				blockRow:   displayRow,
+				rows:       len(rendered.Rows),
+				bodyOffset: bodyOffset,
+				rendered:   rendered,
 			})
 		}
 		pendingBlockID = ""
@@ -4598,10 +4706,22 @@ func (m *Model) refreshViewport() {
 			if chip != nil {
 				if target == nil {
 					// A plain answer has no click target of its own, but the
-					// chip needs a region to live in. Register the whole block
-					// as a toggle region — which is the meaning an answer body
-					// already carries — and then carve the chip's line out of
-					// its tail below.
+					// chip needs a region to live in. Register the block as a
+					// toggle region and then carve the chip's line out of its
+					// tail below.
+					//
+					// This region is NOT unreachable, which a code review
+					// supposed. A press on the block's BODY does begin a
+					// selection and never reaches a region lookup (see
+					// pressBeginsSelection) — but a press on the block's HEADER
+					// is deliberately excluded from that path, precisely so the
+					// header stays the disclosure control. The press therefore
+					// falls through to regionAt, and this is the region it finds.
+					// Removing it would make the header of every plain answer a
+					// dead cell and would also break the coverage invariant the
+					// chip's own geometry rests on: the body region and the chip
+					// region must jointly cover the block's lines, which is what
+					// TestCopyChipRegionIsNarrowerThanItsBlock pins.
 					regions = append(regions, clickRegion{
 						startLine: blockStart,
 						endLine:   blockStart + blockLines,
@@ -4710,16 +4830,16 @@ func (m *Model) refreshViewport() {
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	content := strings.Join(blocks, "\n")
-	if m.hasSelection() {
-		content = m.highlightSelection(content)
+	// The unpainted text is retained whenever anything is about to be painted
+	// onto it, so a later paint-only change (a drag motion, a find cursor step)
+	// can restyle these exact bytes instead of rebuilding every block. It is
+	// dropped when nothing is painted, so a session with no selection and no
+	// search holds no second copy of its transcript.
+	if m.selectionActive() || m.find.open {
+		m.transcriptBase = content
 	}
-	// The search is painted AFTER the selection, so a match shows through on
-	// top of a selected region: the reader is searching right now, and a
-	// highlight hidden underneath the selection tint is worse than one that
-	// overrides it.
-	if m.find.open {
-		content = m.highlightFindMatches(content)
-	}
+	content = m.paintReadingState(content)
+	m.paintedReading = m.readingState()
 	m.viewport.SetContent(content)
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
@@ -4729,6 +4849,48 @@ func (m *Model) refreshViewport() {
 	// Without this every reflow — a resize, new output above, a panel
 	// opening — moved them, because the rows below the change all shift.
 	m.restoreReadingAnchor()
+}
+
+// paintReadingState applies the selection and search highlights to unpainted
+// transcript content.
+//
+// The order matters and is the reason this is one function rather than two call
+// sites: the search is painted AFTER the selection, so a match shows through on
+// top of a selected region. The reader is searching right now, and a highlight
+// hidden underneath the selection tint is worse than one that overrides it.
+func (m Model) paintReadingState(content string) string {
+	if m.hasSelection() {
+		content = m.highlightSelection(content)
+	}
+	if m.find.open {
+		content = m.highlightFindMatches(content)
+	}
+	return content
+}
+
+// repaintReadingState restyles the retained transcript from its unpainted base.
+//
+// It is the fast path for a change that alters only the PAINT: a drag extending
+// the selection, a find cursor stepping to another match, a selection being
+// cleared. The block mappings are unchanged, so the cells are recomputed against
+// the same rows — and the base is the same bytes the last full rebuild produced,
+// so the result is byte-identical to what a rebuild would have drawn.
+//
+// It declines whenever there is nothing to repaint from. That is the honest
+// answer rather than a fallback: without a base the content on screen may
+// already be painted, and painting it a second time would restyle the escapes
+// the first pass emitted. The caller's next full rebuild re-establishes it.
+func (m *Model) repaintReadingState() {
+	if m.transcriptBase == "" {
+		return
+	}
+	if m.paintedReading == m.readingState() {
+		// Nothing moved. This is the common case for a repeated message that
+		// changed no hashed input, and doing nothing keeps the paint stable.
+		return
+	}
+	m.viewport.SetContent(m.paintReadingState(m.transcriptBase))
+	m.paintedReading = m.readingState()
 }
 
 // openRunPreflight opens the cast list panel for the given kind ("sdd" or
@@ -5373,6 +5535,11 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.refreshRailTurns()
 	m.refreshRailChanged()
 	m.refreshRailFleet()
+	// The inspector's copies of the fleet and the changed tree are refreshed
+	// HERE, at the turn boundary, for the same reason the rail's caches are:
+	// the roster and the snapshot both changed while the turn ran, and an open
+	// panel must not describe the session as it was before the turn started.
+	m.refreshInspector()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
@@ -5672,6 +5839,13 @@ func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
 // or changed status, so refresh the transcript viewport to reflect the
 // new card state, then re-arm the pump.
 func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
+	// The inspector holds a COPY of the roster, so a card registering or
+	// changing status has to be pushed into it here. Refreshing only on user
+	// interaction — which is what the panel used to do — meant an open Agents
+	// tab described the fleet as it was when the reader last pressed a key, and
+	// a reader with no reason to press one watched a completed agent stay
+	// "running".
+	m.refreshInspector()
 	m.refreshViewport()
 	if m.subagentEvents == nil {
 		return m, nil
@@ -5699,6 +5873,11 @@ func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 		m.railBaseRef = msg.ref
 	}
 	m.refreshRailChanged()
+	// The inspector holds a copy of the snapshot, so the freshly-read tree has
+	// to be pushed into it: the rail reads m.railChanged directly in View, but
+	// the Changes tab would otherwise keep rendering the snapshot it was last
+	// handed and show the previous base's files.
+	m.refreshInspector()
 	// No explicit refreshViewport here: Bubble Tea re-renders after every
 	// Update, and the rail reads m.railChanged directly in View, so the
 	// updated cache is picked up on the next frame. refreshViewport only
@@ -6722,9 +6901,20 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	// The search's QUERY and CURSOR are hashed, not its results: the results are
 	// derived from the transcript (already hashed above) plus the query, and
 	// hashing them too would only rebuild the viewport more than necessary.
-	fmt.Fprintf(h, "find=%t|%s|%d|sel=%s|%d|%d|",
+	//
+	// The selection's IDENTITY is hashed but its OFFSETS are not, and that split
+	// is load-bearing. Offsets move at POINTER RATE during a drag, so hashing
+	// them made every motion event a full rebuild of the conversation — grouping
+	// every item, re-rendering every block, re-mapping every row — for a change
+	// that only restyles some cells. Leaving them out means a motion event
+	// leaves this hash alone, and refreshViewport then takes its paint-only path
+	// (repaintReadingState), which restyles the retained base instead. The
+	// identity stays in because it is what a rebuild genuinely needs: a
+	// selection whose block vanished must be dropped, and that check runs during
+	// the rebuild.
+	fmt.Fprintf(h, "find=%t|%s|%d|sel=%s|",
 		reading.findOpen, reading.findQuery, reading.findCurrent,
-		reading.selectionBlock, reading.selectionAnchor, reading.selectionFocus)
+		reading.selectionBlock)
 	return h.Sum64()
 }
 

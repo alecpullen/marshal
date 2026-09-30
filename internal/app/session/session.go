@@ -1608,7 +1608,7 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: evt.Timestamp,
 			Kind:      KindAudit,
-			ViewID:    s.scopePrefix(viewIDAudit) + strconv.Itoa(i+1),
+			ViewID:    ordinalViewID(s.scopePrefix(viewIDAudit), i),
 			Audit:     &evt,
 		})
 	}
@@ -1618,7 +1618,7 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: t.StartedAt,
 			Kind:      KindThinking,
-			ViewID:    s.scopePrefix(viewIDThinking) + strconv.Itoa(i+1),
+			ViewID:    ordinalViewID(s.scopePrefix(viewIDThinking), i),
 			Thinking:  &t,
 		})
 	}
@@ -1663,7 +1663,7 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: e.At,
 			Kind:      KindJobExit,
-			ViewID:    s.scopePrefix(viewIDJobExit) + strconv.Itoa(i+1),
+			ViewID:    ordinalViewID(s.scopePrefix(viewIDJobExit), i),
 			JobExit:   &e,
 		})
 	}

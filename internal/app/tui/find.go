@@ -300,7 +300,9 @@ func (m Model) findHighlight(row int) (startCell, endCell int, ok bool) {
 	if !hasSpan {
 		return 0, 0, false
 	}
-	blockRow := row - span.blockRow
+	// bodyRow, not blockRow: the mapping covers the BODY, and a block with a
+	// reasoning summary or a salvage note above it has rows above the body.
+	blockRow := row - span.bodyRow()
 	if blockRow < 0 || blockRow >= len(span.rendered.Rows) {
 		return 0, 0, false
 	}
@@ -326,7 +328,9 @@ func (m Model) findMatchHighlights(row int) []findMatchSpan {
 		if !ok {
 			continue
 		}
-		blockRow := row - span.blockRow
+		// bodyRow, for the same reason as findHighlight: the mapping's origin is
+		// the body, not the block's first line.
+		blockRow := row - span.bodyRow()
 		if blockRow < 0 || blockRow >= len(span.rendered.Rows) {
 			continue
 		}
@@ -518,13 +522,12 @@ const findInputTitle = "Find"
 // a test must be able to drive the SAME code the production path runs: a test
 // that reimplemented the reset would pass against a reset the app never does.
 //
-// Four things are dropped, and each would otherwise serve one conversation's
-// data to another:
+// Each dropped thing would otherwise serve one conversation's data to another:
 //
-//   - the search index and the render cache are keyed by BLOCK IDENTITY, which
-//     is scoped per session. Both conversations number their blocks from 1, so a
-//     collision is likely rather than rare, and the symptom is one
-//     conversation's text appearing in another's search results or rendering.
+//   - the search index is keyed by BLOCK IDENTITY, which is scoped per session.
+//     Both conversations number their blocks from 1, so a collision is likely
+//     rather than rare, and the symptom is one conversation's text appearing in
+//     another's search results.
 //   - an open search names blocks that are gone and an entry anchor that is a
 //     position in a transcript that no longer exists. Left open, it would paint
 //     highlights for the old conversation onto the new one and then "restore"
@@ -534,17 +537,25 @@ const findInputTitle = "Find"
 //     somewhere they never chose.
 //   - a selection has the same problem, and it is worse: it would highlight
 //     text that no longer exists and copy bytes from the wrong conversation.
+//   - the drill stack names subagents of the old session, and the anchors saved
+//     alongside them are positions in the old transcript. Left in place, the
+//     first Esc in the new conversation would "pop back" to a parent that is
+//     gone.
 func (m *Model) resetSessionScopedUIState() {
 	m.resetFindIndex()
-	if m.convRender != nil {
-		m.convRender.reset()
-	}
 	if m.find.open {
 		m.closeFind()
 	}
 	m.readingAnchor = conversation.Anchor{}
 	m.viewportFollow = true
 	m.clearSelection()
+	// The drill stack belongs to the conversation being left: its entries name
+	// subagents of the OLD session, and the anchors saved with them are rows in
+	// a transcript that no longer exists. Left in place, the next Esc would
+	// "pop back" to a parent that is gone.
+	m.viewStack = nil
+	m.viewStackAnchors = nil
+	m.anchorFollow = false
 }
 
 // resetFindIndex drops the search's projection cache.

@@ -32,13 +32,32 @@ type renderedBlockSpan struct {
 	id       conversation.BlockID
 	blockRow int
 	rows     int
-	rendered conversation.RenderedBlock
+	// bodyOffset is how many display rows of the block precede the MAPPED BODY.
+	//
+	// A block is not only its body: a final answer with captured reasoning
+	// renders the `⚙ thought for Ns ▹` summary above the prose, and a salvaged
+	// answer renders a note above it. Those rows belong to the block but not to
+	// the mapping, so the mapping's row 0 sits bodyOffset rows below blockRow —
+	// and a hit test that ignored the difference mapped the summary row onto
+	// body row 0, shifting every selection, click, copy and find highlight in
+	// the block up by the number of leading lines.
+	bodyOffset int
+	rendered   conversation.RenderedBlock
 }
 
-// renderedBlockAt returns the block covering a transcript display row.
+// bodyRow is the block's first MAPPED row, which is the origin the mapping's own
+// row indices are measured from.
+func (s renderedBlockSpan) bodyRow() int { return s.blockRow + s.bodyOffset }
+
+// renderedBlockAt returns the block whose mapped BODY covers a transcript
+// display row.
+//
+// The leading rows are deliberately excluded: they carry no mapping, so a row
+// resolved there would be clamped onto body row 0 and would answer as though the
+// reader had aimed at the first line of the prose.
 func (m Model) renderedBlockAt(row int) (renderedBlockSpan, bool) {
 	for _, s := range m.blockRenderSpans {
-		if row >= s.blockRow && row < s.blockRow+s.rows {
+		if row >= s.bodyRow() && row < s.bodyRow()+s.rows {
 			return s, true
 		}
 	}
@@ -57,7 +76,7 @@ func (m Model) OffsetAtTranscriptCell(row, cell int) (conversation.BlockID, int,
 	if !ok {
 		return "", 0, false
 	}
-	return s.id, s.rendered.OffsetAt(row-s.blockRow, cell), true
+	return s.id, s.rendered.OffsetAt(row-s.bodyRow(), cell), true
 }
 
 // captureReadingAnchor records where the reader is, before the transcript is
@@ -145,12 +164,31 @@ func clampOffset(target, height, total int) int {
 // It reads blockSpans rather than clickRegions because anchoring must work for
 // every block, including the ones that are not clickable (a plain message, a
 // run event). A click region exists only where a click does something.
+// A block that is NOT a document block is skipped, and that is load-bearing. The
+// live thinking region carries session.ViewIDLiveThinking, which no document ever
+// names: it is a transient row, not a transcript item. Returning it produced an
+// anchor that could not resolve — blockIndex reported 0 and Anchor.Resolve took
+// its Approximate path, which drops the reader at Blocks()[0] and throws them to
+// the top of the conversation the moment thinking completed.
+//
+// "Document block" is the right test rather than a hand-maintained deny list
+// because it is exactly the condition the anchor's Resolve checks. A block the
+// document does not hold can never be restored, so anchoring to one is never
+// useful; the nearest document block above it is the honest answer.
 func (m Model) blockAtViewportTop() (conversation.BlockID, int) {
 	line := m.viewport.YOffset()
+	doc := m.conversationDocument()
 	for _, s := range m.blockSpans {
-		if s.startLine <= line && line < s.endLine {
-			return s.id, line - s.startLine
+		if s.startLine > line || line >= s.endLine {
+			continue
 		}
+		if !doc.Has(s.id) {
+			// Not a document block. Keep scanning: the spans are in transcript
+			// order, so the next match is the next block covering this line, and
+			// a caller that finds one gets a block it can actually resolve.
+			continue
+		}
+		return s.id, line - s.startLine
 	}
 	return "", 0
 }

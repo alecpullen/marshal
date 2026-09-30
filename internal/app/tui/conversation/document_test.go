@@ -171,6 +171,73 @@ func TestRevisionCarriedThrough(t *testing.T) {
 	}
 }
 
+// The document claims to be immutable, and an index built once is only honest
+// if nothing can reach past it. Two slices are handed out — the caller's own
+// Members and the document's Blocks — and both are cloned rather than aliased,
+// so a caller that keeps either and later mutates it cannot desync the index
+// from the blocks it indexes.
+//
+// The failure this pins is silent rather than loud: the byMember index would
+// still answer "msg:1" for a block whose Members now say something else, and
+// every resolution, copy and anchor would then name a member the block does
+// not cover.
+func TestDocumentIsImmuneToMutationOfTheCallersSlices(t *testing.T) {
+	members := []string{"msg:1", "msg:2"}
+	children := []Block{{Kind: BlockTool, Members: []string{"audit:1"}, Text: "read a.go"}}
+	doc := NewDocument([]Block{{
+		Kind:     BlockToolGroup,
+		Members:  members,
+		Children: children,
+	}})
+
+	// The caller mutates the slice it handed in, after construction.
+	members[0] = "msg:99"
+	children[0].Text = "overwritten"
+	children[0].Members[0] = "audit:99"
+
+	if block, ok := doc.BlockForMember("msg:1"); !ok || block.ID != GroupBlockID("msg:1") {
+		t.Fatalf("BlockForMember(msg:1) = %+v, %v; the caller's mutation renamed a member the index still answers for",
+			block, ok)
+	}
+	if block, ok := doc.BlockForMember("msg:99"); ok {
+		t.Fatalf("BlockForMember(msg:99) = %+v; the caller's slice reached into the document", block)
+	}
+	if _, ok := doc.BlockForMember("audit:1"); !ok {
+		t.Fatal("BlockForMember(audit:1) not found: a child's members must still resolve")
+	}
+	got := doc.Blocks()[0]
+	if len(got.Members) != 2 || got.Members[0] != "msg:1" {
+		t.Fatalf("block members = %v, want the members as constructed", got.Members)
+	}
+	if got.Children[0].Text != "read a.go" || got.Children[0].Members[0] != "audit:1" {
+		t.Fatalf("block children = %+v, want the children as constructed", got.Children[0])
+	}
+
+	// Now the slice the document handed OUT. Appending to it writes into
+	// whatever array it was given, so an aliased Blocks() is how a caller grows
+	// the document's tail with a block the index never saw.
+	blocks := doc.Blocks()
+	blocks[0].Text = "overwritten"
+	blocks = append(blocks, Block{Kind: BlockMessage, Members: []string{"msg:3"}})
+
+	if blocks[0].Text != "overwritten" {
+		t.Fatalf("the returned slice is not the caller's to mutate: %q", blocks[0].Text)
+	}
+	if doc.Len() != 1 {
+		t.Fatalf("appending to the returned slice grew the document to %d blocks", doc.Len())
+	}
+	if doc.Blocks()[0].Text != "" {
+		t.Fatalf("writing through the returned slice reached the document: %q", doc.Blocks()[0].Text)
+	}
+	if _, ok := doc.BlockForMember("msg:3"); ok {
+		t.Fatal("a block appended to the returned slice became resolvable in the document")
+	}
+	// The document's own view is untouched by the write above.
+	if again := doc.Blocks(); again[0].Text != "" || again[0].Members[0] != "msg:1" {
+		t.Fatalf("the document changed through the slice it handed out: %+v", again[0])
+	}
+}
+
 // A block with no members cannot be identified and must be rejected rather
 // than silently given an empty identity that collides with every other one.
 func TestDocumentRejectsMemberlessBlock(t *testing.T) {

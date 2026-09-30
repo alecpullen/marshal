@@ -74,7 +74,14 @@ const (
 )
 
 // ordinalViewID renders the identity for a 1-based insertion ordinal in one
-// collection's namespace.
+// collection's namespace. prefix is that namespace, i.e. s.scopePrefix(kind) for
+// one of the ordinal-keyed collections (audit, thinking, jobexit); index is the
+// entry's 0-based position in its source collection.
+//
+// This is the ONE home of the ordinal rule, which is why Transcript() calls it
+// rather than inlining an equivalent expression: the off-by-one is part of the
+// invariant, and an inline copy can drift out of step with this one without
+// anything failing. Callers must not reimplement it.
 //
 // Ordinals are derived from the entry's index in its (append-only) source
 // collection plus one, which IS its insertion ordinal: those collections are

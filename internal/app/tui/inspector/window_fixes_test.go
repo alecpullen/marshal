@@ -126,23 +126,76 @@ func TestWindowListKeepsTheCursorVisible(t *testing.T) {
 }
 
 // TestWindowListReservesItsNoteRows pins the budget arithmetic: what the caller
-// is told it may spend on rows PLUS the notes must fit the budget. Counting the
-// notes afterwards is how a windowed panel ends up one row taller than its
-// frame, which is the whole defect.
+// is told it may spend on rows PLUS the notes it is told it may emit must fit
+// the budget. Counting the notes afterwards is how a windowed panel ends up one
+// row taller than its frame, which is the whole defect.
+//
+// The assertion uses ShowAbove/ShowBelow — the notes the window actually
+// authorises — rather than "is anything hidden", because those are no longer
+// the same question at small budgets: the window may withhold a note it cannot
+// afford to let the caller draw.
 func TestWindowListReservesItsNoteRows(t *testing.T) {
 	const total, avail = 100, 10
 	for _, cursor := range []int{0, 5, 50, 99} {
 		w := windowList(total, avail, cursor, 0, 2)
 		notes := 0
-		if w.Above() > 0 {
+		if w.ShowAbove() {
 			notes++
 		}
-		if w.Below() > 0 {
+		if w.ShowBelow() {
 			notes++
 		}
 		if got := w.Rows() + notes; got > avail {
 			t.Errorf("cursor=%d: %d list rows + %d note rows = %d, over the %d budget",
 				cursor, w.Rows(), notes, got, avail)
+		}
+	}
+}
+
+// TestWindowListFitsItsNotesAtASmallBudget is the regression for the review's
+// finding that the note reservation could consume a row a two-row list needed.
+//
+// With avail=2 and a mid-list cursor, the old arithmetic chose ONE list row and
+// then authorised BOTH notes, so the caller emitted above-note + one row +
+// below-note = 3 rows against a 2-row budget: the panel was one row taller than
+// its frame. A note is worth a row only when there is one to spare, so at these
+// sizes the window drops a note rather than overflow — the cursor's own row is
+// always kept, because a window that loses the cursor makes the arrow keys read
+// as broken.
+func TestWindowListFitsItsNotesAtASmallBudget(t *testing.T) {
+	const total = 100
+	for _, avail := range []int{1, 2, 3} {
+		for _, cursor := range []int{0, 1, 49, 50, 98, 99} {
+			for _, scroll := range []int{0, 10, 50, 99} {
+				w := windowList(total, avail, cursor, scroll, 2)
+				notes := 0
+				if w.ShowAbove() {
+					notes++
+				}
+				if w.ShowBelow() {
+					notes++
+				}
+				if got := w.Rows() + notes; got > avail {
+					t.Errorf("avail=%d cursor=%d scroll=%d: %d list rows + %d notes = %d, over budget [%d,%d)",
+						avail, cursor, scroll, w.Rows(), notes, got, w.Start, w.End)
+				}
+				// The cursor must still be inside the window: dropping the
+				// cursor to make the notes fit would trade an overflow for a
+				// broken-looking arrow key.
+				if w.Rows() > 0 && (cursor < w.Start || cursor >= w.End) {
+					t.Errorf("avail=%d cursor=%d scroll=%d: cursor outside window [%d,%d)",
+						avail, cursor, scroll, w.Start, w.End)
+				}
+				// A note may only be withheld when its row was needed by the
+				// rows themselves — an authorised note must correspond to
+				// genuinely hidden content.
+				if w.ShowAbove() && w.Above() == 0 {
+					t.Errorf("avail=%d cursor=%d: ShowAbove with nothing hidden above", avail, cursor)
+				}
+				if w.ShowBelow() && w.Below() == 0 {
+					t.Errorf("avail=%d cursor=%d: ShowBelow with nothing hidden below", avail, cursor)
+				}
+			}
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -72,8 +73,6 @@ type InspectionMessage struct {
 	// a long one.
 	Truncated    bool
 	OmittedBytes int
-	// ToolCallsOmitted counts tool calls dropped by the per-message cap.
-	ToolCallsOmitted int
 }
 
 // InspectionToolCall is one tool call attached to a message.
@@ -335,7 +334,6 @@ func boundInspection(in RequestInspection) RequestInspection {
 
 	// Total budget last: it is the only cap that has to consider the whole.
 	used := 0
-	kept := 0
 	for i := range out.Messages {
 		cost := len(out.Messages[i].Content)
 		for _, tc := range out.Messages[i].ToolCalls {
@@ -352,9 +350,7 @@ func boundInspection(in RequestInspection) RequestInspection {
 			break
 		}
 		used += cost
-		kept++
 	}
-	_ = kept
 	for i := range out.Tools {
 		cost := len(out.Tools[i].Name) + len(out.Tools[i].Description) + len(out.Tools[i].Parameters)
 		if used+cost > MaxInspectionTotalBytes {
@@ -391,6 +387,20 @@ func countMessageBytes(msgs []InspectionMessage) int {
 // The omitted count is measured from the ORIGINAL length, so it stays the true
 // byte count of what is missing even though the retained prefix is shorter than
 // the limit by up to three bytes.
+//
+// The returned string is CLONED. A substring shares its backing array, so
+// returning s[:cut] would keep the whole original alive: a 96 KiB message capped
+// at 32 KiB would leave the snapshot pinning all 96 KiB, and a multi-megabyte
+// tool-call argument would stay fully resident until the next request replaced
+// it. That is precisely what MaxInspectionTotalBytes exists to make untrue (see
+// the cap rationale above: "the number that makes the snapshot's memory use
+// something a caller can reason about"), and the accounting cannot see it —
+// TotalContentBytes measures len of the retained prefix, not the bytes the
+// prefix keeps reachable. The clone is load-bearing for the cap's meaning, not a
+// micro-optimisation, so do not "simplify" it back to a reslice.
+//
+// The UNCAPPED path returns s unchanged: it is the whole string, so its own
+// bytes are all it retains and there is nothing to release.
 func capBytes(s string, limit int) (string, bool, int) {
 	if len(s) <= limit {
 		return s, false, 0
@@ -401,5 +411,5 @@ func capBytes(s string, limit int) (string, bool, int) {
 	}
 	// A limit smaller than one rune would otherwise return nothing at all; the
 	// retained content is still a valid (possibly empty) prefix either way.
-	return s[:cut], true, len(s) - cut
+	return strings.Clone(s[:cut]), true, len(s) - cut
 }

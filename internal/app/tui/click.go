@@ -356,6 +356,12 @@ func (m *Model) pressBeginsSelection(row, cell int) bool {
 
 // onBlockHeader reports whether a transcript row is the first line of a mapped
 // block, which is where its disclosure control lives.
+//
+// A block with lines above its body — a reasoning summary, a salvage note —
+// carries its disclosure control on the FIRST of them, not on the body's first
+// row. The check is against blockRow for that reason: treating the body's first
+// row as the header would make a press there toggle the block instead of
+// starting a selection, which is the opposite of what that row is for.
 func (m Model) onBlockHeader(row int) bool {
 	for _, s := range m.blockRenderSpans {
 		if row == s.blockRow {
@@ -398,8 +404,13 @@ func (m *Model) handleTranscriptMotion(msg tea.MouseMotionMsg) (tea.Cmd, bool) {
 		// screen, and a drag that passed over the status line should survive.
 		return nil, true
 	}
+	// The hash is deliberately NOT reset here. A motion event moves only the
+	// selection's OFFSETS, which are no longer part of the transcript hash, so
+	// leaving it alone lets refreshViewport take its paint-only path and restyle
+	// the retained base. Resetting it would force a full rebuild of every block
+	// per motion event — the cost this split exists to remove — for a change
+	// that alters no text.
 	if m.extendSelectionTo(line, m.columnForClick(msg.X)) {
-		m.lastTranscriptHash = 0
 		m.refreshViewport()
 	}
 	return nil, true

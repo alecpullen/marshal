@@ -1103,6 +1103,14 @@ type TelemetryChangedFile struct {
 	Removed int    `json:"removed"`
 }
 
+// buildChangedFiles reports the working tree's changed files for telemetry.
+//
+// MEANING CHANGE (honesty fix, no behaviour change here): the counts come from
+// changedfiles.Read, which no longer invents Added: 1 for an untracked or binary
+// file. A client that read a nonzero Added as "this path has tracked
+// additions" will now see 0 for those kinds. The path is still listed, so "what
+// changed" is unaffected; only "how much" moves, from a fabricated number to the
+// truth — git reports no countable added lines for a file it does not track.
 func (m *TurnManager) buildChangedFiles(sessionID string, state *session.State) []TelemetryChangedFile {
 	ref := m.baseRefFor(sessionID, state.WorkingDir)
 	files := changedfiles.Read(state.WorkingDir, ref)

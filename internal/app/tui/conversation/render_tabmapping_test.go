@@ -51,6 +51,71 @@ func TestCellAtAndOffsetAtRoundTripWhenTabsDoNotStartAtColumnZero(t *testing.T) 
 	}
 }
 
+// A layout performed with a custom tab stop must be MAPPED with that stop.
+//
+// Layout lays the rows out at stop-4 geometry and OffsetAt/CellAt convert cells
+// back to offsets; if the mapping measured tabs at the package default of 8, a
+// click would land in the wrong column on every row of a document laid out at 4
+// — the rows would draw a tab four cells wide and the click path would move
+// eight cells past it. The stop therefore has to survive from the layout
+// options onto the block the mapping reads.
+func TestLayoutWithACustomTabStopMapsAtThatStop(t *testing.T) {
+	// "a\tcd" at indent 2 puts the tab at column 3, the one place the two
+	// stops are genuinely different geometry: the next stop is 4 at a stop of
+	// 4 (a one-cell tab) and 8 at a stop of 8 (a five-cell tab).
+	const text = "a\tcd"
+	const cOffset = 2 // the offset of 'c', just past the tab
+
+	block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{
+		Width: 40, Indent: 2, TabStop: 4,
+	})
+	if block.TabStop != 4 {
+		t.Fatalf("the block did not retain the layout's tab stop: %d", block.TabStop)
+	}
+
+	row := block.Rows[0]
+	var tab *Span
+	for i := range row.Spans {
+		if row.Spans[i].Range.HasText() && text[row.Spans[i].Range.Start:row.Spans[i].Range.End] == "\t" {
+			tab = &row.Spans[i]
+		}
+	}
+	if tab == nil {
+		t.Fatalf("no tab span in %+v", row.Spans)
+	}
+	if tab.Cells != 1 {
+		t.Fatalf("the tab was laid out as %d cells, want 1 (stop 4 from column 3)", tab.Cells)
+	}
+	// 'c' is drawn at column 4. A mapping that measured the tab at the package
+	// default would report 8 — four cells to the right of the character it
+	// names.
+	if cell, ok := block.CellAt(0, cOffset); !ok || cell != 4 {
+		t.Fatalf("CellAt(the offset of 'c') = %d, %v; want its drawn column 4", cell, ok)
+	}
+	// Every offset on the row round-trips at the configured stop.
+	for off := row.Range.Start; off < row.Range.End; off++ {
+		cell, ok := block.CellAt(0, off)
+		if !ok {
+			t.Fatalf("CellAt(%d) reported nowhere", off)
+		}
+		if back := block.OffsetAt(0, cell); back != off {
+			t.Fatalf("offset %d -> cell %d -> offset %d at tab stop 4", off, cell, back)
+		}
+	}
+
+	// The same text at the DEFAULT stop is different geometry, which is what
+	// makes the stored stop load-bearing rather than decorative: a five-cell
+	// tab and 'c' at column 8.
+	def := LayoutBlock(Block{ID: "msg:2", Text: text}, LayoutOptions{Width: 40, Indent: 2})
+	if cell, ok := def.CellAt(0, cOffset); !ok || cell != 8 {
+		t.Fatalf("default-stop CellAt(the offset of 'c') = %d, %v; want 8", cell, ok)
+	}
+	if block.Rows[0].Cells == def.Rows[0].Cells {
+		t.Fatalf("the stop-4 and stop-8 rows are both %d cells; the custom stop changed nothing",
+			block.Rows[0].Cells)
+	}
+}
+
 // The concrete symptom from the review: source "a\tb", a cell past the tab
 // must map to the offset the cell was DRAWN at. With an indent of 2, the tab
 // starts at column 3 and expands to the stop at column 8, so 'b' is drawn at

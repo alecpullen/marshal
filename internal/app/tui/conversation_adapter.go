@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/binary"
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"strconv"
 	"strings"
@@ -155,22 +156,16 @@ func blockRevision(b conversation.Block) conversation.Block {
 // share a revision with one whose Text became "Answerfoo".
 func blockRevisionFor(b conversation.Block) int {
 	h := fnv.New64a()
-	writeRevField := func(s string) {
-		var n [8]byte
-		binary.LittleEndian.PutUint64(n[:], uint64(len(s)))
-		_, _ = h.Write(n[:])
-		_, _ = h.Write([]byte(s))
-	}
 	// Kind is an int enum, so it is written as a number: converting it to a
 	// string would yield a single rune (kind 7 becomes "\a"), and two different
 	// kinds could then hash to text that collides with real content.
-	writeRevField(strconv.Itoa(int(b.Kind)))
-	writeRevField(b.Text)
-	writeRevField(string(b.Source))
+	writeRevisionField(h, strconv.Itoa(int(b.Kind)))
+	writeRevisionField(h, b.Text)
+	writeRevisionField(h, string(b.Source))
 	for _, t := range b.CopyTargets {
-		writeRevField(string(t.Source))
-		writeRevField(t.Text)
-		writeRevField(t.Label)
+		writeRevisionField(h, string(t.Source))
+		writeRevisionField(h, t.Text)
+		writeRevisionField(h, t.Label)
 	}
 	var flag byte
 	if b.Hidden {
@@ -183,6 +178,43 @@ func blockRevisionFor(b conversation.Block) int {
 	// Masked to the positive int range: Revision is an int, and on a 32-bit
 	// build a raw uint64 would wrap to a negative number. A revision only ever
 	// needs to DIFFER when the content differs, so the truncation is harmless.
+	return int(h.Sum64() & 0x7fffffff)
+}
+
+// writeRevisionField writes one length-prefixed field into a revision hash.
+//
+// The length prefix is what stops two different field layouts hashing alike: a
+// block whose Source became "Answer" and whose Text became "foo" must not share
+// a revision with one whose Text became "Answerfoo".
+func writeRevisionField(h hash.Hash64, s string) {
+	var n [8]byte
+	binary.LittleEndian.PutUint64(n[:], uint64(len(s)))
+	_, _ = h.Write(n[:])
+	_, _ = h.Write([]byte(s))
+}
+
+// blockTextRevision computes the revision a block's TEXT implies, for the
+// transcript's mapped path.
+//
+// The transcript does not build a conversation.Block: it renders a session
+// message straight to rows and keeps the mapping. But the mapping's Revision
+// field is what Selection.MatchesRevision compares, so a transcript block left
+// at zero made that check vacuous — 0 == 0 on every comparison — and an old
+// logical offset was painted over text that had changed underneath it, which is
+// exactly the case the check exists to refuse.
+//
+// So the revision is derived from the same source as the document path's, over
+// the fields the transcript actually has: the block's logical text. Hashed with
+// the same helper and the same length-prefixed layout, so a block that appears
+// in both the document and the transcript carries comparable revisions.
+//
+// It deliberately does NOT include the identity: the revision's contract is
+// "this block's content changed", and an identity is not content. Two blocks
+// with identical text therefore share a revision, which is correct — a selection
+// is scoped by identity separately, in Selection.Block.
+func blockTextRevision(logical string) int {
+	h := fnv.New64a()
+	writeRevisionField(h, logical)
 	return int(h.Sum64() & 0x7fffffff)
 }
 

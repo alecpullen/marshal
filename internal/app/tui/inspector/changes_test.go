@@ -303,7 +303,7 @@ func TestChangesRejectsStaleAndForeignDiffReplies(t *testing.T) {
 	}) {
 		t.Fatal("a superseded reply was accepted")
 	}
-	if got := m.detail.View(""); strings.Contains(got, "stale") {
+	if got := m.changesDetail().View(""); strings.Contains(got, "stale") {
 		t.Fatalf("a superseded reply replaced the newer content:\n%s", got)
 	}
 
@@ -386,11 +386,11 @@ func TestChangesRejectsAStaleReplyForThePathStillSelected(t *testing.T) {
 	}) {
 		t.Error("a superseded reply for the SAME path was accepted — the request-id guard is not doing its job")
 	}
-	if got := m.detail.View(""); strings.Contains(got, "stale") {
+	if got := m.changesDetail().View(""); strings.Contains(got, "stale") {
 		t.Fatalf("the stale reply replaced the current content:\n%s", got)
 	}
-	if !strings.Contains(m.detail.View(""), "fresh") {
-		t.Fatalf("the current content is no longer on screen:\n%s", m.detail.View(""))
+	if !strings.Contains(m.changesDetail().View(""), "fresh") {
+		t.Fatalf("the current content is no longer on screen:\n%s", m.changesDetail().View(""))
 	}
 }
 
@@ -412,7 +412,7 @@ func TestChangesDiffRenderingUsesTheDetailWidth(t *testing.T) {
 	m.ApplyDiffLoaded(DiffLoadedMsg{Scope: req.Scope, Request: req.Request, Path: "a.go",
 		Diff: changedfiles.Diff{Path: "a.go", Patch: patch}})
 
-	narrow := stripANSIForTest(m.detail.View(""))
+	narrow := stripANSIForTest(m.changesDetail().View(""))
 	// diffview renders a unified line as "+ " + content, so the text appears
 	// after the marker rather than glued to it.
 	if !strings.Contains(narrow, "new") {
@@ -449,10 +449,10 @@ func TestChangesTruncatedFetchIsDisclosed(t *testing.T) {
 	m.ApplyDiffLoaded(DiffLoadedMsg{Scope: req.Scope, Request: req.Request, Path: "big.bin",
 		Diff: changedfiles.Diff{Path: "big.bin", Patch: "+++ b/big.bin\n+partial\n", Truncated: true}})
 
-	if !m.detail.Truncated() {
+	if !m.changesDetail().Truncated() {
 		t.Fatal("a truncated fetch did not reach the detail view")
 	}
-	view := m.detail.View("")
+	view := m.changesDetail().View("")
 	if !strings.Contains(view, "incomplete") {
 		t.Fatalf("the truncated fetch is not disclosed:\n%s", view)
 	}

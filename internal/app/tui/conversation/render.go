@@ -235,11 +235,26 @@ type RenderedBlock struct {
 	// for an unbreakable grapheme wider than the budget, which is recorded
 	// rather than truncated so the caller can decide.
 	Width int
+	// TabStop is the column interval this block's rows were laid out with, and
+	// therefore the one its mapping must measure a tab against. Zero means the
+	// package default, so a caller that lays out without an explicit stop — the
+	// ordinary case — keeps the standard geometry.
+	//
+	// It is stored rather than assumed because a tab's width is a function of
+	// the stop, and a mapping that converted cells at a different stop than the
+	// rows were drawn at would place every click and every highlight after a
+	// tab in the wrong column. Storing the zero value as "default" is what
+	// keeps the existing constructors — including the ones in the TUI, which
+	// never set a stop — correct without a change.
+	TabStop int
 	// Logical is the block's logical text, unchanged by layout.
 	Logical string
 	// Rows are the display rows.
 	Rows []DisplayRow
 }
+
+// tabStop returns the effective tab interval for this block's mapping.
+func (r RenderedBlock) tabStop() int { return effectiveTabStop(r.TabStop) }
 
 // LogicalText returns the text a copy must yield.
 //
@@ -282,11 +297,51 @@ func (o LayoutOptions) rowBudget() int {
 }
 
 // tabStop returns the effective tab interval.
-func (o LayoutOptions) tabStop() int {
-	if o.TabStop <= 0 {
+func (o LayoutOptions) tabStop() int { return effectiveTabStop(o.TabStop) }
+
+// effectiveTabStop returns the interval a zero (or negative) stop asks for: the
+// package default. It is the single place the default is applied, so the layout
+// and the mapping cannot disagree about which stop is in force.
+func effectiveTabStop(ts int) int {
+	if ts <= 0 {
 		return tabStop
 	}
-	return o.TabStop
+	return ts
+}
+
+// wrapOptions are the wrapping policy of ONE layout: the cells a row's content
+// may occupy, the indent that precedes it, and the tab stop a tab is measured
+// against.
+//
+// The indent travels WITH the budget rather than beside it because the two
+// walks that have to agree about a row — the wrap that decides where it ends,
+// and the builder that draws it — must count columns from the SAME place, and
+// that place is the indent. A tab's width is not a property of the tab: it is
+// the distance to the next stop from wherever the cursor is, so a tab that
+// lands near a stop is WIDER than the same tab at the line's start. Handing a
+// bare content budget to the wrapper while the builder alone knew the indent
+// meant every tab was measured from column 0 for the wrap and drawn from
+// column indent: the row the wrap believed fitted then overflowed the budget
+// by exactly the difference — production-reachable, because every transcript
+// block is laid out at Indent 3 and the Markdown projection makes a table's
+// cell separator a tab.
+//
+// Unexported, and deliberately so: it parameterizes two unexported helpers, and
+// a consumer states the policy once through LayoutOptions rather than twice in
+// two vocabularies that could drift apart.
+type wrapOptions struct {
+	// Budget is the cells available to a row's CONTENT, excluding Indent.
+	// Zero means "unmeasured": nothing wraps.
+	Budget int
+	// Indent is the decoration prefixed to every row, in cells, so the first
+	// content cell of a row is at this column.
+	Indent int
+	// Breakpoints are the characters a wrap may break after when there is no
+	// space.
+	Breakpoints string
+	// TabStop is the column interval a tab advances to. Zero means the
+	// standard tab stop.
+	TabStop int
 }
 
 // Layout turns styled logical text into display rows.
@@ -303,8 +358,16 @@ func (o LayoutOptions) tabStop() int {
 func Layout(sp Spans, opts LayoutOptions) []DisplayRow {
 	text := sp.Text
 	runs := normalizeRuns(sp.Runs, len(text))
-	budget := opts.rowBudget()
-	ts := opts.tabStop()
+	// One wrap policy, carried whole: the budget the rows must fit in, the
+	// indent they start at, and the stop their tabs are measured against. The
+	// wrap and the row builder read the same value, which is what makes the
+	// decision they each take about a row the same decision.
+	wrap := wrapOptions{
+		Budget:      opts.rowBudget(),
+		Indent:      opts.Indent,
+		Breakpoints: opts.Breakpoints,
+		TabStop:     opts.tabStop(),
+	}
 
 	// Hard lines are the author's own breaks. A trailing newline does not
 	// produce a final empty row: it ends the last row.
@@ -328,22 +391,22 @@ func Layout(sp Spans, opts LayoutOptions) []DisplayRow {
 
 	var rows []DisplayRow
 	for _, hr := range hardRanges {
-		for _, sr := range wrapRange(text, hr, budget, opts.Breakpoints, ts) {
-			rows = append(rows, buildRow(text, sr, runs, opts.Indent, ts, hr.End))
+		for _, sr := range wrapRange(text, hr, wrap) {
+			rows = append(rows, buildRow(text, sr, runs, opts.Indent, wrap.TabStop, hr.End))
 		}
 	}
 	return rows
 }
 
-// wrapRange splits one hard line into soft rows of at most budget cells.
+// wrapRange splits one hard line into soft rows that fit the wrap's budget.
 //
 // It returns ranges that are contiguous over the line: each row starts where
 // the previous ended, including the whitespace a break consumed. Keeping the
 // ranges contiguous means a caller can map a row index to an offset and back
 // without a gaps table, and the whitespace is marked decorative by the row
 // builder rather than dropped from the range arithmetic.
-func wrapRange(text string, line Range, budget int, breakpoints string, ts int) []Range {
-	if budget <= 0 {
+func wrapRange(text string, line Range, wrap wrapOptions) []Range {
+	if wrap.Budget <= 0 {
 		return []Range{line}
 	}
 	if line.End <= line.Start {
@@ -352,7 +415,7 @@ func wrapRange(text string, line Range, budget int, breakpoints string, ts int) 
 	var out []Range
 	pos := line.Start
 	for pos < line.End {
-		end := rowEnd(text, pos, line.End, budget, breakpoints, ts)
+		end := rowEnd(text, pos, line.End, wrap)
 		out = append(out, Range{pos, end})
 		pos = end
 	}
@@ -373,13 +436,24 @@ func wrapRange(text string, line Range, budget int, breakpoints string, ts int) 
 // given. Either way the break lands AFTER the character, so the character stays
 // on the row it ends rather than starting the next one — which is what makes
 // "--flag" break before the flag and not after the hyphen that introduces it.
-func rowEnd(text string, pos, limit, budget int, breakpoints string, ts int) int {
-	col := 0
+//
+// The walk starts at the INDENT the row builder draws the row's content at,
+// not at column 0, and stops at the row's total budget (indent plus content).
+// Starting at 0 was the wrap half of the tab disagreement this signature
+// exists to remove: the same tab was one cell wide for the wrap and seven for
+// the row, so the wrap filled cells that were not there and the row overflowed.
+func rowEnd(text string, pos, limit int, wrap wrapOptions) int {
+	ts := effectiveTabStop(wrap.TabStop)
+	// The total cells the row may occupy, indent included. The wrap's budget
+	// is a CONTENT budget, so the indent is added back exactly once — the same
+	// way buildRow starts counting at the indent.
+	rowBudget := wrap.Budget + wrap.Indent
+	col := wrap.Indent
 	lastBreak := -1
 	i := pos
 	for i < limit {
 		g, cells := graphemeAt(text, i, col, ts)
-		if col+cells > budget && i > pos {
+		if col+cells > rowBudget && i > pos {
 			if lastBreak > pos {
 				return lastBreak
 			}
@@ -387,7 +461,7 @@ func rowEnd(text string, pos, limit, budget int, breakpoints string, ts int) int
 		}
 		col += cells
 		i += len(g)
-		if isBreakOpportunity(text, i, limit, breakpoints) {
+		if isBreakOpportunity(text, i, limit, wrap.Breakpoints) {
 			lastBreak = i
 		}
 	}
@@ -778,7 +852,7 @@ func (r RenderedBlock) OffsetAt(rowIndex, cell int) int {
 			// again is a double conversion, and it is wrong wherever the two
 			// lengths differ — which is every wide grapheme and every tab.
 			within := cell - col
-			return s.Range.Start + logicalLenForCells(r.Logical[s.Range.Start:s.Range.End], within, tabStop, col)
+			return s.Range.Start + logicalLenForCells(r.Logical[s.Range.Start:s.Range.End], within, r.tabStop(), col)
 		}
 		col += s.Cells
 	}
@@ -814,7 +888,7 @@ func (r RenderedBlock) CellAt(rowIndex, off int) (int, bool) {
 			// measuring the display string would report the wrong column and
 			// every offset after a tab on that row would be misplaced.
 			within := off - s.Range.Start
-			return col + cellsForLogicalLen(r.Logical[s.Range.Start:s.Range.End], within, tabStop, col), true
+			return col + cellsForLogicalLen(r.Logical[s.Range.Start:s.Range.End], within, r.tabStop(), col), true
 		}
 		col += s.Cells
 	}
@@ -884,6 +958,7 @@ func LayoutBlock(b Block, opts LayoutOptions) RenderedBlock {
 		BlockID:  b.ID,
 		Revision: b.Revision,
 		Width:    opts.Width,
+		TabStop:  opts.TabStop,
 		Logical:  b.Text,
 		Rows:     Layout(Spans{Text: b.Text}, opts),
 	}

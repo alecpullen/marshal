@@ -102,14 +102,15 @@ func Render(diff string, opts Options) string {
 func RenderResult(diff string, opts Options) Result {
 	hunks, err := parseUnifiedDiff(diff)
 	if err != nil {
-		// The fallback caps on its own line count and says so inline, so its
-		// flag comes from the same condition it uses.
-		total := strings.Count(diff, "\n")
-		return Result{
-			Text:      plainTextFallback(diff, opts.Width),
-			Lines:     min(total, maxRenderLines),
-			Truncated: total > maxRenderLines,
-		}
+		// The fallback caps on its own line count and says so inline, so both
+		// the flag AND the line count come from the enumeration that actually
+		// did the dropping. Deriving either from strings.Count here counted
+		// newlines where the fallback counts strings.Split elements, and the
+		// two differ by one whenever the last line has no trailing newline —
+		// which is exactly the case where the fallback drops a line, so the
+		// capped render was labelled complete.
+		text, lines, truncated := plainTextFallback(diff, opts.Width)
+		return Result{Text: text, Lines: lines, Truncated: truncated}
 	}
 	mode := opts.Mode
 	if mode == ModeAuto {
@@ -273,25 +274,65 @@ func parseRangeStart(s string) (int, bool) {
 	return n, true
 }
 
-func plainTextFallback(diff string, width int) string {
+// plainTextFallback renders the raw input as plain text — wrapped to width when
+// one is given — and reports how many lines it kept and whether it dropped any.
+//
+// The report is RETURNED rather than inferred by the caller, because the
+// caller's old rule was not the same condition. Counting newlines (what
+// strings.Count sees) yields one fewer line than enumerating the input's lines
+// whenever the last line has no trailing newline, and that off-by-one lands
+// exactly on the drop decision: a 501-line input whose last line is unterminated
+// lost that line while the flag said complete — a capped render presented as the
+// whole diff, which is the false statement this API exists to prevent — while a
+// naive Count+1 correction lies the other way, crying truncation for 500
+// terminated lines that all rendered. Asking the code that actually drops is the
+// only reading that matches what the reader sees.
+//
+// lines is what the render actually consumed, capped like the render: a caller
+// comparing it against maxRenderLines must not be told a number the text does
+// not contain. When width <= 0 the fallback is verbatim by definition, so lines
+// is the input's true content-line count even past the cap — nothing was
+// consumed by a cap that did not run.
+func plainTextFallback(diff string, width int) (text string, lines int, truncated bool) {
+	all := strings.Split(diff, "\n")
+	// strings.Split appends an empty element when the input ends in a newline.
+	// That element is not a line of content — it is the newline the previous
+	// line already emitted — and charging it against the budget would make the
+	// cap depend on whether the input happened to end in "\n": 500 terminated
+	// lines would read as 501 and be reported truncated with all of their
+	// content on screen. Drop it here and re-emit the newline at the end, so the
+	// rendering stays byte-for-byte what it was.
+	trailingNewline := len(all) > 0 && all[len(all)-1] == ""
+	if trailingNewline {
+		all = all[:len(all)-1]
+	}
 	if width <= 0 {
-		return diff
+		// No wrapping was requested: the input is returned whole, nothing is
+		// dropped, and both halves of the report say so.
+		return diff, len(all), false
 	}
 	var b strings.Builder
 	count := 0
-	for _, line := range strings.Split(diff, "\n") {
+	for _, line := range all {
 		if count >= maxRenderLines {
+			// Lines remain in the input, so this is a real drop. Reported, not
+			// merely printed: the notice is for the reader, the flag is for the
+			// caller that has to label the render, and the two must agree.
 			fmt.Fprintf(&b, "%s\n", mutedStyle.Render("... (truncated; rerun /diff for full output)"))
-			break
+			return b.String(), count, true
 		}
+		count++
 		if lipgloss.Width(line) > width {
 			line = truncateVisible(line, width)
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
-		count++
 	}
-	return b.String()
+	if trailingNewline {
+		// Reproduce the newline carried by the element dropped above.
+		b.WriteString("\n")
+	}
+	return b.String(), count, false
 }
 
 // --- styling -----------------------------------------------------------

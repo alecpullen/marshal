@@ -5,10 +5,23 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 )
+
+// newTestCommandState builds a session State through the package's constructor
+// rather than as a struct literal. `&session.State{}` bypasses the scope
+// numbering (it leaves scopeID at 0, so ScopeID() reports "s0" — the identity a
+// State that was never numbered shares with every other one) and leaves
+// nextMsgID at 0, both of which falsify ScopeID's documented promise that the
+// token is always set and per-State unique. The constructor is what other tests
+// in this package use (see skills_test.go's newTestState).
+func newTestCommandState() *session.State {
+	return session.New(config.Default(), "/tmp", time.Unix(100, 0), session.Persistence{})
+}
 
 func newTestCommandRegistry(t *testing.T) *commands.Registry {
 	t.Helper()
@@ -208,7 +221,7 @@ func TestCommandManagerCommandRejectsDuringActiveTurn(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return sessionID == "sess_busy" },
 	})

@@ -152,13 +152,16 @@ type Model struct {
 	// context is the Context tab's own state: its scope selection, the copied
 	// pack and request snapshots, and the explicitly-scoped child's context.
 	context contextState
-	// detail is the scrollable body a tab opens to show one thing in full. It
-	// lives on the Model rather than inside a tab so switching tabs does not
-	// discard what the reader was studying, and so the Agents tab can use the
-	// same body without duplicating the scroll/follow rules.
-	detail *DetailView
-	// detailLabel is the heading the detail renders under.
-	detailLabel string
+
+	// NOTE: there is deliberately no single shared *DetailView here. Each of
+	// the three list tabs owns its own (changesState.detail, agentsState.detail,
+	// contextState.detail). A shared body was crosstalk-prone: the tabs write
+	// their content at different moments and do not all re-assert it every
+	// frame, so a Context body could be left rendered under a diff's label and
+	// the paging keys could point at the wrong tab's content. Per-tab bodies
+	// make that mislabelling impossible, and the exported per-tab accessors
+	// (PageDetail/DetailScroll/…, PageAgentDetail/…, PageContextDetail/…)
+	// already name which body they move.
 
 	// scope and seq implement stale-reply rejection. seq is the id of the
 	// most recently issued request; a reply is applicable only when it
@@ -175,12 +178,14 @@ type Model struct {
 // opens on content rather than on an empty state the reader has to interpret.
 func New() *Model {
 	return &Model{
-		tab:    visibleTabs[0],
-		perTab: map[Tab]TabState{},
-		detail: NewDetailView(),
+		tab:     visibleTabs[0],
+		perTab:  map[Tab]TabState{},
+		changes: changesState{detail: NewDetailView()},
+		agents:  agentsState{detail: NewDetailView()},
 		context: contextState{
 			scope:  ContextScopePack,
 			cursor: map[string]int{},
+			detail: NewDetailView(),
 		},
 	}
 }
@@ -292,7 +297,40 @@ func (m *Model) SetState(tab Tab, s TabState) {
 
 // SetData records the snapshot the dock adapter renders from. The side
 // placement passes its snapshot straight to View instead.
+//
+// STALENESS CONTRACT: the recorded snapshot is a SNAPSHOT, not a live view of
+// the caller's data. renderInspectorColumn/renderInspectorBody pass their own
+// Data straight to View, so a frame drawn through those paths does NOT refresh
+// this field. The adapter's View and its `end`/clamp arithmetic read the stored
+// value, so a caller that never calls SetData (for example one driving the
+// adapter directly) gets scroll clamping against an empty snapshot — which
+// clamps the Overview to zero. Call SetData on every refresh, as the root's
+// refreshInspector does.
 func (m *Model) SetData(d Data) { m.data = d }
+
+// ActiveDetail reports the scrollable body belonging to the tab on display, so
+// a caller that holds the Model (and not the per-tab accessors) can still reach
+// the body the reader is looking at.
+//
+// It is the backward-compatible replacement for the single shared detail view:
+// the root and its tests reach the per-tab bodies through the named exported
+// methods (DetailScroll, AgentDetailScroll, ContextDetailScroll, …), and this
+// accessor answers "whichever body is active right now" for the rest. A tab
+// with no body yet yields a freshly allocated, empty view.
+func (m *Model) ActiveDetail() *DetailView {
+	switch m.tab {
+	case TabChanges:
+		return m.changesDetail()
+	case TabAgents:
+		return m.agentsDetail()
+	case TabContext:
+		return m.contextDetail()
+	default:
+		// Overview has no detail body; return an empty one so a caller can call
+		// its read-only methods without a nil check.
+		return NewDetailView()
+	}
+}
 
 // SetScope records the session/state identity this inspector is bound to and
 // resets the request sequence. Any reply issued under the previous scope is
@@ -497,12 +535,27 @@ func (a *DockAdapter) Update(msg tea.Msg) tea.Cmd {
 // handleKey maps the inspector's keys onto model operations. Tab/Shift+Tab
 // cycle tabs, Enter opens the selected row (a later task's concern), and Esc
 // backs out of the detail stack before it means "close".
+//
+// The adapter is the FALLBACK router: when the inspector holds focus, the root's
+// per-tab handler consumes the navigation keys first, and only keys it does not
+// claim reach here (Esc, for example). The adapter is also reached when the
+// inspector is docked without focus.
+//
+// The up/down branches move the CURSOR on the three list tabs and scroll only
+// the Overview. A plain scroll there was close to a no-op: those tabs are
+// cursor-driven, and a scroll offset that no cursor movement accompanies almost
+// never moves the window — so the key looked broken. Overview has no cursor, so
+// it keeps the scroll meaning.
 func (a *DockAdapter) handleKey(k tea.KeyPressMsg) tea.Cmd {
 	switch k.String() {
 	case "up", "k":
-		a.m.scrollBy(-1)
+		if !a.m.moveCursor(-1) {
+			a.m.scrollBy(-1)
+		}
 	case "down", "j":
-		a.m.scrollBy(1)
+		if !a.m.moveCursor(1) {
+			a.m.scrollBy(1)
+		}
 	case "pgup":
 		a.m.scrollBy(-a.m.page())
 	case "pgdown":
@@ -522,4 +575,25 @@ func (a *DockAdapter) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		return func() tea.Msg { return CloseMsg{} }
 	}
 	return nil
+}
+
+// moveCursor moves the selected tab's row cursor by delta and reports whether
+// the tab has a cursor at all. The Overview scrolls a document rather than a
+// list of rows, so it reports false and its caller falls back to scrolling.
+func (m *Model) moveCursor(delta int) bool {
+	switch m.tab {
+	case TabChanges:
+		m.MoveChangesSelection(delta)
+		return true
+	case TabAgents:
+		m.MoveAgentSelection(delta)
+		// An open detail follows the cursor, exactly as the focused key handler
+		// does, so the body and its label never describe different agents.
+		m.SyncAgentDetail()
+		return true
+	case TabContext:
+		m.MoveContextSelection(delta)
+		return true
+	}
+	return false
 }

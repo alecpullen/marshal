@@ -80,7 +80,7 @@ func TestMappedAnswerPublishesItsMappingToTheSink(t *testing.T) {
 	}
 	renderFinalAnswerWithSink(msg, 80, sink)
 
-	rendered, ok := sink.take()
+	rendered, offset, ok := sink.take()
 	if !ok {
 		t.Fatal("the answer published no mapping")
 	}
@@ -90,8 +90,11 @@ func TestMappedAnswerPublishesItsMappingToTheSink(t *testing.T) {
 	if len(rendered.Rows) == 0 {
 		t.Fatal("the mapping has no rows")
 	}
+	if offset != 0 {
+		t.Fatalf("the body claims row offset %d above a block with nothing above its prose", offset)
+	}
 	// Taking clears it, so the next block cannot claim this one's mapping.
-	if _, again := sink.take(); again {
+	if _, _, again := sink.take(); again {
 		t.Fatal("a taken mapping was handed out twice")
 	}
 }
@@ -133,7 +136,7 @@ func TestPathsOutsideTheMappedRendererPublishNoMapping(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			sink := &mappedMessageSink{}
 			renderMessageWithSink(c.msg, 80, sink)
-			if rendered, ok := sink.take(); ok {
+			if rendered, _, ok := sink.take(); ok {
 				t.Fatalf("a non-mapped path published a mapping for %q", rendered.Logical)
 			}
 		})
@@ -146,114 +149,49 @@ func TestPathsOutsideTheMappedRendererPublishNoMapping(t *testing.T) {
 func TestATakenMappingIsNotReusedByTheNextBlock(t *testing.T) {
 	sink := &mappedMessageSink{}
 	sink.pending = &conversation.RenderedBlock{Logical: "first"}
-	if _, ok := sink.take(); !ok {
+	if _, _, ok := sink.take(); !ok {
 		t.Fatal("the pending mapping was not handed out")
 	}
-	if _, ok := sink.take(); ok {
+	if _, _, ok := sink.take(); ok {
 		t.Fatal("the same mapping was handed out to a second block")
 	}
 }
 
-// A cached rendering must not be served for a different width. This is the
-// failure that looks correct until the terminal is resized and then stays wrong:
-// the block keeps the previous width's wrapping, and because the text did not
-// change nothing re-renders it.
-func TestRenderCacheKeysOnWidth(t *testing.T) {
+// The block renderer is not memoized, and this records why rather than leaving
+// the absence to look like an oversight.
+//
+// A render cache keyed on (block, revision, width, mode, theme tier) used to sit
+// beside the renderer. Nothing constructed it and nothing read it: the transcript
+// path builds its blocks through the sink, and the document path is called only
+// by tests. Its only live effect was a reset guard in the session-switch path,
+// which is the kind of dead weight that reads as infrastructure.
+//
+// It was removed rather than wired up. A cache whose key lists every input that
+// can change the output is a silent-staleness hazard the moment a caller
+// populates it without also wiring every invalidation, and the thing that makes
+// it safe is a test like this one pinning the invalidation with the caller. That
+// caller does not exist yet, so neither does the cache.
+func TestBlockRenderingIsNotMemoized(t *testing.T) {
 	block := conversation.Block{
 		ID: "msg:1", Kind: conversation.BlockMessage,
 		Text: "one two three four five six seven eight nine ten",
 	}
+	// A width change must change the output, which is the property a cache would
+	// have to preserve; asserting it here is what would catch a future cache
+	// wired up with a key that missed the width.
 	wide := renderConversationBlock(block, 60, BlockRenderFull)
 	narrow := renderConversationBlock(block, 20, BlockRenderFull)
 	if wide == narrow {
 		t.Fatal("the same text rendered identically at width 60 and width 20")
 	}
-	cache := newConversationRenderCache(8)
-	key := blockRenderKey{block: block.ID, width: 60}
-	cache.put(key, wide)
-
-	if got, ok := cache.get(blockRenderKey{block: block.ID, width: 20}); ok {
-		t.Fatalf("the cache served a width-60 rendering for width 20: %q", got)
+	// And the revision is the block's text: a changed body must produce a
+	// changed revision, because that is the whole contract MatchesRevision reads.
+	first := blockTextRevision("alpha")
+	if second := blockTextRevision("alpha"); second != first {
+		t.Fatal("the same text produced two different revisions")
 	}
-	if got, ok := cache.get(key); !ok || got != wide {
-		t.Fatalf("the cache lost its own entry: %q %v", got, ok)
-	}
-}
-
-// A block whose content changed is rendered again even at the same width, which
-// is what the revision is for. Without it, a streaming answer would freeze at
-// the text it had when it was first rendered.
-func TestRenderCacheKeysOnRevision(t *testing.T) {
-	cache := newConversationRenderCache(8)
-	cache.put(blockRenderKey{block: "msg:1", revision: 1, width: 40}, "first")
-	if got, ok := cache.get(blockRenderKey{block: "msg:1", revision: 2, width: 40}); ok {
-		t.Fatalf("the cache served revision 1's rendering for revision 2: %q", got)
-	}
-}
-
-// A summary and a full rendering of the same block are different outputs, so
-// they cannot share a cache entry.
-func TestRenderCacheKeysOnMode(t *testing.T) {
-	cache := newConversationRenderCache(8)
-	cache.put(blockRenderKey{block: "msg:1", width: 40, mode: BlockRenderFull}, "full")
-	if got, ok := cache.get(blockRenderKey{block: "msg:1", width: 40, mode: BlockRenderSummary}); ok {
-		t.Fatalf("the cache served a full rendering as a summary: %q", got)
-	}
-}
-
-// The cache is bounded. An unbounded one leaks across a long session and every
-// resize multiplies the entries, which only shows up in the sessions that matter
-// most.
-func TestRenderCacheIsBoundedAndEvictsOldestFirst(t *testing.T) {
-	cache := newConversationRenderCache(4)
-	for i := 0; i < 10; i++ {
-		cache.put(blockRenderKey{block: conversation.BlockID("msg:" + string(rune('a'+i))), width: 40}, "x")
-	}
-	if got := cache.Len(); got != 4 {
-		t.Fatalf("cache holds %d entries, want the bound of 4", got)
-	}
-	// The first four inserted are gone; the last four survive.
-	if _, ok := cache.get(blockRenderKey{block: "msg:a", width: 40}); ok {
-		t.Fatal("the oldest entry survived eviction")
-	}
-	if _, ok := cache.get(blockRenderKey{block: "msg:j", width: 40}); !ok {
-		t.Fatal("the newest entry was evicted")
-	}
-}
-
-// Reading an entry makes it recent, so a block the reader is looking at is not
-// evicted by a stream of new ones arriving behind it.
-func TestRenderCacheKeepsRecentlyReadEntries(t *testing.T) {
-	cache := newConversationRenderCache(3)
-	cache.put(blockRenderKey{block: "a", width: 40}, "a")
-	cache.put(blockRenderKey{block: "b", width: 40}, "b")
-	cache.put(blockRenderKey{block: "c", width: 40}, "c")
-	// Touch "a" so it is no longer the oldest.
-	if _, ok := cache.get(blockRenderKey{block: "a", width: 40}); !ok {
-		t.Fatal("entry a went missing before eviction")
-	}
-	cache.put(blockRenderKey{block: "d", width: 40}, "d")
-
-	if _, ok := cache.get(blockRenderKey{block: "a", width: 40}); !ok {
-		t.Fatal("a recently read entry was evicted")
-	}
-	if _, ok := cache.get(blockRenderKey{block: "b", width: 40}); ok {
-		t.Fatal("the least recently used entry survived")
-	}
-}
-
-// The cache is emptied on a session switch. Block identities are scoped per
-// session, so entries carried across a switch would serve one conversation's
-// rendering for another's block.
-func TestRenderCacheResetEmptiesIt(t *testing.T) {
-	cache := newConversationRenderCache(8)
-	cache.put(blockRenderKey{block: "msg:1", width: 40}, "stale")
-	cache.reset()
-	if got := cache.Len(); got != 0 {
-		t.Fatalf("cache still holds %d entries after reset", got)
-	}
-	if _, ok := cache.get(blockRenderKey{block: "msg:1", width: 40}); ok {
-		t.Fatal("a reset cache served an entry")
+	if changed := blockTextRevision("alphabet"); changed == first {
+		t.Fatal("different text produced the same revision")
 	}
 }
 

@@ -89,6 +89,108 @@ func TestRowsNeverExceedTheWidthBudget(t *testing.T) {
 	}
 }
 
+// A tab's width is column-relative, so the wrap that decides where a row ends
+// and the builder that draws it must count columns from the SAME place — the
+// indent the content starts at. Measuring the wrap from column 0 while the
+// builder walked from the indent made every hard line whose tab landed near a
+// stop render WIDER than the wrap had decided, which is why the fixtures above
+// could not catch it: none of them contains a tab.
+//
+// The indent is not incidental. Every transcript block is laid out with
+// Indent 3, and the Markdown projection makes a table's cell separator a tab,
+// so a one-row table is the smallest production shape that overflows.
+func TestTabbedRowsNeverExceedTheWidthBudget(t *testing.T) {
+	for _, f := range tabFixtures {
+		t.Run(f.name, func(t *testing.T) {
+			for _, indent := range []int{0, 1, 3} {
+				for _, width := range []int{12, 16, 20, 40, 79} {
+					if width < indent+tabStop {
+						// A tab is up to tabStop cells wide, so at this width a
+						// single tab may genuinely not fit. Overflow is then the
+						// recorded minimum-overflow outcome rather than a bug,
+						// and TestATabWiderThanTheBudgetDoesNotWedgeTheWrap
+						// covers it.
+						continue
+					}
+					block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+						Width: width, Indent: indent,
+					})
+					for i, row := range block.Rows {
+						if row.Cells > width {
+							t.Fatalf("indent %d width %d: row %d is %d cells: %q",
+								indent, width, i, row.Cells, row.Text())
+						}
+						if got := ansi.StringWidth(row.Text()); got > width {
+							t.Fatalf("indent %d width %d: row %d measures %d cells: %q",
+								indent, width, i, got, row.Text())
+						}
+					}
+					// The wrap may not achieve the budget by losing a byte.
+					if got := reassembled(block.Rows); got != f.text {
+						t.Fatalf("indent %d width %d: reassembled %q, want %q",
+							indent, width, got, f.text)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The reviewer's two reproductions, pinned exactly. Both are a row that ends at
+// the tab the wrap should have broken before: measuring the tab from column 0
+// made it look one cell wide for the wrap and it was drawn seven or eight cells
+// wide, so row 0 came out at 20 cells against a budget of 10 and of 16.
+func TestAWrapThatFallsAtATabStillFitsTheBudget(t *testing.T) {
+	for _, tc := range []struct{ width, indent int }{{10, 1}, {16, 3}} {
+		const text = "1234567\tword"
+		block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{
+			Width: tc.width, Indent: tc.indent,
+		})
+		for i, row := range block.Rows {
+			if row.Cells > tc.width {
+				t.Fatalf("width %d indent %d: row %d is %d cells: %q",
+					tc.width, tc.indent, i, row.Cells, row.Text())
+			}
+		}
+		// The tab is measured from the indent, so the row ends ON it (or, at
+		// width 10, before it): "word" is pushed to a row of its own, which is
+		// the opposite of the reported failure, where the tab expanded to fill
+		// the budget the wrap had already spent and "word" stayed on row 0.
+		if got := block.Rows[0].ContentText(); strings.Contains(got, "word") {
+			t.Fatalf("width %d indent %d: first row is %q, want the text before the tab",
+				tc.width, tc.indent, got)
+		}
+		if got := reassembled(block.Rows); got != text {
+			t.Fatalf("width %d indent %d: reassembled %q, want %q", tc.width, tc.indent, got, text)
+		}
+	}
+}
+
+// The production shape the overflow was reached through: a Markdown table whose
+// cell separator is a tab, laid out at the transcript's indent. At width 20 the
+// reviewer measured 21 cells on the body row.
+func TestAMarkdownTableWithATabSeparatorFitsTheTranscriptWidth(t *testing.T) {
+	sp := ProjectMarkdown("| marshal | stars |\n| --- | --- |\n| go | 1234 |", MarkdownOptions{})
+	for _, width := range []int{20, 40, 80} {
+		block := RenderedBlock{
+			Logical: sp.Text,
+			Width:   width,
+			Rows:    Layout(sp, LayoutOptions{Width: width, Indent: 3}),
+		}
+		if len(block.Rows) == 0 {
+			t.Fatalf("width %d: the table projected to no rows: %q", width, sp.Text)
+		}
+		for i, row := range block.Rows {
+			if row.Cells > width {
+				t.Fatalf("width %d: row %d is %d cells: %q", width, i, row.Cells, row.Text())
+			}
+			if got := ansi.StringWidth(row.Text()); got > width {
+				t.Fatalf("width %d: row %d measures %d cells: %q", width, i, got, row.Text())
+			}
+		}
+	}
+}
+
 // normalizeRuns must not swallow a whole run when one merely GRAZES another:
 // the un-overlapped remainder is real text that would otherwise lose its
 // styling and be left an orphan gap. Pinning the deterministic choice — an

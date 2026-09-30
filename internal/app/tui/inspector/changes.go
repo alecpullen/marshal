@@ -70,6 +70,17 @@ type changesState struct {
 	// have to guess, and guessing produces either the previous file's patch or
 	// a confident "no changes".
 	loaded bool
+
+	// detail is THIS tab's own scrollable body. It is per-tab rather than a
+	// single view shared with Agents and Context because the three tabs keep
+	// their content in their own state and re-render it on different
+	// schedules: a shared view holds whichever tab wrote to it last, so
+	// opening a Context row and then a diff left the Changes label over the
+	// context body. One body per tab makes that mislabelling impossible
+	// rather than merely fixed.
+	detail *DetailView
+	// detailLabel is the heading this tab's body renders under.
+	detailLabel string
 }
 
 // ChangesSnapshot returns the snapshot the list came from.
@@ -286,18 +297,31 @@ func (m *Model) ApplyDiffLoaded(msg DiffLoadedMsg) bool {
 // place in a long diff.
 func (m *Model) HasDiff() bool { return m.changes.currentReq != 0 }
 
+// changesDetail reports the Changes tab's own body, allocating it on first use.
+//
+// Each tab owns its body so one tab's content can never be rendered under
+// another tab's label. The accessor is a method rather than a plain field read
+// so a zero Model — which the tests construct — behaves like New(), while the
+// pointer identity still makes the body mutable in place.
+func (m *Model) changesDetail() *DetailView {
+	if m.changes.detail == nil {
+		m.changes.detail = NewDetailView()
+	}
+	return m.changes.detail
+}
+
 // PageDetail moves the diff body by whole viewports. Positive is forward.
-func (m *Model) PageDetail(delta int) { m.detail.Page(delta) }
+func (m *Model) PageDetail(delta int) { m.changesDetail().Page(delta) }
 
 // DetailScroll reports the diff body's scroll offset, so a caller can tell
 // whether a key actually moved the patch it was looking at.
-func (m *Model) DetailScroll() int { return m.detail.ScrollOffset() }
+func (m *Model) DetailScroll() int { return m.changesDetail().ScrollOffset() }
 
 // DetailTop jumps the diff body to its first line.
-func (m *Model) DetailTop() { m.detail.Top() }
+func (m *Model) DetailTop() { m.changesDetail().Top() }
 
 // DetailBottom jumps the diff body to its last line and resumes following.
-func (m *Model) DetailBottom() { m.detail.Bottom() }
+func (m *Model) DetailBottom() { m.changesDetail().Bottom() }
 
 // CapturedPatch returns the patch text as FETCHED, with the note explaining
 // what it is, and whether the fetch was capped.
@@ -378,8 +402,9 @@ func (m *Model) applyDiff(path string, diff changedfiles.Diff) {
 	// Truncation reaches the reader if EITHER the fetch was capped or the
 	// renderer capped its output: both mean the bytes on screen are a prefix,
 	// and neither may be presented as the whole patch.
-	m.detail.SetNoLongerChanged(m.changes.vanished)
-	m.detail.SetContent(rendered.Text, diff.Truncated || rendered.Truncated)
+	detail := m.changesDetail()
+	detail.SetNoLongerChanged(m.changes.vanished)
+	detail.SetContent(rendered.Text, diff.Truncated || rendered.Truncated)
 	// A patch the reader asked to open starts at its FIRST line.
 	//
 	// The detail view follows by default, which is right for a stream that
@@ -387,8 +412,8 @@ func (m *Model) applyDiff(path string, diff changedfiles.Diff) {
 	// opening it at the bottom hides the hunk header that says what changed.
 	// It is also what makes the paging keys work at all — a view already pinned
 	// to the end has nowhere to page forward to, so PageDown would look broken.
-	m.detail.Top()
-	m.detailLabel = title
+	detail.Top()
+	m.changes.detailLabel = title
 }
 
 // diffViewMode picks the layout for a width. Side-by-side needs the room; below
@@ -427,23 +452,21 @@ func (m *Model) viewChanges() string {
 		return note
 	}
 
-	var b strings.Builder
 	if len(m.changes.rows) == 0 {
-		b.WriteString("No changes against " + baseLabel(m.changes.snapshot) + ".\n")
-		return b.String()
+		return "No changes against " + baseLabel(m.changes.snapshot) + ".\n"
 	}
-
-	b.WriteString("Changed against " + baseLabel(m.changes.snapshot) + ":\n")
-	b.WriteString("\n")
 
 	// An UNMEASURED panel renders everything. That is the same rule the detail
 	// body follows for an unmeasured width: a caller that has not laid its frame
 	// out yet gets the full content rather than a window computed from a height
 	// nobody has measured. A window of one row would be a lie about the content.
 	if m.height <= 0 {
+		var b strings.Builder
+		b.WriteString("Changed against " + baseLabel(m.changes.snapshot) + ":\n")
+		b.WriteString("\n")
 		for _, row := range m.changes.rows {
 			b.WriteString("  ")
-			b.WriteString(changeRowText(row.file))
+			b.WriteString(changeRowText(row.file, m.width))
 			b.WriteString("\n")
 		}
 		if m.changes.vanished {
@@ -461,20 +484,15 @@ func (m *Model) viewChanges() string {
 	// as a second column and a join pads the shorter column to the taller one.
 	// Anything this function emits beyond m.height therefore escapes into the
 	// frame and pushes the status line and composer off the bottom — which is
-	// the defect, and why the budget is computed here rather than estimated.
-	rows := m.height
+	// the defect, and why every row here goes through a budget rather than being
+	// counted by hand. The blank line before the detail body is a ROW, and
+	// forgetting to count it was how this panel emitted more rows than the
+	// height it recorded.
+	rb := newRowBudget(m.height)
 
-	// Fixed chrome: the header pair.
-	rows -= 2
-
-	// A trailing note about a vanished selection, and the loading row. Both are
-	// single lines plus their separator.
-	if m.changes.vanished {
-		rows -= 2
-	}
-	if m.changes.loading {
-		rows -= 2
-	}
+	// Fixed chrome: the header pair, one line and its separator.
+	rb.line("Changed against " + baseLabel(m.changes.snapshot) + ":")
+	rb.blank()
 
 	// The list and the detail body SHARE what is left, split evenly when a body
 	// is open. Half each is the rule because neither is more important than the
@@ -482,10 +500,26 @@ func (m *Model) viewChanges() string {
 	// a long file list is still reading one of them. The split is what stops
 	// either one starving the other, which is how a long diff used to leave no
 	// list at all.
+	//
+	// The trailing notes are reserved FIRST, because they are conditional and
+	// their rows must not be handed to the list or the body: a budget that
+	// promises a row to two writers is a budget that overflows.
+	rows := rb.left()
+	if m.changes.vanished {
+		rows -= 2 // blank + the note line
+	}
+	if m.changes.loading {
+		rows -= 2 // blank + the loading line
+	}
+	rows = max(rows, 1)
+
 	bodyRows := 0
-	if !m.changes.loading && m.changes.currentReq != 0 {
-		bodyRows = max(rows/2, 1)
-		rows -= bodyRows
+	if !m.changes.loading && m.changes.currentReq != 0 && rows >= 3 {
+		// The body wants a blank separator row plus at least one content row;
+		// below three rows there is no honest way to show a body at all.
+		bodyShare := max((rows-1)/2, 1)
+		bodyRows = min(bodyShare, rows-2)
+		rows -= bodyRows + 1
 	}
 	listRows := max(rows, 1)
 
@@ -493,53 +527,62 @@ func (m *Model) viewChanges() string {
 	// the list's share rather than being added on top of it. Adding them
 	// afterwards is precisely how a budgeted panel ends up taller than its frame.
 	w := windowList(len(m.changes.rows), listRows, m.changes.cursor, m.State(TabChanges).Scroll, 2)
-	if note := aboveNote(w.Above(), m.width); note != "" {
-		b.WriteString(note)
-		b.WriteString("\n")
+	if w.ShowAbove() {
+		rb.line(aboveNote(w.Above(), m.width))
 	}
 	for i := w.Start; i < w.End; i++ {
 		cursor := "  "
 		if i == m.changes.cursor {
 			cursor = "▸ "
 		}
-		b.WriteString(cursor)
-		b.WriteString(changeRowText(m.changes.rows[i].file))
-		b.WriteString("\n")
+		rb.line(cursor + changeRowText(m.changes.rows[i].file, m.width))
 	}
-	if note := belowNote(w.Below(), m.width); note != "" {
-		b.WriteString(note)
-		b.WriteString("\n")
+	if w.ShowBelow() {
+		rb.line(belowNote(w.Below(), m.width))
 	}
 
-	if m.changes.vanished {
+	if m.changes.vanished && rb.left() >= 2 {
 		// The reader's file stopped being changed. Say so rather than letting
-		// them study a diff that no longer describes a pending change.
-		b.WriteString("\n")
-		b.WriteString("The file you were on is no longer changed; showing its nearest neighbour.\n")
+		// them study a diff that no longer describes a pending change. A
+		// separator plus its line is two rows; emitting only the blank at a
+		// degenerate height would leave a gap with nothing in it.
+		rb.blank()
+		rb.line("The file you were on is no longer changed; showing its nearest neighbour.")
 	}
 
 	if m.changes.loading {
-		b.WriteString("\n")
-		b.WriteString("Loading diff…\n")
-		return b.String()
+		if rb.left() >= 2 {
+			rb.blank()
+			rb.line("Loading diff…")
+		}
+		return rb.String()
 	}
 
-	if m.changes.currentReq != 0 {
+	if m.changes.currentReq != 0 && bodyRows > 0 && rb.left() >= 2 {
 		// The body is resized to ITS share, so it windows its own content to
 		// what it was given rather than to the whole panel.
-		m.detail.Resize(m.width, bodyRows)
-		b.WriteString("\n")
-		b.WriteString(m.detail.View(m.detailLabel))
+		detail := m.changesDetail()
+		detail.Resize(m.width, bodyRows)
+		rb.blank()
+		rb.body(detail.View(m.changes.detailLabel))
 	}
-	return b.String()
+	return rb.String()
 }
 
-// changeRowText renders one row: marker, path, and truthful counts.
+// changeRowText renders one row: marker, path, and truthful counts, clamped to
+// the panel width.
 //
 // An unknown count renders as NOTHING. The alternative is to print a number,
 // and a fabricated count on screen is indistinguishable from a real one — which
 // is precisely the defect this work removed from the reader underneath.
-func changeRowText(f changedfiles.File) string {
+//
+// The clamp is not cosmetic. A path is author-controlled and can be arbitrarily
+// long; an unclamped row wraps in the terminal, which shifts every row below it
+// and pushes the panel's own chrome off the bottom. clampToWidth measures
+// display CELLS and budgets the ellipsis inside the width, unlike
+// strutil.Truncate which cuts to N runes and then appends the ellipsis (N+1
+// cells) — so this is the helper every other row in the package uses.
+func changeRowText(f changedfiles.File, width int) string {
 	var b strings.Builder
 	b.WriteString(string(markerFor(f)))
 	b.WriteString(" ")
@@ -561,7 +604,15 @@ func changeRowText(f changedfiles.File) string {
 		// rather than in digits.
 		b.WriteString("  " + unknownCountNote(f))
 	}
-	return b.String()
+	// Two cells are reserved for the cursor marker and its space, so the marker
+	// and the row text together cannot exceed the panel width. An UNMEASURED
+	// panel (width 0) is not clamped at all, following the rule every other
+	// renderer in this package uses: before the first resize the panel shows
+	// its content rather than a single ellipsis.
+	if width <= 0 {
+		return b.String()
+	}
+	return clampToWidth(b.String(), max(width-2, 1))
 }
 
 // unknownCountNote describes why a count is unknown, so the absence of a number

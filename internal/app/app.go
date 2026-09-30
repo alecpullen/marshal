@@ -2100,6 +2100,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		var tuiOpts []tui.Option
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
+		tuiOpts = append(tuiOpts, tui.WithNow(runOpts.now))
 		configLayers := &rt.Layers
 		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
 		tuiOpts = append(tuiOpts, tui.WithLayerReloader(layerReloaderFor(homeDir, workingDir, state.Trusted)))

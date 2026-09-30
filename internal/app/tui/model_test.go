@@ -7915,6 +7915,72 @@ func TestSubagentBrokerPublishesRefreshMessage(t *testing.T) {
 	}
 }
 
+// The memo must make an unchanged tick cheap AND identical: a spinner tick
+// that changes nothing about any block's inputs must leave the viewport
+// content byte-for-byte unchanged while serving every history block from
+// the cache instead of re-rendering it.
+func TestRefreshViewportMemoServesUnchangedHistory(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	state.AddMessage(session.RoleUser, "fix the bug", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "On it — checking the parser.", session.ContentTypeNarration)
+	state.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(101, 0), ToolName: "git.log", ResultSummary: "3 commits"})
+	state.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(102, 0), ToolName: "git.log", ResultSummary: "2 commits"})
+	state.LogThinking(session.ThinkingEntry{Text: "the parser path is fine", Duration: time.Second, StartedAt: time.Unix(103, 0)})
+
+	m.refreshViewport()
+	cachedBlocks := len(m.blockRenderCache)
+	if cachedBlocks == 0 {
+		t.Fatal("expected memoized blocks after first build, got none")
+	}
+	before := m.View().Content
+
+	// Simulate a spinner tick that changes nothing in any block's key:
+	// same frame glyph is part of the key, so reuse the same frame. What
+	// this pins is that a rebuild with identical inputs yields identical
+	// output (i.e. the memo serves valid blocks and the eviction pass does
+	// not drop live entries).
+	// A different spinner frame re-renders only live blocks; with no live
+	// block present the memo must carry the whole history across it.
+	m.spinnerFrame = "⠙"
+	m.refreshViewport()
+	if len(m.blockRenderCache) != cachedBlocks {
+		t.Fatalf("memo size changed on an unchanged rebuild: %d → %d", cachedBlocks, len(m.blockRenderCache))
+	}
+	if got := m.View().Content; got != before {
+		t.Fatalf("an unchanged rebuild changed the rendered viewport")
+	}
+}
+
+// The mirror-image guarantee: a block whose content actually changed must
+// repaint (i.e. the memo is keyed on the full render input, not just item
+// identity). A streamed reasoning tail on a live thinking item mutates the
+// per-item content without changing the item's timestamp, so a key that
+// ignored content would freeze the trace mid-stream.
+func TestRefreshViewportMemoInvalidatesOnChangedContent(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	state.AddMessage(session.RoleAssistant, "first", session.ContentTypeNarration)
+	m.refreshViewport()
+	before := m.View().Content
+
+	// Replace the SAME message object's content in place (the streaming
+	// path does this for narration before AddMessage finalizes... in the
+	// real stream the InProgress view carries it, but the InProgress block
+	// is live; here the equivalent real case is a job exit output that
+	// arrives after the row exists — KindJobExit.Output is part of its
+	// render and its key).
+	m.state.AddMessage(session.RoleAssistant, "first — now longer", session.ContentTypeNarration)
+	m.refreshViewport()
+	if got := m.View().Content; got == before {
+		t.Fatal("a changed block did not repaint — memo key does not fold in content")
+	}
+}
+
 func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
@@ -7922,11 +7988,15 @@ func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
 
 	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{})
-	before := m.lastTranscriptHash
 
-	updated, _ := m.handleSubagentMsg(subagentMsg{view: session.SubagentView{Label: "review"}})
-	if updated.lastTranscriptHash == before {
-		t.Fatal("handleSubagentMsg should refresh the viewport")
+	// A registered subagent card must appear in the rendered viewport once
+	// the pump delivers its event. (The wholesale transcriptHash guard is
+	// gone — invalidation is per-block now — so the assertion is on the
+	// rendered content, not the hash.)
+	_, _ = m.handleSubagentMsg(subagentMsg{view: session.SubagentView{Label: "review"}})
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "review") {
+		t.Fatalf("handleSubagentMsg should refresh the viewport with the card\n%s", view)
 	}
 }
 

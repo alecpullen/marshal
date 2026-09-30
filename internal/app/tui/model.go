@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -489,6 +490,18 @@ type Model struct {
 	successPulseAt time.Time
 	now            func() time.Time
 
+	// blockRenderCache memoizes transcript blocks by their full render-input
+	// identity (the fields each block's renderer actually consumes: content,
+	// width, expanded state, callers result, region offset/rows, spinner
+	// glyph, and for live cards the child tail). The transcript can hold
+	// thousands of items while a turn runs, and refreshViewport is woken at
+	// the spinner tick (80ms) — so without the memo, every 80ms re-renders
+	// every block from scratch: glamour markdown, diffs, wraps.
+	// Keyed by blockKey, which hashes those fields. Evicted to
+	// entries that participated in the last build, so nothing accumulates
+	// beyond the current transcript.
+	blockRenderCache map[blockKey]string
+
 	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
 	// todosDismissed hides the all-done summary from the next turn
 	// onward; todosSig detects the agent rewriting the list, which
@@ -505,6 +518,7 @@ type Model struct {
 
 	// customAgentFactory builds a one-shot AgentRunner for a named custom
 	// agent. Wired from app.go; used by buildCustomAgentRunner for Run-now.
+	// (memo: blockKey lives below activeToolKeyFor.)
 	customAgentFactory CustomAgentRunnerFactory
 
 	// subagentFactory builds a fresh child *agent.Runner for a one-shot
@@ -566,6 +580,144 @@ type activeToolKey struct {
 
 func activeToolKeyFor(atc session.ActiveToolCall) activeToolKey {
 	return activeToolKey{startedAt: atc.StartedAt, name: atc.Name}
+}
+
+// blockKey is the full identity of ONE rendered transcript block: a block's
+// own identity (transcript item timestamp+kind, or the active tool row's
+// StartedAt+name) plus everything its renderer consumes that is NOT already
+// folded into that identity — content, width, expanded state, caller count,
+// region scroll offset and high-water rows, the spinner glyph, and for live
+// subagent cards the child's activity tail.
+type blockKey struct {
+	kind        session.TranscriptKind
+	ts          int64
+	contentHash uint64
+	width       int
+	expanded    bool
+	spinner     string
+	regionOff   int
+	regionRows  int
+	callersN    int
+	subTailHash uint64
+}
+
+// Elapsed wall-clock time is deliberately NOT part of the key: the only
+// blocks that display an advancing clock (active tool call, live thinking,
+// running subagent) also carry the spinner glyph in their key, which
+// already flips every 80ms tick — so their elapsed label advances at the
+// spinner cadence without defeating the memo for the settled blocks.
+
+// blockMemoKey builds the memo identity for one per-item block.
+func blockMemoKey(entry transcriptEntry, expanded bool, spinnerFrame string, rv regionView, callers []string, width int) blockKey {
+	out := blockKey{
+		width:      width,
+		expanded:   expanded,
+		spinner:    spinnerFrame,
+		regionOff:  rv.offset,
+		regionRows: rv.minRows,
+		callersN:   len(callers),
+	}
+	if entry.Group != nil {
+		// A merged run renders head + count + one bullet per event; every
+		// event's identity and result text is part of the block's content.
+		out.kind = session.KindAudit
+		out.ts = entry.Group[0].Timestamp.UnixNano()
+		out.contentHash = fnvAuditEvents(entry.Group)
+		return out
+	}
+	item := entry.Item
+	out.kind = item.Kind
+	out.ts = item.Timestamp.UnixNano()
+	switch item.Kind {
+	case session.KindMessage:
+		if item.Message != nil {
+			out.contentHash = fnvStrings(string(item.Message.Role), string(item.Message.ContentType), item.Message.Content)
+		}
+	case session.KindAudit:
+		if item.Audit != nil {
+			out.contentHash = fnvAuditEvents([]registry.AuditEvent{*item.Audit})
+		}
+	case session.KindSubagent:
+		if item.Subagent != nil {
+			// transcriptHash folds status/label/tool calls/summary/current
+			// tool; the memo needs the same identity PLUS the live tail,
+			// which transcriptHash never covered (the card's body streams
+			// without a State mutation).
+			v := item.Subagent
+			out.contentHash = fnvStrings(v.Label, fmt.Sprint(v.Status), v.Summary,
+				fmt.Sprint(v.ToolCalls), v.CurrentTool, fmt.Sprint(v.TokensUsed))
+			out.subTailHash = fnvLines(subagentTailLines(v.Child, subagentTailBudget))
+		}
+	case session.KindThinking:
+		if item.Thinking != nil {
+			out.contentHash = fnvStrings(item.Thinking.Text, fmt.Sprint(item.Thinking.Duration))
+		}
+	case session.KindRunEvent:
+		if item.RunEvent != nil {
+			out.contentHash = fnvStrings(fmt.Sprint(item.RunEvent.Kind), fmt.Sprint(item.RunEvent.TaskN),
+				item.RunEvent.Title, item.RunEvent.Detail, item.RunEvent.Body, item.RunEvent.Severity)
+		}
+	case session.KindJobExit:
+		if item.JobExit != nil {
+			out.contentHash = fnvStrings(item.JobExit.ID, item.JobExit.Command, fmt.Sprint(item.JobExit.ExitCode), item.JobExit.Output)
+		}
+	}
+	return out
+}
+
+// activeToolBlockKey builds the memo identity for the (at most one) live
+// active tool row. Elapsed time is not hashed: the elapsed clock is carried
+// by the spinner (spinnerFrame already flips every 80ms, so elapsed moves
+// within the frame cadence; folding now into the key would defeat the
+// memo). Content: name, args, and the full output the renderer may show.
+func activeToolBlockKey(atc session.ActiveToolCall, spinnerFrame string, expanded bool, width int) blockKey {
+	return blockKey{
+		kind:        session.KindRunEvent,
+		ts:          atc.StartedAt.UnixNano(),
+		width:       width,
+		expanded:    expanded,
+		spinner:     spinnerFrame,
+		contentHash: fnvStrings(atc.Name, atc.Args, atc.Output),
+	}
+}
+
+// fnvLines hashes a []string with the 64-bit FNV-1a used everywhere else in
+// this package's invalidation paths.
+func fnvLines(lines []string) uint64 {
+	h := fnv.New64a()
+	for _, l := range lines {
+		io.WriteString(h, l)
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// fnvStrings hashes a variadic run of strings with FNV-1a, NUL-separated.
+func fnvStrings(parts ...string) uint64 {
+	h := fnv.New64a()
+	for _, p := range parts {
+		io.WriteString(h, p)
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// fnvAuditEvents hashes the fields of audit events renderToolGroup /
+// renderCompletedToolCall actually draw on: identity, result text, exit
+// code, sandbox status, and hook metadata. Errors, diffs and symbol rows
+// are excluded from groups, so the diff-heavy fields (ResultContent for
+// isDiffTool events) matter only on their own rows — folding ResultContent
+// here keeps expanded diffs correct after ResultContent arrives late
+// (spilled results load it on demand).
+func fnvAuditEvents(events []registry.AuditEvent) uint64 {
+	h := fnv.New64a()
+	for _, ev := range events {
+		fmt.Fprintf(h, "%d|%s|%s|%s|%s|%v|%d|%s|",
+			ev.Timestamp.UnixNano(), ev.ToolName, ev.Args, ev.ResultSummary,
+			ev.ResultContent, ev.CommandExitCode, len(ev.Symbols), ev.Error)
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
 }
 
 // activeToolIsExpanded reports whether the given in-flight tool call has a
@@ -692,6 +844,17 @@ func WithWorkingDir(workDir string) Option {
 func WithSkillIndex(idx *skills.Index) Option {
 	return func(m *Model) {
 		m.skillIndex = idx
+	}
+}
+
+// WithNow overrides the model's clock. Tests inject a fixed clock for
+// elapsed-time assertions; app.Run threads the runtime clock through so
+// the TUI's spinners agree with injected state timestamps.
+func WithNow(now func() time.Time) Option {
+	return func(m *Model) {
+		if now != nil {
+			m.now = now
+		}
 	}
 }
 
@@ -3654,8 +3817,8 @@ func (m *Model) refreshViewport() {
 		}
 		items = filtered
 	}
+
 	inProgress := transcriptState.InProgress()
-	streamLen := len(inProgress.Reasoning)
 	atc, activeTool := transcriptState.ActiveToolCall()
 	if activeTool {
 		if atc.StartedAt != m.activeToolStartedAt {
@@ -3664,20 +3827,32 @@ func (m *Model) refreshViewport() {
 	} else {
 		m.activeToolStartedAt = time.Time{}
 	}
-	busy := m.busy || activeTool || streamLen > 0
-
-	todos := m.viewedTodos()
-	if sig := todoSignature(todos); sig != m.todosSig {
-		m.todosSig = sig
-		m.todosDismissed = false
-	}
 	queued := m.state.SteeringQueue()
-	notice, noticeUp := m.state.Notice()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows)
-	if hash == m.lastTranscriptHash {
-		return
+
+	// Per-block memo: every block whose (identity + inputs) is unchanged is
+	// served from blockRenderCache instead of re-rendered. The wholesale
+	// transcriptHash early-return this replaces could only answer
+	// "nothing changed — skip everything": with the spinner frame folded
+	// into it, that meant one unchanged frame per tick rebuild the ENTIRE
+	// transcript (glamour markdown, diffs, ANSI wraps over the whole
+	// history) 12.5 times a second, which is the long-session stall the
+	// spinner tick was paying for. Invalidating per render-input flips that
+	// around: an unchanged history costs map lookups, streaming/live blocks
+	// (whose keys changed) still re-render.
+	if m.blockRenderCache == nil {
+		m.blockRenderCache = map[blockKey]string{}
 	}
-	m.lastTranscriptHash = hash
+	seenBlocks := map[blockKey]struct{}{} // participation set: the eviction pass below keeps only these
+	memoize := func(key blockKey, render func() string) string {
+		if s, ok := m.blockRenderCache[key]; ok {
+			seenBlocks[key] = struct{}{}
+			return s
+		}
+		s := render()
+		seenBlocks[key] = struct{}{}
+		m.blockRenderCache[key] = s
+		return s
+	}
 
 	blocks := make([]string, 0, len(items)+4)
 	regions := make([]clickRegion, 0, len(items))
@@ -3722,7 +3897,12 @@ func (m *Model) refreshViewport() {
 			key := itemKeyFor(entry.Item)
 			expanded := m.isExpanded(key)
 			rv := regionView{offset: m.regionOffset[key], minRows: m.regionRows[key]}
-			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
+			// entry.Item is *T: the closure dereferences at call time, so the
+			// slice-reuse filtered[:0] cannot corrupt a cached render — the
+			// key captures the same content the render call reads.
+			s := memoize(blockMemoKey(entry, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width()), func() string {
+				return renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
+			})
 			// Record the tallest this region has been, so a later shrink in
 			// the child's activity tail cannot shrink the card.
 			if n := strings.Count(s, "\n"); n > m.regionRows[key] {
@@ -3785,8 +3965,12 @@ func (m *Model) refreshViewport() {
 		// deduplicated above; this is the in-flight counterpart.
 		suppress := !drilling && atc.Name == "agent.run" && m.state.HasRunningSubagent()
 		if !suppress {
-			s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolIsExpanded(activeToolKeyFor(atc)), m.viewport.Width())
-			addBlock(s, &clickTarget{isActiveTool: true, toolKey: activeToolKeyFor(atc)})
+			k := activeToolKeyFor(atc)
+			expanded := m.activeToolIsExpanded(k)
+			s := memoize(activeToolBlockKey(atc, m.activeSpinnerFrame(session.ActivityTool), expanded, m.viewport.Width()), func() string {
+				return renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), expanded, m.viewport.Width())
+			})
+			addBlock(s, &clickTarget{isActiveTool: true, toolKey: k})
 		}
 	}
 	if n, ok := m.state.Notice(); ok {
@@ -3825,6 +4009,22 @@ func (m *Model) refreshViewport() {
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	m.viewport.SetContent(strings.Join(blocks, "\n"))
+
+	// Evict memo entries that did not participate in this build, so the
+	// cache tracks the live transcript instead of growing without bound:
+	// a rewound turn, a cleared run log, or a drill-in switch would
+	// otherwise retain every block ever rendered. Same lifecycle as
+	// regionOffset/regionRows above. Entries whose width no longer matches
+	// are dead too — the next build at the new width re-fills them.
+	for key := range m.blockRenderCache {
+		if key.width != m.viewport.Width() {
+			delete(m.blockRenderCache, key)
+			continue
+		}
+		if _, ok := seenBlocks[key]; !ok {
+			delete(m.blockRenderCache, key)
+		}
+	}
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 	}
@@ -4844,8 +5044,10 @@ func (m Model) handleSpinnerTick(msg spinnerTickMsg) (Model, tea.Cmd) {
 	m.spinnerFrame = m.spinner.Next()
 	// The spinner tick is at 80ms (smoother than the 150ms layout tick);
 	// the activity strip and the in-progress thinking/tool rows read
-	// m.spinnerFrame via activeSpinnerFrame, so the viewport must
-	// re-render here or the animation stays at the 150ms cadence.
+	// m.spinnerFrame via activeSpinnerFrame, so refreshViewport runs here
+	// or their animation stays at the 150ms cadence. Rebuilding is
+	// memoized per block (see refreshViewport): steady-state ticks cost one
+	// map probe per history block; only live blocks re-render.
 	m.refreshViewport()
 	return m, spinnerTickCmd()
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -510,6 +511,16 @@ type Model struct {
 	// painted from. A mismatch with no transcript change means only the paint
 	// moved, which is the drag case; see repaintReadingState.
 	paintedReading readingState
+	// blockRenderCache memoizes settled transcript blocks by their full
+	// render-input identity (blockMemoKey): a block whose identity and
+	// inputs are unchanged is served from the cache instead of re-rendered.
+	// Stored as blockMemoEntry rather than a bare string because a memo HIT
+	// must not skip the mapped-rendering claim: the cached TEXT is replayed
+	// and the cached MAPPING (span) is re-recorded for this build, so
+	// selection, click and find mappings survive a hit. See refreshViewport.
+	// The map write through m is safe under View's value receiver because
+	// the map header travels with the model the Update chain returns.
+	blockRenderCache map[blockKey]blockMemoEntry
 	// blockRenderSpans records, for every rendered block, the display rows it
 	// occupies and the RenderedBlock they came from. It is the selection
 	// mapping's input: a click names a row and a cell, and only this table can
@@ -699,6 +710,154 @@ func activeToolKeyFor(atc session.ActiveToolCall) activeToolKey {
 	return activeToolKey{startedAt: atc.StartedAt, name: atc.Name}
 }
 
+// blockKey is the memo identity of one transcript block: everything the
+// block's rendering is a function of, except the leading-prefix state the
+// claim path re-derives (see blockMemoEntry). Elapsed wall-clock time is
+// deliberately NOT part of the key: the only blocks that display an
+// advancing clock (active tool call, live thinking, running subagent) also
+// carry the spinner glyph in their key, which already flips every 80ms
+// tick — so their elapsed label advances at the spinner cadence without
+// defeating the memo for the settled blocks.
+type blockKey struct {
+	kind        session.TranscriptKind
+	ts          int64
+	contentHash uint64
+	width       int
+	expanded    bool
+	spinner     string
+	regionOff   int
+	regionRows  int
+	callersN    int
+	subTailHash uint64
+}
+
+// blockMemoEntry is one memo slot: the rendered text and the mapped
+// rendering it produced, if any.
+//
+// The span is stored (not a copy) because the claim path mutates it in
+// place — it re-stamps blockRow for the current build and re-appends it
+// to the new build's renders. Storing a copy would fork the identity the
+// selection mapping resolves through; sharing the pointer keeps one
+// source of truth per block.
+type blockMemoEntry struct {
+	text string
+	span *renderedBlockSpan
+}
+
+// blockMemoKey builds the memo identity for one per-item block.
+func blockMemoKey(entry transcriptEntry, expanded bool, spinnerFrame string, rv regionView, callers []string, width int) blockKey {
+	out := blockKey{
+		width:      width,
+		expanded:   expanded,
+		spinner:    spinnerFrame,
+		regionOff:  rv.offset,
+		regionRows: rv.minRows,
+		callersN:   len(callers),
+	}
+	if entry.Group != nil {
+		// A merged run renders head + count + one bullet per event; every
+		// event's identity and result text is part of the block's content.
+		// GroupIDs ride along in the group path's identity the same way a
+		// lone item's identity does below: GroupID[0] anchors a group the
+		// way Timestamp anchors a lone item, and without it two merged runs
+		// of identical events would share a slot.
+		out.kind = session.KindAudit
+		out.ts = entry.Group[0].Timestamp.UnixNano()
+		out.subTailHash = fnvStrings(entry.GroupIDs...)
+		out.contentHash = fnvAuditEvents(entry.Group)
+		return out
+	}
+	item := entry.Item
+	out.kind = item.Kind
+	out.ts = item.Timestamp.UnixNano()
+	out.subTailHash = fnvStrings(item.ViewID)
+	switch item.Kind {
+	case session.KindMessage:
+		if item.Message != nil {
+			out.contentHash = fnvStrings(string(item.Message.Role), string(item.Message.ContentType), item.Message.Content)
+		}
+	case session.KindAudit:
+		if item.Audit != nil {
+			out.contentHash = fnvAuditEvents([]registry.AuditEvent{*item.Audit})
+		}
+	case session.KindSubagent:
+		if item.Subagent != nil {
+			// The wholesale hash folds status/label/tool calls/summary/
+			// current tool; the memo needs the same identity PLUS the live
+			// tail, which the wholesale hash never covered (the card's
+			// body streams without a State mutation).
+			v := item.Subagent
+			out.contentHash = fnvStrings(v.Label, fmt.Sprint(v.Status), v.Summary,
+				fmt.Sprint(v.ToolCalls), v.CurrentTool, fmt.Sprint(v.TokensUsed))
+			out.subTailHash = fnvLines(subagentTailLines(v.Child, subagentTailBudget))
+		}
+	case session.KindThinking:
+		if item.Thinking != nil {
+			out.contentHash = fnvStrings(item.Thinking.Text, fmt.Sprint(item.Thinking.Duration))
+		}
+	case session.KindRunEvent:
+		if item.RunEvent != nil {
+			out.contentHash = fnvStrings(fmt.Sprint(item.RunEvent.Kind), fmt.Sprint(item.RunEvent.TaskN),
+				item.RunEvent.Title, item.RunEvent.Detail, item.RunEvent.Body, item.RunEvent.Severity)
+		}
+	case session.KindJobExit:
+		if item.JobExit != nil {
+			out.contentHash = fnvStrings(item.JobExit.ID, item.JobExit.Command, fmt.Sprint(item.JobExit.ExitCode), item.JobExit.Output)
+		}
+	}
+	return out
+}
+
+// activeToolBlockKey builds the memo identity for the (at most one) live
+// active tool row. Elapsed time is not hashed: the elapsed clock is carried
+// by the spinner (spinnerFrame already flips every 80ms, so elapsed moves
+// within the frame cadence; folding now into the key would defeat the
+// memo). Content: name, args, and the full output the renderer may show.
+func activeToolBlockKey(atc session.ActiveToolCall, spinnerFrame string, expanded bool, width int) blockKey {
+	return blockKey{
+		kind:        session.KindRunEvent,
+		ts:          atc.StartedAt.UnixNano(),
+		width:       width,
+		expanded:    expanded,
+		spinner:     spinnerFrame,
+		contentHash: fnvStrings(atc.Name, atc.Args, atc.Output),
+	}
+}
+
+// fnvLines hashes a []string with the 64-bit FNV-1a used everywhere else in
+// this package's invalidation paths.
+func fnvLines(lines []string) uint64 {
+	h := fnv.New64a()
+	for _, l := range lines {
+		io.WriteString(h, l)
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// fnvStrings hashes a variadic run of strings with FNV-1a, NUL-separated.
+func fnvStrings(parts ...string) uint64 {
+	h := fnv.New64a()
+	for _, p := range parts {
+		io.WriteString(h, p)
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// fnvAuditEvents hashes a run of audit events — every field the tool-group
+// and audit renderers consume.
+func fnvAuditEvents(events []registry.AuditEvent) uint64 {
+	h := fnv.New64a()
+	for _, ev := range events {
+		fmt.Fprintf(h, "%d|%s|%s|%s|%s|%v|%d|%s|",
+			ev.Timestamp.UnixNano(), ev.ToolName, ev.Args, ev.ResultSummary,
+			ev.ResultContent, ev.CommandExitCode, len(ev.Symbols), ev.Error)
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
 // activeToolIsExpanded reports whether the given in-flight tool call has a
 // click override to expand. Default collapsed, as today — no global default
 // involved.
@@ -846,6 +1005,17 @@ func WithSkillIndex(idx *skills.Index) Option {
 // per-keystroke DB hit on the first `@`); if the model is constructed
 // without it, the popup falls back to a lazy load on the first `@`
 // keystroke (see updateCompletionPopups).
+// WithNow overrides the model's clock. Tests inject a fixed clock for
+// elapsed-time assertions; app.Run threads the runtime clock through so
+// the TUI's spinners agree with injected state timestamps.
+func WithNow(now func() time.Time) Option {
+	return func(m *Model) {
+		if now != nil {
+			m.now = now
+		}
+	}
+}
+
 func WithFileIndex(paths []string) Option {
 	return func(m *Model) {
 		m.fileIndex = buildFileIndexItems(paths)
@@ -4600,23 +4770,94 @@ func (m *Model) refreshViewport() {
 	// new content.
 	m.transcriptBase = ""
 
-	blocks := make([]string, 0, len(items)+4)
-	regions := make([]clickRegion, 0, len(items))
-	spans := make([]blockSpan, 0, len(items))
-	renders := make([]renderedBlockSpan, 0, len(items))
-	// The sink collects mapped renderings produced during THIS build. It is
-	// created here rather than stored on the model because a stale mapping is
-	// worse than none: a click resolved against last layout's rows lands in the
-	// wrong place, and nothing on screen would show it.
-	sink := &mappedMessageSink{}
-	seenRegions := map[itemKey]bool{}
-	lineCursor := 0
 	// displayRow tracks the block's first display row, which is the coordinate
 	// pointer events use. It runs alongside lineCursor rather than being derived
 	// from it: lineCursor counts transcript lines for scrolling and includes the
 	// blank separator between blocks, and a mapping built from it would be off by
-	// however many separators came before.
+	// however many separators came before. Declared here, before the memo
+	// bootstrap, because the memoize closure below reads it to restamp a cached
+	// block's placed row.
 	displayRow := 0
+	// The sink collects mapped renderings produced during THIS build. It is
+	// created here rather than stored on the model because a stale mapping is
+	// worse than none: a click resolved against last layout's rows lands in the
+	// wrong place, and nothing on screen would show it. Declared before the
+	// memo bootstrap too, because the memoize closure republishes the mapping
+	// it consumes back into the sink on a miss.
+	sink := &mappedMessageSink{}
+
+	// Per-block memo, reconciled WITH the wholesale hash rather than instead
+	// of it: the hash early-return above still answers "nothing changed at
+	// all — repaint only", and when it misses, the memo below answers the
+	// finer question "WHICH blocks changed". That combination is what fixes
+	// the long-session stall: the wholesale hash folds the spinner frame,
+	// so a steady-state tick (spinner moved, nothing else) misses the hash
+	// every 80ms — and under the pre-memo rebuild path that tick re-rendered
+	// the ENTIRE transcript (glamour markdown, diffs, ANSI wraps over the
+	// whole history) 12.5 times a second. Here the tick's rebuild still runs,
+	// but every settled block is served from blockRenderCache and only the
+	// live blocks (whose keys moved with the spinner or the stream) render.
+	if m.blockRenderCache == nil {
+		m.blockRenderCache = map[blockKey]blockMemoEntry{}
+	}
+	seenBlocks := map[blockKey]struct{}{} // participation set: the eviction pass below keeps only these
+	// A memo HIT must not skip the sink claim: the with-sink render call is
+	// also what publishes the block's mapped rendering (the selection, click
+	// and find mapping). On a hit the render does not run, so the PREVIOUS
+	// build's mapping is replayed instead — it is identical to what today's
+	// render would publish because every mapping input is either part of the
+	// memo key (block content, width — see blockKey) or re-derived outside it
+	// (the placed row, re-stamped below; the leading prefix, carried in the
+	// stored span's bodyOffset). See blockMemoEntry.
+	prevRendered := make(map[string]*renderedBlockSpan, len(m.blockRenderSpans))
+	for i := range m.blockRenderSpans {
+		r := &m.blockRenderSpans[i]
+		prevRendered[string(r.id)] = r
+	}
+	// memoize returns the block's text for THIS build, from the cache when
+	// the key matches. render is called only on a miss and returns the text
+	// plus the mapped span the with-sink render left in the sink (nil when
+	// the block has no mapped path, like a tool group or a separator).
+	memoize := func(key blockKey, render func() (string, *renderedBlockSpan)) string {
+		if entry, ok := m.blockRenderCache[key]; ok {
+			seenBlocks[key] = struct{}{}
+			if entry.span != nil {
+				// Promote the entry's span to prevRendered so the claim
+				// below finds it, and refresh the placed row recorded for
+				// THIS build: the block's identity is stable but its row
+				// moves as blocks above it appear, change or vanish.
+				span := entry.span
+				prevRendered[string(span.id)] = span
+				span.blockRow = displayRow
+			}
+			return entry.text
+		}
+		text, span := render()
+		seenBlocks[key] = struct{}{}
+		if span != nil {
+			m.blockRenderCache[key] = blockMemoEntry{text: text, span: span}
+			// Re-publish the mapping the closure just TAKEed so the claim
+			// below still finds it: the closure consumed the sink's pending
+			// value in order to cache the span, and without republishing, the
+			// FIRST build of a block would drop its mapping — while later
+			// builds replayed it from the cache, so every assertion about
+			// selection and highlight availability would break. The claimed
+			// body offset is the total the render chain accumulated.
+			r := span.rendered
+			sink.pending = &r
+			sink.pendingOffset = span.bodyOffset
+		} else {
+			m.blockRenderCache[key] = blockMemoEntry{text: text, span: span}
+		}
+		return text
+	}
+
+	blocks := make([]string, 0, len(items)+4)
+	regions := make([]clickRegion, 0, len(items))
+	spans := make([]blockSpan, 0, len(items))
+	renders := make([]renderedBlockSpan, 0, len(items))
+	seenRegions := map[itemKey]bool{}
+	lineCursor := 0
 	// pendingBlockID carries the identity for the next addBlock when that
 	// block has no click target of its own.
 	pendingBlockID := conversation.BlockID("")
@@ -4691,6 +4932,7 @@ func (m *Model) refreshViewport() {
 		// has lines the mapping does not cover. Without it every row-based hit
 		// test in the block resolved one line too high.
 		if rendered, bodyOffset, ok := sink.take(); ok {
+			// Fresh render: the mapping the render just published.
 			rendered.BlockID = blockID
 			renders = append(renders, renderedBlockSpan{
 				id:         blockID,
@@ -4699,6 +4941,15 @@ func (m *Model) refreshViewport() {
 				bodyOffset: bodyOffset,
 				rendered:   rendered,
 			})
+		} else if span := prevRendered[string(blockID)]; span != nil {
+			// Memo hit: the render did not run, so the sink holds nothing and
+			// the block's mapping from the PREVIOUS build is re-claimed here.
+			// The block's identity and all mapping inputs are unchanged (part
+			// of the memo key), so the mapping is today's too; only the placed
+			// row has moved, and the memoize hit re-stamped it already. It is
+			// re-appended here (same pointer) so THIS build's renders carries
+			// it — the next build's prevRendered seeds from that.
+			renders = append(renders, *span)
 		}
 		pendingBlockID = ""
 		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
@@ -4744,7 +4995,26 @@ func (m *Model) refreshViewport() {
 			// advances the cursor: the chip's region is carved out of the
 			// block's tail, and the ordinary region must cover the rest.
 			blockStart := lineCursor
-			s := renderTranscriptItemWithSink(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width(), sink)
+			// The with-sink render is the MEMO'S MISS path: it renders AND
+			// publishes the mapped rendering into the sink. On a memo hit the
+			// render does not run, so the sink is left undisturbed and the
+			// claim inside addBlock is satisfied from prevRendered instead.
+			// The placed row is read inside addBlock from displayRow, which
+			// has not advanced yet at either claim site.
+			s := memoize(blockMemoKey(entry, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width()), func() (string, *renderedBlockSpan) {
+				text := renderTranscriptItemWithSink(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width(), sink)
+				if rendered, bodyOffset, ok := sink.take(); ok {
+					id := conversation.BlockID(key.viewID)
+					rendered.BlockID = id
+					return text, &renderedBlockSpan{
+						id:         id,
+						rows:       len(rendered.Rows),
+						bodyOffset: bodyOffset,
+						rendered:   rendered,
+					}
+				}
+				return text, nil
+			})
 			blockLines := strings.Count(s, "\n")
 			// Record the tallest this region has been, so a later shrink in
 			// the child's activity tail cannot shrink the card.
@@ -4853,8 +5123,12 @@ func (m *Model) refreshViewport() {
 		// deduplicated above; this is the in-flight counterpart.
 		suppress := !drilling && atc.Name == "agent.run" && m.state.HasRunningSubagent()
 		if !suppress {
-			s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolIsExpanded(activeToolKeyFor(atc)), m.viewport.Width())
-			addBlock(s, &clickTarget{isActiveTool: true, toolKey: activeToolKeyFor(atc)})
+			k := activeToolKeyFor(atc)
+			expanded := m.activeToolIsExpanded(k)
+			s := memoize(activeToolBlockKey(atc, m.activeSpinnerFrame(session.ActivityTool), expanded, m.viewport.Width()), func() (string, *renderedBlockSpan) {
+				return renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), expanded, m.viewport.Width()), nil
+			})
+			addBlock(s, &clickTarget{isActiveTool: true, toolKey: k})
 		}
 	}
 	if n, ok := m.state.Notice(); ok {
@@ -4929,6 +5203,22 @@ func (m *Model) refreshViewport() {
 	content = m.paintReadingState(content)
 	m.paintedReading = m.readingState()
 	m.viewport.SetContent(content)
+
+	// Evict memo entries that did not participate in this build, so the
+	// cache tracks the live transcript instead of growing without bound:
+	// a rewound turn, a cleared run log, or a drill-in switch would
+	// otherwise retain every block ever rendered. Same lifecycle as
+	// regionOffset/regionRows above. Entries whose width no longer matches
+	// are dead too — the next build at the new width re-fills them.
+	for key := range m.blockRenderCache {
+		if key.width != m.viewport.Width() {
+			delete(m.blockRenderCache, key)
+			continue
+		}
+		if _, ok := seenBlocks[key]; !ok {
+			delete(m.blockRenderCache, key)
+		}
+	}
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 		return

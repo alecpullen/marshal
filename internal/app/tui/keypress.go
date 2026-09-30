@@ -164,14 +164,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// the reader pressed reflexively would put them in a mode they did not
 		// choose, and the query they would be typing into is not visible.
 		if m.find.open && len(m.find.matches) > 0 {
-			m.stepFind(1)
-			return *m, nil, true
+			return *m, m.stepFind(1), true
 		}
 		return *m, nil, false
 	case "shift+f3":
 		if m.find.open && len(m.find.matches) > 0 {
-			m.stepFind(-1)
-			return *m, nil, true
+			return *m, m.stepFind(-1), true
 		}
 		return *m, nil, false
 	case "f6", "shift+f6":
@@ -377,12 +375,19 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// The rail's own visibility remains a setting ([tui.side_panel].enabled);
 		// the inspector is a session toggle that also works below the rail's
 		// width threshold, by falling back to the dock.
-		if m.inspector != nil {
-			m.inspector.toggle(m.inspectorSideAvailable())
-			m.refreshInspector()
-		}
-		m.resize(m.rawWidth, m.rawHeight)
-		return *m, nil, true
+		// It dispatches through the CATALOG rather than doing the toggle
+		// inline. Ctrl+B and the palette row for the same action must agree —
+		// that is the contract actionCatalog exists to enforce — and a second
+		// hand-written copy of the toggle is exactly how the two drift.
+		mm, cmd := m.runAction(ActionToggleInspector)
+		return mm, cmd, true
+	case "ctrl+shift+b":
+		// Expand / restore the inspector body. It is Ctrl+B's shifted sibling
+		// because it is the same surface, one step further: the row and the key
+		// are declared together in the catalog, and this is what makes the
+		// "expanded body" level of Esc reachable.
+		mm, cmd := m.runAction(ActionExpandInspector)
+		return mm, cmd, true
 	case "ctrl+r":
 		mm, cmd := m.runAction(ActionRollback)
 		return mm, cmd, true

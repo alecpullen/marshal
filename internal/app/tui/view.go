@@ -151,7 +151,17 @@ func (m *Model) viewString() string {
 	// duplicate every number on screen.
 	inspectorOnSide := m.inspector != nil && m.inspector.placement() == inspectorSide
 	if inspectorOnSide {
-		if rv := m.renderInspectorColumn(); rv != "" {
+		if rv := m.renderInspectorColumn(leftHeight); rv != "" {
+			// The inspector column must be clipped to the SAME budget as the
+			// left column, and it must be clipped BEFORE the join.
+			// lipgloss.JoinHorizontal pads the shorter column to the taller
+			// one, so an over-tall right column makes the joined row as tall
+			// as the inspector regardless of how well the left column was
+			// clipped — and the status line and composer are placed below the
+			// joined row. That is the identical failure clipLeftColumn exists
+			// to prevent, one column to the right, so it gets the identical
+			// treatment: both columns are bounded, then joined.
+			rv = clipLeftColumn(rv, leftHeight)
 			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
 		}
 	}
@@ -184,11 +194,32 @@ func (m *Model) viewString() string {
 // renderInspectorColumn renders the inspector into the second column,
 // band-painted like the rail it replaces so the two are visually
 // interchangeable at the same width.
-func (m Model) renderInspectorColumn() string {
+//
+// It takes the row budget explicitly and RESIZES the inspector to the measured
+// frame rectangle before rendering. Both halves matter:
+//
+//   - The rectangle is the authority on the column's size, not the height the
+//     inspector recorded at the last resize event. The body shrinks without any
+//     resize event — the composer grows to a second line, the dock claims rows,
+//     the run panel appears — and a panel still rendering to its stale, larger
+//     height would overflow the frame it is joined into.
+//   - The inspector is told the SAME budget the caller is about to clip to, so
+//     it windows its own list to fit rather than relying on the clip to hide the
+//     surplus. The clip is the guarantee; windowing is what stops the reader
+//     losing the rows at the top of the list to it.
+//
+// The model is a pointer, so this resize persists into the next frame's state
+// even though View holds a value receiver.
+func (m Model) renderInspectorColumn(budget int) string {
 	r := m.frameRect().Inspector
 	if r.Empty() {
 		return ""
 	}
+	height := min(r.Height, budget)
+	if height < 1 {
+		height = 1
+	}
+	m.inspector.resize(r.Width, height)
 	body := m.inspector.model.View(m.inspectorData())
 	if body == "" {
 		return ""

@@ -36,6 +36,21 @@ import (
 // UI feel broken rather than slow.
 const maxFindMatches = 500
 
+// searchIndexMaxBytes caps the projected TEXT the index retains, alongside the
+// entry count.
+//
+// The entry cap alone bounds the cache by the number of blocks in the
+// conversation, which is not the quantity that costs: 4096 entries of a
+// streaming answer's full text each is 4096 × the block size, and the memory a
+// long session spends on cached projections would then be sized for the
+// largest blocks it happened to contain rather than for anything it needed.
+// The ceiling trades one re-projection per keystroke, for a block that has
+// itself been evicted, against a cache whose footprint a session cannot
+// outgrow. 4 MiB holds the readable projection of a very large visible
+// conversation; a block evicted for size is simply re-projected next time it
+// is searched, exactly as it would be after an LRU eviction.
+const searchIndexMaxBytes = 4 << 20
+
 // FindQuery is what the reader typed, kept with the form used to search.
 //
 // It is a type rather than a bare string so that the fold and the echo cannot
@@ -184,21 +199,32 @@ func projectBlock(b Block, index *SearchIndex) (string, []Run) {
 	return sp.Text, sp.Runs
 }
 
-// searchableMarkdown reports whether a block's text should be projected.
+// searchableMarkdown reports whether a block's text may be projected as
+// Markdown before it is searched.
+//
+// The rule the whole function serves is that the projection must match what
+// the reader is LOOKING at, and the transcript's renderers are the authority
+// on that. A message is rendered through the same Markdown projection here
+// (renderMessageWithSink), so a match's offsets highlight the text that was
+// drawn. A thinking entry, a subagent card, a run event and a background
+// job's exit are NOT: renderThinkingSummary, renderSubagentCard,
+// renderRunEvent and renderJobExit wrap, gutter and truncate the RAW text
+// with no Markdown pass, so "- bullet" is shown as "- bullet" and searching a
+// projected "•" would find a character that is nowhere on screen — while the
+// "- bullet" the reader can see would be unfindable. Those kinds therefore
+// stay searchable AS WRITTEN.
 func searchableMarkdown(b Block) bool {
 	switch b.Kind {
-	case BlockMessage, BlockThinking:
+	case BlockMessage:
 		// A user's prompt is Markdown to the same parser; an assistant's answer
-		// is the projection the reader read.
-		return b.Source != SourceOutput && b.Source != SourcePatch
-	case BlockSubagent, BlockRunEvent, BlockJobExit:
-		// These render as prose, so they are projected the same way.
+		// is the projection the reader read. But captured output and patches
+		// are verbatim by source, and the message renderer draws them that way.
 		return b.Source != SourceOutput && b.Source != SourcePatch
 	default:
-		// A tool call's output is captured text, and a collapsed group's
-		// members are exactly that. Running it through a Markdown parser would
-		// rewrite what the tool printed, and the rewrite would not match what
-		// the reader sees.
+		// Everything else — a thinking entry, a subagent card, a run event, a
+		// job exit, a tool call's output, a collapsed group's members — is
+		// drawn raw, and a projection that rewrote it would not match what the
+		// reader sees.
 		return false
 	}
 }
@@ -318,13 +344,34 @@ func (s *SearchIndex) spans(b Block) (string, []Run) {
 	return sp.Text, sp.Runs
 }
 
-// store caches a projection, evicting the least recently used when full.
+// store caches a projection, evicting the least recently used entries until
+// both bounds hold: the entry count, and the total bytes of retained text.
+//
+// The byte ceiling exists for the same reason the entry cap does — a cache
+// whose footprint a session cannot outgrow — and it is enforced the same way:
+// the LEAST recently used projection is the one dropped, so the text the
+// reader is most likely to search again survives longest. A lone entry larger
+// than the ceiling itself is still kept (evicting everything else to hold
+// nothing would not be a bound, it would be an empty cache).
 func (s *SearchIndex) store(id BlockID, e searchIndexEntry) {
 	if id == "" {
 		return
 	}
-	if _, exists := s.entries[id]; !exists && len(s.entries) >= s.max {
-		s.evictOldest()
+	if _, exists := s.entries[id]; !exists {
+		for len(s.entries) >= s.max {
+			s.evictOldest()
+		}
+		// A fresh projection's bytes count before it lands, so the ceiling
+		// governs what RETAINS rather than what arrived.
+		var total int
+		for _, existing := range s.entries {
+			total += len(existing.text)
+		}
+		for total+len(e.text) > searchIndexMaxBytes && len(s.order) > 0 {
+			oldest := s.order[0]
+			total -= len(s.entries[oldest].text)
+			s.evictOldest()
+		}
 	}
 	s.entries[id] = e
 	s.touch(id)

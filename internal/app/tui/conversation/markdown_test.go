@@ -236,6 +236,80 @@ func TestCodeBlocksKeepTheirBytesAndLoseOnlyTheFence(t *testing.T) {
 	}
 }
 
+// A fenced code block INSIDE a container keeps the container's prefix on its
+// own source lines: a quote-fenced block is quoted line by line ("quoted
+// code" keeps its ">" per line), and a CODE block is still code (SpanCode)
+// inside a LIST (its marker is the bullet, not a fence rewrap). writeCode
+// slices from lines() whose starts include the container's indentation, so
+// the prefix rides along.
+func TestAFencedCodeBlockInsideAContainerKeepsTheContainerPrefix(t *testing.T) {
+	t.Run("in a blockquote", func(t *testing.T) {
+		sp := ProjectMarkdown("> ```\n> code line\n> ```", MarkdownOptions{})
+		if !strings.Contains(sp.Text, "> code line") {
+			t.Fatalf("a quoted code block lost the quote prefix: %q", sp.Text)
+		}
+		// The code itself is still styled as code, not as plain body text.
+		off := strings.Index(sp.Text, "code line")
+		if got := kindAt(sp.Runs, off); got != SpanCode {
+			t.Fatalf("the quoted code has kind %v, want SpanCode (runs %+v)", got, sp.Runs)
+		}
+	})
+	t.Run("in a list item", func(t *testing.T) {
+		sp := ProjectMarkdown("- item\n\n  ```\n  keep me\n  ```", MarkdownOptions{})
+		if !strings.Contains(sp.Text, "keep me") {
+			t.Fatalf("a fenced block inside a list item lost its content: %q", sp.Text)
+		}
+		off := strings.Index(sp.Text, "keep me")
+		if got := kindAt(sp.Runs, off); got != SpanCode {
+			t.Fatalf("the fenced block's content has kind %v, want SpanCode", got)
+		}
+	})
+}
+
+// A multi-line blockquote carries its marker on EVERY line, not just the
+// first: a projection that emitted "> " once and then the bare body would
+// read as a quote ending after one line, and a copy of it would lose the
+// structure the reader saw. This is the test a mutation that collapsed
+// writeQuote to one marker plus a plain body survived.
+func TestAMultilineBlockquoteKeepsItsMarkerOnEveryLine(t *testing.T) {
+	block := project(t, "> line one\n> line two", 80)
+	got := readable(block)
+	want := "> line one\n> line two"
+	if got != want {
+		t.Fatalf("multiline blockquote read as %q, want %q (the marker on every line)", got, want)
+	}
+	// And the quote markers themselves are still marked decorative, so a
+	// selection copy can drop them on purpose if it wants.
+	sp := ProjectMarkdown("> line one\n> line two", MarkdownOptions{})
+	sawQuoteMarker := 0
+	for _, r := range sp.Runs {
+		if r.Kind == SpanQuote {
+			sawQuoteMarker++
+		}
+	}
+	if sawQuoteMarker != 2 {
+		t.Fatalf("the projection styled %d quote markers, want one per line", sawQuoteMarker)
+	}
+}
+
+// Emphasis INSIDE a blockquote keeps its styling: the sub-projection's runs
+// are re-applied through the re-emission, and a mutation that dropped them
+// (one marker plus a plain body) passed every existing test.
+func TestEmphasisInsideAQuoteKeepsItsKind(t *testing.T) {
+	sp := ProjectMarkdown("> a *b*", MarkdownOptions{})
+	off := strings.Index(sp.Text, "b")
+	if off < 0 {
+		t.Fatalf("projection %q does not contain the quoted word", sp.Text)
+	}
+	if got := kindAt(sp.Runs, off); got != SpanEmphasis {
+		t.Fatalf("the quoted word has kind %v, want emphasis (runs %+v)", got, sp.Runs)
+	}
+	// The marker, not the word, is the quote's own styling.
+	if got := kindAt(sp.Runs, 0); got != SpanQuote {
+		t.Fatalf("the quote marker has kind %v, want SpanQuote", got)
+	}
+}
+
 // A run must cover every byte of the logical text, so a consumer can style or
 // search any position without a gap to special-case.
 func TestEveryLogicalByteIsCoveredByARun(t *testing.T) {
@@ -447,9 +521,9 @@ func TestTextAcrossAProjectedBlockReturnsReadableText(t *testing.T) {
 	block := project(t, "run `go test` now", 80)
 	// Row 0 is "run go test now"; select from the first cell through the last.
 	row := block.Rows[0]
-	got := block.TextAcross(0, 0, 0, row.Cells)
+	got := block.textAcross(0, 0, 0, row.Cells)
 	if got != "run go test now" {
-		t.Fatalf("TextAcross over a projected row = %q, want the readable text", got)
+		t.Fatalf("textAcross over a projected row = %q, want the readable text", got)
 	}
 	if strings.Contains(got, "`") {
 		t.Fatalf("the backticks leaked into the selection: %q", got)

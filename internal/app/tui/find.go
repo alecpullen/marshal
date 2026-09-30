@@ -411,11 +411,9 @@ func (m *Model) handleFindKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.afterFindQueryChange()
 		return m, nil, true
 	case "f3":
-		m.stepFind(1)
-		return m, nil, true
+		return m, m.stepFind(1), true
 	case "shift+f3":
-		m.stepFind(-1)
-		return m, nil, true
+		return m, m.stepFind(-1), true
 	}
 	if !isPrintableKey(msg) {
 		return m, nil, false
@@ -463,18 +461,30 @@ func (m *Model) afterFindQueryChange() {
 // Scrolling is part of the step rather than the caller's job: a key that moved
 // the cursor without moving the view would leave the reader looking at the
 // previous match, which reads as the key having done nothing.
-func (m *Model) stepFind(delta int) {
+//
+// It returns a command when the step has something to tell the reader. That is
+// the one case where the cursor legitimately moves and the view legitimately
+// does not: the match is real, but its block is not rendered at the current
+// width, so gotoFindMatch reports that no jump happened. The cursor still
+// advances — reverting it would make the key a silent no-op and hide the fact
+// that the result list changed — so the reader is told, rather than being left
+// to conclude the key is broken.
+func (m *Model) stepFind(delta int) tea.Cmd {
 	if len(m.find.matches) == 0 {
-		return
+		return nil
 	}
 	if delta >= 0 {
 		m.nextFindMatch()
 	} else {
 		m.prevFindMatch()
 	}
-	m.gotoFindMatch()
+	moved := m.gotoFindMatch()
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
+	if moved {
+		return nil
+	}
+	return m.showToast("match found, but it is not visible at this width")
 }
 
 // openFindForSlashKey opens the search when `/` is pressed with the conversation

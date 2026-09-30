@@ -38,7 +38,7 @@ const mappedIndent = 3
 
 // blockRenderKey identifies one rendering of one block.
 //
-// The fields are the inputs renderConversationBlock reads, and nothing else.
+// The fields are the inputs the mapped renderer reads, and nothing else.
 // Rendering mode is here because the transcript renders some blocks as a
 // one-line summary and others in full; expansion is here because a collapsed
 // group and an expanded one differ without their text changing; revision is here
@@ -155,35 +155,34 @@ func (c *conversationRenderCache) reset() {
 
 // renderConversationBlock renders one block to styled screen text at a width.
 //
+// It delegates to the mapped renderer, and that is the point: this function and
+// the live transcript path used to be TWO layout paths, and they disagreed. This
+// one laid out with no indent; the live one laid out with `mappedIndent` and let
+// the caller substitute its gutter glyph on the first line. Wiring this path up
+// as it was would have drawn every block three columns to the left of where the
+// transcript draws it and shifted every cell offset in the RenderedBlock by
+// three.
+//
+// There is now exactly one layout, so that class of divergence cannot come back.
+// The caller discards the mapping; a consumer that wants to select, click or
+// search a block goes through the transcript path, which keeps it.
+//
 // The returned text has no trailing newline: the caller joins blocks, and a
 // per-block newline is how a transcript acquires a blank line between every pair
 // of items.
 func (m *Model) renderConversationBlock(block conversation.Block, width int, mode BlockRenderMode) string {
-	if width <= 0 {
+	if width <= 0 || block.Text == "" {
 		return ""
 	}
-	key := blockRenderKey{
-		block:     block.ID,
-		revision:  block.Revision,
-		width:     width,
-		mode:      mode,
-		themeTier: theme.Current().Tier,
-	}
-	if m.convRender == nil {
-		m.convRender = newConversationRenderCache(0)
-	}
-	if cached, ok := m.convRender.get(key); ok {
-		return cached
-	}
-	out := renderConversationBlock(block, width, mode)
-	m.convRender.put(key, out)
-	return out
+	text, _ := renderMappedBlock(block.Text, width, mode, mappedIndent)
+	return strings.TrimSuffix(text, "\n")
 }
 
 // renderConversationBlock is the pure rendering, with no cache and no model.
 //
-// It is separated from the cached wrapper so it can be tested directly, and so
-// the cache's correctness is the only thing the wrapper has to get right.
+// It exists for callers that have a Block and no Model, and it is the indent-free
+// form of the mapped layout (a Block has no transcript gutter — it is a document
+// fragment, not a transcript row).
 //
 // An unmeasured width (zero or negative) renders NOTHING rather than rendering
 // unwrapped text. A caller has not yet laid its frame out, and emitting the text
@@ -194,22 +193,8 @@ func renderConversationBlock(block conversation.Block, width int, mode BlockRend
 	if width <= 0 || block.Text == "" {
 		return ""
 	}
-	sp := conversation.ProjectMarkdown(block.Text, conversation.MarkdownOptions{})
-	if mode == BlockRenderSummary {
-		sp = summarizeSpans(sp, width)
-	}
-	rows := conversation.Layout(sp, conversation.LayoutOptions{
-		Width:       width,
-		Breakpoints: WrapBreakpoints,
-	})
-	var b strings.Builder
-	for i, row := range rows {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(renderDisplayRow(row))
-	}
-	return b.String()
+	text, _ := renderMappedBlock(block.Text, width, mode, 0)
+	return strings.TrimSuffix(text, "\n")
 }
 
 // mappedMessageSink collects the mappings produced during one transcript build.
@@ -253,17 +238,41 @@ func (s *mappedMessageSink) take() (conversation.RenderedBlock, bool) {
 // Markdown a second time and, worse, could disagree with what was drawn if
 // anything between the two calls changed.
 func renderMappedMessage(content string, width int, mode BlockRenderMode) (string, conversation.RenderedBlock) {
+	return renderMappedBlock(content, width, mode, mappedIndent)
+}
+
+// renderMappedBlock is the ONE layout path for a block of prose.
+//
+// Both the live transcript renderer and the document-level
+// renderConversationBlock funnel through it, which is what removes the class of
+// bug the review found: two layout functions with different indent budgets, one
+// of them live and one of them dead, silently disagreeing about where column 3
+// is. There is exactly one answer now because there is exactly one function.
+//
+// indent is the leading gutter the layout reserves. The transcript passes
+// mappedIndent so the caller can substitute its own gutter GLYPH on the first
+// line without moving any offset; a document-level caller passes 0, because a
+// block quoted out of the conversation has no transcript gutter.
+//
+// summaryBudget is the width BlockRenderSummary truncates to in the TRANSCRIPT
+// case, where the width includes the indent. It is ignored when indent is 0
+// (there the summary is bounded by width alone). The two differ on purpose: a
+// summary is a fixed number of CELLS of text, and the transcript's cells start
+// after the gutter.
+func renderMappedBlock(
+	content string, width int, mode BlockRenderMode, indent int,
+) (string, conversation.RenderedBlock) {
 	// Prose sits behind the transcript's gutter, so the layout indent is the
 	// gutter width and the wrap budget is the matching remainder. Measuring
 	// wrong here is how a line ends up under the side rail.
 	opts := conversation.LayoutOptions{
 		Width:       width,
-		Indent:      mappedIndent,
+		Indent:      indent,
 		Breakpoints: WrapBreakpoints,
 	}
 	sp := conversation.ProjectMarkdown(content, conversation.MarkdownOptions{})
 	if mode == BlockRenderSummary {
-		sp = summarizeSpans(sp, contentWidth(width))
+		sp = summarizeSpans(sp, summaryBudget(width, indent))
 	}
 	rows := conversation.Layout(sp, opts)
 	rendered := conversation.RenderedBlock{
@@ -290,6 +299,14 @@ func renderMappedMessage(content string, width int, mode BlockRenderMode) (strin
 	// is what keeps the mapping's cell 3 meaning screen column 3 instead of
 	// needing an offset applied at every hit test.
 	return b.String() + "\n", rendered
+}
+
+// summaryBudget picks the width a one-line summary is truncated to.
+func summaryBudget(width, indent int) int {
+	if indent > 0 {
+		return contentWidth(width)
+	}
+	return width
 }
 
 // renderMappedFirstLine renders a mapped block's first line with the caller's

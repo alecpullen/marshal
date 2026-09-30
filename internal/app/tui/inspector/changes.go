@@ -436,13 +436,78 @@ func (m *Model) viewChanges() string {
 	b.WriteString("Changed against " + baseLabel(m.changes.snapshot) + ":\n")
 	b.WriteString("\n")
 
-	for i, row := range m.changes.rows {
+	// An UNMEASURED panel renders everything. That is the same rule the detail
+	// body follows for an unmeasured width: a caller that has not laid its frame
+	// out yet gets the full content rather than a window computed from a height
+	// nobody has measured. A window of one row would be a lie about the content.
+	if m.height <= 0 {
+		for _, row := range m.changes.rows {
+			b.WriteString("  ")
+			b.WriteString(changeRowText(row.file))
+			b.WriteString("\n")
+		}
+		if m.changes.vanished {
+			b.WriteString("\n")
+			b.WriteString("The file you were on is no longer changed; showing its nearest neighbour.\n")
+		}
+		if m.changes.loading {
+			b.WriteString("\n")
+			b.WriteString("Loading diff…\n")
+		}
+		return b.String()
+	}
+
+	// The tab is BUDGETED end to end, because the panel is joined into the frame
+	// as a second column and a join pads the shorter column to the taller one.
+	// Anything this function emits beyond m.height therefore escapes into the
+	// frame and pushes the status line and composer off the bottom — which is
+	// the defect, and why the budget is computed here rather than estimated.
+	rows := m.height
+
+	// Fixed chrome: the header pair.
+	rows -= 2
+
+	// A trailing note about a vanished selection, and the loading row. Both are
+	// single lines plus their separator.
+	if m.changes.vanished {
+		rows -= 2
+	}
+	if m.changes.loading {
+		rows -= 2
+	}
+
+	// The list and the detail body SHARE what is left, split evenly when a body
+	// is open. Half each is the rule because neither is more important than the
+	// other: a reader with a diff open is still choosing files, and a reader with
+	// a long file list is still reading one of them. The split is what stops
+	// either one starving the other, which is how a long diff used to leave no
+	// list at all.
+	bodyRows := 0
+	if !m.changes.loading && m.changes.currentReq != 0 {
+		bodyRows = max(rows/2, 1)
+		rows -= bodyRows
+	}
+	listRows := max(rows, 1)
+
+	// The window is asked to reserve its own note rows, so the notes ride inside
+	// the list's share rather than being added on top of it. Adding them
+	// afterwards is precisely how a budgeted panel ends up taller than its frame.
+	w := windowList(len(m.changes.rows), listRows, m.changes.cursor, m.State(TabChanges).Scroll, 2)
+	if note := aboveNote(w.Above(), m.width); note != "" {
+		b.WriteString(note)
+		b.WriteString("\n")
+	}
+	for i := w.Start; i < w.End; i++ {
 		cursor := "  "
 		if i == m.changes.cursor {
 			cursor = "▸ "
 		}
 		b.WriteString(cursor)
-		b.WriteString(changeRowText(row.file))
+		b.WriteString(changeRowText(m.changes.rows[i].file))
+		b.WriteString("\n")
+	}
+	if note := belowNote(w.Below(), m.width); note != "" {
+		b.WriteString(note)
 		b.WriteString("\n")
 	}
 
@@ -460,6 +525,9 @@ func (m *Model) viewChanges() string {
 	}
 
 	if m.changes.currentReq != 0 {
+		// The body is resized to ITS share, so it windows its own content to
+		// what it was given rather than to the whole panel.
+		m.detail.Resize(m.width, bodyRows)
 		b.WriteString("\n")
 		b.WriteString(m.detail.View(m.detailLabel))
 	}

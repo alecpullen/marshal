@@ -25,6 +25,13 @@ func searchBlock(id, text string) Block {
 	return Block{ID: BlockID(id), Kind: BlockMessage, Members: []string{id}, Text: text}
 }
 
+// searchProjectionOf returns the TEXT the search reads: exactly what
+// projectBlock produces for a block, used to pin the projection the reader's
+// query is matched against.
+func searchProjectionOf(b Block) (string, []Run) {
+	return projectBlock(b, nil)
+}
+
 // projectionOf is the readable text a block is searched in. It is the same
 // projection the renderer lays out, which is what makes a match's offsets
 // usable for a highlight.
@@ -291,6 +298,55 @@ func TestFindCapsItsResults(t *testing.T) {
 	}
 }
 
+// The transcript renders a thinking entry, a subagent card, a run event and a
+// job exit from their RAW text: plain, with no Markdown projection
+// (renderThinkingSummary, renderSubagentCard, renderRunEvent, renderJobExit
+// wrap and gutter the literal bytes — "- bullet" is shown as "- bullet").
+// The search projection must name the text the reader is LOOKING at, so a
+// match's offsets highlight what is on screen.
+func TestFindSearchesPlainProjectedKindsAsWritten(t *testing.T) {
+	cases := []struct {
+		name string
+		kind BlockKind
+	}{
+		{"a thinking entry", BlockThinking},
+		{"a subagent card", BlockSubagent},
+		{"a run event", BlockRunEvent},
+		{"a job exit", BlockJobExit},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			const src = "plain text with - bullet\n"
+			block := Block{
+				ID:      "plain@1:1",
+				Kind:    c.kind,
+				Members: []string{"plain@1:1"},
+				Text:    src,
+			}
+			doc := NewDocument([]Block{block})
+
+			// The raw bytes ARE what is drawn, so they are findable; the
+			// projected form (a "•" for the bullet) is not searchable.
+			if got := FindInDocument(doc, NewFindQuery("•"), nil); len(got) != 0 {
+				t.Fatalf("%s was projected as Markdown: %+v", c.name, got)
+			}
+			got := FindInDocument(doc, NewFindQuery("- bullet"), nil)
+			if len(got) != 1 {
+				t.Fatalf("%s's own text was not found as written: %+v", c.name, got)
+			}
+			if block.Text[got[0].Range.Start:got[0].Range.End] != "- bullet" {
+				t.Fatalf("%s: the match names %q, want the raw bytes",
+					c.name, block.Text[got[0].Range.Start:got[0].Range.End])
+			}
+			// And the text the search projects is the RAW bytes — matching
+			// what the renderer will draw — not a Markdown rewrite of them.
+			if text, _ := searchProjectionOf(block); text != "plain text with - bullet\n" {
+				t.Fatalf("%s's search projection was rewritten: %q", c.name, text)
+			}
+		})
+	}
+}
+
 func TestFindSearchesToolOutputAsWritten(t *testing.T) {
 	// A tool's output is captured text, not Markdown. A block of it containing
 	// something that LOOKS like a list marker must be searched as the tool wrote
@@ -409,6 +465,67 @@ func TestSearchIndexReprojectsOnlyChangedBlocks(t *testing.T) {
 	block.Revision = 1
 	if got := idx.text(block); got != "second revision" {
 		t.Fatalf("a revised block served %q, want its new text", got)
+	}
+}
+
+// The index must also bound BYTES, not just entries: 4096 entries of a
+// streaming answer's full text each is 4096 × the block size, and a long
+// session cannot afford a cache sized for its largest conversation rather
+// than its largest RETAINED text.
+func TestSearchIndexIsBoundedByBytes(t *testing.T) {
+	idx := NewSearchIndex(0)
+	// 64 blocks of a 64 KiB projection: 4 MiB of text, far past the ceiling.
+	for i := 0; i < 64; i++ {
+		b := searchBlock("msg@1:"+strconv.Itoa(i), strings.Repeat("x", 64*1024))
+		b.Revision = i
+		idx.text(b)
+	}
+	total := 0
+	for _, e := range idx.entries {
+		total += len(e.text)
+	}
+	if total > searchIndexMaxBytes {
+		t.Fatalf("the index retains %d bytes of projected text, past the ceiling of %d",
+			total, searchIndexMaxBytes)
+	}
+	if idx.Len() > 64 {
+		t.Fatalf("the byte ceiling did not bound the index: %d entries", idx.Len())
+	}
+	// The LRU keeps the most RECENTLY projected text, so the last block must
+	// still be served and the text must still be intact (the eviction must
+	// not have corrupted an entry).
+	last := searchBlock("msg@1:63", strings.Repeat("x", 64*1024))
+	last.Revision = 63
+	if got := idx.text(last); got != last.Text {
+		t.Fatalf("the newest entry was not served intact: %d bytes, want %d",
+			len(got), len(last.Text))
+	}
+}
+
+// A block whose content has CHANGED must be re-projected, not served from the
+// cache keyed on a stale revision. This is the contract the production
+// adapter is being fixed to honour: with Revision actually populated, a
+// streaming answer that grows its text bumps the revision, and a cache that
+// ignored it would search text that is no longer on screen.
+func TestSearchIndexReprojectsAChangedBlock(t *testing.T) {
+	idx := NewSearchIndex(0)
+	alpha := searchBlock("msg@1:1", "alpha")
+
+	if got := idx.text(alpha); got != "alpha" {
+		t.Fatalf("the first projection served %q, want %q", got, "alpha")
+	}
+	beta := searchBlock("msg@1:1", "beta")
+	beta.Revision = 1
+	if got := idx.text(beta); got != "beta" {
+		t.Fatalf("a changed block served %q from the stale cache, want %q", got, "beta")
+	}
+	// And a search over the document finds the NEW text through the index.
+	doc := NewDocument([]Block{beta})
+	if got := FindInDocument(doc, NewFindQuery("beta"), idx); len(got) != 1 {
+		t.Fatalf("a search through the index found %d matches for the new text", len(got))
+	}
+	if got := FindInDocument(doc, NewFindQuery("alpha"), idx); len(got) != 0 {
+		t.Fatalf("the stale projection was still searchable: %+v", got)
 	}
 }
 

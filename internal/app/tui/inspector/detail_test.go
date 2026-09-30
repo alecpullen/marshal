@@ -129,9 +129,39 @@ func TestDetailTruncationIsNotConfusedWithMoreToScroll(t *testing.T) {
 		}
 	})
 
-	t.Run("a truncated source that also needs scrolling says both", func(t *testing.T) {
+	// The two notes COMPETE for rows on a small panel, and the truncation note
+	// wins whenever it is present: "the source was capped, so what you have is a
+	// prefix" is a claim about completeness, and a reader who cannot see it has no
+	// way to know the body is incomplete. The "scroll for more" note is a hint
+	// about content the reader can reach, so losing it costs them nothing they
+	// cannot see for themselves.
+	//
+	// What must hold in EVERY case is the budget: the render never emits more rows
+	// than the height it recorded. That is the invariant the old implementation
+	// violated — it emitted the label and both notes ON TOP of a full-height
+	// viewport, so THIS state produced four rows for a height of three.
+	t.Run("a truncated source that also needs scrolling never overflows its height", func(t *testing.T) {
+		for height := 1; height <= 8; height++ {
+			d := NewDetailView()
+			d.Resize(80, height)
+			d.SetContent(detailBody(40), true)
+			d.Top()
+
+			view := d.View("patch")
+			if rows := renderedRows(view); rows > height {
+				t.Fatalf("height %d emitted %d rows:\n%s", height, rows, view)
+			}
+			// The truncation note must survive whenever there is room for it at
+			// all: it is the only statement about whether the body is complete.
+			if height >= 3 && !strings.Contains(view, "incomplete") {
+				t.Fatalf("height %d dropped the truncation note:\n%s", height, view)
+			}
+		}
+	})
+
+	t.Run("both notes are disclosed when there is room for them", func(t *testing.T) {
 		d := NewDetailView()
-		d.Resize(80, 3)
+		d.Resize(80, 8)
 		d.SetContent(detailBody(40), true)
 		d.Top()
 

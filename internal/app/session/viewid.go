@@ -61,6 +61,15 @@ const (
 	// That region is not a transcript item, so it has no ordinal and cannot
 	// collide with one: real thinking items are thinking:1, thinking:2, …
 	// while this one is named.
+	//
+	// Deliberate exception to the per-State scoping invariant: it is a
+	// shared expand key, not a collection identity. A parent State and a
+	// drilled-in child live in one viewport at a time, and only one region
+	// is ever live, so sharing the key across States is exactly right.
+	// Scoped real ordinals always carry "@"; this has no scope token and
+	// no numeric ordinal (see scopePrefix), so they can never match. Do
+	// not scope it: doing so would fork the live region's expand state
+	// between parent and child views.
 	ViewIDLiveThinking = "thinking:live"
 )
 

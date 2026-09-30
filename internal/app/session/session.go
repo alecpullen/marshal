@@ -1590,10 +1590,14 @@ func (s *State) Transcript() []TranscriptItem {
 		items = append(items, TranscriptItem{
 			Timestamp: msg.CreatedAt,
 			Kind:      KindMessage,
-			// Keyed by Message.ID, not by position: a rewind rebuilds
-			// s.messages as a shorter path (rebuildActiveBranch), so an
-			// index would renumber every survivor and move a reader's anchor
-			// onto unrelated content.
+			// Keyed by Message.ID, not by position. A rewind to an
+			// ancestor rebuilds s.messages as a PREFIX of the old path
+			// (rebuildActiveBranch), so survivors coincidentally keep
+			// their indices — but positions are not identities: once the
+			// branch is re-extended after the rewind, the new message
+			// takes the ordinal a survivor's identity was built from.
+			// Keying on msg.ID, which never repeats, makes that reuse
+			// harmless; see TestViewIDSurvivesRewind.
 			ViewID:  s.scopePrefix(viewIDMessage) + strconv.FormatInt(msg.ID, 10),
 			Message: &msg,
 		})

@@ -17,7 +17,7 @@ import (
 //
 //   - offsets in and out of this file are always snapped to a grapheme
 //     boundary, because a boundary is the only place a string can be cut;
-//   - columns are always measured in cells through CellWidth, never counted in
+//   - columns are always measured in cells through cellWidth, never counted in
 //     runes or bytes;
 //   - tabs are expanded for layout and preserved in the logical text, so a
 //     copy of indented code gets the author's tab back.
@@ -31,13 +31,16 @@ import (
 // would place the cursor in a different column than the text it names.
 const tabStop = 8
 
-// CellWidth returns the number of display cells a string occupies, accounting
+// cellWidth returns the number of display cells a string occupies, accounting
 // for wide graphemes, combining marks and tab expansion.
 //
 // It differs from ansi.StringWidth in exactly one respect, deliberately: a tab
 // is measured by where it lands rather than as a zero-width control character.
 // Since a newline resets the column, the expansion is accumulated per line.
-func CellWidth(s string) int {
+//
+// Unexported: the rest of the TUI measures lines with ansi.StringWidth, and
+// nothing outside this package consumes a second width function.
+func cellWidth(s string) int {
 	if s == "" {
 		return 0
 	}
@@ -179,7 +182,7 @@ func clampOffset(s string, off int) int {
 	return off
 }
 
-// OffsetForCell converts a display column to the logical offset of the
+// offsetForCell converts a display column to the logical offset of the
 // grapheme that owns it. It is the click path: a mouse event carries a cell,
 // and the mapping has to name text.
 //
@@ -192,7 +195,17 @@ func clampOffset(s string, off int) int {
 // The offset is always a grapheme boundary within the FIRST display line
 // containing that column; a cell is a position in a row, so an offset returned
 // for a multi-line string names a position on its first line.
-func OffsetForCell(s string, cell int, stop int) int {
+//
+// Unexported: the click path on a LAID-OUT row goes through
+// RenderedBlock.OffsetAt, which has the row's spans; this free-standing form
+// has no callers outside the package and is kept only for the
+// offsetForCell/cellForOffset round-trip tests.
+//
+// Unlike cellWidth, the walk is per display line and the caller does not pass
+// a starting column; mapping a LAID-OUT row whose tabs begin mid-row should
+// prefer RenderedBlock.OffsetAt/CellAt, which read the tab span's own
+// laid-out geometry and can only be exact through it.
+func offsetForCell(s string, cell int, stop int) int {
 	if stop <= 0 {
 		stop = tabStop
 	}
@@ -235,16 +248,21 @@ func OffsetForCell(s string, cell int, stop int) int {
 	return len(line)
 }
 
-// CellForOffset converts a logical offset to the display column its grapheme
+// cellForOffset converts a logical offset to the display column its grapheme
 // starts at, within the offset's own display line.
 //
 // It is the render path and the anchor path: a mapped renderer needs to know
 // which column a match begins in so it can style it, and a restored anchor
-// needs to know where the reader's byte now sits after a resize.
+// needs to know where the reader's byte now sits after a resize. It is the
+// inverse of offsetForCell and the two round-trip.
+//
+// Unexported: the render path on a LAID-OUT row goes through
+// RenderedBlock.CellAt; this free-standing pairing with offsetForCell has no
+// callers outside the package.
 //
 // The offset is snapped first, so a caller may pass an arbitrary byte position
 // and receive the column of the character it lands in.
-func CellForOffset(s string, off int, stop int) int {
+func cellForOffset(s string, off int, stop int) int {
 	if stop <= 0 {
 		stop = tabStop
 	}

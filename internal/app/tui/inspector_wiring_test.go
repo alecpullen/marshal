@@ -69,12 +69,12 @@ func TestDraftSurvivesOpeningTheInspectorAtEverySize(t *testing.T) {
 }
 
 // TestInspectorStateIsReachableAcrossEverySize pins that the same inspector
-// state survives moving between the three sizes: tab, scroll, filter and the
+// state survives moving between the three sizes: the tab, its scroll and the
 // detail stack are all still there.
 func TestInspectorStateIsReachableAcrossEverySize(t *testing.T) {
 	m := inspectorModel(t, inspectorSizes[0][0], inspectorSizes[0][1])
 	m.inspector.open(inspector.TabOverview, m.inspectorSideAvailable())
-	m.inspector.model.SetState(inspector.TabOverview, inspector.TabState{Scroll: 6, Filter: "app"})
+	m.inspector.model.SetState(inspector.TabOverview, inspector.TabState{Scroll: 6})
 
 	for i := 0; i < 12; i++ {
 		w, h := inspectorSizes[i%len(inspectorSizes)][0], inspectorSizes[i%len(inspectorSizes)][1]
@@ -84,8 +84,8 @@ func TestInspectorStateIsReachableAcrossEverySize(t *testing.T) {
 		if !m.inspector.isOpen() {
 			t.Fatalf("iteration %d at %dx%d: the inspector became unreachable", i, w, h)
 		}
-		if got := m.inspector.model.State(inspector.TabOverview); got.Scroll != 6 || got.Filter != "app" {
-			t.Fatalf("iteration %d at %dx%d: state = %+v, want scroll 6 filter app", i, w, h, got)
+		if got := m.inspector.model.State(inspector.TabOverview); got.Scroll != 6 {
+			t.Fatalf("iteration %d at %dx%d: state = %+v, want scroll 6", i, w, h, got)
 		}
 		if m.input.Value() != "" {
 			// The draft was never set here, but a resize must not type into

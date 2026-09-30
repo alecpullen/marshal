@@ -265,12 +265,20 @@ type LayoutOptions struct {
 }
 
 // rowBudget is the cell budget available to content on a row.
+//
+// A width at or below the indent leaves NO content cells, and flooring the
+// result at 1 would be a lie the layout then breaks: every grapheme would
+// overflow (the shredding-into-fragments failure), because "one cell" is a
+// budget nothing but a narrow grapheme can honour. The degenerate case
+// instead reports 0 — the same signal an unmeasured width uses — so the
+// wrapper stops breaking and lets each hard line take the overflow it
+// genuinely cannot avoid. One overflowing row is the minimum-overflow
+// outcome; a column of overflowing fragments is not.
 func (o LayoutOptions) rowBudget() int {
-	w := o.Width - o.Indent
 	if o.Width <= 0 {
 		return 0 // unmeasured: never wrap
 	}
-	return max(w, 1)
+	return o.Width - o.Indent
 }
 
 // tabStop returns the effective tab interval.
@@ -638,19 +646,31 @@ func (c *runCursor) kindAt(off int) SpanKind {
 	return SpanPlain
 }
 
-// normalizeRuns drops runs that are malformed, clamps them to the text, and
-// coalesces adjacent runs of the same kind.
+// normalizeRuns makes an arbitrary run list usable: out-of-range and empty
+// runs are dropped, survivors are clamped to the text, the list is SORTED by
+// start (a caller that produced runs while walking an AST backwards must not
+// get a projection that silently drops half its input), and overlaps are
+// resolved deterministically instead of by drop order.
 //
 // Malformed runs are DROPPED rather than rejected: this is a render path, and a
 // renderer that produced a bad run must still produce readable output rather
 // than nothing. Dropping means the affected bytes render as plain text, which is
 // the projection that was asked for minus styling — visible, selectable and
 // correct, just not decorative.
+//
+// An overlap keeps the EARLIER run whole and trims the later one's overlapping
+// prefix, so the later run only styles the bytes the earlier one left. The
+// alternative — dropping the later run outright — threw away styling for
+// entirely unclaimed text whenever one run merely grazed another, and the
+// affected bytes dropped out of every styled projection with no trace of why.
+// Trimming keeps every survivor's kind on the bytes it actually owns, which is
+// what kindAt's first-covering-run scan and runCursor's monotone walk both
+// rely on.
 func normalizeRuns(runs []Run, textLen int) []Run {
 	if len(runs) == 0 {
 		return nil
 	}
-	out := make([]Run, 0, len(runs))
+	clamped := make([]Run, 0, len(runs))
 	for _, r := range runs {
 		if !r.Range.HasText() || r.Range.Empty() {
 			continue
@@ -664,10 +684,22 @@ func normalizeRuns(runs []Run, textLen int) []Run {
 		if r.Range.End <= r.Range.Start {
 			continue
 		}
+		clamped = append(clamped, r)
+	}
+	// Lower start wins; ties break by the longer run, then by kind, so the
+	// order of equal runs is a function of their content and not of the order
+	// they arrived in.
+	sortRuns(clamped)
+	out := make([]Run, 0, len(clamped))
+	for _, r := range clamped {
 		if n := len(out); n > 0 {
 			prev := &out[n-1]
 			if r.Range.Start < prev.Range.End {
-				continue // overlapping: keep the first, drop the offender
+				// Overlapping: keep the earlier run, trim the overlap.
+				if r.Range.End <= prev.Range.End {
+					continue // fully covered by the earlier run
+				}
+				r.Range.Start = prev.Range.End
 			}
 			if r.Range.Start == prev.Range.End && r.Kind == prev.Kind {
 				prev.Range.End = r.Range.End
@@ -677,6 +709,29 @@ func normalizeRuns(runs []Run, textLen int) []Run {
 		out = append(out, r)
 	}
 	return out
+}
+
+// sortRuns orders runs by start, then by the longer range, then by kind, so
+// an equal pair always normalizes the same way regardless of input order.
+func sortRuns(runs []Run) {
+	// Insertion sort: run lists are short (a projection's styling fragments),
+	// and this keeps the sort itself allocation-free.
+	for i := 1; i < len(runs); i++ {
+		for j := i; j > 0 && lessRun(runs[j], runs[j-1]); j-- {
+			runs[j], runs[j-1] = runs[j-1], runs[j]
+		}
+	}
+}
+
+// lessRun is sortRuns' ordering.
+func lessRun(a, b Run) bool {
+	if a.Range.Start != b.Range.Start {
+		return a.Range.Start < b.Range.Start
+	}
+	if a.Range.End != b.Range.End {
+		return a.Range.End > b.Range.End // the longer run first, so it wins any overlap
+	}
+	return a.Kind < b.Kind
 }
 
 // OffsetAt maps a display cell on a row to a logical offset.
@@ -723,7 +778,7 @@ func (r RenderedBlock) OffsetAt(rowIndex, cell int) int {
 			// again is a double conversion, and it is wrong wherever the two
 			// lengths differ — which is every wide grapheme and every tab.
 			within := cell - col
-			return s.Range.Start + logicalLenForCells(r.Logical[s.Range.Start:s.Range.End], within, tabStop)
+			return s.Range.Start + logicalLenForCells(r.Logical[s.Range.Start:s.Range.End], within, tabStop, col)
 		}
 		col += s.Cells
 	}
@@ -759,14 +814,14 @@ func (r RenderedBlock) CellAt(rowIndex, off int) (int, bool) {
 			// measuring the display string would report the wrong column and
 			// every offset after a tab on that row would be misplaced.
 			within := off - s.Range.Start
-			return col + cellsForLogicalLen(r.Logical[s.Range.Start:s.Range.End], within, tabStop), true
+			return col + cellsForLogicalLen(r.Logical[s.Range.Start:s.Range.End], within, tabStop, col), true
 		}
 		col += s.Cells
 	}
 	return 0, false
 }
 
-// TextAcross extracts the text covering a display range, joining rows by the
+// textAcross extracts the text covering a display range, joining rows by the
 // separator each one declares.
 //
 // This is the primitive a selection copy is built on (Task 12): a drag names a
@@ -778,7 +833,11 @@ func (r RenderedBlock) CellAt(rowIndex, off int) (int, bool) {
 // yields the same text as a drag forwards. Cells are clamped to the block's own
 // rows, so a drag that ran off either end stops at the end rather than
 // panicking.
-func (r RenderedBlock) TextAcross(startRow, startCell, endRow, endCell int) string {
+//
+// Unexported: the selection path resolves text from the LOGICAL offsets the
+// mapping yields (Selection.Text), and no caller outside this package needs
+// the row/cell form.
+func (r RenderedBlock) textAcross(startRow, startCell, endRow, endCell int) string {
 	if startRow > endRow || (startRow == endRow && startCell > endCell) {
 		startRow, endRow = endRow, startRow
 		startCell, endCell = endCell, startCell
@@ -877,15 +936,23 @@ func (row DisplayRow) ContentText() string {
 // logicalLenForCells returns the number of LOGICAL bytes a display position
 // within a span covers. It is the tab-aware direction of the mapping: eight
 // display cells can be one logical byte.
-func logicalLenForCells(logical string, cells int, ts int) int {
+//
+// startCol is the column the span BEGINS at, accumulated by the caller while
+// walking the row. A tab's width is the distance to the next stop from where
+// it lands, so a span at column 13 measures its tab from 13 and not from 0;
+// seeding the walk at the span's own column is what makes a tab in a table's
+// second field — or anywhere on an indented, wrapped or quoted row — map to
+// the cell it is actually drawn at. Callers must pass the accumulated column,
+// not 0: the two lengths a span carries are not enough on their own.
+func logicalLenForCells(logical string, cells, ts, startCol int) int {
 	if cells <= 0 {
 		return 0
 	}
-	col := 0
+	col := startCol
 	i := 0
 	for i < len(logical) {
 		g, w := graphemeAt(logical, i, col, ts)
-		if col+w > cells {
+		if col+w > cells+startCol {
 			return i
 		}
 		col += w
@@ -897,19 +964,24 @@ func logicalLenForCells(logical string, cells int, ts int) int {
 // cellsForLogicalLen returns the display cells a number of LOGICAL bytes
 // occupies. It is logicalLenForCells' inverse, and both are needed because a
 // span's display and logical lengths differ wherever a tab appears.
-func cellsForLogicalLen(logical string, length int, ts int) int {
+//
+// startCol is the column the span BEGINS at: a tab's expansion is measured to
+// the next stop from the column it lands at, not from the span's own start.
+// Cells are returned as a WIDTH (a number of cells), so the caller adds them
+// to the accumulated column; only the walk inside is column-aware.
+func cellsForLogicalLen(logical string, length, ts, startCol int) int {
 	if length <= 0 {
 		return 0
 	}
 	if length > len(logical) {
 		length = len(logical)
 	}
-	col := 0
+	col := startCol
 	i := 0
 	for i < length {
 		g, w := graphemeAt(logical, i, col, ts)
 		col += w
 		i += len(g)
 	}
-	return col
+	return col - startCol
 }

@@ -101,8 +101,17 @@ func tabForKind(k TargetKind) (Tab, bool) {
 // TabState is per-tab navigation state. Each tab keeps its own, so switching
 // tabs and returning never loses where the user was.
 type TabState struct {
-	Cursor int
-	Filter string
+	// Scroll is the first row the tab shows.
+	//
+	// It is the ONLY field, and that is deliberate. TabState used to carry
+	// Cursor and Filter as well, and nothing read or wrote either of them in
+	// production: each tab with a cursor keeps it in its own state
+	// (changesState.cursor, agentsState.cursor, contextState.cursor), because a
+	// cursor is keyed by something the tab knows — a path, a runtime ID — and a
+	// bare int here could not express that. Fields that LOOK like a tab's
+	// navigation state but never participate in it are worse than none: they
+	// invite the next reader to update the wrong one and then wonder why nothing
+	// moves.
 	Scroll int
 }
 
@@ -383,18 +392,21 @@ func (m *Model) View(data Data) string {
 		// through the generic per-tab scroll offset: its navigation is a cursor
 		// over PATHS plus a separate body, and flattening that into one scroll
 		// number would lose which file the reader is on.
-		m.detail.Resize(m.width, m.height)
+		//
+		// The shared body is NOT sized here: each tab decides its own share of
+		// the panel AFTER budgeting its list, and sizing it to the whole panel
+		// here would make it claim rows the tab had already promised to the
+		// list — which is exactly how the emission came out taller than the
+		// height it was given.
 		return m.viewChanges()
 	case TabAgents:
 		// The Agents tab shares that shape and that shared body: a cursor over
 		// runtime IDs plus the child's conversation. It gets the same treatment
 		// for the same reason.
-		m.detail.Resize(m.width, m.height)
 		return m.viewAgents()
 	case TabContext:
 		// The Context tab shares that shape a third time: a cursor over the
 		// scope's rows plus the shared body.
-		m.detail.Resize(m.width, m.height)
 		return m.viewContext()
 	default:
 		// A tab with no renderer yet. Returning "" is honest: the tab is not
@@ -407,11 +419,32 @@ func (m *Model) View(data Data) string {
 // content.
 func (m *Model) scrollBy(delta int) { m.setScroll(m.State(m.tab).Scroll + delta) }
 
-// setScroll records an absolute scroll offset for the selected tab, clamped to
-// [0, maxScroll].
+// setScroll records an absolute scroll offset for the selected tab.
+//
+// The clamp is per-TAB, because the tabs do not scroll the same thing: the
+// Overview scrolls a document, while Changes, Agents and Context scroll a LIST of
+// rows whose length their own state holds. Clamping a list tab against the
+// Overview's row count (the sole clamp this used to apply) would snap every list
+// scroll back to zero, so a reader who scrolled a long file list and returned to
+// it would find it at the top — and would have no way to tell that from the key
+// not working.
+//
+// The list tabs are additionally clamped to keep their CURSOR on screen, since
+// the cursor is what the list is navigated by; a scroll that hid the cursor would
+// look like the window lost the reader's place.
 func (m *Model) setScroll(v int) {
+	switch m.tab {
+	case TabChanges:
+		v = min(max(v, 0), max(len(m.changes.rows)-1, 0))
+	case TabAgents:
+		v = min(max(v, 0), max(len(m.agents.roster)-1, 0))
+	case TabContext:
+		v = min(max(v, 0), max(len(m.context.rows)-1, 0))
+	default:
+		v = min(max(v, 0), m.maxScroll(m.data))
+	}
 	s := m.State(m.tab)
-	s.Scroll = min(max(v, 0), m.maxScroll(m.data))
+	s.Scroll = v
 	m.SetState(m.tab, s)
 }
 

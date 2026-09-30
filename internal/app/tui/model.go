@@ -4695,6 +4695,18 @@ func (m *Model) refreshViewport() {
 	if m.hasSelection() && !m.selectionIsLive() {
 		m.clearSelection()
 	}
+	// Rebuild the search results for the CURRENT transcript, before anything is
+	// painted from them. Without this an open search keeps the result list it
+	// was built with while the conversation moves on beneath it: the count in
+	// the status line, the match the cursor is on, and the painted hits all
+	// describe a transcript that no longer exists, and F3 can step onto a block
+	// that is gone. The rebuild is guarded by m.find.open inside refreshFind, so
+	// a session with no search open pays nothing.
+	//
+	// It runs AFTER the new mappings exist (they are what FindInDocument reads)
+	// and BEFORE the highlights are painted from m.find.matches, which is the
+	// only window in which both facts are true.
+	m.refreshFind()
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	content := strings.Join(blocks, "\n")

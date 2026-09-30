@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strconv"
+
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/contextpack"
@@ -276,29 +278,17 @@ func agentContextLabel(v session.SubagentView) string {
 
 // itoa64 renders a subagent's runtime ID.
 //
-// It mirrors the inspector's own helper rather than importing strconv for one
-// call in a package that otherwise formats with fmt. The two produce identical
-// text, which is load-bearing: the label this produces is compared against the
-// label the inspector renders, and a mismatch would make every refresh look
-// like the child had changed.
+// The requirement is that this produces EXACTLY the text the inspector renders,
+// because the label it builds is compared against the inspector's label and a
+// mismatch would make every refresh look like the child had changed. That is
+// not a reason to hand-roll a formatter — it is a reason to call the same
+// standard function the inspector calls.
+//
+// The previous implementation was a byte-loop copy of strconv's algorithm with
+// a comment calling the duplication load-bearing. It was not: the shared
+// contract is the OUTPUT, and strconv.FormatInt satisfies it for every int64,
+// including the negative IDs the copy mishandled (n = -n overflows on
+// math.MinInt64, producing the ID wrapped rather than negated).
 func itoa64(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return strconv.FormatInt(n, 10)
 }

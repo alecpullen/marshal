@@ -1040,14 +1040,37 @@ func contextHeading(d ContextData, scope ContextScope, childName string, width i
 	if d.Child {
 		lines = append(lines, "this is a CHILD agent's own context, not the conversation's")
 	}
-	_ = width
 	switch scope {
 	case ContextScopePack:
 		lines = append(lines, contextPackSummary(d.Pack, d.Now)...)
 	case ContextScopeRequest:
 		lines = append(lines, contextRequestSummary(d.Request, d.Now)...)
 	}
-	return lines
+	// The width budget is applied HERE rather than left to the caller, because
+	// the caller counts these lines as ROWS to budget the list against. A heading
+	// that returned unclamped lines would be counted as one row each and then
+	// wrap into several in the terminal, so the panel would spend its budget on
+	// a document other than the one it draws and the surplus would escape into
+	// the frame. Clamping keeps the count and the render describing the same rows.
+	//
+	// The width is not theoretical: the subject embeds a child agent's LABEL,
+	// which is author text and can be arbitrarily long.
+	return clampLines(lines, width)
+}
+
+// clampLines truncates each line to width display cells.
+//
+// The slice's LENGTH is deliberately preserved: callers use it as a row count, so
+// dropping or joining lines here would silently change the panel's budget.
+func clampLines(lines []string, width int) []string {
+	if width <= 0 {
+		return lines
+	}
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = clampToWidth(line, width)
+	}
+	return out
 }
 
 // contextPackSummary describes the pack as a whole.
@@ -1218,7 +1241,8 @@ func (m *Model) viewContext() string {
 	width := max(m.width, 20)
 
 	var b strings.Builder
-	for _, line := range contextHeading(d, scope, m.context.childName, width) {
+	heading := contextHeading(d, scope, m.context.childName, width)
+	for _, line := range heading {
 		b.WriteString(m.contextLine(line, width))
 		b.WriteString("\n")
 	}
@@ -1229,7 +1253,48 @@ func (m *Model) viewContext() string {
 		return b.String()
 	}
 
-	for i, row := range m.context.rows {
+	// An UNMEASURED panel renders every row, following the same rule the detail
+	// body uses for an unmeasured width.
+	if m.height <= 0 {
+		for i, row := range m.context.rows {
+			cursor := "  "
+			if i == m.ContextCursor() {
+				cursor = "▸ "
+			}
+			line := cursor + row.label
+			if row.detail != "" {
+				line += "  " + row.detail
+			}
+			b.WriteString(m.contextLine(line, width))
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+
+	// The tab is BUDGETED end to end, for the same reason the other two are:
+	// the panel is joined into the frame as a second column, and a join pads the
+	// shorter column to the taller one, so rows emitted beyond m.height escape
+	// into the frame and push the status line off the bottom.
+	rows := m.height - len(heading)
+
+	bodyRows := 0
+	if m.context.hasOpen {
+		// The stale note, if it will show, is a row of its own.
+		if m.context.stale {
+			rows -= 1
+		}
+		bodyRows = max(rows/2, 1)
+		rows -= bodyRows
+	}
+	listRows := max(rows, 1)
+
+	w := windowList(len(m.context.rows), listRows, m.ContextCursor(), m.State(TabContext).Scroll, 2)
+	if note := aboveNote(w.Above(), m.width); note != "" {
+		b.WriteString(m.contextLine(note, width))
+		b.WriteString("\n")
+	}
+	for i := w.Start; i < w.End; i++ {
+		row := m.context.rows[i]
 		cursor := "  "
 		if i == m.ContextCursor() {
 			cursor = "▸ "
@@ -1241,10 +1306,16 @@ func (m *Model) viewContext() string {
 		b.WriteString(m.contextLine(line, width))
 		b.WriteString("\n")
 	}
+	if note := belowNote(w.Below(), m.width); note != "" {
+		b.WriteString(m.contextLine(note, width))
+		b.WriteString("\n")
+	}
 
 	if m.context.hasOpen {
 		b.WriteString("\n")
-		m.detail.Resize(m.width, m.height)
+		// The body gets ITS share, so it windows its own content to what it was
+		// given rather than to the whole panel.
+		m.detail.Resize(m.width, bodyRows)
 		// Re-wrapped per frame so a resize reflows the body rather than
 		// leaving rows cut for the old width.
 		m.contextWrapBody()

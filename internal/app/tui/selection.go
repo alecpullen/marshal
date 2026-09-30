@@ -471,27 +471,47 @@ func (m Model) mappedBlockSpan(id conversation.BlockID) (renderedBlockSpan, bool
 // It works in TRANSCRIPT rows, not block rows: the caller is a renderer that has
 // a row of the assembled transcript. Reporting false for an uncovered row is what
 // keeps a caret from being drawn on every line.
+//
+// It paints from the LIVE mapping, and it refuses when the live block's revision
+// no longer matches the one the selection was made at.
+//
+// The frozen snapshot is the right source for COPY BYTES and the wrong source
+// for the HIGHLIGHT, and using it for both was a real defect. The reason is that
+// a highlight is a claim about the SCREEN: "these cells, here". The live mapping
+// is what supplies the row placement, so a frozen block combined with a live
+// `blockRow` mixes two geometries — and after any reflow (a resize, the todo
+// panel opening, a dock row appearing) they describe different layouts. A
+// selection made at width 80 and re-rendered at width 40 was measured tinting
+// forty cells past the selected text, over adjacent text and chrome.
+//
+// The logical offsets themselves are revision-independent, so painting them
+// through the live geometry is exact. What the revision check buys is the case
+// where the live text has genuinely CHANGED: the selection's byte offsets then
+// name different words, and the honest answer is to paint nothing rather than
+// to tint whatever now sits at those offsets. The frozen copy is untouched, so
+// the reader's `y` still yields exactly the bytes they dragged over.
 func (m Model) selectionHighlight(row int) (startCell, endCell int, ok bool) {
 	if !m.hasSelection() {
-		return 0, 0, false
-	}
-	block, hasBlock := m.selectedBlock()
-	if !hasBlock {
 		return 0, 0, false
 	}
 	span, hasSpan := m.mappedBlockSpan(m.selection.sel.Block)
 	if !hasSpan {
 		return 0, 0, false
 	}
+	if !m.selection.sel.MatchesRevision(span.rendered) {
+		// The block's content moved on. The selection still owns its bytes
+		// (via the frozen copy) but it can no longer point at cells.
+		return 0, 0, false
+	}
 	blockRow := row - span.blockRow
-	if blockRow < 0 || blockRow >= len(block.Rows) {
+	if blockRow < 0 || blockRow >= len(span.rendered.Rows) {
 		return 0, 0, false
 	}
 	from, to := m.selection.sel.Anchor, m.selection.sel.Focus
 	if from > to {
 		from, to = to, from
 	}
-	return block.HighlightRange(blockRow, from, to)
+	return span.rendered.HighlightRange(blockRow, from, to)
 }
 
 // highlightFindMatches paints the search's matches onto assembled transcript

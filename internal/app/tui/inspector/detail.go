@@ -38,12 +38,37 @@ type DetailView struct {
 	// noLongerChanged labels a detail whose path has stopped being changed.
 	// Empty when the file is still in the changed set.
 	noLongerChanged bool
+	// label is the heading rendered above the body.
+	//
+	// It is STORED, not just passed to View, because it is a row of the BUDGET:
+	// the content height and the scroll bound both have to know whether that row
+	// is being spent. A caller sharing a column with this view must be able to
+	// ask how many rows it will emit BEFORE rendering, and it has no way to hand
+	// the label over a second time — so the label lives here, set via SetLabel
+	// (or by View), and every height derivation reads it.
+	label string
 }
 
 // NewDetailView returns an empty detail view that is following.
 func NewDetailView() *DetailView {
 	return &DetailView{follow: true}
 }
+
+// SetLabel records the heading the body renders under.
+//
+// It re-clamps, because the label is a row: adding one shortens the content
+// window, and a scroll offset that was legal before can be past the end
+// afterwards.
+func (d *DetailView) SetLabel(label string) {
+	if d.label == label {
+		return
+	}
+	d.label = label
+	d.clamp()
+}
+
+// Label reports the recorded heading.
+func (d *DetailView) Label() string { return d.label }
 
 // SetContent replaces the body.
 //
@@ -136,20 +161,167 @@ func (d *DetailView) lines() []string {
 	return strings.Split(d.content, "\n")
 }
 
-// maxScroll is the largest valid offset for the current bounds.
-func (d *DetailView) maxScroll() int {
-	return max(len(d.lines())-d.viewportHeight(), 0)
+// detailPlan is the exact row plan for one render: what will be written, and
+// how much of the content is shown.
+//
+// It exists because the budget and the emission MUST be computed from one place.
+// The previous code derived the content window from a "chrome rows" estimate and
+// then emitted the chrome ON TOP of it, so the two could disagree — Resize(40, 5)
+// produced 8 rows, and the surplus escaped into whatever column the panel was
+// being joined against. A plan that both View and BodyHeight read makes that
+// class of disagreement impossible rather than merely fixed.
+type detailPlan struct {
+	// labelRow is whether the heading is written.
+	labelRow bool
+	// contentStart and contentRows are the visible content window.
+	contentStart, contentRows int
+	// scrollNote is whether the "more to scroll to" footer is written.
+	scrollNote bool
+	// truncatedNote is whether the "source was capped" footer is written.
+	truncatedNote bool
+	// emptyNote is whether the "Nothing to show." line stands in for content.
+	emptyNote bool
+	// unmeasured records that no height has been recorded, so the plan is
+	// unbounded and every conditional row is rendered.
+	unmeasured bool
 }
 
-// viewportHeight is the number of content lines the view can show. Before the
-// first resize it is unbounded, so an unmeasured view renders everything rather
-// than nothing.
-func (d *DetailView) viewportHeight() int {
-	if d.height <= 0 {
-		return len(d.lines())
+// Rows is the total number of lines this plan writes.
+func (p detailPlan) Rows() int {
+	rows := 0
+	if p.labelRow {
+		rows++
 	}
-	// One row is the label header.
-	return max(d.height-1, 1)
+	if p.emptyNote {
+		// plan() has already established that this fits alongside the label.
+		rows++
+		return rows
+	}
+	rows += p.contentRows
+	if p.scrollNote {
+		rows++
+	}
+	if p.truncatedNote {
+		rows++
+	}
+	return rows
+}
+
+// plan computes the row plan for the current content, height and label.
+//
+// The reservation order is deliberate and is the whole fix:
+//
+//  1. The label, because it names what the reader is looking at.
+//  2. The truncation note, because "the source was capped" is a claim about
+//     completeness that must not be silently dropped — a reader who cannot see
+//     that footer has no way to know the body is a prefix.
+//  3. The content window.
+//  4. The "scroll for more" note, but ONLY out of rows the content did not need.
+//     It is a hint about what is below, so it yields to content; if there is no
+//     room for it, the reader simply sees fewer lines, which that note would
+//     only have told them anyway.
+//
+// Each step draws from one shrinking budget, so the total cannot exceed the
+// height. A step that does not fit is skipped rather than overflowing.
+func (d *DetailView) plan() detailPlan {
+	var p detailPlan
+	lines := d.lines()
+
+	p.labelRow = d.label != "" || d.noLongerChanged
+	p.unmeasured = d.height <= 0
+	if len(lines) == 0 {
+		// The empty note is a content row, so it obeys the same budget content
+		// does: it is emitted only when it fits alongside the label. Emitting
+		// both on a one-row panel would put the panel one row over, which is the
+		// defect this plan exists to make impossible.
+		if !p.unmeasured && p.labelRow && d.height < 2 {
+			return p
+		}
+		p.emptyNote = true
+		return p
+	}
+	if p.unmeasured {
+		// Unmeasured: the view renders everything rather than nothing, the same
+		// rule clampLine follows for width.
+		p.contentStart = min(max(d.scroll, 0), max(len(lines)-1, 0))
+		p.contentRows = len(lines) - p.contentStart
+		p.truncatedNote = d.truncatedBySource
+		return p
+	}
+
+	// The ROW COUNT first, then the position: a following view is positioned
+	// relative to the rows it can show, so computing the start before the count
+	// is what made the two circular.
+	budget := d.height
+	if p.labelRow {
+		if budget < 1 {
+			// Not even the label fits. A degenerate panel emits nothing rather
+			// than a row it does not have.
+			p.labelRow = false
+			return p
+		}
+		budget--
+	}
+	if d.truncatedBySource && budget >= 1 {
+		p.truncatedNote = true
+		budget--
+	}
+	p.contentRows = min(len(lines), budget)
+
+	// Now the start. Following means "end at the last line", and it is resolved
+	// here rather than read off a stored offset, because the offset can be stale
+	// with respect to content that has since arrived or a height that has since
+	// changed.
+	if d.follow {
+		p.contentStart = max(len(lines)-p.contentRows, 0)
+	} else {
+		p.contentStart = min(max(d.scroll, 0), max(len(lines)-1, 0))
+	}
+
+	if len(lines)-p.contentStart <= p.contentRows {
+		// Everything from here fits, so there is nothing to hint at.
+		p.contentRows = len(lines) - p.contentStart
+		return p
+	}
+	// The content does not fit below the start. The hint is worth one row when
+	// there is one to spare; when there is not, the content keeps it.
+	if p.contentRows >= 2 {
+		p.scrollNote = true
+		p.contentRows--
+		if d.follow {
+			// Reserving the hint row moves the window down by nothing — the
+			// window still ends at the last line — but its START must follow,
+			// or the last line would be the one that got dropped.
+			p.contentStart = max(len(lines)-p.contentRows, 0)
+		}
+	}
+	return p
+}
+
+// BodyHeight reports the number of rows View will actually emit, so a caller
+// that shares a column with this view can budget for it BEFORE rendering.
+//
+// Asking after the fact is too late — the rows are already spent — and that is
+// exactly how a panel ends up taller than the frame it is joined into. It is
+// derived from the same plan View renders, so the two cannot disagree.
+//
+// The label must have been set (SetLabel) for this to be exact, since View
+// renders the recorded one.
+// It is a pure function of the view's state: it does not move the scroll, so
+// asking it before a render cannot change what that render shows.
+func (d *DetailView) BodyHeight() int {
+	return d.plan().Rows()
+}
+
+// maxScroll is the largest valid offset for the current bounds.
+//
+// It is derived from the plan rather than from a separate height subtraction, so
+// the furthest the reader can scroll is exactly the point at which the last line
+// is on screen. plan() is pure with respect to the scroll offset, so this cannot
+// feed back into itself.
+func (d *DetailView) maxScroll() int {
+	p := d.plan()
+	return max(len(d.lines())-p.contentRows, 0)
 }
 
 // clamp keeps the offset inside the scrollable range.
@@ -184,6 +356,17 @@ func (d *DetailView) ScrollToMatch(needle string) bool {
 
 // View renders the visible window under a label.
 //
+// The label is RECORDED before rendering, because it is a row of the budget and
+// the content window has already been derived from it. Passing a label here that
+// differs from the one BodyHeight was asked about would make the two disagree,
+// so this assignment is the single point that keeps them in step.
+//
+// Every row is accounted for before it is written: the label, the content window
+// and the notes all come out of the budget chromeRows reserved. The total emitted
+// line count never exceeds the recorded height (when one has been recorded), which
+// is what stops this body overflowing the column it is joined into — the way a
+// long diff used to push the status line off the bottom of the screen.
+//
 // The footer distinguishes the two kinds of "more", because conflating them is
 // how a reader believes they have seen a whole patch when they have seen a
 // prefix:
@@ -191,38 +374,55 @@ func (d *DetailView) ScrollToMatch(needle string) bool {
 //   - not at the bottom and not truncated: there is more to scroll to.
 //   - truncated at the source: there is nothing more to reach, and the reader
 //     must be told that plainly.
+//
+// A FOLLOWING view is anchored to the END at render time rather than to whatever
+// offset happens to be stored. The stored offset is a snapshot of a moment:
+// content that arrived after the last SetContent, or a height recorded after it,
+// would leave the view showing a window that is no longer the end — so a reader
+// who is following would see stale lines with a "scroll for more" note under
+// them, which is the opposite of following. The plan resolves that anchor from
+// the content and the height it is rendering WITH, which is what makes
+// "following" mean the last line is on screen.
 func (d *DetailView) View(label string) string {
-	var b strings.Builder
-	header := label
-	if d.noLongerChanged {
-		// The path left the changed set. Say so at the top, where a reader
-		// looks first, rather than letting them wonder why the diff is stale.
-		header += "  " + mutedDetailNote("(no longer changed)")
+	if label != "" {
+		d.SetLabel(label)
 	}
-	if header != "" {
+
+	// ONE plan, rendered. Every row that follows is one the plan accounted for,
+	// which is what bounds the output by the recorded height.
+	p := d.plan()
+
+	var b strings.Builder
+	if p.labelRow {
+		header := d.label
+		if d.noLongerChanged {
+			// The path left the changed set. Say so at the top, where a reader
+			// looks first, rather than letting them wonder why the diff is stale.
+			header += "  " + mutedDetailNote("(no longer changed)")
+		}
 		b.WriteString(d.clampLine(header))
 		b.WriteString("\n")
 	}
 
-	lines := d.lines()
-	if len(lines) == 0 {
+	if p.emptyNote {
 		b.WriteString(d.note("Nothing to show."))
 		return b.String()
 	}
 
-	height := d.viewportHeight()
-	end := min(d.scroll+height, len(lines))
-	for _, line := range lines[d.scroll:end] {
+	lines := d.lines()
+	end := min(p.contentStart+p.contentRows, len(lines))
+	for _, line := range lines[p.contentStart:end] {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
-	if d.scroll+height < len(lines) {
-		// More of the body remains to scroll to. This is not truncation.
+	if p.scrollNote {
+		// More of the body remains below. This is not truncation: the reader can
+		// reach it.
 		b.WriteString(d.note("… scroll for more"))
 		b.WriteString("\n")
 	}
-	if d.truncatedBySource {
+	if p.truncatedNote {
 		// The wording is deliberately not patch-specific. This body is shared
 		// by the Changes, Agents and Context tabs, and "captured patch" on a
 		// context section would name the wrong thing — a reader who is told
@@ -252,7 +452,7 @@ func (d *DetailView) note(s string) string { return d.clampLine(mutedDetailNote(
 // order to read a sentence about it.
 //
 // An UNMEASURED view (width 0) is not clamped at all, following the same rule
-// as viewportHeight: before the first resize the view renders everything rather
+// as contentHeight: before the first resize the view renders everything rather
 // than nothing, and clamping to a width nobody measured would replace every line
 // with an ellipsis.
 func (d *DetailView) clampLine(s string) string {

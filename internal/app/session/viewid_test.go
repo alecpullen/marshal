@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +134,15 @@ func TestViewIDStableAcrossRepeatedTranscriptCalls(t *testing.T) {
 // path. A message that survives the rewind must keep the identity a reader
 // anchored to; only the removed tail may disappear. Deriving identity from
 // the current position in the slice fails exactly here.
+//
+// The failure is subtle, which is why the assertions below are spelled the
+// way they are: a rewind to an ANCESTOR leaves s.messages holding a prefix
+// of the old path, so a positional identity is coincidentally stable for the
+// survivors. It breaks only when the branch is re-extended after the rewind
+// — the new message takes the ordinal a survivor's identity was built from.
+// Both halves are asserted so the test pins the msg.ID mechanism itself, not
+// the coincidence. (TestViewIDNotReusedAfterClearMessages pins the same
+// property for ClearMessages.)
 func TestViewIDSurvivesRewind(t *testing.T) {
 	s := newTestState()
 	s.AddMessage(RoleUser, "one", ContentTypePlain)
@@ -144,12 +154,34 @@ func TestViewIDSurvivesRewind(t *testing.T) {
 		t.Fatalf("precondition: got %d messages, want 3", len(before))
 	}
 	keep := viewIDs(before)[:2]
+	allBefore := viewIDs(before)
 	third := before[2].Message.ID
 
 	s.Rewind(third)
 	after := viewIDs(s.Transcript())
 	if !equalStrings(after, keep) {
 		t.Fatalf("rewind changed surviving identities:\n got %v\nwant %v", after, keep)
+	}
+
+	// Re-extend the branch: the next message must not reuse the identity of
+	// ANY message that existed before the rewind — including the removed
+	// one. A positional scheme hands the new message exactly the removed
+	// tail's slot (the survivors keep theirs, so they cannot catch it), and
+	// the reader who had anchored or expanded the removed message now has
+	// that identity pointing at unrelated content.
+	s.AddMessage(RoleAssistant, "four", ContentTypePlain)
+	extended := viewIDs(s.Transcript())
+	if len(extended) != 3 {
+		t.Fatalf("got %d messages after re-extension, want 3", len(extended))
+	}
+	if !equalStrings(extended[:2], keep) {
+		t.Fatalf("re-extending the branch changed the survivors:\n got %v\nwant %v", extended[:2], keep)
+	}
+	for _, id := range allBefore {
+		if extended[2] == id {
+			t.Fatalf("a message added after the rewind reused ViewID %q (pre-rewind identities: %v, after re-extension: %v)",
+				id, allBefore, extended)
+		}
 	}
 }
 
@@ -179,6 +211,11 @@ func TestViewIDForMessageTracksMessageID(t *testing.T) {
 // msg:1. A presentation identity must not collide across those scopes, or an
 // anchor taken on the parent resolves to an unrelated child message — the
 // cross-session collision that makes a drill-down silently move the reader.
+//
+// The distinctness assertion is unconditional: if message IDs ever stop
+// colliding across States (e.g. nextMsgID becomes process-wide), this test
+// must still hold — the scope token would then be redundant, but the
+// identities must still differ, not silently skip.
 func TestViewIDScopedPerStateInstance(t *testing.T) {
 	parent := newTestState()
 	child := newTestState()
@@ -191,24 +228,73 @@ func TestViewIDScopedPerStateInstance(t *testing.T) {
 		t.Fatalf("precondition: got %d parent and %d child items, want 1 each",
 			len(parentItems), len(childItems))
 	}
-	if parentItems[0].Message.ID != childItems[0].Message.ID {
-		t.Skip("message IDs no longer collide across states; scope token may be unnecessary")
-	}
 	if parentItems[0].ViewID == childItems[0].ViewID {
 		t.Fatalf("parent and child messages share ViewID %q", parentItems[0].ViewID)
 	}
 }
 
-// The same applies to the other collections: two States each produce
-// audit:1, and those are different tool calls.
+// One case per collection kind that uses scoped ordinals — every namespace
+// in viewid.go. Two States each produce the kind's first identity, and each
+// identity must carry ITS State's scope token: the identities differ both
+// pairwise and by the scope prefix they name. Run events additionally carry
+// their own collection epoch, and messages/subagents key on their own IDs,
+// but all go through the same per-State scope token (see scopePrefix).
+//
+// The prefix assertion is what actually pins the scoping for every kind, and
+// the pairwise-distinctness check alone cannot: the subagent registry's
+// runtime ID (subagentSeq) is process-wide, so two subagents registered one
+// after the other get different IDs even with the scope dropped — distinct
+// by accident. HasPrefix on each State's own scope token is what fails the
+// moment a kind unscopes.
 func TestViewIDScopedPerStateForCollections(t *testing.T) {
-	a := newTestState()
-	b := newTestState()
-	a.LogThinking(ThinkingEntry{Text: "a"})
-	b.LogThinking(ThinkingEntry{Text: "b"})
+	cases := map[string]struct {
+		token string
+		seed  func(*State)
+	}{
+		"audit": {
+			token: viewIDAudit,
+			seed:  func(s *State) { s.LogToolCall(registry.AuditEvent{ToolName: "file.read"}) },
+		},
+		"thinking": {
+			token: viewIDThinking,
+			seed:  func(s *State) { s.LogThinking(ThinkingEntry{Text: "t"}) },
+		},
+		"subagent": {
+			token: viewIDSubagent,
+			seed:  func(s *State) { s.RegisterSubagent("child", newTestState()) },
+		},
+		"runevent": {
+			token: viewIDRunEvent,
+			seed:  func(s *State) { s.AddRunEvent(RunEvent{Kind: RunEventCommit, TaskN: 1, Title: "abc123"}) },
+		},
+		"jobexit": {
+			token: viewIDJobExit,
+			seed:  func(s *State) { s.AddJobExit(JobExit{ID: "job-1", Command: "go test", ExitCode: 0}) },
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newTestState()
+			b := newTestState()
+			tc.seed(a)
+			tc.seed(b)
 
-	if a.Transcript()[0].ViewID == b.Transcript()[0].ViewID {
-		t.Fatalf("two states produced the same thinking ViewID %q", a.Transcript()[0].ViewID)
+			aItems := a.Transcript()
+			bItems := b.Transcript()
+			if len(aItems) != 1 || len(bItems) != 1 {
+				t.Fatalf("precondition: %s: got %d and %d items, want 1 each", name, len(aItems), len(bItems))
+			}
+			aView, bView := aItems[0].ViewID, bItems[0].ViewID
+			if aView == bView {
+				t.Fatalf("two states produced the same %s ViewID %q", name, aView)
+			}
+			if want := a.scopePrefix(tc.token); !strings.HasPrefix(aView, want) {
+				t.Errorf("state a's %s ViewID %q must start with its own scope prefix %q", name, aView, want)
+			}
+			if want := b.scopePrefix(tc.token); !strings.HasPrefix(bView, want) {
+				t.Errorf("state b's %s ViewID %q must start with its own scope prefix %q", name, bView, want)
+			}
+		})
 	}
 }
 

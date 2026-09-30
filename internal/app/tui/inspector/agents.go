@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"marshal/internal/strutil"
 )
 
@@ -385,12 +387,12 @@ func (m *Model) viewAgents() string {
 	// than truncated at one line, because a half-sentence explanation is worse
 	// than none — but it is still bounded, since a header that reflows the list
 	// off the panel is a header that costs the reader the content.
-	for _, line := range []string{
-		"Runtime agents — what actually ran this session.",
-		"(/agents shows the configured role routes, which is a different list.)",
-	} {
-		for _, wrapped := range wrapToWidth(line, width) {
-			b.WriteString(wrapped)
+	headerRows := 0
+	for _, line := range agentsHeaderLines() {
+		wrapped := wrapToWidth(line, width)
+		headerRows += len(wrapped)
+		for _, w := range wrapped {
+			b.WriteString(w)
 			b.WriteString("\n")
 		}
 	}
@@ -402,13 +404,65 @@ func (m *Model) viewAgents() string {
 	}
 
 	b.WriteString("\n")
-	for i, a := range m.agents.roster {
+
+	// An UNMEASURED panel renders the whole roster, following the same rule the
+	// detail body uses for an unmeasured width: a caller that has not laid its
+	// frame out gets the content rather than a window off a height nobody
+	// measured.
+	if m.height <= 0 {
+		for i, a := range m.agents.roster {
+			cursor := "  "
+			if i == m.agents.cursor {
+				cursor = "▸ "
+			}
+			b.WriteString(cursor)
+			b.WriteString(agentRowText(a, m.width))
+			b.WriteString("\n")
+		}
+		if m.agents.vanished {
+			b.WriteString("\n")
+			b.WriteString("The agent you were on is no longer in the roster; showing its nearest neighbour.\n")
+		}
+		return b.String()
+	}
+
+	// The tab is BUDGETED end to end: the panel is joined into the frame as a
+	// second column, and a join pads the shorter column to the taller one, so
+	// anything emitted beyond m.height escapes into the frame and pushes the
+	// status line off the bottom. The roster is WINDOWED to the rows left over,
+	// and the window reserves its own note rows so they ride INSIDE the list's
+	// share rather than being added to it.
+	//
+	// The header is measured by wrapping it, not assumed: it wraps, so its row
+	// count depends on the panel's width.
+	rows := m.height - headerRows - 1 // the blank line before the roster
+	if m.agents.vanished {
+		rows -= 2
+	}
+
+	bodyRows := 0
+	if m.AgentDetailOpen() {
+		bodyRows = max(rows/2, 1)
+		rows -= bodyRows
+	}
+	listRows := max(rows, 1)
+
+	w := windowList(len(m.agents.roster), listRows, m.agents.cursor, m.State(TabAgents).Scroll, 2)
+	if note := aboveNote(w.Above(), m.width); note != "" {
+		b.WriteString(note)
+		b.WriteString("\n")
+	}
+	for i := w.Start; i < w.End; i++ {
 		cursor := "  "
 		if i == m.agents.cursor {
 			cursor = "▸ "
 		}
 		b.WriteString(cursor)
-		b.WriteString(agentRowText(a, m.width))
+		b.WriteString(agentRowText(m.agents.roster[i], m.width))
+		b.WriteString("\n")
+	}
+	if note := belowNote(w.Below(), m.width); note != "" {
+		b.WriteString(note)
 		b.WriteString("\n")
 	}
 
@@ -420,10 +474,24 @@ func (m *Model) viewAgents() string {
 	}
 
 	if m.AgentDetailOpen() {
+		m.detail.Resize(m.width, bodyRows)
 		b.WriteString("\n")
 		b.WriteString(m.detail.View(m.detailLabel))
 	}
 	return b.String()
+}
+
+// agentsHeaderLines is the header the Agents tab renders, in one place so its
+// height can be MEASURED rather than guessed.
+//
+// It is a function rather than a package variable because the text is a product
+// claim, not configuration: a caller that mutated a shared slice in place would
+// silently change what the panel says.
+func agentsHeaderLines() []string {
+	return []string{
+		"Runtime agents — what actually ran this session.",
+		"(/agents shows the configured role routes, which is a different list.)",
+	}
 }
 
 // agentRowText renders one roster row: status marker, id, label, route, timing
@@ -485,52 +553,107 @@ func agentRowText(a Agent, width int) string {
 	return strutil.Truncate(line, budget, true)
 }
 
-// wrapToWidth breaks a line into display rows that each fit width cells.
+// wrapToWidth breaks a line into display rows that each fit width CELLS.
 //
-// It wraps on spaces where it can and mid-word where it must, because a single
-// unbreakable token (a long path, a model name) must still be bounded: letting
-// it through would produce the one row the panel cannot render, and the row
-// below it would be pushed off the bottom of the panel.
+// Cells, not runes. A rune is not a column: a CJK ideograph, an emoji and many
+// combining forms occupy two, and a combining mark occupies none of its own. The
+// earlier version measured `len([]rune(s))`, so ten CJK characters were treated
+// as ten cells and emitted as twenty — a header twice its budget, which wrapped
+// in the terminal and pushed the panel's chrome off the bottom of the screen.
+// That is precisely the overflow this function exists to prevent, so measuring
+// in the wrong unit made it fail at its one job for any non-ASCII text.
+//
+// It wraps on spaces where it can and mid-token where it must, because a single
+// unbreakable token (a long path, a model name) must still be bounded. A token
+// is split on GRAPHEME boundaries, never mid-cluster, so a wide character is
+// never halved into two invalid fragments.
 func wrapToWidth(s string, width int) []string {
 	width = max(width, 1)
-	if len([]rune(s)) <= width {
+	if ansi.StringWidth(s) <= width {
 		return []string{s}
 	}
 	var out []string
-	line := make([]rune, 0, width)
+
+	// current is the row being built, as a string, so cells and bytes cannot
+	// drift apart.
+	current := ""
 	flush := func() {
-		if len(line) > 0 {
-			out = append(out, string(line))
-			line = line[:0]
+		if current != "" {
+			out = append(out, current)
+			current = ""
 		}
 	}
+	currentCells := func() int { return ansi.StringWidth(current) }
+
 	for _, word := range strings.Fields(s) {
-		runes := []rune(word)
-		// A word that cannot fit on a line of its own is cut into pieces. It is
-		// cut, not dropped: silently losing part of the text is worse than an
-		// ugly break.
-		for len(runes) > width {
+		// A token that cannot fit on a row of its own is cut into pieces. It is
+		// cut, not dropped: silently losing text is worse than an ugly break.
+		for ansi.StringWidth(word) > width {
 			flush()
-			out = append(out, string(runes[:width]))
-			runes = runes[width:]
+			head, rest := splitAtCells(word, width)
+			if head == "" {
+				// The FIRST cluster is wider than the whole budget, so no amount
+				// of splitting makes this word fit. Emit that one cluster on its
+				// own and continue with the remainder: emitting the WHOLE word
+				// (the obvious fallback) would put the entire token on one row,
+				// which is the overflow this function exists to prevent, and
+				// dropping it loses content. One over-wide cluster is the
+				// smallest honest unit.
+				g, _ := ansi.FirstGraphemeCluster(word, ansi.GraphemeWidth)
+				if g == "" {
+					break
+				}
+				head, rest = g, word[len(g):]
+			}
+			out = append(out, head)
+			word = rest
 		}
-		need := len(runes)
-		if len(line) > 0 {
-			need++
+		if word == "" {
+			continue
 		}
-		if len(line)+need > width {
+		gap := 0
+		if current != "" {
+			gap = 1
+		}
+		if currentCells()+gap+ansi.StringWidth(word) > width {
 			flush()
+			gap = 0
 		}
-		if len(line) > 0 {
-			line = append(line, ' ')
+		if gap == 1 {
+			current += " "
 		}
-		line = append(line, runes...)
+		current += word
 	}
 	flush()
 	if len(out) == 0 {
 		return []string{""}
 	}
 	return out
+}
+
+// splitAtCells splits s into a head of at most cells display cells and the rest,
+// breaking only on grapheme boundaries.
+//
+// It reports an empty head when the FIRST cluster alone is wider than the budget,
+// so the caller can decide (it renders the cluster whole rather than looping).
+func splitAtCells(s string, cells int) (head, rest string) {
+	used := 0
+	i := 0
+	for i < len(s) {
+		g, w := ansi.FirstGraphemeCluster(s[i:], ansi.GraphemeWidth)
+		if g == "" {
+			break
+		}
+		if w < 0 {
+			w = 0
+		}
+		if used+w > cells {
+			break
+		}
+		used += w
+		i += len(g)
+	}
+	return s[:i], s[i:]
 }
 
 // pluralTools renders a tool-call count. "1 tools" reads as a rendering bug.

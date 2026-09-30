@@ -213,25 +213,25 @@ func TestWordStepsWalkWordEdgesAndAlwaysTerminate(t *testing.T) {
 	const text = "alpha beta gamma"
 	// Forward from the start of "beta" reaches the end of "beta".
 	from := strings.Index(text, "beta")
-	if got := NextWordBoundary(text, from); got != from+len("beta") {
-		t.Fatalf("NextWordBoundary from %d = %d, want the end of the word (%d)",
+	if got := nextWordBoundary(text, from); got != from+len("beta") {
+		t.Fatalf("nextWordBoundary from %d = %d, want the end of the word (%d)",
 			from, got, from+len("beta"))
 	}
 	// Forward from the space before "beta" reaches the START of "beta".
-	if got := NextWordBoundary(text, from-1); got != from {
-		t.Fatalf("NextWordBoundary from a space = %d, want the next word's start (%d)",
+	if got := nextWordBoundary(text, from-1); got != from {
+		t.Fatalf("nextWordBoundary from a space = %d, want the next word's start (%d)",
 			got, from)
 	}
 
 	// Forward from the start advances strictly and terminates at the end.
 	off := 0
 	for i := 0; i < 50; i++ {
-		next := NextWordBoundary(text, off)
+		next := nextWordBoundary(text, off)
 		if next <= off {
-			t.Fatalf("NextWordBoundary made no progress at %d (stayed at %d)", off, next)
+			t.Fatalf("nextWordBoundary made no progress at %d (stayed at %d)", off, next)
 		}
 		if snapped := SnapToBoundary(text, next); snapped != next {
-			t.Fatalf("NextWordBoundary returned %d, which is not a grapheme boundary", next)
+			t.Fatalf("nextWordBoundary returned %d, which is not a grapheme boundary", next)
 		}
 		off = next
 		if off == len(text) {
@@ -242,19 +242,19 @@ func TestWordStepsWalkWordEdgesAndAlwaysTerminate(t *testing.T) {
 		t.Fatalf("repeated NextWordBoundary did not reach the end: stopped at %d of %d",
 			off, len(text))
 	}
-	if got := NextWordBoundary(text, len(text)); got != len(text) {
-		t.Fatalf("NextWordBoundary at the end = %d, want the end (absorbing)", got)
+	if got := nextWordBoundary(text, len(text)); got != len(text) {
+		t.Fatalf("nextWordBoundary at the end = %d, want the end (absorbing)", got)
 	}
 
 	// Backward goes the same way, in reverse.
 	off = len(text)
 	for i := 0; i < 50; i++ {
-		prev := PrevWordBoundary(text, off)
+		prev := prevWordBoundary(text, off)
 		if prev >= off {
-			t.Fatalf("PrevWordBoundary made no progress at %d (stayed at %d)", off, prev)
+			t.Fatalf("prevWordBoundary made no progress at %d (stayed at %d)", off, prev)
 		}
 		if snapped := SnapToBoundary(text, prev); snapped != prev {
-			t.Fatalf("PrevWordBoundary returned %d, which is not a grapheme boundary", prev)
+			t.Fatalf("prevWordBoundary returned %d, which is not a grapheme boundary", prev)
 		}
 		off = prev
 		if off == 0 {
@@ -264,8 +264,8 @@ func TestWordStepsWalkWordEdgesAndAlwaysTerminate(t *testing.T) {
 	if off != 0 {
 		t.Fatalf("repeated PrevWordBoundary did not reach the start: stopped at %d", off)
 	}
-	if got := PrevWordBoundary(text, 0); got != 0 {
-		t.Fatalf("PrevWordBoundary at the start = %d, want 0 (absorbing)", got)
+	if got := prevWordBoundary(text, 0); got != 0 {
+		t.Fatalf("prevWordBoundary at the start = %d, want 0 (absorbing)", got)
 	}
 }
 
@@ -274,12 +274,12 @@ func TestWordStepsWalkWordEdgesAndAlwaysTerminate(t *testing.T) {
 // is indistinguishable from a broken one.
 func TestWordExtensionTerminatesOnTextWithoutSpaces(t *testing.T) {
 	const text = "日本語のテキスト"
-	got := NextWordBoundary(text, 0)
+	got := nextWordBoundary(text, 0)
 	if got <= 0 {
-		t.Fatalf("NextWordBoundary made no progress on unspaced text: %d", got)
+		t.Fatalf("nextWordBoundary made no progress on unspaced text: %d", got)
 	}
 	if got > len(text) {
-		t.Fatalf("NextWordBoundary ran past the end: %d > %d", got, len(text))
+		t.Fatalf("nextWordBoundary ran past the end: %d > %d", got, len(text))
 	}
 	if snapped := SnapToBoundary(text, got); snapped != got {
 		t.Fatalf("the boundary %d splits a grapheme", got)

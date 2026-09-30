@@ -140,8 +140,8 @@ func TestOpenAcceptsEveryProductTabAndRefusesAnUnknownOne(t *testing.T) {
 // helper that Open guards.
 func TestPerTabStateSurvivesTabSwitch(t *testing.T) {
 	m := New()
-	overview := TabState{Cursor: 3, Filter: "go", Scroll: 7}
-	changes := TabState{Cursor: 1, Filter: "diff", Scroll: 2}
+	overview := TabState{Scroll: 7}
+	changes := TabState{Scroll: 2}
 	m.SetState(TabOverview, overview)
 	m.SetState(TabChanges, changes)
 
@@ -160,11 +160,11 @@ func TestPerTabStateSurvivesTabSwitch(t *testing.T) {
 }
 
 // Resizing is not navigation. Twenty resizes across the three supported
-// terminal sizes must leave tab, cursor, filter, scroll, and the detail stack
-// exactly as they were.
+// terminal sizes must leave the tab, its scroll, and the detail stack exactly
+// as they were.
 func TestPerTabStateSurvivesRepeatedResize(t *testing.T) {
 	m := New()
-	want := TabState{Cursor: 4, Filter: "ctx", Scroll: 9}
+	want := TabState{Scroll: 9}
 	m.SetState(TabOverview, want)
 	// A target whose owning tab is visible, so OpenTarget genuinely navigates.
 	// (A changed-file target routes to Changes now that it exists.)

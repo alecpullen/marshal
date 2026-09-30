@@ -32,10 +32,18 @@ const (
 	ActionMemory        ActionID = "memory"
 	ActionModels        ActionID = "models"
 	ActionTasks         ActionID = "tasks"
-	ActionSideRail      ActionID = "side-rail"
-	ActionThinking      ActionID = "thinking"
-	ActionRollback      ActionID = "rollback"
-	ActionHelp          ActionID = "help"
+	// ActionToggleInspector and ActionSideRail are SEPARATE ids because they
+	// were one id with one key that did something different from what its label
+	// said: Ctrl+B toggles the inspector, while the row labelled "Side rail"
+	// claimed that key. The catalog is the single place a key's meaning is
+	// declared, so a label that names the other surface is exactly the drift
+	// the catalog exists to prevent.
+	ActionToggleInspector ActionID = "toggle-inspector"
+	ActionSideRail        ActionID = "side-rail"
+	ActionExpandInspector ActionID = "expand-inspector"
+	ActionThinking        ActionID = "thinking"
+	ActionRollback        ActionID = "rollback"
+	ActionHelp            ActionID = "help"
 
 	// Copy actions are separate IDs rather than one "copy" with an argument:
 	// "Copy answer" and "Copy output" are different promises about different
@@ -169,9 +177,19 @@ var actionCatalog = []actionDef{
 		key:  "Ctrl+T", priority: actionPriorityOptional,
 	},
 	{
-		id: ActionSideRail, label: "Side rail",
-		desc: "toggle the widescreen side rail for this session",
+		id: ActionToggleInspector, label: "Inspector",
+		desc: "toggle the conversation inspector for this session",
 		key:  "Ctrl+B", priority: actionPriorityOptional,
+	},
+	{
+		id: ActionSideRail, label: "Side rail",
+		desc:     "show or hide the widescreen side rail for this session",
+		priority: actionPriorityOptional,
+	},
+	{
+		id: ActionExpandInspector, label: "Expand inspector",
+		desc: "expand the inspector over the body (Esc returns it)",
+		key:  "Ctrl+Shift+B", priority: actionPriorityOptional,
 	},
 	{
 		id: ActionThinking, label: "Thinking blocks",
@@ -245,11 +263,26 @@ type actionContext struct {
 	// transcript is drilled into, or 0.
 	DrilledRunningChildID int64
 	HasRunningSubagent    bool
-	InspectorOnScreen     bool
-	TodosActive           bool
-	RollbackEligible      bool
-	MemoryAvailable       bool
-	MouseCaptured         bool
+	// InspectorOnScreen reports that the inspector is drawn this frame (side,
+	// dock, or body-expanded) — distinct from suspended, which is "open but
+	// yielding the slot".
+	InspectorOnScreen bool
+	// InspectorAvailable reports that this build wired an inspector at all, so
+	// Ctrl+B has something to toggle.
+	InspectorAvailable bool
+	// InspectorExpanded reports that the inspector is already occupying the
+	// body, so the expand action has nothing left to do.
+	InspectorExpanded bool
+	// SideRailAvailable reports that the read-only rail renders at the current
+	// width AND is enabled in settings. It is a different question from
+	// InspectorOnScreen: the rail and the inspector are separate surfaces with
+	// separate visibility rules, and collapsing them into one field is what let
+	// a row labelled "Side rail" claim the inspector's key.
+	SideRailAvailable bool
+	TodosActive       bool
+	RollbackEligible  bool
+	MemoryAvailable   bool
+	MouseCaptured     bool
 	// CopyBlock is the block a copy action would act on: the one under the
 	// reading anchor, or the newest when the reader is following. It is the
 	// resolved block rather than the sources it offers, so availability and
@@ -324,11 +357,16 @@ func (m Model) actionSnapshot() actionContext {
 		Busy:               m.busy,
 		QueueLen:           m.effectiveQueueLen(),
 		HasRunningSubagent: m.hasRunningSubagent(),
-		InspectorOnScreen:  m.railEnabled(),
+		SideRailAvailable:  m.railEnabled(),
 		TodosActive:        m.state != nil && len(m.state.Todos()) > 0,
 		RollbackEligible:   m.state != nil && m.state.HasBackup(),
 		MemoryAvailable:    m.memoryDB != nil,
 		MouseCaptured:      m.effectiveMouseCapture(),
+	}
+	if m.inspector != nil {
+		ctx.InspectorAvailable = true
+		ctx.InspectorOnScreen = m.inspector.isRendering()
+		ctx.InspectorExpanded = m.inspector.replacesBodyOnly()
 	}
 	// The dock holds one panel; the palette is one of them, so it is excluded
 	// or every action in the list would read as "resolve the open panel".
@@ -436,9 +474,20 @@ func availability(ctx actionContext, id ActionID) (disabled bool, reason string)
 		if !ctx.TodosActive {
 			return true, "the task list is empty"
 		}
+	case ActionToggleInspector:
+		if !ctx.InspectorAvailable {
+			return true, "the conversation inspector is not available in this build"
+		}
 	case ActionSideRail:
+		if !ctx.SideRailAvailable {
+			return true, "the side rail is off in settings, or the terminal is too narrow for it"
+		}
+	case ActionExpandInspector:
 		if !ctx.InspectorOnScreen {
-			return true, "the terminal is too narrow for the side rail"
+			return true, "open the inspector first (Ctrl+B)"
+		}
+		if ctx.InspectorExpanded {
+			return true, "the inspector is already expanded"
 		}
 	case ActionMemory:
 		if !ctx.MemoryAvailable {
@@ -609,9 +658,19 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 	case ActionTasks:
 		m.cycleTodoPanelMode()
 		m.refreshViewport()
+	case ActionToggleInspector:
+		if m.inspector != nil {
+			m.inspector.toggle(m.inspectorSideAvailable())
+			m.resize(m.rawWidth, m.rawHeight)
+		}
 	case ActionSideRail:
 		m.railHidden = !m.railHidden
 		m.resize(m.rawWidth, m.rawHeight)
+	case ActionExpandInspector:
+		if m.inspector != nil {
+			m.inspector.expandBody()
+			m.refreshViewport()
+		}
 	case ActionThinking:
 		m.detailExpanded = !m.detailExpanded
 		m.itemExpanded = map[itemKey]bool{}

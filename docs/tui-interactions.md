@@ -50,21 +50,34 @@ the mode cue — so they survive a narrow terminal that drops the branch name.
 
 | Key | What it does |
 | --- | --- |
-| `Ctrl+B` | toggle the inspector. Side rail on a wide terminal, docked panel otherwise |
+| `Ctrl+B` | toggle the inspector. Side column on a wide terminal, docked panel otherwise |
+| `Ctrl+Shift+B` | expand the inspector over the body; press again to return it |
 | `F6` / `Shift+F6` | cycle focus forward / back |
-| `Tab` / `Shift+Tab` | next / previous tab, on every tab except Context |
-| `[` `]` | cycle the Context tab's scope (pack ↔ last request) |
+| `Tab` / `Shift+Tab` | next / previous tab, on **every** tab including Context |
+| `←` `→` | on the Context tab, cycle its scope (pack ↔ last request) |
 
 The inspector has four tabs: **Changes** (working-tree diff against a base ref),
 **Agents** (running sub-agents, with their transcripts), **Context** (the pack and
 the last request), **Overview** (the same numbers as the side rail).
+
+`Tab` keeps its tab-bar meaning everywhere, including on the Context tab: a panel
+where `Tab` sometimes changed tabs and sometimes did something else could not be
+learned. The Context tab's scope is cycled by the arrow keys instead, and cycling
+it does **not** change the tab on display.
+
+The **side rail** is a separate, read-only surface with its own visibility rule:
+it appears at the width set by `tui.side_panel.min_width` and is toggled for the
+session by the *Side rail* row in the action palette (`F2`). It has no `Ctrl+B`
+binding, because `Ctrl+B` belongs to the inspector — the inspector's Overview is
+the rail's content made scrollable and navigable, so one key for both would leave
+the more capable surface unreachable.
 
 `/inspect <tab>` opens it by name. A tab that is not implemented cannot be opened
 by name — it says so rather than showing an empty panel.
 
 An open detail body survives new snapshots: a refresh updates badges without
 replacing what you are reading. Escape backs out of one level at a time —
-expanded body → open detail → focus.
+expanded body → the Context tab's child scope → open detail → focus.
 
 ## Selecting and copying
 
@@ -83,9 +96,14 @@ terminal for its own native selection, and takes it back.
 
 A selection is stored as *logical* offsets, so it survives a reflow, and it is
 frozen when the gesture ends, so streaming output cannot change bytes you already
-chose. A selection stays inside one block: the text between a point in one block
-and a point in another is not a range of any single string, and concatenating
-across blocks splices two unrelated documents together.
+chose. The highlight is drawn from the current layout — a highlight is a claim
+about cells on screen, so it is re-derived from the live geometry on every rebuild
+and follows the text through a resize. If a block's text genuinely changed
+underneath a selection, the highlight is dropped rather than tinted over whatever
+now sits at those offsets; the copied bytes still come from the frozen snapshot.
+A selection stays inside one block: the text between a point in one block and a
+point in another is not a range of any single string, and concatenating across
+blocks splices two unrelated documents together.
 
 Copy feedback is transient and states the scope: "Copied answer", "Copied code 1
 (go)", "Copy selection (42 characters)". Local clipboard helpers are tried first
@@ -130,6 +148,12 @@ actually read — in the conversation currently on screen. Specifically:
 - **A capped tool result is disclosed.** The status line says the search covered
   captured output that may itself be truncated, rather than implying it covered
   everything.
+
+An open search stays in step with the conversation: the result list is rebuilt on
+every transcript rebuild, so output that streams in while you are searching is
+searchable as it arrives, and the count in the status line describes the text you
+are actually looking at. Stepping to a match that cannot be scrolled to at the
+current width says so in the status line rather than moving the cursor silently.
 
 Matches are highlighted in the transcript through the same cell mapping the click
 and selection offsets come from, so a highlight cannot drift from the text it

@@ -60,13 +60,16 @@ func PositionAt(block RenderedBlock, row, cell int) TextPosition {
 	return TextPosition{Block: block.BlockID, Offset: off, Row: row, Cell: cell}
 }
 
-// PositionAtOffset converts a logical offset to a position, keeping the row it
+// positionAtOffset converts a logical offset to a position, keeping the row it
 // is displayed on.
 //
 // It exists for the keyboard path: an arrow key moves an OFFSET by a grapheme,
 // and the result still needs to know which row it is on so a caller can scroll
 // it into view.
-func PositionAtOffset(block RenderedBlock, off int) TextPosition {
+//
+// Unexported: the keyboard path is owned by the parent package through
+// GraphemeLineUp/GraphemeLineDown, which do the row-keeping themselves.
+func positionAtOffset(block RenderedBlock, off int) TextPosition {
 	off = SnapToBoundary(block.Logical, off)
 	if row, ok := block.RowForOffset(off); ok {
 		cell, _ := block.CellAt(row, off)
@@ -170,7 +173,7 @@ func SelectionAt(anchor, focus TextPosition, revision int) (Selection, bool) {
 	}, true
 }
 
-// NextWordBoundary returns the offset where the word starting at off ends.
+// nextWordBoundary returns the offset where the word starting at off ends.
 //
 // A "word" is a run of non-space characters, so this is the whitespace rule
 // rather than a linguistic one: it behaves the same for "foo(int)" as for
@@ -180,7 +183,10 @@ func SelectionAt(anchor, focus TextPosition, revision int) (Selection, bool) {
 // because a word-wise key that does nothing looks broken. It advances one
 // GRAPHEME in that case, which is the smallest step that is unambiguously
 // progress.
-func NextWordBoundary(text string, off int) int {
+//
+// Unexported: no caller outside the package wires a word-wise key yet; the
+// exported surface is what the parent package consumes.
+func nextWordBoundary(text string, off int) int {
 	off = SnapToBoundary(text, off)
 	if off >= len(text) {
 		return len(text)
@@ -204,11 +210,11 @@ func NextWordBoundary(text string, off int) int {
 	return NextGrapheme(text, off)
 }
 
-// PrevWordBoundary returns the offset where the word ending at off begins.
+// prevWordBoundary returns the offset where the word ending at off begins.
 //
-// Symmetric with NextWordBoundary, including the no-spaces case: it always moves
+// Symmetric with nextWordBoundary, including the no-spaces case: it always moves
 // back at least one grapheme, so the key cannot appear dead.
-func PrevWordBoundary(text string, off int) int {
+func prevWordBoundary(text string, off int) int {
 	off = SnapToBoundary(text, off)
 	if off <= 0 {
 		return 0
@@ -240,14 +246,14 @@ func isSpaceAt(text string, off int) bool {
 	return text[off] == ' ' || text[off] == '\t' || text[off] == '\n'
 }
 
-// LineBounds returns the offsets bounding the display row containing off, for a
+// lineBounds returns the offsets bounding the display row containing off, for a
 // line-wise extension.
 //
 // The bounds are the row's own logical range, so a line selection includes the
 // author's trailing whitespace on that line (it is inside the range) and stops
 // before the wrap's consumed space (which is restored by the row separator when
 // text is assembled, not by the range).
-func LineBounds(block RenderedBlock, off int) (int, int, bool) {
+func lineBounds(block RenderedBlock, off int) (int, int, bool) {
 	off = SnapToBoundary(block.Logical, off)
 	row, ok := block.RowForOffset(off)
 	if !ok {
@@ -267,7 +273,7 @@ func LineBounds(block RenderedBlock, off int) (int, int, bool) {
 // Up is to stay under the character you were on, and a row's offsets are not
 // proportional to its columns.
 func GraphemeLineUp(block RenderedBlock, off, _ int) int {
-	start, _, ok := LineBounds(block, off)
+	start, _, ok := lineBounds(block, off)
 	if !ok {
 		return off
 	}
@@ -286,7 +292,7 @@ func GraphemeLineUp(block RenderedBlock, off, _ int) int {
 
 // GraphemeLineDown is GraphemeLineUp's counterpart.
 func GraphemeLineDown(block RenderedBlock, off, _ int) int {
-	_, end, ok := LineBounds(block, off)
+	_, end, ok := lineBounds(block, off)
 	if !ok {
 		return off
 	}
@@ -341,9 +347,12 @@ func (r RenderedBlock) HighlightRange(rowIndex int, from, to int) (int, int, boo
 	return startCell, endCell, true
 }
 
-// SelectedRows returns the rows a selection touches, so a caller can check that
+// selectedRows returns the rows a selection touches, so a caller can check that
 // every block it plans to freeze is one the selection is actually in.
-func (s Selection) SelectedRows(block RenderedBlock) []int {
+//
+// Unexported: the freeze decision is made from the selection's own bounds; no
+// caller currently consumes the row list.
+func (s Selection) selectedRows(block RenderedBlock) []int {
 	if s.Block != block.BlockID {
 		return nil
 	}

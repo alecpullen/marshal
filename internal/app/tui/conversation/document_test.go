@@ -186,6 +186,29 @@ func TestDocumentRejectsMemberlessBlock(t *testing.T) {
 	}
 }
 
+// A block whose identity is already taken is DROPPED rather than admitted.
+// Pinning this deliberately: the alternative (a second block with the same
+// ID) would make "the block the reader is anchored to" name two different
+// rows, which is how a copy or a scroll silently lands on the wrong content.
+// The cost of the drop is real — the second block's text leaves the
+// transcript — and it is the FIRST block that survives, because that is the
+// one an earlier reader could already be anchored to.
+func TestDocumentDropsADuplicateIdentityBlock(t *testing.T) {
+	doc := NewDocument([]Block{
+		{Kind: BlockMessage, Members: []string{"msg:1"}, Text: "first"},
+		{Kind: BlockMessage, Members: []string{"msg:1"}, Text: "second"},
+	})
+	if len(doc.Blocks()) != 1 {
+		t.Fatalf("the document holds %d blocks, want only the first", len(doc.Blocks()))
+	}
+	if got := doc.Blocks()[0].Text; got != "first" {
+		t.Fatalf("the surviving block carries %q, want the first block's text", got)
+	}
+	if doc.Len() != 1 {
+		t.Fatalf("Len = %d after a duplicate was dropped", doc.Len())
+	}
+}
+
 // Copy targets name what the text IS, so a copy action can state its scope
 // honestly ("Copy answer" vs "Copy code") rather than guessing from content.
 func TestBlockCarriesSemanticCopyTargets(t *testing.T) {

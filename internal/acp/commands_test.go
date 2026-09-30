@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"marshal/internal/app/session"
@@ -34,6 +35,14 @@ func newTestCommandRegistry(t *testing.T) *commands.Registry {
 		PromptBody:  "do the thing",
 	}); err != nil {
 		t.Fatalf("register someplugincmd: %v", err)
+	}
+	if err := reg.Register(commands.Command{
+		Name:        "find",
+		Description: "search the transcript",
+		Args:        "<phrase>",
+		TUIOnly:     true,
+	}); err != nil {
+		t.Fatalf("register find: %v", err)
 	}
 	return reg
 }
@@ -247,6 +256,48 @@ func TestCommandManagerCommandRejectsNilRegistry(t *testing.T) {
 	_, err := mgr.Command(context.Background(), raw)
 	if err == nil {
 		t.Fatal("Command with nil Registry: got nil error, want an error")
+	}
+}
+
+// /find is TUIOnly with no Handler and no manager-owned headless
+// implementation (supportsHeadless is keyed on the fixed
+// headlessCommandNames map, which contains only "mcp"), so the documented
+// rule in mcpauth.go — a command is headless-capable only via TUIOnly AND a
+// handler, or a manager implementation — must reject it as TUI-only rather
+// than route it anywhere. The rejection is the contract the /find reviewer
+// finding asks to pin: /find's result is a position in the rendered
+// transcript, which an ACP client has no way to consume.
+func TestCommandManagerCommandRejectsFindAsTUIOnly(t *testing.T) {
+	reg := newTestCommandRegistry(t)
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+		},
+		HasActive: func(sessionID string) bool { return false },
+	})
+	// The command_list catalog must also agree: /find is offered as
+	// tui_only, never as headless — a client must not even be tempted to
+	// run it.
+	craw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := mgr.CommandList(context.Background(), craw)
+	if err != nil {
+		t.Fatalf("CommandList: %v", err)
+	}
+	for _, c := range res.(CommandListResult).Commands {
+		if c.Name == "find" && (c.Kind == "headless" || c.Kind == "prompt") {
+			t.Errorf("command_list kind for /find = %q, want \"tui_only\"", c.Kind)
+		}
+	}
+	if mgr.supportsHeadless("find") {
+		t.Error("supportsHeadless(find) = true, want false")
+	}
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_1", Name: "find", Args: []string{"needle"}})
+	_, err = mgr.Command(context.Background(), raw)
+	if err == nil {
+		t.Fatal("Command(find): got nil error, want the TUI-only rejection")
+	}
+	if !strings.Contains(err.Error(), "not available over ACP") || !strings.Contains(err.Error(), "TUI-only") {
+		t.Errorf("Command(find) error = %q, want the TUI-only rejection sentence (headless routing would produce a different failure)", err.Error())
 	}
 }
 

@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"marshal/internal/app/session"
@@ -78,7 +81,7 @@ func (m Model) conversationItems() []session.TranscriptItem {
 // anchor to or select.
 func conversationBlock(entry transcriptEntry) (conversation.Block, bool) {
 	if entry.Group != nil {
-		return toolGroupBlock(entry.Group, entry.GroupIDs), true
+		return blockRevision(toolGroupBlock(entry.Group, entry.GroupIDs)), true
 	}
 	if entry.Item == nil {
 		return conversation.Block{}, false
@@ -117,7 +120,70 @@ func conversationBlock(entry transcriptEntry) (conversation.Block, bool) {
 			block.Text = item.JobExit.Output
 		}
 	}
-	return block, true
+	return blockRevision(block), true
+}
+
+// blockRevision stamps a block with a revision derived from its content.
+//
+// It exists because Block.Revision was DECLARED and never populated: every
+// construction site left it at zero, so two consumers that key on it were both
+// silently comparing 0 == 0.
+//
+//   - SearchIndex serves a cached projection when the revision matches, so a
+//     streaming answer whose text grew was searched through its OLD text.
+//   - Selection.MatchesRevision is how a caller detects that the text moved
+//     underneath a selection, so a check that always returned true was no
+//     check at all.
+//
+// A content hash is the right source because the revision's whole contract is
+// "semantic change to this block's content": any cheap summary that changed
+// exactly when the text changed and never otherwise would do, and a hash is
+// the one that cannot drift from the text it describes.
+//
+// It is computed AFTER the text is attached, and it deliberately excludes
+// Revision itself so stamping is not recursive.
+func blockRevision(b conversation.Block) conversation.Block {
+	b.Revision = blockRevisionFor(b)
+	return b
+}
+
+// blockRevisionFor computes the revision a block's current content implies.
+//
+// The field set is exactly the set a render or a search projection depends on,
+// each length-prefixed so two different field layouts cannot hash alike: a
+// block whose Source became "Answer" and whose Text became "foo" must not
+// share a revision with one whose Text became "Answerfoo".
+func blockRevisionFor(b conversation.Block) int {
+	h := fnv.New64a()
+	writeRevField := func(s string) {
+		var n [8]byte
+		binary.LittleEndian.PutUint64(n[:], uint64(len(s)))
+		_, _ = h.Write(n[:])
+		_, _ = h.Write([]byte(s))
+	}
+	// Kind is an int enum, so it is written as a number: converting it to a
+	// string would yield a single rune (kind 7 becomes "\a"), and two different
+	// kinds could then hash to text that collides with real content.
+	writeRevField(strconv.Itoa(int(b.Kind)))
+	writeRevField(b.Text)
+	writeRevField(string(b.Source))
+	for _, t := range b.CopyTargets {
+		writeRevField(string(t.Source))
+		writeRevField(t.Text)
+		writeRevField(t.Label)
+	}
+	var flag byte
+	if b.Hidden {
+		flag |= 1
+	}
+	if b.Truncated {
+		flag |= 2
+	}
+	_, _ = h.Write([]byte{flag})
+	// Masked to the positive int range: Revision is an int, and on a 32-bit
+	// build a raw uint64 would wrap to a negative number. A revision only ever
+	// needs to DIFFER when the content differs, so the truncation is harmless.
+	return int(h.Sum64() & 0x7fffffff)
 }
 
 // toolGroupBlock describes a collapsed run of same-tool calls. Every member

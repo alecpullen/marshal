@@ -183,7 +183,7 @@ func TestCloseIsNotASuspension(t *testing.T) {
 func TestSuspensionPreservesTabScrollAndStack(t *testing.T) {
 	h := newInspectorHost()
 	h.open(inspector.TabOverview, true)
-	h.model.SetState(inspector.TabOverview, inspector.TabState{Cursor: 3, Filter: "go", Scroll: 11})
+	h.model.SetState(inspector.TabOverview, inspector.TabState{Scroll: 11})
 	h.model.OpenTarget(inspector.Target{
 		Kind: inspector.TargetChangedFile, Scope: "s1", ID: "internal/app/tui/view.go",
 	})
@@ -196,8 +196,8 @@ func TestSuspensionPreservesTabScrollAndStack(t *testing.T) {
 	if h.model.SelectedTab() != before {
 		t.Fatalf("tab = %q after restore, want %q", h.model.SelectedTab(), before)
 	}
-	if got := h.model.State(inspector.TabOverview); got.Cursor != 3 || got.Filter != "go" || got.Scroll != 11 {
-		t.Fatalf("state = %+v after restore, want the saved cursor/filter/scroll", got)
+	if got := h.model.State(inspector.TabOverview); got.Scroll != 11 {
+		t.Fatalf("state = %+v after restore, want the saved scroll", got)
 	}
 	if h.model.Depth() != depth {
 		t.Fatalf("detail depth = %d after restore, want %d", h.model.Depth(), depth)
@@ -273,7 +273,7 @@ func TestResizeAcrossSizesKeepsTheInspectorReachable(t *testing.T) {
 	sizes := [][2]int{{80, 24}, {120, 40}, {200, 60}}
 	h := newInspectorHost()
 	h.open(inspector.TabOverview, true)
-	h.model.SetState(inspector.TabOverview, inspector.TabState{Scroll: 4, Filter: "main"})
+	h.model.SetState(inspector.TabOverview, inspector.TabState{Scroll: 4})
 	h.model.OpenTarget(inspector.Target{
 		Kind: inspector.TargetChangedFile, Scope: "s1", ID: "internal/app/tui/model.go",
 	})
@@ -289,8 +289,8 @@ func TestResizeAcrossSizesKeepsTheInspectorReachable(t *testing.T) {
 		if h.model.SelectedTab() != wantTab {
 			t.Fatalf("iteration %d at %dx%d: tab = %q, want %q", i, w, ht, h.model.SelectedTab(), wantTab)
 		}
-		if got := h.model.State(inspector.TabOverview); got.Scroll != 4 || got.Filter != "main" {
-			t.Fatalf("iteration %d at %dx%d: state = %+v, want scroll 4 filter %q", i, w, ht, got, "main")
+		if got := h.model.State(inspector.TabOverview); got.Scroll != 4 {
+			t.Fatalf("iteration %d at %dx%d: state = %+v, want scroll 4", i, w, ht, got)
 		}
 		if got, ok := h.model.ActiveTarget(); !ok || got != wantTarget {
 			t.Fatalf("iteration %d at %dx%d: active target = %+v/%v, want %+v", i, w, ht, got, ok, wantTarget)

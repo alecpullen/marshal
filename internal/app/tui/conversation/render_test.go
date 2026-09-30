@@ -89,6 +89,60 @@ func TestRowsNeverExceedTheWidthBudget(t *testing.T) {
 	}
 }
 
+// normalizeRuns must not swallow a whole run when one merely GRAZES another:
+// the un-overlapped remainder is real text that would otherwise lose its
+// styling and be left an orphan gap. Pinning the deterministic choice — an
+// overlap that reaches past the earlier run keeps the earlier one whole and
+// styles the unclaimed remainder; an overlap fully covered by an earlier run
+// is dropped outright, because none of its bytes are unstyled anywhere.
+func TestNormalizeRunsKeepsTheUnoverlappedTailOfAnOverlappingRun(t *testing.T) {
+	got := normalizeRuns([]Run{
+		{Range: Range{0, 3}, Kind: SpanEmphasis}, // "abc"
+		{Range: Range{1, 8}, Kind: SpanCode},     // overlaps, but reaches past it
+	}, 10)
+	if len(got) != 2 {
+		t.Fatalf("a grazing overlap swallowed a whole run: %+v", got)
+	}
+	if got[0] != (Run{Range: Range{0, 3}, Kind: SpanEmphasis}) {
+		t.Fatalf("the first run was not kept: %+v", got[0])
+	}
+	// The second run survives WITHOUT the two bytes that were already
+	// claimed: everything else would style one byte twice or drop its text.
+	if got[1].Kind != SpanCode || got[1].Range.Start != 3 || got[1].Range.End != 8 {
+		t.Fatalf("the overlapping run's survivor = %+v, want code over bytes 3..8", got[1])
+	}
+
+	// A run fully covered by an earlier one HAS no unclaimed bytes, so it
+	// contributes nothing.
+	if fully := normalizeRuns([]Run{
+		{Range: Range{0, 8}, Kind: SpanEmphasis},
+		{Range: Range{2, 5}, Kind: SpanCode},
+	}, 10); len(fully) != 1 {
+		t.Fatalf("a fully covered run was not dropped: %+v", fully)
+	}
+}
+
+// normalizeRuns must be robust to an UNSORTED input, not silently reject it:
+// the runs a real renderer produces are ordered, but a caller that hands over
+// a reversed slice (a fold that appended in the wrong direction) must still
+// get a projection it can lay out rather than one run and a dropped tail.
+func TestNormalizeRunsSortsAnUnsortedInputDeterministically(t *testing.T) {
+	got := normalizeRuns([]Run{
+		{Range: Range{5, 8}, Kind: SpanStrong},
+		{Range: Range{0, 3}, Kind: SpanEmphasis},
+	}, 10)
+	if len(got) != 2 {
+		t.Fatalf("unsorted runs were dropped rather than ordered: %+v", got)
+	}
+	if got[0].Range.Start > got[1].Range.Start {
+		t.Fatalf("the runs came back unsorted: %+v", got)
+	}
+	if got[0] != (Run{Range: Range{0, 3}, Kind: SpanEmphasis}) ||
+		got[1] != (Run{Range: Range{5, 8}, Kind: SpanStrong}) {
+		t.Fatalf("the runs were reordered wrongly: %+v", got)
+	}
+}
+
 // A hard break is the author's; a soft break is the renderer's. Copy uses the
 // author's breaks and must never invent one, which is why the distinction is
 // recorded on the row rather than inferred later from the display text.
@@ -450,7 +504,7 @@ func TestTrailingWhitespaceBeforeAHardBreakIsKept(t *testing.T) {
 	}
 }
 
-// TextAcross is what a drag-selection copy is built on: it must return the
+// textAcross is what a drag-selection copy is built on: it must return the
 // LOGICAL text between two display positions, with no soft-wrap newline and no
 // decoration.
 func TestTextAcrossReturnsLogicalTextBetweenDisplayPositions(t *testing.T) {
@@ -459,26 +513,26 @@ func TestTextAcrossReturnsLogicalTextBetweenDisplayPositions(t *testing.T) {
 	})
 	// Rows: "  hello" (cells 2..6 = hello), "  world". The range is half-open,
 	// so the end cell names the offset just past the last character selected.
-	got := block.TextAcross(0, 2, 0, 7)
+	got := block.textAcross(0, 2, 0, 7)
 	if got != "hello" {
-		t.Fatalf("TextAcross over the first row = %q, want %q", got, "hello")
+		t.Fatalf("textAcross over the first row = %q, want %q", got, "hello")
 	}
 	// Across the wrap: the consumed space is restored, not turned into a
 	// newline and not dropped.
-	got = block.TextAcross(0, 2, 1, 8)
+	got = block.textAcross(0, 2, 1, 8)
 	if got != "hello world" {
-		t.Fatalf("TextAcross across the wrap = %q, want %q", got, "hello world")
+		t.Fatalf("textAcross across the wrap = %q, want %q", got, "hello world")
 	}
 	// A reversed drag yields the same text as a forward one.
-	if back := block.TextAcross(1, 8, 0, 2); back != got {
+	if back := block.textAcross(1, 8, 0, 2); back != got {
 		t.Fatalf("a backwards drag gave %q, want %q", back, got)
 	}
 	// The end cell is exclusive: stopping at the start of "world" leaves it out.
-	if got := block.TextAcross(0, 2, 1, 2); got != "hello " {
-		t.Fatalf("TextAcross up to the start of the next row = %q, want %q", got, "hello ")
+	if got := block.textAcross(0, 2, 1, 2); got != "hello " {
+		t.Fatalf("textAcross up to the start of the next row = %q, want %q", got, "hello ")
 	}
 	// A drag that runs off both ends is clamped, not a panic.
-	if got := block.TextAcross(-5, -5, 99, 99); got != "hello world" {
+	if got := block.textAcross(-5, -5, 99, 99); got != "hello world" {
 		t.Fatalf("an out-of-range drag gave %q, want the whole text", got)
 	}
 }
@@ -487,7 +541,7 @@ func TestTextAcrossReturnsLogicalTextBetweenDisplayPositions(t *testing.T) {
 // the renderer added, and a copy that included it would paste stray spaces.
 func TestTextAcrossSkipsDecoration(t *testing.T) {
 	block := LayoutBlock(Block{ID: "msg:1", Text: "code"}, LayoutOptions{Width: 40, Indent: 4})
-	if got := block.TextAcross(0, 0, 0, 8); got != "code" {
+	if got := block.textAcross(0, 0, 0, 8); got != "code" {
 		t.Fatalf("a drag over the indent and the text gave %q, want %q", got, "code")
 	}
 }
@@ -544,6 +598,40 @@ func TestAnUnmeasuredWidthDoesNotWrap(t *testing.T) {
 	}
 	if got := contentText(block.Rows); got != text {
 		t.Fatalf("content = %q, want the text unchanged", got)
+	}
+}
+
+// A layout whose frame consumes its whole width cannot honour a content
+// budget: there are no content cells left, so every grapheme overflows.
+// Flooring the budget at 1 pretended one cell still fit and produced the
+// visible failure this task guards against — every row shredding into a
+// column of single-cell fragments that ALSO overflowed. The honest choice,
+// pinned here, is the minimum-overflow one: stop wrapping, one row per hard
+// line, overflowing only as far as the author's own text forces.
+func TestADegenerateBudgetDoesNotShredTheText(t *testing.T) {
+	const text = "alpha beta gamma"
+	block := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{Width: 4, Indent: 4})
+	if len(block.Rows) != 1 {
+		t.Fatalf("degenerate layout produced %d rows, want one per hard line: %q",
+			len(block.Rows), rowsText(block.Rows))
+	}
+	if got := reassembled(block.Rows); got != text {
+		t.Fatalf("reassembled %q, want %q", got, text)
+	}
+
+	// One content cell left is NOT degenerate: the budget is honoured, every
+	// row fits the width, and the wrap is still a wrap rather than a shred.
+	wrapped := LayoutBlock(Block{ID: "msg:1", Text: text}, LayoutOptions{Width: 5, Indent: 4})
+	if len(wrapped.Rows) < 4 {
+		t.Fatalf("a single-cell budget stopped wrapping: %q", rowsText(wrapped.Rows))
+	}
+	for i, row := range wrapped.Rows {
+		if row.Cells > 5 {
+			t.Fatalf("row %d is %d cells, past the width of 5", i, row.Cells)
+		}
+	}
+	if got := reassembled(wrapped.Rows); got != text {
+		t.Fatalf("reassembled %q, want %q", got, text)
 	}
 }
 

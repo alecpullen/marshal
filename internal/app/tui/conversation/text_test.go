@@ -40,8 +40,8 @@ var textFixtures = []struct {
 func TestCellWidthMatchesTheWidthTheRestOfTheAppMeasures(t *testing.T) {
 	for _, f := range textFixtures {
 		t.Run(f.name, func(t *testing.T) {
-			if got, want := CellWidth(f.text), ansi.StringWidth(f.text); got != want {
-				t.Fatalf("CellWidth(%q) = %d, want %d (ansi.StringWidth)", f.text, got, want)
+			if got, want := cellWidth(f.text), ansi.StringWidth(f.text); got != want {
+				t.Fatalf("cellWidth(%q) = %d, want %d (ansi.StringWidth)", f.text, got, want)
 			}
 		})
 	}
@@ -68,8 +68,8 @@ func TestCellWidthExpandsTabsToTheNextTabStop(t *testing.T) {
 		{"no tabs here", 12}, // absent tabs change nothing
 	}
 	for _, c := range cases {
-		if got := CellWidth(c.text); got != c.want {
-			t.Errorf("CellWidth(%q) = %d, want %d", c.text, got, c.want)
+		if got := cellWidth(c.text); got != c.want {
+			t.Errorf("cellWidth(%q) = %d, want %d", c.text, got, c.want)
 		}
 	}
 }
@@ -147,8 +147,8 @@ func TestOffsetForCellClampsWideContinuationCellsToTheirGrapheme(t *testing.T) {
 		{99, 5}, // far past the end is still the end
 		{-1, 0},
 	} {
-		if got := OffsetForCell(text, c.cell, 8); got != c.want {
-			t.Errorf("OffsetForCell(%q, %d) = %d, want %d", text, c.cell, got, c.want)
+		if got := offsetForCell(text, c.cell, 8); got != c.want {
+			t.Errorf("offsetForCell(%q, %d) = %d, want %d", text, c.cell, got, c.want)
 		}
 	}
 }
@@ -158,18 +158,18 @@ func TestOffsetForCellClampsWideContinuationCellsToTheirGrapheme(t *testing.T) {
 func TestOffsetForCellTreatsAnEmojiSequenceAsOneGrapheme(t *testing.T) {
 	const seq = "👩🏽‍💻"
 	const text = seq + "!" // the sequence is two cells, "!" one
-	if got := OffsetForCell(text, 1, 8); got != 0 {
-		t.Errorf("OffsetForCell(%q, 1) = %d, want 0", text, got)
+	if got := offsetForCell(text, 1, 8); got != 0 {
+		t.Errorf("offsetForCell(%q, 1) = %d, want 0", text, got)
 	}
-	if got := OffsetForCell(text, 2, 8); got != len(seq) {
-		t.Errorf("OffsetForCell(%q, 2) = %d, want %d", text, got, len(seq))
+	if got := offsetForCell(text, 2, 8); got != len(seq) {
+		t.Errorf("offsetForCell(%q, 2) = %d, want %d", text, got, len(seq))
 	}
-	if got := CellWidth(text); got != 3 {
-		t.Errorf("CellWidth(%q) = %d, want 3", text, got)
+	if got := cellWidth(text); got != 3 {
+		t.Errorf("cellWidth(%q) = %d, want 3", text, got)
 	}
 }
 
-// CellForOffset is the inverse a renderer needs: given a logical offset, which
+// cellForOffset is the inverse a renderer needs: given a logical offset, which
 // column does that byte start at. Round-tripping is what lets a selection
 // survive a resize, because the geometry is recomputed while the offsets stay
 // put.
@@ -187,9 +187,9 @@ func TestCellForOffsetIsTheInverseOfOffsetForCellOnGraphemes(t *testing.T) {
 					if snapped := SnapToBoundary(line, off); snapped != off {
 						continue // a continuation byte is not a position text can be cut at
 					}
-					cell := CellForOffset(line, off, 8)
-					if got := OffsetForCell(line, cell, 8); got != off {
-						t.Fatalf("line %q: OffsetForCell(CellForOffset(%d) = %d) = %d, want %d",
+					cell := cellForOffset(line, off, 8)
+					if got := offsetForCell(line, cell, 8); got != off {
+						t.Fatalf("line %q: offsetForCell(cellForOffset(%d) = %d) = %d, want %d",
 							line, off, cell, got, off)
 					}
 				}
@@ -199,7 +199,7 @@ func TestCellForOffsetIsTheInverseOfOffsetForCellOnGraphemes(t *testing.T) {
 }
 
 // The column a tab lands on depends on the column it started at, so
-// CellForOffset has to accumulate the expansion rather than count a tab as one
+// cellForOffset has to accumulate the expansion rather than count a tab as one
 // byte of one cell.
 func TestCellForOffsetCountsExpandedTabCells(t *testing.T) {
 	const text = "a\tb"
@@ -210,8 +210,8 @@ func TestCellForOffsetCountsExpandedTabCells(t *testing.T) {
 		{3, 9},
 		{99, 9},
 	} {
-		if got := CellForOffset(text, c.off, 8); got != c.want {
-			t.Errorf("CellForOffset(%q, %d) = %d, want %d", text, c.off, got, c.want)
+		if got := cellForOffset(text, c.off, 8); got != c.want {
+			t.Errorf("cellForOffset(%q, %d) = %d, want %d", text, c.off, got, c.want)
 		}
 	}
 }

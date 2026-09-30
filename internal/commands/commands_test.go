@@ -362,6 +362,9 @@ func TestFindCommandRegistered(t *testing.T) {
 	if !cmd.TUIOnly {
 		t.Error("/find should be TUIOnly: its result is a position in the rendered transcript")
 	}
+	if cmd.Handler != nil {
+		t.Error("/find must not have a headless Handler")
+	}
 	// The argument is documented as a PHRASE, because it is joined rather than
 	// treated as a list of terms — a reader who assumes one term per word would
 	// get a different search from the one they asked for.

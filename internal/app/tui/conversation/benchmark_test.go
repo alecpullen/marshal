@@ -98,7 +98,7 @@ func BenchmarkLargeConversationCachedUpdate(b *testing.B) {
 	spans := make(map[BlockID]Spans, n)
 	layout := func(block Block) int {
 		sp, ok := spans[block.ID]
-		if !ok || spansRevision(block, sp) {
+		if !ok || benchmarkStubsStaleProjection(block, sp) {
 			sp = ProjectMarkdown(block.Text, MarkdownOptions{})
 			spans[block.ID] = sp
 		}
@@ -116,13 +116,12 @@ func BenchmarkLargeConversationCachedUpdate(b *testing.B) {
 	}
 }
 
-// spansRevision reports whether a cached projection is stale.
-//
-// A real cache keys on the block's revision; this predicate stands in for that so
-// the benchmark reads as the shape of the real refresh. It reports "unchanged"
-// after the first pass, which is the streaming case: one block's text grew and
-// the rest must not be reparsed.
-func spansRevision(_ Block, sp Spans) bool { return sp.Text == "" }
+// benchmarkStubsStaleProjection stands in for a real cache's staleness check,
+// which the production cache keys on the block's revision. The name states
+// that it is a BENCHMARK STUB rather than the real predicate: the real
+// cache's revision check lives in SearchIndex.spans, and a reader looking for
+// it must not mistake this for it.
+func benchmarkStubsStaleProjection(_ Block, sp Spans) bool { return sp.Text == "" }
 
 func BenchmarkLargeConversationReflowAtNewWidth(b *testing.B) {
 	const n = 10000

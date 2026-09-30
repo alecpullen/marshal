@@ -203,10 +203,31 @@ func writeRevisionField(h hash.Hash64, s string) {
 // logical offset was painted over text that had changed underneath it, which is
 // exactly the case the check exists to refuse.
 //
-// So the revision is derived from the same source as the document path's, over
-// the fields the transcript actually has: the block's logical text. Hashed with
-// the same helper and the same length-prefixed layout, so a block that appears
-// in both the document and the transcript carries comparable revisions.
+// So the revision is derived from the same KIND of source as the document
+// path's — a content hash over the block's text — and hashed with the same
+// helper and the same length-prefixed layout.
+//
+// The two are PER-PATH revisions, NOT equal ones, and the difference is
+// deliberate rather than a defect to be closed:
+//
+//   - The document path hashes blockRevisionFor(Block), which covers the kind,
+//     the source, and every copy target as well as the text. That is what it
+//     must cover: SearchIndex serves a cached projection keyed on it, and a
+//     block whose source became "Answer" while its text stayed put is a
+//     different block to search.
+//   - The transcript path hashes the block's logical text alone, because the
+//     transcript has no Block — a message renders straight to rows. Widening it
+//     to the document's field set would mean reconstructing a Block here purely
+//     to hash it.
+//   - The text each hashes is also not the same string. The transcript hashes
+//     the PROJECTED Markdown (sp.Text) of already tab-expanded content, while
+//     the document hashes the message's raw Content.
+//
+// Nothing compares the two: MatchesRevision is fed a RenderedBlock from the same
+// path that froze the selection, and SearchIndex compares document revisions
+// only. The contract each one has to keep is therefore local — "this block's
+// content changed under the reader, so the offsets they stored no longer mean
+// what they meant" — and that is what a text hash gives, exactly, on both paths.
 //
 // It deliberately does NOT include the identity: the revision's contract is
 // "this block's content changed", and an identity is not content. Two blocks

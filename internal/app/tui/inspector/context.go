@@ -1287,8 +1287,12 @@ func (m *Model) viewContext() string {
 	// shorter column to the taller one, so rows emitted beyond m.height escape
 	// into the frame and push the status line off the bottom. Every row goes
 	// through the budget, including the blank line before the body and the stale
-	// note after it — an uncounted row is how this panel used to overshoot.
-	rb := newRowBudget(m.height)
+	// note beside it — an uncounted row is how this panel used to overshoot.
+	//
+	// The budget is WIDTH-aware as well, so a row that some other writer
+	// composed without clamping cannot reflow into rows this budget has already
+	// spent.
+	rb := newRowBudget(m.height, m.width)
 	for _, line := range heading {
 		rb.line(m.contextLine(line, width))
 	}
@@ -1301,8 +1305,24 @@ func (m *Model) viewContext() string {
 	// The list and the detail body SHARE what is left. The stale note (one row)
 	// is reserved FIRST, because it is conditional and its row must not be
 	// handed to the list or the body.
+	//
+	// The reservation is a FLOOR, and it is HONOURED below: the note is emitted
+	// at the list/body boundary, the first place its reserved row can be spent.
+	// The earlier arrangement emitted it AFTER the body, where the body's own
+	// blank separator could take the row first and leave the reservation paid
+	// for and unspent — the reader losing a row of list to a sentence they never
+	// saw.
+	//
+	// The charge is taken ONLY when this budget can then honour it, which is
+	// what makes it a floor rather than a deduction. The list is given what is
+	// left AFTER the charge, so a charged row is a row the list cannot spend —
+	// and the note, emitted at the list/body boundary below, always finds its
+	// row. At a ONE-row budget there is no such arrangement: the charge would
+	// leave the list with nothing, and a stale label over a list the reader
+	// cannot see is worth less than the row it costs. Below that size the note
+	// is simply not charged, which costs the list nothing at all.
 	rows := rb.left()
-	if m.context.hasOpen && m.context.stale {
+	if m.context.hasOpen && m.context.stale && rows >= 2 {
 		rows--
 	}
 	rows = max(rows, 1)
@@ -1318,16 +1338,28 @@ func (m *Model) viewContext() string {
 
 	w := windowList(len(m.context.rows), listRows, m.ContextCursor(), m.State(TabContext).Scroll, 2)
 	if w.ShowAbove() {
-		rb.line(m.contextLine(aboveNote(w.Above(), m.width), width))
+		rb.line(m.contextLine(aboveNote(w.Above(), width), width))
 	}
 	for i := w.Start; i < w.End; i++ {
 		rb.line(m.contextLine(m.contextRowLine(i, m.context.rows[i]), width))
 	}
 	if w.ShowBelow() {
-		rb.line(m.contextLine(belowNote(w.Below(), m.width), width))
+		rb.line(m.contextLine(belowNote(w.Below(), width), width))
 	}
 
-	if m.context.hasOpen && bodyRows > 0 {
+	// The stale note is emitted HERE — after the list, before the body — because
+	// this is where its reserved row can be spent. Emitting it after the body
+	// left it competing with the body's own separator for the last row, and the
+	// separator usually won.
+	//
+	// The reader is told rather than moved: the body on screen is theirs to
+	// finish reading, and the note says the snapshot behind it has moved on.
+	if m.context.hasOpen && m.context.stale && rb.left() >= 1 {
+		rb.line(m.contextLine(
+			"[this snapshot changed since you opened it — press Enter again to refresh]", width))
+	}
+
+	if m.context.hasOpen && bodyRows > 0 && rb.left() >= 2 {
 		rb.blank()
 		// The body gets ITS share, so it windows its own content to what it was
 		// given rather than to the whole panel.
@@ -1337,13 +1369,6 @@ func (m *Model) viewContext() string {
 		// leaving rows cut for the old width.
 		m.contextWrapBody()
 		rb.body(detail.View(m.context.openLabel))
-		if m.context.stale {
-			// The reader is told rather than moved: the body on screen is
-			// theirs to finish reading, and the note says the snapshot behind
-			// it has moved on.
-			rb.line(m.contextLine(
-				"[this snapshot changed since you opened it — press Enter again to refresh]", width))
-		}
 	}
 	return rb.String()
 }

@@ -557,6 +557,13 @@ func renderMessage(msg session.Message, width int) string {
 func renderMessageWithSink(msg session.Message, width int, sink *mappedMessageSink) string {
 	// Expand tabs once, here, so every content-type branch below measures
 	// what the terminal will actually render. See expandTabs.
+	//
+	// The expansion is applied to this COPY of the message (msg is by value),
+	// so the session's own content is untouched. It does mean the mapped
+	// renderer downstream hashes the EXPANDED text, while the document path
+	// hashes the raw Content — the two revisions are per-path and are never
+	// compared; see blockTextRevision for why that is correct rather than a
+	// gap.
 	msg.Content = expandTabs(msg.Content)
 	// Skill messages are handled before the role branches: the body
 	// (ContentTypeSkillBody) is model context, not transcript content, and

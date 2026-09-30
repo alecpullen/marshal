@@ -442,6 +442,31 @@ func wrapRange(text string, line Range, wrap wrapOptions) []Range {
 // Starting at 0 was the wrap half of the tab disagreement this signature
 // exists to remove: the same tab was one cell wide for the wrap and seven for
 // the row, so the wrap filled cells that were not there and the row overflowed.
+//
+// Slack, and which way it leans. The two halves of a wrap agree about where a
+// row ends — the builder draws exactly the range this returns — so the budget
+// holds in the direction that matters. What remains is a one-cell slack in the
+// SAFE direction, recorded here rather than left to be rediscovered.
+//
+// A break after a SPACE is the case that has it. The break lands past the
+// space, so the space's byte is inside the ending row's range, and the budget
+// that let the row reach its limit counted that byte as a cell. But buildRow
+// elides a space that is a soft row's LAST byte — it shows nothing on a
+// terminal and would make the display text disagree with the cell count — so
+// the row is DRAWN one cell short of the budget it was allowed. "abc def" at a
+// budget of 4 draws "abc" as 3 cells and keeps the space in the range.
+//
+// One cell UNDER is the harmless direction: the row is never wider than the
+// wrap measured, its range still accounts for every byte, and the space comes
+// back when the rows are read as text, because the row's Separator reports it.
+// A break after a non-space breakpoint character has no slack at all — that
+// character is drawn, so it is counted and spent — which is why this is
+// specific to space breaks.
+//
+// Declining the break in exactly that case would recover the cell, at the cost
+// of changing which rows every ordinary paragraph wraps into, to fix a
+// one-cell shortfall on a shape no reported overflow was ever reached through.
+// The comment is the fix; the behaviour is deliberate.
 func rowEnd(text string, pos, limit int, wrap wrapOptions) int {
 	ts := effectiveTabStop(wrap.TabStop)
 	// The total cells the row may occupy, indent included. The wrap's budget

@@ -19,6 +19,14 @@ import (
 // nextMsgID at 0, both of which falsify ScopeID's documented promise that the
 // token is always set and per-State unique. The constructor is what other tests
 // in this package use (see skills_test.go's newTestState).
+//
+// EVERY runtime in this file is built with it, not only the tests that happen to
+// read State today. A zero State is a state the package's own contract says
+// cannot exist, and a test that hands one to the code under test is asserting
+// something false about the input even when the assertion it is making is about
+// something else. Keeping all of them identical also means the next test added
+// here cannot inherit a state whose ScopeID silently collides with every other
+// unnumbered one — the failure that made this helper necessary.
 func newTestCommandState() *session.State {
 	return session.New(config.Default(), "/tmp", time.Unix(100, 0), session.Persistence{})
 }
@@ -64,7 +72,7 @@ func TestCommandManagerCommandListReturnsKinds(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -123,7 +131,7 @@ func TestCommandManagerCommandRunsHeadlessHandler(t *testing.T) {
 
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -162,7 +170,7 @@ func TestCommandManagerCommandSerializesDoc(t *testing.T) {
 
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -191,7 +199,7 @@ func TestCommandManagerCommandRejectsTUIOnly(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -206,7 +214,7 @@ func TestCommandManagerCommandRejectsUnknownName(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -248,7 +256,7 @@ func TestCommandManagerCommandRejectsMalformedParams(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -261,7 +269,10 @@ func TestCommandManagerCommandRejectsMalformedParams(t *testing.T) {
 func TestCommandManagerCommandRejectsNilRegistry(t *testing.T) {
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: nil}, true
+			// The runtime is otherwise well-formed — the point is the nil
+			// Registry — so the State comes from the constructor like every
+			// other one here.
+			return &CommandRuntime{State: newTestCommandState(), Registry: nil}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -284,7 +295,7 @@ func TestCommandManagerCommandRejectsFindAsTUIOnly(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})
@@ -318,7 +329,7 @@ func TestCommandManagerCommandRejectsPromptBodyOnly(t *testing.T) {
 	reg := newTestCommandRegistry(t)
 	mgr := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {
-			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+			return &CommandRuntime{State: newTestCommandState(), Registry: reg}, true
 		},
 		HasActive: func(sessionID string) bool { return false },
 	})

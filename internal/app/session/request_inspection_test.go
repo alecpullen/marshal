@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -529,6 +530,97 @@ func sharesStorage(a, b string) bool {
 		return false
 	}
 	return unsafe.StringData(a) == unsafe.StringData(b)
+}
+
+// TestRequestInspectionToolDropsAreByteAccounted pins the arithmetic the
+// OmittedBytes field promises: retained bytes plus omitted bytes reconstructs
+// the ORIGINAL content, so a reader can see how much of the request is missing
+// rather than only how many entries were dropped.
+//
+// The messages arms have always counted their dropped bytes (countMessageBytes).
+// The tools arms did not: they recorded ToolsOmitted and nothing else, so a
+// snapshot that dropped 50 tool definitions reported zero missing bytes for
+// them and the sum came up short with no way to notice. Both tools arms are
+// covered — the entry cap and the total budget — because they are separate code
+// paths and only pinning one would leave the other free to regress.
+func TestRequestInspectionToolDropsAreByteAccounted(t *testing.T) {
+	// originalBytes is the same measure the snapshot's own accounting uses, so
+	// the assertion is about the arithmetic rather than about a second opinion
+	// on what a tool's bytes are.
+	originalBytes := func(msgs []InspectionMessage, tools []InspectionTool) int {
+		return countMessageBytes(msgs) + countToolBytes(tools)
+	}
+
+	t.Run("entry cap", func(t *testing.T) {
+		s := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+
+		// One more than the cap so a drop is forced, and small enough that the
+		// total budget is nowhere near binding: this subtest must fail only if
+		// the ENTRY cap's accounting is wrong.
+		tools := make([]InspectionTool, 0, MaxInspectionTools+7)
+		for i := 0; i < MaxInspectionTools+7; i++ {
+			tools = append(tools, InspectionTool{
+				Name:        fmt.Sprintf("tool-%d", i),
+				Description: "a tool",
+				Parameters:  `{"type":"object"}`,
+			})
+		}
+		msgs := []InspectionMessage{{Role: "user", Content: "hi"}}
+		req := inspectionRequest(msgs...)
+		req.Tools = tools
+		s.SetRequestInspection(req)
+
+		got, _ := s.RequestInspection()
+		if got.ToolsOmitted != 7 {
+			t.Fatalf("ToolsOmitted = %d, want 7", got.ToolsOmitted)
+		}
+		if len(got.Tools) != MaxInspectionTools {
+			t.Fatalf("kept %d tools, want the cap %d", len(got.Tools), MaxInspectionTools)
+		}
+
+		retained := got.TotalContentBytes()
+		if want := originalBytes(msgs, tools) - retained; got.OmittedBytes != want {
+			t.Fatalf("OmittedBytes = %d, want %d (original %d - retained %d): the dropped tools' bytes are unaccounted",
+				got.OmittedBytes, want, originalBytes(msgs, tools), retained)
+		}
+	})
+
+	t.Run("total budget", func(t *testing.T) {
+		s := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+
+		// Parameters are not field-capped, so a run of large ones is the way to
+		// overrun the total budget with the ENTRY cap untouched — the other arm.
+		per := 128 * 1024
+		tools := make([]InspectionTool, 0, 32)
+		for i := 0; i < 32; i++ {
+			tools = append(tools, InspectionTool{
+				Name:        fmt.Sprintf("tool-%d", i),
+				Description: "a tool",
+				Parameters:  `{"blob":"` + strings.Repeat("p", per) + `"}`,
+			})
+		}
+		msgs := []InspectionMessage{{Role: "user", Content: "hi"}}
+		req := inspectionRequest(msgs...)
+		req.Tools = tools
+		s.SetRequestInspection(req)
+
+		got, _ := s.RequestInspection()
+		if got.ToolsOmitted == 0 {
+			t.Fatal("precondition: the total budget must drop some tools here")
+		}
+		if len(got.Tools) == len(tools) {
+			t.Fatal("precondition: no tool was dropped")
+		}
+
+		retained := got.TotalContentBytes()
+		if retained > MaxInspectionTotalBytes {
+			t.Fatalf("retained %d bytes, want <= %d", retained, MaxInspectionTotalBytes)
+		}
+		if want := originalBytes(msgs, tools) - retained; got.OmittedBytes != want {
+			t.Fatalf("OmittedBytes = %d, want %d (original %d - retained %d): the budget-dropped tools' bytes are unaccounted",
+				got.OmittedBytes, want, originalBytes(msgs, tools), retained)
+		}
+	})
 }
 
 // TestRequestInspectionHasNoPersistenceSideEffects pins the plan's constraint:

@@ -157,6 +157,15 @@ const maxStderrBytes = 4 * 1024
 // whole output first. Overflow is not reported to the caller — the truncation is
 // already visible to the reader as the message simply ending, and an error here
 // would replace the helper's real failure with a bookkeeping one.
+//
+// SINGLE WRITER ONLY. Every field is unsynchronised, and Write both reads and
+// appends b.buf without a lock, so concurrent writers would race and could
+// corrupt the slice header. It is safe here because it has exactly one user: the
+// goroutine os/exec starts to copy the child's stderr into cmd.Stderr. The
+// process is run to completion synchronously by execRun, and that goroutine is
+// finished (joined by cmd.Wait) before String is read. Do not reuse this type
+// for a stream several goroutines may write to, or the cap becomes a data race
+// rather than a bound.
 type boundedBuffer struct {
 	buf   []byte
 	limit int

@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/changedfiles"
+	"marshal/internal/app/tui/conversation"
 	"marshal/internal/app/tui/inspector"
 )
 
@@ -494,6 +496,243 @@ func TestActionSnapshotIsMemoizedPerStateChange(t *testing.T) {
 	third := m.actionSnapshot()
 	if third.QueueLen == 7 && third.Busy {
 		t.Fatal("the snapshot is stale after the transcript changed")
+	}
+}
+
+// TestActionSnapshotFollowsTheReadingPosition is the regression for the review's
+// D3.
+//
+// actionSnapshotKey carried transcriptVersion, which a SCROLL does not move:
+// scrolling changes no content, so nothing rebuilt the document and the memo
+// stayed valid. But copyBlock() resolves the block from the reader's position, so
+// a snapshot taken before a scroll went on answering "Copy answer" for the block
+// the reader had scrolled away from — and the footer renders from that same
+// snapshot, so the hint described the wrong block too.
+func TestActionSnapshotFollowsTheReadingPosition(t *testing.T) {
+	m := newTestModel(t)
+	m.actionCache = &actionSnapshotCache{}
+	// Enough content that the viewport can actually scroll, and two answers so
+	// the block under the reader changes.
+	for i := 0; i < 8; i++ {
+		m.state.AddMessage(session.RoleAssistant,
+			strings.Repeat("answer prose that takes up rows\n\n", 12),
+			session.ContentTypeMarkdown)
+	}
+	m.state.AddMessage(session.RoleAssistant, "the very last answer", session.ContentTypeMarkdown)
+	m.refreshViewport()
+
+	if m.viewport.TotalLineCount() <= m.viewport.Height() {
+		t.Fatalf("precondition: the transcript does not overflow the viewport (%d lines, %d rows)",
+			m.viewport.TotalLineCount(), m.viewport.Height())
+	}
+
+	// Follow the bottom: the copy target is the newest block.
+	if !m.viewportFollow {
+		t.Fatalf("precondition: the model is not following (viewportFollow=%v)", m.viewportFollow)
+	}
+	following := m.actionSnapshot()
+	if !following.CopyBlockFound {
+		t.Fatal("precondition: no copy block resolved while following")
+	}
+
+	// Scroll up. This is the operation that moved no content and so left the key
+	// untouched: nothing is rebuilt, no version is bumped.
+	m.viewport.GotoTop()
+	m.viewportFollow = false
+	m.captureReadingAnchor()
+
+	afterScroll := m.actionSnapshot()
+	if !afterScroll.CopyBlockFound {
+		t.Fatal("no copy block resolved after scrolling")
+	}
+	if afterScroll.CopyBlock.ID == following.CopyBlock.ID {
+		t.Fatalf("the copy target is still block %q after scrolling to the top: the snapshot "+
+			"was served from the memo, so the footer describes a block the reader left",
+			afterScroll.CopyBlock.ID)
+	}
+	// And the anchor is genuinely a different block, so the test is not asserting
+	// on a fallback that would have changed anyway.
+	if m.readingAnchor.Block != afterScroll.CopyBlock.ID {
+		t.Fatalf("the copy target %q is not the anchored block %q",
+			afterScroll.CopyBlock.ID, m.readingAnchor.Block)
+	}
+}
+
+// TestActionSnapshotStillHitsWhileFollowing pins the other half of D3: the fix
+// must not invalidate the memo on every spinner tick, which is the cost the cache
+// exists to avoid.
+//
+// A following reader is pinned to the bottom, and the viewport's offset at the
+// bottom moves with every new line. Keying on that offset UNCONDITIONALLY would
+// make each tick a cache miss — a rebuild of the whole conversation document per
+// 80ms, which is exactly the pessimisation the key's own comment warns about.
+// The key therefore records no position at all while following.
+func TestActionSnapshotStillHitsWhileFollowing(t *testing.T) {
+	m := newTestModel(t)
+	m.actionCache = &actionSnapshotCache{}
+	for i := 0; i < 8; i++ {
+		m.state.AddMessage(session.RoleAssistant,
+			strings.Repeat("answer prose that takes up rows\n\n", 12),
+			session.ContentTypeMarkdown)
+	}
+	m.refreshViewport()
+	if !m.viewportFollow {
+		t.Fatal("precondition: the model is not following")
+	}
+
+	m.actionSnapshot()
+	key := m.actionCache.key
+	// A following reader has no position in the key: the fields that would carry
+	// one are zero.
+	if key.viewportFollow != true {
+		t.Fatal("the key does not record that the reader is following")
+	}
+	if key.anchorBlock != "" || key.viewportTop != 0 {
+		t.Fatalf("the key records a reading position while following (%q, %d): a following "+
+			"reader has none, and keying on the bottom offset would miss on every tick",
+			key.anchorBlock, key.viewportTop)
+	}
+
+	// Scrolling the viewport WITHOUT leaving follow (a wheel-down at the bottom)
+	// must not invalidate: the reader's position is unchanged, they are still at
+	// the live end.
+	m.viewport.GotoBottom()
+	if got := m.actionSnapshotKeyOf(); got != key {
+		t.Fatalf("the key moved for a reader still at the live end: %+v vs %+v", got, key)
+	}
+	if !m.actionCache.valid || m.actionCache.key != key {
+		t.Fatal("the memo was invalidated with no state change")
+	}
+}
+
+// TestTranscriptAndDocumentRevisionsAreNotInterchangeable pins the review's D6 as
+// a DOCUMENTED per-path contract rather than a latent expectation.
+//
+// The doc comment on blockTextRevision used to claim a block appearing in both
+// the document and the transcript "carries comparable revisions". It does not,
+// and it never did, on two separate counts:
+//
+//   - the two hash different FIELD SETS (blockRevisionFor also covers kind,
+//     source and every copy target);
+//   - the transcript hashes PROJECTED Markdown of TAB-EXPANDED content, while the
+//     document hashes the message's raw Content.
+//
+// The gap is harmless, because nothing compares them — but a claim in a comment is
+// read as a promise, so the comment now states the per-path contract. This test
+// exists to make the claim falsifiable: if a later change ever makes some consumer
+// compare a transcript revision against a document one, the equality asserted here
+// would start to matter and the failure would say which assumption broke.
+func TestTranscriptAndDocumentRevisionsAreNotInterchangeable(t *testing.T) {
+	// A tab-bearing answer is the case the old comment's wording would have
+	// covered and got wrong: after expansion the two hash different strings.
+	const raw = "col one\tcol two"
+	m := newTestModel(t)
+	m.state.SetWorkspace(session.Workspace{ProjectRoot: t.TempDir()})
+	m.state.AddMessageFinal(session.RoleAssistant, raw, session.ContentTypeMarkdown)
+	m.refreshViewport()
+
+	_, span := reasoningAnswerModelNoReasoning(t, &m, raw)
+	if span.rendered.Revision == 0 {
+		t.Fatal("the transcript mapping carries no revision")
+	}
+
+	doc := m.conversationDocument()
+	var block conversation.Block
+	for _, b := range doc.Blocks() {
+		if strings.Contains(b.Text, "col one") {
+			block = b
+			break
+		}
+	}
+	if block.ID == "" {
+		t.Fatalf("no document block holds the answer: %+v", doc.Blocks())
+	}
+	if block.Revision == 0 {
+		t.Fatal("the document block carries no revision")
+	}
+	// The document path's revision is NOT the transcript's, and the reason is
+	// visible right here: the transcript hashed the expanded text, the document
+	// the raw one.
+	if block.Revision == span.rendered.Revision {
+		t.Fatal("the document and transcript paths produced equal revisions; the per-path " +
+			"contract in blockTextRevision's comment no longer describes the code")
+	}
+	// And the transcript really did hash the EXPANDED text, which is the part of
+	// the divergence the old comment was specifically wrong about.
+	if want := blockTextRevision(expandTabs(raw)); span.rendered.Revision != want {
+		t.Fatalf("the transcript revision = %d, want the hash of the expanded text %d",
+			span.rendered.Revision, want)
+	}
+}
+
+// reasoningAnswerModelNoReasoning returns the placed mapping for the block whose
+// text contains want, for a model with an ordinary (reasoning-free) answer.
+func reasoningAnswerModelNoReasoning(t *testing.T, m *Model, want string) (Model, renderedBlockSpan) {
+	t.Helper()
+	for _, s := range m.blockRenderSpans {
+		if strings.Contains(s.rendered.Logical, "col one") {
+			return *m, s
+		}
+	}
+	t.Fatalf("no mapped block holds %q: %+v", want, m.blockRenderSpans)
+	return *m, renderedBlockSpan{}
+}
+
+// TestDockedInspectorTabKeyInvalidatesTheActionSnapshot is the regression for the
+// review's D4.
+//
+// Before the fix, the dock branch sent every key to the dock adapter and never
+// touched the inspector's own selection. Moving the cursor on the Changes tab
+// therefore changed which path a copy would take, with no refresh and no
+// invalidation — so the memoized snapshot went on answering for the previous
+// row, and CopyInspectedPath's availability lagged a keystroke behind.
+//
+// Routing through handleInspectorKey fixes it for free, because every tab case
+// ends in refreshInspector, which invalidates. This test pins that it stays true.
+func TestDockedInspectorTabKeyInvalidatesTheActionSnapshot(t *testing.T) {
+	dir, head := railFixtureRepo(t)
+	m := dockedInspectorModel(t)
+	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
+	m.railBaseRef = head
+	m.inspector.open(inspector.TabChanges, m.inspectorSideAvailable())
+	m.refreshRailChanged()
+	m.refreshInspector()
+	m.syncDock()
+	selectChangedPath(t, &m, "a.go")
+
+	if !m.actionSnapshot().InspectedPathSelected {
+		t.Fatal("precondition: the selected path is not offered to the copy action")
+	}
+	// The row the reader is on BEFORE the key. It has to be captured here: the
+	// inspector's model is shared by pointer between the model and every copy
+	// Update hands back, so reading it off the old value after the key would
+	// report the new row.
+	before, _ := m.inspector.model.SelectedPath()
+
+	// Seed the memo with a recognisable marker and the key the pre-key state
+	// produced, so "was it invalidated?" is answerable independently of whether
+	// the two resolutions happen to be equal. The footer resolves the snapshot on
+	// every frame, so this is the state the next frame would find.
+	m.actionSnapshot()
+	m.actionCache.ctx = actionContext{InspectedPathSelected: true, ContextDetailOpen: true, QueueLen: 7}
+	seededKey := m.actionCache.key
+
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	got := asModel(t, mm)
+
+	// And the selection really did move, so the test is not passing on a no-op key.
+	after, _ := got.inspector.model.SelectedPath()
+	if before == after {
+		t.Fatalf("precondition: Down did not move the selection off %q", before)
+	}
+
+	// Either the cache was dropped, or the key moved so the stale answer cannot be
+	// served anyway. What must NOT survive is the marker under an unchanged key.
+	if got.actionCache.valid && got.actionCache.ctx.QueueLen == 7 &&
+		got.actionCache.key == seededKey {
+		t.Fatal("Down on a docked Changes tab left the action snapshot valid with its " +
+			"marker intact: the selection moved and nothing invalidated the memo, so a " +
+			"copy action is judged on the row the reader left")
 	}
 }
 

@@ -262,11 +262,12 @@ func TestInspectorChangesScopeRejectsAClosedSessionReply(t *testing.T) {
 		t.Fatal("precondition: the scope did not change, so this tests nothing")
 	}
 
+	// SetScope clears the whole changes pane (the old conversation's list,
+	// cursor, in-flight marker and diff body all belong to it), so the
+	// loading flag is no longer the observable for "the reply was refused";
+	// the patch content still must not appear.
 	mm, _ := m.Update(msg)
 	after := asModel(t, mm)
-	if !after.inspector.model.ChangesLoading() {
-		t.Fatal("a reply from a closed conversation cleared the in-flight state")
-	}
 	if view := stripANSI(after.inspector.model.View(after.inspectorData())); strings.Contains(view, "+func A() {}") {
 		t.Fatalf("a reply from a closed conversation was drawn:\n%s", view)
 	}

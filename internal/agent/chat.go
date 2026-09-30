@@ -703,11 +703,18 @@ func requestInspectionFor(r *Runner, p provider.Provider, model string, req sche
 // timeout firing, means something different to the reader than "it broke", and
 // a reader who cannot tell them apart looks for a bug that is not there.
 //
-// The CONTEXT is checked before the error, and that ordering is deliberate. A
-// cancelled context makes the attempt cancelled whatever the adapter reported:
-// a provider that ignores cancellation and finishes its stream anyway has still
-// served a request the user abandoned, and labelling that "completed" tells
-// them a turn succeeded that they stopped.
+// Both the ERROR and the CONTEXT are consulted, and either can decide.
+//
+// The error is examined FIRST, so an adapter that surfaces a cancellation as
+// context.Canceled or context.DeadlineExceeded — the ordinary way one arrives —
+// is read as a cancellation rather than as a failure.
+//
+// The context is then examined as well, because the error is not the only
+// evidence. A provider that reports a cancellation as some unrelated error, or
+// that ignores cancellation and finishes its stream anyway, has still served a
+// request the user abandoned, and only ctx.Err() knows it: labelling that turn
+// "completed" tells the user a turn succeeded that they stopped, and labelling
+// it "failed" sends them looking for a bug that is not there.
 func inspectionStatusFor(ctx context.Context, err error) session.InspectionStatus {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return session.InspectionCancelled

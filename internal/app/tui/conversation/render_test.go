@@ -102,35 +102,122 @@ func TestRowsNeverExceedTheWidthBudget(t *testing.T) {
 func TestTabbedRowsNeverExceedTheWidthBudget(t *testing.T) {
 	for _, f := range tabFixtures {
 		t.Run(f.name, func(t *testing.T) {
-			for _, indent := range []int{0, 1, 3} {
-				for _, width := range []int{12, 16, 20, 40, 79} {
-					if width < indent+tabStop {
-						// A tab is up to tabStop cells wide, so at this width a
-						// single tab may genuinely not fit. Overflow is then the
-						// recorded minimum-overflow outcome rather than a bug,
-						// and TestATabWiderThanTheBudgetDoesNotWedgeTheWrap
-						// covers it.
-						continue
-					}
-					block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
-						Width: width, Indent: indent,
-					})
-					for i, row := range block.Rows {
-						if row.Cells > width {
-							t.Fatalf("indent %d width %d: row %d is %d cells: %q",
-								indent, width, i, row.Cells, row.Text())
+			// Both the package stop and a custom one. The custom stop is not
+			// decoration: LayoutBlock stores the stop it laid out with, and the
+			// mapping measures a tab against it, so a wrap that agreed with the
+			// builder at 8 and disagreed at 4 would overflow only here.
+			for _, ts := range []int{0, 4} {
+				// The stop the layout will actually use; zero means the package
+				// default, which is the value every fixture above must be
+				// checked against.
+				eff := effectiveTabStop(ts)
+				// 8 and 10 are here because the guard this replaces —
+				// "width < indent + stop", which is the width of a tab at
+				// column ZERO, the widest a tab can ever be — discarded exactly
+				// these cases: the "leading tab" fixture at indent 1 and stop 8
+				// opens its tab at column 1, where the tab is one cell short of
+				// the stop and the width leaves exactly room for it. It fits,
+				// and the conservative guard threw the case away.
+				for _, indent := range []int{0, 1, 3} {
+					for _, width := range []int{8, 10, 12, 16, 20, 40, 79} {
+						startCol, need, hasTab := firstTabWidth(f.text, indent, eff)
+						if hasTab && need > width-indent {
+							// The tab's FIRST start column is the most
+							// favourable one it ever has (a later tab starts
+							// further right), so if the first one cannot fit,
+							// the row genuinely cannot honour the budget and
+							// overflow is the recorded minimum-overflow outcome
+							// rather than a bug —
+							// TestATabWiderThanTheBudgetDoesNotWedgeTheWrap
+							// covers it.
+							t.Logf("stop %d indent %d width %d: the first tab opens at column %d and needs %d content cells, which do not fit",
+								eff, indent, width, startCol, need)
+							continue
 						}
-						if got := ansi.StringWidth(row.Text()); got > width {
-							t.Fatalf("indent %d width %d: row %d measures %d cells: %q",
-								indent, width, i, got, row.Text())
+						block := LayoutBlock(Block{ID: "msg:1", Text: f.text}, LayoutOptions{
+							Width: width, Indent: indent, TabStop: ts,
+						})
+						if got := effectiveTabStop(block.TabStop); got != eff {
+							t.Fatalf("stop %d indent %d width %d: the block lost the stop it was laid out with: %d, want %d",
+								eff, indent, width, got, eff)
 						}
-					}
-					// The wrap may not achieve the budget by losing a byte.
-					if got := reassembled(block.Rows); got != f.text {
-						t.Fatalf("indent %d width %d: reassembled %q, want %q",
-							indent, width, got, f.text)
+						for i, row := range block.Rows {
+							if row.Cells > width {
+								t.Fatalf("stop %d indent %d width %d: row %d is %d cells: %q",
+									eff, indent, width, i, row.Cells, row.Text())
+							}
+							if got := ansi.StringWidth(row.Text()); got > width {
+								t.Fatalf("stop %d indent %d width %d: row %d measures %d cells: %q",
+									eff, indent, width, i, got, row.Text())
+							}
+						}
+						// The wrap may not achieve the budget by losing a byte.
+						if got := reassembled(block.Rows); got != f.text {
+							t.Fatalf("stop %d indent %d width %d: reassembled %q, want %q",
+								eff, indent, width, got, f.text)
+						}
 					}
 				}
+			}
+		})
+	}
+}
+
+// firstTabWidth measures a fixture's first tab: the column it opens at and the
+// content cells it needs there, at this indent and stop.
+//
+// It exists to make the test's skip EXACT. The conservative version of that
+// guard — "width < indent + stop" — discarded cases that verifiably fit: a
+// tab's width at the start of a row is the distance to the next stop from where
+// it starts, which is at most the stop and usually less, so a width one cell
+// past the indent is already a case the layout must honour. The start column is
+// measured from the indent, exactly as rowEnd measures it.
+func firstTabWidth(text string, indent, ts int) (startCol, need int, ok bool) {
+	i := strings.IndexByte(text, '\t')
+	if i < 0 {
+		return 0, 0, false
+	}
+	// The text before the tab on its own hard line decides the column the tab
+	// opens at.
+	lineStart := strings.LastIndexByte(text[:i], '\n') + 1
+	startCol = indent + ansi.StringWidth(text[lineStart:i])
+	return startCol, ts - startCol%ts, true
+}
+
+// The skip guard must not skip what the layout can honour: a tab's width is
+// measured from the column it STARTS at, so indent+stop is NOT the threshold.
+// Both sides of it are pinned here, with the two shapes that differ by one
+// cell — the "leading tab" fixture at indent 1, whose tab opens at column 1 and
+// is one cell short of the stop against the width a stop leaves there (it fits,
+// and the conservative `width < indent+stop` guard threw it away), and a tab
+// that opens at column 0 where it really is the full stop and does not fit at
+// one cell less.
+func TestFirstTabWidthSkipsOnlyWhatCannotFit(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		text                string
+		indent, width, ts   int
+		wantStart, wantNeed int
+		wantSkip            bool
+	}{
+		{"leading tab at indent 1 fits a width of 8", "\tab\tcd", 1, 8, 8, 1, 7, false},
+		{"tab at column 0 needs the whole stop", "\tab\tcd", 0, 8, 8, 0, 8, false},
+		{"tab at column 0 of a narrower width cannot fit", "\tab\tcd", 0, 7, 8, 0, 8, true},
+		{"narrow width at indent 3 cannot fit", "1234567\tword", 3, 8, 8, 10, 6, true},
+		{"no tab is never skipped", "plain words", 3, 8, 8, 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			startCol, need, hasTab := firstTabWidth(tc.text, tc.indent, tc.ts)
+			if wantHas := strings.IndexByte(tc.text, '\t') >= 0; hasTab != wantHas {
+				t.Fatalf("hasTab = %v for %q, want %v", hasTab, tc.text, wantHas)
+			}
+			if startCol != tc.wantStart || need != tc.wantNeed {
+				t.Fatalf("firstTabWidth(%q, %d, %d) = start %d / need %d, want %d / %d",
+					tc.text, tc.indent, tc.ts, startCol, need, tc.wantStart, tc.wantNeed)
+			}
+			if got := hasTab && need > tc.width-tc.indent; got != tc.wantSkip {
+				t.Fatalf("skip = %v, want %v (start %d, need %d, width %d, indent %d)",
+					got, tc.wantSkip, startCol, need, tc.width, tc.indent)
 			}
 		})
 	}
@@ -172,10 +259,17 @@ func TestAWrapThatFallsAtATabStillFitsTheBudget(t *testing.T) {
 func TestAMarkdownTableWithATabSeparatorFitsTheTranscriptWidth(t *testing.T) {
 	sp := ProjectMarkdown("| marshal | stars |\n| --- | --- |\n| go | 1234 |", MarkdownOptions{})
 	for _, width := range []int{20, 40, 80} {
-		block := RenderedBlock{
-			Logical: sp.Text,
-			Width:   width,
-			Rows:    Layout(sp, LayoutOptions{Width: width, Indent: 3}),
+		// Through LayoutBlock, not a hand-built literal: LayoutBlock is what
+		// carries the tab stop the rows were laid out with onto the block the
+		// mapping reads, and a literal would leave that field at zero and
+		// assert a propagation that never happened. It is also the entry point
+		// the documented consumer path names, so this is the shape a caller
+		// actually gets.
+		block := LayoutBlock(Block{ID: "table:1", Text: sp.Text}, LayoutOptions{
+			Width: width, Indent: 3, Breakpoints: "",
+		})
+		if block.TabStop != 0 {
+			t.Fatalf("width %d: the default stop did not propagate to the block: %d", width, block.TabStop)
 		}
 		if len(block.Rows) == 0 {
 			t.Fatalf("width %d: the table projected to no rows: %q", width, sp.Text)

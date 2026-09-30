@@ -162,6 +162,16 @@ type Model struct {
 	// make that mislabelling impossible, and the exported per-tab accessors
 	// (PageDetail/DetailScroll/…, PageAgentDetail/…, PageContextDetail/…)
 	// already name which body they move.
+	//
+	// emptyDetail is the ONE body that is shared, and only because it holds no
+	// content at all: the Overview tab has no detail, so ActiveDetail has to
+	// return something, and returning a FRESH empty view on every call made the
+	// accessor's result unstable. A caller comparing two ActiveDetail results —
+	// "is this the same body I was paging a moment ago?" — got two different
+	// answers to the same question. One allocated empty view gives the
+	// no-detail case a stable identity without giving any tab's real content a
+	// second home.
+	emptyDetail *DetailView
 
 	// scope and seq implement stale-reply rejection. seq is the id of the
 	// most recently issued request; a reply is applicable only when it
@@ -178,16 +188,29 @@ type Model struct {
 // opens on content rather than on an empty state the reader has to interpret.
 func New() *Model {
 	return &Model{
-		tab:     visibleTabs[0],
-		perTab:  map[Tab]TabState{},
-		changes: changesState{detail: NewDetailView()},
-		agents:  agentsState{detail: NewDetailView()},
+		tab:         visibleTabs[0],
+		perTab:      map[Tab]TabState{},
+		changes:     changesState{detail: NewDetailView()},
+		agents:      agentsState{detail: NewDetailView()},
+		emptyDetail: NewDetailView(),
 		context: contextState{
 			scope:  ContextScopePack,
 			cursor: map[string]int{},
 			detail: NewDetailView(),
 		},
 	}
+}
+
+// overviewDetail reports the tab with no body of its own.
+//
+// It is allocated lazily as well as in New, because a zero Model — which the
+// tests construct — must behave like a constructed one rather than returning
+// nil from an accessor whose contract is "usable without a nil check".
+func (m *Model) overviewDetail() *DetailView {
+	if m.emptyDetail == nil {
+		m.emptyDetail = NewDetailView()
+	}
+	return m.emptyDetail
 }
 
 // SelectedTab reports the tab on display.
@@ -326,9 +349,10 @@ func (m *Model) ActiveDetail() *DetailView {
 	case TabContext:
 		return m.contextDetail()
 	default:
-		// Overview has no detail body; return an empty one so a caller can call
-		// its read-only methods without a nil check.
-		return NewDetailView()
+		// Overview has no detail body; return the model's one stable empty view
+		// so a caller can call its read-only methods without a nil check AND
+		// compare two calls for identity.
+		return m.overviewDetail()
 	}
 }
 
@@ -359,6 +383,20 @@ func (m *Model) SetScope(scope string) {
 	// selection is re-derived from the new roster, which arrives with the next
 	// refresh.
 	m.agents = agentsState{}
+	// The Changes tab's list, cursor, vanished flag, in-flight request, loaded
+	// diff and BODY are the same kind of thing and go for the same reason: the
+	// old conversation's changed-file list describes a working tree the reader
+	// has left, and a diff labelled with a path from it would be read as the new
+	// session's — on screen the two are indistinguishable. NOTHING in
+	// changesState is a preference, so nothing is preserved, and that includes
+	// the rendered patch: changesDetail() lazily allocates a fresh body on the
+	// next render, so the discarded one cannot be brought back.
+	//
+	// The old request id is invalidated twice over by this: currentReq returns
+	// to zero (which ApplyDiffLoaded refuses outright) and SetScope resets the
+	// sequence, so an id issued under the previous scope can never be accepted
+	// again even if the counter were to reach the same number.
+	m.changes = changesState{}
 	// The Context tab's data and detail belong to the conversation that was
 	// replaced, so both go. The SCOPE selection survives: it is a preference
 	// about which question the reader is asking, not a position in a list that
@@ -557,13 +595,21 @@ func (a *DockAdapter) handleKey(k tea.KeyPressMsg) tea.Cmd {
 			a.m.scrollBy(1)
 		}
 	case "pgup":
-		a.m.scrollBy(-a.m.page())
+		if !a.m.moveCursor(-a.m.page()) {
+			a.m.scrollBy(-a.m.page())
+		}
 	case "pgdown":
-		a.m.scrollBy(a.m.page())
+		if !a.m.moveCursor(a.m.page()) {
+			a.m.scrollBy(a.m.page())
+		}
 	case "home", "g":
-		a.m.setScroll(0)
+		if !a.m.moveCursorTo(cursorTop) {
+			a.m.setScroll(0)
+		}
 	case "end", "G":
-		a.m.setScroll(a.m.maxScroll(a.m.data))
+		if !a.m.moveCursorTo(cursorBottom) {
+			a.m.setScroll(a.m.maxScroll(a.m.data))
+		}
 	case "tab":
 		a.m.NextTab()
 	case "shift+tab":
@@ -592,6 +638,61 @@ func (m *Model) moveCursor(delta int) bool {
 		m.SyncAgentDetail()
 		return true
 	case TabContext:
+		m.MoveContextSelection(delta)
+		return true
+	}
+	return false
+}
+
+// cursorTarget names a coarse destination on a list tab's cursor.
+type cursorTarget int
+
+const (
+	// cursorTop is the first row of the list.
+	cursorTop cursorTarget = iota
+	// cursorBottom is the last row of the list.
+	cursorBottom
+)
+
+// moveCursorTo moves the selected tab's cursor to a coarse destination and
+// reports whether the tab has a cursor at all, mirroring moveCursor's contract
+// so a caller can fall back to scrolling.
+//
+// It exists because Home/End on these tabs used to write a TabState.Scroll
+// offset the tabs only partially read: the window is anchored to the CURSOR, so
+// a scroll that no cursor movement accompanies usually moves nothing at all —
+// the key looked broken while quietly storing a number that meant something on
+// a different tab. On a cursor-driven list, "go to the top" means the cursor
+// goes to the top.
+func (m *Model) moveCursorTo(target cursorTarget) bool {
+	switch m.tab {
+	case TabChanges:
+		if target == cursorTop {
+			m.selectRow(0)
+		} else {
+			m.selectRow(len(m.changes.rows) - 1)
+		}
+		return true
+	case TabAgents:
+		// The delta is the whole list, so the clamp inside MoveAgentSelection
+		// lands on the end. It is expressed as a move rather than a direct
+		// assignment so that the selection ID, the vanished flag and the
+		// following detail all stay in step with the cursor, exactly as they do
+		// for a single-row move.
+		delta := len(m.agents.roster)
+		if target == cursorTop {
+			delta = -delta
+		}
+		m.MoveAgentSelection(delta)
+		// An open detail follows the cursor, so the body and its label never
+		// describe different agents.
+		m.SyncAgentDetail()
+		return true
+	case TabContext:
+		delta := len(m.context.rows)
+		if target == cursorTop {
+			delta = -delta
+		}
 		m.MoveContextSelection(delta)
 		return true
 	}

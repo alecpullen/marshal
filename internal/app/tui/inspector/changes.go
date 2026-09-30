@@ -488,7 +488,17 @@ func (m *Model) viewChanges() string {
 	// counted by hand. The blank line before the detail body is a ROW, and
 	// forgetting to count it was how this panel emitted more rows than the
 	// height it recorded.
-	rb := newRowBudget(m.height)
+	//
+	// The budget is WIDTH-aware as well as height-aware, so every row below —
+	// including the header, which carries an author-controlled base ref, and the
+	// two trailing notes — is clamped to the panel rather than wrapping into rows
+	// this budget has already spent.
+	rb := newRowBudget(m.height, m.width)
+	// Rows are composed against the SAME width the budget bounds them to. A note
+	// measured against an unmeasured panel width would collapse to a single
+	// ellipsis cell, which costs the reader the disclosure that the list is
+	// windowed at all.
+	width := budgetWidth(m.width)
 
 	// Fixed chrome: the header pair, one line and its separator.
 	rb.line("Changed against " + baseLabel(m.changes.snapshot) + ":")
@@ -504,14 +514,37 @@ func (m *Model) viewChanges() string {
 	// The trailing notes are reserved FIRST, because they are conditional and
 	// their rows must not be handed to the list or the body: a budget that
 	// promises a row to two writers is a budget that overflows.
-	rows := rb.left()
-	if m.changes.vanished {
-		rows -= 2 // blank + the note line
+	//
+	// The reservation is a FLOOR, not a blind deduction, and it is CHARGED ONLY
+	// WHEN THE NOTE WILL ACTUALLY BE DRAWN. Deducting two rows and then failing
+	// the `rb.left() >= 2` gate below left the reader with neither the note nor
+	// the two rows of list it was taken from — the worst of both. The list's
+	// share is computed AFTER the subtraction, so a note that was reserved is a
+	// note the list cannot consume, and a note that was not reserved costs the
+	// list nothing.
+	avail := rb.left()
+	vanishRows := 0
+	if m.changes.vanished && avail >= 3 {
+		vanishRows = 2 // blank + the note line
 	}
+	loadingRows := 0
 	if m.changes.loading {
-		rows -= 2 // blank + the loading line
+		switch {
+		case avail-vanishRows >= 3:
+			loadingRows = 2 // blank + the loading line
+		case avail-vanishRows >= 1:
+			// One row left: the separator is decoration and the sentence is
+			// not. A panel that shows nothing at all while a git read is in
+			// flight is indistinguishable from a frozen one, so the loading
+			// line degrades to the sentence alone rather than being dropped.
+			loadingRows = 1
+		}
 	}
-	rows = max(rows, 1)
+	// No floor of one row is applied here. The floor would hand the list the row
+	// a degraded loading line was just promised, which is precisely the "reserved
+	// and then dropped" failure this arithmetic exists to remove. Every path that
+	// does not reserve a row for a note still leaves the list at least one.
+	rows := avail - vanishRows - loadingRows
 
 	bodyRows := 0
 	if !m.changes.loading && m.changes.currentReq != 0 && rows >= 3 {
@@ -521,24 +554,24 @@ func (m *Model) viewChanges() string {
 		bodyRows = min(bodyShare, rows-2)
 		rows -= bodyRows + 1
 	}
-	listRows := max(rows, 1)
+	listRows := rows
 
 	// The window is asked to reserve its own note rows, so the notes ride inside
 	// the list's share rather than being added on top of it. Adding them
 	// afterwards is precisely how a budgeted panel ends up taller than its frame.
 	w := windowList(len(m.changes.rows), listRows, m.changes.cursor, m.State(TabChanges).Scroll, 2)
 	if w.ShowAbove() {
-		rb.line(aboveNote(w.Above(), m.width))
+		rb.line(aboveNote(w.Above(), width))
 	}
 	for i := w.Start; i < w.End; i++ {
 		cursor := "  "
 		if i == m.changes.cursor {
 			cursor = "▸ "
 		}
-		rb.line(cursor + changeRowText(m.changes.rows[i].file, m.width))
+		rb.line(cursor + changeRowText(m.changes.rows[i].file, width))
 	}
 	if w.ShowBelow() {
-		rb.line(belowNote(w.Below(), m.width))
+		rb.line(belowNote(w.Below(), width))
 	}
 
 	if m.changes.vanished && rb.left() >= 2 {
@@ -551,8 +584,14 @@ func (m *Model) viewChanges() string {
 	}
 
 	if m.changes.loading {
-		if rb.left() >= 2 {
+		// The row the reservation above charged is spent HERE, in the degraded
+		// one-row form when that is all that was charged. A loading state that
+		// renders as nothing is indistinguishable from a frozen panel.
+		switch {
+		case rb.left() >= 2:
 			rb.blank()
+			rb.line("Loading diff…")
+		case rb.left() >= 1:
 			rb.line("Loading diff…")
 		}
 		return rb.String()

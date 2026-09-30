@@ -328,6 +328,13 @@ func boundInspection(in RequestInspection) RequestInspection {
 	}
 	if n := len(out.Tools); n > MaxInspectionTools {
 		out.ToolsOmitted = n - MaxInspectionTools
+		// Account the dropped definitions' bytes. The messages arm above has
+		// always done this (countMessageBytes); the tools arm counting only the
+		// entries meant the two halves of the same statement disagreed — the
+		// snapshot said how MANY definitions it dropped but reported none of
+		// their bytes, so a reader adding retained to omitted got less than the
+		// original and no way to see that the arithmetic was short.
+		out.OmittedBytes += countToolBytes(out.Tools[MaxInspectionTools:])
 		out.Tools = out.Tools[:MaxInspectionTools]
 		out.Truncated = true
 	}
@@ -355,6 +362,7 @@ func boundInspection(in RequestInspection) RequestInspection {
 		cost := len(out.Tools[i].Name) + len(out.Tools[i].Description) + len(out.Tools[i].Parameters)
 		if used+cost > MaxInspectionTotalBytes {
 			out.ToolsOmitted += len(out.Tools) - i
+			out.OmittedBytes += countToolBytes(out.Tools[i:])
 			out.Tools = out.Tools[:i]
 			out.Truncated = true
 			break
@@ -372,6 +380,22 @@ func countMessageBytes(msgs []InspectionMessage) int {
 		for _, tc := range m.ToolCalls {
 			total += len(tc.Args)
 		}
+	}
+	return total
+}
+
+// countToolBytes sums the byte-bearing fields of a run of tool definitions.
+//
+// It measures the SAME fields the total budget charges for (name, description
+// and parameters, in the loop above) rather than a fresh definition of "the
+// bytes a tool costs". The two have to agree: the omitted count exists so that
+// retained bytes plus omitted bytes reconstructs the original, and a counter
+// that measured a different set of fields would leave the arithmetic short by
+// exactly the fields it forgot.
+func countToolBytes(tools []InspectionTool) int {
+	total := 0
+	for _, t := range tools {
+		total += len(t.Name) + len(t.Description) + len(t.Parameters)
 	}
 	return total
 }

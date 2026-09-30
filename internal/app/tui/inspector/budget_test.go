@@ -86,6 +86,18 @@ func agentsModelWithDetail(t *testing.T, width, height int) *Model {
 // contextModelWithDetail builds a Context tab with many sections and one open.
 func contextModelWithDetail(t *testing.T, width, height int) *Model {
 	t.Helper()
+	m := New()
+	m.Resize(width, height)
+	m.SetContext(manySectionContext())
+	if !m.OpenContextRow(0) {
+		t.Fatal("OpenContextRow refused row 0")
+	}
+	return m
+}
+
+// manySectionContext is a pack with more sections than any height under test can
+// show, and one long enough to give the detail a real body.
+func manySectionContext() ContextData {
 	d := packFixture()
 	d.Pack.Sections[0].ContentTruncated = false
 	d.Pack.Sections[0].Content = strings.Repeat("section line\n", 200)
@@ -97,11 +109,19 @@ func contextModelWithDetail(t *testing.T, width, height int) *Model {
 			Content: "package p\n",
 		})
 	}
-	m := New()
-	m.Resize(width, height)
-	m.SetContext(d)
-	if !m.OpenContextRow(0) {
-		t.Fatal("OpenContextRow refused row 0")
+	return d
+}
+
+// contextModelWithStaleDetail builds the same model and then moves the snapshot
+// on underneath the open row, which is the state that draws the stale note.
+func contextModelWithStaleDetail(t *testing.T, width, height int) *Model {
+	t.Helper()
+	m := contextModelWithDetail(t, width, height)
+	updated := manySectionContext()
+	updated.Pack.Sections[0].Content = strings.Repeat("a DIFFERENT section line\n", 200)
+	m.SetContext(updated)
+	if !m.ContextDetailStale() {
+		t.Fatal("precondition failed: the open detail did not go stale")
 	}
 	return m
 }
@@ -185,6 +205,44 @@ func TestTabsNeverExceedTheirHeightWithTrailingNotes(t *testing.T) {
 					height, got, m.viewAgents())
 			}
 		}()
+		// Context: move the snapshot on under the open row so the stale note
+		// is drawn. The note is the Context tab's own trailing note, and it is
+		// the one that used to be emitted LAST — after the body — where the
+		// body's separator could consume the row it had been reserved.
+		func() {
+			m := contextModelWithStaleDetail(t, 60, height)
+			if got := renderedRows(m.viewContext()); got > height {
+				t.Errorf("height %d: Context with a stale note emitted %d rows:\n%s",
+					height, got, m.viewContext())
+			}
+		}()
+	}
+}
+
+// TestContextStaleNoteIsNotReservedAndThenDropped pins the other half of the
+// same property: once the row has been taken from the list for the stale note,
+// the note is what gets it.
+//
+// The note used to be emitted after the body, behind an `rb.left() >= 2` gate
+// that the body's own blank separator had already consumed. The reader paid a
+// row of list for a sentence they never saw — worse than not reserving at all,
+// because the panel looked complete while saying nothing.
+//
+// The sweep starts at height 7 rather than 1 because the panel's heading is four
+// rows plus a separator at this width: at height 6 exactly one row is left, and
+// one row cannot hold both a list row and the note. At that size the note is not
+// charged at all (the reservation requires two rows to be worth taking), so there
+// is nothing to drop and nothing lost.
+func TestContextStaleNoteIsNotReservedAndThenDropped(t *testing.T) {
+	for height := 7; height <= 30; height++ {
+		m := contextModelWithStaleDetail(t, 60, height)
+		view := stripANSIForTest(m.viewContext())
+		if !strings.Contains(view, "changed since you opened it") {
+			t.Errorf("height %d: the stale note was reserved but never drawn:\n%s", height, view)
+		}
+		if got := renderedRows(m.viewContext()); got > height {
+			t.Errorf("height %d: Context emitted %d rows, over budget:\n%s", height, got, view)
+		}
 	}
 }
 

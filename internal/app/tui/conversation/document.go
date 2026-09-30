@@ -206,6 +206,11 @@ func (d *Document) isNarrowerThan(prev, candidate int) bool {
 // member the block does not cover. Cloning at construction is the cheap end of
 // the trade: it costs one copy per block, once, against a class of desync that
 // is invisible until it corrupts an anchor.
+//
+// It clones Members and Children, and ONLY those: CopyTargets is carried
+// through by reference, which is sound here only because nothing in this
+// package ever writes to a CopyTarget through a block. A caller must not
+// either — see Document.Blocks, which hands that same slice out.
 func normalizeBlock(b Block) Block {
 	b.ID = blockID(b)
 	b.Members = cloneStrings(b.Members)
@@ -285,12 +290,20 @@ func GroupBlockID(firstMember string) BlockID {
 // the copy is cheap next to the walk that consumes it.
 //
 // The copy is SHALLOW: a block's own Members, Children and CopyTargets slices
-// are shared, read-only. Members and Children are cloned at construction, so a
-// caller cannot reach the document through the slice it passed in; the
-// remaining sharing is the returned blocks' own slices, and a consumer must
-// treat them as read-only. Deep-copying every block's slices on every call
-// would buy protection against a mutation no caller performs, at a cost paid
-// by every render.
+// are shared, read-only.
+//
+// Mutating a Block or its CopyTargets or Children through what this returns
+// corrupts the document: treat every returned Block, and every slice it points
+// at, as read-only. Only the SLICE OF BLOCKS is the caller's — appending to it
+// (or writing through it) cannot reach the document's own array, and that is
+// the one mutation this method is built to survive, because it is the one a
+// caller performs by accident.
+//
+// Members and Children are cloned at construction, so a caller cannot reach the
+// document through the slice it PASSED IN either — but that protects the
+// document from its caller's earlier slices, not from the blocks handed back
+// here. Deep-copying every block's slices on every call would buy protection
+// against a mutation no caller performs, at a cost paid by every render.
 func (d *Document) Blocks() []Block { return cloneBlocks(d.blocks) }
 
 // Len reports how many blocks the document holds.

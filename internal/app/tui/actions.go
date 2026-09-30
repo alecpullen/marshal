@@ -391,7 +391,28 @@ type actionSnapshotKey struct {
 	// transcriptVersion stands in for the document and the block spans: both are
 	// rebuilt by the same refresh, so one counter covers every content change
 	// that could alter what a copy action resolves to.
+	//
+	// It does NOT cover a change of READING POSITION, and that is what the two
+	// fields below are for. Scrolling moves no content, so transcriptVersion is
+	// untouched by it — but copyBlock() resolves the block from the reader's
+	// position, so a snapshot memoized before a scroll would go on offering
+	// "Copy answer" for a block the reader has scrolled away from.
 	transcriptVersion uint64
+	// viewportFollow is the first input of copyBlock(): while it is set the copy
+	// target is the NEWEST block, and while it is clear it is the anchored one.
+	viewportFollow bool
+	// anchorBlock is the block the reader is on, and viewportTop the fallback
+	// copyBlock uses when there is no anchor yet. Both are recorded only while
+	// NOT following — a following reader holds no position (captureReadingAnchor
+	// clears the anchor deliberately), and the viewport's bottom offset moves
+	// with the content, so keying on it there would invalidate the cache on
+	// every spinner tick and defeat the memo it guards.
+	//
+	// The block identity is a string, not the whole anchor: copyBlock() reads
+	// the identity and the fallback position, and the offset inside the block
+	// does not change which block a copy resolves to.
+	anchorBlock conversation.BlockID
+	viewportTop int
 	// pickerCommand distinguishes the palette from any other dock panel, which
 	// is what OtherPanelOpen is computed from.
 	pickerCommand string
@@ -426,6 +447,14 @@ func (m Model) actionSnapshotKeyOf() actionSnapshotKey {
 		panelOwnsKeys:     m.panelOwnsKeys(),
 		hasSelection:      m.hasSelection(),
 		conversation:      m.effectiveFocus() == FocusConversation,
+	}
+	// The reader's position, recorded only when they have one. See the field
+	// comments: a following reader is pinned to the bottom, and the offset that
+	// goes with "the bottom" moves with every new line of output.
+	k.viewportFollow = m.viewportFollow
+	if !m.viewportFollow {
+		k.anchorBlock = m.readingAnchor.Block
+		k.viewportTop = m.viewport.YOffset()
 	}
 	if v, ok := m.drilledInto(); ok && v.Status == session.SubagentRunning {
 		k.drilledID = v.ID

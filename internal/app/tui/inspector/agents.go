@@ -449,10 +449,17 @@ func (m *Model) viewAgents() string {
 	// second column, and a join pads the shorter column to the taller one, so
 	// anything emitted beyond m.height escapes into the frame and pushes the
 	// status line off the bottom. Every row goes through a budget rather than
-	// being counted by hand — the blank line before the detail body is a ROW,
-	// and an uncounted one is how this panel used to emit more rows than the
-	// height it recorded.
-	rb := newRowBudget(m.height)
+	// being counted by hand — the blank line before the body is a ROW, and an
+	// uncounted one is how this panel used to emit more rows than the height it
+	// recorded.
+	//
+	// The budget is WIDTH-aware too, so the empty-roster note and the vanished
+	// note are clamped to the panel rather than wrapping into rows this budget
+	// has already spent.
+	rb := newRowBudget(m.height, m.width)
+	// Rows are composed against the SAME width the budget bounds them to, so a
+	// note cannot collapse to a single ellipsis cell on an unmeasured panel.
+	noteWidth := budgetWidth(m.width)
 
 	// The header WRAPS, so at a degenerate height it may not fully fit. A header
 	// that is cut by the budget is still honest — the alternative is emitting
@@ -461,8 +468,14 @@ func (m *Model) viewAgents() string {
 		rb.line(line)
 	}
 	if len(m.agents.roster) == 0 {
-		if rb.left() >= 2 {
+		switch {
+		case rb.left() >= 2:
 			rb.blank()
+			rb.line("No agents have run in this conversation yet.")
+		case rb.left() >= 1:
+			// No room for the separator, but the sentence still fits. An empty
+			// roster that renders as a blank panel under a header is
+			// indistinguishable from a panel that failed to draw.
 			rb.line("No agents have run in this conversation yet.")
 		}
 		return rb.String()
@@ -476,8 +489,12 @@ func (m *Model) viewAgents() string {
 	// The roster and the detail body SHARE what is left. The trailing notes are
 	// reserved FIRST, because they are conditional and their rows must not be
 	// handed to the list or the body.
+	//
+	// The reservation is a FLOOR: with fewer than three rows left the note
+	// cannot be drawn whatever happens, so deducting its two rows as well would
+	// cost the reader two rows of roster for a sentence they never see.
 	rows := rb.left()
-	if m.agents.vanished {
+	if m.agents.vanished && rows >= 3 {
 		rows -= 2 // blank + the note line
 	}
 	rows = max(rows, 1)
@@ -494,17 +511,17 @@ func (m *Model) viewAgents() string {
 	// share rather than being added to it.
 	w := windowList(len(m.agents.roster), listRows, m.agents.cursor, m.State(TabAgents).Scroll, 2)
 	if w.ShowAbove() {
-		rb.line(aboveNote(w.Above(), m.width))
+		rb.line(aboveNote(w.Above(), noteWidth))
 	}
 	for i := w.Start; i < w.End; i++ {
 		cursor := "  "
 		if i == m.agents.cursor {
 			cursor = "▸ "
 		}
-		rb.line(cursor + agentRowText(m.agents.roster[i], m.width))
+		rb.line(cursor + agentRowText(m.agents.roster[i], noteWidth))
 	}
 	if w.ShowBelow() {
-		rb.line(belowNote(w.Below(), m.width))
+		rb.line(belowNote(w.Below(), noteWidth))
 	}
 
 	if m.agents.vanished && rb.left() >= 2 {

@@ -2130,6 +2130,73 @@ func (m *Model) inspectorDiffCommand() tea.Cmd {
 // exactly like a file with no changes.
 const inspectorDiffTimeout = 5 * time.Second
 
+// inspectorDockOwnsSlot reports whether the panel holding the dock slot is the
+// inspector's own adapter.
+//
+// It is the guard for every exemption from the dock's "the open panel owns
+// every key" rule: a DIFFERENT panel in the slot must never see the inspector's
+// keys, and a dock-placed inspector must never have them dropped.
+func (m Model) inspectorDockOwnsSlot() bool {
+	return m.inspector != nil && m.dock.Panel() == dock.Panel(m.inspector.adapter)
+}
+
+// handleDockGlobalKey resolves a key that keeps its GLOBAL meaning while the
+// inspector's adapter holds the dock slot, and runs it through runAction.
+//
+// The set is deliberately explicit and small: these are the keys whose meaning
+// does not depend on which surface is focused, so a panel that swallowed them
+// would leave the user with a dead key that the footer is still advertising.
+// Everything else — tab bars, list navigation, `c`, Enter — belongs to the
+// panel, and a key the panel does not claim is a no-op rather than a global.
+//
+// Ctrl+X is resolved through ctrlXID rather than hard-coded to the stop action,
+// because it is one key with a resolved meaning: the same resolution the
+// footer prints and the palette lists. A hard-coded stop here would be a second
+// answer to "what does Ctrl+X do", which is the drift the action catalog exists
+// to prevent.
+//
+// It reports handled=false for a key that is not global, so the caller can hand
+// it to the panel.
+func (m *Model) handleDockGlobalKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	var id ActionID
+	switch k.String() {
+	case "ctrl+b":
+		// The toggle, not the bare rail: Ctrl+B opened this panel and Ctrl+B is
+		// what closes it. Resolved from the catalog so the key, the footer and
+		// the palette row cannot disagree.
+		id = ActionToggleInspector
+	case "ctrl+x":
+		resolved, ok := m.actionSnapshot().ctrlXID()
+		if !ok {
+			// Unbound in this state: the footer omits the hint, so there is
+			// nothing to explain. The key is still consumed, so it cannot fall
+			// through to the panel's keymap as a second, hidden meaning.
+			return *m, nil, true
+		}
+		id = resolved
+	case "ctrl+s":
+		id = ActionToggleMouse
+	case "ctrl+r":
+		id = ActionRollback
+	case "f6":
+		id = ActionFocusNext
+	case "shift+f6":
+		id = ActionFocusPrevious
+	case "f2":
+		// The palette's catalog entry is gated on no other panel owning the
+		// keys, so in this state it resolves to a refusal — and routing it
+		// through the catalog is what turns that refusal into a sentence the
+		// reader can act on. Swallowing the key silently (what the dock branch
+		// did) left them pressing a documented key with no answer at all, which
+		// is the failure this exemption exists to remove.
+		id = ActionPalette
+	default:
+		return *m, nil, false
+	}
+	mm, cmd := m.runAction(id)
+	return mm, cmd, true
+}
+
 // handleInspectorKey routes a keypress to the conversation inspector while it
 // owns the keys.
 //
@@ -3045,20 +3112,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.dock.IsOpen() {
 		switch msg.(type) {
 		case tea.KeyPressMsg, tea.PasteMsg:
-			// The inspector is the ONE dock panel whose own toggle key must
-			// survive being open: Ctrl+B opened it, and Ctrl+B is what closes it
-			// (the adapter's own keymap has no binding for it, so forwarding the
-			// key would make the panel impossible to dismiss from the keyboard).
-			// Every other panel keeps the slot's keys exclusively, which is what
-			// the "modal surface owns every key" contract promises.
+			// The INSPECTOR is the one dock panel that is a real keyboard
+			// surface rather than a form, so it gets two exemptions from the
+			// "the open panel owns every key" rule, in this order:
 			//
-			// The exemption is checked before the ownership branch rather than
-			// inside the adapter because the binding is a GLOBAL action: it is
-			// resolved from the catalog by runAction so the footer, the palette
-			// and this key cannot disagree about what Ctrl+B means.
-			if k, ok := msg.(tea.KeyPressMsg); ok && m.inspector != nil &&
-				m.dock.Panel() == dock.Panel(m.inspector.adapter) && k.String() == "ctrl+b" {
-				break
+			//  1. The keys that mean the same thing on every surface, resolved
+			//     from the action catalog (see inspectorDockOwnsSlot and
+			//     handleDockGlobalKey). Ctrl+X is the one that matters: stopping
+			//     the agent is precisely the state a docked Agents tab is
+			//     showing, and the footer went on advertising it while the key
+			//     was dead.
+			//  2. Its per-tab keys, through the same handleInspectorKey the
+			//     side placement uses. Without this the Changes/Agents/Context
+			//     contract (Enter opens the selected diff or detail, `c` scopes
+			//     the Context tab, page keys move an open body) was unreachable
+			//     in the dock placement — and below the side threshold the dock
+			//     is the ONLY placement there is. Routing through it also keeps
+			//     the action snapshot honest for free: every tab key ends in
+			//     refreshInspector, which invalidates the memo.
+			//
+			// Everything neither claims still belongs to the panel, exactly as
+			// the contract promises for every other panel in the slot.
+			//
+			// The GLOBAL keys are tried first and that order is load-bearing:
+			// handleInspectorKey deliberately reports "handled" for every key it
+			// is given (a key that fell through would reach the textarea as a
+			// second, invisible recipient), so a global tried after it would
+			// never run. The two sets do not overlap — the globals are all
+			// modified or function keys, the inspector's are plain navigation —
+			// so no key loses a meaning it had.
+			if k, ok := msg.(tea.KeyPressMsg); ok && m.inspectorDockOwnsSlot() {
+				if mm, cmd, handled := m.handleDockGlobalKey(k); handled {
+					return mm, cmd
+				}
+				mm, cmd, _ := m.handleInspectorKey(k)
+				return mm, cmd
 			}
 			// Offer-to-fill: while the /sdd preflight is open and the verify
 			// gate is unknown, `f` dispatches a one-shot proposal task instead

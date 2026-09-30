@@ -18,6 +18,28 @@ func bigDiff(lines int) string {
 	return b.String()
 }
 
+// multiHunkDiff builds a unified diff with one file header and one hunk per
+// entry in hunks, each carrying that many added lines.
+//
+// Hunk sizes are given explicitly rather than derived, because what a hunk
+// contributes to Lines differs by mode: unified renders the "@@" header line as
+// a content line, while side-by-side pairs only the content and skips the
+// header. A test that wants two hunks to land exactly on the budget has to size
+// them for the mode it is in.
+func multiHunkDiff(hunks ...int) string {
+	var b strings.Builder
+	b.WriteString("--- a/multi.go\n+++ b/multi.go\n")
+	start := 1
+	for _, n := range hunks {
+		fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", start, n, start, n)
+		for i := 0; i < n; i++ {
+			b.WriteString("+added line\n")
+		}
+		start += n
+	}
+	return b.String()
+}
+
 // TestRenderResultReportsTruncation pins the fact the Changes view needs: the
 // renderer caps its output, and a caller that cannot tell "this is the whole
 // diff" from "this is the first 500 lines" will label a partial patch as
@@ -31,8 +53,13 @@ func TestRenderResultReportsTruncation(t *testing.T) {
 		if !strings.Contains(res.Text, "added") {
 			t.Fatalf("the rendered text lost its content: %q", res.Text)
 		}
-		if res.Lines == 0 {
-			t.Fatal("Lines = 0 for a non-empty diff")
+		// The CONCRETE count, not merely "non-zero": Lines is the number a
+		// caller compares against the cap, so the small case has to pin it as
+		// exactly as the capped cases do. One hunk of a header, a context line
+		// and an added line is three rendered lines — the `---`/`+++` file
+		// headers are not content and are never counted.
+		if res.Lines != 3 {
+			t.Fatalf("Lines = %d, want 3 (hunk header + context + added)", res.Lines)
 		}
 	})
 
@@ -51,6 +78,82 @@ func TestRenderResultReportsTruncation(t *testing.T) {
 		res := RenderResult("", Options{Width: 80})
 		if res.Truncated {
 			t.Fatal("an empty diff reported Truncated = true")
+		}
+	})
+}
+
+// TestRenderResultHonoursOneBudgetAcrossHunks pins the GLOBAL cap — the one
+// property a per-hunk budget cannot express. Each hunk's renderer used to start
+// its own line count against maxRenderLines, and the outer loop only tested the
+// budget AFTER a hunk returned, so two hunks that each fitted the cap on their
+// own both rendered in full: Lines reached roughly twice the cap, and because no
+// individual renderer had dropped anything Truncated was false. The caller was
+// handed an over-budget render labelled complete, which is the false statement
+// the Result type exists to prevent.
+func TestRenderResultHonoursOneBudgetAcrossHunks(t *testing.T) {
+	// Width 160 keeps ModeSideBySide wide enough for the real two-column layout
+	// rather than its unified fallback, so both modes are exercised for real.
+	modes := []struct {
+		name string
+		mode Mode
+	}{
+		{"unified", ModeUnified},
+		{"side-by-side", ModeSideBySide},
+	}
+
+	t.Run("two hunks that together exceed the cap stop at the cap", func(t *testing.T) {
+		// 300 lines each: neither hunk alone reaches the cap, so only a shared
+		// budget can notice that together they do.
+		diff := multiHunkDiff(300, 300)
+		for _, m := range modes {
+			t.Run(m.name, func(t *testing.T) {
+				res := RenderResult(diff, Options{Width: 160, Mode: m.mode})
+				if res.Lines > maxRenderLines {
+					t.Fatalf("Lines = %d, want <= the global cap %d: each hunk budgeted its own %d",
+						res.Lines, maxRenderLines, maxRenderLines)
+				}
+				if !res.Truncated {
+					t.Fatalf("two hunks of 300 lines rendered %d lines under a %d-line budget and reported Truncated = false",
+						res.Lines, maxRenderLines)
+				}
+				if !strings.Contains(res.Text, "truncated") {
+					t.Fatalf("Truncated = true with no notice in the render:\n%s", res.Text)
+				}
+				// The drop is real, not merely declared: the render holds no
+				// more content lines than the budget allows.
+				if n := strings.Count(res.Text, "added line"); n > maxRenderLines {
+					t.Fatalf("the render carries %d content lines, want <= %d", n, maxRenderLines)
+				}
+			})
+		}
+	})
+
+	t.Run("two hunks that end exactly at the cap are complete", func(t *testing.T) {
+		// A diff that spends the budget exactly is not truncated: the reader
+		// sees all of it, and crying truncation here would teach them to
+		// distrust a full render. Sizes differ per mode because unified counts
+		// each hunk's "@@" header and side-by-side does not, so the same diff
+		// would be over budget in one mode and exactly on it in the other.
+		for _, tc := range []struct {
+			name  string
+			mode  Mode
+			hunks []int
+		}{
+			{"unified", ModeUnified, []int{249, 249}},         // 2 headers + 498 added
+			{"side-by-side", ModeSideBySide, []int{250, 250}}, // 500 pairs
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				res := RenderResult(multiHunkDiff(tc.hunks...), Options{Width: 160, Mode: tc.mode})
+				if res.Lines != maxRenderLines {
+					t.Fatalf("Lines = %d, want the full budget %d", res.Lines, maxRenderLines)
+				}
+				if res.Truncated {
+					t.Fatal("a render that ends exactly at the budget was reported truncated")
+				}
+				if strings.Contains(res.Text, "truncated") {
+					t.Fatalf("a complete render carries the truncation notice:\n%s", res.Text)
+				}
+			})
 		}
 	})
 }

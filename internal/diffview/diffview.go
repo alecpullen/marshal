@@ -135,12 +135,25 @@ func RenderResult(diff string, opts Options) Result {
 		if i > 0 {
 			b.WriteString("\n")
 		}
+		// The budget is GLOBAL, so it is handed to the renderer as the number
+		// of lines that are still available rather than letting each hunk
+		// measure against the full cap. A per-hunk cap is not a cap on the
+		// output: two hunks that each fit would both render in full, the total
+		// would reach roughly twice maxRenderLines, and — because no individual
+		// renderer had dropped anything — the snapshot would be reported
+		// complete. Passing `remaining` makes crossing the budget impossible
+		// and makes `capped` a decision made against the true budget left.
+		//
+		// lineCount < maxRenderLines whenever a hunk is entered: the loop breaks
+		// the moment the budget is spent and more hunks remain, so remaining is
+		// at least 1 here (and the final hunk may legitimately spend it all).
+		remaining := maxRenderLines - lineCount
 		var written int
 		var capped bool
 		if mode == ModeSideBySide {
-			written, capped = renderSideBySide(&b, h, opts)
+			written, capped = renderSideBySide(&b, h, opts, remaining)
 		} else {
-			written, capped = renderUnified(&b, h, opts)
+			written, capped = renderUnified(&b, h, opts, remaining)
 		}
 		lineCount += written
 		// A hunk reports whether IT dropped content. The previous code inferred
@@ -302,6 +315,15 @@ func plainTextFallback(diff string, width int) (text string, lines int, truncate
 	// lines would read as 501 and be reported truncated with all of their
 	// content on screen. Drop it here and re-emit the newline at the end, so the
 	// rendering stays byte-for-byte what it was.
+	//
+	// The rule cannot tell a newline artifact from real content, so input that
+	// deliberately ends with a BLANK line ("a\n\n") loses that blank line from
+	// the count as well: its trailing empty element is indistinguishable from a
+	// terminator. Lines is therefore one lower than a reader counting the
+	// visible lines would say, for that input only. Nothing is dropped from the
+	// text (the newline is re-emitted below), and the alternative — counting the
+	// artifact — is the mis-reporting described above, so this is the safer of
+	// the two off-by-ones rather than a bug to be fixed.
 	trailingNewline := len(all) > 0 && all[len(all)-1] == ""
 	if trailingNewline {
 		all = all[:len(all)-1]
@@ -350,7 +372,14 @@ var (
 
 // --- unified -----------------------------------------------------------
 
-func renderUnified(b *strings.Builder, h Hunk, opts Options) (int, bool) {
+// renderUnified writes one hunk in unified layout and returns how many content
+// lines it wrote and whether it dropped any.
+//
+// budget is the number of lines this hunk may still spend, i.e. the GLOBAL
+// remaining budget — not maxRenderLines. See RenderResult's loop: a per-hunk
+// budget is what let several hunks each render in full and push the total past
+// the cap while every renderer reported that it had dropped nothing.
+func renderUnified(b *strings.Builder, h Hunk, opts Options, budget int) (int, bool) {
 	lang := detectLanguage(h)
 	count := 0
 	// Unified lines are prefixed with two visible cells ("+ ", "- ", "  ").
@@ -360,7 +389,7 @@ func renderUnified(b *strings.Builder, h Hunk, opts Options) (int, bool) {
 		maxContentWidth = 1
 	}
 	for _, ln := range h.Lines {
-		if count >= maxRenderLines {
+		if count >= budget {
 			// Lines remain in this hunk, so content is being dropped.
 			return count, true
 		}
@@ -483,7 +512,11 @@ func computeEmphasis(left, right string) (*lineEmphasis, *lineEmphasis) {
 	return &le, &re
 }
 
-func renderSideBySide(b *strings.Builder, h Hunk, opts Options) (int, bool) {
+// renderSideBySide writes one hunk in side-by-side layout and returns how many
+// output lines it wrote and whether it dropped any.
+//
+// budget is the lines still available GLOBALLY, as for renderUnified.
+func renderSideBySide(b *strings.Builder, h Hunk, opts Options, budget int) (int, bool) {
 	// Reserve 3 for the " │ " separator. Give the left side
 	// floor(remaining/2) and the right side ceil(remaining/2) so the full
 	// width is used without wasting a character on even-width terminals.
@@ -491,17 +524,25 @@ func renderSideBySide(b *strings.Builder, h Hunk, opts Options) (int, bool) {
 	leftHalf := remaining / 2
 	rightHalf := remaining - leftHalf
 	if leftHalf < 20 {
-		return renderUnified(b, h, opts)
+		// Too narrow for two columns; the unified layout is the same content in
+		// a different shape, so it inherits the same budget.
+		return renderUnified(b, h, opts, budget)
 	}
 	lang := detectLanguage(h)
 	pairs := pairLines(h.Lines)
 	count := 0
-	for i, p := range pairs {
-		if count >= maxRenderLines {
-			// Capped only if pairs remain. A diff that ends exactly at the
-			// budget is complete, and claiming otherwise would teach the reader
-			// to distrust a full render.
-			return count, i < len(pairs)
+	for _, p := range pairs {
+		if count >= budget {
+			// The guard runs before the pair is rendered, so reaching it means
+			// at least this pair — and possibly more — is being dropped: the
+			// return is capped unconditionally. (The old `i < len(pairs)` term
+			// read i, the index of the pair just abandoned, so it was always
+			// true; it said "capped if pairs remain" while answering a question
+			// that could not come out false.)
+			//
+			// A diff that ends exactly at the budget never reaches here: the
+			// loop simply runs out of pairs, falls out, and reports complete.
+			return count, true
 		}
 		lstr := renderSideColumn(p.left, leftHalf, removedStyle, remEmphStyle, p.leftEmph, opts.Highlight, lang)
 		rstr := renderSideColumn(p.right, rightHalf, addedStyle, addEmphStyle, p.rightEmph, opts.Highlight, lang)

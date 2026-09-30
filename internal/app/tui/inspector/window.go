@@ -134,7 +134,8 @@ func windowRange(total, rows, cursor, scroll int) (start, end int) {
 }
 
 // rowBudget writes rows while a row budget lasts, so a panel's emission can
-// never exceed the height it was given.
+// never exceed the height it was given — nor its rows be wider than the panel
+// it is joined into.
 //
 // The three list tabs each lay out a header, a windowed list, trailing notes
 // and a detail body. Budgeting that by hand is exactly where a blank line
@@ -143,23 +144,62 @@ func windowRange(total, rows, cursor, scroll int) (start, end int) {
 // is joined into (clipLeftColumn hides it, so the reader loses content with no
 // sign that anything was dropped). Writing through this type makes the total
 // an invariant rather than an arithmetic hope.
+//
+// The WIDTH bound is here for the same reason as the height one. Five of the
+// chrome rows these tabs draw are composed from author-controlled or fixed text
+// that was never clamped — the Changes header carries the base ref, and the
+// vanished/loading notes are longer than the product's minimum panel width at
+// 30 columns. An unclamped row WRAPS, and a wrapped row is a second display row
+// the height budget never counted, inside a slot it budgeted for one: the note
+// reflows everything below it and the panel overflows vertically for a reason
+// that looks like it has nothing to do with height. Clamping here rather than
+// at each call site is what makes that impossible to forget for the next row
+// somebody adds.
 type rowBudget struct {
 	b     strings.Builder
 	limit int
+	// width is the panel width every row is clamped to, in display cells.
+	width int
 	used  int
 }
 
-// newRowBudget returns a budget that will emit at most limit rows.
-func newRowBudget(limit int) *rowBudget {
-	return &rowBudget{limit: max(limit, 0)}
+// minBudgetWidth is the width the row budget clamps to when the panel has not
+// recorded a usable one.
+//
+// A panel that has measured its HEIGHT but not its width still has to bound its
+// rows: the emission is being bounded, so "unmeasured" cannot mean "unbounded"
+// — that is how Resize(0, 24) produced rows past the frame. The floor is the
+// same 20 columns the Agents and Context tabs already assume when they render
+// their chrome (max(m.width, 20)), so the budget and the tabs agree about what
+// a degenerate panel is.
+const minBudgetWidth = 20
+
+// newRowBudget returns a budget that emits at most limit rows, each clamped to
+// width display cells.
+func newRowBudget(limit, width int) *rowBudget {
+	return &rowBudget{limit: max(limit, 0), width: budgetWidth(width)}
 }
 
+// budgetWidth is the width a budgeted panel bounds its rows to: the recorded
+// panel width, or minBudgetWidth when nothing usable has been recorded.
+//
+// It is exposed because the budget is not the only writer of a row: the
+// window's "N more rows" notes are COMPOSED before they are handed over, and a
+// note composed against an unmeasured width would collapse to a single ellipsis
+// cell — the reader would lose the disclosure that the list is windowed. Every
+// row of a budgeted panel is therefore measured against this one number.
+func budgetWidth(width int) int { return max(width, minBudgetWidth) }
+
 // line writes s as one row, reporting false when the budget is spent.
+//
+// The row is clamped to the panel width here, so a caller cannot spend a row
+// that is wider than the frame — a wrapped row costs rows the height budget has
+// already promised elsewhere.
 func (r *rowBudget) line(s string) bool {
 	if r.used >= r.limit {
 		return false
 	}
-	r.b.WriteString(s)
+	r.b.WriteString(clampToWidth(s, r.width))
 	r.b.WriteString("\n")
 	r.used++
 	return true
@@ -219,9 +259,17 @@ func pluralise(n int, unit string) string {
 }
 
 // clampToWidth bounds a line to the panel, ellipsising rather than wrapping.
+//
+// An UNMEASURED width does NOT pass the line through unbounded. A bound that
+// silently disappears is the failure this helper exists to prevent: the callers
+// that genuinely mean "nothing has been measured, so render everything"
+// (changeRowText, agentRowText, clampLines) each say so AT THE CALL SITE, where
+// the exception is visible next to the reason for it. Reaching this function
+// therefore means the caller wants a bound, and the only honest bound available
+// with no width is the narrowest one that is still a bound.
 func clampToWidth(s string, width int) string {
 	if width <= 0 {
-		return s
+		return ansi.Truncate(s, 1, "…")
 	}
 	return ansi.Truncate(s, width, "…")
 }

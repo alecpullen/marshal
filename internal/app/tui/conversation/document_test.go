@@ -218,11 +218,28 @@ func TestDocumentIsImmuneToMutationOfTheCallersSlices(t *testing.T) {
 	// the document's tail with a block the index never saw.
 	blocks := doc.Blocks()
 	blocks[0].Text = "overwritten"
-	blocks = append(blocks, Block{Kind: BlockMessage, Members: []string{"msg:3"}})
 
+	// The assertion above is NOT evidence that Blocks() clones: "the element I
+	// wrote was written" holds for any slice of structs, cloned or not, because
+	// a Block is a value and the write lands in the copy either way. What
+	// separates a clone from an alias is that TWO calls never share an array,
+	// so grow the returned slice and write through every element it now has,
+	// then ask the DOCUMENT and a SECOND call what they hold. An aliased
+	// Blocks() fails here and passes every assertion above.
+	//
+	// Only the Block structs are written, deliberately: the clone is shallow,
+	// so a Block's own Members/Children/CopyTargets slices ARE the document's
+	// (documented on Blocks, which tells a caller to treat them as read-only).
+	// Writing nested storage would be testing the sharing the doc admits to
+	// rather than the array-identity the clone is supposed to guarantee.
+	blocks = append(blocks, Block{Kind: BlockMessage, Members: []string{"msg:3"}})
+	for i := range blocks {
+		blocks[i].Text = "overwritten"
+	}
 	if blocks[0].Text != "overwritten" {
 		t.Fatalf("the returned slice is not the caller's to mutate: %q", blocks[0].Text)
 	}
+
 	if doc.Len() != 1 {
 		t.Fatalf("appending to the returned slice grew the document to %d blocks", doc.Len())
 	}
@@ -232,9 +249,26 @@ func TestDocumentIsImmuneToMutationOfTheCallersSlices(t *testing.T) {
 	if _, ok := doc.BlockForMember("msg:3"); ok {
 		t.Fatal("a block appended to the returned slice became resolvable in the document")
 	}
-	// The document's own view is untouched by the write above.
+	// The document's own view is untouched by the writes above — and so is a
+	// SECOND call's, which is the part that pins the clone rather than the
+	// value semantics.
 	if again := doc.Blocks(); again[0].Text != "" || again[0].Members[0] != "msg:1" {
 		t.Fatalf("the document changed through the slice it handed out: %+v", again[0])
+	}
+	if got, ok := doc.Block(GroupBlockID("msg:1")); !ok || got.Text != "" || got.Members[0] != "msg:1" {
+		t.Fatalf("Block(msg:1) = %+v, %v; the caller's writes reached the document", got, ok)
+	}
+	// Writing through a SECOND call must not reach the FIRST caller either,
+	// which is only true if every call copies.
+	second := doc.Blocks()
+	for i := range second {
+		second[i].Text = "through the second call"
+	}
+	if blocks[0].Text != "overwritten" {
+		t.Fatalf("a second Blocks() call aliased the first one's array: %+v", blocks[0])
+	}
+	if doc.Blocks()[0].Text != "" || doc.Blocks()[0].Members[0] != "msg:1" {
+		t.Fatalf("the document changed through a repeat call: %+v", doc.Blocks()[0])
 	}
 }
 

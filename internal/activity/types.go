@@ -33,8 +33,9 @@ func FromContext(ctx context.Context) (Ref, bool) {
 type Source string
 
 const (
-	SourceModelProse      Source = "model_prose"
-	SourceRuntimeFallback Source = "runtime_fallback"
+	SourceModelProse         Source = "model_prose"
+	SourceRuntimeFallback    Source = "runtime_fallback"
+	SourceStructuredProgress Source = "structured_progress"
 )
 
 // Narration is the immutable public text accepted for a response. Sequence

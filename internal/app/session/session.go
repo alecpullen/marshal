@@ -228,6 +228,7 @@ type State struct {
 	cancel context.CancelFunc
 
 	mu              sync.Mutex
+	progressMu      sync.Mutex
 	messages        []Message
 	inProgress      InProgressMessage
 	notice          Notice
@@ -237,24 +238,26 @@ type State struct {
 	// childQuestions is the FIFO queue of subagent questions waiting for
 	// the parent (spec §7): concurrent children queue behind one another
 	// rather than overwriting a single shared slot.
-	childQuestions        []*PendingChildQuestion
-	pendingSkillGate      *PendingSkillGate
-	skillGateDisabled     bool
-	skillGateAllowed      map[string]bool
-	skillGateDenied       map[string]int
-	activeToolCall        *ActiveToolCall
-	sessionRules          []string
-	auditLog              []registry.AuditEvent
-	thinkingLog           []ThinkingEntry
-	activityRun           activity.Ref
-	activityResponse      activity.Ref
-	activityBoundary      int64
-	activitySequence      uint64
-	activityNextID        uint64
-	activityNarrations    []activity.Narration
-	activityResponseLinks []ResponseNarration
-	lastBackup            []BackupFile
-	contextPack           contextpack.Pack
+	childQuestions            []*PendingChildQuestion
+	pendingSkillGate          *PendingSkillGate
+	skillGateDisabled         bool
+	skillGateAllowed          map[string]bool
+	skillGateDenied           map[string]int
+	activeToolCall            *ActiveToolCall
+	sessionRules              []string
+	auditLog                  []registry.AuditEvent
+	thinkingLog               []ThinkingEntry
+	activityRun               activity.Ref
+	activityResponse          activity.Ref
+	activityBoundary          int64
+	activitySequence          uint64
+	activityNextID            uint64
+	activityNarrations        []activity.Narration
+	activityResponseLinks     []ResponseNarration
+	activityProgress          []activity.ProgressRevision
+	activityProgressResponses map[string]progressResponseRecord
+	lastBackup                []BackupFile
+	contextPack               contextpack.Pack
 	// requestInspection is the bounded snapshot of the last conversation
 	// attempt Marshal submitted to its provider adapter. It is in-memory only
 	// (see request_inspection.go): nothing persists it, and it is never logged.

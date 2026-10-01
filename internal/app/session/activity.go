@@ -11,6 +11,7 @@ import (
 // are intentionally absent because phase 1 does not persist ownership.
 type ActivitySnapshot struct {
 	Narrations         []activity.Narration
+	ProgressRevisions  []activity.ProgressRevision
 	ResponseNarrations []ResponseNarration
 	Run                activity.Ref
 	Response           activity.Ref
@@ -42,6 +43,8 @@ func (s *State) nextActivityIDLocked(kind string) string {
 // BeginActivityRun starts fresh ownership for one invocation. Runtime IDs
 // are in-process only and are never persisted or used as message IDs.
 func (s *State) BeginActivityRun(boundaryMessageID int64) activity.Ref {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run := activity.Ref{RunID: s.nextActivityIDLocked("run"), ActorID: "main"}
@@ -50,6 +53,8 @@ func (s *State) BeginActivityRun(boundaryMessageID int64) activity.Ref {
 }
 
 func (s *State) BeginActivityResponse() activity.Ref {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.activityRun.RunID == "" {
@@ -143,6 +148,8 @@ func (s *State) setActivityResponseNarrationLocked(responseID, narrationID strin
 // SetActivityBoundary starts a new visible user segment inside a run and
 // drops the active response so subsequent tool-only output cannot inherit it.
 func (s *State) SetActivityBoundary(messageID int64) {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	s.mu.Lock()
 	s.activityBoundary = messageID
 	s.activityResponse = activity.Ref{}
@@ -150,6 +157,8 @@ func (s *State) SetActivityBoundary(messageID int64) {
 }
 
 func (s *State) EndActivityRun(run activity.Ref) {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	s.mu.Lock()
 	if run.RunID == s.activityRun.RunID {
 		for i := range s.activityNarrations {
@@ -181,9 +190,31 @@ func (s *State) ActivitySnapshot() ActivitySnapshot {
 		// ownership begins at the active user boundary and is carried by the
 		// tool records themselves.
 		sourceOnPath := n.SourceMessageID != 0 && path[n.SourceMessageID]
+		if n.Source == activity.SourceStructuredProgress {
+			for _, revision := range s.activityProgress {
+				if revision.NarrationID == n.ID && path[revision.SourceMessageID] {
+					sourceOnPath = true
+					break
+				}
+			}
+		}
 		fallback := n.Source == activity.SourceRuntimeFallback && n.SourceMessageID == 0
 		if n.BoundaryMessageID != 0 && path[n.BoundaryMessageID] && (sourceOnPath || fallback) {
+			if n.Source == activity.SourceStructuredProgress {
+				for _, revision := range s.activityProgress {
+					if revision.NarrationID == n.ID && path[revision.SourceMessageID] {
+						n.SourceMessageID = revision.SourceMessageID
+						break
+					}
+				}
+			}
 			snapshot.Narrations = append(snapshot.Narrations, n)
+		}
+	}
+	for _, revision := range s.activityProgress {
+		if path[revision.SourceMessageID] {
+			revision.Sections = cloneProgressSections(revision.Sections)
+			snapshot.ProgressRevisions = append(snapshot.ProgressRevisions, revision)
 		}
 	}
 	known := make(map[string]bool, len(snapshot.Narrations))

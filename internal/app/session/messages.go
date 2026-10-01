@@ -273,6 +273,15 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 }
 
 func (s *State) appendMessageActivity(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string, ref activity.Ref) int64 {
+	id, msg := s.appendMessageActivityDeferred(role, content, contentType, final, salvaged, salvageReason, toolCallCount, usage, ref)
+	s.publishEvent(EventMessageAdded, Event{Message: &msg})
+	return id
+}
+
+// appendMessageActivityDeferred updates the message tree but leaves publishing
+// to the caller. Progress recording uses this to release its serialization
+// lock before a terminal subscriber can block on EventMessageAdded.
+func (s *State) appendMessageActivityDeferred(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string, ref activity.Ref) (int64, Message) {
 	s.mu.Lock()
 	visibleBoundary := isActivityBoundaryMessage(role, contentType)
 	if visibleBoundary {
@@ -372,11 +381,8 @@ func (s *State) appendMessageActivity(role Role, content string, contentType Con
 	}
 	s.msgByID[id] = msg
 	s.leafID = id
-	published := msg
 	s.mu.Unlock()
-
-	s.publishEvent(EventMessageAdded, Event{Message: &published})
-	return id
+	return id, msg
 }
 
 func isActivityBoundaryMessage(role Role, contentType ContentType) bool {
@@ -473,6 +479,8 @@ func (s *State) rebuildActiveBranch() {
 // new branch. Returns the new leaf id. Does NOT restore files — the caller
 // (/rewind) does that via Snapshotter.
 func (s *State) Rewind(turnMsgID int64) int64 {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	parent, ok := s.parentOf[turnMsgID]
@@ -514,6 +522,8 @@ func (s *State) Branches() []int64 {
 // SwitchBranch sets the active leaf to leafID and rebuilds the
 // active-branch view (s.messages) to match.
 func (s *State) SwitchBranch(leafID int64) {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	s.mu.Lock()
 	s.leafID = leafID
 	var leafDBID int64
@@ -555,12 +565,16 @@ func (s *State) LeafID() int64 {
 // It does not affect the audit log, pending approvals, backups, or context
 // pack.
 func (s *State) ClearMessages() int {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	count := len(s.messages)
 	s.messages = nil
 	s.activityNarrations = nil
 	s.activityResponseLinks = nil
+	s.activityProgress = nil
+	s.activityProgressResponses = nil
 	s.resetActivityLocked()
 	return count
 }

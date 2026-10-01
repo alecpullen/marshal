@@ -345,6 +345,9 @@ func merge(cfg *Config, file configFile) error {
 	}
 	if file.TUI != nil {
 		set(&cfg.TUI.Theme, file.TUI.Theme)
+		if file.TUI.TranscriptView != nil {
+			cfg.TUI.TranscriptView = TranscriptView(*file.TUI.TranscriptView)
+		}
 		set(&cfg.TUI.Depth, file.TUI.Depth)
 		if file.TUI.Palette != nil {
 			if cfg.TUI.Palette == nil {

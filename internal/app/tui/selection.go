@@ -91,6 +91,11 @@ func (m *Model) clearSelection() {
 	m.selection.sel = conversation.Selection{}
 	m.selection.dragging = false
 	m.selection.frozen = nil
+	if m.pendingTranscriptView != nil {
+		next := *m.pendingTranscriptView
+		m.pendingTranscriptView = nil
+		m.setTranscriptView(next)
+	}
 }
 
 // beginSelectionAt starts a drag at a transcript display position.

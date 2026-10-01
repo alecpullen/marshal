@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/conversation"
 	"marshal/internal/app/tui/inspector"
@@ -38,12 +39,15 @@ const (
 	// claimed that key. The catalog is the single place a key's meaning is
 	// declared, so a label that names the other surface is exactly the drift
 	// the catalog exists to prevent.
-	ActionToggleInspector ActionID = "toggle-inspector"
-	ActionSideRail        ActionID = "side-rail"
-	ActionExpandInspector ActionID = "expand-inspector"
-	ActionThinking        ActionID = "thinking"
-	ActionRollback        ActionID = "rollback"
-	ActionHelp            ActionID = "help"
+	ActionToggleInspector      ActionID = "toggle-inspector"
+	ActionSideRail             ActionID = "side-rail"
+	ActionExpandInspector      ActionID = "expand-inspector"
+	ActionThinking             ActionID = "thinking"
+	ActionTranscriptNotebook   ActionID = "transcript-notebook"
+	ActionTranscriptLegacy     ActionID = "transcript-legacy"
+	ActionTranscriptConfigured ActionID = "transcript-configured"
+	ActionRollback             ActionID = "rollback"
+	ActionHelp                 ActionID = "help"
 
 	// Copy actions are separate IDs rather than one "copy" with an argument:
 	// "Copy answer" and "Copy output" are different promises about different
@@ -196,6 +200,9 @@ var actionCatalog = []actionDef{
 		desc: "expand or collapse reasoning blocks in the transcript",
 		key:  "Ctrl+G", priority: actionPriorityOptional,
 	},
+	{id: ActionTranscriptNotebook, label: "Use notebook transcript", desc: "show the notebook transcript for this session", priority: actionPriorityOptional},
+	{id: ActionTranscriptLegacy, label: "Use legacy transcript", desc: "show the legacy transcript for this session", priority: actionPriorityOptional},
+	{id: ActionTranscriptConfigured, label: "Use configured transcript view", desc: "clear the session override and follow the configured default", priority: actionPriorityOptional},
 	{
 		id: ActionRollback, label: "Roll back the last patch",
 		desc: "revert the most recent patch (Ctrl+R twice: the first press arms it)",
@@ -293,7 +300,10 @@ type actionContext struct {
 	// HasSelection reports that the reader has selected text on the
 	// conversation surface, so a copy would take that text rather than the
 	// block's own targets.
-	HasSelection bool
+	HasSelection         bool
+	SelectionActive      bool
+	TranscriptView       config.TranscriptView
+	TranscriptOverridden bool
 	// ConversationFocused reports that the conversation owns the keys, which
 	// is what a selection gesture needs.
 	ConversationFocused bool
@@ -415,16 +425,17 @@ type actionSnapshotKey struct {
 	viewportTop int
 	// pickerCommand distinguishes the palette from any other dock panel, which
 	// is what OtherPanelOpen is computed from.
-	pickerCommand string
-	panelOwnsKeys bool
-	drilledID     int64
-	hasSelection  bool
-	conversation  bool
-	inspector     bool
-	inspTab       inspector.Tab
-	inspRendering bool
-	inspExpanded  bool
-	inspAgentOpen bool
+	pickerCommand   string
+	panelOwnsKeys   bool
+	drilledID       int64
+	hasSelection    bool
+	selectionActive bool
+	conversation    bool
+	inspector       bool
+	inspTab         inspector.Tab
+	inspRendering   bool
+	inspExpanded    bool
+	inspAgentOpen   bool
 	// inspAgentID is the selected agent's runtime ID. It is only meaningful
 	// while inspAgentOpen, and it is the value the snapshot actually reads, so
 	// including the "open" flag above is bookkeeping and this is the data.
@@ -446,6 +457,7 @@ func (m Model) actionSnapshotKeyOf() actionSnapshotKey {
 		pickerCommand:     m.pickerCommand,
 		panelOwnsKeys:     m.panelOwnsKeys(),
 		hasSelection:      m.hasSelection(),
+		selectionActive:   m.selectionActive(),
 		conversation:      m.effectiveFocus() == FocusConversation,
 	}
 	// The reader's position, recorded only when they have one. See the field
@@ -522,8 +534,11 @@ func (m Model) resolveActionSnapshot(key actionSnapshotKey) actionContext {
 		MouseCaptured:         key.mouseCaptured,
 		DrilledRunningChildID: key.drilledID,
 		HasSelection:          key.hasSelection,
+		SelectionActive:       key.selectionActive,
 		ConversationFocused:   key.conversation,
 	}
+	ctx.TranscriptView = m.effectiveTranscriptView()
+	ctx.TranscriptOverridden = m.transcriptViewOverride != nil
 	if key.inspector {
 		ctx.InspectorAvailable = true
 		ctx.InspectorOnScreen = key.inspRendering
@@ -603,6 +618,27 @@ func (ctx actionContext) ctrlXID() (ActionID, bool) {
 // when it cannot.
 func availability(ctx actionContext, id ActionID) (disabled bool, reason string) {
 	switch id {
+	case ActionTranscriptNotebook:
+		if ctx.TranscriptView == config.TranscriptNotebook {
+			return true, "notebook transcript is already active"
+		}
+		if ctx.SelectionActive {
+			return true, "clear the transcript selection or finish the drag before switching views"
+		}
+	case ActionTranscriptLegacy:
+		if ctx.TranscriptView == config.TranscriptLegacy {
+			return true, "legacy transcript is already active"
+		}
+		if ctx.SelectionActive {
+			return true, "clear the transcript selection or finish the drag before switching views"
+		}
+	case ActionTranscriptConfigured:
+		if !ctx.TranscriptOverridden {
+			return true, "the transcript already follows the configured default"
+		}
+		if ctx.SelectionActive {
+			return true, "clear the transcript selection or finish the drag before switching views"
+		}
 	case ActionStopAgent:
 		if ctx.DrilledRunningChildID == 0 && ctx.InspectorAgentRunningID == 0 {
 			return true, "no running agent is being inspected — Ctrl+F inspects one, or open the Agents tab"
@@ -726,6 +762,13 @@ func resolveAction(ctx actionContext, id ActionID) (Action, bool) {
 			HintVerb: def.hint,
 			Priority: def.priority,
 		}
+		if id == ActionTranscriptNotebook || id == ActionTranscriptLegacy || id == ActionTranscriptConfigured {
+			status := "configured default"
+			if ctx.TranscriptOverridden {
+				status = "session override"
+			}
+			a.Desc += " Current: " + string(ctx.TranscriptView) + " (" + status + ")."
+		}
 		if def.dynamic {
 			// The mouse hint must describe what the key will do, so the verb
 			// comes from the resolved capture state, not from the catalog.
@@ -767,6 +810,18 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 		return *m, m.showToast(action.Label + " — " + action.DisabledReason)
 	}
 	switch id {
+	case ActionTranscriptNotebook:
+		m.setTranscriptView(config.TranscriptNotebook)
+		m.transcriptViewOverride = transcriptViewPtr(config.TranscriptNotebook)
+		m.invalidateActionSnapshot()
+	case ActionTranscriptLegacy:
+		m.setTranscriptView(config.TranscriptLegacy)
+		m.transcriptViewOverride = transcriptViewPtr(config.TranscriptLegacy)
+		m.invalidateActionSnapshot()
+	case ActionTranscriptConfigured:
+		m.transcriptViewOverride = nil
+		m.setTranscriptView(m.configuredTranscriptView())
+		m.invalidateActionSnapshot()
 	case ActionStopAgent:
 		// The inspector's selection wins when it has one, matching ctrlXID's
 		// resolution: the action the footer advertised and the action that runs

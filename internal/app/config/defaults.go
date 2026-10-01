@@ -183,8 +183,9 @@ func Default() Config {
 			Enabled: true,
 		},
 		TUI: TUIConfig{
-			Depth:        "flat",
-			MouseCapture: true,
+			TranscriptView: TranscriptLegacy,
+			Depth:          "flat",
+			MouseCapture:   true,
 			SidePanel: SidePanelConfig{
 				Enabled:  true,
 				MinWidth: 120,

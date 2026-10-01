@@ -48,6 +48,34 @@ func TestInterfaceFrameHasThemeEnum(t *testing.T) {
 	}
 }
 
+func TestInterfaceFrameHasDefaultTranscriptView(t *testing.T) {
+	s := newState(config.Default())
+	ps := newPaneStack(interfaceFrame(s))
+	var row *field
+	for _, candidate := range ps.Top().List.Rows() {
+		if candidate.Title == "Default transcript view" {
+			row = candidate
+			break
+		}
+	}
+	if row == nil {
+		t.Fatal("missing Default transcript view")
+	}
+	if row.GetStr() != "legacy" {
+		t.Fatalf("default = %q", row.GetStr())
+	}
+	if err := row.SetStr("notebook"); err != nil {
+		t.Fatal(err)
+	}
+	if s.cfg.TUI.TranscriptView != config.TranscriptNotebook {
+		t.Fatalf("config view = %q", s.cfg.TUI.TranscriptView)
+	}
+	s.SetTranscriptViewContext(config.TranscriptLegacy, true)
+	if !strings.Contains(s.transcriptViewDescription(), "effective: legacy") || !strings.Contains(s.transcriptViewDescription(), "session override active") {
+		t.Fatalf("description omits effective session override: %q", s.transcriptViewDescription())
+	}
+}
+
 func TestInterfaceFrameThemeSetterWritesToConfig(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(interfaceFrame(s))

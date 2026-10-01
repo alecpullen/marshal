@@ -155,6 +155,15 @@ func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption)
 // saves to avoid baking user-layer values into the project file.
 func (b *BrowserPanel) SetLayers(layers config.Layers) { b.layers = layers }
 
+// SetTranscriptViewContext supplies session-only display state for the
+// transcript preference row. It never changes the browser's config copy.
+func (b *BrowserPanel) SetTranscriptViewContext(effective config.TranscriptView, overridden bool) {
+	b.reg.st.SetTranscriptViewContext(effective, overridden)
+	if f, ok := b.reg.Lookup("tui.transcript_view"); ok {
+		f.Desc = b.reg.st.transcriptViewDescription()
+	}
+}
+
 // Layers returns the panel's current snapshot, for tests and for the
 // model's post-save refresh path.
 func (b *BrowserPanel) Layers() config.Layers { return b.layers }

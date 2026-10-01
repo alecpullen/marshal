@@ -181,7 +181,8 @@ type SnapshotsConfig struct {
 }
 
 type TUIConfig struct {
-	Theme string `toml:"theme"`
+	Theme          string         `toml:"theme"`
+	TranscriptView TranscriptView `toml:"transcript_view"`
 	// Depth is how many background planes the TUI paints for itself:
 	// "flat" (none — the terminal's background shows through everywhere,
 	// including transparency and images), "raised" (chrome paints a

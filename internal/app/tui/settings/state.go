@@ -15,12 +15,14 @@ import (
 // section pane binds to by pointer. It is heap-allocated (Model stores
 // *state) so pointer bindings survive Model value copies.
 type state struct {
-	cfg              config.Config
-	discovered       map[string][]schema.ModelInfo
-	actionState      map[string]actionState
-	connectRequested bool
-	pending          *pendingMaterialization
-	pendingCmd       tea.Cmd
+	cfg                      config.Config
+	effectiveTranscriptView  config.TranscriptView
+	transcriptViewOverridden bool
+	discovered               map[string][]schema.ModelInfo
+	actionState              map[string]actionState
+	connectRequested         bool
+	pending                  *pendingMaterialization
+	pendingCmd               tea.Cmd
 
 	// dataDir enables on-disk limit resolution for probes launched from
 	// settings. Empty disables it, which silently strips context/output
@@ -78,6 +80,14 @@ func (s *state) SetDataDir(dir string) { s.dataDir = dir }
 
 // NewState is the exported constructor for *State (alias for *state).
 func NewState(cfg config.Config) *state { return newState(cfg) }
+
+// SetTranscriptViewContext annotates the default-view field with the currently
+// effective session choice. This is display context only; persisted config
+// remains the configured default in cfg.
+func (s *state) SetTranscriptViewContext(effective config.TranscriptView, overridden bool) {
+	s.effectiveTranscriptView = effective.Effective()
+	s.transcriptViewOverridden = overridden
+}
 
 func (s *state) takePendingCmd() tea.Cmd {
 	cmd := s.pendingCmd

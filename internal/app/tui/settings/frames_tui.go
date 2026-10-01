@@ -1,12 +1,22 @@
 package settings
 
 import (
+	"marshal/internal/app/config"
 	"marshal/internal/app/tui/theme"
 )
 
 func interfaceFrame(s *state) *frame {
 	return newFrame("Interface", func() []*field {
 		return []*field{
+			func() *field {
+				f := enumField("tui.transcript_view", "Default transcript view", []string{"legacy", "notebook"},
+					func() string { return string(s.cfg.TUI.TranscriptView.Effective()) },
+					func(v string) { s.cfg.TUI.TranscriptView = config.TranscriptView(v) })
+				f.TomlPath = "tui.transcript_view"
+				f.Desc = s.transcriptViewDescription()
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
 			func() *field {
 				f := enumField("tui.theme", "Theme", theme.Names(),
 					func() string { return s.cfg.TUI.Theme },
@@ -86,4 +96,19 @@ func interfaceFrame(s *state) *frame {
 			}(),
 		}
 	})
+}
+
+func (s *state) transcriptViewDescription() string {
+	configured := s.cfg.TUI.TranscriptView.Effective()
+	effective := s.effectiveTranscriptView
+	if effective == "" {
+		effective = configured
+	}
+	desc := "effective: " + string(effective)
+	if s.transcriptViewOverridden {
+		desc += " · session override active"
+	} else {
+		desc += " · following configured default"
+	}
+	return "configured default (Notebook is a preview); " + desc
 }

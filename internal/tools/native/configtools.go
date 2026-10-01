@@ -577,19 +577,28 @@ func (t *toolSet) configSnapshotsSetTool() registry.Tool {
 func (t *toolSet) configTUISetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.tui.set",
-		Description: "Set fields in the [tui] section (theme, palette, mode). Omitted fields are preserved.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"theme":{"type":"string"},"palette":{"type":"object","additionalProperties":{"type":"string"}},"mode":{"type":"string"}},"additionalProperties":false}`),
+		Description: "Set fields in the [tui] section (theme, palette, mode, transcript_view). transcript_view is legacy or notebook. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"theme":{"type":"string"},"palette":{"type":"object","additionalProperties":{"type":"string"}},"mode":{"type":"string"},"transcript_view":{"type":"string","enum":["legacy","notebook"]}},"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		var args struct {
 			configWriteEnvelope
-			Theme   *string           `json:"theme"`
-			Palette map[string]string `json:"palette"`
-			Mode    *string           `json:"mode"`
+			Theme          *string           `json:"theme"`
+			Palette        map[string]string `json:"palette"`
+			Mode           *string           `json:"mode"`
+			TranscriptView *string           `json:"transcript_view"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.tui.set args: %w", err)
+		}
+		var transcriptView config.TranscriptView
+		if args.TranscriptView != nil {
+			var err error
+			transcriptView, err = config.ParseTranscriptView(*args.TranscriptView)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
 		}
 		scope := args.resolvedScope()
 		reason := fmt.Sprintf("config.tui.set (%s scope): update tui section", scope)
@@ -607,6 +616,9 @@ func (t *toolSet) configTUISetTool() registry.Tool {
 			}
 			if args.Mode != nil {
 				cfg.TUI.Mode = *args.Mode
+			}
+			if args.TranscriptView != nil {
+				cfg.TUI.TranscriptView = transcriptView
 			}
 		})
 	}

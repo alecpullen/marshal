@@ -206,13 +206,14 @@ type fileHistory struct {
 }
 
 type fileTUI struct {
-	Theme        *string           `toml:"theme"`
-	Depth        *string           `toml:"depth"`
-	Palette      map[string]string `toml:"palette"`
-	Mode         *string           `toml:"mode"`
-	MouseCapture *bool             `toml:"mouse_capture"`
-	SidePanel    *fileSidePanel    `toml:"side_panel"`
-	Suggestions  *string           `toml:"suggestions"`
+	Theme          *string           `toml:"theme"`
+	TranscriptView *string           `toml:"transcript_view"`
+	Depth          *string           `toml:"depth"`
+	Palette        map[string]string `toml:"palette"`
+	Mode           *string           `toml:"mode"`
+	MouseCapture   *bool             `toml:"mouse_capture"`
+	SidePanel      *fileSidePanel    `toml:"side_panel"`
+	Suggestions    *string           `toml:"suggestions"`
 }
 
 type fileSidePanel struct {

@@ -435,7 +435,10 @@ type Model struct {
 	detailExpanded     bool
 	// notebookView is a private presentation seam used by the C1 rollout.
 	// User-facing configuration and switching are wired by the later view task.
-	notebookView bool
+	notebookView           bool
+	transcriptViewOverride *config.TranscriptView
+	transcriptViewStates   map[string]transcriptReadingState
+	pendingTranscriptView  *config.TranscriptView
 	// notebookWorkReversed stores presentation-only order overrides by scoped
 	// narration key. It never changes the semantic document or session records.
 	notebookWorkReversed map[itemKey]bool
@@ -1251,7 +1254,13 @@ func relPath(workingDir, path string) string {
 // status line (the policy engine is rebuilt from the same value by the
 // runtime reload).
 func (m *Model) applyNewConfig(cfg config.Config) {
+	oldConfiguredView := m.configuredTranscriptView()
 	m.state.Config = cfg
+	m.invalidateActionSnapshot()
+	newConfiguredView := cfg.TUI.TranscriptView.Effective()
+	if m.transcriptViewOverride == nil && oldConfiguredView != newConfiguredView {
+		m.setTranscriptView(newConfiguredView)
+	}
 	m.approvalMode = policy.ParseApprovalMode(cfg.Agent.ApprovalMode)
 	m.setReg = nil
 	m.setPopup = nil
@@ -1546,6 +1555,7 @@ func (m *Model) openSettingsBrowser(query string) {
 		query,
 		opts...,
 	)
+	browser.SetTranscriptViewContext(m.effectiveTranscriptView(), m.transcriptViewOverride != nil)
 	// m.state.Config may already hold an unsaved change left behind by a
 	// previous failed save (browser or /set) — applyNewConfig keeps it
 	// applied in-memory so the edit isn't lost, which means this fresh
@@ -1719,6 +1729,7 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:        NewSpinner(),
 		now:            time.Now,
 		viewportFollow: true,
+		notebookView:   state.Config.TUI.TranscriptView.Effective() == config.TranscriptNotebook,
 		discovered:     map[string][]schema.ModelInfo{},
 		itemExpanded:   map[itemKey]bool{},
 	}

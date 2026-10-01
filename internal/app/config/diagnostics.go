@@ -32,6 +32,12 @@ type Diagnostic struct {
 // sorted by Path for stable output.
 func Diagnose(cfg Config, layers Layers) []Diagnostic {
 	var ds []Diagnostic
+	if !cfg.TUI.TranscriptView.Valid() {
+		path := "tui.transcript_view"
+		ds = append(ds, Diagnostic{Severity: SeverityWarning, Path: path,
+			Message: fmt.Sprintf("unknown transcript view %q; using legacy (accepted: \"legacy\", \"notebook\")", cfg.TUI.TranscriptView),
+			Source:  layers.ProvenanceOf(path).SetBy.String()})
+	}
 
 	// 1 & 2: provider BaseURL checks
 	for name, pc := range cfg.Providers {

@@ -262,12 +262,33 @@ func TestScalarWorkspaceWriteTools(t *testing.T) {
 	testSectionWrite(t, "config.swarm.set", (*toolSet).configSwarmSetTool, `{"budget":{"max_fix_rounds":9}}`, func(c config.Config) bool { return c.Swarm.Budget.MaxFixRounds == 9 })
 	testSectionWrite(t, "config.sdd.set", (*toolSet).configSDDSetTool, `{"auto_worktree":true}`, func(c config.Config) bool { return c.SDD.AutoWorktree })
 	testSectionWrite(t, "config.snapshots.set", (*toolSet).configSnapshotsSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.Snapshots.Enabled })
-	testSectionWrite(t, "config.tui.set", (*toolSet).configTUISetTool, `{"theme":"dark"}`, func(c config.Config) bool { return c.TUI.Theme == "dark" })
+	testSectionWrite(t, "config.tui.set", (*toolSet).configTUISetTool, `{"theme":"dark","transcript_view":"notebook"}`, func(c config.Config) bool {
+		return c.TUI.Theme == "dark" && c.TUI.TranscriptView == config.TranscriptNotebook
+	})
 	testSectionWrite(t, "config.session.rollover.set", (*toolSet).configSessionRolloverSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.Session.Rollover.Enabled })
 	testSectionWrite(t, "config.lsp.set", (*toolSet).configLSPSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.LSP.Enabled != nil && *c.LSP.Enabled })
 	testSectionWrite(t, "config.project.set", (*toolSet).configProjectSetTool, `{"name":"myproj"}`, func(c config.Config) bool { return c.Project.Name == "myproj" })
 	testSectionWrite(t, "config.commands.set", (*toolSet).configCommandsSetTool, `{"test":"go test ./..."}`, func(c config.Config) bool { return c.Commands.Test == "go test ./..." })
 	testSectionWrite(t, "config.profile.set", (*toolSet).configProfileSetTool, `{"default":"fast"}`, func(c config.Config) bool { return c.Profile.Default == "fast" })
+}
+
+func TestConfigTUISetRejectsInvalidTranscriptViewBeforeWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	reloaded := false
+	ts := toolSet{config: cfg, configPath: path, configReloader: func(config.Config) error { reloaded = true; return nil }}
+	tool := ts.configTUISetTool()
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "bad", Name: "config.tui.set", Args: json.RawMessage(`{"transcript_view":"future"}`)})
+	if err == nil {
+		t.Fatal("invalid transcript_view accepted")
+	}
+	if reloaded {
+		t.Fatal("invalid write reached config reloader")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("invalid write touched config file: %v", err)
+	}
 }
 
 // TestConfigGlobalSaveRefreshesSessionLayers pins the agent-side half of

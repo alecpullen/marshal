@@ -320,12 +320,13 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 	if !reflect.DeepEqual(cfg.TUI, def.TUI) {
 		file.TUI = &fileTUI{
-			Theme:        strutil.Ptr(cfg.TUI.Theme),
-			Depth:        strutil.Ptr(cfg.TUI.Depth),
-			Palette:      cfg.TUI.Palette,
-			Mode:         strutil.Ptr(cfg.TUI.Mode),
-			MouseCapture: strutil.Ptr(cfg.TUI.MouseCapture),
-			Suggestions:  strutil.Ptr(cfg.TUI.Suggestions),
+			Theme:          strutil.Ptr(cfg.TUI.Theme),
+			TranscriptView: strutil.Ptr(string(cfg.TUI.TranscriptView)),
+			Depth:          strutil.Ptr(cfg.TUI.Depth),
+			Palette:        cfg.TUI.Palette,
+			Mode:           strutil.Ptr(cfg.TUI.Mode),
+			MouseCapture:   strutil.Ptr(cfg.TUI.MouseCapture),
+			Suggestions:    strutil.Ptr(cfg.TUI.Suggestions),
 		}
 		if !reflect.DeepEqual(cfg.TUI.SidePanel, def.TUI.SidePanel) {
 			file.TUI.SidePanel = &fileSidePanel{

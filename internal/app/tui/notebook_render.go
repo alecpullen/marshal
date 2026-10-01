@@ -138,8 +138,9 @@ func renderNotebookNarration(block conversation.Block, width int, expanded, reve
 		BodyOffset:  0,
 		PrefixCells: headlinePrefixCells,
 	}}
+	workChildren := flattenNotebookChildren(block.Children)
 	workCount := 0
-	for _, child := range block.Children {
+	for _, child := range workChildren {
 		if child.ID != block.ID {
 			workCount++
 		}
@@ -151,13 +152,13 @@ func renderNotebookNarration(block conversation.Block, width int, expanded, reve
 		}
 		parts = append(parts, notebookRenderPart{Text: continuation() + mutedStyle().Render(orderLabel) + "\n", OrderControl: true})
 	}
-	if !expanded || len(block.Children) == 0 {
+	if !expanded || len(workChildren) == 0 {
 		return parts
 	}
 
 	label := continuation() + mutedStyle().Render("Work") + "\n"
 	parts[0].Text += label
-	for _, child := range block.Children {
+	for _, child := range workChildren {
 		if child.ID == block.ID {
 			continue // the parent headline already represents its source narration
 		}
@@ -175,6 +176,9 @@ func renderNotebookNarration(block conversation.Block, width int, expanded, reve
 		}
 		const childPrefixCells = 5 // continuation indent, rail, and gap
 		content := child.Text
+		if child.Kind == conversation.BlockReference {
+			content = ""
+		}
 		if hasItem && item.Message != nil {
 			content = item.Message.Content
 		}
@@ -183,6 +187,12 @@ func renderNotebookNarration(block conversation.Block, width int, expanded, reve
 		}
 		var body strings.Builder
 		header := ""
+		if child.Kind == conversation.BlockSection {
+			header = strings.ToUpper(child.SectionLabel)
+		}
+		if child.Kind == conversation.BlockReference {
+			header = child.Text
+		}
 		if hasItem && item.Audit != nil {
 			header = DisplayToolName(item.Audit.ToolName)
 			if item.Audit.Error != "" {
@@ -228,6 +238,17 @@ func renderNotebookNarration(block conversation.Block, width int, expanded, reve
 	return parts
 }
 
+func flattenNotebookChildren(children []conversation.Block) []conversation.Block {
+	var out []conversation.Block
+	for _, child := range children {
+		out = append(out, child)
+		if len(child.Children) > 0 {
+			out = append(out, flattenNotebookChildren(child.Children)...)
+		}
+	}
+	return out
+}
+
 // reverseNotebookWorkChildren returns a private presentation copy with work
 // children reversed. The narration source stays first and every source block,
 // copy target, and runtime record remains untouched.
@@ -236,6 +257,17 @@ func reverseNotebookWorkChildren(block conversation.Block, reverse bool) convers
 		return block
 	}
 	children := append([]conversation.Block(nil), block.Children...)
+	sectionEnd := 0
+	for sectionEnd < len(children) && children[sectionEnd].Kind == conversation.BlockSection {
+		sectionEnd++
+	}
+	if sectionEnd > 0 {
+		for left, right := sectionEnd, len(children)-1; left < right; left, right = left+1, right-1 {
+			children[left], children[right] = children[right], children[left]
+		}
+		block.Children = children
+		return block
+	}
 	source := -1
 	for i := range children {
 		if children[i].ID == block.ID {

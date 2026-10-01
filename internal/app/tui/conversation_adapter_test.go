@@ -10,6 +10,20 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestBlockRevisionIncludesSectionLabelsAndReferenceTargets(t *testing.T) {
+	base := conversation.Block{Kind: conversation.BlockSection, Text: "same", SectionLabel: "change"}
+	first := blockRevisionFor(base)
+	base.SectionLabel = "checking"
+	if got := blockRevisionFor(base); got == first {
+		t.Fatal("section label change did not affect block revision")
+	}
+	base.SectionLabel = "change"
+	base.ReferenceTarget = "audit:2"
+	if got := blockRevisionFor(base); got == first {
+		t.Fatal("reference availability target did not affect block revision")
+	}
+}
+
 // A document built from a real transcript must carry the same identities the
 // transcript produced, so a click region, an expand override and an anchor
 // all name the same thing.

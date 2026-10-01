@@ -12,6 +12,7 @@ import (
 type ActivitySnapshot struct {
 	Narrations         []activity.Narration
 	ProgressRevisions  []activity.ProgressRevision
+	EvidenceRecords    []EvidenceRecord
 	ResponseNarrations []ResponseNarration
 	Run                activity.Ref
 	Response           activity.Ref
@@ -222,6 +223,9 @@ func (s *State) ActivitySnapshot() ActivitySnapshot {
 			revision.Sections = cloneProgressSections(revision.Sections)
 			snapshot.ProgressRevisions = append(snapshot.ProgressRevisions, revision)
 		}
+	}
+	for _, record := range s.evidenceRecords {
+		snapshot.EvidenceRecords = append(snapshot.EvidenceRecords, cloneEvidenceRecord(record))
 	}
 	known := make(map[string]bool, len(snapshot.Narrations))
 	for _, n := range snapshot.Narrations {

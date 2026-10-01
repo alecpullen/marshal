@@ -168,6 +168,8 @@ func blockRevisionFor(b conversation.Block) int {
 	writeRevisionField(h, strconv.Itoa(int(b.Kind)))
 	writeRevisionField(h, b.Text)
 	writeRevisionField(h, string(b.Source))
+	writeRevisionField(h, b.ReferenceTarget)
+	writeRevisionField(h, b.SectionLabel)
 	for _, t := range b.CopyTargets {
 		writeRevisionField(h, string(t.Source))
 		writeRevisionField(h, t.Text)

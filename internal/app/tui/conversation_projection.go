@@ -51,7 +51,7 @@ func notebookConversationDocument(items []session.TranscriptItem, snapshot sessi
 	blocks := make([]conversation.Block, 0, len(items))
 	segment := make([]session.TranscriptItem, 0)
 	flush := func() {
-		blocks = append(blocks, projectNotebookSegment(segment, owners, options.FollowingLatest)...)
+		blocks = append(blocks, projectNotebookSegment(segment, owners, snapshot, options.FollowingLatest)...)
 		segment = segment[:0]
 	}
 	unavailable := false
@@ -75,7 +75,7 @@ func notebookConversationDocument(items []session.TranscriptItem, snapshot sessi
 	return conversation.NewDocument(blocks)
 }
 
-func projectNotebookSegment(items []session.TranscriptItem, owners map[string]activity.Narration, followingLatest bool) []conversation.Block {
+func projectNotebookSegment(items []session.TranscriptItem, owners map[string]activity.Narration, snapshot session.ActivitySnapshot, followingLatest bool) []conversation.Block {
 	if len(items) == 0 {
 		return nil
 	}
@@ -203,6 +203,9 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 			block.PresentationOnly = true
 			block.Members = nil
 		}
+		if owners[id].Source == activity.SourceStructuredProgress {
+			block = structuredNarrationSections(block, owners[id], snapshot, items)
+		}
 		sections[id] = notebookBlockRevision(block)
 	}
 	ordered := make([]string, 0, len(ids))
@@ -289,7 +292,19 @@ func notebookBlockRevision(b conversation.Block) conversation.Block {
 	for _, child := range b.Children {
 		writeRevisionField(h, string(child.ID))
 		writeRevisionField(h, strconv.Itoa(child.Revision))
+		writeRevisionField(h, child.ReferenceTarget)
+		writeRevisionField(h, child.Text)
+		writeRevisionField(h, strconv.Itoa(int(child.Kind)))
 		for _, member := range child.Members {
+			writeRevisionField(h, member)
+		}
+	}
+	for _, alternative := range b.EventOrderAlternatives {
+		writeRevisionField(h, string(alternative.ID))
+		writeRevisionField(h, strconv.Itoa(alternative.Revision))
+		writeRevisionField(h, strconv.FormatUint(alternative.EventOrderSequence, 10))
+		writeRevisionField(h, strconv.FormatUint(alternative.SourceRevision, 10))
+		for _, member := range alternative.Members {
 			writeRevisionField(h, member)
 		}
 	}

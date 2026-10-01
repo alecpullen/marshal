@@ -80,6 +80,17 @@ func TestPresentationOnlyBlockHasNoSourceIdentity(t *testing.T) {
 	}
 }
 
+func TestNarrationCanUseStableSemanticIDAcrossSourceMembers(t *testing.T) {
+	one := NewDocument([]Block{{ID: "narration:n1", Kind: BlockNarration, Members: []string{"revision:1"}}})
+	two := NewDocument([]Block{{ID: "narration:n1", Kind: BlockNarration, Members: []string{"revision:2", "revision:1"}}})
+	if one.Blocks()[0].ID != two.Blocks()[0].ID || one.Blocks()[0].ID != "narration:n1" {
+		t.Fatalf("stable narration identity = %q then %q", one.Blocks()[0].ID, two.Blocks()[0].ID)
+	}
+	if _, ok := two.LocateMember("revision:1"); !ok {
+		t.Fatal("old revision source stopped being addressable")
+	}
+}
+
 // A group references every member it covers, so a member that also has its
 // own block is not ambiguous.
 func TestGroupReferencesEveryMember(t *testing.T) {

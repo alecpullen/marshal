@@ -44,6 +44,10 @@ const (
 	BlockNarration
 	// BlockOwnershipNote is explanatory presentation metadata without source identity.
 	BlockOwnershipNote
+	// BlockSection is one declared structured progress section.
+	BlockSection
+	// BlockReference links to an exact source already projected elsewhere.
+	BlockReference
 )
 
 // CopySource names what a piece of text IS, so a copy action can label its
@@ -98,6 +102,13 @@ type Block struct {
 	// Children expose a group's members as addressable blocks, so a consumer
 	// can navigate into a collapsed run without expanding it first.
 	Children []Block
+	// EventOrderAlternatives retains source-faithful records a view can expose
+	// without duplicating them in the default semantic rendering.
+	EventOrderAlternatives []Block
+	// EventOrderSequence is the source sequence for an alternative.
+	EventOrderSequence uint64
+	// SourceRevision is the structured progress revision represented here.
+	SourceRevision uint64
 	// Source names what Text is, when the block has one dominant text.
 	Source CopySource
 	// Text is the block's source text as handed in by the caller.
@@ -115,6 +126,10 @@ type Block struct {
 	Truncated bool
 	// CopyTargets are the clipboard payloads this block offers.
 	CopyTargets []CopyTarget
+	// ReferenceTarget names the exact canonical source member a compact link
+	// points to; the link's presentation identity is not a source identity.
+	ReferenceTarget string
+	SectionLabel    string
 	// Revision counts semantic change to this block's content. A consumer
 	// caching a render keys on (ID, Revision, width, expansion, theme), so
 	// an unchanged block is not reparsed when unrelated output arrives.
@@ -225,14 +240,14 @@ func (d *Document) isNarrowerThan(prev, candidate int) bool {
 // the trade: it costs one copy per block, once, against a class of desync that
 // is invisible until it corrupts an anchor.
 //
-// It clones Members and Children, and ONLY those: CopyTargets is carried
+// It clones Members, Children, and event-order alternatives: CopyTargets is carried
 // through by reference, which is sound here only because nothing in this
 // package ever writes to a CopyTarget through a block. A caller must not
 // either — see Document.Blocks, which hands that same slice out.
 func normalizeBlock(b Block) Block {
 	b.ID = blockID(b)
 	b.Members = cloneStrings(b.Members)
-	if len(b.Children) == 0 {
+	if len(b.Children) == 0 && len(b.EventOrderAlternatives) == 0 {
 		return b
 	}
 	children := make([]Block, len(b.Children))
@@ -240,6 +255,11 @@ func normalizeBlock(b Block) Block {
 		children[i] = normalizeBlock(child)
 	}
 	b.Children = children
+	alternatives := make([]Block, len(b.EventOrderAlternatives))
+	for i, alternative := range b.EventOrderAlternatives {
+		alternatives[i] = normalizeBlock(alternative)
+	}
+	b.EventOrderAlternatives = alternatives
 	return b
 }
 
@@ -270,6 +290,12 @@ func cloneBlocks(in []Block) []Block {
 // grows (members are appended).
 func blockID(b Block) BlockID {
 	if b.PresentationOnly {
+		return b.ID
+	}
+	if b.Kind == BlockNarration && b.ID != "" {
+		return b.ID
+	}
+	if (b.Kind == BlockSection || b.Kind == BlockReference) && b.ID != "" {
 		return b.ID
 	}
 	if len(b.Members) == 0 {
@@ -320,7 +346,7 @@ func GroupBlockID(firstMember string) BlockID {
 // the one mutation this method is built to survive, because it is the one a
 // caller performs by accident.
 //
-// Members and Children are cloned at construction, so a caller cannot reach the
+// Members, Children and event-order alternatives are cloned at construction, so a caller cannot reach the
 // document through the slice it PASSED IN either — but that protects the
 // document from its caller's earlier slices, not from the blocks handed back
 // here. Deep-copying every block's slices on every call would buy protection
@@ -364,6 +390,12 @@ func locateInBlock(b Block, member string, ancestors []BlockID) (NestedLocation,
 	for _, child := range b.Children {
 		next := append(append([]BlockID(nil), ancestors...), b.ID)
 		if loc, ok := locateInBlock(child, member, next); ok {
+			return loc, true
+		}
+	}
+	for _, alternative := range b.EventOrderAlternatives {
+		next := append(append([]BlockID(nil), ancestors...), b.ID)
+		if loc, ok := locateInBlock(alternative, member, next); ok {
 			return loc, true
 		}
 	}

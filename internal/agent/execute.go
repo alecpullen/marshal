@@ -98,11 +98,13 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 	approval := registry.ApprovalNotRequired
 	switch decision {
 	case policy.DecisionDeny:
-		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
+		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Activity: owner, Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
 		event.Activity = owner
 		r.logToolCall(event)
 		r.countToolCall(true, false)
-		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
+		msg := r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)
+		r.addEvidenceReceipt(&msg, owner)
+		return policyLoopResult{Messages: []schema.ChatMessage{msg}}, nil
 	case policy.DecisionConfirm:
 		// State.PendingApproval is a single slot; two concurrent approvals
 		// would overwrite each other and strand the first caller. Serialize
@@ -115,11 +117,13 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 			return policyLoopResult{}, waitErr
 		}
 		if !approved {
-			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
+			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Activity: owner, Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
 			event.Activity = owner
 			r.logToolCall(event)
 			r.countToolCall(true, false)
-			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}}, nil
+			msg := r.buildToolErrorMessage(toolName, "denied by user", toolCallID)
+			r.addEvidenceReceipt(&msg, owner)
+			return policyLoopResult{Messages: []schema.ChatMessage{msg}}, nil
 		}
 		approval = registry.ApprovalApproved
 		if edited != "" {
@@ -268,6 +272,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			r.countToolCall(false, true)
 			msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
 			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+			r.addEvidenceReceipt(&msg, action.Activity)
 			return []schema.ChatMessage{msg}, nil
 		}
 	}
@@ -332,7 +337,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			event.Hooks = hookAuditMetadata(hookOut)
 			r.logToolCall(event)
 			r.countToolCall(true, false)
-			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookErr.Error(), toolCallID)}, nil
+			msg := r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookErr.Error(), toolCallID)
+			r.addEvidenceReceipt(&msg, action.Activity)
+			return []schema.ChatMessage{msg}, nil
 		}
 		if hookOut.Decision == hooks.DecisionBlock {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookOut.Reason))
@@ -340,7 +347,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			event.Hooks = hookAuditMetadata(hookOut)
 			r.logToolCall(event)
 			r.countToolCall(true, false)
-			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookOut.Reason, toolCallID)}, nil
+			msg := r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookOut.Reason, toolCallID)
+			r.addEvidenceReceipt(&msg, action.Activity)
+			return []schema.ChatMessage{msg}, nil
 		}
 		if hookOut.Decision == hooks.DecisionHalt {
 			return nil, fmt.Errorf("halted by pre_tool_use hook: %s", hookOut.Reason)
@@ -438,6 +447,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		if toolName == "file.write_patch" && tier >= failedRepeatInject {
 			msg.Content += failedPatchTargetHint(r, args, execErr)
 		}
+		r.addEvidenceReceipt(&msg, action.Activity)
 		return []schema.ChatMessage{msg}, nil
 	}
 
@@ -475,8 +485,18 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(summarized.Content), true)
 	r.trackerMu.Unlock()
 	msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+	r.addEvidenceReceipt(&msg, action.Activity)
 	r.countToolCall(false, false)
 	return []schema.ChatMessage{msg}, nil
+}
+
+func (r *Runner) addEvidenceReceipt(msg *schema.ChatMessage, owner activity.Ref) {
+	if msg == nil || r.State == nil {
+		return
+	}
+	if record, ok := r.State.IssueEvidenceReceipt(owner); ok {
+		msg.Content += formatEvidenceReceipt(record)
+	}
 }
 
 func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
@@ -949,7 +969,9 @@ func (r *Runner) skillGateDenyMessages(name string, args json.RawMessage, toolCa
 	event.Activity = owner
 	r.logToolCall(event)
 	r.countToolCall(true, false)
-	return []schema.ChatMessage{r.buildToolErrorMessage("skill.load",
+	msg := r.buildToolErrorMessage("skill.load",
 		fmt.Sprintf("Skill load denied: you do not need the skill %q at this point. You may attempt to load it again later if the situation changes.", name),
-		toolCallID)}
+		toolCallID)
+	r.addEvidenceReceipt(&msg, owner)
+	return []schema.ChatMessage{msg}
 }

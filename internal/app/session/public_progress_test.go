@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/activity"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/registry"
 )
 
 func strptr(s string) *string                                               { return &s }
@@ -96,6 +97,31 @@ func TestPublicProgressIdempotencyScopeAndWarnings(t *testing.T) {
 	s.EndActivityRun(run)
 	if _, err := s.ApplyPublicProgress(r, u); !errors.Is(err, ErrProgressScope) {
 		t.Fatalf("ended run error = %v", err)
+	}
+}
+
+func TestPublicProgressKeepsValidEvidenceRefsAndDropsInvalid(t *testing.T) {
+	s := newTestState()
+	s.BeginActivityRun(addActivityBoundary(s))
+	response := s.BeginActivityResponse()
+	response = s.BindActivityFallback(response)
+	call := s.BeginActivityCall(response, "provider")
+	s.LogToolCall(registry.AuditEvent{Activity: call, ToolName: "file.read", ResultContent: "observed"})
+	if _, ok := s.IssueEvidenceReceipt(call); !ok {
+		t.Fatal("failed to issue evidence alias")
+	}
+	progressResponse := s.BeginActivityResponse()
+	got := applyProgress(t, s, progressResponse, activity.ProgressUpdate{
+		Mode: activity.ProgressBegin, Headline: strptr("Investigation"),
+		Sections: sectionsPtr(activity.ProgressSection{Kind: activity.SectionEvidence, Text: "This is a report from agent.output", EvidenceRefs: []string{"e1-1", "e1-1", "e1-999"}}),
+	})
+	if len(got.Warnings) != 1 {
+		t.Fatalf("warnings = %v, want one compact unresolved warning", got.Warnings)
+	}
+	snapshot := s.ActivitySnapshot()
+	sections := snapshot.ProgressRevisions[0].Sections
+	if len(sections) != 1 || sections[0].Text != "This is a report from agent.output" || len(sections[0].EvidenceRefs) != 1 || sections[0].EvidenceRefs[0] != "e1-1" {
+		t.Fatalf("materialized sections = %+v", sections)
 	}
 }
 

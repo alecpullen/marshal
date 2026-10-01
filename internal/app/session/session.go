@@ -256,6 +256,9 @@ type State struct {
 	activityResponseLinks     []ResponseNarration
 	activityProgress          []activity.ProgressRevision
 	activityProgressResponses map[string]progressResponseRecord
+	evidenceRecords           []EvidenceRecord
+	evidenceNextAlias         uint64
+	evidenceIssuedCalls       map[string]bool
 	lastBackup                []BackupFile
 	contextPack               contextpack.Pack
 	// requestInspection is the bounded snapshot of the last conversation

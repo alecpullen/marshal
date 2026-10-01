@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"marshal/internal/activity"
 )
 
 func TestNewAuditEventCopiesToolCallResultAndError(t *testing.T) {
@@ -58,6 +60,18 @@ func TestNewAuditEventCopiesToolCallResultAndError(t *testing.T) {
 	}
 	if event.Model != "" {
 		t.Fatalf("Model = %q, want empty", event.Model)
+	}
+}
+
+func TestNewAuditEventCopiesToolCallActivity(t *testing.T) {
+	owner := activity.Ref{RunID: "run", ActorID: "actor", ResponseID: "response", NarrationID: "narration", CallID: "call", ProviderCallID: "provider-call"}
+	event := NewAuditEvent(time.Now(), testTool("file.read"), ToolCall{Activity: owner, Name: "file.read"}, ToolResult{}, ApprovalNotRequired, nil)
+	if event.Activity != owner {
+		t.Fatalf("Activity = %+v, want %+v", event.Activity, owner)
+	}
+	owner.NarrationID = "later mutation"
+	if event.Activity.NarrationID != "narration" {
+		t.Fatalf("event Activity changed after caller mutation: %+v", event.Activity)
 	}
 }
 

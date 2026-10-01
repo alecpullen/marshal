@@ -49,6 +49,9 @@ func (s *State) BeginActivityRun(boundaryMessageID int64) activity.Ref {
 	defer s.mu.Unlock()
 	run := activity.Ref{RunID: s.nextActivityIDLocked("run"), ActorID: "main"}
 	s.activityRun, s.activityResponse, s.activityBoundary = run, activity.Ref{}, boundaryMessageID
+	s.evidenceRecords = nil
+	s.evidenceNextAlias = 0
+	s.evidenceIssuedCalls = make(map[string]bool)
 	return run
 }
 
@@ -167,6 +170,9 @@ func (s *State) EndActivityRun(run activity.Ref) {
 			}
 		}
 		s.activityRun, s.activityResponse = activity.Ref{}, activity.Ref{}
+		s.evidenceRecords = nil
+		s.evidenceNextAlias = 0
+		s.evidenceIssuedCalls = nil
 	}
 	s.mu.Unlock()
 }

@@ -94,8 +94,15 @@ func (s *State) ApplyPublicProgress(response activity.Ref, update activity.Progr
 	warnings := []string(nil)
 	for i := range sections {
 		if len(sections[i].EvidenceRefs) > 0 {
-			sections[i].EvidenceRefs = nil // Task 2 supplies the resolver.
-			warnings = []string{"some evidence references are unavailable"}
+			records, unresolved := s.resolveEvidenceRefsLocked(response, sections[i].EvidenceRefs)
+			valid := make([]string, 0, len(records))
+			for _, record := range records {
+				valid = append(valid, record.Alias)
+			}
+			sections[i].EvidenceRefs = valid
+			if len(unresolved) > 0 && len(warnings) == 0 {
+				warnings = unresolved
+			}
 		}
 	}
 	var narrationID string

@@ -70,6 +70,7 @@ type HookMetadata struct {
 
 func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, approval ApprovalState, err error) AuditEvent {
 	event := AuditEvent{
+		Activity:      call.Activity,
 		Timestamp:     now,
 		ToolName:      call.Name,
 		Args:          append(json.RawMessage(nil), call.Args...),

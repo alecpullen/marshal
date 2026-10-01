@@ -57,6 +57,29 @@ func TestRunCachesReadOnlyToolResults(t *testing.T) {
 	if !foundCached {
 		t.Fatalf("audit log missing cached result marker: %#v", state.AuditLog())
 	}
+	if len(state.AuditLog()) != 2 || state.AuditLog()[0].Activity.CallID == "" || state.AuditLog()[1].Activity.CallID == "" {
+		t.Fatalf("audits lost explicit invocation ownership: %+v", state.AuditLog())
+	}
+	if state.AuditLog()[0].Activity.CallID == state.AuditLog()[1].Activity.CallID {
+		t.Fatal("cached attempt reused the original runtime call identity")
+	}
+	if len(p.Requests) < 3 {
+		t.Fatalf("provider requests = %d, want cached result delivered", len(p.Requests))
+	}
+	foundCachedReceipt := false
+	for _, msg := range p.Requests[2].Messages {
+		if strings.Contains(msg.Content, "Evidence receipt: e1-2") && strings.Contains(msg.Content, "(cached)") {
+			foundCachedReceipt = true
+		}
+	}
+	if !foundCachedReceipt {
+		t.Fatalf("cached delivery omitted its fresh evidence receipt: %+v", p.Requests[2].Messages)
+	}
+	for _, ev := range state.AuditLog() {
+		if strings.Contains(ev.ResultContent, "Evidence receipt:") {
+			t.Fatalf("receipt contaminated cached/raw audit content: %+v", ev)
+		}
+	}
 }
 
 func TestRunExecutesParallelReadOnlyActions(t *testing.T) {

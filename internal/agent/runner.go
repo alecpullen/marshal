@@ -1477,7 +1477,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}
-			responseOwner := r.State.BindActivityFallback(res.Activity)
+			responseOwner, progressDiagnostic, structuredOwner := applyParsedProgress(r.State, res.Activity, action)
+			if progressDiagnostic != "" {
+				r.State.Logger().Debug("public progress metadata diagnostic", "diagnostic", progressDiagnostic)
+				note := "Progress metadata note: " + progressDiagnostic
+				r.State.AddMessage(session.RoleSystem, note, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: note})
+			}
+			if !structuredOwner {
+				responseOwner = r.State.BindActivityFallback(responseOwner)
+			}
 			for i := range action.Actions {
 				action.Actions[i].Activity = r.State.BeginActivityCall(responseOwner, action.Actions[i].ToolCallID)
 			}
@@ -1493,6 +1502,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return finalized, err
 			}
 			continue
+		}
+		responseOwner, progressDiagnostic, structuredOwner := applyParsedProgress(r.State, res.Activity, action)
+		if progressDiagnostic != "" {
+			r.State.Logger().Debug("public progress metadata diagnostic", "diagnostic", progressDiagnostic)
+			note := "Progress metadata note: " + progressDiagnostic
+			r.State.AddMessage(session.RoleSystem, note, session.ContentTypePlain)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: note})
 		}
 
 		switch action.Type {
@@ -1542,7 +1558,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			return task, nil
 		case ActionToolCall, ActionPatch:
 			toolCallCountThisTurn++
-			action.Activity = r.State.BeginActivityCall(r.State.BindActivityFallback(res.Activity), action.ToolCallID)
+			if !structuredOwner {
+				responseOwner = r.State.BindActivityFallback(responseOwner)
+			}
+			action.Activity = r.State.BeginActivityCall(responseOwner, action.ToolCallID)
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
 				return task, r.failTurn(task, err)

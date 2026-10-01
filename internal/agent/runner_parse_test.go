@@ -246,6 +246,60 @@ func TestPersistentMalformedOutputSalvagesWhenWorkExists(t *testing.T) {
 	}
 }
 
+func TestProgressMetadataCannotBlockOrReplaceToolExecution(t *testing.T) {
+	for _, tc := range []struct {
+		name, progress string
+		wantProgress   bool
+	}{
+		{"valid", `{"mode":"begin","headline":"Inspecting"}`, true},
+		{"unresolved evidence ref", `{"mode":"begin","headline":"Inspecting","sections":[{"kind":"evidence","text":"output","evidence_refs":["unknown-ref"]}]}`, true},
+		{"invalid", `{"mode":"begin","headline":42}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			reg := registry.New()
+			if err := reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+				calls++
+				return registry.ToolResult{Summary: "read", Content: "contents"}, nil
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			first := `{"action":{"type":"tool_call","tool":"file.read","args":{"path":"a"}},"progress":` + tc.progress + `}`
+			p := &agenttest.ScriptedProvider{Responses: []string{first, `{"action":{"type":"final","content":"Done."}}`}}
+			state := newTestState(t)
+			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+			r.SetForceClass(string(ClassQuestion))
+			r.MaxToolIterations, r.MaxRetries = 5, 0
+			if _, err := r.RunTask(context.Background(), "inspect"); err != nil {
+				t.Fatalf("RunTask: %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("tool calls=%d, want 1", calls)
+			}
+			got := len(state.ActivitySnapshot().ProgressRevisions) > 0
+			if got != tc.wantProgress {
+				t.Fatalf("progress recorded=%v, want %v", got, tc.wantProgress)
+			}
+			if tc.name == "unresolved evidence ref" {
+				revisions := state.ActivitySnapshot().ProgressRevisions
+				if len(revisions) == 0 || len(revisions[0].Sections) != 1 || len(revisions[0].Sections[0].EvidenceRefs) != 0 {
+					t.Fatalf("unresolved ref was not dropped safely: %+v", revisions)
+				}
+				foundWarning := false
+				for _, message := range state.Messages() {
+					if message.Role == session.RoleSystem && strings.Contains(message.Content, "evidence references are unavailable") {
+						foundWarning = true
+						break
+					}
+				}
+				if !foundWarning {
+					t.Fatal("missing bounded unresolved-reference warning")
+				}
+			}
+		})
+	}
+}
+
 func TestPersistentMalformedOutputFailsFastWithoutWork(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{"not json at all"}}
 	state := newTestState(t)

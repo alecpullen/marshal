@@ -30,12 +30,13 @@ func TestActivityRefsBindNarrationAndCallsWithoutEnteringActionJSON(t *testing.T
 		t.Fatalf("call owner lost response/narration: %+v", first)
 	}
 
-	action := ModelAction{Activity: first, Type: ActionToolCall, Tool: "file.read"}
+	headline := "private progress"
+	action := ModelAction{Activity: first, Progress: &activity.ProgressUpdate{Mode: activity.ProgressBegin, Headline: &headline}, ProgressDiagnostic: "private diagnostic", Type: ActionToolCall, Tool: "file.read"}
 	encoded, err := json.Marshal(action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "runtime") || strings.Contains(string(encoded), "narration") || strings.Contains(string(encoded), "provider-1") {
+	if strings.Contains(string(encoded), "runtime") || strings.Contains(string(encoded), "narration") || strings.Contains(string(encoded), "provider-1") || strings.Contains(string(encoded), "progress") || strings.Contains(string(encoded), "diagnostic") {
 		t.Fatalf("internal activity leaked into JSON action: %s", encoded)
 	}
 	snapshot := state.ActivitySnapshot()

@@ -34,21 +34,24 @@ var (
 // described in docs/07-agent-runtime-and-swarm.md. When Actions is set,
 // the single-action fields are empty and vice-versa.
 type ModelAction struct {
-	Activity   activity.Ref `json:"-"`
-	Rationale  string
-	Type       ActionType
-	Tool       string
-	Args       json.RawMessage
-	Content    string
-	ToolCallID string
-	Actions    []ModelAction      // parallel read-only tool calls
-	Questions  []session.Question // structured question payload (question.ask)
+	Activity           activity.Ref             `json:"-"`
+	Progress           *activity.ProgressUpdate `json:"-"`
+	ProgressDiagnostic string                   `json:"-"`
+	Rationale          string
+	Type               ActionType
+	Tool               string
+	Args               json.RawMessage
+	Content            string
+	ToolCallID         string
+	Actions            []ModelAction      // parallel read-only tool calls
+	Questions          []session.Question // structured question payload (question.ask)
 }
 
 type actionEnvelope struct {
-	Rationale string        `json:"rationale"`
-	Action    payloadOrList `json:"action"`
-	Actions   payloadOrList `json:"actions,omitempty"`
+	Rationale string          `json:"rationale"`
+	Action    payloadOrList   `json:"action"`
+	Actions   payloadOrList   `json:"actions,omitempty"`
+	Progress  json.RawMessage `json:"progress,omitempty"`
 }
 
 // payloadOrList accepts either a single action object or an array of them,
@@ -131,6 +134,7 @@ func ParseActionRepairing(raw string, knownTool func(string) bool) (ModelAction,
 	if len(payloads) == 0 {
 		return ModelAction{}, nil, fmt.Errorf("%w: %q", ErrUnknownActionType, "")
 	}
+	progress, progressDiagnostic := decodeEnvelopeProgress(envelope.Progress)
 	// batch decides which form the action takes. The "actions" array is the
 	// parallel form and carries a read-only restriction (F-SEC-11), so a
 	// one-element array must STAY a batch — collapsing it to a single action
@@ -158,7 +162,7 @@ func ParseActionRepairing(raw string, knownTool func(string) bool) (ModelAction,
 			repairs = append(repairs, notes...)
 			actions = append(actions, ma)
 		}
-		return ModelAction{Rationale: envelope.Rationale, Actions: actions}, repairs, nil
+		return ModelAction{Rationale: envelope.Rationale, Actions: actions, Progress: progress, ProgressDiagnostic: progressDiagnostic}, repairs, nil
 	}
 
 	ma, notes, err := validatePayload(payloads[0], knownTool)
@@ -167,17 +171,22 @@ func ParseActionRepairing(raw string, knownTool func(string) bool) (ModelAction,
 	}
 	repairs = append(repairs, notes...)
 	return ModelAction{
-		Rationale: envelope.Rationale,
-		Type:      ma.Type,
-		Tool:      ma.Tool,
-		Args:      ma.Args,
-		Content:   ma.Content,
-		Questions: ma.Questions,
+		Rationale:          envelope.Rationale,
+		Type:               ma.Type,
+		Tool:               ma.Tool,
+		Args:               ma.Args,
+		Content:            ma.Content,
+		Questions:          ma.Questions,
+		Progress:           progress,
+		ProgressDiagnostic: progressDiagnostic,
 	}, repairs, nil
 }
 
 func validatePayload(p actionPayload, knownTool func(string) bool) (ModelAction, []string, error) {
 	var repairs []string
+	if p.Type == ActionType("progress.update") {
+		return ModelAction{}, nil, fmt.Errorf("%w: %q", ErrUnknownActionType, p.Type)
+	}
 	switch p.Type {
 	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser, ActionQuestionAsk:
 	default:

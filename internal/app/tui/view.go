@@ -283,7 +283,11 @@ func (m Model) renderTranscriptFrame() string {
 	vpHeight := max(m.viewport.Height(), 1)
 	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.viewport.View())
 	if m.scrollHintRows() > 0 {
-		hint := mutedStyle().Render("↑ scrolled — End to follow")
+		hintText := "↑ scrolled — End to follow"
+		if m.notebookView && m.notebookNewActivity > 0 {
+			hintText = fmt.Sprintf("↑ %d new activity · End to follow", m.notebookNewActivity)
+		}
+		hint := mutedStyle().Render(hintText)
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
 	if v, ok := m.drilledInto(); ok {

@@ -253,6 +253,22 @@ func (m *Model) gotoFindMatch() bool {
 	if !ok {
 		return false
 	}
+	if m.notebookView {
+		doc := m.conversationDocument()
+		if location, found := doc.LocateMember(string(match.Block)); found && len(location.Ancestors) > 0 {
+			state, _ := m.conversationSource()
+			if state != nil {
+				for _, ancestor := range location.Ancestors {
+					key := notebookItemKey(state.ScopeID(), ancestor)
+					if m.itemExpanded == nil {
+						m.itemExpanded = map[itemKey]bool{}
+					}
+					m.itemExpanded[key] = true
+				}
+				m.refreshViewport()
+			}
+		}
+	}
 	row, ok := m.blockStartRow(match.Scroll)
 	if !ok {
 		// The block is not rendered at this width — it is real, but nothing
@@ -269,8 +285,9 @@ func (m *Model) gotoFindMatch() bool {
 	// hit rather than on the block's first line.
 	target := row
 	if span, ok := m.mappedBlockSpan(match.Block); ok {
+		row = span.blockRow
 		if blockRow, ok := span.rendered.RowForOffset(match.Range.Start); ok {
-			target = row + blockRow
+			target = span.bodyRow() + blockRow
 		}
 	}
 	m.viewport.SetYOffset(clampOffset(target, m.viewport.Height(), m.viewport.TotalLineCount()))
@@ -306,7 +323,11 @@ func (m Model) findHighlight(row int) (startCell, endCell int, ok bool) {
 	if blockRow < 0 || blockRow >= len(span.rendered.Rows) {
 		return 0, 0, false
 	}
-	return span.rendered.HighlightRange(blockRow, match.Range.Start, match.Range.End)
+	start, end, ok := span.rendered.HighlightRange(blockRow, match.Range.Start, match.Range.End)
+	if !ok {
+		return 0, 0, false
+	}
+	return start + span.prefixCells, end + span.prefixCells, true
 }
 
 // findMatchHighlights returns every match's cells on a transcript row, so the
@@ -338,6 +359,8 @@ func (m Model) findMatchHighlights(row int) []findMatchSpan {
 		if !ok || end <= start {
 			continue
 		}
+		start += span.prefixCells
+		end += span.prefixCells
 		isCurrent := hasCurrent && match.Block == current.Block && match.Range == current.Range
 		out = append(out, findMatchSpan{start: start, end: end, current: isCurrent})
 	}

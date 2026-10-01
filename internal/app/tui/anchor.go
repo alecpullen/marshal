@@ -42,7 +42,11 @@ type renderedBlockSpan struct {
 	// body row 0, shifting every selection, click, copy and find highlight in
 	// the block up by the number of leading lines.
 	bodyOffset int
-	rendered   conversation.RenderedBlock
+	// prefixCells is decoration drawn before each mapped row. Notebook child
+	// rows have an indented rail; keeping its measured width here lets pointer
+	// hits and painted ranges use the same mapped geometry.
+	prefixCells int
+	rendered    conversation.RenderedBlock
 }
 
 // bodyRow is the block's first MAPPED row, which is the origin the mapping's own
@@ -76,7 +80,7 @@ func (m Model) OffsetAtTranscriptCell(row, cell int) (conversation.BlockID, int,
 	if !ok {
 		return "", 0, false
 	}
-	return s.id, s.rendered.OffsetAt(row-s.bodyRow(), cell), true
+	return s.id, s.rendered.OffsetAt(row-s.bodyRow(), cell-s.prefixCells), true
 }
 
 // captureReadingAnchor records where the reader is, before the transcript is

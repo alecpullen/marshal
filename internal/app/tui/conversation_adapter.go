@@ -30,7 +30,7 @@ import (
 func (m Model) conversationDocument() *conversation.Document {
 	items := m.conversationItems()
 	var snapshot session.ActivitySnapshot
-	options := conversationProjectionOptions{}
+	options := conversationProjectionOptions{Notebook: m.notebookView, FollowingLatest: m.viewportFollow}
 	if state, _ := m.conversationSource(); state != nil {
 		snapshot = state.ActivitySnapshot()
 		options.ScopeID = state.ScopeID()

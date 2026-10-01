@@ -234,7 +234,7 @@ func (m *Model) copyBlock() (conversation.Block, bool) {
 		return blocks[len(blocks)-1], true
 	}
 	if m.readingAnchor.Block != "" {
-		if block, ok := doc.Block(m.readingAnchor.Block); ok {
+		if block, ok := copyBlockByID(doc, m.readingAnchor.Block); ok {
 			return block, true
 		}
 	}
@@ -242,7 +242,7 @@ func (m *Model) copyBlock() (conversation.Block, bool) {
 	// block under the viewport top, which is what the anchor was derived
 	// from in the first place.
 	if id, _ := m.blockAtViewportTop(); id != "" {
-		if block, ok := doc.Block(id); ok {
+		if block, ok := copyBlockByID(doc, id); ok {
 			return block, true
 		}
 	}
@@ -251,6 +251,17 @@ func (m *Model) copyBlock() (conversation.Block, bool) {
 		return conversation.Block{}, false
 	}
 	return blocks[len(blocks)-1], true
+}
+
+func copyBlockByID(doc *conversation.Document, id conversation.BlockID) (conversation.Block, bool) {
+	if block, ok := doc.Block(id); ok {
+		return block, true
+	}
+	location, ok := doc.LocateMember(string(id))
+	if !ok {
+		return conversation.Block{}, false
+	}
+	return location.Block, true
 }
 
 // beginCopy stamps a request and returns the command that performs it offline

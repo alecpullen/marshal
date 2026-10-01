@@ -36,6 +36,8 @@ type clickTarget struct {
 	// alone put the group in the table under the member's name, so every lookup
 	// by the group's real identity missed.
 	blockID conversation.BlockID
+	// orderControl changes only the notebook's local child presentation order.
+	orderControl bool
 }
 
 // copyTarget resolves the target a copy click should put on the clipboard.
@@ -307,6 +309,8 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 		m.drillIntoSubagent(*target.subagent)
 	} else if target.isActiveTool {
 		m.toggleActiveToolExpanded(target.toolKey)
+	} else if target.orderControl {
+		m.toggleNotebookWorkOrder(target.key)
 	} else if target.copySource != nil {
 		// A copy click copies and does NOT toggle. Routing it through the
 		// toggle path is how one click would both copy and change what is on

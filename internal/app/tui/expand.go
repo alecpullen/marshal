@@ -2,6 +2,7 @@ package tui
 
 import (
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/conversation"
 )
 
 // itemKey identifies a transcript item for per-item expand/collapse state,
@@ -45,6 +46,17 @@ func itemKeyForGroup(memberIDs []string) itemKey {
 		return itemKey{kind: session.KindAudit}
 	}
 	return itemKey{viewID: memberIDs[0], kind: session.KindAudit}
+}
+
+func notebookItemKey(scope string, id conversation.BlockID) itemKey {
+	return itemKey{viewID: "notebook:" + scope + ":" + string(id), kind: session.KindMessage}
+}
+
+func (m *Model) toggleNotebookWorkOrder(key itemKey) {
+	if m.notebookWorkReversed == nil {
+		m.notebookWorkReversed = map[itemKey]bool{}
+	}
+	m.notebookWorkReversed[key] = !m.notebookWorkReversed[key]
 }
 
 // liveThinkingKey is the synthetic identity of the in-progress thinking

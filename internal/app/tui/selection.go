@@ -103,12 +103,11 @@ func (m *Model) beginSelectionAt(row, cell int) bool {
 	if !ok {
 		return false
 	}
-	pos := conversation.PositionAt(span.rendered, off.Row, off.Cell)
 	m.selection.sel = conversation.Selection{
 		Block:    span.id,
 		Revision: span.rendered.Revision,
-		Anchor:   pos.Offset,
-		Focus:    pos.Offset,
+		Anchor:   off.Offset,
+		Focus:    off.Offset,
 	}
 	m.selection.dragging = true
 	m.selection.frozen = nil
@@ -139,8 +138,7 @@ func (m *Model) extendSelectionTo(row, cell int) bool {
 		// bottom of the text: it selects to the end rather than stopping.
 		return m.extendSelectionToBlockEdge(span, row)
 	}
-	pos := conversation.PositionAt(span.rendered, off.Row, off.Cell)
-	m.selection.sel.Focus = pos.Offset
+	m.selection.sel.Focus = off.Offset
 	return true
 }
 
@@ -457,7 +455,7 @@ func (m Model) mappedBlockAt(row, cell int) (renderedBlockSpan, conversation.Tex
 	// not cover. Subtracting blockRow put the summary line at body row 0 and
 	// shifted every offset in the block by the number of leading lines.
 	blockRow := row - span.bodyRow()
-	pos := conversation.PositionAt(span.rendered, blockRow, cell)
+	pos := conversation.PositionAt(span.rendered, blockRow, cell-span.prefixCells)
 	return span, pos, true
 }
 
@@ -520,7 +518,11 @@ func (m Model) selectionHighlight(row int) (startCell, endCell int, ok bool) {
 	if from > to {
 		from, to = to, from
 	}
-	return span.rendered.HighlightRange(blockRow, from, to)
+	start, end, ok := span.rendered.HighlightRange(blockRow, from, to)
+	if !ok {
+		return 0, 0, false
+	}
+	return start + span.prefixCells, end + span.prefixCells, true
 }
 
 // highlightFindMatches paints the search's matches onto assembled transcript

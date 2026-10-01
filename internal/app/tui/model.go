@@ -433,6 +433,16 @@ type Model struct {
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
 	detailExpanded     bool
+	// notebookView is a private presentation seam used by the C1 rollout.
+	// User-facing configuration and switching are wired by the later view task.
+	notebookView bool
+	// notebookWorkReversed stores presentation-only order overrides by scoped
+	// narration key. It never changes the semantic document or session records.
+	notebookWorkReversed map[itemKey]bool
+	// notebookSeenNarrations tracks in-process narration identities so a reader
+	// above latest can be told how much owned activity arrived while away.
+	notebookSeenNarrations map[string]bool
+	notebookNewActivity    int
 	// itemExpanded holds per-item expand/collapse overrides set by clicking
 	// a transcript block. An item with no entry here follows detailExpanded.
 	// Cleared whenever ctrl+g flips the global default (see keypress.go).
@@ -4723,6 +4733,31 @@ func (m *Model) refreshViewport() {
 		m.activeToolStartedAt = time.Time{}
 	}
 	busy := m.busy || activeTool || streamLen > 0
+	var activitySnapshot session.ActivitySnapshot
+	activityScope := ""
+	if transcriptState != nil {
+		activitySnapshot = transcriptState.ActivitySnapshot()
+		activityScope = transcriptState.ScopeID()
+	}
+	if m.notebookView {
+		if m.notebookSeenNarrations == nil {
+			m.notebookSeenNarrations = map[string]bool{}
+			for _, narration := range activitySnapshot.Narrations {
+				m.notebookSeenNarrations[activityScope+":"+narration.ID] = true
+			}
+		} else {
+			for _, narration := range activitySnapshot.Narrations {
+				key := activityScope + ":" + narration.ID
+				if !m.notebookSeenNarrations[key] && !m.viewportFollow {
+					m.notebookNewActivity++
+				}
+				m.notebookSeenNarrations[key] = true
+			}
+		}
+		if m.viewportFollow {
+			m.notebookNewActivity = 0
+		}
+	}
 
 	todos := m.viewedTodos()
 	if sig := todoSignature(todos); sig != m.todosSig {
@@ -4732,6 +4767,12 @@ func (m *Model) refreshViewport() {
 	queued := m.state.SteeringQueue()
 	notice, noticeUp := m.state.Notice()
 	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows, m.readingState())
+	if m.notebookView {
+		// The private view selector is a rendering input just like the measured
+		// width: changing it must rebuild both rows and their interaction maps.
+		hash ^= 0x9e3779b97f4a7c15
+		hash ^= uint64(m.notebookNewActivity) * 0x517cc1b727220a95
+	}
 	if hash == m.lastTranscriptHash {
 		// The transcript itself is unchanged. If something merely PAINTED onto
 		// it moved, restyle from the retained unpainted base rather than
@@ -4882,7 +4923,7 @@ func (m *Model) refreshViewport() {
 			// explicit id wins when present; otherwise the key's identity is
 			// the block's, which covers every single-item block.
 			id := target.blockID
-			if id == "" && target.key.viewID != "" {
+			if id == "" && target.key.viewID != "" && !target.orderControl {
 				id = conversation.BlockID(target.key.viewID)
 			}
 			if id != "" {
@@ -4941,10 +4982,24 @@ func (m *Model) refreshViewport() {
 		addBlock(renderWelcomeBanner(m.viewport.Width()), nil)
 	}
 	firstTurn := true
-	for _, entry := range groupTranscript(items) {
+	entries := groupTranscript(items)
+	itemByViewID := make(map[string]session.TranscriptItem, len(items))
+	for _, item := range items {
+		itemByViewID[item.ViewID] = item
+	}
+	if m.notebookView {
+		options := conversationProjectionOptions{Notebook: true, FollowingLatest: m.viewportFollow}
+		if transcriptState != nil {
+			options.ScopeID = activityScope
+		}
+		entries = notebookTranscriptEntries(items, activitySnapshot, options)
+	}
+	narrationRank := 0
+	activeToolPlaced := false
+	for _, entry := range entries {
 		// A separator precedes every user turn but the first, so the rule
 		// always reads as "a new turn starts here" rather than as a header.
-		if entry.Group == nil && isUserTurn(*entry.Item) {
+		if entry.Group == nil && entry.Item != nil && isUserTurn(*entry.Item) {
 			if !firstTurn {
 				addBlock(renderTurnSeparator(m.viewport.Width()), nil)
 			}
@@ -4963,6 +5018,67 @@ func (m *Model) refreshViewport() {
 				id = conversation.GroupBlockID(entry.GroupIDs[0])
 			}
 			addBlock(s, &clickTarget{key: key, blockID: id})
+		} else if entry.Notebook != nil {
+			block := *entry.Notebook
+			if block.Kind == conversation.BlockOwnershipNote {
+				addBlock(renderOwnershipNote(block.Text, m.viewport.Width()), nil)
+				continue
+			}
+			if block.Kind != conversation.BlockNarration {
+				continue
+			}
+			key := notebookItemKey(activityScope, block.ID)
+			reversed := m.notebookWorkReversed[key]
+			expanded, ok := m.itemExpanded[key]
+			if !ok {
+				expanded = narrationRank == 0
+				if m.itemExpanded == nil {
+					m.itemExpanded = map[itemKey]bool{}
+				}
+				m.itemExpanded[key] = expanded
+			}
+			narrationRank++
+			block = reverseNotebookWorkChildren(block, reversed)
+			parts := renderNotebookNarration(block, m.viewport.Width(), expanded, reversed, m.detailExpanded, itemByViewID)
+			if activeTool && atc.Activity.NarrationID != "" {
+				for _, child := range block.Children {
+					if childItem, ok := itemByViewID[string(child.ID)]; ok && childItem.Activity.NarrationID == atc.Activity.NarrationID {
+						if !expanded {
+							parts[0].Text += continuation() + mutedStyle().Render("Work") + "\n"
+						}
+						key := activeToolKeyFor(atc)
+						parts[0].Text += renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolIsExpanded(key), m.viewport.Width())
+						activeToolPlaced = true
+						break
+					}
+				}
+			}
+			for i, part := range parts {
+				if part.OrderControl {
+					orderTarget := &clickTarget{key: key, orderControl: true}
+					addBlock(part.Text, orderTarget)
+					continue
+				}
+				partKey := key
+				if i > 0 {
+					partKey.viewID += ":" + string(part.ID)
+				}
+				rendered := part.Rendered
+				rendered.BlockID = part.ID
+				sink.pending = nil
+				sink.pendingOffset = 0
+				if len(rendered.Rows) > 0 {
+					sink.pending = &rendered
+					sink.pendingOffset = part.BodyOffset
+				}
+				target := &clickTarget{key: partKey, blockID: part.ID}
+				addBlock(part.Text, target)
+				if len(renders) > 0 && renders[len(renders)-1].id == part.ID {
+					renders[len(renders)-1].prefixCells = part.PrefixCells
+				}
+				seenRegions[partKey] = true
+			}
+			seenRegions[key] = true
 		} else {
 			key := itemKeyFor(entry.Item)
 			// Every item gets a rendered span, whether or not it is
@@ -5098,7 +5214,7 @@ func (m *Model) refreshViewport() {
 	// child (or the parent when not drilling). The previous code read
 	// m.state.ActiveToolCall(), which always used the parent session
 	// and showed the wrong tool inside a drilled subagent view.
-	if atc, ok := transcriptState.ActiveToolCall(); ok {
+	if atc, ok := transcriptState.ActiveToolCall(); ok && !activeToolPlaced {
 		// Suppress the parent in-flight agent.run row when a subagent card
 		// is already rendering the running child. Completed rows are already
 		// deduplicated above; this is the in-flight counterpart.

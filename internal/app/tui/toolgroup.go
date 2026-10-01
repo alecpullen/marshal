@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/conversation"
 	"marshal/internal/tools/registry"
 )
 
@@ -23,6 +24,9 @@ const bulletIndent = 4
 type transcriptEntry struct {
 	Item  *session.TranscriptItem // non-nil for ungrouped entries
 	Group []registry.AuditEvent   // len >= 2 for a collapsed run
+	// Notebook is non-nil when this entry is a projected narration section.
+	// Item points at its public narration source; the block carries owned work.
+	Notebook *conversation.Block
 	// GroupIDs are the members' presentation identities, parallel to Group.
 	// They are carried because a registry.AuditEvent has no stable identity
 	// of its own — several run events can share a timestamp AND identical

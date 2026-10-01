@@ -87,6 +87,82 @@ func TestNotebookJourneyKeepsLegacySourcesAndCopyOutputs(t *testing.T) {
 	}
 }
 
+func TestStructuredProgressJourneyProjectsChronologicalLegacyAndNotebook(t *testing.T) {
+	now := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
+	state := session.New(config.Default(), t.TempDir(), now, session.Persistence{})
+	state.AddMessage(session.RoleUser, "Read, change, and verify", session.ContentTypePlain)
+	boundary := state.Messages()[0].ID
+	state.BeginActivityRun(boundary)
+	headline := "Inspecting the target"
+	begin, err := state.ApplyPublicProgress(state.BeginActivityResponse(), activity.ProgressUpdate{Mode: activity.ProgressBegin, Headline: &headline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readCall := state.BeginActivityCall(begin.Owner, "read-call")
+	state.LogToolCall(registry.AuditEvent{Activity: readCall, Timestamp: now, ToolName: "file.read", ResultSummary: "Read target", ResultContent: "old value"})
+	readReceipt, ok := state.IssueEvidenceReceipt(readCall)
+	if !ok {
+		t.Fatal("read result did not issue an evidence receipt")
+	}
+	sections := []activity.ProgressSection{{Kind: activity.SectionEvidence, Text: "The read returned the old value.", EvidenceRefs: []string{readReceipt.Alias}}, {Kind: activity.SectionChecking, Text: "Checking the updated value."}}
+	updatedHeadline := "Verified change"
+	revised, err := state.ApplyPublicProgress(state.BeginActivityResponse(), activity.ProgressUpdate{Mode: activity.ProgressRevise, Headline: &updatedHeadline, Sections: &sections})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.AddMessageFinal(session.RoleAssistant, "The target now has the expected value.", session.ContentTypeMarkdown)
+	state.EndActivityRun(revised.Owner)
+	items := state.Transcript()
+	snapshot := state.ActivitySnapshot()
+	legacy := projectConversation(items, snapshot, conversationProjectionOptions{})
+	notebook := projectConversation(items, snapshot, conversationProjectionOptions{Notebook: true, FollowingLatest: true, ScopeID: state.ScopeID()})
+	legacyOrder := make(map[string]int)
+	for i, block := range legacy.Blocks() {
+		legacyOrder[string(block.ID)] = i
+	}
+	var journeySources []session.TranscriptItem
+	for _, item := range items {
+		if item.ViewID == "" {
+			t.Fatalf("transcript source lacks identity: %+v", item)
+		}
+		left, leftOK := legacy.LocateMember(item.ViewID)
+		right, rightOK := notebook.LocateMember(item.ViewID)
+		if !leftOK || !rightOK {
+			t.Fatalf("source %q coverage legacy=%v notebook=%v", item.ViewID, leftOK, rightOK)
+		}
+		if !reflect.DeepEqual(left.Block.CopyTargets, right.Block.CopyTargets) {
+			t.Fatalf("source %q copy bytes changed across projections: legacy=%+v notebook=%+v", item.ViewID, left.Block.CopyTargets, right.Block.CopyTargets)
+		}
+		if item.Kind == session.KindMessage || item.Kind == session.KindAudit {
+			journeySources = append(journeySources, item)
+		}
+	}
+	for i := 1; i < len(journeySources); i++ {
+		before := legacyOrder[journeySources[i-1].ViewID]
+		after := legacyOrder[journeySources[i].ViewID]
+		if before >= after {
+			t.Fatalf("legacy chronology changed at %q then %q: block positions %d/%d", journeySources[i-1].ViewID, journeySources[i].ViewID, before, after)
+		}
+	}
+	if len(snapshot.ProgressRevisions) != 2 || snapshot.ProgressRevisions[1].Sections[0].EvidenceRefs[0] != readReceipt.Alias {
+		t.Fatalf("journey did not retain its cited revision: %+v", snapshot.ProgressRevisions)
+	}
+	latestID := ""
+	for _, item := range items {
+		if item.Message != nil && item.Message.ID == snapshot.ProgressRevisions[1].SourceMessageID {
+			latestID = item.ViewID
+		}
+	}
+	loc, ok := notebook.LocateMember(latestID)
+	if !ok || len(loc.Ancestors) == 0 {
+		t.Fatalf("latest revision is not inside the notebook narration: source=%q loc=%+v", latestID, loc)
+	}
+	parent, ok := notebook.Block(loc.Ancestors[0])
+	if !ok || len(parent.EventOrderAlternatives) != 2 || parent.EventOrderAlternatives[0].SourceRevision != 1 || parent.EventOrderAlternatives[1].SourceRevision != 2 {
+		t.Fatalf("notebook does not preserve both revisions in event order: %+v", parent)
+	}
+}
+
 func TestNotebookRunnerJourneysKeepNoProseJSONAndMalformedFallbacks(t *testing.T) {
 	t.Run("native tool-only response", func(t *testing.T) {
 		provider := &agenttest.ScriptedProvider{

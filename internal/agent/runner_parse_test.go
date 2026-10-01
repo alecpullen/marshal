@@ -285,15 +285,17 @@ func TestProgressMetadataCannotBlockOrReplaceToolExecution(t *testing.T) {
 				if len(revisions) == 0 || len(revisions[0].Sections) != 1 || len(revisions[0].Sections[0].EvidenceRefs) != 0 {
 					t.Fatalf("unresolved ref was not dropped safely: %+v", revisions)
 				}
-				foundWarning := false
+				warningCount := 0
 				for _, message := range state.Messages() {
 					if message.Role == session.RoleSystem && strings.Contains(message.Content, "evidence references are unavailable") {
-						foundWarning = true
-						break
+						warningCount++
 					}
 				}
-				if !foundWarning {
-					t.Fatal("missing bounded unresolved-reference warning")
+				if warningCount != 1 {
+					t.Fatalf("unresolved-reference warning count=%d, want exactly one", warningCount)
+				}
+				if p.Calls != 2 || state.ToolBudget().Used != 1 || len(state.AuditLog()) != 1 {
+					t.Fatalf("unresolved metadata changed request/work accounting: requests=%d budget=%+v audits=%d", p.Calls, state.ToolBudget(), len(state.AuditLog()))
 				}
 			}
 		})

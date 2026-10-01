@@ -103,7 +103,7 @@ internal/worktree/             — git worktree helpers
 - **Repository intelligence** — tree-sitter symbol index, repo map, and file summaries.
 - **Context management** — pack builder with token budgets; inspect usage at `/context`.
 - **Reading-first conversation** — an anchored reading position that survives resizes and streaming output, application-owned drag and keyboard selection, copying, current-conversation find with match navigation, and a four-tab inspector (changes, agents, context, overview). See [docs/tui-interactions.md](docs/tui-interactions.md).
-- **Transcript views (preview)** — the legacy transcript remains the default. Choose **Notebook (preview)** from the action palette (`F2` or `/actions`), or set `tui.transcript_view = "notebook"` under `[tui]` for the configured default. A per-session palette choice overrides that setting until **Use configured transcript view** clears it. View changes wait until active text selection is cleared. Phase 1 groups only newly attributed live activity; older history has no persisted ownership metadata, so it remains in chronological fallback blocks. Rich resource summaries and semantic sections are planned for later phases.
+- **Transcript views (preview)** — the legacy transcript remains the default. Choose **Notebook (preview)** from the action palette (`F2` or `/actions`), or set `tui.transcript_view = "notebook"` under `[tui]` for the configured default. A per-session palette choice overrides that setting until **Use configured transcript view** clears it. View changes wait until active text selection is cleared. Notebook groups newly attributed live activity and displays optional structured progress with cited results. Older restored history has no persisted ownership metadata, so it stays in chronological fallback blocks. Durable evidence history and richer resource/child views remain future work.
 - **Safe, sandboxed tools** — shell commands classified, approval-gated, and run isolated by default.
 - **Git integration** — automatically checkpoint the working tree before tooling.
 - **Persistent sessions** — project state, messages, and memory stored in SQLite.
@@ -160,8 +160,13 @@ the selection to be cleared so the selection stays attached to its source.
 Notebook (preview) groups activity when current runtime ownership metadata
 connects narration, tools, and results. Phase 1 does not persist that ownership
 metadata, so restored and older history stays visible in chronological
-fallback blocks instead of being retroactively grouped. Rich resource
-summaries and semantic sections are future phases.
+fallback blocks instead of being retroactively grouped. Structured public
+progress is optional: agents may revise a short narration and cite results
+they have received during the current run. References are scoped to that
+actor/run and retained in memory only; unavailable or evicted references are
+shown as unavailable. Legacy view remains the default and displays each
+public revision in chronological order. Rich resource summaries, durable
+evidence history, and semantic child/resource views remain future work.
 
 ## Usability testing (synthetic users)
 

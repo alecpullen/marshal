@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
@@ -106,7 +107,11 @@ type TranscriptItem struct {
 	// (see viewid.go). It exists because (Timestamp, Kind) is not an
 	// identity: same-kind items written in one clock tick, and the several
 	// run events of a fast task, collapsed into one indistinguishable block.
-	ViewID   string
+	ViewID string
+	// Activity is runtime-only attribution. Zero values are expected for
+	// restored messages and legacy callers. Sequence records append order.
+	Activity activity.Ref
+	Sequence uint64
 	Message  *Message
 	Audit    *registry.AuditEvent
 	Thinking *ThinkingEntry
@@ -232,17 +237,24 @@ type State struct {
 	// childQuestions is the FIFO queue of subagent questions waiting for
 	// the parent (spec §7): concurrent children queue behind one another
 	// rather than overwriting a single shared slot.
-	childQuestions    []*PendingChildQuestion
-	pendingSkillGate  *PendingSkillGate
-	skillGateDisabled bool
-	skillGateAllowed  map[string]bool
-	skillGateDenied   map[string]int
-	activeToolCall    *ActiveToolCall
-	sessionRules      []string
-	auditLog          []registry.AuditEvent
-	thinkingLog       []ThinkingEntry
-	lastBackup        []BackupFile
-	contextPack       contextpack.Pack
+	childQuestions        []*PendingChildQuestion
+	pendingSkillGate      *PendingSkillGate
+	skillGateDisabled     bool
+	skillGateAllowed      map[string]bool
+	skillGateDenied       map[string]int
+	activeToolCall        *ActiveToolCall
+	sessionRules          []string
+	auditLog              []registry.AuditEvent
+	thinkingLog           []ThinkingEntry
+	activityRun           activity.Ref
+	activityResponse      activity.Ref
+	activityBoundary      int64
+	activitySequence      uint64
+	activityNextID        uint64
+	activityNarrations    []activity.Narration
+	activityResponseLinks []ResponseNarration
+	lastBackup            []BackupFile
+	contextPack           contextpack.Pack
 	// requestInspection is the bounded snapshot of the last conversation
 	// attempt Marshal submitted to its provider adapter. It is in-memory only
 	// (see request_inspection.go): nothing persists it, and it is never logged.
@@ -1529,6 +1541,11 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
+	if event.Activity == (activity.Ref{}) {
+		event.Activity = s.activityResponse
+	}
+	s.activitySequence++
+	event.Sequence = s.activitySequence
 	s.auditLog = append(s.auditLog, event)
 	// Also accumulate into the per-turn ledger buffer. The compaction in
 	// summary string and the (ok) marker are filled in here so the
@@ -1598,8 +1615,10 @@ func (s *State) Transcript() []TranscriptItem {
 			// takes the ordinal a survivor's identity was built from.
 			// Keying on msg.ID, which never repeats, makes that reuse
 			// harmless; see TestViewIDSurvivesRewind.
-			ViewID:  s.scopePrefix(viewIDMessage) + strconv.FormatInt(msg.ID, 10),
-			Message: &msg,
+			ViewID:   s.scopePrefix(viewIDMessage) + strconv.FormatInt(msg.ID, 10),
+			Activity: msg.Activity,
+			Sequence: msg.Sequence,
+			Message:  &msg,
 		})
 	}
 
@@ -1609,6 +1628,8 @@ func (s *State) Transcript() []TranscriptItem {
 			Timestamp: evt.Timestamp,
 			Kind:      KindAudit,
 			ViewID:    ordinalViewID(s.scopePrefix(viewIDAudit), i),
+			Activity:  evt.Activity,
+			Sequence:  evt.Sequence,
 			Audit:     &evt,
 		})
 	}
@@ -1619,6 +1640,8 @@ func (s *State) Transcript() []TranscriptItem {
 			Timestamp: t.StartedAt,
 			Kind:      KindThinking,
 			ViewID:    ordinalViewID(s.scopePrefix(viewIDThinking), i),
+			Activity:  t.Activity,
+			Sequence:  t.Sequence,
 			Thinking:  &t,
 		})
 	}

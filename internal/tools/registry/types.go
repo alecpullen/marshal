@@ -3,6 +3,8 @@ package registry
 import (
 	"context"
 	"encoding/json"
+
+	"marshal/internal/activity"
 )
 
 type RiskLevel string
@@ -45,9 +47,10 @@ type Tool struct {
 }
 
 type ToolCall struct {
-	ID   string
-	Name string
-	Args json.RawMessage
+	Activity activity.Ref
+	ID       string
+	Name     string
+	Args     json.RawMessage
 }
 
 type ToolHandler func(ctx context.Context, call ToolCall) (ToolResult, error)

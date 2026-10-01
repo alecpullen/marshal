@@ -3,6 +3,8 @@ package registry
 import (
 	"encoding/json"
 	"time"
+
+	"marshal/internal/activity"
 )
 
 type ApprovalState string
@@ -15,6 +17,8 @@ const (
 )
 
 type AuditEvent struct {
+	Activity      activity.Ref
+	Sequence      uint64
 	Timestamp     time.Time
 	AgentRole     string
 	Model         string

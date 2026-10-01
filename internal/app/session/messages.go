@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/db"
 )
 
@@ -107,6 +108,8 @@ const (
 // active branch is the path from root to leafID.
 type Message struct {
 	ID       int64
+	Activity activity.Ref
+	Sequence uint64
 	ParentID int64
 	// DBID is the persisted SQLite row id for this message. It is non-zero
 	// for messages that were written to (or loaded from) the database and
@@ -266,7 +269,21 @@ func (s *State) persistenceEnabled() bool {
 // anyway, and holding it closes the race where a concurrent Rewind /
 // SwitchBranch could orphan a stashed pointer mid-promotion.
 func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string) {
+	s.appendMessageActivity(role, content, contentType, final, salvaged, salvageReason, toolCallCount, usage, activity.Ref{})
+}
+
+func (s *State) appendMessageActivity(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string, ref activity.Ref) int64 {
 	s.mu.Lock()
+	visibleBoundary := isActivityBoundaryMessage(role, contentType)
+	if visibleBoundary {
+		ref = activity.Ref{}
+	}
+	if ref == (activity.Ref{}) {
+		ref = s.activityResponse
+	}
+	if visibleBoundary {
+		ref = activity.Ref{}
+	}
 	reasoning := s.inProgress.Reasoning
 	var thinkDuration time.Duration
 	if reasoning != "" {
@@ -325,8 +342,11 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 		s.toolAuditThisTurn = nil
 	}
 
+	s.activitySequence++
 	msg := Message{
 		ID:            id,
+		Activity:      ref,
+		Sequence:      s.activitySequence,
 		ParentID:      parent,
 		DBID:          dbID,
 		Role:          role,
@@ -342,6 +362,10 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 		Usage:         usage,
 	}
 	s.messages = append(s.messages, msg)
+	if visibleBoundary {
+		s.activityBoundary = id
+		s.activityResponse = activity.Ref{}
+	}
 	s.parentOf[id] = parent
 	if parent != 0 {
 		s.childrenOf[parent] = append(s.childrenOf[parent], id)
@@ -352,6 +376,19 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	s.mu.Unlock()
 
 	s.publishEvent(EventMessageAdded, Event{Message: &published})
+	return id
+}
+
+func isActivityBoundaryMessage(role Role, contentType ContentType) bool {
+	if role != RoleUser {
+		return false
+	}
+	switch contentType {
+	case ContentTypeSteering, ContentTypeSubagentReport, ContentTypeWatchReport:
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *State) AddMessage(role Role, content string, contentType ContentType) {
@@ -450,6 +487,7 @@ func (s *State) Rewind(turnMsgID int64) int64 {
 		}
 	}
 	s.rebuildActiveBranch()
+	s.resetActivityLocked()
 	if s.persistenceEnabled() {
 		if err := s.db.SetBranchLeaf(s.sessionID, s.leafDBID); err != nil {
 			s.logger.Error("set branch leaf failed", "error", err, "session_id", s.sessionID, "leaf", s.leafDBID)
@@ -484,6 +522,7 @@ func (s *State) SwitchBranch(leafID int64) {
 	}
 	s.leafDBID = leafDBID
 	s.rebuildActiveBranch()
+	s.resetActivityLocked()
 	s.mu.Unlock()
 
 	if s.persistenceEnabled() {
@@ -520,5 +559,8 @@ func (s *State) ClearMessages() int {
 	defer s.mu.Unlock()
 	count := len(s.messages)
 	s.messages = nil
+	s.activityNarrations = nil
+	s.activityResponseLinks = nil
+	s.resetActivityLocked()
 	return count
 }

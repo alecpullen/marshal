@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/internal/activity"
 )
 
 // UserApprovalDecision is the user's response to a pending tool approval
@@ -119,6 +121,7 @@ func (p *PendingQuestion) Respond(a []Answer) {
 }
 
 type PendingToolCall struct {
+	Activity     activity.Ref
 	ID           string
 	Name         string
 	Args         string
@@ -152,6 +155,7 @@ func (p *PendingToolCall) Respond(d UserApprovalDecision) {
 }
 
 type ActiveToolCall struct {
+	Activity  activity.Ref
 	Name      string
 	Args      string
 	Path      string
@@ -165,6 +169,7 @@ func (s *State) SetPendingApproval(tc *PendingToolCall) {
 	var snap *PendingToolCall
 	if tc != nil {
 		snap = &PendingToolCall{
+			Activity:     tc.Activity,
 			ID:           tc.ID,
 			Name:         tc.Name,
 			Args:         tc.Args,
@@ -312,6 +317,9 @@ func snapshotChildQuestionLocked(q *PendingChildQuestion) *PendingChildQuestion 
 
 func (s *State) SetActiveToolCall(atc ActiveToolCall) {
 	s.mu.Lock()
+	if atc.Activity == (activity.Ref{}) {
+		atc.Activity = s.activityResponse
+	}
 	s.activeToolCall = &atc
 	copy := atc
 	s.mu.Unlock()

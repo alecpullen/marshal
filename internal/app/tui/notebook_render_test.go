@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/conversation"
@@ -94,6 +96,137 @@ func TestNotebookWorkOrderToggleIsReversibleAndPresentationOnly(t *testing.T) {
 	if block.Children[1].ID != "audit:a" || block.Children[1].CopyTargets[0].Text != "first" || block.Children[2].CopyTargets[0].Text != "second" {
 		t.Fatal("presentation order mutated source identities or copy payloads")
 	}
+}
+
+func TestStructuredNarrationOffersSectionsAndEventOrder(t *testing.T) {
+	block := conversation.Block{
+		ID: "narration:structured", Kind: conversation.BlockNarration, Text: "Current headline",
+		Children: []conversation.Block{{
+			ID: "section:change", Kind: conversation.BlockSection, SectionLabel: "change", Text: "Changed the parser.",
+			CopyTargets: []conversation.CopyTarget{{Source: conversation.SourceAnswer, Text: "Changed the parser.", Label: "Copy change"}},
+		}},
+		EventOrderAlternatives: []conversation.Block{
+			{ID: "revision:one", Kind: conversation.BlockMessage, Text: "Earlier public update.", SourceRevision: 1},
+			{ID: "revision:two", Kind: conversation.BlockMessage, Text: "Current public update.", SourceRevision: 2},
+		},
+	}
+	sections := renderNotebookNarration(block, 80, true, false, false, nil)
+	if !strings.Contains(joinNotebookParts(sections), "Show event order") || !strings.Contains(joinNotebookParts(sections), "CHANGE") {
+		t.Fatalf("section view missing labels/control: %q", ansi.Strip(joinNotebookParts(sections)))
+	}
+	if !strings.Contains(joinNotebookParts(sections), "Copy section") {
+		t.Fatalf("section view has no independent copy action: %q", ansi.Strip(joinNotebookParts(sections)))
+	}
+	eventOrder := renderNotebookNarration(block, 80, true, true, false, nil)
+	plain := ansi.Strip(joinNotebookParts(eventOrder))
+	if !strings.Contains(plain, "Show sections") || !strings.Contains(plain, "Revision 1") || !strings.Contains(plain, "Earlier public update") || !strings.Contains(plain, "Revision 2") {
+		t.Fatalf("event-order view missing revision history/control: %q", plain)
+	}
+}
+
+func TestStructuredNarrationFailureAndUnavailableReferenceFitTerminalWidths(t *testing.T) {
+	block := conversation.Block{
+		ID: "narration:failure", Kind: conversation.BlockNarration, Text: "Failure-aware headline",
+		Children: []conversation.Block{{
+			ID: "section:checking", Kind: conversation.BlockSection, SectionLabel: "checking", Text: "Reviewed the output and kept its Markdown **unchanged**; wide characters 界面 remain intact.",
+			Children: []conversation.Block{
+				{ID: "audit:failed", Kind: conversation.BlockTool, Members: []string{"audit:failed"}, Text: ""},
+				{ID: "reference:long", Kind: conversation.BlockReference, Text: "See " + strings.Repeat("very-long-reference-label/", 5), ReferenceTarget: "audit:source", PresentationOnly: true},
+				{ID: "reference:gone", Kind: conversation.BlockReference, Text: "Evidence unavailable", PresentationOnly: true},
+			},
+		}},
+		EventOrderAlternatives: []conversation.Block{{ID: "revision:one", Kind: conversation.BlockMessage, Text: "Earlier update", SourceRevision: 1}},
+	}
+	exit := 2
+	records := map[string]session.TranscriptItem{"audit:failed": {
+		ViewID: "audit:failed", Kind: session.KindAudit,
+		Audit: &registry.AuditEvent{ToolName: "shell.run", Error: strings.Repeat("command failed after checking the generated output ", 3), CommandExitCode: &exit},
+	}}
+	for _, tc := range []struct {
+		width      int
+		monochrome bool
+	}{{80, false}, {120, false}, {80, true}} {
+		if tc.monochrome {
+			previous := theme.Current()
+			theme.Reload(theme.LoadFor(true, ""))
+			t.Cleanup(func() { theme.Reload(previous) })
+		}
+		parts := renderNotebookNarration(block, tc.width, true, false, false, records)
+		plain := ansi.Strip(joinNotebookParts(parts))
+		if !strings.Contains(plain, "exit 2") || !strings.Contains(plain, "source unavailable") || !strings.Contains(plain, "unchanged") {
+			t.Fatalf("width %d omitted factual status, unavailable reason, or raw Markdown: %q", tc.width, plain)
+		}
+		var longReference, unavailable notebookRenderPart
+		for _, part := range parts {
+			switch part.ID {
+			case "reference:long":
+				longReference = part
+			case "reference:gone":
+				unavailable = part
+			}
+		}
+		if longReference.Reference != "audit:source" || unavailable.Reference != "" || unavailable.Disabled != "source is unavailable" {
+			t.Fatalf("reference target/disabled reason = long:%+v unavailable:%+v", longReference, unavailable)
+		}
+		if strings.Contains(plain, "Copy output") {
+			t.Fatalf("empty result unexpectedly offers output copy: %q", plain)
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(joinNotebookParts(parts), "\n"), "\n") {
+			if got := ansi.StringWidth(line); got > tc.width {
+				t.Fatalf("width %d produced %d-cell line: %q", tc.width, got, ansi.Strip(line))
+			}
+		}
+	}
+}
+
+func TestStructuredNotebookFitsTerminalGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		width, height int
+		monochrome    bool
+	}{{80, 24, true}, {120, 40, false}} {
+		t.Run(fmt.Sprintf("%dx%d/mono=%v", tc.width, tc.height, tc.monochrome), func(t *testing.T) {
+			if tc.monochrome {
+				previous := theme.Current()
+				theme.Reload(theme.LoadFor(true, ""))
+				t.Cleanup(func() { theme.Reload(previous) })
+			}
+			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+			state.AddMessage(session.RoleUser, "Review this Unicode path 界面 and retain its Markdown.", session.ContentTypePlain)
+			boundary := state.Transcript()[0].Message.ID
+			state.BeginActivityRun(boundary)
+			response := state.BeginActivityResponse()
+			headline, action := "Reviewing the Unicode path", "Checking the renderer geometry"
+			sections := []activity.ProgressSection{{Kind: activity.SectionChecking, Text: "Kept **Markdown**, wide glyphs 界面, and the source path /workspace/really/long/path/file.go visible."}}
+			if _, err := state.ApplyPublicProgress(response, activity.ProgressUpdate{Mode: activity.ProgressBegin, Headline: &headline, CurrentAction: &action, Sections: &sections}); err != nil {
+				t.Fatal(err)
+			}
+			state.SetActivity(session.Activity{Kind: session.ActivityThinking})
+			m := New(state)
+			m.notebookView = true
+			m.busy = true
+			m.resize(tc.width, tc.height)
+			m.refreshViewport()
+			rows, widest := frameRows(&m)
+			if rows != tc.height || widest > tc.width {
+				t.Fatalf("notebook frame geometry = %dx%d, want <=%dx%d with exact height", widest, rows, tc.width, tc.height)
+			}
+			if m.viewport.Height() < 1 || m.frameRect().Activity.Height < 1 {
+				t.Fatalf("transcript/activity rows collapsed at %dx%d: viewport=%d activity=%d", tc.width, tc.height, m.viewport.Height(), m.frameRect().Activity.Height)
+			}
+			plain := ansi.Strip(m.viewString())
+			if !strings.Contains(plain, "Show event order") || !strings.Contains(plain, "Checking the renderer geometry") {
+				t.Fatalf("structured controls/activity missing at %dx%d: %q", tc.width, tc.height, plain)
+			}
+		})
+	}
+}
+
+func joinNotebookParts(parts []notebookRenderPart) string {
+	var out strings.Builder
+	for _, part := range parts {
+		out.WriteString(part.Text)
+	}
+	return out.String()
 }
 
 func TestNotebookNewNarrationStaysBelowReadingAnchorAndShowsCount(t *testing.T) {
@@ -211,7 +344,7 @@ func TestRefreshViewportDispatchesNotebookProjection(t *testing.T) {
 		t.Fatal("find did not expand the owning narration")
 	}
 	if _, ok := m.mappedBlockSpan(childID); !ok {
-		t.Fatal("expanded audit child has no mapped selection geometry")
+		t.Fatalf("expanded audit child %q has no mapped selection geometry: %+v", childID, m.blockRenderSpans)
 	}
 	m.readingAnchor.Block = childID
 	copyBlock, ok := m.copyBlock()

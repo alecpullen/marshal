@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 func TestProjectNotebookActivityPriority(t *testing.T) {
@@ -33,6 +35,45 @@ func TestProjectNotebookActivityPriority(t *testing.T) {
 		})
 	}
 }
+
+func TestNotebookActivityUsesCurrentActionAndFailureSupersedesIt(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "Inspect the parser", session.ContentTypePlain)
+	boundary := state.Transcript()[0].Message.ID
+	state.BeginActivityRun(boundary)
+	response := state.BeginActivityResponse()
+	headline, action := "Reviewing parser", "Checking the parser tests"
+	response = state.BindActivityNarration(response, "The earlier prose said I was checking the parser tests.")
+	state.AddNarrationMessage(response, "The earlier prose said I was checking the parser tests.")
+	receipt, err := state.ApplyPublicProgress(response, activity.ProgressUpdate{Mode: activity.ProgressBegin, Headline: &headline, CurrentAction: &action})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = receipt.Owner
+	state.SetActivity(session.Activity{Kind: session.ActivityThinking})
+	m := New(state)
+	m.notebookView = true
+	m.busy = true
+	m.resize(80, 24)
+	if got := m.notebookActivitySnapshot().currentAction; got != action {
+		t.Fatalf("current action = %q, want %q", got, action)
+	}
+	if row := stripANSI(m.renderNotebookActivity()); !strings.Contains(row, action) {
+		t.Fatalf("pre-failure activity row = %q, want current action %q", row, action)
+	}
+	call := state.BeginActivityCall(response, "provider-call")
+	state.LogToolCall(registry.AuditEvent{Activity: call, ToolName: "shell.run", Error: "exit status 1", CommandExitCode: intPtr(1)})
+	failed := m.notebookActivitySnapshot()
+	if failed.currentAction != "" || !failed.suppressNarration {
+		t.Fatalf("failed intent snapshot = %+v, want a neutral fallback with stale narration suppressed", failed)
+	}
+	row := stripANSI(m.renderNotebookActivity())
+	if !strings.Contains(row, "Generating") || strings.Contains(row, "Checking the parser") || strings.Contains(row, "Reviewing parser") || strings.Contains(row, "earlier prose") {
+		t.Fatalf("activity row retained stale intent after the failure: %q", row)
+	}
+}
+
+func intPtr(value int) *int { return &value }
 
 func TestNotebookActivityDoesNotRenderThinkingLabel(t *testing.T) {
 	m := newTestModel(t)

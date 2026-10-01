@@ -27,7 +27,8 @@ type clickTarget struct {
 	// from the answer source, whose zero value a plain bool could not tell
 	// apart. A target with a copy source never toggles expansion: one click
 	// must mean one thing.
-	copySource *conversation.CopySource
+	copySource  *conversation.CopySource
+	copyBlockID conversation.BlockID
 	// blockID, when set, is the DOCUMENT identity of the block this region
 	// renders. It exists because a click key is not always a document identity:
 	// a collapsed group's key carries its FIRST MEMBER's identity, since an
@@ -38,6 +39,10 @@ type clickTarget struct {
 	blockID conversation.BlockID
 	// orderControl changes only the notebook's local child presentation order.
 	orderControl bool
+	// referenceTarget names a canonical transcript member reached from a
+	// compact notebook evidence link.
+	referenceTarget string
+	disabledReason  string
 }
 
 // copyTarget resolves the target a copy click should put on the clipboard.
@@ -305,12 +310,16 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
-	if target.subagent != nil {
+	if target.disabledReason != "" {
+		m.showToast(target.disabledReason)
+	} else if target.subagent != nil {
 		m.drillIntoSubagent(*target.subagent)
 	} else if target.isActiveTool {
 		m.toggleActiveToolExpanded(target.toolKey)
 	} else if target.orderControl {
 		m.toggleNotebookWorkOrder(target.key)
+	} else if target.referenceTarget != "" {
+		m.revealNotebookReference(target.referenceTarget)
 	} else if target.copySource != nil {
 		// A copy click copies and does NOT toggle. Routing it through the
 		// toggle path is how one click would both copy and change what is on
@@ -319,6 +328,9 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 		// The click is NOT followed by refreshViewport: a copy changes no
 		// transcript content, and a rebuild here would drop the reader's
 		// anchor for no reason.
+		if target.copyBlockID != "" {
+			return m.copyNotebookBlockSource(target.copyBlockID, *target.copySource), true
+		}
 		return m.copySelection(*target.copySource), true
 	} else {
 		m.toggleItemExpanded(target.key)

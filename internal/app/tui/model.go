@@ -5077,6 +5077,11 @@ func (m *Model) refreshViewport() {
 				if i > 0 {
 					partKey.viewID += ":" + string(part.ID)
 				}
+				if part.CopySource != "" {
+					source := part.CopySource
+					addBlock(part.Text, &clickTarget{copyBlockID: part.ID, copySource: &source})
+					continue
+				}
 				rendered := part.Rendered
 				rendered.BlockID = part.ID
 				sink.pending = nil
@@ -5085,7 +5090,7 @@ func (m *Model) refreshViewport() {
 					sink.pending = &rendered
 					sink.pendingOffset = part.BodyOffset
 				}
-				target := &clickTarget{key: partKey, blockID: part.ID}
+				target := &clickTarget{key: partKey, blockID: part.ID, referenceTarget: part.Reference, disabledReason: part.Disabled}
 				addBlock(part.Text, target)
 				if len(renders) > 0 && renders[len(renders)-1].id == part.ID {
 					renders[len(renders)-1].prefixCells = part.PrefixCells

@@ -46,6 +46,7 @@ const (
 	ActionTranscriptNotebook   ActionID = "transcript-notebook"
 	ActionTranscriptLegacy     ActionID = "transcript-legacy"
 	ActionTranscriptConfigured ActionID = "transcript-configured"
+	ActionNotebookOrder        ActionID = "notebook-event-order"
 	ActionRollback             ActionID = "rollback"
 	ActionHelp                 ActionID = "help"
 
@@ -203,6 +204,7 @@ var actionCatalog = []actionDef{
 	{id: ActionTranscriptNotebook, label: "Use notebook transcript", desc: "show the notebook transcript for this session", priority: actionPriorityOptional},
 	{id: ActionTranscriptLegacy, label: "Use legacy transcript", desc: "show the legacy transcript for this session", priority: actionPriorityOptional},
 	{id: ActionTranscriptConfigured, label: "Use configured transcript view", desc: "clear the session override and follow the configured default", priority: actionPriorityOptional},
+	{id: ActionNotebookOrder, label: "Toggle notebook event order", desc: "switch the current structured narration between sections and event order", priority: actionPriorityOptional},
 	{
 		id: ActionRollback, label: "Roll back the last patch",
 		desc: "revert the most recent patch (Ctrl+R twice: the first press arms it)",
@@ -322,7 +324,9 @@ type actionContext struct {
 	// Context tab, so the context copy has something to copy. It is only ever
 	// set while that tab is the one on display: a body left open behind a tab
 	// the reader switched away from is not what they are looking at.
-	ContextDetailOpen bool
+	ContextDetailOpen      bool
+	NotebookOrderTarget    itemKey
+	NotebookOrderAvailable bool
 	// InspectorAgentRunningID is the runtime ID of the running agent selected
 	// on the inspector's Agents tab, or 0.
 	//
@@ -558,6 +562,7 @@ func (m Model) resolveActionSnapshot(key actionSnapshotKey) actionContext {
 	// The copy actions resolve their block through the same path dispatch
 	// uses, so availability and behaviour cannot describe different blocks.
 	ctx.CopyBlock, ctx.CopyBlockFound = m.copyBlock()
+	ctx.NotebookOrderTarget, ctx.NotebookOrderAvailable = m.notebookOrderTarget()
 	ctx.TranscriptEmpty = len(m.blockRenderSpans) == 0
 	// The inspected-change actions read the inspector's own state, which is
 	// the only place that knows what is selected and what has been fetched.
@@ -638,6 +643,13 @@ func availability(ctx actionContext, id ActionID) (disabled bool, reason string)
 		}
 		if ctx.SelectionActive {
 			return true, "clear the transcript selection or finish the drag before switching views"
+		}
+	case ActionNotebookOrder:
+		if ctx.TranscriptView != config.TranscriptNotebook {
+			return true, "switch to the notebook transcript first"
+		}
+		if !ctx.NotebookOrderAvailable {
+			return true, "move the reading anchor to a structured narration"
 		}
 	case ActionStopAgent:
 		if ctx.DrilledRunningChildID == 0 && ctx.InspectorAgentRunningID == 0 {
@@ -821,6 +833,11 @@ func (m *Model) runAction(id ActionID) (tea.Model, tea.Cmd) {
 	case ActionTranscriptConfigured:
 		m.transcriptViewOverride = nil
 		m.setTranscriptView(m.configuredTranscriptView())
+		m.invalidateActionSnapshot()
+	case ActionNotebookOrder:
+		m.toggleNotebookWorkOrder(ctx.NotebookOrderTarget)
+		m.lastTranscriptHash = 0
+		m.refreshViewport()
 		m.invalidateActionSnapshot()
 	case ActionStopAgent:
 		// The inspector's selection wins when it has one, matching ctrlXID's

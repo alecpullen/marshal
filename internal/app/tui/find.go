@@ -162,6 +162,11 @@ func (m *Model) refreshFind() {
 	}
 	previous, hadPrevious := m.currentFindMatch()
 	doc := m.conversationDocument()
+	if m.notebookView {
+		if state, _ := m.conversationSource(); state != nil {
+			doc = notebookFindDocument(doc, state.ScopeID(), m.notebookWorkReversed)
+		}
+	}
 	m.find.matches = conversation.FindInDocument(doc, conversation.NewFindQuery(m.find.query), m.findIndex)
 	m.find.truncated = conversation.DocumentTruncated(doc)
 
@@ -195,6 +200,24 @@ func (m *Model) refreshFind() {
 	// hit is genuinely gone is still better served by the nearest position than
 	// by the first match in the transcript.
 	m.find.current = clampFindIndex(m.find.current, len(m.find.matches))
+}
+
+func notebookFindDocument(doc *conversation.Document, scope string, reversed map[itemKey]bool) *conversation.Document {
+	if doc == nil {
+		return doc
+	}
+	blocks := doc.Blocks()
+	var visit func([]conversation.Block)
+	visit = func(items []conversation.Block) {
+		for i := range items {
+			if !reversed[notebookItemKey(scope, items[i].ID)] {
+				items[i].EventOrderAlternatives = nil
+			}
+			visit(items[i].Children)
+		}
+	}
+	visit(blocks)
+	return conversation.NewDocument(blocks)
 }
 
 // currentFindMatch returns the match the reader is on.

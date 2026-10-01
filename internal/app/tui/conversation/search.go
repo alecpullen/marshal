@@ -103,21 +103,33 @@ func FindInDocument(doc *Document, q FindQuery, index *SearchIndex) []FindMatch 
 		if len(out) >= maxFindMatches {
 			break
 		}
-		// A collapsed group's members are searched as blocks of their own:
-		// their output is still in the conversation, and a query that matched
-		// inside one must be able to open it.
-		for _, child := range b.Children {
-			out = appendFindMatches(out, b.ID, child, needle, index)
-			if len(out) >= maxFindMatches {
-				break
-			}
-		}
+		// Search nested section members as blocks of their own: their output is
+		// still in the conversation, and a match must open the owning narration.
+		out = appendNestedBlockMatches(out, b.ID, b.Children, needle, index)
+		// Structured notebook narration keeps source-faithful prior revisions
+		// outside the semantic section tree. Search those alternatives as part
+		// of the same collapsed narration, so a match can still open its parent.
+		out = appendNestedBlockMatches(out, b.ID, b.EventOrderAlternatives, needle, index)
 		if len(out) >= maxFindMatches {
 			break
 		}
 	}
 	if len(out) > maxFindMatches {
 		out = out[:maxFindMatches]
+	}
+	return out
+}
+
+func appendNestedBlockMatches(out []FindMatch, scrollTo BlockID, blocks []Block, needle []rune, index *SearchIndex) []FindMatch {
+	for _, block := range blocks {
+		out = appendFindMatches(out, scrollTo, block, needle, index)
+		if len(out) >= maxFindMatches {
+			return out
+		}
+		out = appendNestedBlockMatches(out, scrollTo, block.Children, needle, index)
+		if len(out) >= maxFindMatches {
+			return out
+		}
 	}
 	return out
 }

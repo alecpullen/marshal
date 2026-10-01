@@ -33,6 +33,23 @@ func findTestModel(t *testing.T) Model {
 	return m
 }
 
+func TestNotebookFindSearchesOnlyVisibleRevisionOrder(t *testing.T) {
+	doc := conversation.NewDocument([]conversation.Block{{
+		ID: "narration:n", Kind: conversation.BlockNarration, Members: []string{"narration:n"}, Text: "Current headline",
+		EventOrderAlternatives: []conversation.Block{{ID: "revision:old", Kind: conversation.BlockMessage, Members: []string{"revision:old"}, Text: "Earlier private parser detail", SourceRevision: 1}},
+	}})
+	query := conversation.NewFindQuery("Earlier private parser detail")
+	sections := notebookFindDocument(doc, "scope", nil)
+	if got := conversation.FindInDocument(sections, query, nil); len(got) != 0 {
+		t.Fatalf("section-mode search exposed an unrendered revision: %+v", got)
+	}
+	eventOrder := notebookFindDocument(doc, "scope", map[itemKey]bool{notebookItemKey("scope", "narration:n"): true})
+	got := conversation.FindInDocument(eventOrder, query, nil)
+	if len(got) != 1 || got[0].Block != "revision:old" || got[0].Scroll != "narration:n" {
+		t.Fatalf("event-order search did not locate the visible revision: %+v", got)
+	}
+}
+
 // findScrollableModel returns a model whose transcript is TALLER than the
 // viewport.
 //

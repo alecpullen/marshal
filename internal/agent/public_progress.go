@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"marshal/internal/activity"
@@ -78,6 +79,8 @@ func (r *Runner) preflightNativeProgress(ctx context.Context, calls []schema.Too
 			tool, ok := r.Registry.Lookup("progress.update")
 			if !ok {
 				err = errProgressUnavailable
+			} else if len(call.Args) > activity.MaxProgressBytes {
+				err = fmt.Errorf("progress.update payload exceeds %d bytes", activity.MaxProgressBytes)
 			} else if validateErr := registry.ValidateArgs(tool, call.Args); validateErr != nil {
 				err = validateErr
 			} else {
@@ -87,7 +90,11 @@ func (r *Runner) preflightNativeProgress(ctx context.Context, calls []schema.Too
 				} else {
 					owner = receipt.Owner
 					accepted = true
-					ordered[i] = schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "Progress updated."}
+					content := "Progress updated."
+					if warning := boundedProgressDiagnostic(strings.Join(receipt.Warnings, "; ")); warning != "" {
+						content += " Warning: " + warning
+					}
+					ordered[i] = schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: content}
 					answered[i] = true
 				}
 			}

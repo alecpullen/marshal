@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"marshal/internal/activity"
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -79,6 +81,61 @@ func TestNativeProgressPreflightPreservesCallsAndWorkAccounting(t *testing.T) {
 	}
 	if !sawPair {
 		t.Fatalf("provider history lost original call order/IDs: %+v", p.Requests[1].Messages)
+	}
+}
+
+func TestNativeProgressReplyReportsUnresolvedEvidenceWithoutDroppingUpdate(t *testing.T) {
+	state := newTestState(t)
+	reg := registry.New()
+	if err := reg.Register(native.PublicProgressTool(state)); err != nil {
+		t.Fatal(err)
+	}
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{"", "Done."},
+		ToolCalls:     [][]schema.ToolCall{{{ID: "p1", Name: "progress_update", Args: json.RawMessage(`{"mode":"begin","headline":"Inspecting","sections":[{"kind":"evidence","text":"Observed output","evidence_refs":["expired-ref"]}]}`)}}, nil},
+		FinishReasons: []string{"tool_calls", "stop"},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test")
+	r.NativeTools = true
+	if err := r.Run(context.Background(), "inspect"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := state.ActivitySnapshot().ProgressRevisions; len(got) != 1 || got[0].Headline != "Inspecting" {
+		t.Fatalf("progress revisions = %+v, valid progress should be retained", got)
+	}
+	foundWarning := false
+	for _, message := range p.Requests[1].Messages {
+		if message.ToolCallID == "p1" && strings.Contains(message.Content, "Warning:") && strings.Contains(message.Content, "references are unavailable") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("native tool reply did not report the unresolved evidence warning: %+v", p.Requests[1].Messages)
+	}
+}
+
+func TestNativeProgressRejectsOversizedPayloadBeforeValidation(t *testing.T) {
+	state := newTestState(t)
+	reg := registry.New()
+	if err := reg.Register(native.PublicProgressTool(state)); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"mode":"begin","headline":"` + strings.Repeat("x", activity.MaxProgressBytes) + `"}`
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{"", "Done."},
+		ToolCalls:     [][]schema.ToolCall{{{ID: "p1", Name: "progress_update", Args: json.RawMessage(raw)}}, nil},
+		FinishReasons: []string{"tool_calls", "stop"},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test")
+	r.NativeTools = true
+	if err := r.Run(context.Background(), "inspect"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := state.ActivitySnapshot().ProgressRevisions; len(got) != 0 {
+		t.Fatalf("oversized native metadata was accepted: %+v", got)
+	}
+	if !strings.Contains(p.Requests[1].Messages[len(p.Requests[1].Messages)-1].Content, "payload exceeds") {
+		t.Fatalf("oversized native metadata reply did not explain rejection: %+v", p.Requests[1].Messages)
 	}
 }
 

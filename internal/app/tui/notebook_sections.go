@@ -130,6 +130,7 @@ func structuredNarrationSections(parent conversation.Block, narration activity.N
 	if latest.Body != "" {
 		children = append(children, blockRevision(conversation.Block{ID: conversation.BlockID("section:" + narration.ID + ":body"), Kind: conversation.BlockSection, Text: latest.Body, Source: conversation.SourceAnswer, SectionLabel: "Summary", CopyTargets: []conversation.CopyTarget{{Source: conversation.SourceAnswer, Text: latest.Body, Label: "Copy summary"}}}))
 	}
+	var unreferencedWork []conversation.Block
 	for _, child := range parent.Children {
 		if child.Kind == conversation.BlockMessage {
 			if len(child.Members) > 0 {
@@ -139,8 +140,15 @@ func structuredNarrationSections(parent conversation.Block, narration activity.N
 			}
 		}
 		if child.Kind == conversation.BlockThinking || len(child.Members) == 0 || !seenSource[child.Members[0]] {
-			children = append(children, child)
+			if child.Kind != conversation.BlockThinking && len(child.Members) > 0 {
+				unreferencedWork = append(unreferencedWork, child)
+			} else {
+				children = append(children, child)
+			}
 		}
+	}
+	if len(unreferencedWork) > 0 {
+		children = append(children, conversation.Block{ID: conversation.BlockID("section:" + narration.ID + ":work"), Kind: conversation.BlockSection, SectionLabel: string(activity.SectionWork), Children: unreferencedWork})
 	}
 	parent.Children = children
 	return notebookBlockRevision(parent)

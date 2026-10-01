@@ -77,9 +77,8 @@ func TestStructuredNarrationProjectsLatestSectionsAndUniqueEvidence(t *testing.T
 			t.Fatalf("revision %q exact location/copy = %+v, %v", want.id, loc, found)
 		}
 	}
-	priorSources := conversation.NewDocument(blocks[1].EventOrderAlternatives)
-	if matches := conversation.FindInDocument(priorSources, conversation.NewFindQuery("Earlier body"), nil); len(matches) == 0 || matches[0].Block != "rev1" {
-		t.Fatalf("prior revision body is not searchable in event-order sources: %+v", matches)
+	if matches := conversation.FindInDocument(doc, conversation.NewFindQuery("Earlier body"), nil); len(matches) == 0 || matches[0].Block != "rev1" || matches[0].Scroll != "narration:n" {
+		t.Fatalf("prior revision body is not searchable in the notebook document: %+v", matches)
 	}
 	loc, ok := doc.LocateMember("audit")
 	if !ok || len(loc.Ancestors) < 2 {
@@ -103,6 +102,25 @@ func TestStructuredNarrationProjectsLatestSectionsAndUniqueEvidence(t *testing.T
 	}
 	if copies != 1 || len(sections) != 3 || sections[0] != "change" || sections[1] != "checking" || sections[2] != "Summary" {
 		t.Fatalf("section/evidence projection copies=%d sections=%v children=%+v", copies, sections, blocks[1].Children)
+	}
+}
+
+func TestStructuredNarrationGroupsUnreferencedWorkSeparately(t *testing.T) {
+	narration := activity.Narration{ID: "n", RunID: "run", ActorID: "main", Source: activity.SourceStructuredProgress}
+	work := conversation.Block{ID: "audit:unreferenced", Kind: conversation.BlockTool, Members: []string{"audit:unreferenced"}, Text: "Ran a check"}
+	parent := conversation.Block{ID: "legacy:n", Kind: conversation.BlockNarration, Children: []conversation.Block{work}}
+	snapshot := session.ActivitySnapshot{
+		Narrations:        []activity.Narration{narration},
+		ProgressRevisions: []activity.ProgressRevision{{NarrationID: "n", Revision: 1, Headline: "Checking", Sections: []activity.ProgressSection{{Kind: activity.SectionChange, Text: "Updated file"}}}},
+	}
+	got := structuredNarrationSections(parent, narration, snapshot, nil, nil)
+	if len(got.Children) != 2 || got.Children[1].Kind != conversation.BlockSection || got.Children[1].SectionLabel != "work" || len(got.Children[1].Children) != 1 || got.Children[1].Children[0].ID != work.ID {
+		t.Fatalf("unreferenced work group = %+v", got.Children)
+	}
+	for _, part := range renderNotebookNarration(got, 80, true, false, false, nil) {
+		if part.ID == got.Children[1].ID && part.CopySource != "" {
+			t.Fatalf("group-only Work heading offered an invalid copy action: %+v", part)
+		}
 	}
 }
 

@@ -392,7 +392,7 @@ func renderNotebookNarration(block conversation.Block, width int, expanded, reve
 				return ""
 			}(),
 		})
-		if child.Kind == conversation.BlockSection || (hasItem && item.Message != nil && item.Message.ContentType == session.ContentTypeNarration) {
+		if (child.Kind == conversation.BlockSection && len(child.CopyTargets) > 0) || (hasItem && item.Message != nil && item.Message.ContentType == session.ContentTypeNarration) {
 			parts = append(parts, notebookRenderPart{ID: child.ID, Text: nestedRail() + mutedStyle().Render("Copy section") + "\n", CopySource: conversation.SourceAnswer})
 		} else if hasItem && item.Audit != nil && item.Audit.ResultContent != "" {
 			parts = append(parts, notebookRenderPart{ID: child.ID, Text: nestedRail() + mutedStyle().Render("Copy output") + "\n", CopySource: conversation.SourceOutput})

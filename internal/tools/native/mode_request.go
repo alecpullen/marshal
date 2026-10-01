@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
@@ -55,8 +56,14 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 		}
 
 		ch := make(chan session.UserApprovalDecision, 1)
+		owner, _ := activity.FromContext(ctx)
+		pendingID := owner.CallID
+		if pendingID == "" {
+			pendingID = fmt.Sprintf("mode_req_%d", time.Now().UnixNano())
+		}
 		pending := &session.PendingToolCall{
-			ID:           fmt.Sprintf("mode_req_%d", time.Now().UnixNano()),
+			Activity:     owner,
+			ID:           pendingID,
 			Name:         "mode.request",
 			Args:         string(call.Args),
 			Reason:       reason,

@@ -712,6 +712,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		r.TitleManager.OnUserTurn(ctx, goal)
 	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
+	turnMessages := r.State.Messages()
+	var boundaryID int64
+	if len(turnMessages) > 0 {
+		boundaryID = turnMessages[len(turnMessages)-1].ID
+	}
+	activityRun := r.State.BeginActivityRun(boundaryID)
+	defer r.State.EndActivityRun(activityRun)
 	// If the previous turn was interrupted (Esc), surface a one-line note in
 	// the user's transcript so they know where things stopped. The model
 	// gets its full orientation from the persisted RoleUser interrupt marker
@@ -1330,15 +1337,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// renders and persists without re-entering the model's context,
 			// where the identical text is already present on the very next
 			// line.
+			responseOwner := res.Activity
 			if narration := strings.TrimSpace(res.Text); narration != "" {
-				r.State.AddMessage(session.RoleAssistant, narration, session.ContentTypeNarration)
+				responseOwner = r.State.BindActivityNarration(responseOwner, narration)
+				r.State.AddNarrationMessage(responseOwner, narration)
+			} else {
+				responseOwner = r.State.BindActivityFallback(responseOwner)
 			}
 
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
 			toolCallCountThisTurn += len(res.ToolCalls)
 
-			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls)
+			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls, responseOwner)
 			if execErr != nil {
 				return task, r.failTurn(task, execErr)
 			}
@@ -1466,6 +1477,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}
+			responseOwner := r.State.BindActivityFallback(res.Activity)
+			for i := range action.Actions {
+				action.Actions[i].Activity = r.State.BeginActivityCall(responseOwner, action.Actions[i].ToolCallID)
+			}
 			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
 			if execErr != nil {
 				return task, r.failTurn(task, execErr)
@@ -1527,6 +1542,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			return task, nil
 		case ActionToolCall, ActionPatch:
 			toolCallCountThisTurn++
+			action.Activity = r.State.BeginActivityCall(r.State.BindActivityFallback(res.Activity), action.ToolCallID)
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
 				return task, r.failTurn(task, err)

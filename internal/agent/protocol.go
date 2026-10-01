@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/session"
 	"marshal/internal/jsonextract"
 )
@@ -33,6 +34,7 @@ var (
 // described in docs/07-agent-runtime-and-swarm.md. When Actions is set,
 // the single-action fields are empty and vice-versa.
 type ModelAction struct {
+	Activity   activity.Ref `json:"-"`
 	Rationale  string
 	Type       ActionType
 	Tool       string

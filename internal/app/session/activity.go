@@ -65,6 +65,35 @@ func (s *State) BeginActivityResponse() activity.Ref {
 	return s.activityResponse
 }
 
+// BeginActivityCall allocates a unique runtime call identity while retaining
+// the provider's call ID when one was supplied.
+func (s *State) BeginActivityCall(owner activity.Ref, providerCallID string) activity.Ref {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner.CallID = s.nextActivityIDLocked("call")
+	owner.ProviderCallID = providerCallID
+	return owner
+}
+
+// BindActivityFallback binds tool-only output to the current runtime context.
+func (s *State) BindActivityFallback(owner activity.Ref) activity.Ref {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if owner.NarrationID != "" {
+		return owner
+	}
+	owner.NarrationID = s.nextActivityIDLocked("narration")
+	s.activitySequence++
+	s.activityNarrations = append(s.activityNarrations, activity.Narration{
+		ID: owner.NarrationID, RunID: owner.RunID, ActorID: owner.ActorID,
+		ResponseID: owner.ResponseID, BoundaryMessageID: s.activityBoundary,
+		Source: activity.SourceRuntimeFallback, Sequence: s.activitySequence,
+	})
+	s.setActivityResponseNarrationLocked(owner.ResponseID, owner.NarrationID)
+	s.activityResponse = owner
+	return owner
+}
+
 // BindActivityNarration records public model prose by response identity.
 // The returned ref is a new value and can be safely captured by dispatchers.
 func (s *State) BindActivityNarration(response activity.Ref, publicText string) activity.Ref {

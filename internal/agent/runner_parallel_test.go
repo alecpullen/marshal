@@ -476,6 +476,53 @@ func TestParallelAgentRunDispatchesConcurrently(t *testing.T) {
 	}
 }
 
+// A leading sequential native call must not leak its index into the
+// batch-relative result slots used by consecutive agent.run calls.
+func TestNativeAgentRunBatchAfterSequentialCallKeepsResultIndexesRelative(t *testing.T) {
+	reg := registry.New()
+	for _, tool := range []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly, Handler: func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "read", Content: "file contents"}, nil
+		}},
+		{Name: "agent.run", Risk: registry.RiskWorkspaceWrite, Handler: func(_ context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: string(call.Args)}, nil
+		}},
+	} {
+		if err := reg.Register(tool); err != nil {
+			t.Fatalf("register %s: %v", tool.Name, err)
+		}
+	}
+	state := newTestState(t)
+	policyEngine := policy.NewEngine(&config.Config{}, nil)
+	policyEngine.SetApprovalMode(policy.ModeAuto)
+	runner := NewRunner(nil, reg, policyEngine, state, "test")
+	state.AddMessage(session.RoleUser, "inspect", session.ContentTypePlain)
+	msgs := state.Messages()
+	run := state.BeginActivityRun(msgs[len(msgs)-1].ID)
+	response := state.BeginActivityResponse()
+
+	results, err := runner.executeNativeToolCalls(context.Background(), []schema.ToolCall{
+		{ID: "read", Name: "file.read", Args: json.RawMessage(`{}`)},
+		{ID: "run-a", Name: "agent.run", Args: json.RawMessage(`{"prompt":"a"}`)},
+		{ID: "run-b", Name: "agent.run", Args: json.RawMessage(`{"prompt":"b"}`)},
+	}, response)
+	if err != nil {
+		t.Fatalf("executeNativeToolCalls: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("result messages = %d, want 3: %+v", len(results), results)
+	}
+	audits := state.AuditLog()
+	if len(audits) != 3 {
+		t.Fatalf("audit events = %d, want 3: %+v", len(audits), audits)
+	}
+	for i, audit := range audits {
+		if audit.Activity.RunID != run.RunID || audit.Activity.ResponseID != response.ResponseID || audit.Activity.CallID == "" {
+			t.Errorf("audit %d lost captured ownership: %+v", i, audit.Activity)
+		}
+	}
+}
+
 // TestParallelAgentRunPreservesSiblingsOnError verifies that when one of
 // two concurrent agent.run calls fails, the sibling's result is still
 // recorded and the turn completes.

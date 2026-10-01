@@ -35,9 +35,17 @@ type InProgressMessage struct {
 // left over from a previous call. Call this once per model call that may
 // stream reasoning content, before consuming its event stream.
 func (s *State) BeginStreaming() {
+	s.BeginStreamingFor(activity.Ref{})
+}
+
+// BeginStreamingFor records thinking against the response captured by its caller.
+func (s *State) BeginStreamingFor(owner activity.Ref) {
 	s.mu.Lock()
 	s.activitySequence++
-	s.inProgress = InProgressMessage{StartedAt: time.Now(), Active: true, Activity: s.activityResponse, Sequence: s.activitySequence}
+	if owner == (activity.Ref{}) {
+		owner = s.activityResponse
+	}
+	s.inProgress = InProgressMessage{StartedAt: time.Now(), Active: true, Activity: owner, Sequence: s.activitySequence}
 	snap := s.inProgress
 	s.mu.Unlock()
 	s.publishEvent(EventThinkingChanged, Event{Thinking: &snap})
@@ -46,7 +54,15 @@ func (s *State) BeginStreaming() {
 // AppendThinking appends a chunk of reasoning/thinking text to the
 // in-progress message.
 func (s *State) AppendThinking(delta string) {
+	s.AppendThinkingFor(activity.Ref{}, delta)
+}
+
+// AppendThinkingFor appends a chunk and stamps the explicitly captured owner.
+func (s *State) AppendThinkingFor(owner activity.Ref, delta string) {
 	s.mu.Lock()
+	if owner != (activity.Ref{}) {
+		s.inProgress.Activity = owner
+	}
 	s.inProgress.Reasoning += delta
 	snap := s.inProgress
 	s.mu.Unlock()

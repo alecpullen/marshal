@@ -87,6 +87,17 @@ func TestNarrationRecordedForTextWithToolCalls(t *testing.T) {
 	if narrationCount != 1 {
 		t.Fatalf("narration message count = %d, want 1", narrationCount)
 	}
+	snapshot := state.ActivitySnapshot()
+	if len(snapshot.Narrations) != 1 || snapshot.Narrations[0].Text != "Checking the guard first." {
+		t.Fatalf("activity snapshot did not retain the accepted narration: %+v", snapshot.Narrations)
+	}
+	if len(state.AuditLog()) != 1 {
+		t.Fatalf("audit calls = %d, want one", len(state.AuditLog()))
+	}
+	audit := state.AuditLog()[0]
+	if audit.Activity.RunID == "" || audit.Activity.ResponseID == "" || audit.Activity.NarrationID != snapshot.Narrations[0].ID || audit.Activity.CallID == "" || audit.Activity.ProviderCallID != "tc1" {
+		t.Fatalf("audit ownership = %+v, narration = %+v", audit.Activity, snapshot.Narrations[0])
+	}
 }
 
 // Narration must not swallow the thinking/reasoning summary. AddMessage
@@ -160,5 +171,8 @@ func TestNarrationNotRecordedForEmptyTextWithToolCalls(t *testing.T) {
 		if m.ContentType == session.ContentTypeNarration {
 			t.Fatalf("empty text must not produce narration, found %q", m.Content)
 		}
+	}
+	if len(state.AuditLog()) != 1 || state.AuditLog()[0].Activity.NarrationID == "" {
+		t.Fatalf("tool-only response should receive runtime fallback ownership: %+v", state.AuditLog())
 	}
 }

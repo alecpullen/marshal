@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/routing"
@@ -102,8 +103,14 @@ func (t *toolSet) requestConfigApproval(ctx context.Context, reason string) (boo
 		return false, fmt.Errorf("session state not available — cannot request approval")
 	}
 	ch := make(chan session.UserApprovalDecision, 1)
+	owner, _ := activity.FromContext(ctx)
+	pendingID := owner.CallID
+	if pendingID == "" {
+		pendingID = fmt.Sprintf("config_approve_%d", time.Now().UnixNano())
+	}
 	pending := &session.PendingToolCall{
-		ID:           fmt.Sprintf("config_approve_%d", time.Now().UnixNano()),
+		Activity:     owner,
+		ID:           pendingID,
 		Name:         "config.write",
 		Reason:       reason,
 		Schema:       "Configuration change approval",

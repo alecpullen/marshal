@@ -95,6 +95,7 @@ func UnansweredAnswers(questions []Question) []Answer {
 // user response. The runner blocks on ResponseChan; the TUI sends exactly
 // one value, one Answer per Question (in the same order).
 type PendingQuestion struct {
+	Activity     activity.Ref
 	Questions    []Question
 	ResponseChan chan []Answer
 	responded    sync.Once
@@ -390,6 +391,7 @@ const (
 // the ACP permission bridge) sends exactly one choice. Mirrors
 // PendingToolCall's once-only Respond protocol.
 type PendingSkillGate struct {
+	Activity     activity.Ref
 	Skill        string
 	Description  string
 	Reason       string

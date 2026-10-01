@@ -3,15 +3,31 @@
 // persisted; restored messages therefore have unknown ownership.
 package activity
 
+import "context"
+
 // Ref identifies one run, provider response, narration, or dispatched call.
 // Empty fields mean that the source has no known activity attribution.
 // IDs are runtime identities and are not stable across process restarts.
 type Ref struct {
-	RunID       string
-	ActorID     string
-	ResponseID  string
-	NarrationID string
-	CallID      string
+	RunID          string
+	ActorID        string
+	ResponseID     string
+	NarrationID    string
+	CallID         string
+	ProviderCallID string
+}
+
+type contextKey struct{}
+
+// WithRef passes an immutable activity owner through native tool handlers.
+func WithRef(ctx context.Context, ref Ref) context.Context {
+	return context.WithValue(ctx, contextKey{}, ref)
+}
+
+// FromContext returns the captured owner supplied by the runner, if any.
+func FromContext(ctx context.Context) (Ref, bool) {
+	ref, ok := ctx.Value(contextKey{}).(Ref)
+	return ref, ok
 }
 
 type Source string

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/session"
 	"marshal/internal/hooks"
 	"marshal/internal/llm/schema"
@@ -93,11 +94,12 @@ type policyLoopResult struct {
 // user-declined) are returned as Messages so the caller can short-circuit.
 // On an error from approval (context cancel, etc.) it is returned to the
 // caller. When the decision is allow, Approval is set to ApprovalNotRequired.
-func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, normalizedArgs json.RawMessage, decision policy.Decision, reason, toolCallID string) (policyLoopResult, error) {
+func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, normalizedArgs json.RawMessage, decision policy.Decision, reason, toolCallID string, owner activity.Ref) (policyLoopResult, error) {
 	approval := registry.ApprovalNotRequired
 	switch decision {
 	case policy.DecisionDeny:
 		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
+		event.Activity = owner
 		r.logToolCall(event)
 		r.countToolCall(true, false)
 		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
@@ -107,13 +109,14 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		// all approval requests on this runner, including those launched
 		// from the parallel read-only batch in executeActions.
 		r.approvalMu.Lock()
-		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
+		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason, owner)
 		r.approvalMu.Unlock()
 		if waitErr != nil {
 			return policyLoopResult{}, waitErr
 		}
 		if !approved {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
+			event.Activity = owner
 			r.logToolCall(event)
 			r.countToolCall(true, false)
 			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}}, nil
@@ -180,6 +183,17 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 // model. Loop-detection/stall handling is done by the caller (RunTask), not
 // here — this only records the call into the progress tracker.
 func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, error) {
+	if action.Activity.CallID == "" {
+		owner := action.Activity
+		if owner.ResponseID == "" {
+			owner = r.State.ActivitySnapshot().Response
+		}
+		if owner.NarrationID == "" {
+			owner = r.State.BindActivityFallback(owner)
+		}
+		action.Activity = r.State.BeginActivityCall(owner, action.ToolCallID)
+	}
+	ctx = activity.WithRef(ctx, action.Activity)
 	toolName := action.Tool
 	if action.Type == ActionPatch {
 		toolName = "file.write_patch"
@@ -247,6 +261,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			logged := cached
 			logged.Summary = "(cached) " + logged.Summary
 			call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
+			call.Activity = action.Activity
+			call.Activity = action.Activity
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
 			r.logToolCall(event)
 			r.countToolCall(false, true)
@@ -293,7 +309,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, evalErr.Error(), toolCallID)}, nil
 		}
 
-		policyResult, err := r.handlePolicyDecision(ctx, tool, toolName, args, argsMap, normalizedArgs, decision, reason, toolCallID)
+		policyResult, err := r.handlePolicyDecision(ctx, tool, toolName, args, argsMap, normalizedArgs, decision, reason, toolCallID, action.Activity)
 		if err != nil {
 			return nil, err
 		}
@@ -312,6 +328,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		lastHookOut = hookOut
 		if hookErr != nil {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookErr.Error()))
+			event.Activity = action.Activity
 			event.Hooks = hookAuditMetadata(hookOut)
 			r.logToolCall(event)
 			r.countToolCall(true, false)
@@ -319,6 +336,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 		if hookOut.Decision == hooks.DecisionBlock {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookOut.Reason))
+			event.Activity = action.Activity
 			event.Hooks = hookAuditMetadata(hookOut)
 			r.logToolCall(event)
 			r.countToolCall(true, false)
@@ -345,6 +363,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	r.State.SetActivity(session.Activity{Kind: session.ActivityTool, Label: label, StartedAt: r.Now()})
 	r.State.SetActiveToolCall(session.ActiveToolCall{
 		Name:      toolName,
+		Activity:  action.Activity,
 		Args:      SummarizeToolArgs(toolName, args),
 		Path:      firstPatchPathFromArgs(toolName, args),
 		StartedAt: r.Now(),
@@ -372,11 +391,12 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if callID == "" {
 		callID = fmt.Sprintf("call_%d", r.Now().UnixNano())
 	}
-	call := registry.ToolCall{ID: callID, Name: toolName, Args: args}
+	call := registry.ToolCall{Activity: action.Activity, ID: callID, Name: toolName, Args: args}
 	start := time.Now()
 	result, execErr := tool.Handler(ctx, call)
 	if execErr != nil {
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
+		event.Activity = action.Activity
 		event.Duration = time.Since(start)
 		event.Hooks = hookAuditMetadata(lastHookOut)
 		event.OriginalArgs = originalApprovedArgs
@@ -443,6 +463,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
+	event.Activity = action.Activity
 	event.Duration = time.Since(start)
 	event.Hooks = hookAuditMetadata(lastHookOut)
 	event.OriginalArgs = originalApprovedArgs
@@ -514,19 +535,24 @@ func normalizeToolName(reg *registry.Registry, name string) string {
 	return name
 }
 
-func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.ToolCall) ([]schema.ChatMessage, error) {
+func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.ToolCall, owner activity.Ref) ([]schema.ChatMessage, error) {
 	r.trackerMu.Lock()
 	r.invalidArgsThisRound = 0
 	r.trackerMu.Unlock()
 	msgs := make([]schema.ChatMessage, 0, len(calls))
+	owners := make([]activity.Ref, len(calls))
+	for i, call := range calls {
+		owners[i] = r.State.BeginActivityCall(owner, call.ID)
+	}
 
 	// agent.run calls are dispatched concurrently when a batch contains
 	// consecutive runs. ask_user / question.ask stay sequential because
 	// they share single-session state slots. Non-agent-run tools run
 	// sequentially in their natural order.
 	type runSlot struct {
-		idx  int
-		call schema.ToolCall
+		idx   int
+		call  schema.ToolCall
+		owner activity.Ref
 	}
 	var runBatch []runSlot
 	flushRunBatch := func() error {
@@ -540,6 +566,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 				Tool:       call.Name,
 				Args:       call.Args,
 				ToolCallID: call.ID,
+				Activity:   runBatch[0].owner,
 			})
 			if err != nil {
 				msgs = append(msgs, r.buildToolErrorMessage(call.Name, err.Error(), call.ID))
@@ -563,6 +590,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 					Tool:       slot.call.Name,
 					Args:       slot.call.Args,
 					ToolCallID: slot.call.ID,
+					Activity:   slot.owner,
 				})
 				results[slot.idx] = res
 				errs[slot.idx] = err
@@ -580,13 +608,15 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 		return nil
 	}
 
-	for _, call := range calls {
+	for callIndex, call := range calls {
+		callOwner := owners[callIndex]
+		callCtx := activity.WithRef(ctx, callOwner)
 		call.Name = normalizeToolName(r.Registry, call.Name)
 		if call.Name == "ask_user" {
 			if err := flushRunBatch(); err != nil {
 				return nil, err
 			}
-			msg, err := r.executeNativeAskUser(ctx, call)
+			msg, err := r.executeNativeAskUser(callCtx, call)
 			if err != nil {
 				return nil, err
 			}
@@ -597,7 +627,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			if err := flushRunBatch(); err != nil {
 				return nil, err
 			}
-			msg, err := r.executeNativeQuestionAsk(ctx, call)
+			msg, err := r.executeNativeQuestionAsk(callCtx, call)
 			if err != nil {
 				return nil, err
 			}
@@ -605,7 +635,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			continue
 		}
 		if call.Name == "agent.run" {
-			runBatch = append(runBatch, runSlot{idx: len(runBatch), call: call})
+			runBatch = append(runBatch, runSlot{idx: len(runBatch), call: call, owner: callOwner})
 			continue
 		}
 		if err := flushRunBatch(); err != nil {
@@ -616,6 +646,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			Tool:       call.Name,
 			Args:       call.Args,
 			ToolCallID: call.ID,
+			Activity:   callOwner,
 		})
 		if err != nil {
 			return nil, err
@@ -856,6 +887,7 @@ func (r *Runner) logToolCall(event registry.AuditEvent) {
 // approvalMu because State.PendingSkillGate is a single slot, exactly like
 // requestApproval serializes on State.PendingApproval.
 func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args json.RawMessage, argsMap map[string]interface{}, toolCallID string) ([]schema.ChatMessage, bool) {
+	owner, _ := activity.FromContext(ctx)
 	threshold := r.State.Config.Skills.LoadGateThresholdTokens
 	if threshold <= 0 {
 		return nil, false
@@ -875,7 +907,7 @@ func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args jso
 		return nil, false
 	case session.SkillGateDenied:
 		r.State.SkillGateRecordDeny(name)
-		return r.skillGateDenyMessages(name, args, toolCallID), true
+		return r.skillGateDenyMessages(name, args, toolCallID, owner), true
 	}
 	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
 		r.State.SkillGateRecordAllow(name, false)
@@ -903,7 +935,7 @@ func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args jso
 			return []schema.ChatMessage{r.buildToolErrorMessage("skill.load", "skill load was not approved (prompt cancelled)", toolCallID)}, true
 		}
 		r.State.SkillGateRecordDeny(name)
-		return r.skillGateDenyMessages(name, args, toolCallID), true
+		return r.skillGateDenyMessages(name, args, toolCallID, owner), true
 	}
 }
 
@@ -911,9 +943,10 @@ func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args jso
 // (with the call's args and the refused skill's name, so the audit log
 // can distinguish which load was denied), the tool-call counter, and the
 // guidance message verbatim from the spec.
-func (r *Runner) skillGateDenyMessages(name string, args json.RawMessage, toolCallID string) []schema.ChatMessage {
+func (r *Runner) skillGateDenyMessages(name string, args json.RawMessage, toolCallID string, owner activity.Ref) []schema.ChatMessage {
 	tool, _ := r.Registry.Lookup("skill.load")
 	event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: "skill.load", Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied by skill load gate: %s", name))
+	event.Activity = owner
 	r.logToolCall(event)
 	r.countToolCall(true, false)
 	return []schema.ChatMessage{r.buildToolErrorMessage("skill.load",

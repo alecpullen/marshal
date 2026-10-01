@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/session"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
@@ -18,7 +19,14 @@ import (
 // clear PendingApproval. The wait ends only on a decision, ctx
 // cancellation (turn cancel/shutdown), or State.ResolvePendingForShutdown —
 // there is no wall-clock timeout.
-func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, reason string) (approved bool, edited string, err error) {
+func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, reason string, owners ...activity.Ref) (approved bool, edited string, err error) {
+	var owner activity.Ref
+	if len(owners) > 0 {
+		owner = owners[0]
+	}
+	if owner == (activity.Ref{}) {
+		owner, _ = activity.FromContext(ctx)
+	}
 	command, _ := argsMap["command"].(string)
 	if command == "" {
 		command = toolName
@@ -33,8 +41,13 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		}
 	}
 
+	pendingID := owner.CallID
+	if pendingID == "" {
+		pendingID = fmt.Sprintf("call_%d", r.Now().UnixNano())
+	}
 	tc := &session.PendingToolCall{
-		ID:           fmt.Sprintf("call_%d", r.Now().UnixNano()),
+		Activity:     owner,
+		ID:           pendingID,
 		Name:         toolName,
 		Args:         string(args),
 		Command:      command,
@@ -82,7 +95,9 @@ func (r *Runner) requestAnswer(ctx context.Context, question string) (string, er
 // State.ResolvePendingForShutdown, which answers every pending question
 // with Unanswered.
 func (r *Runner) requestQuestions(ctx context.Context, questions []session.Question) ([]session.Answer, error) {
+	owner, _ := activity.FromContext(ctx)
 	q := &session.PendingQuestion{
+		Activity:     owner,
 		Questions:    questions,
 		ResponseChan: make(chan []session.Answer, 1),
 	}
@@ -144,6 +159,7 @@ func recordQuestionAnswers(state *session.State, answers []session.Answer) {
 // cancellation (turn cancel/shutdown), or State.ResolvePendingForShutdown
 // (which answers with SkillGateDeny).
 func (r *Runner) requestSkillGate(ctx context.Context, name string) (session.SkillGateChoice, error) {
+	owner, _ := activity.FromContext(ctx)
 	description := ""
 	if r.SkillIndex != nil {
 		if skill, ok := r.SkillIndex.Load(name); ok {
@@ -156,6 +172,7 @@ func (r *Runner) requestSkillGate(ctx context.Context, name string) (session.Ski
 		windowLabel = "≤ " + strutil.CompactTokens(window) + " tokens"
 	}
 	sg := &session.PendingSkillGate{
+		Activity:     owner,
 		Skill:        name,
 		Description:  description,
 		Reason:       fmt.Sprintf("Context window is %s; loading skills consumes context. Allow this load?", windowLabel),

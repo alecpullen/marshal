@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
@@ -600,7 +601,9 @@ func modelChangeNeedsConsent(parentModel, parentProvider, childModel, childProvi
 // panel — the consent reason is displayed as the approval reason.
 func requestSubagentConsent(ctx context.Context, state *session.State, reason string) (approved, denied bool) {
 	ch := make(chan session.UserApprovalDecision, 1)
+	owner, _ := activity.FromContext(ctx)
 	tc := &session.PendingToolCall{
+		Activity:     owner,
 		ID:           "subagent-model-consent",
 		Name:         "agent.run",
 		Args:         "",

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
@@ -44,6 +45,7 @@ func reconnectBackoff(attempt int) time.Duration {
 }
 
 type chatResult struct {
+	Activity     activity.Ref
 	Text         string
 	ToolCalls    []schema.ToolCall
 	FinishReason string
@@ -331,6 +333,7 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 // everything here is torn down when the attempt ends, including when the
 // attempt is cut short by a detected loop.
 func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
+	responseOwner := r.State.BeginActivityResponse()
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, r.effectiveChatTimeout())
 	defer cancel()
@@ -420,7 +423,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		Status: session.InspectionStreaming,
 	})
 
-	r.State.BeginStreaming()
+	r.State.BeginStreamingFor(responseOwner)
 	started := r.Now()
 	// Seed the status label with what the agent last said it was doing;
 	// live thinking lines replace it as they complete below.
@@ -454,7 +457,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		switch event.Type {
 		case schema.ChatEventDelta:
 			if event.Kind == schema.DeltaThinking {
-				r.State.AppendThinking(event.Delta)
+				r.State.AppendThinkingFor(responseOwner, event.Delta)
 				thinkingBuf.WriteString(event.Delta)
 				if loopSnippet == "" {
 					if looped, repeated := det.feed(event.Delta); looped {
@@ -494,7 +497,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 				Status: inspectionStatusFor(ctx, event.Err),
 				Err:    event.Err.Error(),
 			})
-			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, event.Err
+			return chatResult{Activity: responseOwner, Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, event.Err
 		case schema.ChatEventDone:
 			usage = event.Usage
 			toolCalls = event.ToolCalls
@@ -538,7 +541,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			s.m.CacheWriteTokens += usage.CacheWriteTokens
 		})
 	}
-	return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, nil
+	return chatResult{Activity: responseOwner, Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, nil
 }
 
 func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {

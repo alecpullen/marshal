@@ -4707,30 +4707,11 @@ func (m *Model) refreshViewport() {
 	// While drilled into a subagent, render the child session's transcript
 	// (and its live blocks) in place of the orchestrator's. The parent
 	// transcript is left untouched so popping back restores it as-is.
-	transcriptState := m.state
-	drilled, drilling := m.drilledInto()
-	if drilling {
-		if drilled.Child != nil {
-			transcriptState = drilled.Child
-		} else {
-			drilling = false
-		}
+	transcriptState, items := m.conversationSource()
+	if transcriptState == nil {
+		transcriptState = m.state
 	}
-	items := transcriptState.Transcript()
-	if !drilling {
-		// The completed agent.run audit event duplicates the subagent card
-		// (its full result content is the verbose subagent log); the card
-		// replaces it in the parent view. While drilled in, the child's own
-		// audit events render normally.
-		filtered := items[:0]
-		for _, item := range items {
-			if item.Kind == session.KindAudit && item.Audit != nil && item.Audit.ToolName == "agent.run" {
-				continue
-			}
-			filtered = append(filtered, item)
-		}
-		items = filtered
-	}
+	drilling := transcriptState != m.state
 	inProgress := transcriptState.InProgress()
 	streamLen := len(inProgress.Reasoning)
 	atc, activeTool := transcriptState.ActiveToolCall()

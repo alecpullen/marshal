@@ -29,14 +29,13 @@ import (
 // member list match what the user can actually click.
 func (m Model) conversationDocument() *conversation.Document {
 	items := m.conversationItems()
-	entries := groupTranscript(items)
-	blocks := make([]conversation.Block, 0, len(entries))
-	for _, entry := range entries {
-		if block, ok := conversationBlock(entry); ok {
-			blocks = append(blocks, block)
-		}
+	var snapshot session.ActivitySnapshot
+	options := conversationProjectionOptions{}
+	if state, _ := m.conversationSource(); state != nil {
+		snapshot = state.ActivitySnapshot()
+		options.ScopeID = state.ScopeID()
 	}
-	return conversation.NewDocument(blocks)
+	return projectConversation(items, snapshot, options)
 }
 
 // conversationItems returns the transcript the user is actually looking at,
@@ -47,6 +46,13 @@ func (m Model) conversationDocument() *conversation.Document {
 // replaces it in the parent view. A document that included the filtered event
 // would offer a copy target for an item the user cannot see.
 func (m Model) conversationItems() []session.TranscriptItem {
+	_, items := m.conversationSource()
+	return items
+}
+
+// conversationSource is shared with refreshViewport so semantic actions and
+// rendered rows use the same drill scope and duplicate agent.run filter.
+func (m Model) conversationSource() (*session.State, []session.TranscriptItem) {
 	transcriptState := m.state
 	drilled, drilling := m.drilledInto()
 	if drilling {
@@ -57,12 +63,12 @@ func (m Model) conversationItems() []session.TranscriptItem {
 		}
 	}
 	if transcriptState == nil {
-		return nil
+		return nil, nil
 	}
 
 	items := transcriptState.Transcript()
 	if drilling {
-		return items
+		return transcriptState, items
 	}
 
 	filtered := make([]session.TranscriptItem, 0, len(items))
@@ -72,7 +78,7 @@ func (m Model) conversationItems() []session.TranscriptItem {
 		}
 		filtered = append(filtered, item)
 	}
-	return filtered
+	return transcriptState, filtered
 }
 
 // conversationBlock converts one render entry into a semantic block.

@@ -40,6 +40,10 @@ const (
 	BlockRunEvent
 	// BlockJobExit is a background job finishing.
 	BlockJobExit
+	// BlockNarration is a stable parent section in the notebook projection.
+	BlockNarration
+	// BlockOwnershipNote is explanatory presentation metadata without source identity.
+	BlockOwnershipNote
 )
 
 // CopySource names what a piece of text IS, so a copy action can label its
@@ -80,6 +84,9 @@ type Block struct {
 	// member's identity; for a group it is derived from the group's first
 	// member.
 	ID BlockID
+	// PresentationOnly permits an explicitly identified note that is not a
+	// transcript source. Such blocks must not claim members or copy targets.
+	PresentationOnly bool
 	// Kind classifies the block.
 	Kind BlockKind
 	// Members are the transcript identities this block covers, in order. A
@@ -130,6 +137,14 @@ type Document struct {
 	byMember map[string]int
 }
 
+// NestedLocation identifies an exact block within a presentation tree. Ancestors
+// are ordered outermost first and let callers expand or scroll to the child
+// without widening its copy target.
+type NestedLocation struct {
+	Block     Block
+	Ancestors []BlockID
+}
+
 // NewDocument indexes the supplied blocks.
 //
 // A block with no members is dropped: it has no identity to derive, and
@@ -143,6 +158,9 @@ func NewDocument(blocks []Block) *Document {
 	}
 	for _, b := range blocks {
 		b = normalizeBlock(b)
+		if b.PresentationOnly && (len(b.Members) != 0 || len(b.CopyTargets) != 0) {
+			continue
+		}
 		if b.ID == "" {
 			continue
 		}
@@ -251,6 +269,9 @@ func cloneBlocks(in []Block) []Block {
 // grows, and its first member is the one thing that cannot change while it
 // grows (members are appended).
 func blockID(b Block) BlockID {
+	if b.PresentationOnly {
+		return b.ID
+	}
 	if len(b.Members) == 0 {
 		return ""
 	}
@@ -325,6 +346,33 @@ func (d *Document) BlockForMember(member string) (Block, bool) {
 		return Block{}, false
 	}
 	return d.blocks[i], true
+}
+
+// LocateMember finds the narrowest exact child occurrence and its ancestors.
+// When an identity appears in more than one presentation location, the first
+// location in document order is returned; source identity remains shared.
+func (d *Document) LocateMember(member string) (NestedLocation, bool) {
+	for _, b := range d.blocks {
+		if loc, ok := locateInBlock(b, member, nil); ok {
+			return loc, true
+		}
+	}
+	return NestedLocation{}, false
+}
+
+func locateInBlock(b Block, member string, ancestors []BlockID) (NestedLocation, bool) {
+	for _, child := range b.Children {
+		next := append(append([]BlockID(nil), ancestors...), b.ID)
+		if loc, ok := locateInBlock(child, member, next); ok {
+			return loc, true
+		}
+	}
+	for _, id := range b.Members {
+		if id == member {
+			return NestedLocation{Block: b, Ancestors: append([]BlockID(nil), ancestors...)}, true
+		}
+	}
+	return NestedLocation{}, false
 }
 
 // IndexOf returns a block's position, for a caller that needs to render or

@@ -45,6 +45,41 @@ func TestGroupIDDerivesFromFirstMember(t *testing.T) {
 	}
 }
 
+func TestLocateMemberReturnsExactNestedBlockAndAncestors(t *testing.T) {
+	doc := NewDocument([]Block{{Kind: BlockNarration, Members: []string{"narration-source", "audit:1"}, Children: []Block{
+		{Kind: BlockMessage, Members: []string{"narration-source"}, Text: "plan"},
+		{Kind: BlockTool, Members: []string{"audit:1"}, Source: SourceOutput, Text: "small output", CopyTargets: []CopyTarget{{Source: SourceOutput, Text: "small output", Label: "Copy output"}}},
+	}}})
+	loc, ok := doc.LocateMember("audit:1")
+	if !ok || loc.Block.ID != "audit:1" || loc.Block.Text != "small output" {
+		t.Fatalf("location = %+v, %v", loc, ok)
+	}
+	if len(loc.Ancestors) != 1 || loc.Ancestors[0] != "narration-source" {
+		t.Fatalf("ancestors = %v", loc.Ancestors)
+	}
+	if loc.Block.CopyTargets[0].Text != "small output" {
+		t.Fatalf("child copy widened: %+v", loc.Block.CopyTargets)
+	}
+	// Existing lookup deliberately retains its top-level narrowest-block rule.
+	outer, ok := doc.BlockForMember("audit:1")
+	if !ok || outer.Kind != BlockNarration {
+		t.Fatalf("legacy lookup changed: %+v, %v", outer, ok)
+	}
+}
+
+func TestPresentationOnlyBlockHasNoSourceIdentity(t *testing.T) {
+	doc := NewDocument([]Block{{ID: "note:ownership", Kind: BlockOwnershipNote, Text: "Ownership unavailable", PresentationOnly: true}})
+	if doc.Len() != 1 || doc.Blocks()[0].ID != "note:ownership" {
+		t.Fatalf("presentation note dropped: %+v", doc.Blocks())
+	}
+	if _, ok := doc.BlockForMember("note:ownership"); ok {
+		t.Fatal("presentation note became a source member")
+	}
+	if _, ok := doc.LocateMember("note:ownership"); ok {
+		t.Fatal("presentation note became locatable as a transcript source")
+	}
+}
+
 // A group references every member it covers, so a member that also has its
 // own block is not ambiguous.
 func TestGroupReferencesEveryMember(t *testing.T) {

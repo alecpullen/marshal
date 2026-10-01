@@ -281,6 +281,14 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 			return err
 		}
 	}
+	// Public progress is a runtime presentation capability and must be bound
+	// to the State that owns the provider response. Standalone registries
+	// without a session do not advertise it.
+	if tools.sessionState != nil {
+		if err := reg.Register(PublicProgressTool(tools.sessionState)); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }

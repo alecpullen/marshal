@@ -187,6 +187,12 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 // model. Loop-detection/stall handling is done by the caller (RunTask), not
 // here — this only records the call into the progress tracker.
 func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, error) {
+	// progress.update is accepted only by RunTask's native response preflight.
+	// Refusing it here keeps JSON actions and indirect generic dispatch from
+	// reaching the presentation handler, policy hooks, audit, or work metrics.
+	if action.Tool == "progress.update" {
+		return []schema.ChatMessage{BuildNativeToolErrorMessage("progress.update", "progress.update is available only as a leading native tool call", action.ToolCallID)}, nil
+	}
 	if action.Activity.CallID == "" {
 		owner := action.Activity
 		if owner.ResponseID == "" {
@@ -539,6 +545,41 @@ func normalizeToolName(reg *registry.Registry, name string) string {
 	// truncated-name heuristic below.
 	if canonical, ok := toolAliasMap(reg.List())[name]; ok {
 		return canonical
+	}
+	suffix := "." + name
+	var match string
+	count := 0
+	for _, tool := range reg.List() {
+		if strings.HasSuffix(tool.Name, suffix) {
+			match = tool.Name
+			count++
+		}
+	}
+	if count == 1 {
+		return match
+	}
+	return name
+}
+
+// normalizeNativeToolName resolves the wire alias before canonical names.
+// Native providers see only these aliases, so in a rare alias/canonical name
+// collision the disambiguated alias shown in the schema is authoritative.
+func normalizeNativeToolName(reg *registry.Registry, name string) string {
+	if reg == nil {
+		return name
+	}
+	// The tool schema advertised to the model uses toolNameToAlias's dotless
+	// alias (see chat.go buildToolDefinitions), so a well-behaved provider
+	// echoes the alias back verbatim — reverse it before falling back to the
+	// truncated-name heuristic below. Alias wins over a canonical name that
+	// happens to collide with it: the colliding canonical tool is advertised
+	// under its disambiguated suffix, so the unsuffixed spelling identifies
+	// the capability the provider actually saw.
+	if canonical, ok := toolAliasMap(reg.List())[name]; ok {
+		return canonical
+	}
+	if _, ok := reg.Lookup(name); ok {
+		return name
 	}
 	suffix := "." + name
 	var match string

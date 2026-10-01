@@ -1196,6 +1196,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				fmt.Sprintf("Recovered from a provider stream error mid-turn (%v); continuing with the response received so far.", err),
 				session.ContentTypePlain)
 		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// A provider may finish a buffered response just as the user
+			// cancels. Do not apply presentation metadata or dispatch its calls.
+			return task, r.failTurn(task, context.Canceled)
+		}
 		raw := res.Text
 
 		if r.NativeTools {
@@ -1313,11 +1318,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				continue
 			}
 
-			budget.tools++
-			consecutiveEmpty = 0
-			countIterations()
-
-			// Log thinking BEFORE AddMessage, which clears inProgress.
+			// Log thinking before progress application or public narration
+			// clears the session's in-progress accumulator. This also covers
+			// metadata-only responses, which may carry structured prose.
 			if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && inProgress.Reasoning != "" {
 				r.State.LogThinking(session.ThinkingEntry{
 					Text:      inProgress.Reasoning,
@@ -1325,6 +1328,43 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					StartedAt: inProgress.StartedAt,
 				})
 			}
+			responseOwner, orderedReplies, workCalls, workIndexes, hasProgress := r.preflightNativeProgress(ctx, res.ToolCalls, res.Activity)
+			if narration := strings.TrimSpace(res.Text); narration != "" {
+				if hasProgress {
+					// The structured headline is already public. Keep genuinely
+					// distinct response prose attached to its owner, while avoiding
+					// a second copy when the model merely repeats the headline.
+					snapshot := r.State.ActivitySnapshot()
+					headline := ""
+					for _, revision := range snapshot.ProgressRevisions {
+						if revision.NarrationID == responseOwner.NarrationID && revision.Revision >= 1 {
+							headline = revision.Headline
+						}
+					}
+					if strings.TrimSpace(narration) != headline {
+						r.State.AddNarrationMessage(responseOwner, narration)
+					}
+				} else {
+					responseOwner = r.State.BindActivityNarration(responseOwner, narration)
+					r.State.AddNarrationMessage(responseOwner, narration)
+				}
+			} else if !hasProgress {
+				responseOwner = r.State.BindActivityFallback(responseOwner)
+			}
+			if len(workCalls) == 0 {
+				// A metadata-only response is overhead. It must not create tool
+				// evidence, satisfy grounding/verification, reset the stall
+				// detector, or spend a work-tool slot.
+				budget.overhead++
+				countIterations()
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
+				messages = append(messages, orderedReplies...)
+				continue
+			}
+
+			budget.tools++
+			consecutiveEmpty = 0
+			countIterations()
 
 			// The model's own narration of what it is about to do. It
 			// already arrives here alongside the tool calls and, until now,
@@ -1337,29 +1377,48 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// renders and persists without re-entering the model's context,
 			// where the identical text is already present on the very next
 			// line.
-			responseOwner := res.Activity
-			if narration := strings.TrimSpace(res.Text); narration != "" {
-				responseOwner = r.State.BindActivityNarration(responseOwner, narration)
-				r.State.AddNarrationMessage(responseOwner, narration)
-			} else {
-				responseOwner = r.State.BindActivityFallback(responseOwner)
-			}
-
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
-			toolCallCountThisTurn += len(res.ToolCalls)
+			toolCallCountThisTurn += len(workCalls)
 
-			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls, responseOwner)
-			if execErr != nil {
-				return task, r.failTurn(task, execErr)
+			// Execute each uninterrupted run of work calls separately. A
+			// misplaced metadata call cannot make two agent.run calls become
+			// adjacent and gain new parallel-batch semantics.
+			invalidWorkCalls := 0
+			for start := 0; start < len(workCalls); {
+				end := start + 1
+				for end < len(workCalls) && workIndexes[end] == workIndexes[end-1]+1 {
+					end++
+				}
+				resultMsgs, execErr := r.executeNativeToolCalls(ctx, workCalls[start:end], responseOwner)
+				if execErr != nil {
+					return task, r.failTurn(task, execErr)
+				}
+				invalidWorkCalls += r.invalidArgsCount()
+				// Normal native dispatch returns one role:tool message per
+				// call. Match by ID with a FIFO for providers that repeat an ID.
+				byID := make(map[string][]schema.ChatMessage, len(resultMsgs))
+				for _, reply := range resultMsgs {
+					byID[reply.ToolCallID] = append(byID[reply.ToolCallID], reply)
+				}
+				for i := start; i < end; i++ {
+					id := workCalls[i].ID
+					if queued := byID[id]; len(queued) > 0 {
+						orderedReplies[workIndexes[i]] = queued[0]
+						byID[id] = queued[1:]
+					} else {
+						orderedReplies[workIndexes[i]] = BuildNativeToolErrorMessage(workCalls[i].Name, "tool returned no result", id)
+					}
+				}
+				start = end
 			}
 			// Every call this turn was rejected before running: nothing was
 			// accomplished, so the turn is overhead, not work.
-			if invalidArgs := r.invalidArgsCount(); invalidArgs > 0 && invalidArgs == len(res.ToolCalls) {
+			if invalidWorkCalls > 0 && invalidWorkCalls == len(workCalls) {
 				budget.reclassifyAsOverhead()
 				countIterations()
 			}
-			messages = append(messages, resultMsgs...)
+			messages = append(messages, orderedReplies...)
 			var finalized *Task
 			messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
 			if finalized != nil {
@@ -1443,6 +1502,51 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			continue
 		}
+		if action.Type == ActionToolCall && action.Tool == "progress.update" {
+			// Structured-action providers cannot use the native presentation
+			// capability. Refuse it before this response receives work credit;
+			// the matching native preflight is the only accepted execution path.
+			budget.overhead++
+			countIterations()
+			assistantContent := raw
+			if strings.TrimSpace(assistantContent) == "" {
+				assistantContent = emptyModelResponsePlaceholder
+			}
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
+			messages = append(messages, BuildCorrectionMessage(errors.New("progress.update is available only as a leading native tool call")))
+			continue
+		}
+		// progress.update is presentation metadata, never a JSON actions[]
+		// work item. Strip it before budget and work counters are incremented;
+		// if the batch has ordinary siblings, those still pass through the
+		// existing all-read-only check and executor in their original order.
+		rejectedBatchProgress := 0
+		if len(action.Actions) > 0 {
+			work := make([]ModelAction, 0, len(action.Actions))
+			for _, candidate := range action.Actions {
+				if candidate.Type == ActionToolCall && candidate.Tool == "progress.update" {
+					rejectedBatchProgress++
+					continue
+				}
+				work = append(work, candidate)
+			}
+			if rejectedBatchProgress > 0 {
+				action.Actions = work
+				if len(work) == 0 {
+					budget.overhead++
+					countIterations()
+					assistantContent := raw
+					if strings.TrimSpace(assistantContent) == "" {
+						assistantContent = emptyModelResponsePlaceholder
+					}
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
+					for i := 0; i < rejectedBatchProgress; i++ {
+						messages = append(messages, BuildCorrectionMessage(errors.New("progress.update is available only as a leading native tool call")))
+					}
+					continue
+				}
+			}
+		}
 		consecutiveParseFailures = 0
 		consecutiveEmpty = 0
 		budget.tools++
@@ -1451,6 +1555,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if pendingRepairNote != nil {
 			messages = append(messages, *pendingRepairNote)
 			pendingRepairNote = nil
+		}
+		for i := 0; i < rejectedBatchProgress; i++ {
+			messages = append(messages, BuildCorrectionMessage(errors.New("progress.update is available only as a leading native tool call")))
 		}
 		producedValidAction = true
 

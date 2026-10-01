@@ -1211,6 +1211,15 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		pol = s.pol.Clone()
 		pol.SetApprovalMode(policy.ModeAuto)
 	}
+	// Scope views retain Tool handlers, so rebind the session-owned progress
+	// capability whenever this factory creates a fresh state (pipeline roles).
+	if runnerState != s.state {
+		if _, ok := toolReg.Lookup("progress.update"); ok {
+			if err := toolReg.Replace(native.PublicProgressTool(runnerState)); err != nil {
+				return nil, fmt.Errorf("role runner progress capability: %w", err)
+			}
+		}
+	}
 	r := agent.NewRunner(p, toolReg, pol, runnerState, route.Preset.Model)
 	r.Role = role
 	// AI-03: without a RouteResolver, resolveRoute returns a zero route and
@@ -1821,6 +1830,14 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		// list must not overwrite the parent's visible list.
 		if err := roReg.Replace(native.TodoWriteTool(childState)); err != nil {
 			parentState.Logger().Warn("subagent: todo rebind failed; child shares parent todos", "error", err)
+		}
+		// The copied-registry fallback also needs the child's owner-bound
+		// presentation capability; otherwise progress.update would revise the
+		// parent session even though ordinary child tools use childState.
+		if _, ok := roReg.Lookup("progress.update"); ok {
+			if err := roReg.Replace(native.PublicProgressTool(childState)); err != nil {
+				parentState.Logger().Warn("subagent: progress rebind failed; child cannot publish progress", "error", err)
+			}
 		}
 		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
 		child.Role = role

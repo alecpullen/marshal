@@ -21,6 +21,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/activity"
 	"marshal/internal/agent"
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/agent/swarm"
@@ -3732,6 +3733,60 @@ func TestSubagentChildTodosAreIsolated(t *testing.T) {
 	}
 	if len(childState.Todos()) != 1 {
 		t.Fatalf("child todos = %+v, want the written item", childState.Todos())
+	}
+}
+
+func TestSubagentFallbackRegistryRebindsPublicProgressPerChild(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	parentReg := registry.New()
+	if err := parentReg.Register(native.PublicProgressTool(parentState)); err != nil {
+		t.Fatal(err)
+	}
+	factory, _ := buildSubagentFactory(cfg, parentState, nil, parentReg, policy.NewEngine(&cfg, nil), "fallback", router, nil, nil, 1, pricing.ModelPricing{})
+
+	apply := func(childState *session.State, child *agent.Runner, headline string) {
+		childState.AddMessage(session.RoleUser, "child task", session.ContentTypePlain)
+		boundary := childState.Messages()[0].ID
+		childState.BeginActivityRun(boundary)
+		response := childState.BeginActivityResponse()
+		tool, ok := child.Registry.Lookup("progress.update")
+		if !ok {
+			t.Fatal("child registry missing progress.update")
+		}
+		args, _ := json.Marshal(map[string]any{"mode": "begin", "headline": headline})
+		if _, err := tool.Handler(activity.WithRef(context.Background(), response), registry.ToolCall{Args: args}); err != nil {
+			t.Fatalf("child progress.update: %v", err)
+		}
+	}
+
+	childA, stateA, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childB, stateB, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(stateA, childA, "child A")
+	apply(stateB, childB, "child B")
+	if len(stateA.ActivitySnapshot().ProgressRevisions) != 1 || stateA.ActivitySnapshot().ProgressRevisions[0].Headline != "child A" {
+		t.Fatalf("child A progress = %+v", stateA.ActivitySnapshot().ProgressRevisions)
+	}
+	if len(stateB.ActivitySnapshot().ProgressRevisions) != 1 || stateB.ActivitySnapshot().ProgressRevisions[0].Headline != "child B" {
+		t.Fatalf("child B progress = %+v", stateB.ActivitySnapshot().ProgressRevisions)
+	}
+	if len(parentState.ActivitySnapshot().ProgressRevisions) != 0 {
+		t.Fatalf("child progress leaked into parent: %+v", parentState.ActivitySnapshot().ProgressRevisions)
 	}
 }
 

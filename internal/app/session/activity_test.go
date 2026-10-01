@@ -110,6 +110,33 @@ func TestActivitySnapshotRequiresNarrationSourceOnActivePath(t *testing.T) {
 	}
 }
 
+func TestRuntimeFallbackSnapshotStaysWithItsOriginalBoundary(t *testing.T) {
+	s := newTestState()
+	boundary := addActivityBoundary(s)
+	s.BeginActivityRun(boundary)
+	response := s.BeginActivityResponse()
+	fallback := s.BindActivityFallback(response)
+	if got := s.ActivitySnapshot().Narrations; len(got) != 1 || got[0].ID != fallback.NarrationID || got[0].BoundaryMessageID != boundary {
+		t.Fatalf("runtime fallback snapshot = %+v, want fallback owned by boundary %d", got, boundary)
+	}
+
+	s.AddMessage(RoleUser, "later request", ContentTypePlain)
+	laterBoundary := s.Messages()[1].ID
+	snapshot := s.ActivitySnapshot()
+	if len(snapshot.Narrations) != 1 || snapshot.Narrations[0].ID != fallback.NarrationID || snapshot.Narrations[0].BoundaryMessageID != boundary || snapshot.Narrations[0].BoundaryMessageID == laterBoundary {
+		t.Fatalf("fallback migrated to the later boundary: %+v (later boundary %d)", snapshot.Narrations, laterBoundary)
+	}
+
+	s.Rewind(laterBoundary)
+	if got := s.ActivitySnapshot().Narrations; len(got) != 1 || got[0].BoundaryMessageID != boundary {
+		t.Fatalf("rewinding the later turn removed or moved the fallback: %+v", got)
+	}
+	s.Rewind(boundary)
+	if got := s.ActivitySnapshot().Narrations; len(got) != 0 {
+		t.Fatalf("fallback survived removal of its boundary: %+v", got)
+	}
+}
+
 func TestFreshActivityRunAfterCompletionDoesNotInheritNarration(t *testing.T) {
 	s := newTestState()
 	firstRun := s.BeginActivityRun(addActivityBoundary(s))

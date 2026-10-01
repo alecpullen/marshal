@@ -40,6 +40,32 @@ func notebookTranscriptEntries(items []session.TranscriptItem, snapshot session.
 			entries = append(entries, transcriptEntry{Notebook: &copy})
 			continue
 		}
+		if block.Kind == conversation.BlockNarration && block.PresentationOnly {
+			// A tool-only runtime fallback has no narration message to anchor
+			// its display. Its explicitly owned first child supplies the
+			// viewport position; the presentation parent itself claims no
+			// transcript identity or copy payload.
+			var anchor *session.TranscriptItem
+			for _, child := range block.Children {
+				if len(child.Members) == 0 {
+					continue
+				}
+				anchor = byID[child.Members[0]]
+				if anchor != nil {
+					break
+				}
+			}
+			if anchor != nil {
+				copy := block
+				entries = append(entries, transcriptEntry{Item: anchor, Notebook: &copy})
+				for _, child := range block.Children {
+					for _, member := range child.Members {
+						used[member] = true
+					}
+				}
+			}
+			continue
+		}
 		if len(block.Members) == 0 {
 			continue
 		}

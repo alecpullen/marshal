@@ -103,6 +103,7 @@ internal/worktree/             — git worktree helpers
 - **Repository intelligence** — tree-sitter symbol index, repo map, and file summaries.
 - **Context management** — pack builder with token budgets; inspect usage at `/context`.
 - **Reading-first conversation** — an anchored reading position that survives resizes and streaming output, application-owned drag and keyboard selection, copying, current-conversation find with match navigation, and a four-tab inspector (changes, agents, context, overview). See [docs/tui-interactions.md](docs/tui-interactions.md).
+- **Transcript views (preview)** — the legacy transcript remains the default. Choose **Notebook (preview)** from the action palette (`F2` or `/actions`), or set `tui.transcript_view = "notebook"` under `[tui]` for the configured default. A per-session palette choice overrides that setting until **Use configured transcript view** clears it. View changes wait until active text selection is cleared. Phase 1 groups only newly attributed live activity; older history has no persisted ownership metadata, so it remains in chronological fallback blocks. Rich resource summaries and semantic sections are planned for later phases.
 - **Safe, sandboxed tools** — shell commands classified, approval-gated, and run isolated by default.
 - **Git integration** — automatically checkpoint the working tree before tooling.
 - **Persistent sessions** — project state, messages, and memory stored in SQLite.
@@ -138,6 +139,29 @@ go test ./...                  # all tests
 gofmt -w .                     # format
 go vet ./...                   # vet
 ```
+
+### Transcript view preference
+
+Marshal starts in the legacy transcript. To make Notebook (preview) the
+configured default, add this to the user or project config:
+
+```toml
+[tui]
+transcript_view = "notebook"
+```
+
+The setting controls new sessions and sessions without a temporary choice.
+During a session, open the action palette with `F2` or `/actions` and choose
+**Use notebook transcript** or **Use legacy transcript**. That choice is a
+session override and takes precedence over configuration until you choose
+**Use configured transcript view**. If text is selected, switching waits for
+the selection to be cleared so the selection stays attached to its source.
+
+Notebook (preview) groups activity when current runtime ownership metadata
+connects narration, tools, and results. Phase 1 does not persist that ownership
+metadata, so restored and older history stays visible in chronological
+fallback blocks instead of being retroactively grouped. Rich resource
+summaries and semantic sections are future phases.
 
 ## Usability testing (synthetic users)
 

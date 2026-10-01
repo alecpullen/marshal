@@ -1,11 +1,20 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
+	"marshal/internal/agent"
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/db"
+	"marshal/internal/llm/schema"
+	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 func TestTranscriptViewOverrideAndSelectionGuard(t *testing.T) {
@@ -54,21 +63,63 @@ func TestTranscriptViewActionSnapshotTracksOverrideResetAndConfiguredUpdate(t *t
 
 func TestTranscriptViewSwitchPreservesLiveWorkAndChildScope(t *testing.T) {
 	m := newTestModel(t)
+	provider := &agenttest.ScriptedProvider{
+		Responses:     []string{"I will inspect the fixture.", "done"},
+		ToolCalls:     [][]schema.ToolCall{{{ID: "view-call", Name: "view.noop", Args: json.RawMessage(`{}`)}}, nil},
+		FinishReasons: []string{"tool_calls", "stop"},
+	}
+	var toolExecutions int
+	tools := registry.New()
+	if err := tools.Register(registry.Tool{Name: "view.noop", Risk: registry.RiskReadOnly, Handler: func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+		toolExecutions++
+		return registry.ToolResult{Summary: "done"}, nil
+	}}); err != nil {
+		t.Fatalf("register view fixture tool: %v", err)
+	}
+	runner := agent.NewRunner(provider, tools, policy.NewEngine(&config.Config{}, nil), m.state, "view-test")
+	runner.NativeTools = true
+	runner.SetForceClass(string(agent.ClassQuestion))
+	if err := runner.Run(context.Background(), "inspect this fixture"); err != nil {
+		t.Fatalf("seed runner state: %v", err)
+	}
+	m.runner = runner
+	providerCalls, auditCount, executedTools := provider.Calls, len(m.state.AuditLog()), toolExecutions
+	if providerCalls != 2 || auditCount != 1 || executedTools != 1 {
+		t.Fatalf("seed fixture counts: provider=%d audit=%d tools=%d", providerCalls, auditCount, executedTools)
+	}
+	if err := m.state.SetTodos([]db.TodoItem{{Content: "keep this task", Status: "pending"}}); err != nil {
+		t.Fatalf("set todo fixture: %v", err)
+	}
+	todos := m.state.Todos()
+	m.state.SetRunningJobsCount(3)
 	m.busy = true
 	m.input.SetValue("unfinished draft")
 	m.state.PushSteering("queued follow up")
 	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now()})
-	pending := &session.PendingToolCall{ID: "approval-1", Name: "shell.run", Args: "git status"}
+	pending := &session.PendingToolCall{ID: "approval-1", Name: "shell.run", Args: "git status", ResponseChan: make(chan session.UserApprovalDecision, 1)}
 	m.state.SetPendingApproval(pending)
 	m.state.AddMessage(session.RoleAssistant, "streaming partial answer", session.ContentTypePlain)
 	m.detailExpanded = true
 	m.itemExpanded[itemKey{viewID: "audit:expanded", kind: session.KindAudit}] = true
 	m.setTranscriptView(config.TranscriptNotebook)
+	m.setTranscriptView(config.TranscriptLegacy)
+	m.setTranscriptView(config.TranscriptNotebook)
+	if provider.Calls != providerCalls || len(m.state.AuditLog()) != auditCount || toolExecutions != executedTools {
+		t.Fatalf("view switch caused execution side effects: provider=%d/%d audit=%d/%d tools=%d/%d", provider.Calls, providerCalls, len(m.state.AuditLog()), auditCount, toolExecutions, executedTools)
+	}
+	if !reflect.DeepEqual(m.state.Todos(), todos) || m.state.RunningJobsCount() != 3 {
+		t.Fatalf("view switch changed todo/job state: todos=%+v jobs=%d", m.state.Todos(), m.state.RunningJobsCount())
+	}
 	if m.input.Value() != "unfinished draft" || len(m.state.SteeringQueue()) != 1 || !m.busy {
 		t.Fatal("view switch disturbed draft, queue, or running turn")
 	}
 	if got := m.state.PendingApproval(); got == nil || got.ID != "approval-1" {
 		t.Fatalf("pending approval changed: %+v", got)
+	}
+	select {
+	case decision := <-pending.ResponseChan:
+		t.Fatalf("view switch answered approval channel: %+v", decision)
+	default:
 	}
 	if got, ok := m.state.ActiveToolCall(); !ok || got.Name != "shell.run" {
 		t.Fatalf("active call changed: %+v (%v)", got, ok)

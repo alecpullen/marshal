@@ -176,7 +176,13 @@ func (s *State) ActivitySnapshot() ActivitySnapshot {
 	}
 	snapshot := ActivitySnapshot{Run: s.activityRun, Response: s.activityResponse}
 	for _, n := range s.activityNarrations {
-		if n.BoundaryMessageID != 0 && path[n.BoundaryMessageID] && n.SourceMessageID != 0 && path[n.SourceMessageID] {
+		// Model-prose narrations are backed by a transcript message. Runtime
+		// fallback narrations intentionally have no synthetic message: their
+		// ownership begins at the active user boundary and is carried by the
+		// tool records themselves.
+		sourceOnPath := n.SourceMessageID != 0 && path[n.SourceMessageID]
+		fallback := n.Source == activity.SourceRuntimeFallback && n.SourceMessageID == 0
+		if n.BoundaryMessageID != 0 && path[n.BoundaryMessageID] && (sourceOnPath || fallback) {
 			snapshot.Narrations = append(snapshot.Narrations, n)
 		}
 	}

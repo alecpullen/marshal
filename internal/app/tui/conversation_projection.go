@@ -81,6 +81,7 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 	}
 	byNarration := map[string][]session.TranscriptItem{}
 	sourceIndex := map[string]int{}
+	fallbackBoundaryIndex := map[string]int{}
 	boundaryFound := map[string]bool{}
 	for id, owner := range owners {
 		if owner.BoundaryMessageID == 0 {
@@ -91,6 +92,14 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 			if item.Kind == session.KindMessage && item.Message != nil && item.Message.ID == owner.BoundaryMessageID && isUserTurn(item) {
 				boundaryFound[id] = true
 				break
+			}
+		}
+		if boundaryFound[id] && owner.Source == activity.SourceRuntimeFallback {
+			for i, item := range items {
+				if item.Kind == session.KindMessage && item.Message != nil && item.Message.ID == owner.BoundaryMessageID && isUserTurn(item) {
+					fallbackBoundaryIndex[id] = i
+					break
+				}
 			}
 		}
 	}
@@ -107,11 +116,19 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 	}
 	ids := make([]string, 0, len(byNarration))
 	for id := range byNarration {
-		if _, ok := sourceIndex[id]; ok {
+		_, hasSource := sourceIndex[id]
+		_, hasFallbackBoundary := fallbackBoundaryIndex[id]
+		if hasSource || (owners[id].Source == activity.SourceRuntimeFallback && hasFallbackBoundary) {
 			ids = append(ids, id)
 		}
 	}
-	sort.SliceStable(ids, func(i, j int) bool { return sourceIndex[ids[i]] < sourceIndex[ids[j]] })
+	sectionIndex := func(id string) int {
+		if idx, ok := sourceIndex[id]; ok {
+			return idx
+		}
+		return fallbackBoundaryIndex[id]
+	}
+	sort.SliceStable(ids, func(i, j int) bool { return sectionIndex(ids[i]) < sectionIndex(ids[j]) })
 	allSequenced := len(ids) > 1
 	for _, id := range ids {
 		if owners[id].Sequence == 0 {
@@ -154,26 +171,39 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 		if len(children) == 0 {
 			continue
 		}
-		// The narration source, not the earliest child currently present,
-		// permanently names its parent section.
-		sourceID := items[sourceIndex[id]].ViewID
-		if len(members) > 0 && members[0] != sourceID {
-			for i, m := range members {
-				if m == sourceID {
-					copy(members[1:i+1], members[0:i])
-					members[0] = sourceID
+		text := ""
+		fallback := owners[id].Source == activity.SourceRuntimeFallback && owners[id].SourceMessageID == 0
+		if fallback {
+			// The runtime explicitly owns this work, though there was no public
+			// prose or transcript source message to use as a headline.
+			text = "Tool activity"
+		} else {
+			// The narration source, not the earliest child currently present,
+			// permanently names its parent section.
+			sourceID := items[sourceIndex[id]].ViewID
+			if len(members) > 0 && members[0] != sourceID {
+				for i, m := range members {
+					if m == sourceID {
+						copy(members[1:i+1], members[0:i])
+						members[0] = sourceID
+						break
+					}
+				}
+			}
+			for _, child := range children {
+				if child.Kind == conversation.BlockMessage {
+					text = child.Text
 					break
 				}
 			}
 		}
-		text := ""
-		for _, child := range children {
-			if child.Kind == conversation.BlockMessage {
-				text = child.Text
-				break
-			}
+		block := conversation.Block{Kind: conversation.BlockNarration, Members: members, Children: children, Text: text}
+		if fallback {
+			block.ID = conversation.BlockID("notebook:fallback:" + id)
+			block.PresentationOnly = true
+			block.Members = nil
 		}
-		sections[id] = notebookBlockRevision(conversation.Block{Kind: conversation.BlockNarration, Members: members, Children: children, Text: text})
+		sections[id] = notebookBlockRevision(block)
 	}
 	ordered := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -185,14 +215,27 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 		latest := ordered[len(ordered)-1]
 		ordered = append([]string{latest}, ordered[:len(ordered)-1]...)
 	}
+	normalOrdered := make([]string, 0, len(ordered))
+	fallbackOrdered := make([]string, 0)
+	for _, id := range ordered {
+		if owners[id].Source == activity.SourceRuntimeFallback && owners[id].SourceMessageID == 0 {
+			fallbackOrdered = append(fallbackOrdered, id)
+		} else {
+			normalOrdered = append(normalOrdered, id)
+		}
+	}
+	fallbacksAtBoundary := map[int][]string{}
+	for _, id := range fallbackOrdered {
+		fallbacksAtBoundary[fallbackBoundaryIndex[id]] = append(fallbacksAtBoundary[fallbackBoundaryIndex[id]], id)
+	}
 	out := make([]conversation.Block, 0, len(items))
 	nextSection := 0
 	emitted := map[string]bool{}
-	for _, item := range items {
+	for itemIndex, item := range items {
 		id := item.Activity.NarrationID
 		if idx, ok := sourceIndex[id]; ok && idx >= 0 && item.Kind == session.KindMessage && item.Message != nil && item.Message.ContentType == session.ContentTypeNarration && item.Message.ID == owners[id].SourceMessageID {
-			if nextSection < len(ordered) {
-				selected := ordered[nextSection]
+			if nextSection < len(normalOrdered) {
+				selected := normalOrdered[nextSection]
 				out = append(out, sections[selected])
 				emitted[selected] = true
 				nextSection++
@@ -205,11 +248,15 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 		if b, ok := conversationBlock(transcriptEntry{Item: &item}); ok {
 			out = append(out, b)
 		}
+		for _, selected := range fallbacksAtBoundary[itemIndex] {
+			out = append(out, sections[selected])
+			emitted[selected] = true
+		}
 	}
 	// Defensive completion: a malformed duplicate source record should not
 	// cause an owned section to disappear, though normal transcript IDs are
 	// unique and the source occurrence above emits each section exactly once.
-	for _, id := range ordered {
+	for _, id := range append(normalOrdered, fallbackOrdered...) {
 		if !emitted[id] {
 			out = append(out, sections[id])
 		}

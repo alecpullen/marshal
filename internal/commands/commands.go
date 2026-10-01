@@ -146,6 +146,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				res.Doc.Footer = "⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /models\n" +
 					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n" +
 					"pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom · ctrl+b side rail\n" +
+					"F2 or /actions opens the action palette, including transcript view choices.\n" +
 					"while drilled into a running agent: esc pop out · ctrl+x stop agent · ctrl+c cancel turn\n" +
 					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling).\n" +
 					"ctrl+b hides the side rail first so a selection does not span it."

@@ -40,34 +40,43 @@ func structuredNarrationSections(parent conversation.Block, narration activity.N
 	for _, item := range items {
 		itemsByView[item.ViewID] = item
 	}
+	revisionBySource := make(map[int64]activity.ProgressRevision)
 	for _, revision := range snapshot.ProgressRevisions {
-		if revision.NarrationID != narration.ID {
-			continue
-		}
-		for _, item := range items {
-			if item.Kind != session.KindMessage || item.Message == nil || item.Message.ID != revision.SourceMessageID || item.Message.ContentType != session.ContentTypeNarration {
-				continue
-			}
-			source, ok := conversationBlock(transcriptEntry{Item: &item})
-			if !ok {
-				break
-			}
-			source.SourceRevision = revision.Revision
-			source.EventOrderSequence = revision.Sequence
-			if source.EventOrderSequence == 0 {
-				source.EventOrderSequence = item.Sequence
-			}
-			parent.EventOrderAlternatives = append(parent.EventOrderAlternatives, source)
-			break
+		if revision.NarrationID == narration.ID && revision.SourceMessageID != 0 {
+			revisionBySource[revision.SourceMessageID] = revision
 		}
 	}
-	sort.SliceStable(parent.EventOrderAlternatives, func(i, j int) bool {
-		left, right := parent.EventOrderAlternatives[i], parent.EventOrderAlternatives[j]
-		if left.EventOrderSequence == 0 || right.EventOrderSequence == 0 {
-			return left.SourceRevision < right.SourceRevision
+	allHaveSequence := true
+	for _, item := range items {
+		if !eligibleForOwner(item, narration) {
+			continue
 		}
-		return left.EventOrderSequence < right.EventOrderSequence
-	})
+		source, ok := conversationBlock(transcriptEntry{Item: &item})
+		if !ok {
+			continue
+		}
+		source.EventOrderSequence = item.Sequence
+		if item.Kind == session.KindMessage && item.Message != nil && item.Message.ContentType == session.ContentTypeNarration {
+			if revision, found := revisionBySource[item.Message.ID]; found {
+				source.SourceRevision = revision.Revision
+				if revision.Sequence != 0 {
+					source.EventOrderSequence = revision.Sequence
+				}
+			}
+		}
+		if source.EventOrderSequence == 0 {
+			allHaveSequence = false
+		}
+		parent.EventOrderAlternatives = append(parent.EventOrderAlternatives, source)
+	}
+	// Transcript order is the stable fallback for older/fixture records with no
+	// sequence. When every event has a recorded sequence, use that exact source
+	// order instead of the semantic section grouping.
+	if allHaveSequence {
+		sort.SliceStable(parent.EventOrderAlternatives, func(i, j int) bool {
+			return parent.EventOrderAlternatives[i].EventOrderSequence < parent.EventOrderAlternatives[j].EventOrderSequence
+		})
+	}
 	aliases := make(map[string]session.EvidenceRecord, len(snapshot.EvidenceRecords))
 	for _, record := range snapshot.EvidenceRecords {
 		aliases[record.Alias] = record

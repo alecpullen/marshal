@@ -50,6 +50,10 @@ func (s *State) BeginActivityRun(boundaryMessageID int64) activity.Ref {
 	defer s.mu.Unlock()
 	run := activity.Ref{RunID: s.nextActivityIDLocked("run"), ActorID: "main"}
 	s.activityRun, s.activityResponse, s.activityBoundary = run, activity.Ref{}, boundaryMessageID
+	// Response idempotency payloads are scoped to the active run. Old response
+	// identities cannot be accepted after this boundary, so release their
+	// canonical payload bytes here instead of retaining them for the session.
+	s.activityProgressResponses = nil
 	s.evidenceRecords = nil
 	s.evidenceNextAlias = 0
 	s.evidenceIssuedCalls = make(map[string]bool)
@@ -63,6 +67,7 @@ func (s *State) BeginActivityResponse() activity.Ref {
 	defer s.mu.Unlock()
 	if s.activityRun.RunID == "" {
 		s.activityRun = activity.Ref{RunID: s.nextActivityIDLocked("run"), ActorID: "main"}
+		s.activityProgressResponses = nil
 	}
 	activeNarration := s.activityResponse.NarrationID
 	s.activityResponse = s.activityRun
@@ -171,6 +176,7 @@ func (s *State) EndActivityRun(run activity.Ref) {
 			}
 		}
 		s.activityRun, s.activityResponse = activity.Ref{}, activity.Ref{}
+		s.activityProgressResponses = nil
 		s.evidenceRecords = nil
 		s.evidenceNextAlias = 0
 		s.evidenceIssuedCalls = nil

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -34,8 +35,34 @@ func TestStructuredNarrationProjectsLatestSectionsAndUniqueEvidence(t *testing.T
 	if len(blocks[1].CopyTargets) != 1 || blocks[1].CopyTargets[0].Text != "Current headline\n\nCurrent summary" {
 		t.Fatalf("narration copy target = %+v", blocks[1].CopyTargets)
 	}
-	if len(blocks[1].EventOrderAlternatives) != 2 || blocks[1].EventOrderAlternatives[0].ID != "rev1" || blocks[1].EventOrderAlternatives[1].ID != "rev2" {
+	if len(blocks[1].EventOrderAlternatives) != 3 || blocks[1].EventOrderAlternatives[0].ID != "rev1" || blocks[1].EventOrderAlternatives[1].ID != "audit" || blocks[1].EventOrderAlternatives[2].ID != "rev2" {
 		t.Fatalf("event-order source revisions = %+v", blocks[1].EventOrderAlternatives)
+	}
+	workEvent := blocks[1].EventOrderAlternatives[1]
+	if workEvent.EventOrderSequence != 3 || len(workEvent.Members) != 1 || workEvent.Members[0] != "audit" || len(workEvent.CopyTargets) != 1 || workEvent.CopyTargets[0].Source != conversation.SourceOutput || workEvent.CopyTargets[0].Text != "raw result" {
+		t.Fatalf("event-order work item lost source identity/copy payload: %+v", workEvent)
+	}
+	records := map[string]session.TranscriptItem{}
+	for _, item := range items {
+		records[item.ViewID] = item
+	}
+	parts := renderNotebookNarration(blocks[1], 100, true, true, false, records)
+	var renderedOrder []conversation.BlockID
+	var renderedWork, outputCopy bool
+	for _, part := range parts {
+		if part.OrderControl || part.CopySource != "" {
+			if part.CopySource == conversation.SourceOutput && part.ID == "audit" {
+				outputCopy = true
+			}
+			continue
+		}
+		renderedOrder = append(renderedOrder, part.ID)
+		if part.ID == "audit" && strings.Contains(part.Text, "raw result") {
+			renderedWork = true
+		}
+	}
+	if len(renderedOrder) != 4 || renderedOrder[1] != "rev1" || renderedOrder[2] != "audit" || renderedOrder[3] != "rev2" || !renderedWork || !outputCopy {
+		t.Fatalf("rendered event order/source copy = ids %v work %v output copy %v", renderedOrder, renderedWork, outputCopy)
 	}
 	for _, want := range []struct {
 		id, text string

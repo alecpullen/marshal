@@ -197,3 +197,26 @@ func TestPublicProgressIndependentConcurrentStates(t *testing.T) {
 		t.Fatalf("child states collided: %q", ca.Owner.NarrationID)
 	}
 }
+
+func TestPublicProgressResponseGuardsAreBoundedToRun(t *testing.T) {
+	s := newTestState()
+	boundary := addActivityBoundary(s)
+	for i := 0; i < 8; i++ {
+		run := s.BeginActivityRun(boundary)
+		response := s.BeginActivityResponse()
+		applyProgress(t, s, response, activity.ProgressUpdate{Mode: activity.ProgressBegin, Headline: strptr("Run")})
+		s.mu.Lock()
+		count := len(s.activityProgressResponses)
+		s.mu.Unlock()
+		if count != 1 {
+			t.Fatalf("run %d retained %d response guards, want 1", i, count)
+		}
+		s.EndActivityRun(run)
+		s.mu.Lock()
+		count = len(s.activityProgressResponses)
+		s.mu.Unlock()
+		if count != 0 {
+			t.Fatalf("run %d end retained %d response guards, want 0", i, count)
+		}
+	}
+}

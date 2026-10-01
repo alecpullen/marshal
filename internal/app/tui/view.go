@@ -124,7 +124,9 @@ func (m *Model) viewString() string {
 		// collapses entirely (see turnSpinnerRows). An idle spinner
 		// renders "", which JoinVertical would pad into a blank row
 		// above the todo panel — skip it instead.
-		if spinner := m.renderTurnSpinner(); spinner != "" {
+		if activity := m.renderNotebookActivity(); activity != "" {
+			rows = append(rows, activity)
+		} else if spinner := m.renderTurnSpinner(); spinner != "" {
 			rows = append(rows, spinner)
 		}
 		if todo := m.renderTodoPanel(); todo != "" {

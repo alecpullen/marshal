@@ -1889,7 +1889,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.notebookActivityRows()-m.inputAreaRows()-statusLineRows, 1))
 	// A resize is the one event that can remove a focus target: the rail
 	// hides below its width threshold. effectiveFocus already falls back to
 	// the composer in that case, but the textarea's own focus flag has to
@@ -4090,7 +4090,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.notebookActivityRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -4112,6 +4112,9 @@ func (m Model) scrollHintRows() int {
 // During an SDD run the row collapses to zero: the run panel owns the only
 // spinner. Mirrors renderTurnSpinner's render condition exactly.
 func (m Model) turnSpinnerRows() int {
+	if m.notebookView {
+		return 0
+	}
 	if m.state.SDDProgress().Active {
 		return 0
 	}
@@ -4202,7 +4205,7 @@ func (m *Model) updateViewportHeight() bool {
 	// View's discarded copy.
 	m.syncDock()
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.notebookActivityRows()-m.inputAreaRows()-statusLineRows, 1)
 	// The frame is remeasured here rather than in View: every state change
 	// that can move a region funnels through this method, and View's value
 	// receiver would throw the measurement away.

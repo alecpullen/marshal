@@ -40,6 +40,27 @@ func TestClipLeftColumn(t *testing.T) {
 	}
 }
 
+func TestNotebookActivityUsesOneSharedFrameRow(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.leftWidth, m.height = 80, 80, 24
+	m.notebookView = true
+	m.busy = true
+	m.turnStartedAt = time.Now()
+	m.computeFrame()
+	if got := m.turnSpinnerRows(); got != 0 {
+		t.Fatalf("generic spinner rows = %d, want suppressed", got)
+	}
+	if got := m.notebookActivityRows(); got != 1 {
+		t.Fatalf("notebook activity rows = %d, want 1", got)
+	}
+	if got := m.frameRect().Activity.Height; got < 1 {
+		t.Fatalf("activity frame height = %d, want notebook row", got)
+	}
+	if got := m.viewport.Height(); got < 0 {
+		t.Fatalf("viewport height = %d, must remain nonnegative", got)
+	}
+}
+
 // TestOverRenderingPanelCannotHideFooter proves the frame-height invariant
 // end to end: even when a panel renders far more rows than the layout
 // budgeted, the frame stays exactly terminal-height and the status footer

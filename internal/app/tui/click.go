@@ -122,7 +122,7 @@ func (m *Model) todoPanelBand() (top, bottom int, ok bool) {
 	if band.Empty() {
 		return 0, 0, false
 	}
-	top = band.Y + m.turnSpinnerRows()
+	top = band.Y + m.turnSpinnerRows() + m.notebookActivityRows()
 	return top, top + rows, true
 }
 

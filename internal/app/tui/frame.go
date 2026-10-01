@@ -246,7 +246,7 @@ func (m *Model) computeFrame() {
 
 	// The activity chrome (spinner, todos, live strip, lane) stacks at the
 	// bottom of the transcript column, directly above the dock.
-	activityRows := m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows() + m.laneRows()
+	activityRows := m.turnSpinnerRows() + m.notebookActivityRows() + m.todoPanelRows() + m.liveStripRows() + m.laneRows()
 	activityRows = min(activityRows, transcriptHeight)
 	if activityRows > 0 {
 		f.Activity = layout.Rect{

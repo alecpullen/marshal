@@ -5,10 +5,53 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/llm/schema"
 )
+
+func TestPublicProgressRevisionsStayOutOfSubsequentTurnHistory(t *testing.T) {
+	s := newTestState(t)
+	s.AddMessage(session.RoleUser, "inspect the parser", session.ContentTypePlain)
+	boundary := s.Messages()[0].ID
+	s.BeginActivityRun(boundary)
+	response := s.BeginActivityResponse()
+	first, err := s.ApplyPublicProgress(response, activity.ProgressUpdate{Mode: activity.ProgressBegin, Headline: historyStringPtr("Inspecting parser")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = s.BeginActivityResponse()
+	if _, err := s.ApplyPublicProgress(response, activity.ProgressUpdate{Mode: activity.ProgressRevise, Body: historyStringPtr("Read the parser and found the boundary condition.")}); err != nil {
+		t.Fatal(err)
+	}
+	s.AddMessageFinalWithUsage(session.RoleAssistant, "The loop boundary was off by one.", session.ContentTypeMarkdown, 1, "")
+
+	var publicMessages int
+	for _, message := range s.Messages() {
+		if message.ContentType == session.ContentTypeNarration {
+			publicMessages++
+			if message.Final {
+				t.Fatal("public progress revision was stored as final")
+			}
+		}
+	}
+	if publicMessages != 2 || first.Revision != 1 {
+		t.Fatalf("progress messages=%d first receipt=%+v", publicMessages, first)
+	}
+	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{})
+	for _, message := range msgs {
+		if strings.Contains(message.Content, "Inspecting parser") || strings.Contains(message.Content, "Read the parser and found") {
+			t.Fatalf("persisted public progress was replayed into history: %+v", message)
+		}
+		if strings.Contains(message.Content, "The loop boundary was off by one.") {
+			return // The answer source remains replayable.
+		}
+	}
+	t.Fatal("final answer was not replayed after excluding public progress")
+}
+
+func historyStringPtr(value string) *string { return &value }
 
 // TestBuildHistory_TieredAging covers the rules from Task 6/C of the
 // context-management plan: 10 turns of ~2000-token assistant answers

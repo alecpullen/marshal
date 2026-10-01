@@ -857,18 +857,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	messages := []schema.ChatMessage{
 		BuildSystemPromptWithSystem(SystemPromptOptions{
-			Role:         r.role(),
-			Tools:        r.Registry.List(),
-			Deferred:     r.Registry.ListDeferred(),
-			SkillIndex:   r.SkillIndex,
-			ActiveSkills: r.State.ActiveSkills(),
-			NativeTools:  r.NativeTools,
-			Mode:         r.Policy.ApprovalMode(),
-			Addendum:     r.SystemPromptAddendum,
-			WorkingDir:   r.State.WorkingDir,
-			Roster:       r.agentRoster(),
-			LoadedNames:  r.State.LoadedToolNames(),
-			SystemAccess: r.State.SystemAccess(),
+			Role:                    r.role(),
+			Tools:                   r.Registry.List(),
+			Deferred:                r.Registry.ListDeferred(),
+			SkillIndex:              r.SkillIndex,
+			ActiveSkills:            r.State.ActiveSkills(),
+			NativeTools:             r.NativeTools,
+			PublicProgressAvailable: r.publicProgressAvailable(),
+			Mode:                    r.Policy.ApprovalMode(),
+			Addendum:                r.SystemPromptAddendum,
+			WorkingDir:              r.State.WorkingDir,
+			Roster:                  r.agentRoster(),
+			LoadedNames:             r.State.LoadedToolNames(),
+			SystemAccess:            r.State.SystemAccess(),
 		}),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
@@ -935,7 +936,21 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			updatedPack := r.State.ContextPack()
 			r.contextPackMsgIndex = -1
 			r.emittedSkills = nil
-			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, r.agentRoster(), r.State.LoadedToolNames()...)}
+			messages = []schema.ChatMessage{BuildSystemPromptWithSystem(SystemPromptOptions{
+				Role:                    r.role(),
+				Tools:                   r.Registry.List(),
+				Deferred:                r.Registry.ListDeferred(),
+				SkillIndex:              r.SkillIndex,
+				ActiveSkills:            r.State.ActiveSkills(),
+				NativeTools:             r.NativeTools,
+				PublicProgressAvailable: r.publicProgressAvailable(),
+				Mode:                    r.Policy.ApprovalMode(),
+				Addendum:                r.SystemPromptAddendum,
+				WorkingDir:              r.State.WorkingDir,
+				Roster:                  r.agentRoster(),
+				LoadedNames:             r.State.LoadedToolNames(),
+				SystemAccess:            r.State.SystemAccess(),
+			})}
 			messages = r.setContextPackMessage(messages, updatedPack)
 			messages = r.appendSkillHint(messages)
 			messages = r.appendSkillBodies(messages)
@@ -1095,18 +1110,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		currentSystemAccess := r.State.SystemAccess()
 		if skillsChanged(lastRenderedSkills, currentSkills) || loadedToolsChanged(lastRenderedLoadedTools, currentLoadedTools) || currentSystemAccess != lastRenderedSystemAccess {
 			messages[0] = BuildSystemPromptWithSystem(SystemPromptOptions{
-				Role:         r.role(),
-				Tools:        r.Registry.List(),
-				Deferred:     r.Registry.ListDeferred(),
-				SkillIndex:   r.SkillIndex,
-				ActiveSkills: currentSkills,
-				NativeTools:  r.NativeTools,
-				Mode:         r.Policy.ApprovalMode(),
-				Addendum:     r.SystemPromptAddendum,
-				WorkingDir:   r.State.WorkingDir,
-				Roster:       r.agentRoster(),
-				LoadedNames:  currentLoadedTools,
-				SystemAccess: currentSystemAccess,
+				Role:                    r.role(),
+				Tools:                   r.Registry.List(),
+				Deferred:                r.Registry.ListDeferred(),
+				SkillIndex:              r.SkillIndex,
+				ActiveSkills:            currentSkills,
+				NativeTools:             r.NativeTools,
+				PublicProgressAvailable: r.publicProgressAvailable(),
+				Mode:                    r.Policy.ApprovalMode(),
+				Addendum:                r.SystemPromptAddendum,
+				WorkingDir:              r.State.WorkingDir,
+				Roster:                  r.agentRoster(),
+				LoadedNames:             currentLoadedTools,
+				SystemAccess:            currentSystemAccess,
 			})
 			lastRenderedSkills = currentSkills
 			lastRenderedLoadedTools = currentLoadedTools

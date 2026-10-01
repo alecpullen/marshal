@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/activity"
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/pricing"
@@ -24,6 +26,124 @@ func dummyTools() []registry.Tool {
 		{Name: "file.read", Risk: registry.RiskReadOnly, Description: "Read a file."},
 		{Name: "shell.run", Risk: registry.RiskCommand, Description: "Run a shell command."},
 	}
+}
+
+func TestRunnerPublicProgressAvailabilityUsesCapabilities(t *testing.T) {
+	state := newTestState(t)
+	reg := registry.New()
+	runner := &Runner{Registry: reg, State: state}
+	if !runner.publicProgressAvailable() {
+		t.Fatal("JSON envelope capability should be available with a session")
+	}
+	runner.NativeTools = true
+	if runner.publicProgressAvailable() {
+		t.Fatal("native prompt advertised progress without its registered tool")
+	}
+	if err := reg.Register(registry.Tool{Name: "progress.update", Risk: registry.RiskReadOnly, Handler: func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+		return registry.ToolResult{}, nil
+	}}); err != nil {
+		t.Fatalf("register progress tool: %v", err)
+	}
+	if !runner.publicProgressAvailable() {
+		t.Fatal("native progress capability was not detected")
+	}
+	runner.State = nil
+	if runner.publicProgressAvailable() {
+		t.Fatal("progress capability reported without a session")
+	}
+}
+
+func TestPublicProgressPromptCapabilitiesAndExamples(t *testing.T) {
+	readSchema := json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`)
+	tools := []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly, Schema: readSchema},
+		{Name: "progress.update", Risk: registry.RiskReadOnly},
+	}
+	jsonPrompt := buildSystemPrompt(SystemPromptOptions{
+		Role: RoleGeneral, Tools: tools, Mode: policy.ModeEdit, PublicProgressAvailable: true,
+	}).Content
+	for _, want := range []string{publicProgressAddendum, jsonPublicProgressExamples, jsonProgressSingleExample, jsonProgressBatchExample, jsonProgressReviseExample, illustrativeEvidenceReceipt} {
+		if !strings.Contains(jsonPrompt, want) {
+			t.Errorf("JSON prompt missing progress guidance/example %q", want)
+		}
+	}
+	if strings.Contains(jsonPrompt, "progress.update") {
+		t.Fatalf("JSON prompt offered native metadata as an ordinary work tool:\n%s", jsonPrompt)
+	}
+	for _, raw := range []string{jsonProgressSingleExample, jsonProgressBatchExample, jsonProgressReviseExample} {
+		action, err := ParseAction(raw)
+		if err != nil || action.Progress == nil || action.ProgressDiagnostic != "" {
+			t.Fatalf("prompt JSON example did not parse: action=%+v err=%v", action, err)
+		}
+		if strings.Contains(raw, `"mode":"revise"`) {
+			if action.Progress.Sections == nil || len(*action.Progress.Sections) == 0 || len((*action.Progress.Sections)[0].EvidenceRefs) != 1 || (*action.Progress.Sections)[0].EvidenceRefs[0] != "e1-1" {
+				t.Fatalf("JSON revise example does not copy the displayed receipt alias: %+v", action.Progress)
+			}
+		}
+		validateCall := func(call ModelAction) {
+			t.Helper()
+			tool, ok := findPromptTool(tools, call.Tool)
+			if !ok || registry.ValidateArgs(tool, call.Args) != nil {
+				t.Fatalf("prompt example has invalid tool call: %+v", call)
+			}
+		}
+		if len(action.Actions) > 0 {
+			for _, call := range action.Actions {
+				if call.Tool != "file.read" {
+					t.Fatalf("prompt batch includes non-read tool: %+v", call)
+				}
+				validateCall(call)
+			}
+		} else {
+			validateCall(action)
+		}
+	}
+
+	nativeTools := tools
+	nativePrompt := buildSystemPrompt(SystemPromptOptions{
+		Role: RoleGeneral, Tools: nativeTools, NativeTools: true, Mode: policy.ModeEdit, PublicProgressAvailable: true,
+	}).Content
+	if !strings.Contains(nativePrompt, nativePublicProgressExamples) || !strings.Contains(nativePrompt, nativeProgressBeginExample) || !strings.Contains(nativePrompt, nativeProgressReviseExample) || !strings.Contains(nativePrompt, illustrativeEvidenceReceipt) {
+		t.Fatalf("native prompt missing leading begin/read/revise guidance:\n%s", nativePrompt)
+	}
+	if strings.Contains(nativePrompt, jsonProgressSingleExample) || strings.Contains(nativePrompt, "Respond with exactly one JSON object") {
+		t.Fatalf("native prompt contains JSON envelope examples:\n%s", nativePrompt)
+	}
+	if !strings.Contains(nativePrompt, "final answer in normal prose") {
+		t.Fatalf("native prompt lost plain-prose final compatibility:\n%s", nativePrompt)
+	}
+	if _, err := activity.DecodeProgress(json.RawMessage(nativeProgressBeginExample)); err != nil {
+		t.Fatalf("native progress example does not match progress schema: %v", err)
+	}
+	readTool, ok := findPromptTool(nativeTools, "file.read")
+	if !ok || registry.ValidateArgs(readTool, json.RawMessage(nativeProgressReadArgs)) != nil {
+		t.Fatal("native progress read example does not match the file.read tool schema")
+	}
+	if _, err := activity.DecodeProgress(json.RawMessage(nativeProgressReviseExample)); err != nil {
+		t.Fatalf("native revise example shape does not match progress schema: %v", err)
+	}
+	final, err := ParseAction(`{"action":{"type":"final","content":"Done."}}`)
+	if err != nil || final.Type != ActionFinal || !strings.Contains(jsonPrompt, `"type": "final"`) {
+		t.Fatalf("JSON final-envelope compatibility changed: action=%+v err=%v", final, err)
+	}
+
+	// A registry entry alone does not leak progress guidance into prompts
+	// unless the runner confirms the response path can consume it.
+	withoutCapability := buildSystemPrompt(SystemPromptOptions{
+		Role: RoleGeneral, Tools: nativeTools, NativeTools: true, Mode: policy.ModeEdit,
+	}).Content
+	if strings.Contains(withoutCapability, "Public progress examples") || strings.Contains(withoutCapability, "optional top-level progress field") {
+		t.Fatalf("prompt without actual progress capability advertises it:\n%s", withoutCapability)
+	}
+}
+
+func findPromptTool(tools []registry.Tool, name string) (registry.Tool, bool) {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return registry.Tool{}, false
 }
 
 func TestBuildSystemPromptIncludesToolArgHints(t *testing.T) {

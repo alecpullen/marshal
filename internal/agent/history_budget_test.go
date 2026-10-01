@@ -1,6 +1,13 @@
 package agent
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	"marshal/internal/app/session"
+	"marshal/internal/db"
+)
 
 func TestHistoryBudget_Adaptive(t *testing.T) {
 	cases := []struct {
@@ -30,5 +37,22 @@ func TestHistoryBudget_Adaptive(t *testing.T) {
 					tc.window, tc.configured, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPublicProgressDoesNotConsumeHistoryBudget(t *testing.T) {
+	base := []session.Message{
+		{Role: session.RoleUser, Content: "inspect the parser", ContentType: session.ContentTypePlain},
+		{Role: session.RoleAssistant, Content: "The loop boundary was off by one.", ContentType: session.ContentTypeMarkdown, Final: true},
+	}
+	withProgress := []session.Message{
+		base[0],
+		{Role: session.RoleAssistant, Content: strings.Repeat("public progress detail ", 500), ContentType: session.ContentTypeNarration},
+		base[1],
+	}
+	want := buildHistoryMessages(base, 64, session.GenerationInfo{}, map[int64][]db.ToolAuditEntry{})
+	got := buildHistoryMessages(withProgress, 64, session.GenerationInfo{}, map[int64][]db.ToolAuditEntry{})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("public progress changed budgeted history\n got: %+v\nwant: %+v", got, want)
 	}
 }

@@ -509,6 +509,46 @@ const scratchpadAddendum = `
 Use scratchpad.write to park structured intermediate state (audit results, file lists, decision logs) that is too large for the context budget but must survive context compaction. A compact projection is injected into the context pack automatically; use scratchpad.read to retrieve full content when needed. Prefer the scratchpad over /tmp files for state you may need to reference in later turns.
 `
 
+// publicProgressAddendum is shared across roles. Mode-specific examples live
+// beside the relevant output protocol below so a JSON model is never taught
+// to call presentation metadata as an ordinary work tool.
+const publicProgressAddendum = `
+Keep the user informed at meaningful transitions: a new objective, useful finding, change, or blocker. Give a short public summary; do not narrate every tool call or repeat an unchanged update. Public progress is not private reasoning.
+
+When progress reporting is available, begin a narration for a new objective and revise it while continuing that objective. Use only evidence references supplied in your own tool receipts. Sections describe findings or intentions; Marshal supplies actual execution status. A started job is not a ready service, a patch is not verification, and a child's report is not a result you checked yourself. Keep pending checks separate from observed results. Do not emit terminal layout, status badges, invented IDs, or elapsed times. Structured updates are optional; continue useful work if reporting metadata is rejected. When told to finalize now, skip a new progress update and use the required final-answer or role-specific report format. For delegated work, report your assigned scope and leave overall completion to the parent or controller.
+`
+
+const nativeProgressBeginExample = `{"mode":"begin","headline":"Inspecting the parser","sections":[{"kind":"next","text":"Read the parser and its boundary tests."}]}`
+const nativeProgressReadArgs = `{"path":"internal/agent/protocol.go"}`
+const nativeProgressReviseExample = `{"mode":"revise","sections":[{"kind":"evidence","text":"The file.read receipt confirms the parser path.","evidence_refs":["e1-1"]}]}`
+const illustrativeEvidenceReceipt = `Evidence receipt: e1-1 · source [source view from this receipt] · file.read`
+
+const nativePublicProgressExamples = `
+
+Public progress examples (when the progress.update native tool is available):
+- Start a new objective with a leading progress.update call, then do the work. For example, call progress.update with arguments ` + nativeProgressBeginExample + `, then call file.read with arguments ` + nativeProgressReadArgs + `.
+- Illustrative preceding file.read receipt: ` + illustrativeEvidenceReceipt + `. A later leading progress.update call may revise the narration with arguments ` + nativeProgressReviseExample + `. The example copies e1-1 from that receipt; real calls must copy the alias actually returned by their own receipt, never guess or reuse a reference from another response.
+`
+
+const jsonProgressSingleExample = `{"rationale":"I will inspect the parser before changing it.","progress":{"mode":"begin","headline":"Inspecting the parser","sections":[{"kind":"next","text":"Read the parser and its boundary tests."}]},"action":{"type":"tool_call","tool":"file.read","args":{"path":"internal/agent/protocol.go"}}}`
+
+const jsonProgressBatchExample = `{"rationale":"I will inspect both relevant files.","progress":{"mode":"begin","headline":"Checking parser behavior"},"actions":[{"type":"tool_call","tool":"file.read","args":{"path":"internal/agent/protocol.go"}},{"type":"tool_call","tool":"file.read","args":{"path":"internal/agent/protocol_test.go"}}]}`
+const jsonProgressReviseExample = `{"rationale":"The earlier file.read receipt confirms the parser path; I will inspect its test.","progress":{"mode":"revise","sections":[{"kind":"evidence","text":"The file.read receipt confirms the parser path.","evidence_refs":["e1-1"]}]},"action":{"type":"tool_call","tool":"file.read","args":{"path":"internal/agent/protocol_test.go"}}}`
+
+const jsonPublicProgressExamples = `
+
+The optional top-level progress field is presentation metadata, not an action or work tool. It may accompany one action:
+` + jsonProgressSingleExample + `
+
+It may also accompany a legal read-only batch:
+` + jsonProgressBatchExample + `
+
+For example, if the preceding file.read result ended with ` + illustrativeEvidenceReceipt + `, a later response can revise with:
+` + jsonProgressReviseExample + `
+
+This example copies e1-1 from that displayed receipt. Real calls must copy the alias actually returned by their own receipt, never guess or reuse a reference from another response.
+`
+
 const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
 // NativeFinalizationDirective is the prose-oriented counterpart to
@@ -624,11 +664,15 @@ type SystemPromptOptions struct {
 	SkillIndex   *skills.Index
 	ActiveSkills []string
 	NativeTools  bool
-	Mode         policy.ApprovalMode
-	Addendum     string
-	WorkingDir   string
-	Roster       string
-	LoadedNames  []string
+	// PublicProgressAvailable is set by the runner from its actual response
+	// and session capabilities. Transcript display preferences do not affect
+	// whether the model can submit structured progress.
+	PublicProgressAvailable bool
+	Mode                    policy.ApprovalMode
+	Addendum                string
+	WorkingDir              string
+	Roster                  string
+	LoadedNames             []string
 	// SystemAccess selects the system-access prompt variant: the
 	// file-tools rule is amended and systemAccessDirective is appended
 	// after the mode directive (spec §6).
@@ -737,6 +781,9 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	if nativeTools {
 		b.WriteString(scratchpadAddendum)
 	}
+	if opts.PublicProgressAvailable {
+		b.WriteString(publicProgressAddendum)
+	}
 	if d := modeDirective(mode); d != "" {
 		b.WriteString("\n\n")
 		b.WriteString(d)
@@ -748,6 +795,12 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	if !nativeTools {
 		b.WriteString("\n\nAvailable tools:\n")
 		for _, tool := range tools {
+			// JSON-mode progress is decoded from the optional envelope field;
+			// exposing its native tool registration here would invite an
+			// ordinary tool_call that the JSON protocol rejects.
+			if tool.Name == "progress.update" {
+				continue
+			}
 			// Deferred tools the agent hasn't loaded are announced compactly via
 			// writeDeferredAnnouncement; listing them in full here would
 			// double-pay the prompt cost deferral exists to save. Loaded
@@ -814,6 +867,9 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	b.WriteString("\n")
 	if nativeTools {
 		b.WriteString(nativeOutputFormat)
+		if opts.PublicProgressAvailable {
+			b.WriteString(nativePublicProgressExamples)
+		}
 		hasWritePatch := false
 		for _, tool := range tools {
 			if tool.Name == "file.write_patch" {
@@ -827,6 +883,9 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 		}
 	} else {
 		b.WriteString(baseOutputFormat)
+		if opts.PublicProgressAvailable {
+			b.WriteString(jsonPublicProgressExamples)
+		}
 		// Advertise only the tools that are genuinely safe to run
 		// concurrently. Naming a serial-gated or state-mutating tool here
 		// would invite a parallel call that executeActions has to serialise
@@ -834,7 +893,13 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 		// registry does not classify as read-only would contradict
 		// allReadOnly's own rejection message.
 		b.WriteString("\n\nEach actions[] entry must be a read-only tool_call")
-		if names := batchSafeReadOnlyNames(tools); len(names) > 0 {
+		batchTools := make([]registry.Tool, 0, len(tools))
+		for _, tool := range tools {
+			if tool.Name != "progress.update" {
+				batchTools = append(batchTools, tool)
+			}
+		}
+		if names := batchSafeReadOnlyNames(batchTools); len(names) > 0 {
 			b.WriteString("; read-only tools are: ")
 			b.WriteString(strings.Join(names, ", "))
 		}

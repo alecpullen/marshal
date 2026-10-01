@@ -225,3 +225,14 @@ func (r *Runner) knownTool(name string) bool {
 	_, ok := r.Registry.Lookup(name)
 	return ok
 }
+
+// publicProgressAvailable reports response capability, not presentation
+// preference. Native mode requires the registered leading metadata tool;
+// JSON mode decodes the optional envelope field directly and only needs the
+// session that owns the resulting public revision.
+func (r *Runner) publicProgressAvailable() bool {
+	if r == nil || r.State == nil {
+		return false
+	}
+	return !r.NativeTools || r.knownTool("progress.update")
+}

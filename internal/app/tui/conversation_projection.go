@@ -51,7 +51,7 @@ func notebookConversationDocument(items []session.TranscriptItem, snapshot sessi
 	blocks := make([]conversation.Block, 0, len(items))
 	segment := make([]session.TranscriptItem, 0)
 	flush := func() {
-		blocks = append(blocks, projectNotebookSegment(segment, owners, snapshot, options.FollowingLatest)...)
+		blocks = append(blocks, projectNotebookSegment(segment, owners, snapshot, options.FollowingLatest, items)...)
 		segment = segment[:0]
 	}
 	unavailable := false
@@ -75,7 +75,7 @@ func notebookConversationDocument(items []session.TranscriptItem, snapshot sessi
 	return conversation.NewDocument(blocks)
 }
 
-func projectNotebookSegment(items []session.TranscriptItem, owners map[string]activity.Narration, snapshot session.ActivitySnapshot, followingLatest bool) []conversation.Block {
+func projectNotebookSegment(items []session.TranscriptItem, owners map[string]activity.Narration, snapshot session.ActivitySnapshot, followingLatest bool, allItems []session.TranscriptItem) []conversation.Block {
 	if len(items) == 0 {
 		return nil
 	}
@@ -204,7 +204,7 @@ func projectNotebookSegment(items []session.TranscriptItem, owners map[string]ac
 			block.Members = nil
 		}
 		if owners[id].Source == activity.SourceStructuredProgress {
-			block = structuredNarrationSections(block, owners[id], snapshot, items)
+			block = structuredNarrationSections(block, owners[id], snapshot, items, allItems)
 		}
 		sections[id] = notebookBlockRevision(block)
 	}

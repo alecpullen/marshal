@@ -123,6 +123,13 @@ func TestPublicProgressKeepsValidEvidenceRefsAndDropsInvalid(t *testing.T) {
 	if len(sections) != 1 || sections[0].Text != "This is a report from agent.output" || len(sections[0].EvidenceRefs) != 1 || sections[0].EvidenceRefs[0] != "e1-1" {
 		t.Fatalf("materialized sections = %+v", sections)
 	}
+	if len(sections[0].EvidenceSources) != 1 || sections[0].EvidenceSources[0].SourceViewID == "" {
+		t.Fatalf("accepted section lost its canonical evidence source: %+v", sections[0])
+	}
+	sections[0].EvidenceSources[0].SourceViewID = "mutated"
+	if got := s.ActivitySnapshot().ProgressRevisions[0].Sections[0].EvidenceSources[0].SourceViewID; got == "mutated" {
+		t.Fatal("snapshot evidence source mutation reached session state")
+	}
 }
 
 func TestPublicProgressPublishesAfterReleasingLifecycleLock(t *testing.T) {

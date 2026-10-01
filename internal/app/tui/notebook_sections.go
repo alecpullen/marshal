@@ -12,7 +12,7 @@ import (
 // structuredNarrationSections replaces the source-message body with the
 // latest immutable public revision. Every section keeps its exact source
 // members; reference labels are presentation text and never become identities.
-func structuredNarrationSections(parent conversation.Block, narration activity.Narration, snapshot session.ActivitySnapshot, items []session.TranscriptItem) conversation.Block {
+func structuredNarrationSections(parent conversation.Block, narration activity.Narration, snapshot session.ActivitySnapshot, items, visibleItems []session.TranscriptItem) conversation.Block {
 	var latest *activity.ProgressRevision
 	for i := range snapshot.ProgressRevisions {
 		revision := &snapshot.ProgressRevisions[i]
@@ -36,8 +36,8 @@ func structuredNarrationSections(parent conversation.Block, narration activity.N
 	}
 	children := make([]conversation.Block, 0, len(latest.Sections)+len(parent.Children))
 
-	itemsByView := make(map[string]session.TranscriptItem, len(items))
-	for _, item := range items {
+	itemsByView := make(map[string]session.TranscriptItem, len(visibleItems))
+	for _, item := range visibleItems {
 		itemsByView[item.ViewID] = item
 	}
 	revisionBySource := make(map[int64]activity.ProgressRevision)
@@ -91,22 +91,29 @@ func structuredNarrationSections(parent conversation.Block, narration activity.N
 				continue
 			}
 			localAliases[alias] = true
-			record, exists := aliases[alias]
-			if !exists {
+			source, hasCanonicalSource := evidenceSourceForAlias(section.EvidenceSources, alias)
+			if !hasCanonicalSource && len(section.EvidenceSources) == 0 {
+				record, exists := aliases[alias]
+				if exists {
+					source = activity.EvidenceSource{Alias: record.Alias, Owner: record.Owner, SourceViewID: record.SourceViewID, ToolName: record.ToolName}
+					hasCanonicalSource = true
+				}
+			}
+			if !hasCanonicalSource {
 				sectionBlock.Children = append(sectionBlock.Children, conversation.Block{Kind: conversation.BlockReference, Text: "Evidence unavailable", PresentationOnly: true, ID: conversation.BlockID("unavailable:" + narration.ID + ":" + string(section.Kind) + ":" + alias)})
 				continue
 			}
-			item, retained := itemsByView[record.SourceViewID]
-			if !retained || item.Kind != session.KindAudit || item.Activity.RunID != narration.RunID || item.Activity.ActorID != narration.ActorID {
+			item, retained := itemsByView[source.SourceViewID]
+			if !retained || item.Kind != session.KindAudit || item.Activity != source.Owner || source.Owner.RunID != narration.RunID || source.Owner.ActorID != narration.ActorID {
 				sectionBlock.Children = append(sectionBlock.Children, unavailableEvidence(narration.ID, section.Kind, alias))
 				continue
 			}
-			if item.Activity.NarrationID != narration.ID {
-				sectionBlock.Children = append(sectionBlock.Children, conversation.Block{Kind: conversation.BlockReference, Text: fmt.Sprintf("See %s", record.ToolName), ReferenceTarget: record.SourceViewID, PresentationOnly: true, ID: conversation.BlockID("reference:" + narration.ID + ":" + alias)})
+			if source.Owner.NarrationID != narration.ID {
+				sectionBlock.Children = append(sectionBlock.Children, conversation.Block{Kind: conversation.BlockReference, Text: fmt.Sprintf("See %s", source.ToolName), ReferenceTarget: source.SourceViewID, PresentationOnly: true, ID: conversation.BlockID("reference:" + narration.ID + ":" + alias)})
 				continue
 			}
-			if seenResult[record.SourceViewID] {
-				sectionBlock.Children = append(sectionBlock.Children, conversation.Block{Kind: conversation.BlockReference, Text: fmt.Sprintf("See %s", record.ToolName), ReferenceTarget: record.SourceViewID, PresentationOnly: true, ID: conversation.BlockID("reference:" + narration.ID + ":" + alias)})
+			if seenResult[source.SourceViewID] {
+				sectionBlock.Children = append(sectionBlock.Children, conversation.Block{Kind: conversation.BlockReference, Text: fmt.Sprintf("See %s", source.ToolName), ReferenceTarget: source.SourceViewID, PresentationOnly: true, ID: conversation.BlockID("reference:" + narration.ID + ":" + alias)})
 				continue
 			}
 			result, ok := conversationBlock(transcriptEntry{Item: &item})
@@ -115,8 +122,8 @@ func structuredNarrationSections(parent conversation.Block, narration activity.N
 				continue
 			}
 			sectionBlock.Children = append(sectionBlock.Children, result)
-			seenResult[record.SourceViewID] = true
-			seenSource[record.SourceViewID] = true
+			seenResult[source.SourceViewID] = true
+			seenSource[source.SourceViewID] = true
 		}
 		children = append(children, notebookBlockRevision(sectionBlock))
 	}
@@ -137,6 +144,15 @@ func structuredNarrationSections(parent conversation.Block, narration activity.N
 	}
 	parent.Children = children
 	return notebookBlockRevision(parent)
+}
+
+func evidenceSourceForAlias(sources []activity.EvidenceSource, alias string) (activity.EvidenceSource, bool) {
+	for _, source := range sources {
+		if source.Alias == alias {
+			return source, true
+		}
+	}
+	return activity.EvidenceSource{}, false
 }
 
 func unavailableEvidence(narration string, kind activity.SectionKind, alias string) conversation.Block {

@@ -93,13 +93,17 @@ func (s *State) ApplyPublicProgress(response activity.Ref, update activity.Progr
 	sections := cloneProgressSections(progressSectionsValue(update))
 	warnings := []string(nil)
 	for i := range sections {
+		sections[i].EvidenceSources = nil
 		if len(sections[i].EvidenceRefs) > 0 {
 			records, unresolved := s.resolveEvidenceRefsLocked(response, sections[i].EvidenceRefs)
 			valid := make([]string, 0, len(records))
+			sources := make([]activity.EvidenceSource, 0, len(records))
 			for _, record := range records {
 				valid = append(valid, record.Alias)
+				sources = append(sources, activity.EvidenceSource{Alias: record.Alias, Owner: record.Owner, SourceViewID: record.SourceViewID, ToolName: record.ToolName})
 			}
 			sections[i].EvidenceRefs = valid
+			sections[i].EvidenceSources = sources
 			if len(unresolved) > 0 && len(warnings) == 0 {
 				warnings = unresolved
 			}
@@ -228,6 +232,7 @@ func cloneProgressSections(in []activity.ProgressSection) []activity.ProgressSec
 	for i, section := range in {
 		out[i] = section
 		out[i].EvidenceRefs = append([]string(nil), section.EvidenceRefs...)
+		out[i].EvidenceSources = append([]activity.EvidenceSource(nil), section.EvidenceSources...)
 	}
 	return out
 }

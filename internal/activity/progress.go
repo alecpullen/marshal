@@ -23,6 +23,19 @@ type ProgressSection struct {
 	Kind         SectionKind `json:"kind"`
 	Text         string      `json:"text"`
 	EvidenceRefs []string    `json:"evidence_refs,omitempty"`
+	// EvidenceSources captures canonical source identity at acceptance time.
+	// It is runtime-owned and never part of the model-authored JSON contract.
+	EvidenceSources []EvidenceSource `json:"-"`
+}
+
+// EvidenceSource is the immutable transcript identity resolved for one
+// accepted alias. It survives alias authorization eviction so historical
+// progress can still project a visible source in its original scope.
+type EvidenceSource struct {
+	Alias        string
+	Owner        Ref
+	SourceViewID string
+	ToolName     string
 }
 
 // ProgressUpdate uses pointers to distinguish omitted values from explicit

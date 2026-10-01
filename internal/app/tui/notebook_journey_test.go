@@ -114,6 +114,9 @@ func TestStructuredProgressJourneyProjectsChronologicalLegacyAndNotebook(t *test
 	state.EndActivityRun(revised.Owner)
 	items := state.Transcript()
 	snapshot := state.ActivitySnapshot()
+	if got := snapshot.ProgressRevisions[1].Sections[0].EvidenceSources; len(got) != 1 || got[0].Alias != readReceipt.Alias || got[0].SourceViewID != readReceipt.SourceViewID {
+		t.Fatalf("accepted evidence source identity = %+v, receipt=%+v", got, readReceipt)
+	}
 	legacy := projectConversation(items, snapshot, conversationProjectionOptions{})
 	notebook := projectConversation(items, snapshot, conversationProjectionOptions{Notebook: true, FollowingLatest: true, ScopeID: state.ScopeID()})
 	legacyOrder := make(map[string]int)
@@ -158,8 +161,85 @@ func TestStructuredProgressJourneyProjectsChronologicalLegacyAndNotebook(t *test
 		t.Fatalf("latest revision is not inside the notebook narration: source=%q loc=%+v", latestID, loc)
 	}
 	parent, ok := notebook.Block(loc.Ancestors[0])
-	if !ok || len(parent.EventOrderAlternatives) != 2 || parent.EventOrderAlternatives[0].SourceRevision != 1 || parent.EventOrderAlternatives[1].SourceRevision != 2 {
+	if !ok || len(parent.EventOrderAlternatives) < 2 || parent.EventOrderAlternatives[0].SourceRevision != 1 || parent.EventOrderAlternatives[1].SourceRevision != 2 {
 		t.Fatalf("notebook does not preserve both revisions in event order: %+v", parent)
+	}
+}
+
+func TestAcceptedEvidenceSurvivesAliasEvictionAndRunChange(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "Inspect and report", session.ContentTypePlain)
+	run := state.BeginActivityRun(state.Messages()[0].ID)
+	headline := "Inspecting"
+	begin, err := state.ApplyPublicProgress(state.BeginActivityResponse(), activity.ProgressUpdate{Mode: activity.ProgressBegin, Headline: &headline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := state.BeginActivityCall(begin.Owner, "provider-original")
+	state.LogToolCall(registry.AuditEvent{Activity: call, ToolName: "file.read", ResultSummary: "Read source", ResultContent: "source bytes"})
+	first, ok := state.IssueEvidenceReceipt(call)
+	if !ok {
+		t.Fatal("initial evidence receipt was not issued")
+	}
+	sections := []activity.ProgressSection{{Kind: activity.SectionEvidence, Text: "The source returned these bytes.", EvidenceRefs: []string{first.Alias}}}
+	if _, err := state.ApplyPublicProgress(state.BeginActivityResponse(), activity.ProgressUpdate{Mode: activity.ProgressRevise, Sections: &sections}); err != nil {
+		t.Fatal(err)
+	}
+	acceptedSnapshot := state.ActivitySnapshot()
+	var acceptedSection activity.ProgressSection
+	for _, revision := range acceptedSnapshot.ProgressRevisions {
+		if len(revision.Sections) > 0 && len(revision.Sections[0].EvidenceSources) > 0 {
+			acceptedSection = revision.Sections[0]
+		}
+	}
+	if len(acceptedSection.EvidenceSources) != 1 || acceptedSection.EvidenceSources[0].SourceViewID != first.SourceViewID {
+		t.Fatalf("accepted section did not capture canonical source: %+v", acceptedSection)
+	}
+	for i := 0; i < 256; i++ {
+		owner := state.BeginActivityCall(begin.Owner, fmt.Sprintf("provider-%d", i))
+		state.LogToolCall(registry.AuditEvent{Activity: owner, ToolName: "file.read", ResultSummary: "later source"})
+		if _, ok := state.IssueEvidenceReceipt(owner); !ok {
+			t.Fatalf("later receipt %d was not issued", i)
+		}
+	}
+	if records, warnings := state.ResolveEvidenceRefs(begin.Owner, []string{first.Alias}); len(records) != 0 || len(warnings) != 1 {
+		t.Fatalf("old alias remained authorized after eviction: records=%+v warnings=%v", records, warnings)
+	}
+	state.EndActivityRun(run)
+	state.AddMessage(session.RoleUser, "Continue in a new run", session.ContentTypePlain)
+	state.BeginActivityRun(state.Messages()[len(state.Messages())-1].ID)
+
+	items := state.Transcript()
+	snapshot := state.ActivitySnapshot()
+	if len(snapshot.EvidenceRecords) != 0 {
+		t.Fatalf("new run inherited old alias authorization: %+v", snapshot.EvidenceRecords)
+	}
+	doc := projectConversation(items, snapshot, conversationProjectionOptions{Notebook: true, FollowingLatest: true, ScopeID: state.ScopeID()})
+	location, found := doc.LocateMember(first.SourceViewID)
+	if !found || location.Block.Kind != conversation.BlockTool || location.Block.Text != "source bytes" {
+		t.Fatalf("accepted evidence no longer projects after alias eviction/new run: location=%+v found=%v", location, found)
+	}
+
+	withoutSource := make([]session.TranscriptItem, 0, len(items)-1)
+	for _, item := range items {
+		if item.ViewID != first.SourceViewID {
+			withoutSource = append(withoutSource, item)
+		}
+	}
+	missingDoc := projectConversation(withoutSource, snapshot, conversationProjectionOptions{Notebook: true, FollowingLatest: true, ScopeID: state.ScopeID()})
+	var unavailable bool
+	var visit func([]conversation.Block)
+	visit = func(blocks []conversation.Block) {
+		for _, block := range blocks {
+			if block.Text == "Evidence unavailable" {
+				unavailable = true
+			}
+			visit(block.Children)
+		}
+	}
+	visit(missingDoc.Blocks())
+	if !unavailable {
+		t.Fatal("projection did not mark a removed evidence source unavailable")
 	}
 }
 

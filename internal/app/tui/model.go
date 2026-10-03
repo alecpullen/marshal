@@ -35,6 +35,7 @@ import (
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
@@ -392,6 +393,15 @@ type Model struct {
 	effDensity map[stack.NodeID]density
 	// foldTasks is the session toggle for folding finished tasks (z).
 	foldTasks bool
+	// Browse mode (Esc): a cursor over the rendered nodes. browseItems is
+	// rebuilt on every full refresh; browseTree indexes the nodes for copy,
+	// open and inspect.
+	browsing    bool
+	osc52Noted  bool
+	cursor      stack.NodeID
+	browseNodes []stack.NodeID
+	browseItems []browseItem
+	browseTree  map[stack.NodeID]*stack.Node
 	// flash is a transient status-line message (see flash.go).
 	flash      string
 	flashUntil time.Time
@@ -1905,6 +1915,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsheet.RunCommandMsg:
 		m.closeSessionSheet()
 		return m.dispatchCommand("/" + msg.Command)
+	case inspector.ClosedMsg, inspector.NavigateMsg, inspector.CopyMsg, inspector.OpenMsg:
+		cmd, _ := m.handleInspectorMsg(msg)
+		return m, cmd
 	case docpanel.ClosedMsg:
 		m.dock.CloseNow()
 		m.refreshViewport()
@@ -4640,6 +4653,7 @@ func (m Model) handleSuggestionMsg(msg suggestionMsg) (Model, tea.Cmd) {
 }
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
+	m.leaveBrowse() // running a command ends browsing
 	parts, err := shlex.Split(raw)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, "Invalid command syntax.", session.ContentTypePlain)

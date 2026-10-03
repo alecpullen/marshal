@@ -21,7 +21,7 @@ func scriptedTasks(t *testing.T, m *Model, n, stepsPer int, finish bool) {
 	for i := range todos {
 		todos[i] = db.TodoItem{ID: fmt.Sprintf("t%d", i+1), Content: fmt.Sprintf("Task number %d", i+1), Status: "pending"}
 	}
-		for i := 0; i < n; i++ {
+	for i := 0; i < n; i++ {
 		todos[i].Status = "in_progress"
 		todos[i].StartedAt = time.Now().Add(-30 * time.Second)
 		if err := m.state.SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {

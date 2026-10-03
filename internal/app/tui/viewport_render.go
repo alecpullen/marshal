@@ -140,6 +140,8 @@ func (m *Model) refreshViewport() {
 		addBlock(renderWelcomeBanner(width), nil, nil)
 	}
 	seen := map[stack.NodeID]bool{}
+	tree := map[stack.NodeID]*stack.Node{}
+	var bitems []browseItem
 	firstTurn := true
 	for _, turn := range turns {
 		// A separator precedes every user turn but the first, so the rule
@@ -150,9 +152,15 @@ func (m *Model) refreshViewport() {
 			}
 			firstTurn = false
 		}
+		turnFirst := true
 		for _, node := range turn.Children {
 			collectSeen(node, seen)
+			indexTree(node, tree)
 			out, subs := m.renderNode(node, rctx, width, themeSig)
+			if out != "" {
+				bitems = collectBrowse(bitems, node, out, subs, lineCursor, turnFirst)
+				turnFirst = false
+			}
 			addBlock(out, m.blockTarget(node), subs)
 		}
 	}
@@ -168,9 +176,14 @@ func (m *Model) refreshViewport() {
 
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
+	m.setBrowseItems(bitems, tree)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
-	m.viewport.SetContent(strings.Join(blocks, "\n"))
+	content := strings.Join(blocks, "\n")
+	if m.browsing {
+		content = m.paintCursor(content)
+	}
+	m.viewport.SetContent(content)
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 	}
@@ -388,6 +401,9 @@ func (m *Model) contentSignature(turns []*stack.Node, width int, themeSig uint64
 	fmt.Fprintf(h, "ro%d|rr%d|cl%d|", len(m.regionOffset), len(m.regionRows), len(m.callers))
 	if live {
 		fmt.Fprintf(h, "live|%s|%d|", m.spinnerFrame, m.now().Unix())
+	}
+	if m.browsing {
+		fmt.Fprintf(h, "browse|%d|%s|", m.cursor.Kind, m.cursor.Key)
 	}
 	for _, q := range queued {
 		fmt.Fprintf(h, "q%q|", q)

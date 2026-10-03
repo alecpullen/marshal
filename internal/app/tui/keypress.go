@@ -87,6 +87,18 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// Let typing/pasting fall through to the textarea.
 	}
 
+	// Browse mode owns its keys; the ones it declines (Ctrl chords) continue
+	// down the normal path below.
+	if m.browsing {
+		if mm, cmd, handled := m.handleBrowseKey(msg); handled {
+			return mm, cmd, true
+		}
+		if !m.browsing {
+			// An unbound printable key left browse mode; it is typed next.
+			return *m, nil, false
+		}
+	}
+
 	// readlineShortcutAvailable reports whether a key that shadows standard
 	// readline/textarea bindings should be handled globally right now. When
 	// the input has text or the user is editing a command, those keys fall
@@ -159,6 +171,9 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		m.resetHistoryNav()
+		// Nothing else wanted the key: Esc starts browsing the transcript.
+		// It never cancels a turn, busy or idle.
+		m.enterBrowse()
 		return *m, nil, true
 	case "ctrl+o":
 		m.openSettingsBrowser("")

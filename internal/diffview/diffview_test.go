@@ -143,7 +143,7 @@ func TestRenderSideBySideEvenWidth(t *testing.T) {
 	}
 	opts := Options{Width: 80, Mode: ModeSideBySide}
 	var b strings.Builder
-	renderSideBySide(&b, h, opts)
+	renderSideBySide(&b, h, opts, maxRenderLines)
 	output := b.String()
 	if len(output) == 0 {
 		t.Fatal("expected non-empty side-by-side output")

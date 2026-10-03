@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -168,14 +169,13 @@ func TestPreTaskSessionsRenderWithoutHeadersOrErrors(t *testing.T) {
 	}
 }
 
-func TestTasksDocShowsStepCountsAndDurations(t *testing.T) {
-	now := time.Now()
+func TestTasksDocShowsStepCountsAndWorkTime(t *testing.T) {
 	todos := []db.TodoItem{
-		{ID: "t1", Content: "Done one", Status: "completed", StartedAt: now.Add(-5 * time.Minute), CompletedAt: now.Add(-2 * time.Minute)},
-		{ID: "t2", Content: "Live one", Status: "in_progress", StartedAt: now.Add(-90 * time.Second)},
+		{ID: "t1", Content: "Done one", Status: "completed"},
+		{ID: "t2", Content: "Live one", Status: "in_progress"},
 		{ID: "t3", Content: "Later", Status: "pending"},
 	}
-	doc := tasksDoc(todos, map[string]int{"t1": 2, "t2": 1}, now)
+	doc := tasksDoc(todos, map[string]taskStat{"t1": {steps: 2, work: 3 * time.Minute}, "t2": {steps: 1, work: 90 * time.Second}})
 	if got := doc.Rows[0].Detail; got != "2 steps · 3m00s" {
 		t.Errorf("completed row detail = %q", got)
 	}
@@ -249,9 +249,11 @@ func TestTaskChromeGolden(t *testing.T) {
 			}
 		}
 		want := " ✓ 1/1 Wire the parser"
-		tail := "1 step · 1 tool · 3m00s ▹"
-		if !strings.HasPrefix(folded, want) || !strings.HasSuffix(folded, tail) {
-			t.Errorf("w=%d folded row = %q, want prefix %q and suffix %q", width, folded, want, tail)
+		// The clock is the steps' working time, which a test cannot pin, so it
+		// is matched rather than compared.
+		tail := regexp.MustCompile(`1 step · 1 tool( · \d+s)? ▹$`)
+		if !strings.HasPrefix(folded, want) || !tail.MatchString(folded) {
+			t.Errorf("w=%d folded row = %q, want prefix %q and a step/tool/clock tail", width, folded, want)
 		}
 		if got := len([]rune(folded)); got > width {
 			t.Errorf("w=%d folded row is %d wide", width, got)
@@ -265,7 +267,7 @@ func TestTaskChromeGolden(t *testing.T) {
 				header = strings.TrimRight(l, " ")
 			}
 		}
-		if !strings.HasPrefix(header, " ✓ 1/1 Wire the parser ─") || !strings.HasSuffix(header, "3m00s") {
+		if !strings.HasPrefix(header, " ✓ 1/1 Wire the parser ─") {
 			t.Errorf("w=%d open header = %q", width, header)
 		}
 		if got := len([]rune(header)); got != width {
@@ -339,5 +341,47 @@ func TestNowBarIgnoresATaskStartedBeforeThisTurn(t *testing.T) {
 	}
 	if _, _, elapsed := nowBarHead(in); strings.Contains(elapsed, "h") || strings.Contains(elapsed, "300m") {
 		t.Fatalf("a carried-over task must not put hours on a new turn's clock, got %q", elapsed)
+	}
+}
+
+// A task carried over from an earlier turn must not show the idle hours since
+// then: its clock is the time its steps ran.
+func TestTaskClockIgnoresIdleTimeBetweenTurns(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	long := time.Now().Add(-5 * time.Hour)
+	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Carried over", Status: "in_progress", StartedAt: long}})
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Picking it back up. Briefly.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"x"}`), ResultSummary: "ok"})
+	m.state.EndStep(id)
+	text := viewText(&m)
+	if strings.Contains(text, "5h") || strings.Contains(text, "300m") {
+		t.Fatalf("header clock counted the idle time:\n%s", text)
+	}
+}
+
+// Two todos can share their text; a todo.write-only step re-binds to the one
+// it just started, not to a later twin.
+func TestRebindPrefersTheTodoStartedNearestTheWrite(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 50)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	now := time.Now()
+	todos := []db.TodoItem{
+		{ID: "t1", Content: "Run the tests", Status: "completed", StartedAt: now.Add(-time.Hour), CompletedAt: now.Add(-50 * time.Minute)},
+		{ID: "t2", Content: "Run the tests", Status: "pending"}, // a later twin, not started
+	}
+	_ = m.state.SetTodos(todos)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Starting the first test run. Here goes.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: now.Add(-time.Hour), ToolName: "todo.write", StepID: id, ToolCallID: "w",
+		Args: []byte(`{"todos":[{"content":"Run the tests","status":"in_progress"}]}`)})
+	m.state.EndStep(id)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if m.taskStats["t1"].steps != 1 || m.taskStats["t2"].steps != 0 {
+		t.Fatalf("taskStats = %v: the old step must stay with t1, not move under the later twin", m.taskStats)
 	}
 }

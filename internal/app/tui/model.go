@@ -398,11 +398,10 @@ type Model struct {
 	// open and inspect.
 	browsing   bool
 	osc52Noted bool
-	// taskSteps counts steps per todo as the transcript groups them (with the
+	// taskStats counts steps and work time per todo as the transcript groups them (with the
 	// render-time re-binding), so the Tasks panel agrees with the headers.
-	taskSteps   map[string]int
+	taskStats   map[string]taskStat
 	cursor      stack.NodeID
-	browseNodes []stack.NodeID
 	browseItems []browseItem
 	browseTree  map[stack.NodeID]*stack.Node
 	// flash is a transient status-line message (see flash.go).

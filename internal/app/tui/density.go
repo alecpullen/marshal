@@ -88,14 +88,8 @@ func (m *Model) densityOf(id stack.NodeID, inherited density) density {
 	return inherited
 }
 
-// isExpanded reports whether a node is shown in full, ignoring ancestors'
-// overrides. The renderer resolves inheritance itself; this is for callers
-// that only have an ID.
-func (m *Model) isExpanded(id stack.NodeID) bool {
-	return m.densityOf(id, m.density) == densityFull
-}
-
-// isToolExpanded is isExpanded for an in-flight tool row. A running call
+// isToolExpanded reports whether a tool row is shown expanded; for an
+// in-flight call: A running call
 // stays collapsed unless clicked, whatever the global level says: its output
 // is a live tail, not history. The override carries over when the call
 // settles, because a call's node ID is the same before and after.
@@ -104,7 +98,7 @@ func (m *Model) isToolExpanded(id stack.NodeID, live bool) bool {
 		d, ok := m.override(id)
 		return ok && d == densityFull
 	}
-	return m.isExpanded(id)
+	return m.densityOf(id, m.density) == densityFull
 }
 
 // shownDensity is the level a node was last drawn at: what a click or Enter
@@ -150,16 +144,6 @@ func (m *Model) toggleExpanded(id stack.NodeID) {
 	} else {
 		m.setOverride(id, densityFull)
 	}
-}
-
-// cycleDensity is Enter in browse mode: the node's own override walks
-// steps → full → outline → steps.
-func (m *Model) cycleDensity(id stack.NodeID) {
-	if m.isLiveToolNode(id) {
-		m.toggleExpanded(id)
-		return
-	}
-	m.setOverride(id, m.shownDensity(id).nextOverride())
 }
 
 func (m *Model) isLiveToolNode(id stack.NodeID) bool {

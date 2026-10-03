@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
 )
 
@@ -137,11 +138,11 @@ func TestFailedShellRowKeepsErrorTreatment(t *testing.T) {
 }
 
 func TestTestRunIsShellFamily(t *testing.T) {
-	if !isShellFamily("test.run") || !isShellFamily("shell.run") {
+	if !stack.IsShellFamily("test.run") || !stack.IsShellFamily("shell.run") {
 		t.Fatal("shell.run and test.run are the shell family")
 	}
 	for _, n := range []string{"file.read", "repo.search", "git.status", "agent.run"} {
-		if isShellFamily(n) {
+		if stack.IsShellFamily(n) {
 			t.Errorf("%s is not shell family", n)
 		}
 	}

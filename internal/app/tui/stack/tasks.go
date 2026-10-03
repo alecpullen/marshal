@@ -26,6 +26,11 @@ type TaskInfo struct {
 	CompletedAt time.Time
 
 	Steps int
+	// Work is the time the task's steps ran, the sum of their durations (a
+	// still-open step counts up to now while the turn is running). It stops
+	// at the end of a turn instead of running through the idle time before
+	// the next prompt, which the todo's own timestamps would include.
+	Work  time.Duration
 	Tools int // tool calls, excluding todo.write
 	Edits int // calls that changed files
 
@@ -48,7 +53,8 @@ type ReceiptInfo struct {
 	Salvaged bool
 }
 
-func isShellFamily(name string) bool { return name == "shell.run" || name == "test.run" }
+// IsShellFamily reports whether a tool's subject is a command line.
+func IsShellFamily(name string) bool { return name == "shell.run" || name == "test.run" }
 
 // EventFailed is the one definition of a failed call: an error, a denial, or
 // a non-zero exit. The task failure rule and the step glyph both use it.
@@ -73,6 +79,11 @@ func effectiveTodoID(info *StepInfo, noOtherCalls bool, todos []db.TodoItem) str
 
 // todoSetInProgress reads a todo.write's arguments and returns the ID of the
 // item it marked in_progress.
+//
+// An ID the model sent wins. Otherwise the item is matched by text, and when
+// several todos share that text the one started closest to the write is the
+// one it just set in progress: a later todo with the same words must not pull
+// older steps under itself.
 func todoSetInProgress(ev registry.AuditEvent, todos []db.TodoItem) string {
 	var args struct {
 		Todos []db.TodoItem `json:"todos"`
@@ -91,17 +102,24 @@ func todoSetInProgress(ev registry.AuditEvent, todos []db.TodoItem) string {
 				}
 			}
 		}
-		for _, t := range todos {
-			if t.Content == it.Content {
-				return t.ID
-			}
-		}
 		want := strings.ToLower(strings.TrimSpace(it.Content))
+		best, bestGap := "", time.Duration(1<<62)
 		for _, t := range todos {
-			if strings.ToLower(strings.TrimSpace(t.Content)) == want {
-				return t.ID
+			if strings.ToLower(strings.TrimSpace(t.Content)) != want {
+				continue
+			}
+			gap := time.Duration(1 << 61) // never started: only wins if alone
+			if !t.StartedAt.IsZero() && !ev.Timestamp.IsZero() {
+				gap = t.StartedAt.Sub(ev.Timestamp)
+				if gap < 0 {
+					gap = -gap
+				}
+			}
+			if best == "" || gap < bestGap {
+				best, bestGap = t.ID, gap
 			}
 		}
+		return best
 	}
 	return ""
 }
@@ -110,7 +128,7 @@ func todoSetInProgress(ev registry.AuditEvent, todos []db.TodoItem) string {
 // nodes. Anything else (steps with no task, final answers, notices) stays at
 // turn level, so a pass-through between two steps of one task splits it into
 // segments and the chronology stays honest.
-func groupTasks(nodes []*Node, turnKey string, s Snapshot) []*Node {
+func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn bool) []*Node {
 	out := make([]*Node, 0, len(nodes))
 	var cur *Node
 	segments := map[string]int{}
@@ -139,13 +157,17 @@ func groupTasks(nodes []*Node, turnKey string, s Snapshot) []*Node {
 	}
 	for _, n := range out {
 		if n.Kind == KindTask {
-			fillTask(n, s.Todos)
+			fillTask(n, s.Todos, s.Now, s.Busy && lastTurn)
+			// An unfinished task's clock moves while the turn runs, between
+			// steps as well as during them, so it must not be served from the
+			// render cache.
+			n.Live = s.Busy && lastTurn && n.Task.Status == "in_progress"
 		}
 	}
 	return out
 }
 
-func fillTask(n *Node, todos []db.TodoItem) {
+func fillTask(n *Node, todos []db.TodoItem, now time.Time, running bool) {
 	t := n.Task
 	t.Total = len(todos)
 	t.Dropped = true
@@ -162,6 +184,15 @@ func fillTask(n *Node, todos []db.TodoItem) {
 	for _, st := range n.Children {
 		t.Steps++
 		last = st
+		if st.Step != nil && !st.Step.Step.StartedAt.IsZero() {
+			end := st.Step.Step.EndedAt
+			if end.IsZero() && running && !now.IsZero() {
+				end = now
+			}
+			if end.After(st.Step.Step.StartedAt) {
+				t.Work += end.Sub(st.Step.Step.StartedAt)
+			}
+		}
 		if t.FirstNarration == "" && st.Step != nil && len(st.Step.Narration) > 0 {
 			t.FirstNarration = st.Step.Narration[0].Content
 		}
@@ -172,7 +203,7 @@ func fillTask(n *Node, todos []db.TodoItem) {
 				if len(ev.FilesChanged) > 0 || isEditTool(ev.ToolName) {
 					t.Edits++
 				}
-				if isShellFamily(ev.ToolName) {
+				if IsShellFamily(ev.ToolName) {
 					lastShell = &row.Tools[i]
 				}
 			}
@@ -198,8 +229,8 @@ func isEditTool(name string) bool { return isDiffTool(name) }
 func versionOfTask(n *Node) uint64 {
 	t := n.Task
 	b := newHash()
-	b.f("task|%s|%s|%s|%d|%d|%v|%d|%d|%d|%d|%d|%v|%d|%d|", t.TodoID, t.Content, t.Status, t.Index, t.Total, t.Dropped,
-		t.StartedAt.UnixNano(), t.CompletedAt.UnixNano(), t.Steps, t.Tools, t.Edits, t.UnresolvedFailure, len(t.FirstNarration), len(n.Children))
+	b.f("task|%s|%s|%s|%d|%d|%v|%d|%d|%d|%d|%d|%v|%d|%d|%d|", t.TodoID, t.Content, t.Status, t.Index, t.Total, t.Dropped,
+		t.StartedAt.UnixNano(), t.CompletedAt.UnixNano(), t.Steps, t.Tools, t.Edits, t.UnresolvedFailure, len(t.FirstNarration), len(n.Children), int64(t.Work/time.Second))
 	for _, c := range n.Children {
 		b.f("c|%s|%d|", c.ID.Key, c.Version)
 	}

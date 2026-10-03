@@ -28,10 +28,15 @@ func (m *Model) nodeCopyText(n *stack.Node) string {
 		}
 		return strings.Join(parts, "\n\n")
 	case n.Kind == stack.KindStep && n.Step != nil:
-		head, _, _ := stepHeadline(n.Step, n.Children)
-		lines := []string{head}
+		// The narration already opens with the headline; the headline alone
+		// stands in only for a step that did not narrate.
+		var lines []string
 		for _, msg := range n.Step.Narration {
 			lines = append(lines, strings.TrimSpace(msg.Content))
+		}
+		if len(lines) == 0 {
+			head, _, _ := stepHeadline(n.Step, n.Children)
+			lines = append(lines, head)
 		}
 		for _, row := range n.Children {
 			for _, ev := range row.Tools {
@@ -139,7 +144,7 @@ func (m *Model) nodeFile(n *stack.Node) (path string, line int) {
 		}
 	}
 	for _, ev := range events {
-		if !isShellFamily(ev.ToolName) {
+		if !stack.IsShellFamily(ev.ToolName) {
 			continue
 		}
 		for _, mt := range pathLineRE.FindAllStringSubmatch(ev.ResultContent, -1) {

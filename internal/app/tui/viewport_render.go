@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/stack"
@@ -177,7 +178,7 @@ func (m *Model) refreshViewport() {
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
 	m.setBrowseItems(bitems, tree)
-	m.taskSteps = countTaskSteps(turns)
+	m.taskStats = countTaskStats(turns)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	content := strings.Join(blocks, "\n")
@@ -285,17 +286,28 @@ func (m *Model) noteRegionRows(id stack.NodeID, rows int) {
 	}
 }
 
-// countTaskSteps sums the steps under each task header, per todo ID.
-func countTaskSteps(turns []*stack.Node) map[string]int {
-	counts := map[string]int{}
+// taskStat is what the Tasks panel shows per todo, taken from the same task
+// nodes as the transcript headers so the two always agree.
+type taskStat struct {
+	steps int
+	work  time.Duration
+}
+
+// countTaskStats sums the steps and working time under each task header, per
+// todo ID (a task split into segments adds up).
+func countTaskStats(turns []*stack.Node) map[string]taskStat {
+	stats := map[string]taskStat{}
 	for _, turn := range turns {
 		for _, n := range turn.Children {
 			if n.Kind == stack.KindTask && n.Task != nil {
-				counts[n.Task.TodoID] += n.Task.Steps
+				st := stats[n.Task.TodoID]
+				st.steps += n.Task.Steps
+				st.work += n.Task.Work
+				stats[n.Task.TodoID] = st
 			}
 		}
 	}
-	return counts
+	return stats
 }
 
 // collectSeen records every node ID a block can address: the block, its rows,

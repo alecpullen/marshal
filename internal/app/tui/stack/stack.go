@@ -535,7 +535,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, b := range blocks {
 		out = append(out, b.node)
 	}
-	out = groupTasks(out, turnKey, s)
+	out = groupTasks(out, turnKey, s, lastTurn)
 	if !(s.Busy && lastTurn) {
 		if rc := receipt(turnKey, out, userMsg, s); rc != nil {
 			out = append(out, rc)

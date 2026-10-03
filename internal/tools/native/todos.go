@@ -101,6 +101,7 @@ func newTodoWriteTool(state *session.State) registry.Tool {
 			carried = append(carried, old.Content)
 			merged = append(merged, old)
 		}
+		ensureTodoIDs(merged, state.TodoIDFloor())
 		args.Todos = merged
 
 		if err := store.SetTodos(args.Todos); err != nil {
@@ -190,4 +191,22 @@ func reconcileTodos(prev, next []TodoItem, now time.Time, floor int) ([]TodoItem
 		out = append(out, base)
 	}
 	return out, matched
+}
+
+// ensureTodoIDs gives every item without an ID the next free "t<n>". It covers
+// todos carried over from a list saved before IDs existed, which are not
+// resubmitted and so never pass through matching.
+func ensureTodoIDs(items []TodoItem, floor int) {
+	counter := floor
+	for _, it := range items {
+		if n, err := strconv.Atoi(strings.TrimPrefix(it.ID, "t")); err == nil && strings.HasPrefix(it.ID, "t") && n > counter {
+			counter = n
+		}
+	}
+	for i := range items {
+		if items[i].ID == "" {
+			counter++
+			items[i].ID = "t" + strconv.Itoa(counter)
+		}
+	}
 }

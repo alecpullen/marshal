@@ -71,18 +71,14 @@ func taskPosition(t *stack.TaskInfo) string {
 	return fmt.Sprintf("%d/%d", t.Index, t.Total)
 }
 
-func taskElapsed(t *stack.TaskInfo, now time.Time) string {
-	if t.StartedAt.IsZero() {
+// taskElapsed is the time the task has been worked on, from its steps. Time
+// between turns is not counted: a task carried over from yesterday reads as
+// the minutes it ran, not as a day.
+func taskElapsed(t *stack.TaskInfo) string {
+	if t.Work <= 0 {
 		return ""
 	}
-	end := t.CompletedAt
-	if end.IsZero() {
-		if t.Status != "in_progress" {
-			return ""
-		}
-		end = now
-	}
-	return compactDuration(end.Sub(t.StartedAt))
+	return compactDuration(t.Work)
 }
 
 // renderTask draws a task: either one folded row, or a rule header followed by
@@ -138,7 +134,7 @@ func renderTaskHeader(n *stack.Node, c *stepRenderCtx, width int) string {
 	case t.Status != "completed":
 		g, gc = glyph.Ambient, th.FGMuted
 	}
-	elapsed := taskElapsed(t, c.now)
+	elapsed := taskElapsed(t)
 	right := ""
 	if elapsed != "" {
 		right = " " + mutedStyle().Render(elapsed)
@@ -171,7 +167,7 @@ func renderFoldedTask(n *stack.Node, c *stepRenderCtx, width int) string {
 		}
 		parts = append(parts, fmt.Sprintf("%d %s", t.Tools, word))
 	}
-	if d := taskElapsed(t, c.now); d != "" {
+	if d := taskElapsed(t); d != "" {
 		parts = append(parts, d)
 	}
 	meta := strings.Join(parts, " · ") + " ▹"

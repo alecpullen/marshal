@@ -377,3 +377,11 @@ func TestReconcileTodosGivesLegacyItemsAnIdentity(t *testing.T) {
 		t.Fatal("a matched legacy todo must get an ID")
 	}
 }
+
+func TestEnsureTodoIDsCoversCarriedLegacyItems(t *testing.T) {
+	items := []TodoItem{{ID: "t3", Content: "a"}, {Content: "old, carried over"}, {Content: "another"}}
+	ensureTodoIDs(items, 5)
+	if items[0].ID != "t3" || items[1].ID != "t6" || items[2].ID != "t7" {
+		t.Fatalf("ids = %q %q %q", items[0].ID, items[1].ID, items[2].ID)
+	}
+}

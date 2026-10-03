@@ -63,18 +63,25 @@ func indexTree(n *stack.Node, into map[stack.NodeID]*stack.Node) {
 }
 
 func (m *Model) setBrowseItems(items []browseItem, tree map[stack.NodeID]*stack.Node) {
+	prev := m.cursorIndex()
 	m.browseItems, m.browseTree = items, tree
-	m.browseNodes = make([]stack.NodeID, len(items))
-	for i, it := range items {
-		m.browseNodes[i] = it.id
+	if !m.browsing {
+		return
 	}
-	if m.browsing && m.cursorIndex() < 0 {
-		if len(items) == 0 {
-			m.browsing = false
-			m.input.Focus()
-			return
-		}
+	if len(items) == 0 {
+		m.browsing = false
+		m.input.Focus()
+		return
+	}
+	switch {
+	case m.viewportFollow:
+		// Following new output: the cursor goes with it, or it would scroll
+		// out of view while the view moves on.
 		m.cursor = items[len(items)-1].id
+	case m.cursorIndex() < 0:
+		// The node is gone (a fold, a rewind): stay near where it was
+		// rather than jumping to the end of the transcript.
+		m.cursor = items[max(0, min(prev, len(items)-1))].id
 	}
 }
 
@@ -239,7 +246,7 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 			m.leaveBrowse()
 			return *m, nil, true
 		}
-		m.cycleDensity(m.cursor)
+		m.toggleExpanded(m.cursor)
 		m.invalidateTranscript()
 		m.refreshViewport()
 		m.scrollToCursor()

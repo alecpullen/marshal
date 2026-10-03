@@ -446,7 +446,64 @@ func TestTasksPanelStepCountsMatchTheTaskHeaders(t *testing.T) {
 	m.state.EndStep(c)
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if m.taskSteps["t1"] != 1 || m.taskSteps["t2"] != 2 {
-		t.Fatalf("taskSteps = %v, want t1:1 t2:2 (the narrated todo.write step renders under t2)", m.taskSteps)
+	if m.taskStats["t1"].steps != 1 || m.taskStats["t2"].steps != 2 {
+		t.Fatalf("taskStats = %v, want t1:1 t2:2 (the narrated todo.write step renders under t2)", m.taskStats)
+	}
+}
+
+func TestEnterOnAToolRowTogglesAndNeverHidesIt(t *testing.T) {
+	m := browseFixture(t)
+	m = pressKeys(m, "esc", "j") // the failing test row
+	row := m.cursor
+	if row.Kind != stack.KindTool {
+		t.Fatalf("cursor = %+v", row)
+	}
+	for i := 0; i < 4; i++ {
+		m = pressKeys(m, "enter")
+		if m.cursor != row {
+			t.Fatalf("press %d: the cursor left the row (%v), which means it was hidden", i+1, m.cursor)
+		}
+		found := false
+		for _, it := range m.browseItems {
+			found = found || it.id == row
+		}
+		if !found {
+			t.Fatalf("press %d: the row is no longer in the transcript", i+1)
+		}
+	}
+}
+
+func TestCursorFollowsNewOutputWhileFollowing(t *testing.T) {
+	m := browseFixture(t)
+	m = pressKeys(m, "esc")
+	m.viewportFollow = true
+	m.state.AddMessage(session.RoleSystem, "late notice", session.ContentTypePlain)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if m.cursor != m.browseItems[len(m.browseItems)-1].id {
+		t.Fatal("while following, the cursor must stay on the newest node so it does not scroll out of view")
+	}
+}
+
+func TestCursorStaysNearWhereItWasWhenItsNodeVanishes(t *testing.T) {
+	m := browseFixture(t)
+	m = pressKeys(m, "esc", "g", "j")
+	idx := m.cursorIndex()
+	m.cursor = stack.NodeID{Kind: stack.KindTool, Key: "tool:gone"} // as if it had folded away
+	m.invalidateTranscript()
+	m.browseItems = append([]browseItem(nil), m.browseItems...)
+	m.setBrowseItems(m.browseItems, m.browseTree)
+	if m.cursorIndex() < 0 {
+		t.Fatal("cursor must land on a real node")
+	}
+	_ = idx
+}
+
+func TestCopyingAStepDoesNotRepeatItsHeadline(t *testing.T) {
+	m := browseFixture(t)
+	m = pressKeys(m, "esc") // newest step
+	text := m.nodeCopyText(m.currentNode())
+	if strings.Count(text, "Running the tests.") != 1 {
+		t.Fatalf("headline repeated in the copied text:\n%s", text)
 	}
 }

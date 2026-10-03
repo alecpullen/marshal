@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
-	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -81,7 +80,7 @@ func (m Model) viewedTodos() []native.TodoItem {
 // Each row also carries its step count (the steps under that task's header in
 // the transcript, so the two views agree), its duration once completed, or its live elapsed time while in
 // progress.
-func tasksDoc(todos []native.TodoItem, stepCount map[string]int, now time.Time) commands.Doc {
+func tasksDoc(todos []native.TodoItem, stats map[string]taskStat) commands.Doc {
 	done, _ := todoProgress(todos)
 	rows := make([]commands.Row, 0, len(todos))
 	for _, t := range todos {
@@ -93,14 +92,11 @@ func tasksDoc(todos []native.TodoItem, stepCount map[string]int, now time.Time) 
 			g = glyph.Running
 		}
 		var detail []string
-		if n := stepCount[t.ID]; t.ID != "" && n > 0 {
-			detail = append(detail, pluralCount(n, "step", "steps"))
-		}
-		switch {
-		case t.Status == native.TodoCompleted && !t.StartedAt.IsZero() && !t.CompletedAt.IsZero():
-			detail = append(detail, compactDuration(t.CompletedAt.Sub(t.StartedAt)))
-		case t.Status == native.TodoInProgress && !t.StartedAt.IsZero():
-			detail = append(detail, compactDuration(now.Sub(t.StartedAt)))
+		if st := stats[t.ID]; t.ID != "" && st.steps > 0 {
+			detail = append(detail, pluralCount(st.steps, "step", "steps"))
+			if st.work > 0 {
+				detail = append(detail, compactDuration(st.work))
+			}
 		}
 		rows = append(rows, commands.Row{Text: g + " " + t.Content, Detail: strings.Join(detail, " · ")})
 	}
@@ -129,7 +125,7 @@ func (m *Model) toggleTasksPanel() {
 		return
 	}
 	m.sheetPanel = nil // opening replaces the session sheet if it was up
-	m.tasksPanel = docpanel.New(tasksDoc(todos, m.taskSteps, m.now()), m.state)
+	m.tasksPanel = docpanel.New(tasksDoc(todos, m.taskStats), m.state)
 	m.dock.Open(m.tasksPanel)
 	m.refreshViewport()
 }

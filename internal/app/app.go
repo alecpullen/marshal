@@ -20,6 +20,7 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
@@ -2198,6 +2199,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
+		// Copy prefers a local clipboard helper and falls back to OSC 52 over
+		// SSH or when no helper resolves.
+		tuiOpts = append(tuiOpts, tui.WithClipboard(
+			&clipboard.LocalWriter{},
+			func() bool { return clipboard.Remote(os.Getenv) },
+		))
 		if rt.LSPManager != nil {
 			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewQueryAdapter(rt.LSPManager)))
 		}

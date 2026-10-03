@@ -24,6 +24,7 @@ import (
 	"github.com/google/shlex"
 
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
@@ -398,6 +399,11 @@ type Model struct {
 	// open and inspect.
 	browsing   bool
 	osc52Noted bool
+	// copyWriter is the local clipboard helper; copyRemote reports an SSH
+	// session, where that helper would write the remote machine's clipboard.
+	// With neither usable, copies go to the terminal over OSC 52.
+	copyWriter clipboard.Writer
+	copyRemote func() bool
 	// taskStats counts steps and work time per todo as the transcript groups them (with the
 	// render-time re-binding), so the Tasks panel agrees with the headers.
 	taskStats   map[string]taskStat
@@ -648,6 +654,15 @@ func WithDataDir(dataDir string) Option {
 func WithWorkingDir(workDir string) Option {
 	return func(m *Model) {
 		m.workDir = workDir
+	}
+}
+
+// WithClipboard sets the local clipboard helper used by copy, and how to tell
+// that the session is remote. Without it copies go over OSC 52 only.
+func WithClipboard(w clipboard.Writer, remote func() bool) Option {
+	return func(m *Model) {
+		m.copyWriter = w
+		m.copyRemote = remote
 	}
 }
 
@@ -1922,6 +1937,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsheet.RunCommandMsg:
 		m.closeSessionSheet()
 		return m.dispatchCommand("/" + msg.Command)
+	case copyDoneMsg:
+		cmd := m.handleCopyDone(msg)
+		return m, cmd
 	case flashClearMsg:
 		// Only wakes the view; it must not reach the textarea path, which
 		// would bump the suggestion generation and drop an in-flight result.

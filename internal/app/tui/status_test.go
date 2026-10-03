@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
 )
@@ -799,5 +800,58 @@ func TestStatusHidesGenerationBeforeAnyCompaction(t *testing.T) {
 	// Generation 0 is the session's first window — not a compaction.
 	if out := m.renderStatusLine(100); strings.Contains(out, "gen ") {
 		t.Errorf("generation 0 should not be shown: %q", out)
+	}
+}
+
+func TestStatusLineShowsChangedFileCount(t *testing.T) {
+	m := newStatusTestModel(t)
+	if strings.Contains(stripANSI(m.renderStatusLine(140)), "±") {
+		t.Fatal("±N files must be hidden when nothing changed")
+	}
+	m.sheetChanged = []sessionsheet.ChangedFile{{Path: "a"}, {Path: "b"}, {Path: "c"}}
+	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±3 files") {
+		t.Fatalf("status line missing ±3 files:\n%s", got)
+	}
+	m.sheetChanged = m.sheetChanged[:1]
+	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") || strings.Contains(got, "±1 files") {
+		t.Fatalf("one changed file must read ±1 file:\n%s", got)
+	}
+}
+
+// ±N files drops before the route and mode segments when the line is tight.
+func TestStatusLineChangedFileCountDropsBeforeRoute(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	m.sheetChanged = []sessionsheet.ChangedFile{{Path: "a"}}
+	var sawBoth bool
+	for w := 120; w >= 20; w -= 2 {
+		line := stripANSI(m.renderStatusLine(w))
+		hasFiles := strings.Contains(line, "±1 file")
+		hasRoute := strings.Contains(line, "qwen @ ollama")
+		if hasFiles && !hasRoute {
+			t.Fatalf("width %d kept ±1 file but dropped the route:\n%s", w, line)
+		}
+		sawBoth = sawBoth || (hasFiles && hasRoute)
+	}
+	if !sawBoth {
+		t.Fatal("never saw ±1 file alongside the route; the test's width sweep is stale")
+	}
+}
+
+// A turn that changes files surfaces ±N files once it finishes.
+func TestChangedFileCountAppearsAfterTurn(t *testing.T) {
+	m, dir := gitModel(t)
+	m.resize(140, 40)
+	if strings.Contains(stripANSI(m.renderStatusLine(140)), "±") {
+		t.Fatal("clean tree must not show ±N files")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.busy = true
+	mm, _ := m.Update(agentFinishedMsg{})
+	m = asModel(t, mm)
+	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") {
+		t.Fatalf("status line missing ±1 file after the turn:\n%s", got)
 	}
 }

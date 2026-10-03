@@ -167,7 +167,7 @@ func (m Model) modeSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, think=4, gen=4,
+//	mode=0, untrusted=0, route=1, local=2, ctx=3, ±files=4, think=4, gen=4,
 //	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
@@ -215,6 +215,17 @@ func (m Model) statusLeftSegments() []statusSeg {
 	if used, window := m.state.TurnUsage(); window > 0 {
 		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
 			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
+	}
+
+	// Changed-file count against the base ref, so the working tree's state
+	// stays visible now that the rail is gone. Refreshed on turn boundaries
+	// and workspace events, never during render.
+	if n := len(m.sheetChanged); n > 0 {
+		word := "files"
+		if n == 1 {
+			word = "file"
+		}
+		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("±%d %s", n, word)), priority: 4})
 	}
 
 	// Subscription quota from an OAuth-backed provider. Rendered as

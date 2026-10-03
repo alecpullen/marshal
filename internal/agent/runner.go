@@ -1298,6 +1298,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					budget.overhead++
 					countIterations()
 					r.withStats(func(s *turnStats) { s.m.IntentNudges++ })
+					// Show what the model said: without it the nudge appears
+					// in the transcript with nothing before it.
+					r.State.AddNarration(r.curStep, strings.TrimSpace(res.Text))
 					r.State.AddMessage(session.RoleSystem, intentNudgeMessage, session.ContentTypePlain)
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text})
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: intentNudgeMessage})
@@ -1516,8 +1519,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// the runner discarded it. When the response carries tool work or
 		// asks the user something, it is the step's narration. On final and
 		// answer actions it is not shown: the content is the message.
-		if rationale := strings.TrimSpace(action.Rationale); rationale != "" && actionNarrates(action) {
-			r.State.AddNarration(r.curStep, rationale)
+		//
+		// A batch is narrated only once it has passed validation: a rejected
+		// batch executes nothing, and its rationale would leave a narrated
+		// step that did nothing.
+		narrate := func() {
+			if rationale := strings.TrimSpace(action.Rationale); rationale != "" && actionNarrates(action) {
+				r.State.AddNarration(r.curStep, rationale)
+			}
 		}
 
 		if len(action.Actions) > 0 {
@@ -1535,6 +1544,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}
+			narrate()
 			r.assignEnvelopeCallIDs(action.Actions)
 			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
 			if execErr != nil {
@@ -1550,6 +1560,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			continue
 		}
 
+		narrate()
 		switch action.Type {
 		case ActionAnswer, ActionFinal:
 			// Grounding, same rule as the native path: a non-question task

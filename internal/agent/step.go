@@ -94,8 +94,11 @@ func actionNarrates(a ModelAction) bool {
 	return len(a.Actions) > 0
 }
 
-// intentOpener matches the start of a forward-intent sentence.
-var intentOpener = regexp.MustCompile(`(?i)^\s*(i'?ll|i will|let me|next,? i|now i|i'?m going to|going to)\b`)
+// intentOpener matches a forward-intent sentence: an opener followed by an
+// action verb. Requiring the verb keeps closing pleasantries ("Let me know if
+// you'd like me to update the docs too.") from reading as intent.
+var intentOpener = regexp.MustCompile(`(?i)^\s*(?:i'?ll|i will|let me|next,? i(?:'ll| will)?|now,? i(?:'ll| will)?|i'?m going to|going to)\s+(?:now\s+|first\s+|also\s+|start by\s+|begin by\s+)?` +
+	`(?:read|check|look|run|search|open|examine|inspect|update|edit|write|fix|add|create|test|verify|review|grep|find|try|investigate|view|list|build|implement|apply|modify|change|begin|start|dig|explore|trace|scan|validate|refactor|patch|install|fetch|compile|execute|make|take|use|call|see|go)\b`)
 
 // looksLikeIntentOnly reports whether a text-only model reply is a short
 // statement of what the model means to do next rather than an answer: at most

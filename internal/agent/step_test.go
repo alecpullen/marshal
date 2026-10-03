@@ -237,6 +237,8 @@ func TestLooksLikeIntentOnly(t *testing.T) {
 		{"Now I will update the guard. Then run tests.", true},
 		{"i'm going to grep for it", true},
 		{"Going to look at the logs.", true},
+		{"Let me know if you'd like me to update the docs too.", false},
+		{"I'll be happy to adjust this if you want.", false},
 		{"", false},
 		{"The parser handles empty input in guard.go.", false},
 		{"I'll do this. Then that. And then the other thing.", false}, // 3 terminators
@@ -304,6 +306,20 @@ func TestIntentNudgeFiresOncePerTurn(t *testing.T) {
 	}
 }
 
+// The nudge is only legible if the sentence that provoked it is on screen.
+func TestIntentNudgeShowsTheSentenceItAnswers(t *testing.T) {
+	state, _, _, _ := runWithIntentReplies(t, true, []string{"I'll read parser.go next.", "All done."}, true)
+	var seen bool
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeNarration && m.Content == "I'll read parser.go next." {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the nudged sentence must be recorded as narration before the nudge")
+	}
+}
+
 func TestIntentNudgeDoesNotFire(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -316,6 +332,7 @@ func TestIntentNudgeDoesNotFire(t *testing.T) {
 		{"long text", true, []string{"I'll " + strings.Repeat("go on and on about it ", 15)}, true},
 		{"code fence", true, []string{"I'll run:\n```sh\ngo test\n```"}, true},
 		{"real answer", true, []string{"The guard lives in guard.go."}, true},
+		{"closing offer", true, []string{"Let me know if you'd like me to update the docs too."}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -366,6 +383,26 @@ func TestEnvelopeToolResultsStayUserMessagesOnTheWire(t *testing.T) {
 	for _, m := range last.Messages {
 		if m.Role == schema.RoleTool || m.ToolCallID != "" {
 			t.Fatalf("envelope request carries a tool-role message: %+v", m)
+		}
+	}
+}
+
+// A batch the runner rejects executes nothing, so its rationale must not
+// leave behind a narrated step.
+func TestRejectedEnvelopeBatchIsNotNarrated(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			// write_patch is not read-only: allReadOnly rejects the batch.
+			`{"rationale":"Patching two files at once.","actions":[{"type":"patch","content":"x"},{"type":"patch","content":"y"}]}`,
+			`{"rationale":"x","action":{"type":"final","content":"done"}}`,
+		},
+	}
+	r, state := newStepRunner(t, p, noopRegistry(nil))
+	r.NativeTools = false
+	_ = r.Run(context.Background(), "go")
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeNarration && strings.Contains(m.Content, "Patching two files") {
+			t.Fatalf("rejected batch left narration %q", m.Content)
 		}
 	}
 }

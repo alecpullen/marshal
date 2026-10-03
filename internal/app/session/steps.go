@@ -1,6 +1,7 @@
 package session
 
 import (
+	"marshal/internal/tools/registry"
 	"time"
 
 	"marshal/internal/db"
@@ -168,4 +169,47 @@ func (s *State) stepVisibility(onBranch map[int64]bool) func(StepID) bool {
 		t, ok := turn[id]
 		return !ok || t == 0 || onBranch[t]
 	}
+}
+
+// StepNarration returns the first narration recorded for a step, or "". It
+// scans under the lock without copying the message list: the TUI asks every
+// frame, and a full copy per frame blocks the runner's writes.
+func (s *State) StepNarration(id StepID) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.messages {
+		if m := &s.messages[i]; m.ContentType == ContentTypeNarration && m.StepID == id {
+			return m.Content
+		}
+	}
+	return ""
+}
+
+// StepAudits returns the audit events stamped with a step.
+func (s *State) StepAudits(id StepID) []registry.AuditEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []registry.AuditEvent
+	for i := range s.auditLog {
+		if s.auditLog[i].StepID == id {
+			out = append(out, s.auditLog[i])
+		}
+	}
+	return out
+}
+
+// OpenStep returns the most recently started step that has not ended.
+func (s *State) OpenStep() (Step, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var live *Step
+	for i := range s.steps {
+		if s.steps[i].EndedAt.IsZero() && (live == nil || !s.steps[i].StartedAt.Before(live.StartedAt)) {
+			live = &s.steps[i]
+		}
+	}
+	if live == nil {
+		return Step{}, false
+	}
+	return *live, true
 }

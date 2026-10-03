@@ -265,3 +265,23 @@ func TestActiveToolUpdatesTargetTheirOwnCall(t *testing.T) {
 		t.Fatalf("call b = %+v: updates for a leaked into the later call", got["b"])
 	}
 }
+
+func TestStepScopedReaders(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Unix(1, 0), Persistence{})
+	s.AddMessage(RoleUser, "go", ContentTypePlain)
+	a := s.BeginStep(Actor{})
+	s.AddNarration(a, "Reading. More.")
+	s.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: a})
+	s.EndStep(a)
+	b := s.BeginStep(Actor{})
+	s.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: b})
+	if got := s.StepNarration(a); got != "Reading. More." {
+		t.Errorf("StepNarration(a) = %q", got)
+	}
+	if s.StepNarration(b) != "" || len(s.StepAudits(a)) != 1 || len(s.StepAudits(b)) != 1 {
+		t.Errorf("step readers leaked across steps")
+	}
+	if open, ok := s.OpenStep(); !ok || open.ID != b {
+		t.Errorf("OpenStep = %+v, %v; want step %d", open, ok, b)
+	}
+}

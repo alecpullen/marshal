@@ -1,11 +1,26 @@
 package tui
 
-import "marshal/internal/app/tui/stack"
+import (
+	"fmt"
+
+	"marshal/internal/app/tui/stack"
+)
+
+// expandKey scopes a node ID to the transcript it is shown in. Every session
+// numbers its own steps from 1, so without the scope, expanding step 3 of the
+// main transcript would also expand step 3 of a subagent's, and toggling it
+// there would flip the main one.
+func (m *Model) expandKey(id stack.NodeID) stack.NodeID {
+	if v, ok := m.drilledInto(); ok {
+		return stack.NodeID{Kind: id.Kind, Key: fmt.Sprintf("sub%d/%s", v.ID, id.Key)}
+	}
+	return id
+}
 
 // isExpanded reports the effective expanded state for a node: the per-node
 // override if one has been clicked, otherwise the global ctrl+g default.
 func (m *Model) isExpanded(id stack.NodeID) bool {
-	if v, ok := m.expanded[id]; ok {
+	if v, ok := m.expanded[m.expandKey(id)]; ok {
 		return v
 	}
 	return m.detailExpanded
@@ -18,7 +33,7 @@ func (m *Model) toggleExpanded(id stack.NodeID) {
 	if m.expanded == nil {
 		m.expanded = map[stack.NodeID]bool{}
 	}
-	m.expanded[id] = !m.effectiveExpanded(id)
+	m.expanded[m.expandKey(id)] = !m.effectiveExpanded(id)
 }
 
 // effectiveExpanded is what the row on screen shows: an in-flight call
@@ -43,7 +58,7 @@ func (m *Model) effectiveExpanded(id stack.NodeID) bool {
 // settles, because a call's node ID is the same before and after.
 func (m *Model) isToolExpanded(id stack.NodeID, live bool) bool {
 	if live {
-		return m.expanded[id]
+		return m.expanded[m.expandKey(id)]
 	}
 	return m.isExpanded(id)
 }

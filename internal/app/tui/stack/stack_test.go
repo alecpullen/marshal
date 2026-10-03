@@ -113,7 +113,7 @@ func TestBuildMergesSameToolRunsWithinAStepOnly(t *testing.T) {
 	want := `turn:1
   msg:1
   step:1
-    tools:tool:1:a x3
+    tool:1:a x3
   step:2
     tool:2:d
 `
@@ -408,5 +408,65 @@ func TestToolKeysAreScopedToTheirStep(t *testing.T) {
 	b := nodes[0].Children[2].Children[0].ID
 	if a == b {
 		t.Fatalf("two steps' call_0 rows share identity %v", a)
+	}
+}
+
+func stepOf(id session.StepID, turn int64, start, end int) session.Step {
+	st := step(id, start, end, "")
+	st.TurnMsgID = turn
+	return st
+}
+
+// A step the runner has just opened has no narration yet. Its first call must
+// still render inside it, not inside a nearby step-less item's step.
+func TestBuildPlacesCallInFreshStepDespiteStepLessItem(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), audit("git.rollback", 0, "", 1)},
+		Steps: []session.Step{stepOf(1, 1, 2, 0)},
+		Busy:  true,
+		ActiveTools: []session.ActiveToolCall{
+			{Name: "shell.run", ToolCallID: "r", StepID: 1, StartedAt: at(3)},
+		},
+	})
+	got := shape(nodes)
+	if !strings.Contains(got, "step:1 live\n    tool:1:r live") {
+		t.Fatalf("the live call must sit in the fresh live step:\n%s", got)
+	}
+	for _, n := range nodes[0].Children {
+		if n.Step != nil && n.Step.Heuristic && n.Live {
+			t.Fatalf("the step-less item's heuristic step must not be live:\n%s", got)
+		}
+	}
+}
+
+// Saved timestamps lose sub-second precision, so on resume a step's last tool
+// row can sort after the next user message. It still belongs to its own turn.
+func TestBuildKeepsStepTogetherWhenAuditSortsIntoNextTurn(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			audit("file.read", 1, "a", 1),
+			userMsg(2, 3),
+			audit("file.read", 1, "b", 4), // belongs to step 1 / turn 1
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+	})
+	if len(nodes) != 2 {
+		t.Fatalf("turns = %d", len(nodes))
+	}
+	if !strings.Contains(shape(nodes[:1]), "tool:1:a x2") {
+		t.Fatalf("turn 1 lost the step's last row:\n%s", shape(nodes))
+	}
+	if strings.Contains(shape(nodes[1:]), "tool:1:b") {
+		t.Fatalf("turn 2 must not own step 1's row:\n%s", shape(nodes))
+	}
+}
+
+func TestMergedRunKeepsFirstCallsID(t *testing.T) {
+	one := Build(Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), audit("file.read", 1, "a", 1)}, Steps: []session.Step{stepOf(1, 1, 1, 2)}})
+	two := Build(Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), audit("file.read", 1, "a", 1), audit("file.read", 1, "b", 2)}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
+	a, b := one[0].Children[1].Children[0], two[0].Children[1].Children[0]
+	if len(b.Tools) != 2 || a.ID != b.ID {
+		t.Fatalf("merging changed the row identity: %v -> %v (tools %d)", a.ID, b.ID, len(b.Tools))
 	}
 }

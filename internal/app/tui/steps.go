@@ -626,13 +626,8 @@ func (m Model) approvalWhyFor(owner *session.State, tc *session.PendingToolCall)
 		return approvalWhy{}
 	}
 	w := approvalWhy{owner: stepOwner(st)}
-	for _, msg := range owner.Messages() {
-		if msg.ContentType == session.ContentTypeNarration && msg.StepID == tc.StepID {
-			if head, _ := firstSentence(msg.Content); head != "" {
-				w.why = stripEmphasis(head)
-				break
-			}
-		}
+	if head, _ := firstSentence(owner.StepNarration(tc.StepID)); head != "" {
+		w.why = stripEmphasis(head)
 	}
 	return w
 }
@@ -683,29 +678,16 @@ func subagentSummaryHeadline(summary string) string {
 // bar's live-mirror row.
 func (m Model) liveStepSummary() (headline, toolGlyph string) {
 	state, _ := m.transcriptSource()
-	var live *session.Step
-	steps := state.Steps()
-	for i := range steps {
-		if steps[i].EndedAt.IsZero() && (live == nil || !steps[i].StartedAt.Before(live.StartedAt)) {
-			live = &steps[i]
-		}
-	}
-	if live == nil {
+	live, ok := state.OpenStep()
+	if !ok {
 		return "", ""
 	}
-	for _, msg := range state.Messages() {
-		if msg.ContentType == session.ContentTypeNarration && msg.StepID == live.ID {
-			if h, _ := firstSentence(msg.Content); h != "" {
-				headline = stripEmphasis(h)
-				break
-			}
-		}
+	if h, _ := firstSentence(state.StepNarration(live.ID)); h != "" {
+		headline = stripEmphasis(h)
 	}
 	var rows []*stack.Node
-	for _, ev := range state.AuditLog() {
-		if ev.StepID == live.ID {
-			rows = append(rows, &stack.Node{Kind: stack.KindTool, Tools: []registry.AuditEvent{ev}})
-		}
+	for _, ev := range state.StepAudits(live.ID) {
+		rows = append(rows, &stack.Node{Kind: stack.KindTool, Tools: []registry.AuditEvent{ev}})
 	}
 	for _, atc := range state.ActiveToolCalls() {
 		if atc.StepID == live.ID {

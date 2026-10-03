@@ -360,6 +360,8 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 			id := atc.ToolCallID
 			if id == "" {
 				id = fmt.Sprintf("%s-%d", atc.Name, atc.StartedAt.UnixNano())
+			} else {
+				id = scopedToolCallID(atc.StepID, id)
 			}
 			proj.lastToolID = id
 			proj.lastToolName = atc.Name
@@ -388,6 +390,9 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 				status = "error"
 			}
 			id := ae.ToolCallID
+			if id != "" {
+				id = scopedToolCallID(ae.StepID, id)
+			}
 			if id == "" {
 				id = proj.lastToolID
 				if id == "" || ae.ToolName != proj.lastToolName {
@@ -417,6 +422,17 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 		return nil, false
 	}
 	return nil, false
+}
+
+// scopedToolCallID makes a provider's call ID unique across the session. Some
+// providers number each response's calls from zero (ollama-0, ollama-1, …), so
+// a bare ID would let a later step's first call replace an earlier card in the
+// client. The step is the scope: IDs are unique within one response.
+func scopedToolCallID(step int64, id string) string {
+	if step == 0 {
+		return id
+	}
+	return fmt.Sprintf("s%d:%s", step, id)
 }
 
 // HasActiveTurn reports whether sessionID currently has an in-flight

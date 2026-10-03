@@ -650,3 +650,26 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 		t.Fatalf("one click must expand the running row's output tail:\n%s", stripANSI(m.viewport.GetContent()))
 	}
 }
+
+// Each session numbers its steps from 1; expanding step 1 in the main
+// transcript must not expand step 1 inside a subagent's view.
+func TestExpandStateDoesNotLeakIntoSubagentViews(t *testing.T) {
+	m := newTestModel(t)
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	v := m.state.RegisterSubagent("reviewer", child)
+	step1 := stack.NodeID{Kind: stack.KindStep, Key: "step:1"}
+
+	m.toggleExpanded(step1)
+	if !m.isExpanded(step1) {
+		t.Fatal("main toggle did not stick")
+	}
+	m.viewStack = append(m.viewStack, v)
+	if m.isExpanded(step1) {
+		t.Fatal("the main transcript's expansion leaked into the subagent view")
+	}
+	m.toggleExpanded(step1)
+	m.viewStack = nil
+	if !m.isExpanded(step1) {
+		t.Fatal("toggling inside the subagent flipped the main transcript's step")
+	}
+}

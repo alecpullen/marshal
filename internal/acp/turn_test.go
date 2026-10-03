@@ -3364,3 +3364,26 @@ func TestToolCallArgsUpdateIsResentUnderSameID(t *testing.T) {
 		t.Fatalf("updates = %v, want the first announce and the changed-args resend only", updates)
 	}
 }
+
+// Providers that number calls per response (ollama-0) must not collide across
+// steps: the client keys its cards by ID.
+func TestToolCallIDsAreUniqueAcrossSteps(t *testing.T) {
+	updates := publishToolEvents(t, func(b *pubsub.Broker[session.Event]) {
+		for step := int64(1); step <= 2; step++ {
+			b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "noop", ToolCallID: "ollama-0", StepID: step, StartedAt: time.Unix(step, 0)}})
+			b.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{ToolName: "noop", ToolCallID: "ollama-0", StepID: step, ResultSummary: "ok"}})
+		}
+	})
+	ids := map[string]bool{}
+	for _, u := range updates {
+		if u["kind"] == "tool_call" {
+			ids[fmt.Sprint(u["toolCallId"])] = true
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("announced ids = %v, want one per step", ids)
+	}
+	if updates[1]["toolCallId"] != updates[0]["toolCallId"] {
+		t.Fatalf("an update must carry its call's scoped id: %v vs %v", updates[1]["toolCallId"], updates[0]["toolCallId"])
+	}
+}

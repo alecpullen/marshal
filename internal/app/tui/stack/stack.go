@@ -190,6 +190,12 @@ func Build(s Snapshot) []*Node {
 	if cur.msg != nil || len(cur.items) > 0 {
 		turns = append(turns, cur)
 	}
+	relocateToStepTurns(turns, stepByID, func(t *turn) (int64, *[]session.TranscriptItem) {
+		if t.msg == nil {
+			return 0, &t.items
+		}
+		return t.msg.ID, &t.items
+	})
 
 	// Live work (an in-flight call, streaming reasoning) needs a turn to hang
 	// on even before the transcript has any items.
@@ -204,10 +210,59 @@ func Build(s Snapshot) []*Node {
 			key = fmt.Sprintf("turn:%d", t.msg.ID)
 		}
 		node := &Node{ID: NodeID{KindTurn, key}, Kind: KindTurn}
-		node.Children = buildTurn(t.items, stepByID, s, last)
+		var turnMsgID int64
+		if t.msg != nil {
+			turnMsgID = t.msg.ID
+		}
+		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID)
 		out = append(out, node)
 	}
 	return out
+}
+
+// itemStep is the step an item was stamped with, 0 when it carries none.
+func itemStep(it session.TranscriptItem) session.StepID {
+	switch {
+	case it.Audit != nil:
+		return it.Audit.StepID
+	case it.Thinking != nil:
+		return it.Thinking.StepID
+	case it.Message != nil:
+		return it.Message.StepID
+	}
+	return 0
+}
+
+// relocateToStepTurns moves every stepped item into the turn its step belongs
+// to. Placing items by timestamp alone is fragile: saved timestamps lose
+// sub-second precision, so on resume a step's last tool row can sort after the
+// next user message and be filed under that turn, splitting the step in two.
+func relocateToStepTurns[T any](turns []*T, stepByID map[session.StepID]session.Step, access func(*T) (int64, *[]session.TranscriptItem)) {
+	index := map[int64]*T{}
+	for _, t := range turns {
+		if id, _ := access(t); id != 0 {
+			index[id] = t
+		}
+	}
+	for _, t := range turns {
+		id, items := access(t)
+		kept := (*items)[:0:0]
+		for _, it := range *items {
+			rec, ok := stepByID[itemStep(it)]
+			if sid := itemStep(it); sid == 0 || !ok || rec.TurnMsgID == 0 || rec.TurnMsgID == id {
+				kept = append(kept, it)
+				continue
+			}
+			dest, ok := index[rec.TurnMsgID]
+			if !ok {
+				kept = append(kept, it)
+				continue
+			}
+			_, destItems := access(dest)
+			*destItems = append(*destItems, it)
+		}
+		*items = kept
+	}
 }
 
 // block is a top-level child of a turn awaiting time ordering.
@@ -223,7 +278,7 @@ type stepAcc struct {
 	first  time.Time
 }
 
-func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool) []*Node {
+func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64) []*Node {
 	var blocks []block
 	steps := map[session.StepID]*stepAcc{}
 	var stepOrder []session.StepID
@@ -248,6 +303,16 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	touch := func(a *stepAcc, ts time.Time) {
 		if a.first.IsZero() || (!ts.IsZero() && ts.Before(a.first)) {
 			a.first = ts
+		}
+	}
+
+	// A step the runner has just opened has no content yet, but it is still
+	// the step its calls belong to: seed this turn's open steps so a call or
+	// spinner lands in it rather than in whatever step-less item is nearby.
+	// Steps that stay empty are omitted below.
+	for _, st := range s.Steps {
+		if st.TurnMsgID == turnMsgID && st.EndedAt.IsZero() {
+			idStep(st.ID)
 		}
 	}
 
@@ -475,9 +540,8 @@ func toolRows(audits []registry.AuditEvent, active []session.ActiveToolCall) []*
 		rows = append(rows, &Node{ID: ToolID(ev), Kind: KindTool, Tools: []registry.AuditEvent{ev}})
 	}
 	for i := range rows {
-		if len(rows[i].Tools) > 1 {
-			rows[i].ID = NodeID{KindTool, "tools:" + ToolKey(rows[i].Tools[0])}
-		}
+		// A merged run keeps its first call's ID, so a row the user expanded
+		// stays expanded when a second same-tool call folds into it.
 		rows[i].Version = versionOfTools(rows[i].Tools)
 	}
 	for i := range active {

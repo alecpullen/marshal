@@ -107,10 +107,11 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	// Drop per-message UI state that belongs to the old session.
-	m.expanded = make(map[stack.NodeID]bool)
+	m.nodeDensity = make(map[stack.NodeID]density)
+	m.effDensity = nil
 	m.viewStack = nil
 	m.invalidateTranscript()
-	m.detailExpanded = false
+	m.density = parseDensity(m.state.Config.TUI.Transcript.Density)
 	m.nodeRegions = nil
 	// The old session's changed-files list must never render in the new
 	// session while the sheetBaseRefMsg round-trips; re-read it below.

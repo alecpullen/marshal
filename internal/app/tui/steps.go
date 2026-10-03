@@ -39,7 +39,14 @@ type subRegion struct {
 
 // stepRenderCtx carries everything renderStep reads from the Model.
 type stepRenderCtx struct {
-	expanded func(stack.NodeID) bool
+	// density resolves a node's level: its own override, else inherited.
+	density func(id stack.NodeID, inherited density) density
+	// record is told the level each node is drawn at.
+	record func(id stack.NodeID, d density)
+	// foldTasks is the session fold toggle; hasOverride says a user override
+	// exists for a node (which unfolds it).
+	foldTasks   bool
+	hasOverride func(stack.NodeID) bool
 	// liveExpanded is expanded for an in-flight call, which stays collapsed
 	// until clicked whatever the global default says.
 	liveExpanded func(stack.NodeID) bool
@@ -58,6 +65,18 @@ type stepRenderCtx struct {
 	allowNetwork  bool
 }
 
+// level resolves and records a node's density.
+func (c *stepRenderCtx) level(id stack.NodeID, inherited density) density {
+	d := inherited
+	if c.density != nil {
+		d = c.density(id, inherited)
+	}
+	if c.record != nil {
+		c.record(id, d)
+	}
+	return d
+}
+
 func (c *stepRenderCtx) liveToolExpanded(id stack.NodeID) bool {
 	return c.liveExpanded != nil && c.liveExpanded(id)
 }
@@ -66,9 +85,10 @@ func (c *stepRenderCtx) liveToolExpanded(id stack.NodeID) bool {
 // owner meta), the narration continuation, thinking rows, then tool rows and
 // subagent cards at nested indent. Every piece ends in a newline, so the
 // block's line count is strings.Count(out, "\n").
-func renderStep(n *stack.Node, c *stepRenderCtx, width int) (string, []subRegion) {
+func renderStep(n *stack.Node, c *stepRenderCtx, width int, inherited density) (string, []subRegion) {
 	si := n.Step
 	rows := n.Children
+	sd := c.level(n.ID, inherited)
 	var b strings.Builder
 	var subs []subRegion
 	lines := 0
@@ -107,18 +127,26 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int) (string, []subRegion
 	if inferred {
 		meta.tag = "inferred"
 	}
+	if sd == densityOutline {
+		meta.tools = countToolCalls(rows)
+	}
 	write(stepHeaderLine(g, gc, head, inferred, meta, width) + "\n")
+	if sd == densityOutline {
+		// One row per step: narration, reasoning and tool rows are all
+		// behind a density change.
+		return b.String(), subs
+	}
 
 	// Narration continuation.
 	if rest != "" {
-		expanded := c.expanded(n.ID)
-		write(renderStepContinuation(rest, expanded, width))
+		write(renderStepContinuation(rest, sd == densityFull, width))
 	}
 
 	// Thinking rows.
 	for _, t := range si.Thinking {
 		id := stack.ThinkingID(t)
-		row(id, renderNestedThinking(t, c.expanded(id), width), subRegion{})
+		td := c.level(id, sd)
+		row(id, renderNestedThinking(t, td == densityFull, width), subRegion{})
 	}
 	if si.LiveThinking != "" {
 		rv := c.region(stack.LiveThinkingID)
@@ -137,17 +165,29 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int) (string, []subRegion
 		case ch.Kind == stack.KindTool && ch.Active != nil:
 			row(ch.ID, renderActiveToolRow(*ch.Active, c, c.liveToolExpanded(ch.ID), width), subRegion{})
 		case ch.Kind == stack.KindTool && len(ch.Tools) > 1:
-			row(ch.ID, renderToolGroupRow(ch.Tools, c.expanded(ch.ID), width), subRegion{})
+			rd := c.level(ch.ID, sd)
+			if rd == densityOutline {
+				continue
+			}
+			row(ch.ID, renderToolGroupRow(ch.Tools, rd == densityFull, width), subRegion{})
 		case ch.Kind == stack.KindTool && len(ch.Tools) == 1:
-			row(ch.ID, renderToolRow(ch.Tools[0], c.expanded(ch.ID), c.callers(ch.ID), width), subRegion{})
+			rd := c.level(ch.ID, sd)
+			if rd == densityOutline {
+				continue
+			}
+			row(ch.ID, renderToolRow(ch.Tools[0], rd == densityFull, c.callers(ch.ID), width), subRegion{})
 		case ch.Kind == stack.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil:
 			v := *ch.Item.Subagent
 			rv := c.region(ch.ID)
-			card := renderSubagentCard(v, c.expanded(ch.ID), c.toolSpinner, rv, width-stepRowIndent)
-			if cnt := strings.Count(card, "\n"); cnt > rv.minRows {
+			cd := c.level(ch.ID, sd)
+			card := renderSubagentCard(v, cd == densityFull, c.toolSpinner, rv, width-stepRowIndent)
+			if cd == densityOutline {
+				card = headRow(card)
+			}
+			if cnt := strings.Count(card, "\n"); cnt > rv.minRows && cd != densityOutline {
 				c.noteRows(ch.ID, cnt)
 			}
-			sub := subRegion{live: v.Status == session.SubagentRunning}
+			sub := subRegion{live: v.Status == session.SubagentRunning && cd != densityOutline}
 			if v.Child != nil {
 				sub.subagent = &v
 			}
@@ -155,6 +195,27 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int) (string, []subRegion
 		}
 	}
 	return b.String(), subs
+}
+
+// headRow keeps only the first line of a rendered block, newline included.
+func headRow(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i+1]
+	}
+	return s
+}
+
+// countToolCalls is the number of tool calls a step made, counting each call
+// of a merged run.
+func countToolCalls(rows []*stack.Node) int {
+	n := 0
+	for _, r := range rows {
+		n += len(r.Tools)
+		if r.Active != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // renderToolRow renders a settled tool call inside a step. It is the
@@ -289,6 +350,7 @@ func stepDuration(n *stack.Node, now time.Time) string {
 // metaParts are the pieces of a step header's right-aligned meta.
 type metaParts struct {
 	tag        string // "inferred"
+	tools      int    // outline density: how many calls the collapsed step hides
 	owner      string
 	role       string // owner shortened to the role word
 	model      string
@@ -303,17 +365,25 @@ type metaParts struct {
 // styled text and its visible width.
 func rightMeta(p metaParts, headlineWidth, width int) (string, int) {
 	budget := width - gutterWidth - 2 - min(headlineWidth, minHeadlineCols)
-	type cand struct{ tag, owner, model, dur string }
+	type cand struct{ tag, owner, model, tools, dur string }
+	tools := ""
+	switch {
+	case p.tools == 1:
+		tools = "1 tool"
+	case p.tools > 1:
+		tools = fmt.Sprintf("%d tools", p.tools)
+	}
 	cands := []cand{
-		{p.tag, p.owner, p.model, p.dur},
-		{p.tag, p.owner, "", p.dur},
-		{p.tag, p.owner, "", ""},
-		{p.tag, p.role, "", ""},
-		{p.tag, "", "", ""},
-		{"", "", "", ""},
+		{p.tag, p.owner, p.model, tools, p.dur},
+		{p.tag, p.owner, "", tools, p.dur},
+		{p.tag, p.owner, "", tools, ""},
+		{p.tag, p.role, "", tools, ""},
+		{p.tag, "", "", tools, ""},
+		{"", "", "", tools, ""},
+		{"", "", "", "", ""},
 	}
 	for _, cd := range cands {
-		text, w := renderMeta(cd.tag, cd.owner, cd.model, cd.dur, p.ownerColor)
+		text, w := renderMeta(cd.tag, cd.owner, cd.model, cd.tools, cd.dur, p.ownerColor)
 		if w <= budget {
 			return text, w
 		}
@@ -321,7 +391,7 @@ func rightMeta(p metaParts, headlineWidth, width int) (string, int) {
 	return "", 0
 }
 
-func renderMeta(tag, owner, model, dur string, ownerColor color.Color) (string, int) {
+func renderMeta(tag, owner, model, tools, dur string, ownerColor color.Color) (string, int) {
 	var plain, styled []string
 	add := func(s string, style lipgloss.Style) {
 		if s == "" {
@@ -337,6 +407,7 @@ func renderMeta(tag, owner, model, dur string, ownerColor color.Color) (string, 
 	}
 	add(owner, ownerStyle)
 	add(model, mutedStyle())
+	add(tools, mutedStyle())
 	add(dur, mutedStyle())
 	sep := " · "
 	return strings.Join(styled, mutedStyle().Render(sep)), ansi.StringWidth(strings.Join(plain, sep))

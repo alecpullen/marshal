@@ -61,6 +61,7 @@ func (m *Model) refreshViewport() {
 	snap := stack.Snapshot{
 		Items:           items,
 		Steps:           transcriptState.Steps(),
+		Todos:           transcriptState.Todos(),
 		ActiveTools:     active,
 		InProgress:      inProgress,
 		Busy:            m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
@@ -89,7 +90,10 @@ func (m *Model) refreshViewport() {
 
 	toolFrame := m.activeSpinnerFrame(session.ActivityTool)
 	rctx := &stepRenderCtx{
-		expanded:      m.isExpanded,
+		density:       m.densityOf,
+		record:        m.recordDensity,
+		foldTasks:     m.foldTasks,
+		hasOverride:   func(id stack.NodeID) bool { _, ok := m.override(id); return ok },
 		liveExpanded:  func(id stack.NodeID) bool { return m.isToolExpanded(id, true) },
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
@@ -199,8 +203,12 @@ func (m *Model) renderNode(n *stack.Node, c *stepRenderCtx, width int, themeSig 
 // drawNode is the renderer proper: it dispatches on what the node holds.
 func (m *Model) drawNode(n *stack.Node, c *stepRenderCtx, width int) (string, []subRegion) {
 	switch {
+	case n.Kind == stack.KindTask && n.Task != nil:
+		return renderTask(n, c, width, m.density)
+	case n.Kind == stack.KindReceipt && n.Receipt != nil:
+		return renderReceipt(n.Receipt, width), nil
 	case n.Kind == stack.KindStep && n.Step != nil:
-		return renderStep(n, c, width)
+		return renderStep(n, c, width, m.density)
 	case n.Kind == stack.KindThinking && n.Step != nil:
 		// Reasoning before any step has begun: the bounded live box on its own.
 		rv := m.regionView(stack.LiveThinkingID)
@@ -213,7 +221,9 @@ func (m *Model) drawNode(n *stack.Node, c *stepRenderCtx, width int) (string, []
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
 	case n.Item != nil:
 		rv := m.regionView(n.ID)
-		out := renderTranscriptItem(*n.Item, m.isExpanded(n.ID), m.spinnerFrame, rv, m.callers[n.ID], width)
+		d := m.densityOf(n.ID, m.density)
+		m.recordDensity(n.ID, d)
+		out := renderTranscriptItem(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width)
 		// Record the tallest this region has been, so a later shrink in the
 		// child's activity tail cannot shrink the card.
 		if n.Kind == stack.KindSubagent {
@@ -231,7 +241,7 @@ func (m *Model) drawNode(n *stack.Node, c *stepRenderCtx, width int) (string, []
 // messages are not interactive.
 func (m *Model) blockTarget(n *stack.Node) *clickTarget {
 	switch {
-	case n.Kind == stack.KindStep:
+	case n.Kind == stack.KindStep, n.Kind == stack.KindTask:
 		return &clickTarget{node: n.ID}
 	case n.Kind == stack.KindThinking && n.Step != nil:
 		return &clickTarget{node: stack.LiveThinkingID, isLiveRegion: true}
@@ -322,20 +332,21 @@ func (m *Model) nodeSig(n *stack.Node, c *stepRenderCtx) uint64 {
 type sigWriter interface{ Write([]byte) (int, error) }
 
 func (m *Model) foldNodeSig(h sigWriter, n *stack.Node, c *stepRenderCtx) {
-	exp := m.isExpanded(n.ID)
-	if n.Active != nil {
-		exp = m.isToolExpanded(n.ID, true)
-	}
-	fmt.Fprintf(h, "%s|%v|%d|%d|", n.ID.Key, exp, m.regionOffset[n.ID], m.regionRows[n.ID])
-	if n.Kind == stack.KindStep {
-		fmt.Fprintf(h, "%s|%s|", c.routeModel, c.routeProvider)
+	// The node's own override (if any) is what varies per node; inherited
+	// levels come from ancestors, which this fold also covers.
+	ov, hasOv := m.override(n.ID)
+	fmt.Fprintf(h, "%s|%v|%d|%d|%d|", n.ID.Key, hasOv, ov, m.regionOffset[n.ID], m.regionRows[n.ID])
+	fmt.Fprintf(h, "d%d|", m.density)
+	if n.Kind == stack.KindStep || n.Kind == stack.KindTask {
+		fmt.Fprintf(h, "%s|%s|%v|", c.routeModel, c.routeProvider, m.foldTasks)
 	}
 	if lines, ok := m.callers[n.ID]; ok {
 		fmt.Fprintf(h, "c%q|", lines)
 	}
 	if n.Step != nil {
 		for _, t := range n.Step.Thinking {
-			fmt.Fprintf(h, "t%v|", m.isExpanded(stack.ThinkingID(t)))
+			tov, thas := m.override(stack.ThinkingID(t))
+			fmt.Fprintf(h, "t%v|%d|", thas, tov)
 		}
 	}
 	for _, ch := range n.Children {
@@ -349,7 +360,7 @@ func (m *Model) foldNodeSig(h sigWriter, n *stack.Node, c *stepRenderCtx) {
 // not.
 func (m *Model) contentSignature(turns []*stack.Node, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, reconnect string, hasTurns bool) uint64 {
 	h := fnv.New64a()
-	fmt.Fprintf(h, "w%d|t%d|g%v|", width, themeSig, m.detailExpanded)
+	fmt.Fprintf(h, "w%d|t%d|g%d|f%v|", width, themeSig, m.density, m.foldTasks)
 	fmt.Fprintf(h, "turns%v|", hasTurns)
 	c := &stepRenderCtx{}
 	if st, _ := m.transcriptSource(); st != nil {

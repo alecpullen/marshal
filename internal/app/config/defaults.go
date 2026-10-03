@@ -195,6 +195,7 @@ func Default() Config {
 				MaxCols:  60,
 			},
 			Suggestions: "rules",
+			Transcript:  TranscriptConfig{Density: "steps", FoldFinishedTasks: true},
 		},
 		Hooks: HooksConfig{
 			FailClosed: false,

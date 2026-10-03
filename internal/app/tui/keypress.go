@@ -192,11 +192,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+g":
-		m.detailExpanded = !m.detailExpanded
-		m.expanded = map[stack.NodeID]bool{}
+		m.density = m.density.nextGlobal()
+		m.nodeDensity = map[stack.NodeID]density{}
+		cmd := m.setFlash("Detail: " + m.density.String())
 		m.invalidateTranscript()
 		m.refreshViewport()
-		return *m, nil, true
+		return *m, cmd, true
 	case "ctrl+t":
 		if !readlineShortcutAvailable() {
 			return *m, nil, false

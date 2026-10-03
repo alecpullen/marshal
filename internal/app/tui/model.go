@@ -382,12 +382,19 @@ type Model struct {
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
-	detailExpanded     bool
-	// expanded holds per-node expand/collapse overrides set by clicking a
-	// step, tool row or thinking row. A node with no entry follows
-	// detailExpanded. Cleared whenever ctrl+g flips the global default (see
-	// keypress.go).
-	expanded map[stack.NodeID]bool
+	// density is the global detail level (Ctrl+G); nodeDensity holds per-node
+	// overrides set by Enter or a click, cleared whenever Ctrl+G moves the
+	// global level. A node without one inherits its parent's level.
+	density     density
+	nodeDensity map[stack.NodeID]density
+	// effDensity records the level each node was last drawn at, so a click
+	// cycles from what the user sees rather than from the global default.
+	effDensity map[stack.NodeID]density
+	// foldTasks is the session toggle for folding finished tasks (z).
+	foldTasks bool
+	// flash is a transient status-line message (see flash.go).
+	flash      string
+	flashUntil time.Time
 	// regionOffset holds the per-region body scroll offset for bounded live
 	// regions (see internal/app/tui/liveregion). Pruned on every
 	// refreshViewport, so a finished region's entry does not leak.
@@ -1334,6 +1341,8 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:        NewSpinner(),
 		now:            time.Now,
 		viewportFollow: true,
+		density:        parseDensity(state.Config.TUI.Transcript.Density),
+		foldTasks:      state.Config.TUI.Transcript.FoldFinishedTasks,
 		discovered:     map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {

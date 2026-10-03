@@ -357,6 +357,9 @@ func (m Model) statusRightSegment() string {
 		}
 		return errorStyle().Render("✘ error")
 	}
+	if m.flashActive() {
+		return dimStyle().Render(m.flash)
+	}
 	return help.Footer(m.footerHints())
 }
 

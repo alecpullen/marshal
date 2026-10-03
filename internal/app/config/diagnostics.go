@@ -275,6 +275,18 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
+	// 11: [tui.transcript] density. An unknown level is read as "steps".
+	switch cfg.TUI.Transcript.Density {
+	case "", "outline", "steps", "full":
+	default:
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "tui.transcript.density",
+			Message:  "unknown density " + strconv.Quote(cfg.TUI.Transcript.Density) + " (accepted: \"outline\", \"steps\", \"full\"); using \"steps\"",
+			Source:   layers.ProvenanceOf("tui.transcript.density").SetBy.String(),
+		})
+	}
+
 	// Sort: errors before warnings, then by Path within each group.
 	sort.SliceStable(ds, func(i, j int) bool {
 		if ds[i].Severity != ds[j].Severity {

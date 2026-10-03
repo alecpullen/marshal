@@ -170,7 +170,15 @@ func symbolLabel(s registry.SymbolRef) string {
 // diff is on the audit event, and splitDiffFiles in transcript.go already
 // parses diffs in this layer.
 func diffStat(diff string) string {
-	added, removed := 0, 0
+	added, removed := diffCounts(diff)
+	if added == 0 && removed == 0 {
+		return ""
+	}
+	return fmt.Sprintf("+%d −%d", added, removed)
+}
+
+// diffCounts is the number of added and removed lines in a unified diff.
+func diffCounts(diff string) (added, removed int) {
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
@@ -181,8 +189,5 @@ func diffStat(diff string) string {
 			removed++
 		}
 	}
-	if added == 0 && removed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("+%d −%d", added, removed)
+	return added, removed
 }

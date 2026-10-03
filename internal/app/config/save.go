@@ -328,6 +328,10 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			Mode:         strutil.Ptr(cfg.TUI.Mode),
 			MouseCapture: strutil.Ptr(cfg.TUI.MouseCapture),
 			Suggestions:  strutil.Ptr(cfg.TUI.Suggestions),
+			Transcript: &fileTranscript{
+				Density:           strutil.Ptr(cfg.TUI.Transcript.Density),
+				FoldFinishedTasks: strutil.Ptr(cfg.TUI.Transcript.FoldFinishedTasks),
+			},
 		}
 		// Only hidden is still meaningful. Writing the deprecated sizing keys
 		// would make every later load warn about a file the app wrote itself.

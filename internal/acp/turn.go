@@ -296,10 +296,10 @@ type turnProjection struct {
 	lastThinking string
 	lastToolID   string
 	lastToolName string
-	// announced holds the tool-call IDs already sent as running, so the
+	// announced maps tool-call IDs already sent as running to the args sent, so the
 	// re-publish that follows one of several concurrent calls ending does
 	// not announce a still-running call a second time.
-	announced map[string]bool
+	announced map[string]string
 }
 
 // toolTextCap bounds args/output text in tool_call wire events.
@@ -364,12 +364,14 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 			proj.lastToolID = id
 			proj.lastToolName = atc.Name
 			if proj.announced == nil {
-				proj.announced = map[string]bool{}
+				proj.announced = map[string]string{}
 			}
-			if proj.announced[id] {
+			// Re-send only when the args changed: an agent.await countdown is
+			// a deliberate update under the same ID, a repeated publish is not.
+			if prev, seen := proj.announced[id]; seen && prev == atc.Args {
 				return nil, false
 			}
-			proj.announced[id] = true
+			proj.announced[id] = atc.Args
 			return map[string]any{
 				"kind":       "tool_call",
 				"toolCallId": id,

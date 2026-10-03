@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
@@ -258,7 +259,7 @@ func TestClickOnToolRowTogglesThatRowOnly(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	row := stack.NodeID{Kind: stack.KindTool, Key: "tool:row_a"}
+	row := stack.NodeID{Kind: stack.KindTool, Key: fmt.Sprintf("tool:%d:row_a", id)}
 	region, ok := regionOf(&m, row)
 	if !ok {
 		t.Fatal("tool row recorded no region of its own")
@@ -273,7 +274,7 @@ func TestClickOnToolRowTogglesThatRowOnly(t *testing.T) {
 	if !mm.isExpanded(row) {
 		t.Fatal("click on the row did not expand it")
 	}
-	if mm.isExpanded(stack.NodeID{Kind: stack.KindStep, Key: fmt.Sprintf("step:%d", id)}) || mm.isExpanded(stack.NodeID{Kind: stack.KindTool, Key: "tool:row_b"}) {
+	if mm.isExpanded(stack.NodeID{Kind: stack.KindStep, Key: fmt.Sprintf("step:%d", id)}) || mm.isExpanded(stack.NodeID{Kind: stack.KindTool, Key: fmt.Sprintf("tool:%d:row_b", id)}) {
 		t.Fatal("click on a row must not toggle the step or its siblings")
 	}
 }
@@ -532,7 +533,7 @@ func TestApprovalShowsOwnerAndWhy(t *testing.T) {
 	m.state.AddNarration(id, "Installing the dependency the build needs. It is pinned.")
 	tc := &session.PendingToolCall{Name: "shell.run", Command: "go get example.com/x@v1", Risk: "command", StepID: id}
 
-	w := m.approvalWhyFor(tc)
+	w := m.approvalWhyFor(m.state, tc)
 	if w.owner != "implementer" || w.why != "Installing the dependency the build needs." {
 		t.Fatalf("approvalWhyFor = %+v", w)
 	}
@@ -554,14 +555,98 @@ func TestApprovalShowsOwnerAndWhy(t *testing.T) {
 	m2.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	silent := m2.state.BeginStep(session.Actor{})
 	tc2 := &session.PendingToolCall{Name: "shell.run", Command: "ls", StepID: silent}
-	if w := m2.approvalWhyFor(tc2); w != (approvalWhy{}) {
+	if w := m2.approvalWhyFor(m2.state, tc2); w != (approvalWhy{}) {
 		t.Fatalf("orchestrator step with no narration should add nothing, got %+v", w)
 	}
-	plain := stripANSI(renderApprovalPanel(tc2, session.SandboxInfo{}, false, 80, m2.approvalWhyFor(tc2)))
+	plain := stripANSI(renderApprovalPanel(tc2, session.SandboxInfo{}, false, 80, m2.approvalWhyFor(m2.state, tc2)))
 	if strings.Contains(plain, "why") || strings.Contains(plain, "wants to") {
 		t.Errorf("no owner and no narration means no extra lines:\n%s", plain)
 	}
-	if w := m2.approvalWhyFor(&session.PendingToolCall{Name: "x"}); w != (approvalWhy{}) {
+	if w := m2.approvalWhyFor(m2.state, &session.PendingToolCall{Name: "x"}); w != (approvalWhy{}) {
 		t.Fatalf("unstamped approval should add nothing, got %+v", w)
+	}
+}
+
+// A child's step IDs live in the child's State. The display copy keeps the
+// StepID, and the lookup must use the child, not the parent whose step with
+// the same number belongs to someone else.
+func TestSubagentApprovalResolvesOwnerAgainstChildState(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	pid := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(pid, "Parent narration that must not leak.")
+
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	child.AddMessage(session.RoleUser, "review", session.ContentTypePlain)
+	cid := child.BeginStep(session.Actor{Role: "reviewer", Label: "reviewer"})
+	child.AddNarration(cid, "Checking the migration. It touches two tables.")
+	if cid != pid {
+		t.Fatalf("test needs colliding step IDs, got parent %d child %d", pid, cid)
+	}
+	m.state.RegisterSubagent("reviewer", child)
+	tc := &session.PendingToolCall{Name: "shell.run", Command: "go vet ./...", Risk: "command", StepID: cid}
+	child.SetPendingApproval(tc)
+
+	disp, label := m.pendingApprovalDisplay()
+	if disp == nil || label != "reviewer" || disp.StepID != cid {
+		t.Fatalf("display copy = %+v label %q; StepID must survive the copy", disp, label)
+	}
+	w := m.approvalWhyFor(m.approvalOwner(), disp)
+	if w.owner != "reviewer" || w.why != "Checking the migration." {
+		t.Fatalf("why = %+v", w)
+	}
+}
+
+// A step that is not the live one can still hold a running call (a later
+// step opened while an async call from an earlier one is outstanding); its
+// row must keep ticking rather than be served from the cache.
+func TestOlderStepWithRunningCallKeepsRendering(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	old := stepFixture(t, &m, session.Actor{}, "Kicking off a build.", readEvent("a.go"))
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "make", StartedAt: time.Now(), StepID: old, ToolCallID: "bg"})
+	live := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(live, "Meanwhile reading more.")
+	m.busy, m.turnStartedAt = true, time.Now()
+
+	m.invalidateTranscript()
+	m.refreshViewport()
+	var rendered []stack.NodeID
+	nodeRenderHook = func(id stack.NodeID) { rendered = append(rendered, id) }
+	t.Cleanup(func() { nodeRenderHook = nil })
+	base := m.now()
+	m.now = func() time.Time { return base.Add(5 * time.Second) }
+	m.refreshViewport()
+	want := fmt.Sprintf("step:%d", old)
+	found := false
+	for _, id := range rendered {
+		found = found || id.Key == want
+	}
+	if !found {
+		t.Fatalf("older step %q holds a running call and must re-render on a tick, rendered %v", want, rendered)
+	}
+}
+
+func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Running the suite.")
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
+	m.state.AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
+	m.busy, m.turnStartedAt = true, time.Now()
+	m.detailExpanded = true // ctrl+g on: settled rows open, running rows stay closed
+
+	row := stack.NodeID{Kind: stack.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
+		t.Fatal("a running call starts collapsed")
+	}
+	m.toggleExpanded(row)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if !strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
+		t.Fatalf("one click must expand the running row's output tail:\n%s", stripANSI(m.viewport.GetContent()))
 	}
 }

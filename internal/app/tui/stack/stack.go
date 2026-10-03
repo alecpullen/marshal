@@ -12,6 +12,7 @@ import (
 	"hash"
 	"hash/fnv"
 	"sort"
+	"sync"
 	"time"
 
 	"marshal/internal/app/session"
@@ -84,14 +85,28 @@ type Snapshot struct {
 	Now             time.Time
 }
 
-// ToolKey is a tool row's node key: the call ID when there is one (it is
-// unique), else the timestamp.
+// toolCallKey scopes a call ID to its step: providers reuse IDs like call_0
+// across responses, so the ID alone would give two rows one identity (and
+// one expanded state, one callers lookup, one scroll offset).
+func toolCallKey(step int64, id string) string {
+	if step == 0 {
+		return "tool:" + id
+	}
+	return fmt.Sprintf("tool:%d:%s", step, id)
+}
+
+// ToolKey is a tool row's node key: the step-scoped call ID when there is
+// one, else the timestamp.
 func ToolKey(ev registry.AuditEvent) string {
 	if ev.ToolCallID != "" {
-		return "tool:" + ev.ToolCallID
+		return toolCallKey(ev.StepID, ev.ToolCallID)
 	}
 	return fmt.Sprintf("tool:%d", ev.Timestamp.UnixNano())
 }
+
+// ActiveToolID returns the NodeID of an in-flight call's row. It equals the
+// ToolID of the audit that settles it, so expanded state carries over.
+func ActiveToolID(atc session.ActiveToolCall) NodeID { return activeNode(&atc).ID }
 
 // ThinkingKey is a thinking row's node key.
 func ThinkingKey(t *session.ThinkingEntry) string {
@@ -103,6 +118,21 @@ func ToolID(ev registry.AuditEvent) NodeID { return NodeID{KindTool, ToolKey(ev)
 
 // ThinkingID returns the NodeID of a thinking row.
 func ThinkingID(t *session.ThinkingEntry) NodeID { return NodeID{KindThinking, ThinkingKey(t)} }
+
+// AnyLive reports whether the node or any descendant needs per-tick
+// re-rendering. A settled step can still hold a running subagent card or an
+// in-flight call, so a cache must look below the top level.
+func (n *Node) AnyLive() bool {
+	if n.Live {
+		return true
+	}
+	for _, c := range n.Children {
+		if c.AnyLive() {
+			return true
+		}
+	}
+	return false
+}
 
 // LiveThinkingID is the in-progress reasoning region's identity.
 var LiveThinkingID = NodeID{KindThinking, "think:live"}
@@ -461,7 +491,7 @@ func toolRows(audits []registry.AuditEvent, active []session.ActiveToolCall) []*
 }
 
 func activeNode(atc *session.ActiveToolCall) *Node {
-	key := "tool:" + atc.ToolCallID
+	key := toolCallKey(atc.StepID, atc.ToolCallID)
 	if atc.ToolCallID == "" {
 		key = fmt.Sprintf("active:%s:%d", atc.Name, atc.StartedAt.UnixNano())
 	}
@@ -521,7 +551,70 @@ type hashBuf struct{ h hash.Hash64 }
 func (b *hashBuf) f(format string, a ...any) { fmt.Fprintf(b.h, format, a...) }
 func (b *hashBuf) sum() uint64               { return b.h.Sum64() }
 
+// auditDigests memoises hashAudit. An audit event is immutable once logged,
+// and its payload (args, up to MaxToolResultChars of output) is the one thing
+// Build would otherwise re-hash in full on every refresh. The key is the
+// event's identity plus the sizes of its variable parts, so a changed event
+// misses rather than serving a stale digest.
+var auditDigests = struct {
+	sync.Mutex
+	m map[auditKey]uint64
+}{m: map[auditKey]uint64{}}
+
+type auditKey struct {
+	ts                            int64
+	callID, tool, role, model     string
+	step                          int64
+	args, content, errLen         int
+	summary, head, tail           string
+	hooks, symbols, files, orig   int
+	sbxMS                         int64
+	rewritten, hasNotice, hasExit bool
+}
+
+const auditDigestCap = 8192
+
+// edge is up to 32 bytes from one end of s: with the length, enough to tell
+// apart any two payloads that share an identity.
+func edge(s string, tail bool) string {
+	if len(s) <= 32 {
+		return s
+	}
+	if tail {
+		return s[len(s)-32:]
+	}
+	return s[:32]
+}
+
+func keyOfAudit(e *registry.AuditEvent) auditKey {
+	return auditKey{
+		ts: e.Timestamp.UnixNano(), callID: e.ToolCallID, tool: e.ToolName, role: e.AgentRole, model: e.Model,
+		step: e.StepID, args: len(e.Args), summary: e.ResultSummary, content: len(e.ResultContent), head: edge(e.ResultContent, false), tail: edge(e.ResultContent, true), errLen: len(e.Error),
+		hooks: len(e.Hooks), symbols: len(e.Symbols), files: len(e.FilesChanged), orig: len(e.OriginalArgs),
+		sbxMS: e.Sandbox.DurationMS, rewritten: e.Rewritten, hasNotice: e.Notice != nil, hasExit: e.CommandExitCode != nil,
+	}
+}
+
 func hashAudit(b *hashBuf, e *registry.AuditEvent) {
+	k := keyOfAudit(e)
+	auditDigests.Lock()
+	d, ok := auditDigests.m[k]
+	auditDigests.Unlock()
+	if !ok {
+		hb := newHash()
+		hashAuditFull(hb, e)
+		d = hb.sum()
+		auditDigests.Lock()
+		if len(auditDigests.m) >= auditDigestCap {
+			auditDigests.m = map[auditKey]uint64{}
+		}
+		auditDigests.m[k] = d
+		auditDigests.Unlock()
+	}
+	b.f("a|%d|", d)
+}
+
+func hashAuditFull(b *hashBuf, e *registry.AuditEvent) {
 	b.f("a|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%d|%v|%v|%s|%d|%d|%d|%v|%s|%s|%d|",
 		e.Timestamp.UnixNano(), e.ToolCallID, e.ToolName, e.Args, e.Risk, e.Approval,
 		e.ResultSummary, e.ResultContent, e.Error, e.AgentRole, e.StepID, e.FilesChanged,

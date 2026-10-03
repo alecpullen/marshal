@@ -63,6 +63,18 @@ func (r *Runner) envelopeCallID(i int) string {
 	return fmt.Sprintf("s%d-a%d", r.curStep, i)
 }
 
+var envelopeCallIDPattern = regexp.MustCompile(`^s\d+-a\d+$`)
+
+// wireCallID returns the ID to put on the wire: synthesised envelope IDs exist
+// only to pair rows in the TUI and ACP, and sending one would make the
+// provider expect an assistant tool_calls entry that was never produced.
+func wireCallID(id string) string {
+	if envelopeCallIDPattern.MatchString(id) {
+		return ""
+	}
+	return id
+}
+
 // assignEnvelopeCallIDs fills in missing IDs on a batch before dispatch.
 func (r *Runner) assignEnvelopeCallIDs(actions []ModelAction) {
 	for i := range actions {

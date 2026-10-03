@@ -3350,3 +3350,17 @@ func TestToolCallIDReuseAfterFinishAnnouncesAgain(t *testing.T) {
 		t.Fatalf("kinds = %v", kinds)
 	}
 }
+
+// An agent.await countdown re-publishes the running call under the same ID
+// with new args; the client must see each change.
+func TestToolCallArgsUpdateIsResentUnderSameID(t *testing.T) {
+	t0 := time.Unix(1, 0)
+	updates := publishToolEvents(t, func(b *pubsub.Broker[session.Event]) {
+		b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "agent.await", ToolCallID: "w1", Args: "all (3 running)", StartedAt: t0}})
+		b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "agent.await", ToolCallID: "w1", Args: "all (3 running)", StartedAt: t0}})
+		b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "agent.await", ToolCallID: "w1", Args: "all (2 running)", StartedAt: t0}})
+	})
+	if len(updates) != 2 || updates[1]["args"] != "all (2 running)" {
+		t.Fatalf("updates = %v, want the first announce and the changed-args resend only", updates)
+	}
+}

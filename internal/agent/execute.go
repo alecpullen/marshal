@@ -461,6 +461,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 }
 
 func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	toolCallID = wireCallID(toolCallID)
 	if toolCallID != "" {
 		return BuildNativeToolResultMessage(name, result, toolCallID)
 	}
@@ -468,6 +469,7 @@ func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult,
 }
 
 func (r *Runner) buildCachedToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	toolCallID = wireCallID(toolCallID)
 	if toolCallID != "" {
 		return BuildCachedNativeToolResultMessage(name, result, toolCallID)
 	}
@@ -475,6 +477,7 @@ func (r *Runner) buildCachedToolResultMessage(name string, result registry.ToolR
 }
 
 func (r *Runner) buildToolErrorMessage(name, reason, toolCallID string) schema.ChatMessage {
+	toolCallID = wireCallID(toolCallID)
 	if toolCallID != "" {
 		return BuildNativeToolErrorMessage(name, reason, toolCallID)
 	}

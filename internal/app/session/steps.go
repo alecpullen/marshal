@@ -150,14 +150,22 @@ func (s *State) branchIDsLocked() map[int64]bool {
 // active branch. Step 0 (legacy, or synthesised by the TUI) always does, and
 // so does a step with no record. Callers must hold s.mu.
 func (s *State) stepOnBranchLocked(id StepID, onBranch map[int64]bool) bool {
-	if id == 0 {
-		return true
-	}
+	return s.stepVisibility(onBranch)(id)
+}
+
+// stepVisibility returns stepOnBranchLocked with the step table indexed once,
+// for callers that test many items: a per-item scan is O(items × steps) under
+// the state mutex.
+func (s *State) stepVisibility(onBranch map[int64]bool) func(StepID) bool {
+	turn := make(map[StepID]int64, len(s.steps))
 	for i := range s.steps {
-		if s.steps[i].ID == id {
-			t := s.steps[i].TurnMsgID
-			return t == 0 || onBranch[t]
-		}
+		turn[s.steps[i].ID] = s.steps[i].TurnMsgID
 	}
-	return true
+	return func(id StepID) bool {
+		if id == 0 {
+			return true
+		}
+		t, ok := turn[id]
+		return !ok || t == 0 || onBranch[t]
+	}
 }

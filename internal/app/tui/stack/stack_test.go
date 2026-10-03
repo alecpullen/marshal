@@ -85,8 +85,8 @@ func TestBuildGroupsByStepID(t *testing.T) {
 	want := `turn:1
   msg:1
   step:1
-    tool:c1
-    tool:c2
+    tool:1:c1
+    tool:1:c2
   msg:3
 `
 	if got := shape(nodes); got != want {
@@ -113,9 +113,9 @@ func TestBuildMergesSameToolRunsWithinAStepOnly(t *testing.T) {
 	want := `turn:1
   msg:1
   step:1
-    tools:tool:a x3
+    tools:tool:1:a x3
   step:2
-    tool:d
+    tool:2:d
 `
 	if got := shape(nodes); got != want {
 		t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
@@ -257,7 +257,7 @@ func TestBuildSubagentCardPlacement(t *testing.T) {
 	if !strings.Contains(got, "\n  sub:11") || strings.Contains(got, "step:1\n    sub:10\n    sub:11") {
 		t.Fatalf("card 11 should be pass-through at turn level:\n%s", got)
 	}
-	if strings.Contains(got, "tool:r") {
+	if strings.Contains(got, "tool:1:r") {
 		t.Fatalf("the agent.run audit duplicates the card and must be dropped:\n%s", got)
 	}
 }
@@ -268,7 +268,7 @@ func TestBuildKeepsAgentRunAuditsWhenDrilled(t *testing.T) {
 		Steps:   []session.Step{step(1, 1, 3, "")},
 		Drilled: true,
 	})
-	if !strings.Contains(shape(nodes), "tool:r") {
+	if !strings.Contains(shape(nodes), "tool:1:r") {
 		t.Fatalf("drilled view must show the child's own agent.run rows:\n%s", shape(nodes))
 	}
 }
@@ -301,9 +301,9 @@ func TestBuildLiveStepAndThinking(t *testing.T) {
 	want := `turn:1
   msg:1
   step:1
-    tool:a
+    tool:1:a
   step:2 live
-    tool:s live
+    tool:2:s live
 `
 	if got != want {
 		t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
@@ -351,7 +351,7 @@ func TestBuildSuppressesActiveAgentRunWhileCardRenders(t *testing.T) {
 		RunningSubagent: true,
 		ActiveTools:     []session.ActiveToolCall{{Name: "agent.run", ToolCallID: "r", StartedAt: at(1)}},
 	})
-	if strings.Contains(shape(nodes), "tool:r") {
+	if strings.Contains(shape(nodes), "tool:1:r") {
 		t.Fatalf("in-flight agent.run duplicates the running card")
 	}
 }
@@ -390,5 +390,23 @@ func TestVersionChangesWithPayload(t *testing.T) {
 	}
 	if mk("same") != mk("same") {
 		t.Fatal("version must be deterministic")
+	}
+}
+
+// Providers reuse call IDs like call_0 across responses; the rows must still
+// get distinct identities or they share expanded state and callers.
+func TestToolKeysAreScopedToTheirStep(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			audit("file.write_patch", 1, "call_0", 1),
+			audit("file.write_patch", 2, "call_0", 5),
+		},
+		Steps: []session.Step{step(1, 1, 4, ""), step(2, 5, 6, "")},
+	})
+	a := nodes[0].Children[1].Children[0].ID
+	b := nodes[0].Children[2].Children[0].ID
+	if a == b {
+		t.Fatalf("two steps' call_0 rows share identity %v", a)
 	}
 }

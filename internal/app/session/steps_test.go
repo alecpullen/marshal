@@ -246,3 +246,22 @@ func TestResumeHidesStepsOfRewoundTurns(t *testing.T) {
 		t.Fatalf("audit log = %+v, want only the surviving turn's call", log)
 	}
 }
+
+func TestActiveToolUpdatesTargetTheirOwnCall(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Unix(1, 0), Persistence{})
+	s.SetActiveToolCall(ActiveToolCall{Name: "agent.await", ToolCallID: "a", StartedAt: time.Unix(1, 0)})
+	s.SetActiveToolCall(ActiveToolCall{Name: "shell.run", ToolCallID: "b", StartedAt: time.Unix(2, 0)})
+	s.SetActiveToolCallArgs("a", "all (1 running)")
+	s.AppendActiveToolCallOutput("a", "out-a")
+	s.AppendActiveToolCallOutput("b", "out-b")
+	got := map[string]ActiveToolCall{}
+	for _, c := range s.ActiveToolCalls() {
+		got[c.ToolCallID] = c
+	}
+	if got["a"].Args != "all (1 running)" || got["a"].Output != "out-a" {
+		t.Fatalf("call a = %+v", got["a"])
+	}
+	if got["b"].Args != "" || got["b"].Output != "out-b" {
+		t.Fatalf("call b = %+v: updates for a leaked into the later call", got["b"])
+	}
+}

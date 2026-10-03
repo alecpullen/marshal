@@ -18,7 +18,23 @@ func (m *Model) toggleExpanded(id stack.NodeID) {
 	if m.expanded == nil {
 		m.expanded = map[stack.NodeID]bool{}
 	}
-	m.expanded[id] = !m.isExpanded(id)
+	m.expanded[id] = !m.effectiveExpanded(id)
+}
+
+// effectiveExpanded is what the row on screen shows: an in-flight call
+// ignores the global default, so toggling it must flip from there, or ctrl+g
+// would make the first click a no-op.
+func (m *Model) effectiveExpanded(id stack.NodeID) bool {
+	if id.Kind == stack.KindTool {
+		if st, _ := m.transcriptSource(); st != nil {
+			for _, a := range st.ActiveToolCalls() {
+				if stack.ActiveToolID(a) == id {
+					return m.isToolExpanded(id, true)
+				}
+			}
+		}
+	}
+	return m.isExpanded(id)
 }
 
 // isToolExpanded is isExpanded for an in-flight tool row. A running call

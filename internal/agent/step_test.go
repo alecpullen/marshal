@@ -346,3 +346,26 @@ func TestNarrationDirectiveInPrompt(t *testing.T) {
 		t.Error("envelope mode must never carry the directive")
 	}
 }
+
+// Synthesised envelope IDs pair rows in the UI; they must never reach the
+// provider as tool messages, which would be rejected without a matching
+// assistant tool_calls entry.
+func TestEnvelopeToolResultsStayUserMessagesOnTheWire(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`{"rationale":"r","action":{"type":"tool_call","tool":"noop.tool","args":{}}}`,
+			`{"rationale":"r","action":{"type":"final","content":"done"}}`,
+		},
+	}
+	r, _ := newStepRunner(t, p, noopRegistry(nil))
+	r.NativeTools = false
+	if err := r.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	last := p.Requests[len(p.Requests)-1]
+	for _, m := range last.Messages {
+		if m.Role == schema.RoleTool || m.ToolCallID != "" {
+			t.Fatalf("envelope request carries a tool-role message: %+v", m)
+		}
+	}
+}

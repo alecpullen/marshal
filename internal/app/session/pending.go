@@ -400,14 +400,24 @@ func (s *State) ClearActiveToolCall() {
 	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: nil})
 }
 
-func (s *State) AppendActiveToolCallOutput(delta string) {
+func (s *State) AppendActiveToolCallOutput(id, delta string) {
 	s.mu.Lock()
-	if s.activeToolCall == nil {
+	cur := s.activeToolLocked(id)
+	if cur == nil {
 		s.mu.Unlock()
 		return
 	}
-	s.activeToolCall.Output += delta
+	cur.Output += delta
 	s.mu.Unlock()
+}
+
+// activeToolLocked finds the in-flight call with the given ID. An empty or
+// unknown ID falls back to the latest call, for sources that carry no ID.
+func (s *State) activeToolLocked(id string) *ActiveToolCall {
+	if a, ok := s.activeTools[id]; ok && id != "" {
+		return a
+	}
+	return s.activeToolCall
 }
 
 // SetActiveToolCallArgs updates only the Args field of the in-flight tool
@@ -421,14 +431,15 @@ func (s *State) AppendActiveToolCallOutput(delta string) {
 // publishes EventActiveToolChanged: that one stays silent because streaming
 // output would flood the broker, whereas an args update fires at most once
 // per child completion and should reach ACP clients as well as the TUI.
-func (s *State) SetActiveToolCallArgs(args string) {
+func (s *State) SetActiveToolCallArgs(id, args string) {
 	s.mu.Lock()
-	if s.activeToolCall == nil {
+	cur := s.activeToolLocked(id)
+	if cur == nil {
 		s.mu.Unlock()
 		return
 	}
-	s.activeToolCall.Args = args
-	copy := *s.activeToolCall
+	cur.Args = args
+	copy := *cur
 	s.mu.Unlock()
 	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: &copy})
 }

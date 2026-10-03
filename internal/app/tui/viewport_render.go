@@ -90,6 +90,7 @@ func (m *Model) refreshViewport() {
 	toolFrame := m.activeSpinnerFrame(session.ActivityTool)
 	rctx := &stepRenderCtx{
 		expanded:      m.isExpanded,
+		liveExpanded:  func(id stack.NodeID) bool { return m.isToolExpanded(id, true) },
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
 		callers:       func(id stack.NodeID) []string { return m.callers[id] },
@@ -172,11 +173,12 @@ func (m *Model) refreshViewport() {
 }
 
 // renderNode renders one top-level block, from the cache when it is still
-// valid. Live nodes are never cached: their output changes with the clock and
+// valid. Nodes that are live, or hold a live descendant, are never cached: their output changes with the clock and
 // the spinner.
 func (m *Model) renderNode(n *stack.Node, c *stepRenderCtx, width int, themeSig uint64) (string, []subRegion) {
 	sig := m.nodeSig(n, c)
-	if !n.Live {
+	live := n.AnyLive()
+	if !live {
 		if hit, ok := m.renderCache[n.ID]; ok && hit.version == n.Version && hit.width == width && hit.sig == sig && hit.themeSig == themeSig {
 			return hit.out, hit.subs
 		}
@@ -185,7 +187,7 @@ func (m *Model) renderNode(n *stack.Node, c *stepRenderCtx, width int, themeSig 
 		nodeRenderHook(n.ID)
 	}
 	out, subs := m.drawNode(n, c, width)
-	if !n.Live {
+	if !live {
 		if m.renderCache == nil {
 			m.renderCache = map[stack.NodeID]cachedNode{}
 		}
@@ -320,7 +322,11 @@ func (m *Model) nodeSig(n *stack.Node, c *stepRenderCtx) uint64 {
 type sigWriter interface{ Write([]byte) (int, error) }
 
 func (m *Model) foldNodeSig(h sigWriter, n *stack.Node, c *stepRenderCtx) {
-	fmt.Fprintf(h, "%s|%v|%d|%d|", n.ID.Key, m.isExpanded(n.ID), m.regionOffset[n.ID], m.regionRows[n.ID])
+	exp := m.isExpanded(n.ID)
+	if n.Active != nil {
+		exp = m.isToolExpanded(n.ID, true)
+	}
+	fmt.Fprintf(h, "%s|%v|%d|%d|", n.ID.Key, exp, m.regionOffset[n.ID], m.regionRows[n.ID])
 	if n.Kind == stack.KindStep {
 		fmt.Fprintf(h, "%s|%s|", c.routeModel, c.routeProvider)
 	}

@@ -40,9 +40,12 @@ type subRegion struct {
 // stepRenderCtx carries everything renderStep reads from the Model.
 type stepRenderCtx struct {
 	expanded func(stack.NodeID) bool
-	region   func(stack.NodeID) regionView
-	noteRows func(id stack.NodeID, rows int)
-	callers  func(stack.NodeID) []string
+	// liveExpanded is expanded for an in-flight call, which stays collapsed
+	// until clicked whatever the global default says.
+	liveExpanded func(stack.NodeID) bool
+	region       func(stack.NodeID) regionView
+	noteRows     func(id stack.NodeID, rows int)
+	callers      func(stack.NodeID) []string
 
 	spinner       string // live step header glyph
 	toolSpinner   string // live tool row glyph
@@ -53,6 +56,10 @@ type stepRenderCtx struct {
 	routeProvider string
 	sandbox       session.SandboxInfo
 	allowNetwork  bool
+}
+
+func (c *stepRenderCtx) liveToolExpanded(id stack.NodeID) bool {
+	return c.liveExpanded != nil && c.liveExpanded(id)
 }
 
 // renderStep renders one step: a header (state glyph, headline, right-aligned
@@ -128,7 +135,7 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int) (string, []subRegion
 	for _, ch := range rows {
 		switch {
 		case ch.Kind == stack.KindTool && ch.Active != nil:
-			row(ch.ID, renderActiveToolRow(*ch.Active, c, width), subRegion{})
+			row(ch.ID, renderActiveToolRow(*ch.Active, c, c.liveToolExpanded(ch.ID), width), subRegion{})
 		case ch.Kind == stack.KindTool && len(ch.Tools) > 1:
 			row(ch.ID, renderToolGroupRow(ch.Tools, c.expanded(ch.ID), width), subRegion{})
 		case ch.Kind == stack.KindTool && len(ch.Tools) == 1:
@@ -163,8 +170,8 @@ func renderToolGroupRow(evs []registry.AuditEvent, expanded bool, width int) str
 }
 
 // renderActiveToolRow renders an in-flight tool call inside a step.
-func renderActiveToolRow(atc session.ActiveToolCall, c *stepRenderCtx, width int) string {
-	return indentLines(renderActiveToolCall(atc, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, false, width-stepRowIndent), stepRowIndent)
+func renderActiveToolRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded bool, width int) string {
+	return indentLines(renderActiveToolCall(atc, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, expanded, width-stepRowIndent), stepRowIndent)
 }
 
 // indentLines prefixes every non-empty line with n spaces.
@@ -607,16 +614,19 @@ func actorColor(role string) color.Color {
 // approvalWhyFor looks up who is asking and why for a pending approval: the
 // owner of the requesting step and the first sentence of that step's
 // narration. A call from a step with no narration gets no why line.
-func (m Model) approvalWhyFor(tc *session.PendingToolCall) approvalWhy {
-	if tc == nil || tc.StepID == 0 {
+//
+// A step ID is only meaningful in the State that issued it, so owner is the
+// state holding the pending call: the parent's, or a running child's.
+func (m Model) approvalWhyFor(owner *session.State, tc *session.PendingToolCall) approvalWhy {
+	if tc == nil || tc.StepID == 0 || owner == nil {
 		return approvalWhy{}
 	}
-	st, ok := m.state.Step(tc.StepID)
+	st, ok := owner.Step(tc.StepID)
 	if !ok {
 		return approvalWhy{}
 	}
 	w := approvalWhy{owner: stepOwner(st)}
-	for _, msg := range m.state.Messages() {
+	for _, msg := range owner.Messages() {
 		if msg.ContentType == session.ContentTypeNarration && msg.StepID == tc.StepID {
 			if head, _ := firstSentence(msg.Content); head != "" {
 				w.why = stripEmphasis(head)

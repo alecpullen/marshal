@@ -300,14 +300,14 @@ func (s *State) loadStepsLocked(idMap map[int64]int64) {
 		s.logger.Warn("failed to load tool calls", "error", err, "session_id", s.sessionID)
 		return
 	}
-	onBranch := s.branchIDsLocked()
+	visible := s.stepVisibility(s.branchIDsLocked())
 	known := make(map[StepID]bool, len(s.steps))
 	for _, st := range s.steps {
 		known[st.ID] = true
 	}
 	for _, c := range calls {
 		// A call whose step was dropped above belongs to a rewound branch.
-		if c.StepID > 0 && known[c.StepID] && s.stepOnBranchLocked(c.StepID, onBranch) {
+		if c.StepID > 0 && known[c.StepID] && visible(c.StepID) {
 			// Appended directly, not via LogToolCall: a restored row must not
 			// be persisted again or counted in this turn's ledger.
 			s.auditLog = append(s.auditLog, c)

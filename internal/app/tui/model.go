@@ -1395,7 +1395,7 @@ func New(state *session.State, opts ...Option) Model {
 	// has a pending request (parent or subagent), so the first render shows
 	// the huh surface instead of the legacy fallback panels.
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(tc))
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
 	}
 	if q := m.state.PendingQuestion(); q != nil {
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
@@ -2513,6 +2513,15 @@ func (m *Model) pendingApprovalTarget() (owner *session.State, tc *session.Pendi
 	return nil, nil, ""
 }
 
+// approvalOwner is the state that owns the pending approval being displayed:
+// the parent's unless a running subagent's child holds it.
+func (m *Model) approvalOwner() *session.State {
+	if owner, tc, _ := m.pendingApprovalTarget(); tc != nil {
+		return owner
+	}
+	return m.state
+}
+
 // hasPendingApproval reports whether any approval is pending — either on
 // the parent state or on a running subagent's live child state. Rendering,
 // status indicators, and keypress gating must all consult this (not just
@@ -2553,6 +2562,7 @@ func (m *Model) pendingApprovalDisplay() (tc *session.PendingToolCall, label str
 		Args:         src.Args,
 		Command:      src.Command,
 		Risk:         src.Risk,
+		StepID:       src.StepID,
 		Reason:       fmt.Sprintf("subagent %q: %s", label, src.Reason),
 		Diff:         src.Diff,
 		Schema:       src.Schema,
@@ -2671,6 +2681,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			Args:         tc.Args,
 			Command:      tc.Command,
 			Risk:         tc.Risk,
+			StepID:       tc.StepID,
 			Reason:       fmt.Sprintf("subagent %q: %s", source, tc.Reason),
 			Diff:         tc.Diff,
 			Schema:       tc.Schema,
@@ -2678,7 +2689,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		}
 	}
 	if m.approvalModel == nil {
-		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(displayTC))
+		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
 	}
 	am, cmd := m.approvalModel.Update(msg)
 	m.approvalModel = am
@@ -3007,7 +3018,7 @@ func (m Model) inputChromeRows() int {
 		case m.approvalModel != nil:
 			content = m.approvalModel.View()
 		default:
-			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(tc))
+			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
 		}
 		rows += lipgloss.Height(content)
 	}

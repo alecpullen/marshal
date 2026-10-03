@@ -1607,10 +1607,10 @@ func (s *State) Transcript() []TranscriptItem {
 		})
 	}
 
-	onBranch := s.branchIDsLocked()
+	visible := s.stepVisibility(s.branchIDsLocked())
 	for i := range s.auditLog {
 		evt := s.auditLog[i]
-		if !s.stepOnBranchLocked(evt.StepID, onBranch) {
+		if !visible(evt.StepID) {
 			continue
 		}
 		items = append(items, TranscriptItem{
@@ -1622,7 +1622,7 @@ func (s *State) Transcript() []TranscriptItem {
 
 	for i := range s.thinkingLog {
 		t := s.thinkingLog[i]
-		if !s.stepOnBranchLocked(t.StepID, onBranch) {
+		if !visible(t.StepID) {
 			continue
 		}
 		items = append(items, TranscriptItem{

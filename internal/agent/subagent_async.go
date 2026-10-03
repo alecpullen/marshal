@@ -98,7 +98,7 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 			if p.count() == 0 {
 				return noOutstandingResult(), nil
 			}
-			state.SetActiveToolCallArgs(awaitActiveLabel("any", p))
+			state.SetActiveToolCallArgs(call.ID, awaitActiveLabel("any", p))
 			// Fan out one goroutine per pending target. The arrivals channel
 			// is buffered to the target count, so no loser ever blocks on
 			// send; once the first arrival is consumed, the deferred cancel
@@ -280,7 +280,7 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				break
 			}
 			for _, id := range pending {
-				state.SetActiveToolCallArgs(awaitActiveLabel("all", cfg.scanPending(state)))
+				state.SetActiveToolCallArgs(call.ID, awaitActiveLabel("all", cfg.scanPending(state)))
 				v, err := state.WaitSubagent(ctx, id)
 				if err != nil {
 					// Preserve partial results: a cancelled batch must not
@@ -302,7 +302,7 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				bodies = append(bodies, content)
 			}
 			for _, job := range jobs {
-				state.SetActiveToolCallArgs(awaitActiveLabel("all", cfg.scanPending(state)))
+				state.SetActiveToolCallArgs(call.ID, awaitActiveLabel("all", cfg.scanPending(state)))
 				info, err := cfg.jobs.AwaitJob(ctx, job.ID)
 				if err != nil {
 					if errors.Is(err, context.DeadlineExceeded) {
@@ -322,7 +322,7 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				bodies = append(bodies, content)
 			}
 			for _, w := range watches {
-				state.SetActiveToolCallArgs(awaitActiveLabel("all", cfg.scanPending(state)))
+				state.SetActiveToolCallArgs(call.ID, awaitActiveLabel("all", cfg.scanPending(state)))
 				info, err := cfg.watches.AwaitWatch(ctx, w.ID)
 				if err != nil {
 					if errors.Is(err, context.DeadlineExceeded) {

@@ -210,7 +210,7 @@ func (m Model) renderInputArea() string {
 		case m.approvalModel != nil:
 			rows = append(rows, m.approvalModel.View())
 		default:
-			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth, m.approvalWhyFor(tc)))
+			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth, m.approvalWhyFor(m.approvalOwner(), tc)))
 		}
 	} else {
 		if m.state.SDDProgress().Active {

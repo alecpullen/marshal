@@ -2105,7 +2105,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
-	case connect.TickMsg:
+	case connect.OAuthDoneMsg, connect.TickMsg:
 		if _, ok := m.dock.Panel().(connect.Panel); ok {
 			return m, m.dock.Update(pm)
 		}

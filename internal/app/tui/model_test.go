@@ -5912,6 +5912,35 @@ func TestConnectOpensOverlay(t *testing.T) {
 	}
 }
 
+func TestConnectRoutesOAuthCompletion(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed=%t", failed), func(t *testing.T) {
+			m := newTestModel(t)
+			m.state.Config.Privacy.RemoteProvidersAllowed = true
+			m.openConnect("")
+			updated, _ := m.Update(picker.PickedMsg{Value: "openai-codex"})
+			m = asModel(t, updated)
+			if !strings.Contains(m.connectModel.View(100, 30), "Waiting for you") {
+				t.Fatal("expected OAuth sign-in panel")
+			}
+			msg := connect.OAuthDoneMsg{Provider: "openai-codex"}
+			if failed {
+				msg.Err = errors.New("test exchange failure")
+			}
+			updated, cmd := m.Update(msg)
+			m = asModel(t, updated)
+			view := m.connectModel.View(100, 30)
+			if failed {
+				if !strings.Contains(view, "sign-in failed: test exchange failure") {
+					t.Fatalf("OAuth error did not reach panel: %s", view)
+				}
+			} else if cmd == nil || strings.Contains(view, "Waiting for you") {
+				t.Fatalf("OAuth success did not advance panel: %s", view)
+			}
+		})
+	}
+}
+
 func TestModelsOpensOverlay(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/models")

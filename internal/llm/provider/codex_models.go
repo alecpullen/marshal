@@ -16,10 +16,11 @@ import (
 const codexModelsPath = "/codex/models"
 
 // codexModelsClientVersion is sent as the client_version query parameter.
-// Codex derives this from its own crate version; marshal has no equivalent,
-// so it sends a fixed placeholder. The spike confirmed the endpoint accepts
-// it (docs/codex-spike-findings-2026-09-14.md §4).
-const codexModelsClientVersion = "0.0.0"
+// This pins the catalog protocol version Marshal supports. The server accepts
+// 0.0.0 but returns a legacy catalog without newer models. A live comparison
+// confirmed that 0.160.0 includes the current models with the same credentials.
+// Review this pin when updating the Codex integration.
+const codexModelsClientVersion = "0.160.0"
 
 // codexModelEntry is one entry in the catalog's models array. Only the
 // fields marshal consumes are decoded; the catalog carries much more

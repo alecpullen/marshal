@@ -102,12 +102,15 @@ func TestFilterCodexModelsFallsBackToMaxContextWindow(t *testing.T) {
 // --- the fallback chain ---
 
 func TestCodexModelsLiveFetch(t *testing.T) {
+	// Do not derive the expected version from the implementation constant:
+	// the endpoint accepts 0.0.0 but silently hides current models.
+	const wantCatalogVersion = "0.160.0"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != codexModelsPath {
 			t.Errorf("path = %q, want %q", r.URL.Path, codexModelsPath)
 		}
-		if got := r.URL.Query().Get("client_version"); got != codexModelsClientVersion {
-			t.Errorf("client_version = %q, want %q", got, codexModelsClientVersion)
+		if got := r.URL.Query().Get("client_version"); got != wantCatalogVersion {
+			t.Errorf("client_version = %q, want %q", got, wantCatalogVersion)
 		}
 		if got := r.Header.Get("Authorization"); got == "" {
 			t.Error("missing Authorization header")

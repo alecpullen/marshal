@@ -484,9 +484,11 @@ become decisions, and `add-to-workspace` patches the template
    - Files older than 30 days are deleted at startup.
 2. **Routes:**
    - `GET /api/network?workspace=&agent=&view=hosts|requests|agents`:
-     - `hosts` is the aggregate rows, with the rule (allowlisted,
-       granted, open, injected or blocked) computed from the current
-       policy;
+     - `hosts` is `{processMode: bool, rows: [...]}`: the aggregate
+       rows, with the rule (allowlisted, granted, open, injected or
+       blocked) computed from the current policy. `processMode` is true
+       when no container runtime was detected (`detectedRuntime`,
+       `fleet.go:434`);
      - `requests` is the last 500 records, matching the filter, from
        today's file;
      - `agents` is the per-agent totals.

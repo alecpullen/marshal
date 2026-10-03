@@ -161,6 +161,11 @@ func Build(s Snapshot) []*Node {
 		turns = append(turns, cur)
 	}
 
+	// Live work (an in-flight call, streaming reasoning) needs a turn to hang
+	// on even before the transcript has any items.
+	if len(turns) == 0 {
+		turns = append(turns, &turn{})
+	}
 	out := make([]*Node, 0, len(turns))
 	for i, t := range turns {
 		last := i == len(turns)-1

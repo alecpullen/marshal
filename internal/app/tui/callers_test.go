@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
 )
 
@@ -112,24 +113,24 @@ func TestCallersBustTheTranscriptHash(t *testing.T) {
 	m.refreshViewport()
 	before := m.viewport.GetContent()
 
-	key := itemKey{}
+	var key stack.NodeID
 	for _, item := range m.state.Transcript() {
 		if item.Kind == session.KindAudit {
-			key = itemKeyFor(&item)
+			key = stack.ToolID(*item.Audit)
 		}
 	}
-	m.callers = map[itemKey][]string{key: {"a.go:10"}}
+	m.callers = map[stack.NodeID][]string{key: {"a.go:10"}}
 	m.refreshViewport()
 	if m.viewport.GetContent() == before {
-		t.Fatal("callers must be folded into transcriptHash, or results repaint nothing")
+		t.Fatal("callers must be folded into the content signature, or results repaint nothing")
 	}
 }
 
 func TestStaleCallersArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := itemKey{}
-	m.callers = map[itemKey][]string{gone: {"a.go:1"}}
-	m.callersAsked = map[itemKey]bool{gone: true}
+	gone := stack.NodeID{Kind: stack.KindTool, Key: "tool:gone"}
+	m.callers = map[stack.NodeID][]string{gone: {"a.go:1"}}
+	m.callersAsked = map[stack.NodeID]bool{gone: true}
 	m.state.LogToolCall(editEvent())
 	m.refreshViewport()
 	if _, still := m.callers[gone]; still {

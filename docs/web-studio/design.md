@@ -80,6 +80,11 @@ Two rules shape the design:
 | Theme | Warm Sunset (the TUI's palette), dark-first. The status page is light | all |
 | Multiple users | Designed for, built later | design §13 |
 | TUI logic in the web | Send the view model over ACP (`_marshal/stack`) | §5.2 |
+| Terminal and the agent | Typing in the terminal **pauses the agent automatically**; handing control back resumes it | §8.5 |
+| Plan dependencies | Add **`Depends on:` lines** to the `/sdd` plan format; the task graph reads them | §8.7 |
+| Secrets | **Keep secrets out of agent containers wherever possible.** A pluggable secret provider, with an external manager recommended and a small built-in encrypted store for local single-machine use | §8.15 |
+| Network control | **One shared egress proxy** in the bridge, with agents on an internal-only network and identified per agent | §8.11, §8.15 |
+| Specs location | Feature specs live under `docs/<feature>/`; AGENTS.md updated to say so | §10 |
 
 ## 4. Where we start
 
@@ -370,8 +375,10 @@ Inspect · Changes · Files · Terminal · Preview.
     steps touching the same files or test);
   - the last model request (`/context request`), when the node is a step.
 - **Terminal:** shows the selected command's replay, then a shell in the
-  agent's container. Typing pauses the agent. Handing back resumes it.
-  Shell sessions are recorded in the audit log.
+  agent's container. **Typing pauses the agent automatically** (decided).
+  The dock shows "agent paused · Hand back". The agent resumes when you
+  hand back, or after 2 minutes without typing. Shell sessions are
+  recorded in the audit log.
 - **URL state:** `#step-3.2`, `?dock=wide`. The dock width and default
   state are remembered per browser.
 
@@ -402,13 +409,31 @@ inspect; `Esc` back to live; `⌘P` pin; plus the TUI browse keys.
   Commit. Cells show the state, fix rounds and commit SHA. A roles legend
   shows model, tokens and cost.
 - **Graph:** nodes are tasks with role, state and progress; edges are
-  dependencies; a dashed critical path. It needs dependencies, which come
-  from planner-split swarms. Plans can add optional `Depends on:` lines,
-  and the `/sdd` parser change is small.
+  dependencies; a dashed critical path. Dependencies come from optional
+  `Depends on:` lines in the plan (decided), and from planner-split
+  swarms when those produce them.
 - **Timeline:** a tab with per-role bars and tokens per minute.
 
 **Dock:** the same dock as the session page. Selecting a cell or node shows
 that role's transcript.
+
+**Plan format addition:** an optional line inside a task section.
+
+```markdown
+## Task 4: Exit 2 on ErrEmpty
+Depends on: 2, 3
+```
+
+- **Parser** (`pipeline.ParsePlan`): reads it into
+  `TaskSpec.DependsOn []int`. It rejects unknown task numbers and cycles
+  with a plan diagnostic.
+- **Run order:** today tasks run in file order. With dependencies, the
+  controller may start a task once its dependencies are committed. The
+  first version keeps the serial order and only validates and draws the
+  graph. Running tasks in parallel is a later change, because it needs a
+  worktree per task.
+- **Without the line:** a task depends on the previous task, which matches
+  today's behaviour.
 
 **Data:**
 - Exists: ACP `sdd_*`, `swarm_*`, `SDDProgress`, the pipeline ledger.
@@ -545,8 +570,9 @@ agents and last seen; plus Requests and By-agent views.
 Block, Allow for this agent, Add to workspace. "Add to workspace" writes a
 draft change to the template.
 
-**Needs:** an egress proxy per workspace network, logging connections (new
-work). Today the sandbox can only switch the network on or off.
+**Needs:** the shared egress proxy described in §8.15, which logs
+connections. This is new work; today the sandbox can only switch the
+network on or off.
 
 ### 8.12 Shared memory across projects
 
@@ -592,6 +618,79 @@ headlines.
 **Links:** tokens are unguessable, expire (default 7 days) and can be
 revoked. Creating, listing and revoking links is audited.
 
+### 8.15 Secrets and network security
+
+**Principle:** the safest secret is one the agent never holds. The agent is
+driven by a model and reads untrusted text (issues, web pages, dependency
+READMEs). Anything in its environment can be printed, written to a file or
+sent out. The choice of secret store matters less than keeping secrets out
+of the container.
+
+**Where each secret is used:**
+
+1. **Bridge-side use (default).**
+   - Git push, PR creation and forge API calls already run in the bridge
+     with its own credentials (`credential.go`, `exit.go`, `push.go`).
+     Agents never see forge tokens. This stays the rule for anything the
+     bridge can do on the agent's behalf.
+   - Model provider keys are used by the agent's runtime. They should
+     reach the provider through the proxy below, not as environment
+     variables.
+2. **Proxy-injected credentials.**
+   - For HTTP APIs an agent must call itself, a workspace can declare a
+     service, for example `[secrets.inject] "api.github.com" =
+     "vault:github/marshal-bot"`.
+   - The agent calls the host normally, and the egress proxy adds the
+     credential to the request.
+   - This needs the proxy to terminate TLS for those hosts only. The
+     bridge issues a per-workspace CA that is trusted inside the
+     container. Every other host passes through untouched (CONNECT
+     tunnel).
+3. **Environment injection (last resort).**
+   - Only for tools that must read a secret locally, for example a CLI
+     with no HTTP equivalent.
+   - The secret is marked in the template, values are redacted in
+     transcripts (`internal/redact`), and each use is written to the
+     audit log.
+
+**Secret storage: a pluggable provider in the bridge.**
+
+| Backend | When | Notes |
+|---|---|---|
+| External manager (OpenBao / HashiCorp Vault over HTTP, 1Password via the `op` CLI, `pass`) | **Recommended** for anything shared, remote or long-lived | Key management, rotation, access policy and audit are battle-tested. Reachable from standard-library Go (`net/http`, `os/exec`). |
+| Built-in encrypted store | Local, single machine, nothing else installed | AES-256-GCM (standard library). The key comes from the OS keyring or a key file **outside** the state volume, never next to the data. Owner-scoped like `Credential`. |
+| Environment variables | Today's behaviour; kept as a fallback | Read at use time, never persisted (the current `Credential` design). |
+
+**Why not only a built-in vault?** It would put Marshal in charge of key
+storage, rotation and access control. That's the hard part of a vault, and
+the part most likely to go wrong in a home-grown one. It stays a
+convenience backend for local use.
+
+**Network enforcement: one shared egress proxy.**
+
+- **Isolation:** agent containers join an **internal-only** container
+  network (`docker network create --internal`) with no route out. The
+  proxy is the only bridge between that network and the outside. Agents
+  can't bypass it by ignoring `HTTP_PROXY`.
+- **One proxy:** a single process in the bridge, or one sidecar container
+  next to it. It's a standard-library HTTP CONNECT proxy, plus TLS
+  termination only for injected services.
+- **Identity:** each agent gets per-agent proxy credentials in its
+  `HTTPS_PROXY` URL, checked together with the container's internal IP.
+  The proxy then applies **that agent's workspace policy**: allowlist,
+  injected credentials, logging.
+- **Why shared and not per workspace:**
+  - one process to run, update and monitor;
+  - one connection log for the network inspector;
+  - policy changes apply live without restarting containers;
+  - no extra container per workspace.
+
+  Per-workspace sidecars only isolate better between mutually untrusted
+  tenants. Revisit that when multiple users arrive (§5.4).
+- **Model providers:** local providers (Ollama on the host) are reached
+  through the proxy as an allowed host like any other. Remote provider
+  keys use proxy injection, so they're never in the container.
+
 ## 9. Roadmap
 
 | Phase | Ships |
@@ -605,22 +704,25 @@ revoked. Creating, listing and revoking links is audited.
 
 ## 10. Open questions
 
+Answered on 2026-10-03 and recorded above:
+- terminal pauses the agent (§8.5);
+- `Depends on:` lines (§8.7);
+- secrets approach (§8.15);
+- shared egress proxy (§8.15);
+- specs live under `docs/<feature>/`, with AGENTS.md updated.
+
+Still open:
+
 1. **Stack stream volume.** Is one SSE stream per session enough for the
    live wall with 12+ agents, or should the bridge send a reduced "last 3
    headlines" feed? (§8.3 suggests the reduced feed.)
-2. **Terminal and pause.** Should typing in the terminal pause the agent
-   automatically, or only when you ask? The mockups assume it pauses
-   automatically.
-3. **Graph dependencies.** Add `Depends on:` to the `/sdd` plan format, or
-   rely only on planner-split swarms?
-4. **Secrets vault.** Build a small encrypted store in the bridge, or
-   integrate an external one (for example `pass`, 1Password CLI, Vault)
-   first?
-5. **Egress proxy.** A sidecar per workspace network, or one shared proxy
-   that identifies each agent by container?
-6. **Workspace templates in the repo or the bridge.** The draft says in the
+2. **Workspace templates in the repo or the bridge.** The draft says in the
    repo (`.marshal/workspaces/`), where they're reviewed and trust-hashed.
    Should the bridge also hold user-level templates shared across repos?
-7. **Specs location.** These docs are committed under `docs/`, by the
-   owner's choice, against AGENTS.md's "gitignored specs" rule. Should
-   AGENTS.md be updated to match?
+3. **First external secret manager to support.** OpenBao / HashiCorp Vault
+   (HTTP, most capable) or 1Password (`op` CLI, most common on
+   developers' machines)?
+4. **TLS termination for injected credentials.** Acceptable for the hosts a
+   workspace lists for injection, or should injection be limited to plain
+   reverse-proxy endpoints (`http://github.internal`) that avoid a CA
+   inside the container?

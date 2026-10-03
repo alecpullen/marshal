@@ -74,6 +74,11 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
+	// The sheet's data func must see this frame's model, not the copy it was
+	// opened from, or it would render stale values.
+	if m.sheetPanel != nil {
+		m.sheetPanel.SetData(m.sheetDataFor)
+	}
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
 
@@ -103,25 +108,6 @@ func (m *Model) viewString() string {
 	// rows from the top — the transcript is the topmost block and is
 	// scrollable, so nothing the user must always see is lost.
 	left = clipLeftColumn(left, m.height-statusLineRows)
-	// The rail renders whenever there is relevant data: parent-scoped when
-	// not drilled in, child-scoped while drilled into a real subagent (the
-	// breadcrumb already identifies the drilled-in state). It stays hidden
-	// for pipeline/SDD card drill-ins, whose transcript is still the
-	// parent's and which have no child state to scope to.
-	if m.railEnabled() {
-		child := m.drilledRailState()
-		if child != nil || len(m.viewStack) == 0 {
-			d := m.railData()
-			if child != nil {
-				d = m.childRailData(child)
-			}
-			railHeight := m.height - statusLineRows
-			if rv := m.rail.View(d, m.railWidth, railHeight); rv != "" {
-				rv = chrome.PaintBand(rv, m.railWidth, theme.Current().ChromeBG())
-				left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
-			}
-		}
-	}
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
 }
 

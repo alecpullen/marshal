@@ -390,7 +390,6 @@ func (m Model) footerHints() help.FooterHints {
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
 		TodosActive:          len(m.state.Todos()) > 0,
-		RailEnabled:          m.railEnabled(),
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),

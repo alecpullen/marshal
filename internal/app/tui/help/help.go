@@ -28,9 +28,6 @@ type FooterHints struct {
 	// TodosActive is true when the session has a non-empty todo list, so
 	// the Ctrl+T panel toggle is actionable.
 	TodosActive bool
-	// RailEnabled is true when the side rail is configured and the terminal
-	// is wide enough, so the Ctrl+B toggle is actionable.
-	RailEnabled bool
 	// MouseReleased reports that the mouse currently belongs to the terminal
 	// (Ctrl+S). The hint's label flips on it: a user who has released the
 	// mouse needs to be told how to get wheel scrolling back, and a user who
@@ -113,9 +110,7 @@ func Footer(h FooterHints) string {
 		if h.TodosActive {
 			segs = append(segs, pair("Ctrl+T", "tasks"))
 		}
-		if h.RailEnabled {
-			segs = append(segs, pair("Ctrl+B", "rail"))
-		}
+		segs = append(segs, pair("Ctrl+B", "session"))
 		showMouseHint = true
 	}
 	if h.QueueNonEmpty {

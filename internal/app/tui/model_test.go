@@ -33,8 +33,8 @@ import (
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
+	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
-	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
@@ -1693,12 +1693,12 @@ func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
 	}
 }
 
-// collectRailBaseRefs executes a cmd chain (which may be a tea.Sequence or
-// tea.Batch) and returns every railBaseRefMsg it produces. The sequence msg
+// collectSheetBaseRefs executes a cmd chain (which may be a tea.Sequence or
+// tea.Batch) and returns every sheetBaseRefMsg it produces. The sequence msg
 // type is unexported, so it is unwrapped via reflection.
-func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
+func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 	t.Helper()
-	var refs []railBaseRefMsg
+	var refs []sheetBaseRefMsg
 	var walk func(c tea.Cmd)
 	walk = func(c tea.Cmd) {
 		if c == nil {
@@ -1713,7 +1713,7 @@ func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
 		}
 		// tea.Sequence returns an unexported sequenceMsg []Cmd (Cmd is
 		// func() tea.Msg); unwrap via reflection so we can collect the
-		// railBaseRefCmd inside it.
+		// sheetBaseRefCmd inside it.
 		rv := reflect.ValueOf(msg)
 		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Func {
 			for i := 0; i < rv.Len(); i++ {
@@ -1723,7 +1723,7 @@ func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
 			}
 			return
 		}
-		if rb, ok := msg.(railBaseRefMsg); ok {
+		if rb, ok := msg.(sheetBaseRefMsg); ok {
 			refs = append(refs, rb)
 		}
 	}
@@ -1731,12 +1731,12 @@ func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
 	return refs
 }
 
-func TestAgentFinishedAdvancesRailBaseRef(t *testing.T) {
+func TestAgentFinishedAdvancesSheetBaseRef(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	initRailTestRepo(t, dir)
+	initSheetTestRepo(t, dir)
 
 	m := newTestModel(t)
 	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
@@ -1747,16 +1747,16 @@ func TestAgentFinishedAdvancesRailBaseRef(t *testing.T) {
 	if m.busy {
 		t.Fatal("busy should be cleared after agentFinishedMsg")
 	}
-	refs := collectRailBaseRefs(t, cmd)
+	refs := collectSheetBaseRefs(t, cmd)
 	if len(refs) != 1 {
-		t.Fatalf("expected 1 railBaseRefMsg from the cmd chain, got %d", len(refs))
+		t.Fatalf("expected 1 sheetBaseRefMsg from the cmd chain, got %d", len(refs))
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
 	if refs[0].ref != string(want[:len(want)-1]) {
-		t.Errorf("railBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
 	}
 }
 
@@ -2022,12 +2022,12 @@ func TestSuggestionClearedOnTurnStart(t *testing.T) {
 	}
 }
 
-func TestAgentFinishedAdvancesRailBaseRefWhenCancelled(t *testing.T) {
+func TestAgentFinishedAdvancesSheetBaseRefWhenCancelled(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	initRailTestRepo(t, dir)
+	initSheetTestRepo(t, dir)
 
 	m := newTestModel(t)
 	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
@@ -2039,16 +2039,16 @@ func TestAgentFinishedAdvancesRailBaseRefWhenCancelled(t *testing.T) {
 	if m.cancelling {
 		t.Fatal("cancelling flag should be cleared after agentFinishedMsg")
 	}
-	refs := collectRailBaseRefs(t, cmd)
+	refs := collectSheetBaseRefs(t, cmd)
 	if len(refs) != 1 {
-		t.Fatalf("expected 1 railBaseRefMsg from the cancelled cmd chain, got %d", len(refs))
+		t.Fatalf("expected 1 sheetBaseRefMsg from the cancelled cmd chain, got %d", len(refs))
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
 	if refs[0].ref != string(want[:len(want)-1]) {
-		t.Errorf("railBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
 	}
 }
 
@@ -2778,7 +2778,7 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	initRailTestRepo(t, dir)
+	initSheetTestRepo(t, dir)
 	// Move to a feature branch so the branch name is distinctive.
 	if out, err := exec.Command("git", "-C", dir, "checkout", "-b", "feat-new").CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
@@ -2795,7 +2795,7 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	// Pre-set stale git info and a stale changed-files rail.
 	model.gitInfo = gitinfo.Info{Branch: "old", InRepo: true}
 	model.lastGitRead = time.Unix(50, 0)
-	model.railChanged = []sidepanel.ChangedFile{{Path: "old.txt"}}
+	model.sheetChanged = []sessionsheet.ChangedFile{{Path: "old.txt"}}
 
 	model.input.SetValue("/new")
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -2807,26 +2807,26 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	if m.gitInfo.Branch != "feat-new" {
 		t.Errorf("gitInfo.Branch = %q, want feat-new after /new", m.gitInfo.Branch)
 	}
-	if m.railChanged != nil {
-		t.Errorf("railChanged = %+v, want nil after /new", m.railChanged)
+	if m.sheetChanged != nil {
+		t.Errorf("sheetChanged = %+v, want nil after /new", m.sheetChanged)
 	}
 	if m.lastGitRead.Before(time.Unix(50, 0)) {
 		t.Errorf("lastGitRead = %v, want refreshed after /new", m.lastGitRead)
 	}
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd (railBaseRefCmd) from /new")
+		t.Fatal("expected a non-nil cmd (sheetBaseRefCmd) from /new")
 	}
 	msg := cmd()
-	rb, ok := msg.(railBaseRefMsg)
+	rb, ok := msg.(sheetBaseRefMsg)
 	if !ok {
-		t.Fatalf("cmd() returned %T, want railBaseRefMsg", msg)
+		t.Fatalf("cmd() returned %T, want sheetBaseRefMsg", msg)
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
 	if rb.ref != string(want[:len(want)-1]) {
-		t.Errorf("railBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
+		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
 	}
 }
 

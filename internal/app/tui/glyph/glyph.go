@@ -1,7 +1,7 @@
 // Package glyph is the TUI's single glyph vocabulary.
 //
 // It is a leaf package so that both the tui package and its sub-packages
-// (chrome, listpanel, sidepanel, picker, …) reference the same constants;
+// (chrome, listpanel, sessionsheet, picker, …) reference the same constants;
 // sub-packages cannot import tui itself.
 package glyph
 

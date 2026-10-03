@@ -224,10 +224,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if !readlineShortcutAvailable() {
 			return *m, nil, false
 		}
-		// Toggle the widescreen side rail for the session. Not persisted;
-		// [tui.side_panel].enabled is the durable setting.
-		m.railHidden = !m.railHidden
-		m.resize(m.rawWidth, m.rawHeight)
+		m.openSessionSheet()
 		return *m, nil, true
 	case "ctrl+r":
 		if m.state.HasBackup() {

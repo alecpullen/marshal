@@ -44,8 +44,8 @@ import (
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
+	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
-	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
@@ -350,16 +350,9 @@ type Model struct {
 	rawHeight int
 	width     int // clamped to ≥ minTerminalWidth/Height (internal geometry)
 	height    int
-	// leftWidth is the width of the left column — everything except the
-	// side rail. When the rail is absent it equals width. The status line
-	// is the one component that keeps the full frame width.
+	// leftWidth is the width of the single content column. It always equals
+	// width; the name survives from when a side rail took the remainder.
 	leftWidth int
-	// railWidth is the side rail's width, 0 when the rail is not shown.
-	railWidth int
-	// rail is the side panel's section stack.
-	rail *sidepanel.Rail
-	// railHidden is the session-only Ctrl+B override. Not persisted.
-	railHidden bool
 	// mouseReleased is the session-only Ctrl+S override that hands the mouse
 	// back to the terminal so click-drag text selection works without the
 	// terminal's modifier key. Not persisted; [tui].mouse_capture is the
@@ -367,25 +360,25 @@ type Model struct {
 	// the terminal cannot deliver events to both — so this is a toggle rather
 	// than something the two features can share.
 	mouseReleased bool
-	// railRepoStats is refreshed on turn boundaries, never during render.
-	railRepoStats sidepanel.RepoStats
-	// railTurns is the recent turn-metrics cache, refreshed when a turn
+	// sheetRepoStats is refreshed on turn boundaries, never during render.
+	sheetRepoStats sessionsheet.RepoStats
+	// sheetTurns is the recent turn-metrics cache, refreshed when a turn
 	// completes. Never queried during render.
-	railTurns []db.TurnMetricsRow
-	// railTotals is the session-scoped usage aggregate the rail footer
-	// reports. Refreshed alongside railTurns.
-	railTotals db.UsageTotals
-	// railBaseRef is the commit the changed-files section diffs against,
+	sheetTurns []db.TurnMetricsRow
+	// sheetTotals is the session-scoped usage aggregate the sheet footer
+	// reports. Refreshed alongside sheetTurns.
+	sheetTotals db.UsageTotals
+	// sheetBaseRef is the commit the changed-files section diffs against,
 	// rebased when the workspace changes and after each completed turn
 	// (see handleWorkspaceMsg/handleAgentFinished).
-	railBaseRef string
-	// railChanged is the changed-files cache, refreshed on turn boundaries.
-	railChanged []sidepanel.ChangedFile
-	// railFleet is the agent-worktree cache, refreshed on turn boundaries
+	sheetBaseRef string
+	// sheetChanged is the changed-files cache, refreshed on turn boundaries.
+	sheetChanged []sessionsheet.ChangedFile
+	// sheetFleet is the agent-worktree cache, refreshed on turn boundaries
 	// (ListFleet shells out to git per worktree). Ahead/behind is against
 	// the project root's HEAD.
-	railFleet []worktree.FleetRow
-	viewport  viewport.Model
+	sheetFleet []worktree.FleetRow
+	viewport   viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -487,6 +480,8 @@ type Model struct {
 	// tasksPanel is the open Ctrl+T Tasks panel, kept so a second Ctrl+T
 	// can tell it apart from other docked panels.
 	tasksPanel *docpanel.Panel
+	// sheetPanel is the open Ctrl+B session sheet, kept for the same reason.
+	sheetPanel *sessionsheet.Panel
 
 	// connectReturnToSettings and connectReturnFilter track whether the
 	// connect wizard was opened from the settings browser, so completing
@@ -1455,7 +1450,8 @@ func New(state *session.State, opts ...Option) Model {
 
 	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
-	m.railBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
+	m.sheetBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
+	m.refreshSheetChanged()
 
 	m.histIdx = -1
 	if state.Config.History.Enabled {
@@ -1465,14 +1461,13 @@ func New(state *session.State, opts ...Option) Model {
 			}
 		}
 	}
-	m.rebuildRail()
 
 	if database := state.DB(); database != nil {
 		if projectID := m.memoryProject; projectID != 0 {
 			files, ferr := database.CountFiles(projectID)
 			syms, serr := database.CountSymbols(projectID)
 			if ferr == nil && serr == nil {
-				m.railRepoStats = sidepanel.RepoStats{Files: files, Symbols: syms}
+				m.sheetRepoStats = sessionsheet.RepoStats{Files: files, Symbols: syms}
 			}
 		}
 	}
@@ -1530,11 +1525,7 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
-	cfg := m.state.Config.TUI.SidePanel
-	if m.railHidden {
-		cfg.Enabled = false
-	}
-	m.leftWidth, m.railWidth = sidepanel.Geometry(width, minTerminalWidth, cfg)
+	m.leftWidth = width
 
 	// Input interior: the ▍ bar (1 cell) + 1 right margin = 2 reserved
 	// cells. The textarea's SetWidth sets the text wrap width and
@@ -1548,101 +1539,117 @@ func (m *Model) resize(width, height int) {
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.nowBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
-// railEnabled reports whether the side rail is being rendered.
-func (m Model) railEnabled() bool { return m.railWidth > 0 }
-
-// refreshRailTurns reloads the turn-metrics cache the side panel reads.
+// refreshSheetTurns reloads the turn-metrics cache the session sheet reads.
 // Called on turn completion, never from View.
-func (m *Model) refreshRailTurns() {
+func (m *Model) refreshSheetTurns() {
 	database := m.state.DB()
-	if database == nil || !m.railEnabled() {
+	if database == nil {
 		return
 	}
 	if rows, err := database.RecentTurnMetrics(m.memoryProject, 24); err == nil {
-		m.railTurns = rows
+		m.sheetTurns = rows
 	}
 	if totals, err := database.SessionUsage(m.memoryProject, m.state.SessionID()); err == nil {
-		m.railTotals = totals
+		m.sheetTotals = totals
 	}
 }
 
-// refreshRailChanged reloads the changed-files cache. Shells out to git,
+// refreshSheetChanged reloads the changed-files cache. Shells out to git,
 // so it runs on turn boundaries only — never from View.
-func (m *Model) refreshRailChanged() {
-	if !m.railEnabled() {
-		return
-	}
-	m.railChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.railBaseRef)
+func (m *Model) refreshSheetChanged() {
+	m.sheetChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.sheetBaseRef)
 }
 
-// refreshRailFleet reloads the agent-worktree cache the side panel reads.
+// refreshSheetFleet reloads the agent-worktree cache the session sheet reads.
 // Shells out to git (ListFleet runs several subprocesses per worktree), so
 // it runs on turn boundaries only — never from View. Ahead/behind is
 // against the project root's HEAD, not the active root: the fleet describes
 // the whole project's agent worktrees, not the checked-out one.
-func (m *Model) refreshRailFleet() {
-	if !m.railEnabled() {
-		return
-	}
+func (m *Model) refreshSheetFleet() {
 	root := m.state.Workspace().ProjectRoot
 	if root == "" {
 		root = m.state.WorkingDir
 	}
 	base, err := worktree.CLIGitOps{}.RevParse(root, "HEAD")
 	if err != nil {
-		m.railFleet = nil
+		m.sheetFleet = nil
 		return
 	}
 	rows, err := worktree.ListFleet(worktree.CLIGitOps{}, root, base)
 	if err != nil {
-		m.railFleet = nil
+		m.sheetFleet = nil
 		return
 	}
-	m.railFleet = rows
+	m.sheetFleet = rows
 }
 
-// rebuildRail constructs the side rail from the full section list, filtering
-// out any section whose ID appears in the config's hidden list. Both the
-// constructor and tests call this so there is a single code path.
-func (m *Model) rebuildRail() {
-	all := []sidepanel.Section{
-		sidepanel.SwarmSection{},
-		sidepanel.SDDSection{},
-		sidepanel.ContextSection{},
-		sidepanel.ChangedSection{},
-		sidepanel.WorktreesSection{},
-		sidepanel.WorkingSetSection{},
-		sidepanel.ToolsSection{},
-		sidepanel.RulesSection{},
-		sidepanel.RepoSection{},
-		sidepanel.SkillsSection{},
-		sidepanel.SessionSection{},
-	}
+// sheetSections is the session sheet's section list, minus any section the
+// config's [tui.side_panel].hidden names.
+func (m Model) sheetSections() []sessionsheet.Section {
 	hidden := map[string]bool{}
 	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
 		hidden[id] = true
 	}
-	visible := make([]sidepanel.Section, 0, len(all))
+	all := sessionsheet.DefaultSections()
+	visible := make([]sessionsheet.Section, 0, len(all))
 	for _, s := range all {
 		if !hidden[s.ID()] {
 			visible = append(visible, s)
 		}
 	}
-	m.rail = sidepanel.New(visible...)
+	return visible
 }
 
-// railData assembles the side panel's render snapshot. Everything here is
+// openSessionSheet opens the Ctrl+B session sheet (or closes it, if it is
+// already the open panel). The turn, changed-file and fleet caches are
+// refreshed once on open; the panel then reads them live.
+func (m *Model) openSessionSheet() {
+	if m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel) {
+		m.closeSessionSheet()
+		return
+	}
+	m.refreshSheetCaches()
+	m.sheetPanel = sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
+	m.dock.Open(m.sheetPanel)
+	m.refreshViewport()
+}
+
+func (m *Model) closeSessionSheet() {
+	if m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel) {
+		m.dock.CloseNow()
+	}
+	m.sheetPanel = nil
+	m.refreshViewport()
+}
+
+// refreshSheetCaches reloads every turn-boundary cache the sheet reads.
+func (m *Model) refreshSheetCaches() {
+	m.refreshSheetTurns()
+	m.refreshSheetChanged()
+	m.refreshSheetFleet()
+}
+
+// sheetDataFor is the sheet's data source: the drilled-in subagent's
+// snapshot while drilled into a real child, the parent's otherwise.
+func (m Model) sheetDataFor() sessionsheet.Data {
+	if child := m.drilledSheetState(); child != nil {
+		return m.childSheetData(child)
+	}
+	return m.sheetData()
+}
+
+// sheetData assembles the session sheet's render snapshot. Everything here is
 // either already in memory or cached on turn boundaries — this runs once
 // per frame and must never query the DB or shell out.
-func (m Model) railData() sidepanel.Data {
-	return sidepanel.Data{
+func (m Model) sheetData() sessionsheet.Data {
+	return sessionsheet.Data{
 		State:   m.state,
 		Git:     m.gitInfo,
-		Repo:    m.railRepoStats,
-		Turns:   m.railTurns,
-		Totals:  m.railTotals,
-		Changed: m.railChanged,
-		Fleet:   m.railFleet,
+		Repo:    m.sheetRepoStats,
+		Turns:   m.sheetTurns,
+		Totals:  m.sheetTotals,
+		Changed: m.sheetChanged,
+		Fleet:   m.sheetFleet,
 		Pack:    m.state.ContextPack(),
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
@@ -1654,11 +1661,11 @@ func (m Model) railData() sidepanel.Data {
 	}
 }
 
-// drilledRailState returns the child session the rail should render while
-// drilled into a subagent, or nil when the rail should show the parent (no
+// drilledSheetState returns the child session the sheet should render while
+// drilled into a subagent, or nil when the sheet should show the parent (no
 // drill-in, or a pipeline/SDD card with no Child state). Mirrors
 // refreshViewport's transcriptState resolution.
-func (m Model) drilledRailState() *session.State {
+func (m Model) drilledSheetState() *session.State {
 	if len(m.viewStack) == 0 {
 		return nil
 	}
@@ -1669,23 +1676,23 @@ func (m Model) drilledRailState() *session.State {
 	return v.Child
 }
 
-// childRailData assembles a rail snapshot scoped to a drilled-in subagent:
+// childSheetData assembles a sheet snapshot scoped to a drilled-in subagent:
 // session-scoped telemetry (audit trail, rules, skills) comes from the
 // child, while environment-level sections (git, repo index) stay parent-
 // sourced — they describe the workspace, not the conversation. Parent turn
 // telemetry (Changed/Pack/Swarm/SDD/Turns/Totals) is omitted: it has no
 // per-child meaning and nothing per-child is cached at turn boundaries yet.
-func (m Model) childRailData(child *session.State) sidepanel.Data {
-	return sidepanel.Data{
+func (m Model) childSheetData(child *session.State) sessionsheet.Data {
+	return sessionsheet.Data{
 		State:  child,
 		Audit:  child.AuditLog(),
 		Rules:  child.SessionRules(),
 		Skills: child.ActiveSkills(),
 		Git:    m.gitInfo,
-		Repo:   m.railRepoStats,
+		Repo:   m.sheetRepoStats,
 		// Fleet stays parent-sourced like Git/Repo: the agent worktrees
 		// describe the project's workspace, not the drilled-in conversation.
-		Fleet:   m.railFleet,
+		Fleet:   m.sheetFleet,
 		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
@@ -1752,7 +1759,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// WindowSizeMsg must always resize the underlying layout (and the
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
-		wasRailEnabled := m.railEnabled()
 		m.resize(ws.Width, ws.Height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.leftWidth-4, 30))
@@ -1770,14 +1776,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// current branch even if it changed in another tool.
 		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 		m.lastGitRead = m.now()
-		// A narrow→wide resize newly enables the rail; refreshRailChanged
-		// is gated on railEnabled(), so without this the changed section
-		// would stay empty until the next turn/workspace event. Fires at
-		// most once per disabled→enabled transition.
-		if !wasRailEnabled && m.railEnabled() {
-			m.refreshRailChanged()
-			m.refreshRailFleet()
-		}
 		m.refreshViewport()
 		return m, nil
 	}
@@ -1905,6 +1903,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
+	case sessionsheet.ClosedMsg:
+		m.closeSessionSheet()
+		return m, nil
+	case sessionsheet.RunCommandMsg:
+		m.closeSessionSheet()
+		return m.dispatchCommand("/" + msg.Command)
 	case docpanel.ClosedMsg:
 		m.dock.CloseNow()
 		m.refreshViewport()
@@ -1987,7 +1991,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, sheetBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2327,6 +2331,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+t" && m.input.Value() == "" && !m.editingCommand &&
 				m.tasksPanel != nil && m.dock.Panel() == dock.Panel(m.tasksPanel) {
 				m.toggleTasksPanel()
+				return m, nil
+			}
+			if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+b" && m.input.Value() == "" && !m.editingCommand &&
+				m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel) {
+				m.closeSessionSheet()
 				return m, nil
 			}
 			return m, m.dock.Update(msg)
@@ -4398,9 +4407,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.restoreRunner()
 		m.restoreRunner = nil
 	}
-	m.refreshRailTurns()
-	m.refreshRailChanged()
-	m.refreshRailFleet()
+	m.refreshSheetCaches()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
@@ -4443,9 +4450,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
 	// Rebase the changed-files rail onto the active root's HEAD so committed
-	// agent work stops inflating the diff; the railBaseRefMsg handler sets the
+	// agent work stops inflating the diff; the sheetBaseRefMsg handler sets the
 	// new base and refreshes the cache after the next tick.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, railBaseRefCmd(m.state.Workspace().ActiveRoot)}
+	cmds := []tea.Cmd{tickCmd(), flushCmd, sheetBaseRefCmd(m.state.Workspace().ActiveRoot)}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
@@ -4681,14 +4688,14 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 // handleWorkspaceMsg handles a workspaceMsg: the session's active root
 // changed, so re-read git info for the new root immediately rather than
 // waiting for the 5s tick, then re-arm the pump. It also returns a
-// railBaseRefCmd so the changed-files rail rebases onto the new root's HEAD
+// sheetBaseRefCmd so the changed-files rail rebases onto the new root's HEAD
 // off the UI thread.
 func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
 	var baseCmd tea.Cmd
 	if msg.activeRoot != "" {
 		m.gitInfo = gitinfo.Read(msg.activeRoot)
 		m.lastGitRead = m.now()
-		baseCmd = railBaseRefCmd(msg.activeRoot)
+		baseCmd = sheetBaseRefCmd(msg.activeRoot)
 	}
 	if m.workspaceEvents == nil {
 		return m, baseCmd
@@ -4707,12 +4714,12 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 	return m, pumpSubagentEvents(m.subagentEvents)
 }
 
-// handleRailBaseRef handles a railBaseRefMsg: a freshly-read HEAD SHA for
+// handleSheetBaseRef handles a sheetBaseRefMsg: a freshly-read HEAD SHA for
 // the changed-files rail. It rebases the base ref and refreshes the cache.
-// refreshRailChanged runs two git diff subprocesses synchronously here; that
+// refreshSheetChanged runs two git diff subprocesses synchronously here; that
 // matches the existing turn-boundary behavior and happens at most once per
 // workspace change, so it is acceptable on the UI thread.
-func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
+func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 	// Drop msgs whose dir is no longer the active root: linked worktrees
 	// share the object store, so a stale in-flight cmd from a previous
 	// workspace/session could otherwise rebase the rail against the wrong
@@ -4721,11 +4728,11 @@ func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.ref != "" {
-		m.railBaseRef = msg.ref
+		m.sheetBaseRef = msg.ref
 	}
-	m.refreshRailChanged()
+	m.refreshSheetChanged()
 	// No explicit refreshViewport here: Bubble Tea re-renders after every
-	// Update, and the rail reads m.railChanged directly in View, so the
+	// Update, and the rail reads m.sheetChanged directly in View, so the
 	// updated cache is picked up on the next frame. refreshViewport only
 	// rebuilds the transcript viewport, which this message does not touch.
 	return m, nil
@@ -4799,8 +4806,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkspaceMsg(msg)
 	case subagentMsg:
 		return m.handleSubagentMsg(msg)
-	case railBaseRefMsg:
-		return m.handleRailBaseRef(msg)
+	case sheetBaseRefMsg:
+		return m.handleSheetBaseRef(msg)
 	case agentTickMsg:
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:

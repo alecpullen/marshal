@@ -45,12 +45,12 @@ type watchMsg struct {
 	event watch.Event
 }
 
-// railBaseRefMsg carries a freshly-read HEAD SHA for the changed-files rail.
-// Emitted by railBaseRefCmd so the git subprocess stays off the UI thread.
+// sheetBaseRefMsg carries a freshly-read HEAD SHA for the changed-files rail.
+// Emitted by sheetBaseRefCmd so the git subprocess stays off the UI thread.
 // dir is the workspace active root the SHA was read from; the handler drops
 // msgs whose dir is no longer the active root, so a stale in-flight cmd from
 // a previous workspace/session cannot set the base ref from the wrong tree.
-type railBaseRefMsg struct {
+type sheetBaseRefMsg struct {
 	dir string
 	ref string
 }

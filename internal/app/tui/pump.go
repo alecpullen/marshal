@@ -95,13 +95,13 @@ func pumpSubagentEvents(ch <-chan pubsub.Event[session.SubagentEvent]) tea.Cmd {
 	}
 }
 
-// railBaseRefCmd shells out to git rev-parse off the UI thread and returns
-// the result as a railBaseRefMsg. dir is the workspace active root.
-func railBaseRefCmd(dir string) tea.Cmd {
+// sheetBaseRefCmd shells out to git rev-parse off the UI thread and returns
+// the result as a sheetBaseRefMsg. dir is the workspace active root.
+func sheetBaseRefCmd(dir string) tea.Cmd {
 	if dir == "" {
 		return nil
 	}
 	return func() tea.Msg {
-		return railBaseRefMsg{dir: dir, ref: gitinfo.HeadSHA(dir)}
+		return sheetBaseRefMsg{dir: dir, ref: gitinfo.HeadSHA(dir)}
 	}
 }

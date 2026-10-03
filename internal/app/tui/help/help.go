@@ -93,7 +93,7 @@ func Footer(h FooterHints) string {
 		segs = append(segs,
 			pair("Enter", "send"),
 			pair("Shift+Enter", "newline"),
-			pair("Esc", "cancel"),
+			pair("Ctrl+C", "stop"),
 			pair("Ctrl+X", "clear queue"),
 		)
 		if h.RunActive {

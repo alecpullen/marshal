@@ -83,7 +83,7 @@ func (m Model) renderStatusLine(width int) string {
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
-	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() {
+	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() && m.ctrlCArmed() == ctrlCNone {
 		fits := func(s string) bool {
 			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
 		}
@@ -331,6 +331,12 @@ func browserStatusText(bi session.BrowserInfo) string {
 }
 
 func (m Model) statusRightSegment() string {
+	switch m.ctrlCArmed() {
+	case ctrlCStop:
+		return warningStyle().Render("Ctrl+C again to stop the turn")
+	case ctrlCQuit:
+		return warningStyle().Render("Ctrl+C again to quit")
+	}
 	if m.hasPendingApproval() {
 		return warningStyle().Render(glyph.Warning + " approval")
 	}

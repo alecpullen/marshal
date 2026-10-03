@@ -327,7 +327,11 @@ func TestCtrlCQuits(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	_, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatal("first Ctrl+C must only arm")
+	}
+	_, cmd = updated.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("quit command is nil")
 	}
@@ -4617,14 +4621,21 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 		trigger func(m *Model) tea.Cmd
 	}{
 		{
-			// Ctrl+C interrupts on the first press and quits on the second;
-			// this table covers the shutdown half.
+			// A double Ctrl+C stops the turn; once idle, another double
+			// press quits. This table covers the shutdown half.
 			name: "ctrl+c",
 			trigger: func(m *Model) tea.Cmd {
-				updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-				*m = updated.(Model)
-				updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-				*m = updated.(Model)
+				var cmd tea.Cmd
+				for range 2 {
+					updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+					*m = updated.(Model)
+				}
+				m.busy = false
+				for range 2 {
+					updated, c := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+					*m = updated.(Model)
+					cmd = c
+				}
 				return cmd
 			},
 		},

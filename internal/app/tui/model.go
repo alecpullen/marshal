@@ -444,9 +444,12 @@ type Model struct {
 	// rollbackArmed is the first half of Ctrl+R's arm-then-confirm. Cleared
 	// by any other keypress; see handleKeypress.
 	rollbackArmed bool
-	// interruptArmed is set when Ctrl+C has interrupted a turn, so a second
-	// press quits. Cleared by any other keypress.
-	interruptArmed bool
+	// ctrlCArmedAt/ctrlCArmedFor record a first Ctrl+C press. A second press
+	// for the same action within ctrlCWindow fires it; any other keypress
+	// disarms. Never read directly for display: use ctrlCArmed, which
+	// accounts for expiry.
+	ctrlCArmedAt  time.Time
+	ctrlCArmedFor ctrlCAction
 	viewportFollow bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
@@ -1700,49 +1703,62 @@ func (m Model) childRailData(child *session.State) sidepanel.Data {
 	}
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Clear interruptArmed for any non-keypress message so a stale flag
-	// doesn't cause the next Ctrl+C to quit instead of interrupt. Only an
-	// immediate second Ctrl+C (no intervening messages) should quit.
-	//
-	// The two internal tick messages are exempt: while a turn is busy they
-	// fire every 80-150ms, so clearing on them would wipe the armed flag
-	// almost immediately and the documented "Press Ctrl+C again to quit"
-	// second press would re-interrupt instead of quitting.
-	if _, ok := msg.(tea.KeyPressMsg); !ok {
-		switch msg.(type) {
-		case agentTickMsg, spinnerTickMsg:
-			// Background churn; do not clear the armed quit.
-		default:
-			m.interruptArmed = false
-		}
+// ctrlCAction is what a double Ctrl+C will do.
+type ctrlCAction int
+
+const (
+	ctrlCNone ctrlCAction = iota
+	ctrlCStop
+	ctrlCQuit
+)
+
+// ctrlCWindow is how long a first Ctrl+C stays armed.
+const ctrlCWindow = 3 * time.Second
+
+// ctrlCArmed returns the armed action, or ctrlCNone once the window has
+// expired. Rendering calls this too, so a stale arm shows as disarmed
+// without needing a timer message.
+func (m Model) ctrlCArmed() ctrlCAction {
+	if m.ctrlCArmedFor == ctrlCNone || m.now().Sub(m.ctrlCArmedAt) > ctrlCWindow {
+		return ctrlCNone
 	}
-	// Ctrl+C interrupts an in-flight turn on the first press and quits on the
-	// second. Checked before any overlay routing so it can never be captured
-	// by a form's keymap.
+	return m.ctrlCArmedFor
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Ctrl+C never stops a turn or quits on a single press: the first press
+	// arms (shown on the status line), a second within ctrlCWindow fires.
+	// Checked before any overlay routing so it can never be captured by a
+	// form's keymap.
 	//
-	// It used to quit outright on the first press. Ctrl+C is the universal
-	// "stop what you're doing" reflex, so the moment a user most wants to
-	// interrupt a slow or misbehaving turn was exactly the moment they lost
-	// the session — and with AltScreen there is no scrollback to read
-	// afterwards. Esc already had the interrupt semantics; the better-known
-	// key just did the more destructive thing.
+	// Non-key messages do not disarm: the window expires on its own, and a
+	// turn that ends between the presses must not clear the arm (the second
+	// press then sees a mismatched action and re-arms for quit rather than
+	// turning a stop into a quit).
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		if k.String() == "ctrl+c" {
-			if m.busy && !m.interruptArmed {
-				m.interruptArmed = true
-				m.cancelTurn()
-				m.state.AddMessage(session.RoleSystem,
-					"Turn interrupted. Press Ctrl+C again to quit.",
-					session.ContentTypePlain)
-				m.refreshViewport()
-				return m, nil
+			want := ctrlCQuit
+			if m.busy || m.agentCancel != nil {
+				want = ctrlCStop
 			}
-			return m, m.beginShutdown(true)
+			if m.ctrlCArmed() == want {
+				m.ctrlCArmedFor = ctrlCNone
+				if want == ctrlCStop {
+					m.cancelTurn()
+					m.state.AddMessage(session.RoleSystem, "Turn stopped.",
+						session.ContentTypePlain)
+					m.refreshViewport()
+					return m, nil
+				}
+				return m, m.beginShutdown(true)
+			}
+			m.ctrlCArmedFor = want
+			m.ctrlCArmedAt = m.now()
+			return m, nil
 		}
-		// Any other keypress clears the armed quit, so Ctrl+C never quits
-		// on a press the user has mentally separated from the interrupt.
-		m.interruptArmed = false
+		// Any other keypress disarms, so Ctrl+C never fires on a press the
+		// user has mentally separated from the first.
+		m.ctrlCArmedFor = ctrlCNone
 	}
 
 	// WindowSizeMsg must always resize the underlying layout (and the

@@ -26,6 +26,10 @@ machine or server. In the browser you can:
 - design the workspaces agents run in;
 - manage the automations, monitors and knowledge around all of that.
 
+It's hosted on a server and is **repo-agnostic**: one Studio serves many
+projects and repos. Templates, automations, watches and memory live in
+the Studio and are attached to projects, not stored only inside one repo.
+
 Two rules shape the design:
 
 1. **Same core UI logic as the TUI.** The transcript is the single-stack
@@ -85,6 +89,10 @@ Two rules shape the design:
 | Secrets | **Keep secrets out of agent containers wherever possible.** A pluggable secret provider, with an external manager recommended and a small built-in encrypted store for local single-machine use | §8.15 |
 | Network control | **One shared egress proxy** in the bridge, with agents on an internal-only network and identified per agent | §8.11, §8.15 |
 | Specs location | Feature specs live under `docs/<feature>/`; AGENTS.md updated to say so | §10 |
+| Live update streams | **One stream per session** is enough for now, including for the live wall; no reduced feed | §8.3 |
+| Workspace templates | **Studio-level templates are primary** (the UI is repo-agnostic). Repo-local templates are optional and can extend a Studio template | §8.8 |
+| Secret manager | **OpenBao** is the first external backend | §8.15 |
+| Credential injection | TLS termination at the proxy for injected hosts is **accepted** | §8.15 |
 
 ## 4. Where we start
 
@@ -327,9 +335,10 @@ shows:
 - Clicking a tile opens the session with the dock collapsed.
 - Filters: project, "Runs only".
 
-**Data:** the stack stream for each visible agent, outline density only.
-The bridge should send a reduced "last 3 headlines" view per agent to limit
-traffic.
+**Data:** the normal per-session stack stream for each visible agent
+(decided: no separate reduced feed for now). The tile renders it at outline
+density and keeps only the last three steps. If traffic becomes a problem
+past about 20 agents, revisit a reduced feed then.
 
 ### 8.4 New agent
 
@@ -464,9 +473,27 @@ Source.
 gate (what becomes runnable), policy (default mode, workspace-scoped
 approval rules), history (versions, diff between versions).
 
-**Template file:** `.marshal/workspaces/<name>.toml`. It's covered by the
-trust hash, so a changed template in an untrusted project is ignored, as
-project config is today. Draft schema:
+**Where templates live.** The Studio is repo-agnostic, so templates live
+in two places, with Studio templates as the primary home:
+
+| Home | Stored in | Managed by | Use |
+|---|---|---|---|
+| **Studio template** (primary) | Bridge state: `/state/workspaces/<name>/v<n>.toml`, versioned and owner-scoped | The Studio UI (gallery and designer), audited | Shared across any number of projects and repos |
+| **Repo template** (optional) | `.marshal/workspaces/<name>.toml` in the repo | Reviewed and committed with the code; covered by the trust hash | Project-specific additions that should travel with the code |
+
+**How they combine:**
+- A project's default workspace names a Studio template, or a repo
+  template with an explicit prefix: `go-service` or `repo:go-service`.
+  References are never ambiguous.
+- A repo template can build on a Studio template with
+  `extends = "go-service"`. It may add packages, mounts, files and
+  allowlist hosts. It can't widen secrets or resources beyond the Studio
+  template's limits.
+- Repo templates in an untrusted project are ignored, like project config
+  today.
+- The gallery shows both, each with a source badge.
+
+Draft schema (the same for both homes):
 
 ```toml
 [workspace]
@@ -512,6 +539,11 @@ setup = "go mod download"
 
 **Compatibility:** a `devcontainer.json` `image` stays supported as a
 "base image only" workspace.
+
+**Containers trust the workspace CA.** Each workspace has its own proxy CA
+(see §8.15). Its certificate is added to the container's trust store at
+spawn, not baked into the image. That lets the CA rotate without a rebuild,
+and keeps a template's image the same across bridges.
 
 ### 8.9 Project overview and automations
 
@@ -642,10 +674,13 @@ of the container.
      "vault:github/marshal-bot"`.
    - The agent calls the host normally, and the egress proxy adds the
      credential to the request.
-   - This needs the proxy to terminate TLS for those hosts only. The
-     bridge issues a per-workspace CA that is trusted inside the
-     container. Every other host passes through untouched (CONNECT
-     tunnel).
+   - The proxy terminates TLS for those hosts only (accepted). The
+     bridge issues a **per-workspace CA**, and its private key is held in
+     the secret provider, not on disk in the clear. The CA certificate is
+     trusted inside the container. Every other host passes through
+     untouched as a CONNECT tunnel, and the proxy never decrypts it.
+   - The network inspector marks injected hosts, so it's clear which
+     traffic the proxy can read.
 3. **Environment injection (last resort).**
    - Only for tools that must read a secret locally, for example a CLI
      with no HTTP equivalent.
@@ -657,7 +692,8 @@ of the container.
 
 | Backend | When | Notes |
 |---|---|---|
-| External manager (OpenBao / HashiCorp Vault over HTTP, 1Password via the `op` CLI, `pass`) | **Recommended** for anything shared, remote or long-lived | Key management, rotation, access policy and audit are battle-tested. Reachable from standard-library Go (`net/http`, `os/exec`). |
+| **OpenBao** (first external backend) | **Recommended** for anything shared, remote or long-lived | KV v2 over HTTP from standard-library Go. The bridge authenticates with AppRole, and each workspace's secrets sit under a path such as `marshal/<owner>/<workspace>/`. Key management, rotation, access policy and audit are OpenBao's. HashiCorp Vault works the same way through the same API. |
+| Other external managers (1Password via `op`, `pass`) | Later | Same provider interface (`os/exec`). |
 | Built-in encrypted store | Local, single machine, nothing else installed | AES-256-GCM (standard library). The key comes from the OS keyring or a key file **outside** the state volume, never next to the data. Owner-scoped like `Credential`. |
 | Environment variables | Today's behaviour; kept as a fallback | Read at use time, never persisted (the current `Credential` design). |
 
@@ -704,25 +740,19 @@ convenience backend for local use.
 
 ## 10. Open questions
 
-Answered on 2026-10-03 and recorded above:
-- terminal pauses the agent (§8.5);
-- `Depends on:` lines (§8.7);
-- secrets approach (§8.15);
-- shared egress proxy (§8.15);
-- specs live under `docs/<feature>/`, with AGENTS.md updated.
+All questions raised so far were answered on 2026-10-03 and are recorded
+above:
 
-Still open:
+| Question | Answer |
+|---|---|
+| Should typing in the terminal pause the agent? | Yes (§8.5) |
+| How should plans declare dependencies? | `Depends on:` lines (§8.7) |
+| How should secrets be handled? | Keep them out of containers, behind a pluggable provider (§8.15) |
+| One egress proxy or one per workspace? | One shared proxy (§8.15) |
+| Where do specs live? | `docs/<feature>/` (AGENTS.md updated) |
+| Is one stream per session enough? | Yes, for now (§8.3) |
+| Where do workspace templates live? | Studio templates are primary; repo templates are optional (§8.8) |
+| Which secret manager first? | OpenBao (§8.15) |
+| Is TLS termination at the proxy acceptable? | Yes, for injected hosts only (§8.15) |
 
-1. **Stack stream volume.** Is one SSE stream per session enough for the
-   live wall with 12+ agents, or should the bridge send a reduced "last 3
-   headlines" feed? (§8.3 suggests the reduced feed.)
-2. **Workspace templates in the repo or the bridge.** The draft says in the
-   repo (`.marshal/workspaces/`), where they're reviewed and trust-hashed.
-   Should the bridge also hold user-level templates shared across repos?
-3. **First external secret manager to support.** OpenBao / HashiCorp Vault
-   (HTTP, most capable) or 1Password (`op` CLI, most common on
-   developers' machines)?
-4. **TLS termination for injected credentials.** Acceptable for the hosts a
-   workspace lists for injection, or should injection be limited to plain
-   reverse-proxy endpoints (`http://github.internal`) that avoid a CA
-   inside the container?
+New questions go here as the W1 phase specs are written.

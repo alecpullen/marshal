@@ -198,6 +198,8 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&agent.MaxToolResultChars, fileField[int](file.Agent, "MaxToolResultChars"), cfg.Agent.MaxToolResultChars, def.Agent.MaxToolResultChars)
 	putKey(&agent.MaxStructuredOutputChars, fileField[int](file.Agent, "MaxStructuredOutputChars"), cfg.Agent.MaxStructuredOutputChars, def.Agent.MaxStructuredOutputChars)
 	putKey(&agent.PlanFirst, fileField[bool](file.Agent, "PlanFirst"), cfg.Agent.PlanFirst, def.Agent.PlanFirst)
+	putKey(&agent.NarrationPrompt, fileField[bool](file.Agent, "NarrationPrompt"), cfg.Agent.NarrationPrompt, def.Agent.NarrationPrompt)
+	putKey(&agent.IntentNudge, fileField[bool](file.Agent, "IntentNudge"), cfg.Agent.IntentNudge, def.Agent.IntentNudge)
 	putKey(&agent.SubtaskIterations, fileField[int](file.Agent, "SubtaskIterations"), cfg.Agent.SubtaskIterations, def.Agent.SubtaskIterations)
 	putKey(&agent.ApprovalMode, fileField[string](file.Agent, "ApprovalMode"), cfg.Agent.ApprovalMode, def.Agent.ApprovalMode)
 	putKey(&agent.HistoryBudgetTokens, fileField[int](file.Agent, "HistoryBudgetTokens"), cfg.Agent.HistoryBudgetTokens, def.Agent.HistoryBudgetTokens)

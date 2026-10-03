@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
 )
 
@@ -34,7 +35,7 @@ func WithReferenceFinder(rf ReferenceFinder) Option {
 // false when no server was ready; the result is still cached, as a negative,
 // so the query is never retried.
 type callersMsg struct {
-	key     itemKey
+	key     stack.NodeID
 	callers []string
 	ok      bool
 }
@@ -51,7 +52,7 @@ func (m *Model) callerQueryCmds() tea.Cmd {
 		return nil
 	}
 	if m.callersAsked == nil {
-		m.callersAsked = map[itemKey]bool{}
+		m.callersAsked = map[stack.NodeID]bool{}
 	}
 	var cmds []tea.Cmd
 	for _, item := range m.state.Transcript() {
@@ -65,7 +66,7 @@ func (m *Model) callerQueryCmds() tea.Cmd {
 		if !ok {
 			continue
 		}
-		key := itemKeyFor(&item)
+		key := stack.ToolID(*item.Audit)
 		if m.callersAsked[key] {
 			continue
 		}
@@ -91,7 +92,7 @@ func firstResolvedSymbol(event registry.AuditEvent) (registry.SymbolRef, bool) {
 	return registry.SymbolRef{}, false
 }
 
-func queryCallersCmd(ctx context.Context, rf ReferenceFinder, key itemKey, ref registry.SymbolRef) tea.Cmd {
+func queryCallersCmd(ctx context.Context, rf ReferenceFinder, key stack.NodeID, ref registry.SymbolRef) tea.Cmd {
 	return func() tea.Msg {
 		refs, ok := rf.References(ctx, ref.File, ref.Line, ref.Col)
 		return callersMsg{key: key, callers: refs, ok: ok}
@@ -102,14 +103,14 @@ func queryCallersCmd(ctx context.Context, rf ReferenceFinder, key itemKey, ref r
 // an empty slice so the key is present and the query is not retried.
 func (m Model) handleCallers(msg callersMsg) (Model, tea.Cmd) {
 	if m.callers == nil {
-		m.callers = map[itemKey][]string{}
+		m.callers = map[stack.NodeID][]string{}
 	}
 	if msg.ok {
 		m.callers[msg.key] = msg.callers
 	} else {
 		m.callers[msg.key] = nil
 	}
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 	return m, nil
 }

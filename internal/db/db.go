@@ -85,6 +85,11 @@ var migrationColumns = []columnAdd{
 	{"turn_metrics", "quota_reset_after_secs", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "quota_plan_type", "TEXT NOT NULL DEFAULT ''"},
 	{"symbols", "source", "TEXT"},
+	// Step identity: which model response produced a message or tool call.
+	{"messages", "step_seq", "INTEGER"},
+	{"tool_calls", "step_seq", "INTEGER"},
+	{"tool_calls", "tool_call_id", "TEXT"},
+	{"turn_metrics", "intent_nudges", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func (db *DB) Migrate() error {

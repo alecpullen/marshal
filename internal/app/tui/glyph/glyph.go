@@ -86,6 +86,11 @@ const (
 	// Geometric Shapes) — single-cell, broad terminal-font coverage.
 	Watch = "○"
 
+	// FollowDown marks the now bar's live-mirror row: the transcript is
+	// scrolled away from the running step and End returns to it. U+2193
+	// (Arrows) — single-cell, universally covered.
+	FollowDown = "↓"
+
 	// ProgressFull and ProgressEmpty draw the now bar's progress blocks
 	// (▰▰▱▱ 2/4). U+25B0/U+25B1 are Geometric Shapes — single-cell, broad
 	// terminal-font coverage. They carry no meaning outside a block run.

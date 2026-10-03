@@ -98,7 +98,7 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 	switch decision {
 	case policy.DecisionDeny:
 		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
-		r.logToolCall(event)
+		r.logToolCall(toolCallID, event)
 		r.countToolCall(true, false)
 		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
 	case policy.DecisionConfirm:
@@ -114,7 +114,7 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		}
 		if !approved {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
-			r.logToolCall(event)
+			r.logToolCall(toolCallID, event)
 			r.countToolCall(true, false)
 			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}}, nil
 		}
@@ -248,7 +248,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			logged.Summary = "(cached) " + logged.Summary
 			call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
-			r.logToolCall(event)
+			r.logToolCall(toolCallID, event)
 			r.countToolCall(false, true)
 			msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
 			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
@@ -313,14 +313,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		if hookErr != nil {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookErr.Error()))
 			event.Hooks = hookAuditMetadata(hookOut)
-			r.logToolCall(event)
+			r.logToolCall(toolCallID, event)
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookErr.Error(), toolCallID)}, nil
 		}
 		if hookOut.Decision == hooks.DecisionBlock {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookOut.Reason))
 			event.Hooks = hookAuditMetadata(hookOut)
-			r.logToolCall(event)
+			r.logToolCall(toolCallID, event)
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookOut.Reason, toolCallID)}, nil
 		}
@@ -342,15 +342,21 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	} else if summary := SummarizeToolArgs(toolName, args); toolName == "agent.await" && summary != "" {
 		label = fmt.Sprintf("%s: %s", toolName, summary)
 	}
+	callID := toolCallID
+	if callID == "" {
+		callID = fmt.Sprintf("call_%d", r.Now().UnixNano())
+	}
 	r.State.SetActivity(session.Activity{Kind: session.ActivityTool, Label: label, StartedAt: r.Now()})
 	r.State.SetActiveToolCall(session.ActiveToolCall{
-		Name:      toolName,
-		Args:      SummarizeToolArgs(toolName, args),
-		Path:      firstPatchPathFromArgs(toolName, args),
-		StartedAt: r.Now(),
+		Name:       toolName,
+		Args:       SummarizeToolArgs(toolName, args),
+		Path:       firstPatchPathFromArgs(toolName, args),
+		StartedAt:  r.Now(),
+		StepID:     r.curStep,
+		ToolCallID: callID,
 	})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-	defer r.State.ClearActiveToolCall()
+	defer r.State.ClearActiveToolCallID(callID)
 
 	if r.Snapshotter != nil && r.SnapshotRecorder != nil && tool.Risk != registry.RiskReadOnly {
 		files := changedFilesForTool(toolName, argsMap)
@@ -368,10 +374,6 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		defer release()
 	}
 
-	callID := toolCallID
-	if callID == "" {
-		callID = fmt.Sprintf("call_%d", r.Now().UnixNano())
-	}
 	call := registry.ToolCall{ID: callID, Name: toolName, Args: args}
 	start := time.Now()
 	result, execErr := tool.Handler(ctx, call)
@@ -381,7 +383,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		event.Hooks = hookAuditMetadata(lastHookOut)
 		event.OriginalArgs = originalApprovedArgs
 		event.Rewritten = toolWasRewritten
-		r.logToolCall(event)
+		r.logToolCall(callID, event)
 		r.trackerMu.Lock()
 		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()), false)
 		tier := r.tracker.failedRepeatTier(toolName, string(normalizedArgs))
@@ -447,7 +449,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	event.Hooks = hookAuditMetadata(lastHookOut)
 	event.OriginalArgs = originalApprovedArgs
 	event.Rewritten = toolWasRewritten
-	r.logToolCall(event)
+	r.logToolCall(callID, event)
 
 	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)
 	r.trackerMu.Lock()
@@ -459,6 +461,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 }
 
 func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	toolCallID = wireCallID(toolCallID)
 	if toolCallID != "" {
 		return BuildNativeToolResultMessage(name, result, toolCallID)
 	}
@@ -466,6 +469,7 @@ func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult,
 }
 
 func (r *Runner) buildCachedToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	toolCallID = wireCallID(toolCallID)
 	if toolCallID != "" {
 		return BuildCachedNativeToolResultMessage(name, result, toolCallID)
 	}
@@ -473,6 +477,7 @@ func (r *Runner) buildCachedToolResultMessage(name string, result registry.ToolR
 }
 
 func (r *Runner) buildToolErrorMessage(name, reason, toolCallID string) schema.ChatMessage {
+	toolCallID = wireCallID(toolCallID)
 	if toolCallID != "" {
 		return BuildNativeToolErrorMessage(name, reason, toolCallID)
 	}
@@ -842,9 +847,23 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 // and records it. Every audit event the runner emits goes through here: the
 // events are built at seven sites, and a stamp applied at each of them is a
 // stamp that will be forgotten at the eighth.
-func (r *Runner) logToolCall(event registry.AuditEvent) {
+func (r *Runner) logToolCall(toolCallID string, event registry.AuditEvent) {
 	if event.FinishReason == "" {
 		event.FinishReason = r.getTurnFinishReason()
+	}
+	// Who asked for the call and in which step; without them the transcript
+	// can only guess ownership from timestamp adjacency.
+	if event.StepID == 0 {
+		event.StepID = r.curStep
+	}
+	if event.ToolCallID == "" {
+		event.ToolCallID = toolCallID
+	}
+	if event.AgentRole == "" {
+		event.AgentRole = r.actorRole()
+	}
+	if event.Model == "" {
+		event.Model = r.curModel
 	}
 	r.State.LogToolCall(event)
 }
@@ -914,7 +933,7 @@ func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args jso
 func (r *Runner) skillGateDenyMessages(name string, args json.RawMessage, toolCallID string) []schema.ChatMessage {
 	tool, _ := r.Registry.Lookup("skill.load")
 	event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: "skill.load", Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied by skill load gate: %s", name))
-	r.logToolCall(event)
+	r.logToolCall(toolCallID, event)
 	r.countToolCall(true, false)
 	return []schema.ChatMessage{r.buildToolErrorMessage("skill.load",
 		fmt.Sprintf("Skill load denied: you do not need the skill %q at this point. You may attempt to load it again later if the situation changes.", name),

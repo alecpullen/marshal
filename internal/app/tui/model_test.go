@@ -35,6 +35,7 @@ import (
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
@@ -3248,7 +3249,7 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 	viewWithTool := stripANSI(m.View().Content)
 
 	state.ClearActiveToolCall()
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 	viewWithoutTool := stripANSI(m.View().Content)
 
@@ -7585,24 +7586,24 @@ func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 
 func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 	m := newTestModel(t)
-	keyA := activeToolKey{startedAt: time.Unix(500, 0), name: "shell.run"}
-	keyB := activeToolKey{startedAt: time.Unix(501, 0), name: "shell.run"}
-	m.toggleActiveToolExpanded(keyA) // expand tool A
+	keyA := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
+	keyB := stack.NodeID{Kind: stack.KindTool, Key: "tool:b"}
+	m.toggleExpanded(keyA) // expand tool A
 
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0)})
-	m.lastTranscriptHash = 0
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0), ToolCallID: "a"})
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	// A new tool starts (different StartedAt): the old override must stay
 	// inert in the map, and the new tool must be collapsed.
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0)})
-	m.lastTranscriptHash = 0
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0), ToolCallID: "b"})
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	if !m.activeToolIsExpanded(keyA) {
+	if !m.isToolExpanded(keyA, true) {
 		t.Fatal("expected tool A's override to be retained (inert) after a new tool starts")
 	}
-	if m.activeToolIsExpanded(keyB) {
+	if m.isToolExpanded(keyB, true) {
 		t.Fatal("expected the new tool B to be collapsed")
 	}
 }
@@ -7685,21 +7686,15 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 	m.resize(80, 24)
 	child := newChildState(t)
 	started := time.Now()
-	child.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started})
+	child.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started, ToolCallID: "child_call"})
 	m.state.RegisterSubagent("child", child)
 	m.drillIntoLatestRunningSubagent()
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	// Locate the active-tool region (resolved from the child's transcript).
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.isActiveTool {
-			region, found = r, true
-			break
-		}
-	}
+	key := stack.NodeID{Kind: stack.KindTool, Key: "tool:child_call"}
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the child's active tool call")
 	}
@@ -7709,15 +7704,14 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
 	mm := asModel(t, updated)
 
-	key := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started})
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the child's active tool call to expand on click")
 	}
 
 	// A repaint while drilled in must keep the child's override.
-	mm.lastTranscriptHash = 0
+	mm.invalidateTranscript()
 	mm.refreshViewport()
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the child's override to survive a refreshViewport repaint")
 	}
 }

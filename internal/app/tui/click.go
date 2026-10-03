@@ -4,29 +4,27 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/stack"
 )
 
-// clickTarget identifies what a click region toggles: either a keyed
-// transcript item/group (see itemKey in expand.go), the singleton
-// in-flight active-tool-call block, which has no stable key, or a
-// subagent card that drills into the subagent's transcript.
+// clickTarget identifies what a click region toggles: a node of the
+// transcript tree (a step, a tool row, a thinking row), or a subagent card
+// that drills into the subagent's transcript.
 type clickTarget struct {
-	key          itemKey
-	isActiveTool bool
-	// toolKey identifies the in-flight tool call an active-tool click target
-	// toggles, so the override is keyed by tool-call identity rather than a
-	// single global flag.
-	toolKey  activeToolKey
+	// node is what the click toggles (or, for a live region, scrolls).
+	node     stack.NodeID
 	subagent *session.SubagentView
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
 }
 
-// clickRegion is a half-open [startLine, endLine) range of content lines in
+// nodeRegion is a half-open [startLine, endLine) range of content lines in
 // the transcript viewport, in the same coordinate space as
 // viewport.Model.YOffset() and viewport.Model.GetContent() split by "\n".
-type clickRegion struct {
+// A step's rows record their own ranges inside the step's, and the narrowest
+// range under a click wins.
+type nodeRegion struct {
 	startLine, endLine int
 	target             clickTarget
 }
@@ -53,12 +51,19 @@ func (m *Model) contentLineForClick(x, y int) (int, bool) {
 // m.clickRegions is small (tens of entries, one per visible transcript
 // block) so a linear scan is fine.
 func (m *Model) regionAt(line int) (clickTarget, bool) {
-	for _, r := range m.clickRegions {
-		if line >= r.startLine && line < r.endLine {
-			return r.target, true
+	best := -1
+	for i, r := range m.nodeRegions {
+		if line < r.startLine || line >= r.endLine {
+			continue
+		}
+		if best < 0 || r.endLine-r.startLine < m.nodeRegions[best].endLine-m.nodeRegions[best].startLine {
+			best = i
 		}
 	}
-	return clickTarget{}, false
+	if best < 0 {
+		return clickTarget{}, false
+	}
+	return m.nodeRegions[best].target, true
 }
 
 // nowBarBand returns the half-open screen-row range [top, bottom) the now
@@ -98,7 +103,7 @@ func (m *Model) handleNowBarClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	m.drillIntoSubagent(plan.agents[idx])
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 	return nil, true
 }
@@ -129,16 +134,16 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 		return false
 	}
 	if m.regionOffset == nil {
-		m.regionOffset = map[itemKey]int{}
+		m.regionOffset = map[stack.NodeID]int{}
 	}
-	cur := m.regionOffset[target.key]
+	cur := m.regionOffset[target.node]
 	next := min(max(cur+delta, 0), maxRegionOffset)
 	if next != cur {
-		m.regionOffset[target.key] = next
+		m.regionOffset[target.node] = next
 		// Belt and braces alongside the transcriptHash change in Step 6:
 		// force the rebuild so the scroll is felt on this very event rather
 		// than on the next tick.
-		m.lastTranscriptHash = 0
+		m.invalidateTranscript()
 		m.refreshViewport()
 	}
 	return true
@@ -163,12 +168,10 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	}
 	if target.subagent != nil {
 		m.drillIntoSubagent(*target.subagent)
-	} else if target.isActiveTool {
-		m.toggleActiveToolExpanded(target.toolKey)
 	} else {
-		m.toggleItemExpanded(target.key)
+		m.toggleExpanded(target.node)
 	}
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 	return nil, true
 }

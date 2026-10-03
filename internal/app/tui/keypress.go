@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
 )
 
@@ -192,9 +193,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return *m, nil, true
 	case "ctrl+g":
 		m.detailExpanded = !m.detailExpanded
-		m.itemExpanded = map[itemKey]bool{}
-		m.clearActiveToolExpansions()
-		m.lastTranscriptHash = 0
+		m.expanded = map[stack.NodeID]bool{}
+		m.invalidateTranscript()
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+t":

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"image/color"
 	"log/slog"
 	"os"
@@ -46,6 +45,7 @@ import (
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
@@ -383,43 +383,37 @@ type Model struct {
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
 	detailExpanded     bool
-	// itemExpanded holds per-item expand/collapse overrides set by clicking
-	// a transcript block. An item with no entry here follows detailExpanded.
-	// Cleared whenever ctrl+g flips the global default (see keypress.go).
-	itemExpanded map[itemKey]bool
-	// activeToolExpanded holds per-tool-call click overrides for the in-flight
-	// tool block (renderActiveToolCall, transcript.go:902). It has no stable
-	// itemKey (the audit event isn't logged until completion), so keys are the
-	// call's StartedAt + display name. Overrides for previous calls stay in
-	// the map but become inert: refreshViewport only consults the key of the
-	// current ActiveToolCall. Cleared by ctrl+g (keypress.go) and on starting
-	// a new conversation (commands_dispatch.go).
-	activeToolExpanded map[activeToolKey]bool
+	// expanded holds per-node expand/collapse overrides set by clicking a
+	// step, tool row or thinking row. A node with no entry follows
+	// detailExpanded. Cleared whenever ctrl+g flips the global default (see
+	// keypress.go).
+	expanded map[stack.NodeID]bool
 	// regionOffset holds the per-region body scroll offset for bounded live
-	// regions (see internal/app/tui/liveregion), keyed the same way
-	// itemExpanded is. Rebuilt-and-pruned on every refreshViewport, so a
-	// finished region's entry does not leak.
-	regionOffset map[itemKey]int
+	// regions (see internal/app/tui/liveregion). Pruned on every
+	// refreshViewport, so a finished region's entry does not leak.
+	regionOffset map[stack.NodeID]int
 	// regionRows is the high-water mark for each bounded live region: the
 	// tallest it has rendered so far. liveregion.Render is pure and cannot
 	// remember, and the body genuinely shrinks (SubagentActivityTail
 	// switches between streamed reasoning and audit summaries), so without
 	// this the card oscillates. Pruned with regionOffset.
-	regionRows map[itemKey]int
+	regionRows map[stack.NodeID]int
 	// refFinder resolves blast radius; nil when LSP is unavailable.
 	refFinder ReferenceFinder
-	// callers caches reference lookups per audit item. A present-but-empty
+	// callers caches reference lookups per tool row. A present-but-empty
 	// entry is a negative result and must not be re-queried.
-	callers      map[itemKey][]string
-	callersAsked map[itemKey]bool
-	// activeToolStartedAt tracks the in-flight tool call's StartedAt so
-	// refreshViewport can detect "a new tool started" and reset
-	// activeToolExpanded. Zero when no tool is active.
-	activeToolStartedAt time.Time
-	// clickRegions maps content-line ranges in the transcript viewport to
-	// the transcript block occupying them, rebuilt every time refreshViewport
-	// rebuilds blocks. See click.go.
-	clickRegions []clickRegion
+	callers      map[stack.NodeID][]string
+	callersAsked map[stack.NodeID]bool
+	// renderCache holds each settled transcript block's rendered output,
+	// keyed by node identity and valid while its payload version, width and
+	// render inputs are unchanged. Only live nodes re-render on a spinner
+	// tick. Pruned to the nodes seen on the latest refresh.
+	renderCache map[stack.NodeID]cachedNode
+	// nodeRegions maps content-line ranges in the transcript viewport to the
+	// node occupying them, rebuilt every time refreshViewport rebuilds
+	// blocks. Rows inside a step record their own narrower ranges. See
+	// click.go.
+	nodeRegions []nodeRegion
 	// viewStack is the subagent drill-down stack: when non-empty, the
 	// transcript viewport renders the top subagent's child session instead
 	// of the orchestrator's. Pushed by clicking a subagent card (see
@@ -541,43 +535,6 @@ type Model struct {
 	// The bool reports whether the reload succeeded; when false the caller
 	// must not write through *m.configLayers.
 	layerReloader func() (config.Layers, bool)
-}
-
-// activeToolKey identifies one in-flight tool call. StartedAt disambiguates
-// rapid same-tool churn; the display name keeps distinct concurrent-ish
-// calls from sharing a key. Drilled-in children get their own keys for
-// free: refreshViewport resolves the key from transcriptState (the child
-// when drilling), and a child's StartedAt never equals the parent's.
-type activeToolKey struct {
-	startedAt time.Time
-	name      string
-}
-
-func activeToolKeyFor(atc session.ActiveToolCall) activeToolKey {
-	return activeToolKey{startedAt: atc.StartedAt, name: atc.Name}
-}
-
-// activeToolIsExpanded reports whether the given in-flight tool call has a
-// click override to expand. Default collapsed, as today — no global default
-// involved.
-func (m Model) activeToolIsExpanded(key activeToolKey) bool {
-	return m.activeToolExpanded[key]
-}
-
-// toggleActiveToolExpanded flips the click override for one in-flight tool
-// call and records it, so it no longer tracks the (collapsed) default until
-// the next ctrl+g or new conversation.
-func (m *Model) toggleActiveToolExpanded(key activeToolKey) {
-	if m.activeToolExpanded == nil {
-		m.activeToolExpanded = map[activeToolKey]bool{}
-	}
-	m.activeToolExpanded[key] = !m.activeToolIsExpanded(key)
-}
-
-// clearActiveToolExpansions resets all per-tool-call click overrides. Called
-// by ctrl+g and on starting a new conversation.
-func (m *Model) clearActiveToolExpansions() {
-	m.activeToolExpanded = nil
 }
 
 // pendingAgentRun captures the runner and goal for a run that is waiting
@@ -1378,7 +1335,6 @@ func New(state *session.State, opts ...Option) Model {
 		now:            time.Now,
 		viewportFollow: true,
 		discovered:     map[string][]schema.ModelInfo{},
-		itemExpanded:   map[itemKey]bool{},
 	}
 	for _, opt := range opts {
 		opt(&m)
@@ -1439,7 +1395,7 @@ func New(state *session.State, opts ...Option) Model {
 	// has a pending request (parent or subagent), so the first render shows
 	// the huh surface instead of the legacy fallback panels.
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
 	}
 	if q := m.state.PendingQuestion(); q != nil {
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
@@ -2525,7 +2481,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// viewport height and refresh if it changed.
 	viewportHeightChanged := m.updateViewportHeight()
 	if viewportHeightChanged {
-		m.lastTranscriptHash = 0
+		m.invalidateTranscript()
 		m.refreshViewport()
 	}
 
@@ -2555,6 +2511,15 @@ func (m *Model) pendingApprovalTarget() (owner *session.State, tc *session.Pendi
 		}
 	}
 	return nil, nil, ""
+}
+
+// approvalOwner is the state that owns the pending approval being displayed:
+// the parent's unless a running subagent's child holds it.
+func (m *Model) approvalOwner() *session.State {
+	if owner, tc, _ := m.pendingApprovalTarget(); tc != nil {
+		return owner
+	}
+	return m.state
 }
 
 // hasPendingApproval reports whether any approval is pending — either on
@@ -2597,6 +2562,7 @@ func (m *Model) pendingApprovalDisplay() (tc *session.PendingToolCall, label str
 		Args:         src.Args,
 		Command:      src.Command,
 		Risk:         src.Risk,
+		StepID:       src.StepID,
 		Reason:       fmt.Sprintf("subagent %q: %s", label, src.Reason),
 		Diff:         src.Diff,
 		Schema:       src.Schema,
@@ -2674,7 +2640,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 				m.resetInput()
 				m.input.Placeholder = "Ask Marshal..."
 				m.updateViewportHeight()
-				m.lastTranscriptHash = 0
+				m.invalidateTranscript()
 				return m, nil
 			case "enter":
 				value := strings.TrimSpace(m.input.Value())
@@ -2689,7 +2655,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 					owner.SetPendingApproval(nil)
 					m.approvalModel = nil
 				}
-				m.lastTranscriptHash = 0
+				m.invalidateTranscript()
 				return m, nil
 			}
 		}
@@ -2715,6 +2681,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			Args:         tc.Args,
 			Command:      tc.Command,
 			Risk:         tc.Risk,
+			StepID:       tc.StepID,
 			Reason:       fmt.Sprintf("subagent %q: %s", source, tc.Reason),
 			Diff:         tc.Diff,
 			Schema:       tc.Schema,
@@ -2722,7 +2689,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		}
 	}
 	if m.approvalModel == nil {
-		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
+		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
 	}
 	am, cmd := m.approvalModel.Update(msg)
 	m.approvalModel = am
@@ -2738,14 +2705,14 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			tc.Respond(session.UserApprovalDecision{Approved: true})
 		}
 		owner.SetPendingApproval(nil)
-		m.lastTranscriptHash = 0
+		m.invalidateTranscript()
 		return m, nil
 	case choiceDeny:
 		if owner.PendingApproval() == tc {
 			tc.Respond(session.UserApprovalDecision{Approved: false})
 		}
 		owner.SetPendingApproval(nil)
-		m.lastTranscriptHash = 0
+		m.invalidateTranscript()
 		return m, nil
 	case choiceAlways:
 		rule := permissions.Rule{
@@ -2776,7 +2743,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			tc.Respond(session.UserApprovalDecision{Approved: true})
 		}
 		owner.SetPendingApproval(nil)
-		m.lastTranscriptHash = 0
+		m.invalidateTranscript()
 		return m, nil
 	case choiceSessionAllow:
 		m.state.AddSessionRule(tc.Command)
@@ -2784,7 +2751,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			tc.Respond(session.UserApprovalDecision{Approved: true})
 		}
 		owner.SetPendingApproval(nil)
-		m.lastTranscriptHash = 0
+		m.invalidateTranscript()
 		return m, nil
 	case choiceEdit:
 		m.editingCommand = true
@@ -2797,7 +2764,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		}
 		m.updateViewportHeight()
 		m.input.Focus()
-		m.lastTranscriptHash = 0
+		m.invalidateTranscript()
 		return m, nil
 	case choiceRollback:
 		if m.state.HasBackup() {
@@ -2814,7 +2781,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 				ev.ResultSummary = "Rollback failed"
 			}
 			m.state.LogToolCall(ev)
-			m.lastTranscriptHash = 0
+			m.invalidateTranscript()
 			m.refreshViewport()
 			// Keep the approval open so the user can then approve/deny the
 			// original tool.
@@ -2849,7 +2816,7 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 	m.resetInput()
 	m.input.Placeholder = "Ask Marshal..."
 	m.updateViewportHeight()
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	return m, nil
 }
 
@@ -2881,7 +2848,7 @@ func (m Model) handleChildQuestion(msg tea.Msg, child *session.PendingChildQuest
 	m.resetInput()
 	m.input.Placeholder = "Ask Marshal..."
 	m.updateViewportHeight()
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	return m, nil
 }
 
@@ -3051,7 +3018,7 @@ func (m Model) inputChromeRows() int {
 		case m.approvalModel != nil:
 			content = m.approvalModel.View()
 		default:
-			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1))
+			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
 		}
 		rows += lipgloss.Height(content)
 	}
@@ -3512,17 +3479,7 @@ func (m *Model) popOldestSteering() (string, bool) {
 // isUserTurn reports whether a transcript item is a user prompt, the boundary
 // the turn separator marks.
 func isUserTurn(item session.TranscriptItem) bool {
-	return item.Kind == session.KindMessage &&
-		item.Message != nil &&
-		item.Message.Role == session.RoleUser &&
-		// A subagent report is stored under RoleUser for history replay but
-		// is not a turn the user took; treating it as one emits a turn
-		// separator above a block that renders nothing.
-		item.Message.ContentType != session.ContentTypeSubagentReport &&
-		item.Message.ContentType != session.ContentTypeWatchReport &&
-		// A mid-turn steering message renders (compact dim marker) but is
-		// not a turn boundary either — no separator above an aside.
-		item.Message.ContentType != session.ContentTypeSteering
+	return item.Kind == session.KindMessage && session.IsUserTurnMessage(item.Message)
 }
 
 // hasConversationTurns reports whether the transcript holds any real
@@ -3559,7 +3516,7 @@ func (m *Model) drillIntoSubagent(v session.SubagentView) {
 		return
 	}
 	m.viewStack = append(m.viewStack, v)
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.viewportFollow = true
 }
 
@@ -3584,7 +3541,7 @@ func (m *Model) popDrill() bool {
 		return false
 	}
 	m.viewStack = m.viewStack[:len(m.viewStack)-1]
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	return true
 }
 
@@ -3597,207 +3554,6 @@ func (m Model) breadcrumbRows() int {
 		return 1
 	}
 	return 0
-}
-
-func (m *Model) refreshViewport() {
-	m.updateViewportHeight()
-	// While drilled into a subagent, render the child session's transcript
-	// (and its live blocks) in place of the orchestrator's. The parent
-	// transcript is left untouched so popping back restores it as-is.
-	transcriptState := m.state
-	drilled, drilling := m.drilledInto()
-	if drilling {
-		if drilled.Child != nil {
-			transcriptState = drilled.Child
-		} else {
-			drilling = false
-		}
-	}
-	items := transcriptState.Transcript()
-	if !drilling {
-		// The completed agent.run audit event duplicates the subagent card
-		// (its full result content is the verbose subagent log); the card
-		// replaces it in the parent view. While drilled in, the child's own
-		// audit events render normally.
-		filtered := items[:0]
-		for _, item := range items {
-			if item.Kind == session.KindAudit && item.Audit != nil && item.Audit.ToolName == "agent.run" {
-				continue
-			}
-			filtered = append(filtered, item)
-		}
-		items = filtered
-	}
-	inProgress := transcriptState.InProgress()
-	streamLen := len(inProgress.Reasoning)
-	atc, activeTool := transcriptState.ActiveToolCall()
-	if activeTool {
-		if atc.StartedAt != m.activeToolStartedAt {
-			m.activeToolStartedAt = atc.StartedAt
-		}
-	} else {
-		m.activeToolStartedAt = time.Time{}
-	}
-	busy := m.busy || activeTool || streamLen > 0
-
-	todos := m.viewedTodos()
-	queued := m.state.SteeringQueue()
-	notice, noticeUp := m.state.Notice()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows)
-	if hash == m.lastTranscriptHash {
-		return
-	}
-	m.lastTranscriptHash = hash
-
-	blocks := make([]string, 0, len(items)+4)
-	regions := make([]clickRegion, 0, len(items))
-	seenRegions := map[itemKey]bool{}
-	lineCursor := 0
-	// addBlock appends s to blocks (if non-empty) and, when target is
-	// non-nil, records the content-line range it occupies so a later click
-	// can find it (see click.go). strings.Count is exact regardless of a
-	// block's internal formatting, because it counts the same "\n"
-	// characters strings.Join below will actually lay out on screen.
-	addBlock := func(s string, target *clickTarget) {
-		if s == "" {
-			return
-		}
-		blocks = append(blocks, s)
-		n := strings.Count(s, "\n")
-		if target != nil {
-			regions = append(regions, clickRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
-		}
-		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
-	}
-
-	if !hasConversationTurns(items) {
-		addBlock(renderWelcomeBanner(m.viewport.Width()), nil)
-	}
-	firstTurn := true
-	for _, entry := range groupTranscript(items) {
-		// A separator precedes every user turn but the first, so the rule
-		// always reads as "a new turn starts here" rather than as a header.
-		if entry.Group == nil && isUserTurn(*entry.Item) {
-			if !firstTurn {
-				addBlock(renderTurnSeparator(m.viewport.Width()), nil)
-			}
-			firstTurn = false
-		}
-		if entry.Group != nil {
-			key := itemKeyForGroup(entry.Group)
-			expanded := m.isExpanded(key)
-			s := renderToolGroup(entry.Group, expanded, m.viewport.Width())
-			addBlock(s, &clickTarget{key: key})
-		} else {
-			key := itemKeyFor(entry.Item)
-			expanded := m.isExpanded(key)
-			rv := regionView{offset: m.regionOffset[key], minRows: m.regionRows[key]}
-			s := renderTranscriptItem(*entry.Item, expanded, m.spinnerFrame, rv, m.callers[key], m.viewport.Width())
-			// Record the tallest this region has been, so a later shrink in
-			// the child's activity tail cannot shrink the card.
-			if n := strings.Count(s, "\n"); n > m.regionRows[key] {
-				if m.regionRows == nil {
-					m.regionRows = map[itemKey]int{}
-				}
-				m.regionRows[key] = n
-			}
-			var target *clickTarget
-			switch entry.Item.Kind {
-			case session.KindThinking, session.KindAudit:
-				target = &clickTarget{key: key}
-			case session.KindMessage:
-				if entry.Item.Message != nil &&
-					entry.Item.Message.ContentType == session.ContentTypeSkillAuto {
-					target = &clickTarget{key: key}
-				}
-			case session.KindSubagent:
-				if entry.Item.Subagent != nil && entry.Item.Subagent.Child != nil {
-					target = &clickTarget{
-						key:          key,
-						subagent:     entry.Item.Subagent,
-						isLiveRegion: entry.Item.Subagent.Status == session.SubagentRunning,
-					}
-				}
-			}
-			addBlock(s, target)
-			seenRegions[key] = true
-		}
-	}
-	if inProgress.Active && inProgress.Reasoning != "" {
-		rv := regionView{offset: m.regionOffset[liveThinkingKey], minRows: m.regionRows[liveThinkingKey]}
-		thinkingBlock := renderThinkingBox(
-			inProgress.Reasoning,
-			m.activeSpinnerFrame(session.ActivityThinking),
-			m.now().Sub(inProgress.StartedAt),
-			rv,
-			m.viewport.Width(),
-		)
-		addBlock(thinkingBlock, &clickTarget{key: liveThinkingKey, isLiveRegion: true})
-		// Record the high-water mark for the thinking region too.
-		if n := strings.Count(thinkingBlock, "\n"); n > m.regionRows[liveThinkingKey] {
-			if m.regionRows == nil {
-				m.regionRows = map[itemKey]int{}
-			}
-			m.regionRows[liveThinkingKey] = n
-		}
-		seenRegions[liveThinkingKey] = true
-	}
-	if act := transcriptState.Activity(); act.Kind == session.ActivityReconnecting && act.Label != "" {
-		addBlock(renderReconnectNotice(act.Label, m.activeSpinnerFrame(session.ActivityReconnecting), m.viewport.Width()), nil)
-	}
-	// Use the same transcriptState that was computed for the drilled-in
-	// child (or the parent when not drilling). The previous code read
-	// m.state.ActiveToolCall(), which always used the parent session
-	// and showed the wrong tool inside a drilled subagent view.
-	if atc, ok := transcriptState.ActiveToolCall(); ok {
-		// Suppress the parent in-flight agent.run row when a subagent card
-		// is already rendering the running child. Completed rows are already
-		// deduplicated above; this is the in-flight counterpart.
-		suppress := !drilling && atc.Name == "agent.run" && m.state.HasRunningSubagent()
-		if !suppress {
-			s := renderActiveToolCall(atc, transcriptState.SandboxInfo(), transcriptState.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolIsExpanded(activeToolKeyFor(atc)), m.viewport.Width())
-			addBlock(s, &clickTarget{isActiveTool: true, toolKey: activeToolKeyFor(atc)})
-		}
-	}
-	if n, ok := m.state.Notice(); ok {
-		addBlock(renderNotice(n, m.viewport.Width()), nil)
-	}
-	if len(queued) > 0 {
-		addBlock(renderQueuedMessages(queued, m.viewport.Width()), nil)
-	}
-
-	// Drop offsets for regions that are no longer rendered, so a finished
-	// subagent's entry does not leak for the rest of the session.
-	for k := range m.regionOffset {
-		if !seenRegions[k] {
-			delete(m.regionOffset, k)
-		}
-	}
-	// High-water marks follow the same rule: a region that stopped being
-	// rendered no longer needs one.
-	for k := range m.regionRows {
-		if !seenRegions[k] {
-			delete(m.regionRows, k)
-		}
-	}
-	// Prune cached callers (and the asked marker) for items no longer in
-	// the transcript. This is what makes rollback correct for free: a
-	// rewound audit event leaves the transcript, so its blast-radius cache
-	// goes with it rather than re-rendering stale callers at moved lines.
-	for k := range m.callers {
-		if !seenRegions[k] {
-			delete(m.callers, k)
-			delete(m.callersAsked, k)
-		}
-	}
-
-	m.clickRegions = regions
-	// Every block ends with exactly one newline; separation between blocks
-	// is the caller's job — one blank line, none within a block.
-	m.viewport.SetContent(strings.Join(blocks, "\n"))
-	if m.viewportFollow {
-		m.viewport.GotoBottom()
-	}
 }
 
 // openRunPreflight opens the cast list panel for the given kind ("sdd" or
@@ -5705,94 +5461,6 @@ func browserGlyphStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
-
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall, notice session.Notice, noticeUp bool, regionOffsets map[itemKey]int, callers map[itemKey][]string, regionRows map[itemKey]int) uint64 {
-	h := fnv.New64a()
-	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
-	// The notice banner is rendered into the transcript, so its presence
-	// and identity must bust the viewport cache: without this, esc-dismiss
-	// and the TTL auto-dismiss repaint nothing (the hash is unchanged) and
-	// the banner stays on screen until an unrelated transcript change.
-	fmt.Fprintf(h, "notice=%t|%d|%s|%d|%s|%s|", noticeUp, notice.SetAt.UnixNano(), notice.Category.String(), notice.Severity, notice.Message, notice.Hint)
-	// Live state: without the spinner frame and the active tool call the
-	// early-return in refreshViewport freezes the ▸ row for the whole
-	// duration of a long tool call (e.g. agent.run).
-	fmt.Fprintf(h, "spin=%s|atc=%s|%s|%d|", spinnerFrame, atc.Name, atc.Args, atc.StartedAt.UnixNano())
-	// Bounded live regions scroll independently, and their offsets live on
-	// the Model rather than in items — so without this a scroll changes no
-	// hashed input, refreshViewport early-returns, and the region visibly
-	// does not move. Same class of bug as the notice banner above.
-	// Sorted: map iteration order is randomised, and an unstable hash would
-	// rebuild the viewport on every call.
-	roKeys := make([]itemKey, 0, len(regionOffsets))
-	for k := range regionOffsets {
-		roKeys = append(roKeys, k)
-	}
-	sort.Slice(roKeys, func(i, j int) bool {
-		if !roKeys[i].ts.Equal(roKeys[j].ts) {
-			return roKeys[i].ts.Before(roKeys[j].ts)
-		}
-		return roKeys[i].kind < roKeys[j].kind
-	})
-	for _, k := range roKeys {
-		fmt.Fprintf(h, "roff=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionOffsets[k])
-	}
-	// High-water marks render into the transcript (via MinRows) but live on
-	// the Model rather than in items, so without this a change to the mark
-	// changes no hashed input, refreshViewport early-returns, and the region
-	// keeps its stale height. Sorted for the same reason as the offsets.
-	rrKeys := make([]itemKey, 0, len(regionRows))
-	for k := range regionRows {
-		rrKeys = append(rrKeys, k)
-	}
-	sort.Slice(rrKeys, func(i, j int) bool {
-		if !rrKeys[i].ts.Equal(rrKeys[j].ts) {
-			return rrKeys[i].ts.Before(rrKeys[j].ts)
-		}
-		return rrKeys[i].kind < rrKeys[j].kind
-	})
-	for _, k := range rrKeys {
-		fmt.Fprintf(h, "rrows=%d|%d|%d|", k.ts.UnixNano(), k.kind, regionRows[k])
-	}
-	// Cached blast-radius results render into the transcript but live on the
-	// Model rather than in items, so without this an arriving result changes
-	// no hashed input, refreshViewport early-returns, and the callers line
-	// never appears. Same class of bug as the region offsets above. Sorted:
-	// map iteration is randomised, and an unstable hash would rebuild the
-	// viewport on every call.
-	cKeys := make([]itemKey, 0, len(callers))
-	for k := range callers {
-		cKeys = append(cKeys, k)
-	}
-	sort.Slice(cKeys, func(i, j int) bool {
-		if !cKeys[i].ts.Equal(cKeys[j].ts) {
-			return cKeys[i].ts.Before(cKeys[j].ts)
-		}
-		return cKeys[i].kind < cKeys[j].kind
-	})
-	for _, k := range cKeys {
-		fmt.Fprintf(h, "callers=%d|%d|%d|", k.ts.UnixNano(), k.kind, len(callers[k]))
-	}
-	for _, item := range items {
-		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())
-		if item.Message != nil {
-			fmt.Fprintf(h, "%s|%s|%s\x00", item.Message.Role, item.Message.ContentType, item.Message.Content)
-		}
-		if item.Subagent != nil {
-			// Subagent cards are live while the child runs: status, tool-call
-			// count, and summary must bust the viewport cache or the card
-			// freezes at registration time.
-			fmt.Fprintf(h, "sub=%d|%v|%s|%d|%d|%s|%s\x00", item.Subagent.ID, item.Subagent.Status, item.Subagent.Label, item.Subagent.ToolCalls, item.Subagent.EndedAt.UnixNano(), item.Subagent.Summary, item.Subagent.CurrentTool)
-		}
-	}
-	for _, todo := range todos {
-		fmt.Fprintf(h, "todo=%s|%s\x00", todo.Content, todo.Status)
-	}
-	for _, q := range queued {
-		fmt.Fprintf(h, "q=%s\x00", q)
-	}
-	return h.Sum64()
-}
 
 // flags packs boolean/len state into a single uint64 for the hash.
 func flags(streamLen int, busy bool, nTodos, nQueued int) uint64 {

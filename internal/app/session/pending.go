@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -119,14 +120,17 @@ func (p *PendingQuestion) Respond(a []Answer) {
 }
 
 type PendingToolCall struct {
-	ID           string
-	Name         string
-	Args         string
-	Command      string
-	Risk         string
-	Reason       string
-	Diff         string
-	Schema       string // Details / schema / description of the tool
+	ID      string
+	Name    string
+	Args    string
+	Command string
+	Risk    string
+	Reason  string
+	Diff    string
+	Schema  string // Details / schema / description of the tool
+	// StepID is the step (model response) that requested the call, so the
+	// approval panel can show that step's narration as the reason. 0 = none.
+	StepID       StepID
 	ResponseChan chan UserApprovalDecision
 	responded    sync.Once
 }
@@ -157,6 +161,11 @@ type ActiveToolCall struct {
 	Path      string
 	Output    string
 	StartedAt time.Time
+	// StepID is the step that requested the call; ToolCallID is the call's
+	// ID (provider's, or synthesised in envelope mode). An empty ToolCallID
+	// keys the single legacy slot.
+	StepID     StepID
+	ToolCallID string
 }
 
 func (s *State) SetPendingApproval(tc *PendingToolCall) {
@@ -173,6 +182,7 @@ func (s *State) SetPendingApproval(tc *PendingToolCall) {
 			Reason:       tc.Reason,
 			Diff:         tc.Diff,
 			Schema:       tc.Schema,
+			StepID:       tc.StepID,
 			ResponseChan: tc.ResponseChan,
 		}
 	}
@@ -310,14 +320,23 @@ func snapshotChildQuestionLocked(q *PendingChildQuestion) *PendingChildQuestion 
 	}
 }
 
+// SetActiveToolCall registers an in-flight call under its ToolCallID (an
+// empty ID uses the legacy single slot) and makes it the "latest" one that
+// ActiveToolCall, output appends and args updates act on.
 func (s *State) SetActiveToolCall(atc ActiveToolCall) {
 	s.mu.Lock()
-	s.activeToolCall = &atc
+	if s.activeTools == nil {
+		s.activeTools = map[string]*ActiveToolCall{}
+	}
+	stored := atc
+	s.activeTools[atc.ToolCallID] = &stored
+	s.activeToolCall = &stored
 	copy := atc
 	s.mu.Unlock()
 	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: &copy})
 }
 
+// ActiveToolCall returns the latest in-flight call.
 func (s *State) ActiveToolCall() (ActiveToolCall, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -327,21 +346,78 @@ func (s *State) ActiveToolCall() (ActiveToolCall, bool) {
 	return *s.activeToolCall, true
 }
 
+// ActiveToolCalls returns every in-flight call, oldest first.
+func (s *State) ActiveToolCalls() []ActiveToolCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ActiveToolCall, 0, len(s.activeTools))
+	for _, a := range s.activeTools {
+		out = append(out, *a)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].ToolCallID < out[j].ToolCallID
+		}
+		return out[i].StartedAt.Before(out[j].StartedAt)
+	})
+	return out
+}
+
+// ClearActiveToolCallID removes one in-flight call. When others remain, the
+// most recently started becomes the latest and is published; the event
+// carries nil only once nothing is running.
+func (s *State) ClearActiveToolCallID(id string) {
+	s.mu.Lock()
+	cur, ok := s.activeTools[id]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.activeTools, id)
+	if s.activeToolCall == cur {
+		s.activeToolCall = nil
+		for _, a := range s.activeTools {
+			if s.activeToolCall == nil || a.StartedAt.After(s.activeToolCall.StartedAt) {
+				s.activeToolCall = a
+			}
+		}
+	}
+	var snap *ActiveToolCall
+	if s.activeToolCall != nil {
+		c := *s.activeToolCall
+		snap = &c
+	}
+	s.mu.Unlock()
+	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: snap})
+}
+
+// ClearActiveToolCall drops every in-flight call.
 func (s *State) ClearActiveToolCall() {
 	s.mu.Lock()
+	s.activeTools = nil
 	s.activeToolCall = nil
 	s.mu.Unlock()
 	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: nil})
 }
 
-func (s *State) AppendActiveToolCallOutput(delta string) {
+func (s *State) AppendActiveToolCallOutput(id, delta string) {
 	s.mu.Lock()
-	if s.activeToolCall == nil {
+	cur := s.activeToolLocked(id)
+	if cur == nil {
 		s.mu.Unlock()
 		return
 	}
-	s.activeToolCall.Output += delta
+	cur.Output += delta
 	s.mu.Unlock()
+}
+
+// activeToolLocked finds the in-flight call with the given ID. An empty or
+// unknown ID falls back to the latest call, for sources that carry no ID.
+func (s *State) activeToolLocked(id string) *ActiveToolCall {
+	if a, ok := s.activeTools[id]; ok && id != "" {
+		return a
+	}
+	return s.activeToolCall
 }
 
 // SetActiveToolCallArgs updates only the Args field of the in-flight tool
@@ -355,14 +431,15 @@ func (s *State) AppendActiveToolCallOutput(delta string) {
 // publishes EventActiveToolChanged: that one stays silent because streaming
 // output would flood the broker, whereas an args update fires at most once
 // per child completion and should reach ACP clients as well as the TUI.
-func (s *State) SetActiveToolCallArgs(args string) {
+func (s *State) SetActiveToolCallArgs(id, args string) {
 	s.mu.Lock()
-	if s.activeToolCall == nil {
+	cur := s.activeToolLocked(id)
+	if cur == nil {
 		s.mu.Unlock()
 		return
 	}
-	s.activeToolCall.Args = args
-	copy := *s.activeToolCall
+	cur.Args = args
+	copy := *cur
 	s.mu.Unlock()
 	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: &copy})
 }

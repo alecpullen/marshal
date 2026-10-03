@@ -31,12 +31,22 @@ const (
 // nowBarInput is everything planNowBar reads. It is a value so the plan is
 // a pure function and tests can drive every row-selection case directly.
 type nowBarInput struct {
-	SDD      session.SDDProgress
-	Swarm    session.SwarmProgress
-	Todos    []native.TodoItem
-	Agents   []session.SubagentView // running, with a child, registry order
-	Provider string                 // the parent's provider, to elide it on same-provider children
-	Browser  session.BrowserInfo
+	SDD    session.SDDProgress
+	Swarm  session.SwarmProgress
+	Todos  []native.TodoItem
+	Agents []session.SubagentView // running, with a child, registry order
+	// AgentHeadlines is each agent's latest narration headline, aligned with
+	// Agents ("" when it has not narrated yet).
+	AgentHeadlines []string
+	Model          string // the parent's model, so a child on it adds nothing
+	Provider       string // the parent's provider, to elide it on same-provider children
+
+	// LiveHeadline is the live step's headline and LiveToolGlyph the category
+	// glyph of its running tool. Set only while the viewport is scrolled away
+	// from the live step, which is when the mirror row earns its place.
+	LiveHeadline  string
+	LiveToolGlyph string
+	Browser       session.BrowserInfo
 
 	// JobTexts and WatchTexts are pre-rendered, one row each.
 	JobTexts   []string
@@ -74,8 +84,9 @@ func planNowBar(in nowBarInput) nowBarPlan {
 
 	head, headText, elapsed := nowBarHead(in)
 	actors, agentIdx, browserIdx := nowBarActors(in)
+	mirror := nowBarMirror(in)
 
-	if head == "" && len(actors) == 0 {
+	if head == "" && len(actors) == 0 && mirror == "" {
 		return nowBarPlan{}
 	}
 
@@ -88,6 +99,9 @@ func planNowBar(in nowBarInput) nowBarPlan {
 	}
 
 	var plan nowBarPlan
+	if mirror != "" {
+		plan.rows = append(plan.rows, mirror)
+	}
 	if head != "" {
 		plan.rows = append(plan.rows, head)
 	}
@@ -258,7 +272,11 @@ func nowBarActors(in nowBarInput) (rows []string, agents []*session.SubagentView
 	for i := range in.Agents {
 		v := &in.Agents[i]
 		label := fmt.Sprintf("#%d  %s", v.ID, oneLine(v.Label))
-		if v.Model != "" {
+		if i < len(in.AgentHeadlines) && in.AgentHeadlines[i] != "" {
+			label += "  " + oneLine(in.AgentHeadlines[i])
+		}
+		// The model is only news when it differs from the parent's route.
+		if v.Model != "" && (v.Model != in.Model || (v.Provider != "" && v.Provider != in.Provider)) {
 			label += dimSeparator + v.Model
 			if v.Provider != "" && v.Provider != in.Provider {
 				label += " @ " + v.Provider
@@ -283,6 +301,28 @@ func nowBarActors(in nowBarInput) (rows []string, agents []*session.SubagentView
 		agents = append(agents, nil)
 	}
 	return rows, agents, browserIdx
+}
+
+// nowBarMirror is the live-mirror row: while the transcript is scrolled away
+// from the running step, one line says what that step is doing, with the key
+// that returns to it. "" when there is nothing to mirror.
+func nowBarMirror(in nowBarInput) string {
+	if in.LiveHeadline == "" || in.Height < nowBarCompactHeight {
+		return ""
+	}
+	inner := max(in.Width-1, 1)
+	g := in.Spinner
+	if g == "" {
+		g = glyph.Running
+	}
+	tail := g
+	if in.LiveToolGlyph != "" {
+		tail += " " + in.LiveToolGlyph
+	}
+	left := " " + lipgloss.NewStyle().Foreground(accentColor).Render(glyph.FollowDown) + " " +
+		ansi.Truncate(oneLine(in.LiveHeadline), max(inner-ansi.StringWidth(tail)-12, 8), "…") +
+		dimSeparator + dimStyle().Render(tail)
+	return nowBarJustify(left, "End", inner)
 }
 
 // nowBarSummary is the one-row form for short frames:
@@ -359,10 +399,15 @@ func (m Model) nowBarInput() nowBarInput {
 	if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
 		in.ActivityLabel = m.state.PinnedSpinnerLabel(act)
 	}
+	in.Model = m.state.ActiveRoute().Model
 	for _, v := range m.state.Subagents() {
 		if v.Status == session.SubagentRunning && v.Child != nil {
 			in.Agents = append(in.Agents, v)
+			in.AgentHeadlines = append(in.AgentHeadlines, subagentHeadline(v.Child))
 		}
+	}
+	if !m.viewportFollow && m.busy {
+		in.LiveHeadline, in.LiveToolGlyph = m.liveStepSummary()
 	}
 	width := in.Width
 	for _, j := range m.runningJobs() {

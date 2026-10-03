@@ -296,6 +296,10 @@ type turnProjection struct {
 	lastThinking string
 	lastToolID   string
 	lastToolName string
+	// announced maps tool-call IDs already sent as running to the args sent, so the
+	// re-publish that follows one of several concurrent calls ending does
+	// not announce a still-running call a second time.
+	announced map[string]string
 }
 
 // toolTextCap bounds args/output text in tool_call wire events.
@@ -350,9 +354,26 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 	case session.EventActiveToolChanged:
 		if ev.Payload.ActiveTool != nil {
 			atc := ev.Payload.ActiveTool
-			id := fmt.Sprintf("%s-%d", atc.Name, atc.StartedAt.UnixNano())
+			// The runner's real call ID pairs a running call with its result
+			// exactly, including for concurrent calls. The name+time guess is
+			// only for sources that carry no ID.
+			id := atc.ToolCallID
+			if id == "" {
+				id = fmt.Sprintf("%s-%d", atc.Name, atc.StartedAt.UnixNano())
+			} else {
+				id = scopedToolCallID(atc.StepID, id)
+			}
 			proj.lastToolID = id
 			proj.lastToolName = atc.Name
+			if proj.announced == nil {
+				proj.announced = map[string]string{}
+			}
+			// Re-send only when the args changed: an agent.await countdown is
+			// a deliberate update under the same ID, a repeated publish is not.
+			if prev, seen := proj.announced[id]; seen && prev == atc.Args {
+				return nil, false
+			}
+			proj.announced[id] = atc.Args
 			return map[string]any{
 				"kind":       "tool_call",
 				"toolCallId": id,
@@ -368,10 +389,19 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 			if ae.Error != "" {
 				status = "error"
 			}
-			id := proj.lastToolID
-			if id == "" || ae.ToolName != proj.lastToolName {
-				id = fmt.Sprintf("%s-%d", ae.ToolName, ae.Timestamp.UnixNano())
+			id := ae.ToolCallID
+			if id != "" {
+				id = scopedToolCallID(ae.StepID, id)
 			}
+			if id == "" {
+				id = proj.lastToolID
+				if id == "" || ae.ToolName != proj.lastToolName {
+					id = fmt.Sprintf("%s-%d", ae.ToolName, ae.Timestamp.UnixNano())
+				}
+			}
+			// The call is finished; some providers reuse IDs like call_0, so a
+			// later call under the same ID must announce itself again.
+			delete(proj.announced, id)
 			output := ae.ResultContent
 			if output == "" {
 				output = ae.ResultSummary
@@ -392,6 +422,17 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 		return nil, false
 	}
 	return nil, false
+}
+
+// scopedToolCallID makes a provider's call ID unique across the session. Some
+// providers number each response's calls from zero (ollama-0, ollama-1, …), so
+// a bare ID would let a later step's first call replace an earlier card in the
+// client. The step is the scope: IDs are unique within one response.
+func scopedToolCallID(step int64, id string) string {
+	if step == 0 {
+		return id
+	}
+	return fmt.Sprintf("s%d:%s", step, id)
 }
 
 // HasActiveTurn reports whether sessionID currently has an in-flight

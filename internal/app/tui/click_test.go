@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
@@ -20,16 +21,14 @@ func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
 	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
 	m.state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
 	_ = ts2
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	found := false
-	for _, r := range m.clickRegions {
-		if r.target.key == (itemKey{ts: ts1, kind: session.KindThinking}) {
-			found = true
-			if r.startLine < 0 || r.endLine <= r.startLine {
-				t.Fatalf("invalid region for thinking block: %+v", r)
-			}
+	if r, ok := regionOf(&m, thinkID(ts1)); ok {
+		found = true
+		if r.startLine < 0 || r.endLine <= r.startLine {
+			t.Fatalf("invalid region for thinking block: %+v", r)
 		}
 	}
 	if !found {
@@ -66,17 +65,26 @@ func TestContentLineForClickRejectsOutsideViewport(t *testing.T) {
 
 func TestRegionAtFindsContainingRegion(t *testing.T) {
 	m := newTestModel(t)
-	m.clickRegions = []clickRegion{
-		{startLine: 0, endLine: 2, target: clickTarget{key: itemKey{ts: time.Unix(1, 0), kind: session.KindThinking}}},
-		{startLine: 3, endLine: 5, target: clickTarget{isActiveTool: true}},
+	step := stack.NodeID{Kind: stack.KindStep, Key: "step:1"}
+	row := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
+	other := stack.NodeID{Kind: stack.KindStep, Key: "step:2"}
+	m.nodeRegions = []nodeRegion{
+		{startLine: 0, endLine: 6, target: clickTarget{node: step}},
+		{startLine: 2, endLine: 4, target: clickTarget{node: row}},
+		{startLine: 7, endLine: 9, target: clickTarget{node: other}},
 	}
 
-	if _, ok := m.regionAt(2); ok {
-		t.Fatal("line 2 is the separator between blocks and should not match")
+	if _, ok := m.regionAt(6); ok {
+		t.Fatal("line 6 is the separator between blocks and should not match")
 	}
-	target, ok := m.regionAt(4)
-	if !ok || !target.isActiveTool {
-		t.Fatalf("regionAt(4) = %+v, %v, want the active-tool region", target, ok)
+	if target, ok := m.regionAt(3); !ok || target.node != row {
+		t.Fatalf("regionAt(3) = %+v, %v, want the narrower row inside the step", target, ok)
+	}
+	if target, ok := m.regionAt(5); !ok || target.node != step {
+		t.Fatalf("regionAt(5) = %+v, %v, want the step header region", target, ok)
+	}
+	if target, ok := m.regionAt(8); !ok || target.node != other {
+		t.Fatalf("regionAt(8) = %+v, %v, want the second step", target, ok)
 	}
 }
 
@@ -85,17 +93,11 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	m.resize(80, 24)
 	ts := time.Unix(700, 0)
 	m.state.LogThinking(session.ThinkingEntry{Text: "click me", Duration: time.Second, StartedAt: ts})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := itemKey{ts: ts, kind: session.KindThinking}
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.key == key {
-			region, found = r, true
-		}
-	}
+	key := thinkID(ts)
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the thinking block")
 	}
@@ -117,19 +119,12 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	started := time.Now()
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started})
-	m.lastTranscriptHash = 0
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started, ToolCallID: "call_a"})
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	// Locate the active-tool region.
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.isActiveTool {
-			region, found = r, true
-			break
-		}
-	}
+	key := stack.NodeID{Kind: stack.KindTool, Key: "tool:call_a"}
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the active tool call")
 	}
@@ -139,21 +134,19 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
 	mm := asModel(t, updated)
 
-	key := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started})
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the click to expand the active tool call")
 	}
 
 	// A repaint (hash invalidation + rebuild) must keep the override.
-	mm.lastTranscriptHash = 0
+	mm.invalidateTranscript()
 	mm.refreshViewport()
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the override to survive a refreshViewport repaint")
 	}
 
-	// A different StartedAt (new tool call) collapses back.
-	key2 := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started.Add(time.Second)})
-	if mm.activeToolIsExpanded(key2) {
+	// A different call collapses back.
+	if mm.isToolExpanded(stack.NodeID{Kind: stack.KindTool, Key: "tool:call_b"}, true) {
 		t.Fatal("expected a different tool call to be collapsed")
 	}
 }
@@ -163,13 +156,13 @@ func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	m.resize(80, 24)
 	ts := time.Unix(701, 0)
 	m.state.LogThinking(session.ThinkingEntry{Text: "leave me collapsed", Duration: time.Second, StartedAt: ts})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	updated, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 10, Y: 0, Button: tea.MouseLeft})
 	mm := asModel(t, updated)
 
-	key := itemKey{ts: ts, kind: session.KindThinking}
+	key := thinkID(ts)
 	if mm.isExpanded(key) {
 		t.Fatal("expected an out-of-bounds click to be a no-op")
 	}
@@ -185,17 +178,11 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 		Error:     "boom",
 		Args:      []byte(`{"command": "echo hi"}`),
 	})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := itemKey{ts: ts, kind: session.KindAudit}
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.key == key {
-			region, found = r, true
-		}
-	}
+	key := toolIDAt(ts)
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the failed tool call")
 	}

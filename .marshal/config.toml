@@ -1,9 +1,0 @@
-[profile]
-default = 'single'
-active_preset = 'ollama-cloud-2/kimi-k3'
-
-[agent]
-max_tool_iterations = 0
-max_retries = 3
-approval_mode = 'copilot'
-parent_question_roles = []

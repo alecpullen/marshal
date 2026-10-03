@@ -27,12 +27,14 @@ coverage.txt
 .opencode/
 .workpowers/
 
-# Local project state and database; the project config itself is committed
-# (SaveProjectConfig strips API keys before writing it).
-.marshal/*
-#!.marshal/config.toml
-#!.marshal/.gitignore
+# Local project state and database; the project config is machine-local
+# and is no longer committed (providers/presets live in the user-global
+# config). See .marshal/.gitignore for the rest of .marshal/'s contents.
+.marshal/
 api.fish
+
+# Relocated Go home (module cache, build cache, telemetry)
+/.home/
 
 # Documentation archive and workflow artifacts
 .docs-archive/

@@ -64,6 +64,10 @@ If you need a supported, contractually-backed integration, use the
 
 - **Tokens are per provider entry.** Two `openai_codex` entries hold two
   independent logins, keyed `marshal:provider:<name>`.
+- **Harness instructions.** Marshal sends the leading system prompt in the
+  Responses API `instructions` field. Later system guidance is sent as
+  `developer` input messages, preserving its conversation position; Codex
+  rejects `system` input messages.
 - **Refresh is automatic.** A background worker refreshes proactively using
   the server's `earliest_refresh_at` hint, and the provider refreshes inline
   as a safety net. Both paths share one mutex, so they cannot race.

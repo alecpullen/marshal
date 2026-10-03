@@ -177,6 +177,12 @@ func responsesFinishReason(resp *responsesResponse) string {
 // itself uses); any mid-conversation system message (skill hints,
 // steering) becomes a role item at its position — order preserved.
 func buildResponsesInput(msgs []schema.ChatMessage) (instructions string, items []responsesInputItem) {
+	return buildResponsesInputWithSystemRole(msgs, "system")
+}
+
+// buildResponsesInputWithSystemRole keeps the leading harness prompt in
+// instructions and adapts subsequent system messages to the provider's role.
+func buildResponsesInputWithSystemRole(msgs []schema.ChatMessage, systemRole string) (instructions string, items []responsesInputItem) {
 	var sysParts []string
 	leading := true
 	for _, m := range msgs {
@@ -191,7 +197,7 @@ func buildResponsesInput(msgs []schema.ChatMessage) (instructions string, items 
 		case schema.RoleSystem:
 			items = append(items, responsesInputItem{
 				Type:    "message",
-				Role:    "system",
+				Role:    systemRole,
 				Content: []responsesContentPart{{Type: "input_text", Text: m.Content}},
 			})
 		case schema.RoleUser:
@@ -247,13 +253,17 @@ func buildResponsesRequestBody(req schema.ChatRequest, reasoningSummary bool) ([
 // ["reasoning.encrypted_content"] on every request; every other caller
 // passes nil and gets the previous wire shape byte for byte.
 func buildResponsesRequestBodyWithInclude(req schema.ChatRequest, reasoningSummary bool, include []string) ([]byte, error) {
+	return buildResponsesRequestBodyWithSystemRole(req, reasoningSummary, include, "system")
+}
+
+func buildResponsesRequestBodyWithSystemRole(req schema.ChatRequest, reasoningSummary bool, include []string, systemRole string) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
 	if len(req.Messages) == 0 {
 		return nil, errors.New("chat request: at least one message is required")
 	}
-	instructions, input := buildResponsesInput(req.Messages)
+	instructions, input := buildResponsesInputWithSystemRole(req.Messages, systemRole)
 
 	var tools []responsesTool
 	for _, tool := range req.Tools {

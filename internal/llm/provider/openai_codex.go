@@ -202,7 +202,9 @@ func (p *OpenAICodex) post(ctx context.Context, req schema.ChatRequest, token st
 	// letting the wire disagree with the transport.
 	req.Stream = true
 
-	body, err := buildResponsesRequestBodyWithInclude(req, p.reasoningSummary, []string{codexIncludeReasoning})
+	// Codex rejects system-role input items. Keep the leading harness prompt
+	// in instructions and send later runtime guidance as developer messages.
+	body, err := buildResponsesRequestBodyWithSystemRole(req, p.reasoningSummary, []string{codexIncludeReasoning}, "developer")
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}

@@ -205,9 +205,10 @@ type TUIConfig struct {
 	Suggestions string `toml:"suggestions"`
 }
 
-// SidePanelConfig controls the widescreen side rail. MinWidth is the frame
-// width at which the rail appears; WidthPct/MinCols/MaxCols size it. Hidden
-// lists section IDs to suppress.
+// SidePanelConfig is what remains of the removed widescreen side rail. Only
+// Hidden is honoured: it lists section IDs the Ctrl+B session sheet omits.
+// Enabled, MinWidth, WidthPct, MinCols and MaxCols are ignored but still
+// parsed, so existing config files load; Diagnose warns when one is set.
 type SidePanelConfig struct {
 	Enabled  bool     `toml:"enabled"`
 	MinWidth int      `toml:"min_width"`

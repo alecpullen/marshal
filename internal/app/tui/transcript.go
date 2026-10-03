@@ -230,7 +230,7 @@ const tabStop = 8
 // ansi.StringWidth, which counts "\t" as a single cell — but the terminal
 // advances to the next multiple of tabStop, so unexpanded tabs make every
 // wrap decision undercount and the rendered line ends up wider than the
-// viewport, spilling under the side rail. Expanding at the point raw content
+// viewport, spilling past the column edge. Expanding at the point raw content
 // enters the renderers keeps measurement and rendering in agreement.
 //
 // Input is raw content, never styled output: the column accounting has no

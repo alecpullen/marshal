@@ -15,10 +15,10 @@ const ruleGlyph = "─"
 // Header renders a section heading: a bold title, a hairline rule filling
 // the remaining width, and an optional dim right-hand label.
 //
-// It lives in chrome rather than sidepanel because four unrelated surfaces
+// It lives in chrome rather than sessionsheet because four unrelated surfaces
 // need it — the side rail's sections, the pinned todo panel, the agent lane,
 // and the /agents panel's drilled-in frames. chrome is the lower layer
-// (sidepanel imports chrome, never the reverse), so this is the only home
+// (sessionsheet imports chrome, never the reverse), so this is the only home
 // that does not force a dock panel to import the side rail.
 func Header(title, right string, width int) string {
 	th := theme.Current()

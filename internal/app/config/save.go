@@ -327,15 +327,10 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			MouseCapture: strutil.Ptr(cfg.TUI.MouseCapture),
 			Suggestions:  strutil.Ptr(cfg.TUI.Suggestions),
 		}
-		if !reflect.DeepEqual(cfg.TUI.SidePanel, def.TUI.SidePanel) {
-			file.TUI.SidePanel = &fileSidePanel{
-				Enabled:  strutil.Ptr(cfg.TUI.SidePanel.Enabled),
-				MinWidth: strutil.Ptr(cfg.TUI.SidePanel.MinWidth),
-				WidthPct: strutil.Ptr(cfg.TUI.SidePanel.WidthPct),
-				MinCols:  strutil.Ptr(cfg.TUI.SidePanel.MinCols),
-				MaxCols:  strutil.Ptr(cfg.TUI.SidePanel.MaxCols),
-				Hidden:   cfg.TUI.SidePanel.Hidden,
-			}
+		// Only hidden is still meaningful. Writing the deprecated sizing keys
+		// would make every later load warn about a file the app wrote itself.
+		if len(cfg.TUI.SidePanel.Hidden) > 0 {
+			file.TUI.SidePanel = &fileSidePanel{Hidden: cfg.TUI.SidePanel.Hidden}
 		}
 	}
 	if !reflect.DeepEqual(cfg.Swarm, def.Swarm) {

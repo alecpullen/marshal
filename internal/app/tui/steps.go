@@ -603,3 +603,109 @@ func actorColor(role string) color.Color {
 	_, _ = h.Write([]byte(role))
 	return palette[int(h.Sum32())%len(palette)]
 }
+
+// approvalWhyFor looks up who is asking and why for a pending approval: the
+// owner of the requesting step and the first sentence of that step's
+// narration. A call from a step with no narration gets no why line.
+func (m Model) approvalWhyFor(tc *session.PendingToolCall) approvalWhy {
+	if tc == nil || tc.StepID == 0 {
+		return approvalWhy{}
+	}
+	st, ok := m.state.Step(tc.StepID)
+	if !ok {
+		return approvalWhy{}
+	}
+	w := approvalWhy{owner: stepOwner(st)}
+	for _, msg := range m.state.Messages() {
+		if msg.ContentType == session.ContentTypeNarration && msg.StepID == tc.StepID {
+			if head, _ := firstSentence(msg.Content); head != "" {
+				w.why = stripEmphasis(head)
+				break
+			}
+		}
+	}
+	return w
+}
+
+// subagentHeadline is the first sentence of a child's latest narration: what
+// it says it is doing, for the subagent card and the now bar's agent rows.
+func subagentHeadline(child *session.State) string {
+	if child == nil {
+		return ""
+	}
+	line := strings.TrimSpace(child.LatestNarrationLine())
+	if line == "" {
+		return ""
+	}
+	head, _ := firstSentence(line)
+	return stripEmphasis(head)
+}
+
+// subagentBodyLines is the live card's body: the child's headline and what
+// tool it is running. Before the child has narrated anything it falls back to
+// the raw activity tail, which agent.output also reads.
+func subagentBodyLines(child *session.State, n int) []string {
+	head := subagentHeadline(child)
+	if head == "" {
+		return subagentTailLines(child, n)
+	}
+	lines := []string{head}
+	if label := child.CurrentToolLabel(); label != "" {
+		g := toolCategoryGlyph(label)
+		text := DisplayToolName(label)
+		if strings.HasPrefix(label, "editing ") {
+			g, text = glyph.Edit, label
+		}
+		lines = append(lines, g+" "+text)
+	}
+	return lines
+}
+
+// subagentSummaryHeadline is the first sentence of a settled child's final
+// summary.
+func subagentSummaryHeadline(summary string) string {
+	head, _ := firstSentence(strings.TrimSpace(summary))
+	return stripEmphasis(head)
+}
+
+// liveStepSummary describes the step now running — its narrated headline, or
+// an inferred one — and the category glyph of its running tool, for the now
+// bar's live-mirror row.
+func (m Model) liveStepSummary() (headline, toolGlyph string) {
+	state, _ := m.transcriptSource()
+	var live *session.Step
+	steps := state.Steps()
+	for i := range steps {
+		if steps[i].EndedAt.IsZero() && (live == nil || !steps[i].StartedAt.Before(live.StartedAt)) {
+			live = &steps[i]
+		}
+	}
+	if live == nil {
+		return "", ""
+	}
+	for _, msg := range state.Messages() {
+		if msg.ContentType == session.ContentTypeNarration && msg.StepID == live.ID {
+			if h, _ := firstSentence(msg.Content); h != "" {
+				headline = stripEmphasis(h)
+				break
+			}
+		}
+	}
+	var rows []*stack.Node
+	for _, ev := range state.AuditLog() {
+		if ev.StepID == live.ID {
+			rows = append(rows, &stack.Node{Kind: stack.KindTool, Tools: []registry.AuditEvent{ev}})
+		}
+	}
+	for _, atc := range state.ActiveToolCalls() {
+		if atc.StepID == live.ID {
+			a := atc
+			rows = append(rows, &stack.Node{Kind: stack.KindTool, Active: &a})
+			toolGlyph = toolCategoryGlyph(atc.Name)
+		}
+	}
+	if headline == "" {
+		headline = inferHeadline(rows)
+	}
+	return headline, toolGlyph
+}

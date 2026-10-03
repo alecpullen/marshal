@@ -116,7 +116,34 @@ func mnemonicChoice(key string) (approvalChoice, bool) {
 	}
 }
 
-func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int) *approvalModel {
+// approvalWhy is the context an approval prompt shows about who is asking and
+// why: the owner of the requesting step (empty for the orchestrator) and the
+// first sentence of that step's narration. Both are empty when unknown. The
+// why line is only ever the agent's own words — never an inferred headline.
+type approvalWhy struct {
+	owner string
+	why   string
+}
+
+// ownerLine is "<owner> wants to run a command", or "… to <tool>".
+func (w approvalWhy) ownerLine(tc *session.PendingToolCall) string {
+	if w.owner == "" {
+		return ""
+	}
+	if tc.Name == "shell.run" {
+		return w.owner + " wants to run a command"
+	}
+	return w.owner + " wants to " + strings.ToLower(DisplayToolName(tc.Name))
+}
+
+func (w approvalWhy) whyLine() string {
+	if w.why == "" {
+		return ""
+	}
+	return "why  \"" + w.why + "\""
+}
+
+func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int, why ...approvalWhy) *approvalModel {
 	opts := []huh.Option[approvalChoice]{
 		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
@@ -145,7 +172,11 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		allowNetwork: allowNetwork,
 	}
 
-	summary := approvalSummary(tc, sb, allowNetwork, width)
+	var w approvalWhy
+	if len(why) > 0 {
+		w = why[0]
+	}
+	summary := approvalSummary(tc, sb, allowNetwork, width, w)
 
 	sel := huh.NewSelect[approvalChoice]().
 		Title(summary).
@@ -350,7 +381,11 @@ func (am *approvalModel) IsDone() bool           { return am.done }
 // approvalSummary builds the multi-line title shown above the select. It
 // mirrors the body of renderApprovalPanel (command/description/arguments,
 // risk, sandbox isolation) but as plain titled text the select can render.
-func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
+func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int, why ...approvalWhy) string {
+	var w approvalWhy
+	if len(why) > 0 {
+		w = why[0]
+	}
 	titleStyle := lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 	muted := mutedStyle()
 	text := lipgloss.NewStyle()
@@ -358,6 +393,10 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(glyph.Warning + " Approval needed (←/→, enter to select)"))
 	b.WriteString("\n")
+	if line := w.ownerLine(tc); line != "" {
+		b.WriteString(muted.Render(line))
+		b.WriteString("\n")
+	}
 
 	if tc.Name == "shell.run" {
 		b.WriteString(muted.Render("Agent wants to run:"))
@@ -371,6 +410,10 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 			b.WriteString("\n")
 		}
 		b.WriteString(muted.Render("Arguments: ") + text.Render(tc.Args))
+	}
+	if line := w.whyLine(); line != "" {
+		b.WriteString("\n")
+		b.WriteString(muted.Render(ansi.Wrap(line, max(width, 30), WrapBreakpoints)))
 	}
 	b.WriteString("\n\n")
 	b.WriteString(riskLabelStyle().Render("Risk: "))

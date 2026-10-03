@@ -423,3 +423,145 @@ func TestActorColorIsStableAndOrchestratorHasNone(t *testing.T) {
 		t.Error("colour must be stable per role")
 	}
 }
+
+func TestLiveSubagentCardShowsChildHeadlineAndTool(t *testing.T) {
+	child := newChildState(t)
+	child.AddNarration(child.BeginStep(session.Actor{}), "Tracing the config loader. It has three layers.")
+	child.SetActiveToolCall(session.ActiveToolCall{Name: "file.read", ToolCallID: "c", StartedAt: time.Now()})
+	v := session.SubagentView{ID: 1, Label: "explore repo", Status: session.SubagentRunning, StartedAt: time.Now(), Child: child}
+	out := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 80))
+	if !strings.Contains(out, "Tracing the config loader.") {
+		t.Fatalf("card should show the child's headline:\n%s", out)
+	}
+	if strings.Contains(out, "three layers") {
+		t.Errorf("only the first sentence is the headline:\n%s", out)
+	}
+	if !strings.Contains(out, "Read file") {
+		t.Errorf("card should name the running tool:\n%s", out)
+	}
+
+	// Before the child narrates, the card keeps its raw activity tail.
+	quiet := newChildState(t)
+	v.Child = quiet
+	if out := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 80)); strings.Contains(out, "Tracing") {
+		t.Errorf("a child that has not narrated must not show another's headline:\n%s", out)
+	}
+}
+
+func TestNowBarAgentRowsShowHeadlineAndModelOnlyWhenDifferent(t *testing.T) {
+	in := nowBarBase()
+	in.Model, in.Provider = "qwen", "ollama"
+	in.Agents = nowBarAgents(2)
+	in.AgentHeadlines = []string{"Scanning the handlers.", ""}
+	in.Agents[0].Model, in.Agents[0].Provider = "qwen", "ollama" // same as the parent
+	in.Agents[1].Model, in.Agents[1].Provider = "gpt-5", "openai"
+	plain := stripANSI(strings.Join(planNowBar(in).rows, "\n"))
+	if !strings.Contains(plain, "#1  agent1  Scanning the handlers.") {
+		t.Errorf("agent row should carry the child's headline:\n%s", plain)
+	}
+	if strings.Contains(plain, "qwen") {
+		t.Errorf("a child on the parent's own model adds nothing:\n%s", plain)
+	}
+	if !strings.Contains(plain, "gpt-5 @ openai") {
+		t.Errorf("a child on another model should name it:\n%s", plain)
+	}
+}
+
+func TestNowBarLiveMirrorRow(t *testing.T) {
+	in := nowBarBase()
+	in.Busy, in.TurnStartedAt, in.Spinner = true, nowBarT0.Add(-time.Second), "⠋"
+	in.LiveHeadline, in.LiveToolGlyph = "Running the package tests.", "$"
+	plan := planNowBar(in)
+	if len(plan.rows) != 2 {
+		t.Fatalf("mirror + turn row = %d rows:\n%s", len(plan.rows), stripANSI(strings.Join(plan.rows, "\n")))
+	}
+	first := stripANSI(plan.rows[0])
+	for _, want := range []string{"↓", "Running the package tests.", "⠋", "End"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("mirror row missing %q: %q", want, first)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimRight(first, " "), "End") {
+		t.Errorf("End hint should be right-aligned: %q", first)
+	}
+	if plan.agentRowStart != 2 {
+		t.Errorf("agent rows start after the mirror and turn rows, got %d", plan.agentRowStart)
+	}
+
+	// Actor rows overflow before the mirror gives way: the 4-row cap holds.
+	in.Agents = nowBarAgents(5)
+	plan = planNowBar(in)
+	if len(plan.rows) != nowBarMaxRows {
+		t.Fatalf("rows = %d, want the cap %d", len(plan.rows), nowBarMaxRows)
+	}
+	if !strings.Contains(stripANSI(plan.rows[0]), "↓") || !strings.Contains(stripANSI(plan.rows[len(plan.rows)-1]), "more") {
+		t.Errorf("mirror stays first and agents overflow:\n%s", stripANSI(strings.Join(plan.rows, "\n")))
+	}
+
+	// No headline (the viewport follows the live step): no mirror row.
+	in.LiveHeadline = ""
+	if got := stripANSI(strings.Join(planNowBar(in).rows, "\n")); strings.Contains(got, "End") {
+		t.Errorf("mirror must be absent when following:\n%s", got)
+	}
+}
+
+func TestMirrorRowComesFromTheLiveStepWhenScrolledAway(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Running the tests. This may take a while.")
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "test.run", StepID: id, ToolCallID: "t", StartedAt: time.Now()})
+	m.busy, m.turnStartedAt = true, time.Now()
+
+	m.viewportFollow = true
+	if got := nowBarOut(m); strings.Contains(stripANSI(got), "End") {
+		t.Fatalf("no mirror while following:\n%s", got)
+	}
+	m.viewportFollow = false
+	got := stripANSI(nowBarOut(m))
+	if !strings.Contains(got, "↓ Running the tests.") || !strings.Contains(got, "End") {
+		t.Fatalf("scrolled away from a live step should mirror it:\n%s", got)
+	}
+}
+
+func TestApprovalShowsOwnerAndWhy(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{Role: "sdd_implementer", Label: "implementer"})
+	m.state.AddNarration(id, "Installing the dependency the build needs. It is pinned.")
+	tc := &session.PendingToolCall{Name: "shell.run", Command: "go get example.com/x@v1", Risk: "command", StepID: id}
+
+	w := m.approvalWhyFor(tc)
+	if w.owner != "implementer" || w.why != "Installing the dependency the build needs." {
+		t.Fatalf("approvalWhyFor = %+v", w)
+	}
+	for name, view := range map[string]string{
+		"summary":  approvalSummary(tc, session.SandboxInfo{}, false, 80, w),
+		"fallback": renderApprovalPanel(tc, session.SandboxInfo{}, false, 80, w),
+	} {
+		plain := stripANSI(view)
+		if !strings.Contains(plain, "implementer wants to run a command") {
+			t.Errorf("%s: owner line missing:\n%s", name, plain)
+		}
+		if !strings.Contains(plain, `why  "Installing the dependency the build needs."`) {
+			t.Errorf("%s: why line missing:\n%s", name, plain)
+		}
+	}
+
+	// The orchestrator is not named; a step without narration has no why.
+	m2 := newTestModel(t)
+	m2.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	silent := m2.state.BeginStep(session.Actor{})
+	tc2 := &session.PendingToolCall{Name: "shell.run", Command: "ls", StepID: silent}
+	if w := m2.approvalWhyFor(tc2); w != (approvalWhy{}) {
+		t.Fatalf("orchestrator step with no narration should add nothing, got %+v", w)
+	}
+	plain := stripANSI(renderApprovalPanel(tc2, session.SandboxInfo{}, false, 80, m2.approvalWhyFor(tc2)))
+	if strings.Contains(plain, "why") || strings.Contains(plain, "wants to") {
+		t.Errorf("no owner and no narration means no extra lines:\n%s", plain)
+	}
+	if w := m2.approvalWhyFor(&session.PendingToolCall{Name: "x"}); w != (approvalWhy{}) {
+		t.Fatalf("unstamped approval should add nothing, got %+v", w)
+	}
+}

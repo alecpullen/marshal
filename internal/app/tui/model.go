@@ -1395,7 +1395,7 @@ func New(state *session.State, opts ...Option) Model {
 	// has a pending request (parent or subagent), so the first render shows
 	// the huh surface instead of the legacy fallback panels.
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(tc))
 	}
 	if q := m.state.PendingQuestion(); q != nil {
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
@@ -2678,7 +2678,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		}
 	}
 	if m.approvalModel == nil {
-		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
+		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(displayTC))
 	}
 	am, cmd := m.approvalModel.Update(msg)
 	m.approvalModel = am
@@ -3007,7 +3007,7 @@ func (m Model) inputChromeRows() int {
 		case m.approvalModel != nil:
 			content = m.approvalModel.View()
 		default:
-			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1))
+			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(tc))
 		}
 		rows += lipgloss.Height(content)
 	}

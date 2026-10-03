@@ -344,8 +344,8 @@ func TestRenderSubagentCardContent(t *testing.T) {
 		Summary:   "found three entry points",
 	}
 	collapsed := stripANSI(renderSubagentCard(done, false, "⠋", regionView{}, 80))
-	if strings.Contains(collapsed, "found three entry points") {
-		t.Fatalf("collapsed card must hide the summary, got:\n%s", collapsed)
+	if !strings.Contains(collapsed, "found three entry points") {
+		t.Fatalf("a settled card shows its summary headline, got:\n%s", collapsed)
 	}
 	if strings.Contains(collapsed, "ctrl+f to drill in") {
 		t.Fatalf("childless card must not offer drill-down, got:\n%s", collapsed)

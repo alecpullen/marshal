@@ -50,6 +50,15 @@ func modeStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary).Bold(true)
 }
 
+// modeSegmentStyle is modeStyle, but violet while browsing so the mode change
+// is visible even where the word is clipped.
+func (m Model) modeSegmentStyle() lipgloss.Style {
+	if m.browsing && !m.hasPendingApproval() {
+		return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary).Bold(true)
+	}
+	return modeStyle()
+}
+
 // untrustedStyle colors the untrusted warning segment.
 func untrustedStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning).Bold(true)
@@ -93,6 +102,12 @@ func (m Model) renderStatusLine(width int) string {
 		if !fits(right) {
 			hints := m.footerHints()
 			hints.SuppressMouseHint = true
+			right = help.Footer(hints)
+		}
+		if !fits(right) {
+			hints := m.footerHints()
+			hints.SuppressMouseHint = true
+			hints.SuppressBrowseHint = true
 			right = help.Footer(hints)
 		}
 		if !fits(right) {
@@ -152,6 +167,9 @@ func (m Model) modeSegment() string {
 	if m.state.PendingQuestion() != nil {
 		return "answering"
 	}
+	if m.browsing {
+		return "browse"
+	}
 	mode := string(m.approvalMode)
 	if mode == "" {
 		mode = "default"
@@ -171,7 +189,7 @@ func (m Model) modeSegment() string {
 //	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
-		{text: modeStyle().Render(m.modeSegment()), priority: 0},
+		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0},
 	}
 
 	if !m.state.Trusted() {
@@ -357,6 +375,9 @@ func (m Model) statusRightSegment() string {
 		}
 		return errorStyle().Render("✘ error")
 	}
+	if m.flashActive() {
+		return dimStyle().Render(m.flash)
+	}
 	return help.Footer(m.footerHints())
 }
 
@@ -404,6 +425,7 @@ func (m Model) footerHints() help.FooterHints {
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),
+		Browsing:             m.browsing,
 	}
 }
 

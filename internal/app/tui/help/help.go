@@ -40,6 +40,9 @@ type FooterHints struct {
 	// caller retries with this set when the full cluster overflows, which
 	// makes the mouse hint the first thing shed rather than the last.
 	SuppressMouseHint bool
+	// SuppressBrowseHint drops the Esc browse hint, the second thing shed
+	// (after the mouse hint) when the cluster does not fit.
+	SuppressBrowseHint bool
 	// RunActive is true when a subagent is running, so the Ctrl+F drill-in
 	// hint is actionable.
 	RunActive bool
@@ -49,6 +52,8 @@ type FooterHints struct {
 	// SkillGatePending is true while a skill-load gate dialog is up, so
 	// the footer shows the gate's navigation keys instead of the chat keys.
 	SkillGatePending bool
+	// Browsing is true in browse mode (Esc): the footer shows its keys.
+	Browsing bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -70,7 +75,12 @@ func Footer(h FooterHints) string {
 	showMouseHint := false
 
 	var segs []string
-	if h.QuestionPending {
+	if h.Browsing && !h.QuestionPending && !h.SkillGatePending && !h.ApprovalPending {
+		segs = append(segs,
+			pair("j/k", "move"), pair("↵", "detail"), pair("i", "inspect"),
+			pair("y", "copy"), pair("o", "open"), pair("esc", "back"))
+		return strings.Join(segs, sep.Render(""))
+	} else if h.QuestionPending {
 		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
 	} else if h.SkillGatePending {
 		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
@@ -104,6 +114,9 @@ func Footer(h FooterHints) string {
 			pair("Tab", "mode"),
 			pair("/", "cmd"),
 		)
+		if !h.SuppressBrowseHint {
+			segs = append(segs, pair("Esc", "browse"))
+		}
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
 		}

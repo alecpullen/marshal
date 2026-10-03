@@ -61,7 +61,8 @@ TUI
 internal/app/tui/                     — Bubble Tea model (View/Update/Init); model.go is the hub
 internal/app/tui/dock/                — hosts a single interactive panel above the input area
 internal/app/tui/sessionsheet/        — session sheet (Ctrl+B): read-only sections in a docked panel
-internal/app/tui/stack/               — transcript view model: turn → step → row (structure only, no styling)
+internal/app/tui/stack/               — transcript view model: turn → task → step → row, plus turn receipts (structure only, no styling)
+internal/app/tui/inspector/           — full-screen inspector for one step or tool call (browse mode `i`)
 internal/app/tui/settings/            — /settings browser: field list, pane stack, config frames
 internal/app/tui/connect/             — provider connect flow (template → base URL → key → probe → model)
 internal/app/tui/agents/              — /agents roster panel with per-role attribution

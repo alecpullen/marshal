@@ -145,8 +145,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				res := Panel("Help", false, rows)
 				res.Doc.Footer = "⏎ send · esc close/dismiss · tab/shift+tab mode · alt+m /models\n" +
 					"ctrl+c ctrl+c stop the turn (quit when idle) · ctrl+x clear queue\n" +
-					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n" +
+					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g cycle detail (outline/steps/full) · ctrl+t tasks · ctrl+r rollback\n" +
 					"ctrl+b session sheet · pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n" +
+					"browse mode (esc): j/k move · J/K task · ↵ detail · i inspect · y copy · o open · f agent · z fold · ? keys\n" +
 					"while drilled into a running agent: esc pop out · ctrl+x stop agent\n" +
 					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling)."
 				return res

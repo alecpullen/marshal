@@ -215,6 +215,12 @@ type fileTUI struct {
 	MouseCapture *bool             `toml:"mouse_capture"`
 	SidePanel    *fileSidePanel    `toml:"side_panel"`
 	Suggestions  *string           `toml:"suggestions"`
+	Transcript   *fileTranscript   `toml:"transcript"`
+}
+
+type fileTranscript struct {
+	Density           *string `toml:"density"`
+	FoldFinishedTasks *bool   `toml:"fold_finished_tasks"`
 }
 
 type fileSidePanel struct {

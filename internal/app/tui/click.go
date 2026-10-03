@@ -166,6 +166,16 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
+	// In browse mode a click also moves the cursor to the clicked node. A
+	// click never enters browse mode on its own.
+	if m.browsing && navigable(target.node.Kind) {
+		for _, it := range m.browseItems {
+			if it.id == target.node {
+				m.cursor = target.node
+				break
+			}
+		}
+	}
 	if target.subagent != nil {
 		m.drillIntoSubagent(*target.subagent)
 	} else {

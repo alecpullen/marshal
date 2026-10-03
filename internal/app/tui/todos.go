@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"image/color"
+	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -75,7 +76,11 @@ func (m Model) viewedTodos() []native.TodoItem {
 
 // tasksDoc builds the Ctrl+T Tasks panel: one row per todo, using the same
 // glyphs as todoLine. docpanel supplies the `esc close` hint.
-func tasksDoc(todos []native.TodoItem) commands.Doc {
+//
+// Each row also carries its step count (the steps under that task's header in
+// the transcript, so the two views agree), its duration once completed, or its live elapsed time while in
+// progress.
+func tasksDoc(todos []native.TodoItem, stats map[string]taskStat) commands.Doc {
 	done, _ := todoProgress(todos)
 	rows := make([]commands.Row, 0, len(todos))
 	for _, t := range todos {
@@ -86,7 +91,14 @@ func tasksDoc(todos []native.TodoItem) commands.Doc {
 		case native.TodoInProgress:
 			g = glyph.Running
 		}
-		rows = append(rows, commands.Row{Text: g + " " + t.Content})
+		var detail []string
+		if st := stats[t.ID]; t.ID != "" && st.steps > 0 {
+			detail = append(detail, pluralCount(st.steps, "step", "steps"))
+			if st.work > 0 {
+				detail = append(detail, compactDuration(st.work))
+			}
+		}
+		rows = append(rows, commands.Row{Text: g + " " + t.Content, Detail: strings.Join(detail, " · ")})
 	}
 	return commands.Doc{Title: fmt.Sprintf("Tasks %d/%d", done, len(todos)), Rows: rows}
 }
@@ -113,7 +125,7 @@ func (m *Model) toggleTasksPanel() {
 		return
 	}
 	m.sheetPanel = nil // opening replaces the session sheet if it was up
-	m.tasksPanel = docpanel.New(tasksDoc(todos), m.state)
+	m.tasksPanel = docpanel.New(tasksDoc(todos, m.taskStats), m.state)
 	m.dock.Open(m.tasksPanel)
 	m.refreshViewport()
 }

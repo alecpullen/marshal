@@ -203,6 +203,19 @@ type TUIConfig struct {
 	// additionally falls back to a background model call when the rules
 	// produce no suggestion.
 	Suggestions string `toml:"suggestions"`
+	// Transcript sets how much of the conversation the scrollback shows.
+	Transcript TranscriptConfig `toml:"transcript"`
+}
+
+// TranscriptConfig is the [tui.transcript] table.
+type TranscriptConfig struct {
+	// Density is the starting detail level, cycled with Ctrl+G: "outline"
+	// (one row per step), "steps" (the default), or "full". Any other value
+	// is reported as a diagnostic and treated as "steps".
+	Density string `toml:"density"`
+	// FoldFinishedTasks collapses a completed task to one row. It is the
+	// session default for the z toggle in browse mode.
+	FoldFinishedTasks bool `toml:"fold_finished_tasks"`
 }
 
 // SidePanelConfig is what remains of the removed widescreen side rail. Only

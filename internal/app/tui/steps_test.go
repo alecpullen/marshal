@@ -635,7 +635,7 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
 	m.state.AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
 	m.busy, m.turnStartedAt = true, time.Now()
-	m.detailExpanded = true // ctrl+g on: settled rows open, running rows stay closed
+	m.density = densityFull // ctrl+g on: settled rows open, running rows stay closed
 
 	row := stack.NodeID{Kind: stack.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
 	m.invalidateTranscript()

@@ -63,6 +63,17 @@ func TestFrameInvariants(t *testing.T) {
 			m.busy = true
 			m.turnStartedAt = time.Now()
 		}},
+		{"tasks+browsing", func(t *testing.T, m *Model) {
+			scriptedTasks(t, m, 3, 2, false)
+			m.refreshViewport()
+			m.enterBrowse()
+		}},
+		{"tasks+inspector", func(t *testing.T, m *Model) {
+			scriptedTasks(t, m, 2, 2, true)
+			m.refreshViewport()
+			m.enterBrowse()
+			m.openInspector()
+		}},
 		{"many-todos+agents", func(t *testing.T, m *Model) {
 			for _, n := range []string{"a", "b", "c", "d"} {
 				registerRunningSubagent(t, m, n)

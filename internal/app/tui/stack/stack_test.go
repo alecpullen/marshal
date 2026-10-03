@@ -53,6 +53,9 @@ func shape(nodes []*Node) string {
 	var walk func(ns []*Node, depth int)
 	walk = func(ns []*Node, depth int) {
 		for _, n := range ns {
+			if n.Kind == KindReceipt {
+				continue // asserted on directly; keeps older outlines readable
+			}
 			extra := ""
 			if n.Live {
 				extra = " live"

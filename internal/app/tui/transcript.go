@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/liveregion"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/diffview"
 	"marshal/internal/strutil"
@@ -1007,7 +1008,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	}
 	gutter := gutterPrefix(g, gutterColor)
 	head := DisplayToolName(event.ToolName)
-	shellRow := isShellFamily(event.ToolName)
+	shellRow := stack.IsShellFamily(event.ToolName)
 	// summaryDupesCommand tracks whether the head already carries the
 	// command text. Only then should we suppress the ResultSummary —
 	// background jobs ("started background job <id>") and killed commands

@@ -43,6 +43,24 @@ func interfaceFrame(s *state) *frame {
 				SetFieldWriteGlobal(f, true)
 				return f
 			}(),
+			func() *field {
+				f := enumField("tui.transcript.density", "Transcript detail", []string{"outline", "steps", "full"},
+					func() string { return s.cfg.TUI.Transcript.Density },
+					func(v string) { s.cfg.TUI.Transcript.Density = v })
+				f.TomlPath = "tui.transcript.density"
+				f.Desc = "starting detail level; Ctrl+G cycles it (outline · steps · full)"
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
+			func() *field {
+				f := &field{ID: "tui.transcript.fold_finished_tasks", Title: "Fold finished tasks", Kind: kindToggle,
+					TomlPath: "tui.transcript.fold_finished_tasks",
+					Desc:     "collapse a completed task to one row (z toggles in browse mode)",
+					GetBool:  func() bool { return s.cfg.TUI.Transcript.FoldFinishedTasks },
+					SetBool:  func(v bool) { s.cfg.TUI.Transcript.FoldFinishedTasks = v }}
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
 		}
 	})
 }

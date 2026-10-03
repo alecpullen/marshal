@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -48,7 +50,7 @@ func newTodoWriteTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
 		Name:        "todo.write",
 		Description: "Replace the session todo list. Use for any task with 3+ steps or multiple requirements; mark items completed immediately, never batch-complete at the end. Unfinished items omitted from the new list are kept automatically (carried over); completed items may be dropped. Pass \"drop_unfinished\": true only when the carried list is corrupted or stale and you need to replace it wholesale: the submitted list becomes the whole list, even if that drops unfinished items you left out.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}},"drop_unfinished":{"type":"boolean","description":"When true, skip auto-carry: the submitted list becomes the whole list and unfinished items omitted from it are dropped. Default false keeps auto-carry."}},"required":["todos"],"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}},"drop_unfinished":{"type":"boolean","description":"When true, skip auto-carry: the submitted list becomes the whole list and unfinished items omitted from it are dropped. Default false keeps auto-carry."}},"required":["todos"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -75,27 +77,32 @@ func newTodoWriteTool(state *session.State) registry.Tool {
 		}
 		store := TodoStore(state)
 
+		oldTodos := store.Todos()
+		now := todoNow()
+		// Identity and timestamps are the store's, never the model's.
+		for i := range args.Todos {
+			args.Todos[i].StartedAt, args.Todos[i].CompletedAt = time.Time{}, time.Time{}
+		}
+		merged, matched := reconcileTodos(oldTodos, args.Todos, now, state.TodoIDFloor())
+
 		// Auto-carry: unfinished items missing from the submitted list are
 		// kept (appended with their status) instead of erroring. The old
 		// drop-guard fired during ordinary reorganisation and forced a
 		// retry loop with the model.
-		submitted := map[string]bool{}
-		for _, item := range args.Todos {
-			submitted[strings.TrimSpace(item.Content)] = true
-		}
-		oldTodos := store.Todos()
-		var carried []string
-		if !args.DropUnfinished {
-			for _, old := range oldTodos {
-				if old.Status == TodoCompleted {
-					continue
-				}
-				if !submitted[strings.TrimSpace(old.Content)] {
-					carried = append(carried, old.Content)
-					args.Todos = append(args.Todos, TodoItem{Content: old.Content, Status: old.Status})
-				}
+		var carried, dropped []string
+		for i, old := range oldTodos {
+			if matched[i] || old.Status == TodoCompleted {
+				continue
 			}
+			if args.DropUnfinished {
+				dropped = append(dropped, old.Content)
+				continue
+			}
+			carried = append(carried, old.Content)
+			merged = append(merged, old)
 		}
+		ensureTodoIDs(merged, state.TodoIDFloor())
+		args.Todos = merged
 
 		if err := store.SetTodos(args.Todos); err != nil {
 			return registry.ToolResult{}, err
@@ -107,21 +114,99 @@ func newTodoWriteTool(state *session.State) registry.Tool {
 		if len(carried) > 0 {
 			result.Content += fmt.Sprintf("; carried over %d unfinished item(s): %s", len(carried), strings.Join(carried, "; "))
 		}
-		if args.DropUnfinished {
-			var dropped []string
-			for _, old := range oldTodos {
-				if old.Status == TodoCompleted {
-					continue
-				}
-				if !submitted[strings.TrimSpace(old.Content)] {
-					dropped = append(dropped, old.Content)
-				}
-			}
-			if len(dropped) > 0 {
-				result.Content += fmt.Sprintf("; dropped %d unfinished item(s) per drop_unfinished: %s", len(dropped), strings.Join(dropped, "; "))
-			}
+		if len(dropped) > 0 {
+			result.Content += fmt.Sprintf("; dropped %d unfinished item(s) per drop_unfinished: %s", len(dropped), strings.Join(dropped, "; "))
 		}
 		return result, nil
 	}
 	return tool
+}
+
+// todoNow is the clock for todo timestamps; tests replace it.
+var todoNow = time.Now
+
+// reconcileTodos matches a submitted list against the previous one so items
+// keep their identity and timestamps across rewrites. An item matches, in
+// order, by ID, by exact content, and by content equal after trimming and
+// case-folding; anything else is new and gets the next "t<n>" ID. matched
+// reports which previous items were claimed. Timestamps are set from status
+// transitions: StartedAt on first entering in_progress, CompletedAt on entering
+// completed (cleared again if the item leaves it).
+func reconcileTodos(prev, next []TodoItem, now time.Time, floor int) ([]TodoItem, []bool) {
+	matched := make([]bool, len(prev))
+	claim := func(ok func(TodoItem) bool) int {
+		for i := range prev {
+			if !matched[i] && ok(prev[i]) {
+				matched[i] = true
+				return i
+			}
+		}
+		return -1
+	}
+	// floor is the highest number any earlier ID in the session used, so an
+	// ID freed by dropping a completed todo is never handed to a new one
+	// (older steps still carry it).
+	counter := floor
+	for _, p := range prev {
+		if n, err := strconv.Atoi(strings.TrimPrefix(p.ID, "t")); err == nil && strings.HasPrefix(p.ID, "t") && n > counter {
+			counter = n
+		}
+	}
+	out := make([]TodoItem, 0, len(next))
+	for _, item := range next {
+		idx := -1
+		if item.ID != "" {
+			idx = claim(func(p TodoItem) bool { return p.ID == item.ID })
+		}
+		if idx < 0 {
+			idx = claim(func(p TodoItem) bool { return p.Content == item.Content })
+		}
+		if idx < 0 {
+			want := strings.ToLower(strings.TrimSpace(item.Content))
+			idx = claim(func(p TodoItem) bool { return strings.ToLower(strings.TrimSpace(p.Content)) == want })
+		}
+		var base TodoItem
+		if idx >= 0 {
+			base = prev[idx]
+		}
+		if base.ID == "" {
+			// New, or a todo saved before IDs existed: it gets an identity now.
+			counter++
+			base.ID = "t" + strconv.Itoa(counter)
+		}
+		base.Content, base.Status = item.Content, item.Status
+		switch item.Status {
+		case TodoInProgress:
+			if base.StartedAt.IsZero() {
+				base.StartedAt = now
+			}
+			base.CompletedAt = time.Time{}
+		case TodoCompleted:
+			if base.CompletedAt.IsZero() {
+				base.CompletedAt = now
+			}
+		default:
+			base.CompletedAt = time.Time{}
+		}
+		out = append(out, base)
+	}
+	return out, matched
+}
+
+// ensureTodoIDs gives every item without an ID the next free "t<n>". It covers
+// todos carried over from a list saved before IDs existed, which are not
+// resubmitted and so never pass through matching.
+func ensureTodoIDs(items []TodoItem, floor int) {
+	counter := floor
+	for _, it := range items {
+		if n, err := strconv.Atoi(strings.TrimPrefix(it.ID, "t")); err == nil && strings.HasPrefix(it.ID, "t") && n > counter {
+			counter = n
+		}
+	}
+	for i := range items {
+		if items[i].ID == "" {
+			counter++
+			items[i].ID = "t" + strconv.Itoa(counter)
+		}
+	}
 }

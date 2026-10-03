@@ -16,10 +16,10 @@ func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
 	key := thinkID(time.Unix(100, 0))
 
 	if m.isExpanded(key) {
-		t.Fatal("expected collapsed by default (detailExpanded starts false)")
+		t.Fatal("expected collapsed by default (density starts at steps)")
 	}
 
-	m.detailExpanded = true
+	m.density = densityFull
 	if !m.isExpanded(key) {
 		t.Fatal("expected expanded once the global default flips")
 	}
@@ -29,7 +29,7 @@ func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
 		t.Fatal("expected the per-item override to win over the global default")
 	}
 
-	m.detailExpanded = false
+	m.density = densitySteps
 	if m.isExpanded(key) {
 		t.Fatal("expected the per-item override (still false) to persist")
 	}
@@ -49,13 +49,13 @@ func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 	}
 	mm := asModel(t, updated)
 
-	// detailExpanded flipped true, and the override was cleared, so the
+	// the global level moved to full, and the override was cleared, so the
 	// item now simply follows the (new) global default.
 	if !mm.isExpanded(key) {
 		t.Fatal("expected item to follow the flipped global default")
 	}
-	if len(mm.expanded) != 0 {
-		t.Fatalf("expanded = %v, want cleared", mm.expanded)
+	if len(mm.nodeDensity) != 0 {
+		t.Fatalf("nodeDensity = %v, want cleared", mm.nodeDensity)
 	}
 }
 
@@ -75,8 +75,8 @@ func TestCtrlGClearsActiveToolOverrides(t *testing.T) {
 	}
 	mm := asModel(t, updated)
 
-	if len(mm.expanded) != 0 {
-		t.Fatalf("expanded = %v, want cleared", mm.expanded)
+	if len(mm.nodeDensity) != 0 {
+		t.Fatalf("nodeDensity = %v, want cleared", mm.nodeDensity)
 	}
 	// A running call ignores the global default: it stays collapsed.
 	if mm.isToolExpanded(keyA, true) || mm.isToolExpanded(keyB, true) {

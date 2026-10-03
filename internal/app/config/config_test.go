@@ -2004,3 +2004,43 @@ func TestNarrationConfigDefaultsOnAndOverrides(t *testing.T) {
 		t.Fatalf("saved config lost the overrides:\n%s", data)
 	}
 }
+
+func TestTranscriptConfigDefaultsOverridesAndDiagnostic(t *testing.T) {
+	cfg := Default()
+	if cfg.TUI.Transcript.Density != "steps" || !cfg.TUI.Transcript.FoldFinishedTasks {
+		t.Fatalf("defaults = %+v", cfg.TUI.Transcript)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[tui.transcript]\ndensity = \"verbose\"\nfold_finished_tasks = false\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: t.TempDir(), WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TUI.Transcript.Density != "verbose" || loaded.TUI.Transcript.FoldFinishedTasks {
+		t.Fatalf("file values must override: %+v", loaded.TUI.Transcript)
+	}
+	var found bool
+	for _, d := range Diagnose(loaded, Layers{}) {
+		if d.Path == "tui.transcript.density" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("an unknown density must produce a diagnostic")
+	}
+	out := filepath.Join(t.TempDir(), ".marshal", "config.toml")
+	if err := SaveProjectConfig(out, loaded, Layers{}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	if !strings.Contains(string(data), "fold_finished_tasks = false") {
+		t.Fatalf("saved config lost the override:\n%s", data)
+	}
+}

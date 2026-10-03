@@ -46,6 +46,7 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 			Roster:       r.agentRoster(),
 			LoadedNames:  r.State.LoadedToolNames(),
 			SystemAccess: r.State.SystemAccess(),
+			Narration:    r.NarrationPrompt,
 		}),
 	}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())

@@ -82,9 +82,11 @@ type FlowConfig struct {
 	// ExtraAuthorizeParams are appended to the authorization URL query.
 	ExtraAuthorizeParams map[string]string
 	// RedirectPorts lists acceptable loopback redirect ports. The first
-	// free port wins; if none are free, an ephemeral port is used. Empty
+	// free port wins; if none are free, authorization fails. Empty
 	// means the MCP default (PreferredLoopbackPort, then ephemeral).
 	RedirectPorts []int
+	// RedirectPath is the registered callback path; empty means /callback.
+	RedirectPath string
 }
 
 // Engine drives the OAuth flow for a single authorization server. One
@@ -244,20 +246,27 @@ func (e *Engine) resolveMetadata(ctx context.Context) (AuthorizeServerMetadata, 
 }
 
 // startLoopback binds the callback receiver, preferring the configured
-// redirect ports in order and falling back to an ephemeral port when
-// none of them are free.
+// redirect ports in order. Only flows without registered ports may fall
+// back to an ephemeral port.
 func (e *Engine) startLoopback(ctx context.Context, timeout time.Duration) (*Loopback, error) {
 	ports := e.Flow.RedirectPorts
+	path := e.Flow.RedirectPath
+	if path == "" {
+		path = "/callback"
+	}
 	if len(ports) == 0 {
 		ports = []int{PreferredLoopbackPort}
 	}
 	for _, port := range ports {
-		loop, err := StartLoopbackOnPort(ctx, port, timeout)
+		loop, err := startLoopbackOnPath(ctx, port, path, timeout)
 		if err == nil {
 			return loop, nil
 		}
 	}
-	return StartLoopbackOnPort(ctx, 0, timeout)
+	if len(e.Flow.RedirectPorts) > 0 {
+		return nil, fmt.Errorf("oauth: no registered loopback port available (%v)", ports)
+	}
+	return startLoopbackOnPath(ctx, 0, path, timeout)
 }
 
 // metadataCache returns (creating if necessary) the metadata cache for

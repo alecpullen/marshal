@@ -794,3 +794,39 @@ func TestFlowConfigRedirectPorts(t *testing.T) {
 		t.Fatalf("redirect_uri = %q, want %q", redirect, want)
 	}
 }
+
+func TestFlowConfigRegisteredCallbackPath(t *testing.T) {
+	as := newFakeAS(t)
+	display := newTestDisplay()
+	e := engineWithAS(t, as, newMemStore(), func(en *Engine) {
+		en.Flow.RedirectPath = "/auth/callback"
+	})
+	driveCallback(t, display, as, "CODE-path")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := e.Authorize(ctx, display); err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	u, _ := url.Parse(display.URL())
+	redirect, _ := url.Parse(u.Query().Get("redirect_uri"))
+	if redirect.Path != "/auth/callback" {
+		t.Fatalf("callback path = %q", redirect.Path)
+	}
+}
+
+func TestFlowConfigOccupiedRegisteredPortsFail(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	e := &Engine{Flow: FlowConfig{RedirectPorts: []int{ln.Addr().(*net.TCPAddr).Port}, RedirectPath: "/auth/callback"}}
+	lb, err := e.startLoopback(context.Background(), time.Second)
+	if err == nil {
+		lb.Close()
+		t.Fatal("used an unregistered port when registered ports were occupied")
+	}
+	if !strings.Contains(err.Error(), "no registered loopback port available") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

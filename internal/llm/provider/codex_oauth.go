@@ -126,6 +126,7 @@ func NewCodexOAuthEngine(name string) (*oauth.Engine, error) {
 			ClientID:             codexClientID,
 			ExtraAuthorizeParams: codexExtraAuthorizeParams,
 			RedirectPorts:        []int{codexRedirectPort, codexRedirectFallbackPort},
+			RedirectPath:         "/auth/callback",
 		},
 	}, nil
 }

@@ -103,8 +103,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	// Suggestion accept/dismiss keys are routed before the textarea sees
 	// them, following the existing priority-routing pattern. Right accepts
 	// only at end-of-input; Tab accepts only when the completion popup is
-	// closed (popup priority wins); Esc dismisses only when idle (cancel
-	// takes precedence while busy).
+	// closed (popup priority wins); Esc dismisses whether busy or idle.
 	if m.suggestion != "" && !m.suggestionDismissed {
 		switch msg.String() {
 		case "right":
@@ -118,11 +117,9 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 				return *m, nil, true
 			}
 		case "esc":
-			if !m.busy {
-				m.suggestionDismissed = true
-				m.refreshViewport()
-				return *m, nil, true
-			}
+			m.suggestionDismissed = true
+			m.refreshViewport()
+			return *m, nil, true
 		}
 	}
 
@@ -145,34 +142,28 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "esc":
-		// F18: dismiss the active completion popup first. Only if
-		// nothing is up do we fall through to cancelling the in-flight
-		// turn.
+		// Esc only closes things; it never cancels a turn (Ctrl+C, twice,
+		// does). Dismiss the active completion popup first.
 		if m.activeCompletionPopup() != nil {
 			m.activeCompletionPopup().dismiss()
 			m.completionSuppressed = true
 			return *m, nil, true
 		}
 		// While drilled into a subagent, Esc pops back to the parent
-		// transcript rather than cancelling the in-flight turn. Ctrl+X
-		// while drilled into a running subagent stops that subagent;
-		// Ctrl+C cancels the whole turn.
+		// transcript. Ctrl+X while drilled into a running subagent stops
+		// that subagent; Ctrl+C (twice) stops the whole turn.
 		if m.popDrill() {
 			m.refreshViewport()
 			return *m, nil, true
 		}
-		// An idle esc dismisses the notice banner: there is no turn to
-		// cancel and the banner is the most recent thing asking for
-		// attention. Busy turns fall through to cancelTurn as before.
-		if !m.busy {
-			if _, ok := m.state.Notice(); ok {
-				m.state.DismissNotice()
-				m.refreshViewport()
-				return *m, nil, true
-			}
+		// Dismiss the notice banner, busy or idle: it is the most recent
+		// thing asking for attention.
+		if _, ok := m.state.Notice(); ok {
+			m.state.DismissNotice()
+			m.refreshViewport()
+			return *m, nil, true
 		}
 		m.resetHistoryNav()
-		m.cancelTurn()
 		return *m, nil, true
 	case "ctrl+o":
 		m.openSettingsBrowser("")

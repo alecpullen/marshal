@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"marshal/internal/app/session"
 )
 
 var ctrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
@@ -127,5 +129,48 @@ func TestCtrlCArmSurvivesBackgroundMessages(t *testing.T) {
 	m, _ = press(m, ctrlC)
 	if !*cancelled {
 		t.Fatal("non-key messages must not disarm")
+	}
+}
+
+func TestEscBusyNothingOpenDoesNotCancel(t *testing.T) {
+	m, _, cancelled := busyModel(t)
+	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if *cancelled || !m.busy {
+		t.Fatal("Esc must not cancel a busy turn")
+	}
+}
+
+func TestEscBusyDismissesNotice(t *testing.T) {
+	m, _, cancelled := busyModel(t)
+	m.state.SetNotice(session.Notice{Severity: session.SeverityWarn, Message: "heads up"})
+	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if _, ok := m.state.Notice(); ok {
+		t.Fatal("Esc should dismiss the notice while busy")
+	}
+	if *cancelled {
+		t.Fatal("dismissing a notice must not cancel")
+	}
+}
+
+func TestEscBusyDismissesSuggestion(t *testing.T) {
+	m, _, cancelled := busyModel(t)
+	m.suggestion = "yes"
+	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !m.suggestionDismissed || *cancelled {
+		t.Fatal("busy Esc should dismiss the suggestion without cancelling")
+	}
+}
+
+func TestEscBusyDrilledPopsDrillWithoutCancel(t *testing.T) {
+	m, _, cancelled := busyModel(t)
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if len(m.viewStack) != 0 {
+		t.Fatal("Esc should pop the drill")
+	}
+	if *cancelled {
+		t.Fatal("popping a drill must not cancel the turn")
 	}
 }

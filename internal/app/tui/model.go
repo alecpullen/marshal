@@ -448,8 +448,8 @@ type Model struct {
 	// for the same action within ctrlCWindow fires it; any other keypress
 	// disarms. Never read directly for display: use ctrlCArmed, which
 	// accounts for expiry.
-	ctrlCArmedAt  time.Time
-	ctrlCArmedFor ctrlCAction
+	ctrlCArmedAt   time.Time
+	ctrlCArmedFor  ctrlCAction
 	viewportFollow bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).

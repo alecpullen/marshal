@@ -343,7 +343,7 @@ func TestCtrlCQuits(t *testing.T) {
 	}
 }
 
-func TestEscCancelsInFlightTurn(t *testing.T) {
+func TestEscDoesNotCancelInFlightTurn(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(80, 24)
@@ -354,11 +354,8 @@ func TestEscCancelsInFlightTurn(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = updated.(Model)
 
-	if !cancelled {
-		t.Fatal("Esc should cancel the in-flight agent turn")
-	}
-	if m.agentCancel != nil {
-		t.Fatal("agentCancel should be cleared after Esc")
+	if cancelled || m.agentCancel == nil || !m.busy {
+		t.Fatal("Esc must not cancel the in-flight agent turn")
 	}
 }
 
@@ -3574,18 +3571,20 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	m.queuedCount = 2
 	cancelled := false
 	m.agentCancel = func() { cancelled = true }
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = updated.(Model)
-	if !cancelled {
-		t.Fatal("Esc should cancel the in-flight agent turn")
+	for range 2 {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+		m = updated.(Model)
 	}
-	// After Esc, the queue is NOT cleared yet — that happens in
+	if !cancelled {
+		t.Fatal("double Ctrl+C should cancel the in-flight agent turn")
+	}
+	// After the stop, the queue is NOT cleared yet — that happens in
 	// handleAgentFinished. Verify the flag is set.
 	if !m.cancelling {
-		t.Fatal("cancelling flag should be set after Esc")
+		t.Fatal("cancelling flag should be set after stop")
 	}
 	// Simulate the agent finishing.
-	updated, _ = m.Update(agentFinishedMsg{err: context.Canceled})
+	updated, _ := m.Update(agentFinishedMsg{err: context.Canceled})
 	m = updated.(Model)
 	if len(m.state.SteeringQueue()) != 0 {
 		t.Fatalf("queue not dropped on agent finish: %v", m.state.SteeringQueue())
@@ -3888,8 +3887,8 @@ func TestAtInsideWordDoesNotTrigger(t *testing.T) {
 }
 
 // F18: Esc dismisses the active popup without cancelling the in-flight
-// turn. A subsequent Esc with no popup cancels the turn as before.
-func TestEscDismissesPopupBeforeCancelTurn(t *testing.T) {
+// turn. A subsequent Esc with no popup is a no-op: Esc never cancels.
+func TestEscDismissesPopupAndNeverCancelsTurn(t *testing.T) {
 	m := newViewTestModelWithRegistry(t, 80, 24)
 	m.busy = true
 	m.input.SetValue("/p")
@@ -3909,8 +3908,8 @@ func TestEscDismissesPopupBeforeCancelTurn(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = updated.(Model)
-	if !cancelled {
-		t.Fatal("second Esc with no popup should cancel the turn")
+	if cancelled {
+		t.Fatal("Esc must never cancel the turn")
 	}
 }
 

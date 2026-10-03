@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w4-workspaces-design.md`](../specs/2026-10-03-w4-workspaces-design.md) §5, §7
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W3 (all plans) and [W4.1](2026-10-03-w4-1-engine-workspace-plan.md).
-**Base:** the branch once W4.1 is complete. Bridge anchors were checked on
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W4.1](2026-10-03-w4-1-engine-workspace-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Bridge anchors were checked on
 `2ddc09e`. W2 and W3 bridge additions are named as their plans define them:
 - `Fleet.control` / `controlCall` (W3.2 Task 2);
 - the shared homes and the `volumeMount` `readonly` parameter (W3.2 Task 1);

@@ -2,12 +2,13 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w5-automations-and-ops-design.md`](../specs/2026-10-03-w5-automations-and-ops-design.md) §5.3–§5.6
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W4, [W5.1](2026-10-03-w5-1-engine-plan.md) and [W5.2](2026-10-03-w5-2-bridge-terminal-preview-plan.md).
-**Base:** the branch once W5.2 is complete. Bridge anchors were checked on
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W5.2](2026-10-03-w5-2-bridge-terminal-preview-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Bridge anchors were checked on
 `2ddc09e`. Later symbols are as their plans define them:
 - `Fleet.Spawn` with a `Workspace` and `Routing`;
 - W3.2 budgets (per-agent caps, overrides);
-- W1 `Registry.Stack`, W3.2 `StartRun`;
+- W1.1 `Registry.Stack`, W3.2 `StartRun`;
 - `fleet.json` v10.
 
 **Plan slug:** `w5-3-bridge-recipes-schedules`. Commit each task as
@@ -21,7 +22,8 @@ This plan delivers:
 - schedules, with a cron parser and a scheduler;
 - three new origins;
 - outbound notification webhooks;
-- status links, with a public data endpoint and page.
+- status links, with a public data endpoint and page;
+- the Library memory routes for W5.1's scopes, suggestions and promotion.
 
 ## Non-goals
 
@@ -333,6 +335,39 @@ limit (spec §5.6).
 
 ```bash
 cd web/bridge && go test ./ -run 'TestStatusLink|TestStatusPublic' -v && go test ./... -race && go vet ./...
+```
+
+---
+
+## Task 6: Memory scope, suggestion and promote routes
+
+**Goal:** the Library memory routes expose W5.1's scopes, suggestions and
+promotion, for the W5.5 Memory tab.
+
+**Files:**
+- `web/bridge/library.go` (W3.2 Task 4), `web/bridge/library_test.go`, `web/bridge/audit.go`
+
+**Steps:**
+
+1. `GET /api/library/memory?project=&scope=` passes an optional `scope`
+   through to `session/memory_list`. W5.1 Task 4 accepts it.
+2. Add, both on `projectSession(root)` like the other memory routes:
+   - `GET /api/library/memory/suggestions?project=` →
+     `session/memory_suggestions`;
+   - `POST /api/library/memory/{id}/promote?project=` with body
+     `{scope, scopeKey?}` → `session/memory_promote`.
+3. Add the audit constant `memory_promoted`, and log it on a successful
+   promote.
+4. Tests, extending the library tests' fake child method table:
+   - `scope` reaches `memory_list`;
+   - suggestions proxy;
+   - promote proxies and writes the audit entry;
+   - 501 when the agent lacks the methods (`memoryScopes` missing).
+
+**Verify:**
+
+```bash
+cd web/bridge && go test ./ -run 'TestLibrary' -v && go test ./
 ```
 
 ---

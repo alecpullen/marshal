@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w3-runs-and-control-design.md`](../specs/2026-10-03-w3-runs-and-control-design.md) §6.1–§6.3
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1, W2, [W3.1](2026-10-03-w3-1-engine-plan.md) and [W3.2](2026-10-03-w3-2-bridge-control-plan.md).
-**Base:** the branch once W3.2 is complete. Code from before W1 was checked
+**Track:** UI. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W2.3](2026-10-03-w2-3-review-and-new-agent-plan.md) (previous UI plan) and [W3.2](2026-10-03-w3-2-bridge-control-plan.md) (this phase's backend gate), with everything those depend on.
+**Base:** a branch containing every plan listed under Runs after. Code from before W1 was checked
 on `2ddc09e`. W1–W3.2 names are as those plans define them.
 **Plan slug:** `w3-3-runs-and-live`. Commit each task as
 `w3-3-runs-and-live: task N — <title>`.
@@ -22,7 +23,7 @@ on `2ddc09e`. W1–W3.2 names are as those plans define them.
 
 ## Assumptions
 
-- **Bridge (W3.2):** `GET /api/runs`, `GET /api/runs/{agentId}`,
+- **Bridge (W3.2):** `GET /api/sessions/{id}/roster`, `GET /api/runs`, `GET /api/runs/{agentId}`,
   `POST /api/runs`, `POST /api/runs/{agentId}/answer`, and the fleet
   deltas `run`, `budget` and `reroute`. A 429 `budget_exceeded` response
   exists.
@@ -155,7 +156,6 @@ answer, and the W2 dock filtered by stage.
 **Files:**
 - `web/ui/src/views/Run.svelte` (new), `Run.test.ts` (new)
 - `web/ui/src/lib/runs/{Lanes,Graph,Timeline}.svelte` (new)
-- `web/bridge/registry.go`, `web/bridge/http.go`, `web/bridge/http_test.go` (roster route)
 
 **Steps:**
 
@@ -175,12 +175,9 @@ answer, and the W2 dock filtered by stage.
      glyph from `glyphs.ts` and the state colour, plus the fix-round
      count and short SHA.
    - Clicking a cell dispatches `select({task: n, stage})`.
-   - **Roles legend:** shows each role's model, from `session/agents_roster`.
-     No earlier plan proxies it, so this task adds:
-     - the bridge route `GET /api/sessions/{id}/roster` →
-       `session/agents_roster`, with `Registry.Roster` built on W2.1's
-       `Registry.call`, plus a bridge test;
-     - `getRoster(sessionId)` in `api.ts`.
+   - **Roles legend:** shows each role's model. Add
+     `getRoster(sessionId)` to `api.ts`, calling W3.2's
+     `GET /api/sessions/{id}/roster` (W3.2 Task 9).
 3. `Graph.svelte`:
    - SVG from `layout()`. Nodes are 180×56 rectangles, edges are cubic
      paths, and edges on `criticalPath()` are drawn dashed in accent.
@@ -307,7 +304,7 @@ cd ../.. && cd web/bridge && go test ./...
 | Check | Result |
 |---|---|
 | Self-contained, verifiable tasks? | Yes. Pure helpers (Task 2) come before views. |
-| Anchors verified? | Pre-W1 UI files were checked on `2ddc09e`. `session/agents_roster` exists (`internal/acp/memory.go:199`), and Task 4 adds its bridge proxy. Later names are as defined. |
+| Anchors verified? | Pre-W1 UI files were checked on `2ddc09e`. The roster route comes from W3.2 Task 9. Later names are as defined. |
 | Code compilable in isolation? | No verbatim code. |
 | Placeholders? | None. |
 | Matches the spec? | §6.1–§6.3. |

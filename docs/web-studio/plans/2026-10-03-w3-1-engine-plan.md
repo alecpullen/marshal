@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w3-runs-and-control-design.md`](../specs/2026-10-03-w3-runs-and-control-design.md) §4, §6.9
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1 and W2 (W2.1–W2.3), all tasks.
-**Base:** the branch once W2.3 is complete. Anchors into code from before
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W2.1](2026-10-03-w2-1-session-backend-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Anchors into code from before
 W1 were checked on `2ddc09e`. W1 and W2 names are as those plans define
 them.
 **Plan slug:** `w3-1-engine`. Commit each task as `w3-1-engine: task N — <title>`.

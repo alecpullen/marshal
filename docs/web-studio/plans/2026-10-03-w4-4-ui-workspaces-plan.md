@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w4-workspaces-design.md`](../specs/2026-10-03-w4-workspaces-design.md) §8.1–§8.2
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W3, [W4.1](2026-10-03-w4-1-engine-workspace-plan.md), [W4.2](2026-10-03-w4-2-bridge-templates-builds-plan.md), [W4.3](2026-10-03-w4-3-bridge-secrets-egress-plan.md).
-**Base:** the branch once W4.3 is complete. Names from earlier phases are
+**Track:** UI. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W3.4](2026-10-03-w3-4-control-pages-plan.md) (previous UI plan) and [W4.3](2026-10-03-w4-3-bridge-secrets-egress-plan.md) (this phase's backend gate), with everything those depend on.
+**Base:** a branch containing every plan listed under Runs after. Names from earlier phases are
 as their plans define them.
 **Plan slug:** `w4-4-ui-workspaces`. Commit each task as
 `w4-4-ui-workspaces: task N — <title>`.

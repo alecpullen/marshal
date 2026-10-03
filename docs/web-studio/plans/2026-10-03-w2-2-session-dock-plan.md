@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w2-session-and-ship-design.md`](../specs/2026-10-03-w2-session-and-ship-design.md) §6.1–§6.5
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1 (all tasks) and [W2.1 · Session backend](2026-10-03-w2-1-session-backend-plan.md) (all tasks).
-**Base:** the branch once W2.1 is complete. Anchors into code from before
+**Track:** UI. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W1.2](2026-10-03-w1-2-ui-plan.md) (previous UI plan) and [W2.1](2026-10-03-w2-1-session-backend-plan.md) (this phase's backend gate), with everything those depend on.
+**Base:** a branch containing every plan listed under Runs after. Anchors into code from before
 W1 were checked on `2ddc09e`. Anchors into W1 and W2.1 code are named as
 those plans define them.
 **Plan slug:** `w2-2-session-dock`. Commit each task as

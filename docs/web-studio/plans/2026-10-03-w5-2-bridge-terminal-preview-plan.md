@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w5-automations-and-ops-design.md`](../specs/2026-10-03-w5-automations-and-ops-design.md) §5.1–§5.2, §6.1 (Test shell)
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W4 and [W5.1](2026-10-03-w5-1-engine-plan.md).
-**Base:** the branch once W5.1 is complete. Bridge anchors were checked on
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W5.1](2026-10-03-w5-1-engine-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Bridge anchors were checked on
 `2ddc09e`. The following are as their plans define them:
 - from W2–W4: `Registry.call`, `ErrUnsupported`, `ContainerConfig.ExtraEnv`,
   `workspaceNetworkEnv`, `ResolveWorkspace`, the egress sidecar and

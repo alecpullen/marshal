@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w4-workspaces-design.md`](../specs/2026-10-03-w4-workspaces-design.md) §8.3–§8.5
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W3, and W4.1–W4.4.
-**Base:** the branch once W4.4 is complete. Names from earlier phases are
+**Track:** UI. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W4.4](2026-10-03-w4-4-ui-workspaces-plan.md) (previous UI plan), with everything it depends on.
+**Base:** a branch containing every plan listed under Runs after. Names from earlier phases are
 as their plans define them.
 **Plan slug:** `w4-5-ui-network-projects`. Commit each task as
 `w4-5-ui-network-projects: task N — <title>`.

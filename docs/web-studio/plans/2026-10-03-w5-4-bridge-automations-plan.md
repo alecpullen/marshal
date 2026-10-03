@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w5-automations-and-ops-design.md`](../specs/2026-10-03-w5-automations-and-ops-design.md) §5.7–§5.10
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W4 and W5.1–W5.3.
-**Base:** the branch once W5.3 is complete. Bridge anchors were checked on
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W5.3](2026-10-03-w5-3-bridge-recipes-schedules-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Bridge anchors were checked on
 `2ddc09e`. These are as their plans define them:
 
 | Plan | Symbols |
@@ -210,8 +211,8 @@ cd web/bridge && go test ./ -run 'TestReviewBot|TestPoll' -v && go test ./
 
 ## Task 4: Review bot — draft actions
 
-**Goal:** list, read, edit, post and discard drafts, and send findings to
-the author agent (spec §5.9).
+**Goal:** list, read, edit, post and discard drafts, send findings to
+the author agent, and run the bot on demand (spec §5.9, §6.3).
 
 **Files:**
 - `web/bridge/reviewbot.go`, `reviewbot_test.go`, `web/bridge/http.go`, `web/bridge/audit.go`
@@ -228,6 +229,7 @@ the author agent (spec §5.9).
    | `POST …/{id}/post` | Posts the review (see step 2) |
    | `POST …/{id}/discard` | Sets `status = discarded` |
    | `POST …/{id}/send-to-author` `{findingIds}` | Sends findings to the author agent (see step 3) |
+   | `POST /api/automations/review/run` `{repoId, number}` | Runs the bot on a PR now, through `onPREvent` with the PR's current head SHA (from `GetPR`). The W5.6 Ship panel calls it after a push, since a PR the bridge created raises no webhook event. Returns 202, or 409 when the project's review bot is off. |
 
 2. **Posting.** `post` builds a `Review`:
    - the body is the summary plus the findings without a path or line, as
@@ -251,6 +253,8 @@ the author agent (spec §5.9).
    - discard;
    - send-to-author creates review comments on the matching agent;
    - send-to-author with no match returns 404;
+   - the on-demand run route dispatches `onPREvent` and returns 409 when
+     the bot is off;
    - audit entries.
 
 **Verify:**

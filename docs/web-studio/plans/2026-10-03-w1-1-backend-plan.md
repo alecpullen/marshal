@@ -1,29 +1,27 @@
-# W1 · Foundation — implementation plan
+# W1.1 · Foundation backend — implementation plan
 
-**Spec:** [`docs/web-studio/specs/2026-10-03-w1-foundation-design.md`](../specs/2026-10-03-w1-foundation-design.md)
+**Spec:** [`docs/web-studio/specs/2026-10-03-w1-foundation-design.md`](../specs/2026-10-03-w1-foundation-design.md) §3–§6
 **Parent design:** [`docs/web-studio/design.md`](../design.md) (§9, row W1)
 **Execution:** run inline, task by task, with `marshal-executing-plans` (not `/sdd`).
+**Track:** backend. This is the first plan on the backend track; see
+[`../README.md`](../README.md).
 **Base:** `origin/main` at `2ddc09e` ("Merge branch 'feat/request-inspection'").
-This plan was authored on branch `web-studio/w1-foundation`, which is stacked on
-`ccr-a651f5e7-6xpauj` (the design-doc PR, #23). That branch adds docs only,
-so every code anchor below is as on `2ddc09e`.
-**Plan slug:** `w1-foundation`. Commit each task as
-`w1-foundation: task N — <task title>`.
+Every code anchor below is as on `2ddc09e`.
+**Plan slug:** `w1-1-backend`. Commit each task as
+`w1-1-backend: task N — <task title>`.
 
 ## Goal
 
-The web UI renders a session's transcript from the same Go view model as the
-TUI, streamed as a snapshot plus patches. It does so inside a new Warm Sunset
-shell with a Home inbox. Agents carry owner and origin end to end.
+The engine serves the TUI's transcript view model to web clients, as a
+snapshot plus patches. The bridge proxies the snapshot and broadcasts the
+patches, and agents carry owner and origin in the fleet status. Nothing
+user-visible changes in the web UI yet: that is
+[W1.2 · Foundation UI](2026-10-03-w1-2-ui-plan.md).
 
 ## Non-goals
 
-- The session dock, the inspector (`i`), open (`o`) and drill-in (`f`): W2.
-- Live wall, the New agent redesign, Review & ship: W2–W3. The old
-  Dashboard stays at `#fleet`.
-- Path-based routing. Hash routing stays.
-- Flushing the stack while no turn is running: W2's idle ticker.
-- Inbox budgets, warm pools, watches and automations.
+- Any `web/ui` change (W1.2).
+- Flushing the stack while no turn is running: W2.1's idle ticker.
 - Accounts and per-user enforcement.
 
 ## Assumptions
@@ -39,10 +37,6 @@ shell with a Home inbox. Agents carry owner and origin end to end.
 
   A task's Verify step passes if the only failures are these. A new failure
   blocks the task.
-- `web/ui` has its dependencies installed (`npm ci` in `web/ui`).
-- The built SPA under `web/bridge/static` is committed (`assets.go` embeds
-  it). Only Task 16 rebuilds it, so the UI diffs in tasks 9–15 stay
-  reviewable.
 - `web/` stays standard library only. `TestWebIsStdlibOnly` in
   `web/bridge/boundary_test.go` enforces this.
 
@@ -50,26 +44,18 @@ shell with a Home inbox. Agents carry owner and origin end to end.
 
 | # | Task | Layer |
 |---|---|---|
-| 1 | Move `internal/app/tui/stack` to `internal/viewmodel` | Go |
-| 2 | Move the node text helpers into `viewmodel` | Go |
-| 3 | Wire projection | Go |
-| 4 | ACP stack projector and `session/stack` | Go |
-| 5 | Flush stack patches during and at the end of a turn | Go |
-| 6 | Bridge: broadcast `stack_patch` without storing it | Go |
-| 7 | Bridge: `GET /api/sessions/{id}/stack` | Go |
-| 8 | Bridge: owner and origin on `AgentStatus` | Go |
-| 9 | UI: fix the legacy `session/update` unwrap | TS |
-| 10 | UI: Warm Sunset tokens and Geist fonts | CSS |
-| 11 | UI: base components and glyph map | Svelte |
-| 12 | UI: shell (rail, grouped sidebar, palette, Home route) | Svelte |
-| 13 | UI: Home inbox | Svelte |
-| 14 | UI: stack store | TS |
-| 15 | UI: transcript renderers and density | Svelte |
-| 16 | UI: browse keys, follow, now bar, Chat integration, rebuild static | Svelte |
-| 17 | Docs: AGENTS.md tree and design §5.2 | Docs |
+| 1 | Move `internal/app/tui/stack` to `internal/viewmodel` | Engine |
+| 2 | Move the node text helpers into `viewmodel` | Engine |
+| 3 | Wire projection | Engine |
+| 4 | ACP stack projector and `session/stack` | Engine |
+| 5 | Flush stack patches during and at the end of a turn | Engine |
+| 6 | Bridge: broadcast `stack_patch` without storing it | Bridge |
+| 7 | Bridge: `GET /api/sessions/{id}/stack` | Bridge |
+| 8 | Bridge: owner and origin on `AgentStatus` | Bridge |
+| 9 | Docs: AGENTS.md tree and design §5.2 | Docs |
 
 Tasks 1–3 are pure refactor and addition: the TUI's behaviour does not
-change. Tasks 4–8 add the stream. Tasks 9–16 are the UI.
+change. Tasks 4–8 add the stream.
 
 ---
 
@@ -1429,463 +1415,7 @@ cd web/bridge && go test ./ -run 'TestRegistryStack|TestSessionStack' -v && go t
 cd web/bridge && go test ./ -run TestSnapshot -v && go test ./ && go vet ./
 ```
 
----
-
-## Task 9: UI — fix the legacy `session/update` unwrap
-
-**Goal:** the legacy session store renders streamed agent text from the
-envelope the agent actually sends (spec §7.6).
-
-**Files:**
-- `web/ui/src/lib/store.ts` (`applyACP`, line 292; `applyEvent`)
-- `web/ui/src/lib/store.test.ts`
-
-**Steps:**
-
-1. Write the failing test first. In `store.test.ts`, add
-   `it('renders agent_message_chunk from a real session/update envelope')`,
-   which feeds:
-
-   ```json
-   {"method":"session/update","params":{"sessionId":"s1","update":{"kind":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}
-   ```
-
-   This is the shape `internal/acp/turn.go`'s `messageUpdate` produces.
-   Assert that the store's messages end with assistant text `"hi"`. Run it
-   and see it fail.
-2. In `applyACP`, before the existing `switch (method)`, add the unwrap: if
-   `method === 'session/update'` and `params.update` is an object with a
-   string `kind`, set `method = kind` and `params = update`. Every existing
-   case then sees the same fields it expects today.
-3. Convert the existing `store.test.ts` cases that build the old
-   `{method: 'agent_message_chunk', …}` envelope to the real one. Keep one
-   test on the old shape, to show it still works for any recorded logs.
-
-**Verify:**
-
-```bash
-cd web/ui && npx vitest run src/lib/store.test.ts && npm test
-```
-
----
-
-## Task 10: UI — Warm Sunset tokens and Geist fonts
-
-**Goal:** the SPA uses design §6's palette and type through Tailwind 4
-tokens. Existing views pick it up without per-view edits.
-
-**Files:**
-- `web/ui/package.json`, `web/ui/package-lock.json`
-- `web/ui/src/main.ts`
-- `web/ui/src/app.css` (`@theme` block at line 12)
-
-**Steps:**
-
-1. `cd web/ui && npm install @fontsource-variable/geist@5.3.0 @fontsource-variable/geist-mono@5.3.0`.
-2. In `src/main.ts`, import `@fontsource-variable/geist` and
-   `@fontsource-variable/geist-mono` before `./app.css`.
-3. Rewrite the `@theme` block in `app.css`, keeping every token name that
-   existing components use, so nothing renders unstyled.
-   - Before editing, list the names with
-     `grep -o -- '--color-[a-z0-9-]*' src/app.css | sort -u` and
-     `grep -rho '\b\(bg\|text\|border\|ring\)-[a-z]*-\?[a-z0-9]*' src | sort -u`.
-   - Map the old names onto the new palette.
-   - Add the Warm Sunset tokens:
-     - `--color-accent: #ff875f`
-     - `--color-violet: #d787ff`
-     - `--color-gold: #ffaf00`
-     - `--color-ok: #3fd4b4`
-     - `--color-err: #ff87af`
-     - `--color-warn: #ffaf5f`
-     - `--color-info: #5fd7ff`
-     - neutrals `--color-bg: #121113` (the page) through `--color-line: #2c2a30`,
-       with the intermediate surface steps from the mockups'
-       `docs/web-studio/mockups/*.html` `:root` variables (`--m-bg`, `--m-panel`,
-       `--m-line`, `--m-sub`, `--m-mut`).
-   - Set `--font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif`
-     and `--font-mono: 'Geist Mono Variable', ui-monospace, monospace`.
-4. Add a `[data-theme="light"]` block that overrides the neutrals for the
-   light variant. Dark is the default.
-5. Add a `@media (prefers-reduced-motion: reduce)` rule that disables the
-   `animate-pulse` animation.
-
-**Verify:**
-
-```bash
-cd web/ui && npm test && npx svelte-check && npm run build
-```
-
-Expect all three to succeed. Then run the bridge
-(`go run ./cmd/webbridge --project <repo>`, see `cmd/webbridge/README.md`).
-Run `npm run build` first so it serves the new bundle, but don't commit
-`web/bridge/static` until Task 16. Check the existing views by eye: no
-unstyled or invisible text.
-
----
-
-## Task 11: UI — base components and glyph map
-
-**Goal:** the shared primitives match the design system, and the TUI glyph
-vocabulary is available to TypeScript.
-
-**Files:**
-- `web/ui/src/lib/glyphs.ts` (new), `web/ui/src/lib/glyphs.test.ts` (new)
-- `web/ui/src/lib/ui/Badge.svelte`, `Button.svelte`, `Card.svelte`, `Modal.svelte`
-- `web/ui/src/lib/ui/Tag.svelte`, `Segmented.svelte`, `Kbd.svelte` (new)
-
-**Steps:**
-
-1. Create `glyphs.ts`, exporting a `glyph` object whose values are copied
-   from `internal/app/tui/glyph` (read that package's constants and copy
-   them; do not invent new ones). Also export a
-   `toolGlyph(name: string): string` that mirrors the prefix table
-   `toolCategoryGlyphs` in `internal/app/tui/toolnames.go`, in the same
-   order, falling back to `glyph.Ambient`.
-2. In `glyphs.test.ts`, assert `toolGlyph` for one name per prefix row,
-   plus the fallback.
-3. Restyle `Badge`, `Button`, `Card` and `Modal` with the tokens. Keep
-   their props and slots unchanged, so `Modal.test.ts` and every caller
-   keep working.
-4. Add the new components:
-   - `Tag.svelte`: props `tone` (`'ok'|'err'|'warn'|'info'|'accent'|'violet'|'gold'|'neutral'`)
-     and an optional `role`. A role maps to a tone through a
-     `roleTone(role)` helper exported from `glyphs.ts`, following design §6:
-     - implementer → gold;
-     - reviewer → violet;
-     - planner and branch reviewer → info;
-     - anything else → neutral.
-   - `Segmented.svelte`: props `options: {value,label}[]`, `value` and
-     `onchange`.
-   - `Kbd.svelte`: renders a key cap.
-
-**Verify:**
-
-```bash
-cd web/ui && npx vitest run src/lib/glyphs.test.ts src/lib/ui && npm test && npx svelte-check
-```
-
----
-
-## Task 12: UI — shell
-
-**Goal:** the app has a rail, a grouped and collapsible sidebar, a ⌘K
-palette, and Home as the default route (spec §7.2).
-
-**Files:**
-- `web/ui/src/App.svelte` (hash routing, `hash` state at line 18)
-- `web/ui/src/lib/routes.ts`, `routes.test.ts`
-- `web/ui/src/lib/Sidebar.svelte`, `Sidebar.test.ts`
-- `web/ui/src/lib/Rail.svelte` (new)
-- `web/ui/src/lib/Palette.svelte` (new), `web/ui/src/lib/palette.ts` and
-  `palette.test.ts` (new)
-- `web/ui/src/lib/api.ts` (`AgentStatus`), `web/ui/src/lib/fleet.ts`,
-  `web/ui/src/lib/fleet.test.ts`
-
-**Steps:**
-
-1. In `api.ts`, add `ownerId?: string; origin?: string; clientId?: string`
-   to `export interface AgentStatus` (`api.ts:112`), mirroring Task 8.
-   `fleet.ts` imports that type.
-2. In `routes.ts`, add `'#fleet'` for the old Dashboard and make `''`/`'#'`
-   resolve to Home. Extend `routes.test.ts` to cover both, and confirm that
-   every existing route still resolves.
-3. In `App.svelte`, render `Home` (added in Task 13; render a placeholder
-   until then) for `#`, and `Dashboard` for `#fleet`. Wrap the content in
-   the new layout: `Rail`, then `Sidebar`, then the content.
-4. Create `Rail.svelte`, 52px wide:
-   - Home ⌂, Agents ⧉ and Projects ≡ are active links;
-   - Live ◉, Runs ⋔, Workspaces ▦, Watches ○, Library ◈ and Usage ∿ are
-     disabled, with `title="Coming in W2"` (or the phase from design §9);
-   - Settings ⚙ links to the existing clients/tokens page (`#clients`).
-5. Regroup the existing `Sidebar.svelte` into the groups Needs you /
-   Running / Ready to ship / Earlier. Put the grouping in a pure function
-   `groupAgents(agents)` (in `fleet.ts`, so it can be tested):
-   - **Needs you:** `pending` is set.
-   - **Running:** status is running or busy, and the agent is not
-     already in Needs you.
-   - **Ready to ship:** idle, `changedFiles > 0` and no `prUrl`.
-   - **Earlier:** everything else.
-   - Sort each group by urgency (pending kind, then status), then by
-     `updatedAt` descending.
-6. Make the sidebar collapsible. Persist the state under
-   `marshal.ui.sidebar` in `localStorage`, reading and writing inside
-   try/catch.
-7. Create `palette.ts` with `score(query, text): number`, a subsequence
-   match that favours consecutive and word-start hits and returns 0 for
-   no match. Write `palette.test.ts` first: exact > prefix > word-start >
-   scattered > none.
-8. Create `Palette.svelte`, a modal opened with ⌘K or Ctrl+K. It lists
-   agents (name, project) and pages, filtered by `score`. ↑/↓ moves,
-   Enter navigates, Esc closes.
-9. Update `Sidebar.test.ts` for the new groups.
-
-**Verify:**
-
-```bash
-cd web/ui && npm test && npx svelte-check
-```
-
----
-
-## Task 13: UI — Home inbox
-
-**Goal:** `#` shows the inbox described in spec §7.3.
-
-**Files:**
-- `web/ui/src/views/Home.svelte` (new), `web/ui/src/views/Home.test.ts` (new)
-- `web/ui/src/lib/inbox.ts` (new), `web/ui/src/lib/inbox.test.ts` (new)
-- `web/ui/src/App.svelte` (replace the Task 12 placeholder)
-
-**Steps:**
-
-1. In `inbox.ts`, write
-   `buildInbox(agents, pending, mine: boolean) → {needsYou, ready, running}`.
-   - Reuse `groupAgents` from Task 12 for the agent rows.
-   - Merge intake requests from `pending.ts` (the `/api/pending` store)
-     into `needsYou`, oldest first.
-   - When `mine` is true, keep only items whose `ownerId` is
-     `'local'` or unset.
-   - Write `inbox.test.ts` first.
-2. In `Home.svelte`, render three sections and a side panel.
-   - **Needs you rows:**
-     - Show the agent name, project, an origin avatar (a letter from
-       `origin`: `ui`→U, `cli`→C, `mcp`→M, `issue`→#) and the pending
-       request's text.
-     - A permission row has Approve and Deny buttons that call the same
-       API function `PermissionModal.svelte` uses.
-     - A question row links to `#chat/<sessionId>`.
-     - An intake row has the approve and deny actions `PendingList.svelte`
-       uses.
-   - **Ready to ship rows:** branch and changed-file count, with Review
-     (links to `#chat/<id>`) and Open PR (opens the existing exit panel the
-     way `AgentCard.svelte` does).
-   - **Running rows:** activity text and elapsed time since `updatedAt`.
-   - **Side panel:** reuse `DiskPanel.svelte` in compact form, and
-     `ActivityFeed.svelte` limited to 10 items.
-   - A `Segmented` control switches Mine / Everyone. Persist the choice
-     under `marshal.ui.inbox.scope`, in try/catch.
-3. In `Home.test.ts`, use `@testing-library/svelte`, as `Chat.test.ts`
-   does. Check that each section renders from a fixture, and that the
-   Approve button calls the permission API.
-
-**Verify:**
-
-```bash
-cd web/ui && npx vitest run src/lib/inbox.test.ts src/views/Home.test.ts && npm test && npx svelte-check
-```
-
----
-
-## Task 14: UI — stack store
-
-**Goal:** a TypeScript store that holds the stack and applies the client
-rules in spec §5.4.
-
-**Files:**
-- `web/ui/src/lib/stack.ts` (new), `web/ui/src/lib/stack.test.ts` (new)
-- `web/ui/src/lib/api.ts` (add `getStack(sessionId)`)
-
-**Steps:**
-
-1. In `stack.ts`, declare TypeScript interfaces that mirror spec §4.2
-   field for field: `WireNode`, `WireStep`, `WireTool`, `WireCall`,
-   `WireRunning`, `WireMessage`, `WireThinking`, `WireSubagent`,
-   `WireRunEvent`, `WireJobExit`, `WireTask`, `WireReceipt`,
-   `StackSnapshot` and `StackPatch`. Optional fields are optional. The JSON
-   names are those in `internal/viewmodel/wire.go` from Task 3.
-2. In `api.ts`, add `getStack(sessionId)`. It calls
-   `GET /api/sessions/${id}/stack` and resolves to the snapshot, or to
-   `'unsupported'` on a 501 whose body is `{"error":"stack_unsupported"}`.
-3. In `stack.ts`, write `createStackStore(sessionId, fetcher = getStack)`
-   returning a Svelte store of
-   `{status: 'loading'|'ready'|'unsupported', rev, roots, nodes: Map<string, WireNode>}`,
-   plus these methods:
-   - `load()`: fetch and replace the state.
-   - `onEvent(envelope)`: given an SSE envelope, it:
-     - handles `session/update`/`stack_patch` per spec §5.4 (ignore if
-       `rev <= state.rev`; `load()` if `baseRev !== state.rev`; otherwise
-       apply);
-     - calls `load()` on `session/update`/`session_telemetry` and on
-       `{type:'replay_overflow'}`.
-   - `collect()`: run after each applied patch; deletes nodes not reachable
-     from `roots`.
-4. Write `stack.test.ts` first. Cover:
-   - snapshot load;
-   - applying a patch (upsert a new child and its updated parent);
-   - a stale patch is ignored;
-   - a `baseRev` gap triggers exactly one refetch;
-   - `remove`;
-   - garbage collection of an orphaned node;
-   - `'unsupported'` status on 501;
-   - telemetry triggers a refetch.
-
-**Verify:**
-
-```bash
-cd web/ui && npx vitest run src/lib/stack.test.ts && npm test && npx svelte-check
-```
-
----
-
-## Task 15: UI — transcript renderers and density
-
-**Goal:** a `Transcript` component renders a stack store the way the TUI
-lays out the same tree (spec §7.4).
-
-**Files:**
-- `web/ui/src/lib/transcript/Transcript.svelte` (new)
-- `web/ui/src/lib/transcript/{TurnNode,TaskRow,StepHeader,ToolRow,MessageNode,ThinkingRow,SubagentCard,RunEventRow,JobExitRow,ReceiptLine}.svelte` (new)
-- `web/ui/src/lib/transcript/density.ts`, `density.test.ts` (new)
-- `web/ui/src/lib/transcript/Transcript.test.ts` (new)
-
-**Steps:**
-
-1. In `density.ts`:
-   - `type Density = 'outline' | 'steps' | 'full'`;
-   - `nextGlobal(d)`, cycling outline → steps → full, as the TUI's
-     `nextGlobal` in `internal/app/tui/density.go`;
-   - `effective(nodeId, overrides, parentOf, global)`: a node without an
-     override inherits its parent's effective level;
-   - `visible(node, density)`: at outline, tool rows are hidden. Tests
-     first.
-2. `Transcript.svelte` takes `store`, `density`, `overrides`,
-   `foldTasks` and `cursor`, and walks `roots` → `children` with a
-   recursive `{#each … (id)}` keyed by node ID, so unchanged nodes are not
-   re-rendered. It dispatches each node to its renderer by `kind`.
-3. Renderers. Read the matching TUI renderer for layout, but don't port
-   styling code:
-   - `TaskRow`: `index/total`, content, status glyph, then
-     `steps · tools · edits` and work time on the right (TUI:
-     `tasks_render.go`). A task is folded when `foldTasks` is on, its
-     status is `completed`, and `!unresolvedFailure`.
-   - `StepHeader`:
-     - an owner `Tag` with `roleTone(step.role)`;
-     - the headline, in italics with a small "inferred" tag when
-       `inferred`;
-     - the duration on the right, from `startedAt`/`endedAt` (live steps
-       tick every second);
-     - `rest` as one muted truncated line at `steps`, and as markdown
-       (`markdown.ts`) at `full`;
-     - `thoughts` as "thought for Ns" rows.
-   - `ToolRow`:
-     - `toolGlyph(name)`;
-     - target-first for `file.write_patch`, `file.write`, `file.read`,
-       `symbols.find`, `shell.run` and `test.run` (TUI
-       `subjectFirstTool`), otherwise `display` then target;
-     - `summary`;
-     - a failed call shows the `err` tone and `error` or `exit N`;
-     - a merged run shows `×n` and expands to one line per call;
-     - a running row shows a spinner and `running.output` in a mono block
-       at `full`;
-     - when `truncated` is set, a muted note: "output truncated (full view
-       in W2)".
-   - `MessageNode`: a final message renders as markdown; a user prompt
-     renders as the turn heading.
-   - `ThinkingRow`, `SubagentCard` (label, status glyph, role tag, tool
-     count, current tool, summary), `RunEventRow`, `JobExitRow` and
-     `ReceiptLine` (`duration · N tasks · N steps · N tools · N files ·
-     usage`, matching the TUI receipt format in `tasks_render.go`).
-4. In `Transcript.test.ts`, render a fixture snapshot (one turn, one task,
-   one narrated step, one merged tool run, a final message and a receipt)
-   and check the visible text at each density, and that folding hides a
-   finished task's steps.
-
-**Verify:**
-
-```bash
-cd web/ui && npx vitest run src/lib/transcript && npm test && npx svelte-check
-```
-
----
-
-## Task 16: UI — browse keys, follow, now bar, Chat integration, rebuild static
-
-**Goal:** the session view uses the stack transcript with TUI browse keys,
-follow-to-bottom and a now bar, and falls back to the legacy list on 501.
-The built SPA is committed.
-
-**Files:**
-- `web/ui/src/lib/transcript/browse.ts`, `browse.test.ts` (new)
-- `web/ui/src/lib/transcript/NowBar.svelte` (new)
-- `web/ui/src/views/Chat.svelte`, `web/ui/src/views/Chat.test.ts`
-- `web/bridge/static/**` (rebuilt)
-
-**Steps:**
-
-1. In `browse.ts`, write a pure reducer
-   `browseKey(state, key, ctx) → {state, effect?}`. `ctx` holds the flat
-   visible-node list and the stop indices. Bindings, from
-   `internal/app/tui/browse.go`'s `handleBrowseKey`:
-   - `j`/ArrowDown and `k`/ArrowUp move by one;
-   - `J`/`]` and `K`/`[` jump to the next or previous stop (a task header
-     or the first node of a turn, as `jumpCursor`'s comment says);
-   - `g`/Home and `G`/End go to the first or last node, and `G` on a live
-     node sets `follow = true`;
-   - `Enter` gives `effect: {toggleDensity: id}`;
-   - `z` gives `effect: {toggleFold: true}`;
-   - `y` gives `effect: {copy: id}`;
-   - `i`/`o`/`f` give `effect: {toast: 'Coming in W2'}`;
-   - `Escape` gives `effect: {exitBrowse: true}`.
-
-   Write `browse.test.ts` first, one case per binding.
-2. In `Chat.svelte`:
-   - create `createStackStore(sessionId)` on mount and call `load()`, and
-     forward each SSE envelope the view already receives to `onEvent`;
-   - when `status === 'unsupported'`, render the existing legacy message
-     list (fixed in Task 9); otherwise render `Transcript`;
-   - keep permissions, questions, the mode switcher, steer and the exit
-     panel exactly as they are.
-3. Browse mode: `Esc` in the composer blurs it and enters browse mode at
-   the last node. A document `keydown` listener routes keys through
-   `browseKey`, but only while browse is on and focus isn't in an input.
-   The cursor node gets a violet left rule and is scrolled into view.
-   `copy` uses `navigator.clipboard.writeText` with the node's text:
-   - a step: headline + rest;
-   - a call: target + output;
-   - a message: its content.
-4. Follow: stick to the bottom while the last node is live, unless the user
-   scrolled up or is browsing. `G` resumes it.
-5. `NowBar.svelte` is shown while any node is `live`. It shows:
-   - the live step's owner tag and headline;
-   - the running tool's `display` and target;
-   - elapsed time;
-   - a Stop button that calls the existing cancel API (`POST
-     /api/sessions/{id}/cancel`).
-
-   A second Ctrl+C within 1s of the first also calls cancel; the first
-   shows a "Press Ctrl+C again to stop" hint. `Esc` never cancels.
-6. In the session header, add a global density `Segmented`
-   (Outline / Steps / Full), stored per browser under
-   `marshal.ui.density` (try/catch).
-7. Extend `Chat.test.ts`:
-   - with a mocked `getStack` returning a fixture, the transcript renders;
-   - with `'unsupported'`, the legacy list renders;
-   - a `stack_patch` event updates the DOM;
-   - two Ctrl+C presses within 1s call cancel once.
-8. Rebuild the bundle with `npm run build` (output goes to
-   `web/bridge/static` per `vite.config.ts`), and include the rebuilt
-   assets in this task's commit.
-
-**Verify:**
-
-```bash
-cd web/ui && npm test && npx svelte-check && npm run build
-cd ../bridge && go test ./ -run 'TestAssets|TestWebIsStdlibOnly' -v
-```
-
-Then check the session view by hand, against both an agent from this branch
-and an older one:
-- build `marshal` and run the bridge (`go run ./cmd/webbridge --project <repo>`);
-- open a session and prompt it;
-- the transcript shows a live step and tool rows, and ends with a receipt;
-- reloading mid-turn resyncs;
-- the same session opened in the TUI (`marshal --resume <id>`) shows the
-  same turn, task, headlines and receipt;
-- an older agent image falls back to the legacy list.
-
----
-
-## Task 17: Docs — AGENTS.md tree and design §5.2
+## Task 9: Docs — AGENTS.md tree and design §5.2
 
 **Goal:** the repo map and the parent design match what W1 built.
 
@@ -1916,51 +1446,46 @@ and an older one:
 grep -n 'internal/app/tui/stack\|_marshal/stack' AGENTS.md docs/web-studio/design.md   # prints nothing
 ```
 
----
 
 ## Final verification
 
-Run from the repo root after Task 17:
+Run from the repo root after Task 9:
 
 ```bash
 CGO_ENABLED=1 go build ./...
 CGO_ENABLED=1 go test ./...
 go vet ./...
 gofmt -l .
-cd web/bridge && go test ./... && go vet ./...
-cd ../ui && npm test && npx svelte-check && npm run build && git status --porcelain ../bridge/static
+cd web/bridge && go test ./... -race && go vet ./...
 ```
 
 Expected results:
 - `go test ./...` fails only on the five tests listed under Assumptions;
 - `gofmt -l .` prints nothing;
-- the `web/` commands pass;
-- the final `git status` prints nothing, which means the committed static
-  bundle matches the source.
+- the bridge passes, including `TestWebIsStdlibOnly`.
 
 ## Integration notes
 
-- **Older agents.** An agent from before Task 4 has no `session/stack`, so
-  its web session shows the legacy list. An agent from Task 4 on works with
-  either bridge. A bridge from before Task 6 would store patches in the
-  ring, so deploy the bridge and agent images together.
+- **Older agents.** An agent from before Task 4 has no `session/stack`, and
+  the bridge's stack route returns `501 stack_unsupported` for it. An agent
+  from Task 4 on works with either bridge. A bridge from before Task 6
+  would store patches in the replay ring, so deploy the bridge and agent
+  images together.
 - **Other ACP clients** (editors) never call `session/stack`, so they never
   get patches. `stackView` in `initialize` is how a client discovers the
   feature.
-- **Idle-time changes** (a background subagent finishing between turns)
-  show up only after a refetch. W2 adds the idle ticker (spec §5.3).
-- **Multi-user.** `ownerId`/`origin` now reach the SPA. Nothing enforces
-  them yet (design §5.4).
-- **PR stacking.** This branch is stacked on #23. Merge #23 first, then
-  retarget this branch's PR to `main`.
+- **The web UI is unchanged** until W1.2 runs; it ignores the new
+  `stack_patch` events and the new `AgentStatus` fields.
+- **Multi-user.** `ownerId`/`origin` now reach the fleet status. Nothing
+  enforces them yet (design §5.4).
 
 ## Self-review
 
 | Check | Result |
 |---|---|
-| Every task self-contained and independently verifiable? | Yes. Each task has its own Verify command. Tasks 1–3 leave the TUI unchanged. Task 4 is testable before Task 5. The UI tasks build on each other only through files they create. |
-| Every anchor verified to exist? | Yes, on `2ddc09e`. Checked anchors: `TestRunInitializeCapabilities` (`run_test.go:42`), `AddMessage`, `SetActiveToolCall`/`ClearActiveToolCallID`, `AgentStatus` in `api.ts:112`, `cmd/webbridge`, `TurnManager`/`NewTurnManager` (`turn.go:181`/`233`), `forward`, the `for forwarding` select, `finishTurn` (`turn.go:1198`), `SetMode`'s unknown-session error, `HasActiveTurn` (`turn.go:442`), `newResumeTestManager` (`turn_test.go:3126`), the `sessionCapabilities` map and `session/steer` registration in `host.go`, `EventLog.Append`/`Attach`/`deliver` (`events.go`), `Registry.SetMode` (`registry.go:245`), `rpcError` (`child.go:42`), `writeErr`/`setMode`/routes (`http.go:162`/`662`/`103–149`), `AgentStatus` (`fleetevents.go:179`), `Fleet.Snapshot` (`fleet.go:1159`), `Agent.OwnerID/Origin/ClientID` (`workspace.go`), `applyACP` (`store.ts:292`), `@theme` (`app.css:12`), and the `web/ui/src` file list. |
-| Code blocks complete and compilable in isolation? | The embedded Go (`describe.go`, the TUI wrappers, `wire.go`, `wire_test.go`) and the Task 1 commands were applied to a scratch checkout of `2ddc09e`. `go build ./...`, `go vet` and `gofmt -l` were clean, and `go test ./internal/viewmodel/` passed. Tasks 4–16 use prose with anchors, because their code depends on the surrounding files. |
-| Verification commands correct per AGENTS.md? | Yes: `CGO_ENABLED=1 go build/test`, `go vet ./...`, `gofmt`. `web/ui` uses its `package.json` scripts (`test`, `build`) plus `npx svelte-check`. |
-| No placeholders or TBDs? | None. The Task 12 placeholder for Home is replaced in Task 13 by design. |
-| Contradicts nothing in the spec? | Matches spec §3–§7. It refines design §5.2 as the spec says, and Task 17 updates the design doc. |
+| Every task self-contained and independently verifiable? | Yes. Each task has its own Verify command. Tasks 1–3 leave the TUI unchanged. Task 4 is testable before Task 5. |
+| Every anchor verified to exist? | Yes, on `2ddc09e`. Checked anchors: `TestRunInitializeCapabilities` (`run_test.go:42`), `AddMessage`, `SetActiveToolCall`/`ClearActiveToolCallID`, `cmd/webbridge`, `TurnManager`/`NewTurnManager` (`turn.go:181`/`233`), `forward`, the `for forwarding` select, `finishTurn` (`turn.go:1198`), `SetMode`'s unknown-session error, `HasActiveTurn` (`turn.go:442`), `newResumeTestManager` (`turn_test.go:3126`), the `sessionCapabilities` map and `session/steer` registration in `host.go`, `EventLog.Append`/`Attach`/`deliver` (`events.go`), `Registry.SetMode` (`registry.go:245`), `rpcError` (`child.go:42`), `writeErr`/`setMode`/routes (`http.go:162`/`662`/`103–149`), `AgentStatus` (`fleetevents.go:179`), `Fleet.Snapshot` (`fleet.go:1159`), `Agent.OwnerID/Origin/ClientID` (`workspace.go`). |
+| Code blocks complete and compilable in isolation? | The embedded Go (`describe.go`, the TUI wrappers, `wire.go`, `wire_test.go`) and the Task 1 commands were applied to a scratch checkout of `2ddc09e`. `go build ./...`, `go vet` and `gofmt -l` were clean, and `go test ./internal/viewmodel/` passed. Tasks 4–8 use prose with anchors, because their code depends on the surrounding files. |
+| Verification commands correct per AGENTS.md? | Yes: `CGO_ENABLED=1 go build/test`, `go vet ./...`, `gofmt`. |
+| No placeholders or TBDs? | None. |
+| Contradicts nothing in the spec? | Matches spec §3–§6. It refines design §5.2 as the spec says, and Task 9 updates the design doc. |

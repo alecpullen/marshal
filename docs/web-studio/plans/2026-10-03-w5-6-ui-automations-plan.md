@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w5-automations-and-ops-design.md`](../specs/2026-10-03-w5-automations-and-ops-design.md) §6.3
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W4 and W5.1–W5.5.
-**Base:** the branch once W5.5 is complete. Names from earlier phases are
+**Track:** UI. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W5.5](2026-10-03-w5-5-ui-ops-plan.md) (previous UI plan) and [W5.4](2026-10-03-w5-4-bridge-automations-plan.md) (this phase's backend gate), with everything those depend on.
+**Base:** a branch containing every plan listed under Runs after. Names from earlier phases are
 as their plans define them.
 **Plan slug:** `w5-6-ui-automations`. Commit each task as
 `w5-6-ui-automations: task N — <title>`.
@@ -30,6 +31,7 @@ These W5.4 routes exist:
   send-to-author;
 - `/api/automations/ci/history…`;
 - `POST /api/repos/{id}/webhook-secret`;
+- `POST /api/automations/review/run`;
 - the `automation` fleet delta.
 
 Project settings with `automations` come from W4.2/W5.4
@@ -151,12 +153,10 @@ can request a review (spec §6.3).
    - Enable "Request review bot" when the agent's project settings have
      `automations.reviewBot.enabled`, read with
      `GET /api/projects/settings?root=`.
-   - When it's checked, after `exitAgent` returns a `prUrl`, the bot runs
-     on that PR. Because the PR came from the bridge, there is no webhook
-     event.
-   - Add a bridge route for this: `POST /api/automations/review/run`
-     `{repoId, number}`, which calls W5.4's `onPREvent`, with a bridge
-     test, in `web/bridge/reviewbot.go`.
+   - When it's checked, after `exitAgent` returns a `prUrl`, call
+     `POST /api/automations/review/run` `{repoId, number}` (W5.4 Task 4),
+     with the number parsed from the PR URL. Add `runReviewBot` to
+     `api.ts` for it.
 3. Tests:
    - Home renders a draft row and opens the right route;
    - ShipPanel with the bot enabled calls the run route after a
@@ -166,8 +166,7 @@ can request a review (spec §6.3).
 **Verify:**
 
 ```bash
-cd web/bridge && go test ./ -run 'TestReviewBot' -v
-cd ../ui && npx vitest run src/views/Home.test.ts src/views/Review.test.ts && npx svelte-check
+cd web/ui && npx vitest run src/views/Home.test.ts src/views/Review.test.ts && npx svelte-check
 ```
 
 ---
@@ -236,7 +235,7 @@ Check by hand, end to end:
 | Check | Result |
 |---|---|
 | Self-contained, verifiable tasks? | Yes. |
-| Anchors verified? | Every file comes from W1–W5.5 as defined. Task 3 adds the one missing bridge route, with a test. |
+| Anchors verified? | Every file comes from W1–W5.5 as defined. The on-demand review route is W5.4 Task 4. |
 | Code compilable in isolation? | No verbatim code. |
 | Placeholders? | None. |
 | Matches the spec? | §6.3. Task 4 updates the design doc and AGENTS.md. |

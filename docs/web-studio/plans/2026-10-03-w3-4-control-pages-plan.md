@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w3-runs-and-control-design.md`](../specs/2026-10-03-w3-runs-and-control-design.md) §6.1, §6.4–§6.9
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1, W2, [W3.1](2026-10-03-w3-1-engine-plan.md), [W3.2](2026-10-03-w3-2-bridge-control-plan.md) and [W3.3](2026-10-03-w3-3-runs-and-live-plan.md).
-**Base:** the branch once W3.3 is complete. Code from before W1 was checked
+**Track:** UI. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W3.3](2026-10-03-w3-3-runs-and-live-plan.md) (previous UI plan), with everything it depends on.
+**Base:** a branch containing every plan listed under Runs after. Code from before W1 was checked
 on `2ddc09e`. Later names are as their plans define them.
 **Plan slug:** `w3-4-control-pages`. Commit each task as
 `w3-4-control-pages: task N — <title>`.

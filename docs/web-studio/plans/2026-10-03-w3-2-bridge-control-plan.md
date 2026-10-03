@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w3-runs-and-control-design.md`](../specs/2026-10-03-w3-runs-and-control-design.md) §5, §6.8, §6.9
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1, W2, and [W3.1 · Engine](2026-10-03-w3-1-engine-plan.md).
-**Base:** the branch once W3.1 is complete. Bridge anchors were checked on
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W3.1](2026-10-03-w3-1-engine-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Bridge anchors were checked on
 `2ddc09e`. W1 and W2 bridge additions (`ErrUnsupported`, `Registry.call`,
 `isMethodNotFound`, `EventLog.Broadcast`, the `gate` delta, workspace v7)
 are named as defined in those plans.
@@ -18,6 +19,7 @@ The bridge provides:
   agents;
 - routes for runs, library, models, usage, budgets and watches;
 - the `run`, `watch` and `budget` fleet deltas;
+- a roster proxy route for the Runs page;
 - budget enforcement and the reroute action.
 
 ## Non-goals
@@ -445,6 +447,34 @@ cd web/bridge && go test ./ -run 'TestBudget' -race -v && go test ./
 
 ```bash
 cd web/bridge && go test ./ -run 'TestWatches|TestReroute|TestWorkspace' -v && go test ./ && go vet ./
+```
+
+---
+
+## Task 9: Roster proxy route
+
+**Goal:** `GET /api/sessions/{id}/roster` proxies `session/agents_roster`,
+for the Runs page's roles legend (W3.3).
+
+**Files:**
+- `web/bridge/registry.go`, `web/bridge/http.go`, `web/bridge/http_test.go`
+
+**Steps:**
+
+1. Add `func (r *Registry) Roster(ctx, id string) (json.RawMessage, error)`,
+   one line on W2.1's `Registry.call` with method `session/agents_roster`
+   (`internal/acp/memory.go:199`) and feature `roster`.
+2. Register `GET /api/sessions/{id}/roster` → `sessionRoster`, which copies
+   W1.1's `sessionStack` handler: `registryForSession`, then the call,
+   then the raw JSON.
+3. Tests: pass-through, 404 for an unknown session, and 501
+   `roster_unsupported`, using the same server helper as W1.1's
+   `TestSessionStackRoute`.
+
+**Verify:**
+
+```bash
+cd web/bridge && go test ./ -run 'TestSessionRoster' -v && go test ./
 ```
 
 ---

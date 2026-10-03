@@ -1,7 +1,9 @@
 # W1 · Foundation — phase spec
 
 Parent design: [`docs/web-studio/design.md`](../design.md) (§9 roadmap, row W1).
-Implementation plan: [`docs/web-studio/plans/2026-10-03-w1-foundation-plan.md`](../plans/2026-10-03-w1-foundation-plan.md).
+Plans, executed in this order:
+1. [W1.1 · Foundation backend](../plans/2026-10-03-w1-1-backend-plan.md) (§3–§6)
+2. [W1.2 · Foundation UI](../plans/2026-10-03-w1-2-ui-plan.md) (§7)
 
 ## 1. Summary
 

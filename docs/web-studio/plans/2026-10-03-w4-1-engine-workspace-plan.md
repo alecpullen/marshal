@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w4-workspaces-design.md`](../specs/2026-10-03-w4-workspaces-design.md) §4
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1, W2 and W3, all plans.
-**Base:** the branch once W3.4 is complete. Anchors into code from before
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W3.2](2026-10-03-w3-2-bridge-control-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Anchors into code from before
 W1 were checked on `2ddc09e`. W3's `config/*` methods (`internal/acp/config.go`)
 are as W3.1 defines them.
 **Plan slug:** `w4-1-engine-workspace`. Commit each task as

@@ -2,8 +2,9 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w5-automations-and-ops-design.md`](../specs/2026-10-03-w5-automations-and-ops-design.md) §4
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** W1–W4, all plans.
-**Base:** the branch once W4.5 is complete. Anchors into code from before
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W4.3](2026-10-03-w4-3-bridge-secrets-egress-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Anchors into code from before
 W1 were checked on `2ddc09e`. `internal/workspacecfg` is as W4.1 defines
 it.
 **Plan slug:** `w5-1-engine`. Commit each task as `w5-1-engine: task N — <title>`.

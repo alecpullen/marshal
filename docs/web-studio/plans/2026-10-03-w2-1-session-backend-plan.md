@@ -2,10 +2,11 @@
 
 **Spec:** [`docs/web-studio/specs/2026-10-03-w2-session-and-ship-design.md`](../specs/2026-10-03-w2-session-and-ship-design.md) §4–§5
 **Execution:** inline, task by task, with `marshal-executing-plans`.
-**Runs after:** [W1 · Foundation](2026-10-03-w1-foundation-plan.md), all 17 tasks.
-**Base:** the branch once W1 is complete. Anchors into code from before W1
-were checked on `2ddc09e`. Anchors into code that W1 creates are named as
-the W1 plan defines them (W1 Tasks 2–8).
+**Track:** backend. See [`../README.md`](../README.md) for both tracks.
+**Runs after:** [W1.1](2026-10-03-w1-1-backend-plan.md) (previous backend plan), with everything it depends on. Backend plans never depend on UI plans.
+**Base:** a branch containing every plan listed under Runs after. Anchors into code from before W1
+were checked on `2ddc09e`. Anchors into code that W1.1 creates are named as
+the W1.1 plan defines them (W1.1 Tasks 2–8).
 **Plan slug:** `w2-1-session-backend`. Commit each task as
 `w2-1-session-backend: task N — <title>`.
 
@@ -35,7 +36,7 @@ need:
     `StackSnapshot`/`stackPatch` types;
   - on the bridge: `Registry.Stack`, `ErrStackUnsupported`,
     `Server.sessionStack` and `EventLog.Broadcast`.
-- The five tests that already fail (W1 plan, Assumptions) still fail for
+- The five tests that already fail (W1.1 plan, Assumptions) still fail for
   reasons outside this work. Verify steps treat them as known.
 - `CGO_ENABLED=1` for Go builds.
 
@@ -715,7 +716,7 @@ Expected results:
 | Check | Result |
 |---|---|
 | Self-contained, verifiable tasks? | Yes. Each task has a focused test run. The `viewmodel` tasks come before the ACP tasks that use them, and the ACP tasks before the bridge. |
-| Anchors verified? | Pre-W1 anchors were checked on `2ddc09e`: `decodeParams` (`session.go:306`), `invalidParamsError`/`serverErrorf` (`protocol.go:88/92`), `sessionIDParams` (`turn.go:1424`), `State.Subagent` (`subagents.go:313`), `RegisterSubagent` (`:103`), `RequestInspection`/`SetRequestInspection` (`request_inspection.go:202/219`), `Workspace().ActiveRoot`, `native.SafeResolve` (`helpers.go:68`), `ExitManager.draftMessage` (`exit.go:49/76/113`), `exitMgr` construction (`host.go:401`), `pubsub.Broker.Subscribe` (`broker.go:237`), `publishToolEvents` (`turn_test.go:3280`), `Fleet.Diff` (`fleet.go:931`), `verifySession` (`exit.go:151`), `fleetDelta`, `liveState`, `Registry.Sessions`/`sessionInfo.Busy`, `migrateWorkspace`, `newAgentID`, `auditf`, `hasEvent`, `testFleetWithGate`. W1 symbols are named as the W1 plan defines them. |
+| Anchors verified? | Pre-W1 anchors were checked on `2ddc09e`: `decodeParams` (`session.go:306`), `invalidParamsError`/`serverErrorf` (`protocol.go:88/92`), `sessionIDParams` (`turn.go:1424`), `State.Subagent` (`subagents.go:313`), `RegisterSubagent` (`:103`), `RequestInspection`/`SetRequestInspection` (`request_inspection.go:202/219`), `Workspace().ActiveRoot`, `native.SafeResolve` (`helpers.go:68`), `ExitManager.draftMessage` (`exit.go:49/76/113`), `exitMgr` construction (`host.go:401`), `pubsub.Broker.Subscribe` (`broker.go:237`), `publishToolEvents` (`turn_test.go:3280`), `Fleet.Diff` (`fleet.go:931`), `verifySession` (`exit.go:151`), `fleetDelta`, `liveState`, `Registry.Sessions`/`sessionInfo.Busy`, `migrateWorkspace`, `newAgentID`, `auditf`, `hasEvent`, `testFleetWithGate`. W1.1 symbols are named as the W1.1 plan defines them. |
 | Code compilable in isolation? | No verbatim code. Every step is prose with exact signatures, because each edit depends on W1 code that doesn't exist yet. |
 | Verification per AGENTS.md? | Yes. |
 | Placeholders? | One, deliberate: Task 3 returns an error for `subagentId`, and Task 4 replaces it. |

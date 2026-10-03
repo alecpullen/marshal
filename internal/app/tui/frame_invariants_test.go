@@ -53,6 +53,16 @@ func TestFrameInvariants(t *testing.T) {
 			registerRunningSubagent(t, m, "tester")
 			mustSetTodos(t, m, native.TodoItem{Content: "a task", Status: native.TodoInProgress})
 		}},
+		{"steps+live", func(t *testing.T, m *Model) {
+			for i := 0; i < 6; i++ {
+				stepFixture(t, m, session.Actor{Role: "sdd_reviewer", Label: "reviewer"}, "Reviewing a rather long sentence about the change under review. More detail follows.", readEvent("a.go"), readEvent("b.go"))
+			}
+			live := m.state.BeginStep(session.Actor{})
+			m.state.AddNarration(live, "Running the tests now.")
+			m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: live, ToolCallID: "x"})
+			m.busy = true
+			m.turnStartedAt = time.Now()
+		}},
 		{"many-todos+agents", func(t *testing.T, m *Model) {
 			for _, n := range []string{"a", "b", "c", "d"} {
 				registerRunningSubagent(t, m, n)

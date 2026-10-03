@@ -50,6 +50,13 @@ type AuditEvent struct {
 	// command is indistinguishable from a model mistake without it. Empty for
 	// synthesised events and for providers that report no reason.
 	FinishReason string
+	// StepID is the session step (one model response) that requested this
+	// call. 0 = unknown: a legacy row, or an event the TUI synthesised.
+	// registry cannot import session, so it is a plain int64.
+	StepID int64
+	// ToolCallID is the provider's call ID (native mode) or one the runner
+	// synthesised (envelope mode). It pairs a running call with its audit.
+	ToolCallID string
 }
 
 // HookMetadata captures the per-tool audit trail for F20 lifecycle hooks.

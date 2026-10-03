@@ -85,12 +85,21 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		return fmt.Errorf("marshal tool notice: %w", err)
 	}
 
+	var stepArg, toolCallIDArg any
+	if event.StepID > 0 {
+		stepArg = event.StepID
+	}
+	if event.ToolCallID != "" {
+		toolCallIDArg = event.ToolCallID
+	}
+
 	_, err = db.sqlDB.Exec(
 		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
 		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json,
 		                          original_args_json, rewritten,
-		                          sandbox_enabled, resource_limits, output_truncated, finish_reason, notice_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                          sandbox_enabled, resource_limits, output_truncated, finish_reason, notice_json,
+		                          step_seq, tool_call_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		event.AgentRole,
 		event.Model,
@@ -116,6 +125,8 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		boolToInt(event.Sandbox.OutputTruncated),
 		event.FinishReason,
 		noticeJSON,
+		stepArg,
+		toolCallIDArg,
 	)
 	if err != nil {
 		return fmt.Errorf("save tool call: %w", err)
@@ -177,7 +188,8 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		`SELECT agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
 		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json,
 		        original_args_json, rewritten,
-		        sandbox_enabled, resource_limits, output_truncated, notice_json
+		        sandbox_enabled, resource_limits, output_truncated, notice_json,
+		        step_seq, tool_call_id
 		 FROM tool_calls
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -210,9 +222,17 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		var rl sql.NullInt64
 		var ot sql.NullInt64
 		var noticeJSON sql.NullString
+		var stepSeq sql.NullInt64
+		var toolCallID sql.NullString
 		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &errorString, &created,
-			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON, &origArgs, &rewritten, &sbEnabled, &rl, &ot, &noticeJSON); err != nil {
+			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON, &origArgs, &rewritten, &sbEnabled, &rl, &ot, &noticeJSON, &stepSeq, &toolCallID); err != nil {
 			return nil, fmt.Errorf("scan tool call row: %w", err)
+		}
+		if stepSeq.Valid {
+			e.StepID = stepSeq.Int64
+		}
+		if toolCallID.Valid {
+			e.ToolCallID = toolCallID.String
 		}
 		e.Args = []byte(args)
 		e.Risk = registry.RiskLevel(risk)

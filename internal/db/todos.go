@@ -4,11 +4,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
+// TodoItem is one entry of the session task list. The stored JSON is
+// compatible in both directions: rows written before ID and the timestamps
+// existed decode with zero values, and older binaries ignore the new keys.
 type TodoItem struct {
-	Content string `json:"content"`
-	Status  string `json:"status"`
+	ID          string    `json:"id,omitempty"`
+	Content     string    `json:"content"`
+	Status      string    `json:"status"`
+	StartedAt   time.Time `json:"started_at,omitzero"`
+	CompletedAt time.Time `json:"completed_at,omitzero"`
 }
 
 func (db *DB) SaveTodos(sessionID string, todos []TodoItem) error {

@@ -27,7 +27,7 @@ type Step struct {
 	ID        StepID
 	TurnMsgID int64 // in-memory ID of the turn's user message; 0 if none
 	Actor     Actor
-	TodoID    string // reserved for P3; always "" in P2
+	TodoID    string // the in-progress todo when the step began; "" if none
 	StartedAt time.Time
 	EndedAt   time.Time // zero while open
 }
@@ -58,7 +58,18 @@ func (s *State) BeginStep(actor Actor) StepID {
 	if s.nextStepSeq < 1 {
 		s.nextStepSeq = 1
 	}
-	st := Step{ID: s.nextStepSeq, TurnMsgID: turn, Actor: actor, StartedAt: time.Now()}
+	// A step belongs to the task that was active when it started. The usual
+	// pattern (narrate, mark the next todo in progress, work) puts the
+	// todo.write call itself in a step bound to the previous task; the
+	// renderer re-binds those for display.
+	var todoID string
+	for _, td := range s.todos {
+		if td.Status == "in_progress" {
+			todoID = td.ID
+			break
+		}
+	}
+	st := Step{ID: s.nextStepSeq, TurnMsgID: turn, Actor: actor, TodoID: todoID, StartedAt: time.Now()}
 	s.nextStepSeq++
 	s.steps = append(s.steps, st)
 	published := st
@@ -68,7 +79,7 @@ func (s *State) BeginStep(actor Actor) StepID {
 		row := db.StepRow{
 			Seq: st.ID, TurnMessageID: turnDBID,
 			ActorRole: actor.Role, ActorLabel: actor.Label, Model: actor.Model, Provider: actor.Provider,
-			StartedAt: st.StartedAt,
+			TodoID: st.TodoID, StartedAt: st.StartedAt,
 		}
 		if err := s.db.SaveStep(s.sessionID, row); err != nil {
 			s.logger.Error("save step failed", "error", err, "session_id", s.sessionID, "step", st.ID)

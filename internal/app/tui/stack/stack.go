@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -33,6 +34,8 @@ const (
 	KindJobExit
 	KindThinking
 	KindPassthrough
+	KindTask
+	KindReceipt
 )
 
 // NodeID is a node's identity across rebuilds. The tree is rebuilt from the
@@ -53,10 +56,12 @@ type Node struct {
 	Version  uint64 // hash of every payload field the renderer reads
 
 	// Payload: exactly one is set, by Kind.
-	Item   *session.TranscriptItem
-	Step   *StepInfo
-	Tools  []registry.AuditEvent // len > 1 = merged same-tool run within a step
-	Active *session.ActiveToolCall
+	Item    *session.TranscriptItem
+	Step    *StepInfo
+	Tools   []registry.AuditEvent // len > 1 = merged same-tool run within a step
+	Active  *session.ActiveToolCall
+	Task    *TaskInfo
+	Receipt *ReceiptInfo
 }
 
 // StepInfo is a step node's payload.
@@ -66,6 +71,14 @@ type StepInfo struct {
 	Thinking     []*session.ThinkingEntry
 	LiveThinking string // in-progress reasoning when this is the live step
 	Heuristic    bool
+
+	// TodoID is the task the step renders under: the stored binding, or for a
+	// narrated step whose only tool call was a todo.write, the todo that
+	// write set in progress. Empty means no task.
+	TodoID string
+	// TodoWrites are the step's todo.write calls. They are never rows: the
+	// task headers replace them.
+	TodoWrites []registry.AuditEvent
 }
 
 // Snapshot is everything Build reads.
@@ -75,6 +88,8 @@ type Snapshot struct {
 	ActiveTools []session.ActiveToolCall
 	InProgress  session.InProgressMessage
 	Busy        bool
+	// Todos is the current task list; it names and orders the task headers.
+	Todos []db.TodoItem
 	// Drilled is true while showing a subagent's own transcript. Then its
 	// agent.run audits render normally; otherwise the subagent card replaces
 	// them.
@@ -214,7 +229,7 @@ func Build(s Snapshot) []*Node {
 		if t.msg != nil {
 			turnMsgID = t.msg.ID
 		}
-		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID)
+		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg)
 		out = append(out, node)
 	}
 	return out
@@ -278,7 +293,7 @@ type stepAcc struct {
 	first  time.Time
 }
 
-func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64) []*Node {
+func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message) []*Node {
 	var blocks []block
 	steps := map[session.StepID]*stepAcc{}
 	var stepOrder []session.StepID
@@ -449,8 +464,17 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		} else {
 			node.ID = NodeID{KindStep, fmt.Sprintf("step:orphan:%d", a.first.UnixNano())}
 		}
-		node.Children = toolRows(a.audits, active)
+		var audits []registry.AuditEvent
+		for _, ev := range a.audits {
+			if ev.ToolName == todoWriteTool {
+				a.info.TodoWrites = append(a.info.TodoWrites, ev)
+				continue
+			}
+			audits = append(audits, ev)
+		}
+		node.Children = toolRows(audits, active)
 		node.Children = append(node.Children, a.cards...)
+		a.info.TodoID = effectiveTodoID(a.info, len(audits) == 0 && len(active) == 0, s.Todos)
 		node.Version = versionOfStep(node)
 		return node
 	}
@@ -510,6 +534,12 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	out := make([]*Node, 0, len(blocks))
 	for _, b := range blocks {
 		out = append(out, b.node)
+	}
+	out = groupTasks(out, turnKey, s)
+	if !(s.Busy && lastTurn) {
+		if rc := receipt(turnKey, out, userMsg, s); rc != nil {
+			out = append(out, rc)
+		}
 	}
 	return out
 }
@@ -735,6 +765,7 @@ func versionOfStep(n *Node) uint64 {
 	b := newHash()
 	st := n.Step
 	r := st.Step
+	b.f("td|%s|%d|", st.TodoID, len(st.TodoWrites))
 	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%v|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
 		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), st.Heuristic, len(st.LiveThinking))
 	for _, m := range st.Narration {

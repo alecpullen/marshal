@@ -285,3 +285,28 @@ func TestStepScopedReaders(t *testing.T) {
 		t.Errorf("OpenStep = %+v, %v; want step %d", open, ok, b)
 	}
 }
+
+func TestBeginStepBindsInProgressTodoAndSurvivesResume(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	first := persistedState(t, d, sid)
+	first.AddMessage(RoleUser, "go", ContentTypePlain)
+	none := first.BeginStep(Actor{})
+	first.EndStep(none)
+	if err := first.SetTodos([]db.TodoItem{
+		{ID: "t1", Content: "a", Status: "completed"},
+		{ID: "t2", Content: "b", Status: "in_progress"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bound := first.BeginStep(Actor{})
+	first.EndStep(bound)
+
+	second := persistedState(t, d, sid)
+	got := map[StepID]string{}
+	for _, st := range second.Steps() {
+		got[st.ID] = st.TodoID
+	}
+	if got[none] != "" || got[bound] != "t2" {
+		t.Fatalf("bindings after resume = %v", got)
+	}
+}

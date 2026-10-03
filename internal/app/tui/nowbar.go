@@ -207,7 +207,9 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 	// While a todo is in progress the clock is that task's, not the turn's.
 	if src == srcTodos {
 		for _, t := range in.Todos {
-			if t.Status == "in_progress" && !t.StartedAt.IsZero() {
+			// A todo carried over from an earlier turn would open this turn
+			// with hours on the clock; only one started in this turn counts.
+			if t.Status == "in_progress" && !t.StartedAt.IsZero() && !t.StartedAt.Before(in.TurnStartedAt) {
 				elapsed = formatElapsed(max(in.Now.Sub(t.StartedAt), 0))
 				break
 			}

@@ -83,7 +83,7 @@ func (m *Model) viewString() string {
 		m.sheetPanel.SetData(m.sheetDataFor)
 	}
 	if m.tasksPanel != nil {
-		m.tasksPanel.SetSource(func() commands.Doc { return tasksDoc(m.viewedTodos(), m.viewedSteps(), m.now()) })
+		m.tasksPanel.SetSource(func() commands.Doc { return tasksDoc(m.viewedTodos(), m.taskSteps, m.now()) })
 	}
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()

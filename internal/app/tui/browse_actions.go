@@ -81,7 +81,14 @@ func osc52Unsupported() bool {
 
 // copyCursorNode copies the cursor node over OSC 52 and says how much.
 func (m *Model) copyCursorNode() tea.Cmd {
-	text := plainText(m.nodeCopyText(m.currentNode()))
+	return m.copyText(m.nodeCopyText(m.currentNode()))
+}
+
+// copyText puts text on the clipboard over OSC 52 and says how much. Browse
+// mode and the inspector both copy through it, so both give the same notices,
+// including the one for terminals known not to honour OSC 52.
+func (m *Model) copyText(raw string) tea.Cmd {
+	text := plainText(raw)
 	if text == "" {
 		return m.setFlash("Nothing to copy")
 	}
@@ -120,11 +127,15 @@ func (m *Model) nodeFile(n *stack.Node) (path string, line int) {
 				if f, ok := args["line"].(float64); ok {
 					l = int(f)
 				}
-				return absIn(root, p), l
+				if abs := absIn(root, p); openable(root, abs) {
+					return abs, l
+				}
 			}
 		}
-		if len(ev.FilesChanged) > 0 {
-			return absIn(root, ev.FilesChanged[0]), 0
+		for _, f := range ev.FilesChanged {
+			if abs := absIn(root, f); openable(root, abs) {
+				return abs, 0
+			}
 		}
 	}
 	for _, ev := range events {
@@ -132,17 +143,24 @@ func (m *Model) nodeFile(n *stack.Node) (path string, line int) {
 			continue
 		}
 		for _, mt := range pathLineRE.FindAllStringSubmatch(ev.ResultContent, -1) {
-			p := absIn(root, mt[1])
-			if !within(root, p) {
-				continue
-			}
-			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			if p := absIn(root, mt[1]); openable(root, p) {
 				l, _ := strconv.Atoi(mt[2])
 				return p, l
 			}
 		}
 	}
 	return "", 0
+}
+
+// openable is true for a regular file inside the workspace: a directory (a
+// search over ".") or a path outside the repo is not something `o` should
+// hand to an editor.
+func openable(root, p string) bool {
+	if !within(root, p) {
+		return false
+	}
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
 }
 
 func absIn(root, p string) string {

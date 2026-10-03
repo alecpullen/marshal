@@ -83,7 +83,7 @@ func newTodoWriteTool(state *session.State) registry.Tool {
 		for i := range args.Todos {
 			args.Todos[i].StartedAt, args.Todos[i].CompletedAt = time.Time{}, time.Time{}
 		}
-		merged, matched := reconcileTodos(oldTodos, args.Todos, now)
+		merged, matched := reconcileTodos(oldTodos, args.Todos, now, state.TodoIDFloor())
 
 		// Auto-carry: unfinished items missing from the submitted list are
 		// kept (appended with their status) instead of erroring. The old
@@ -131,7 +131,7 @@ var todoNow = time.Now
 // reports which previous items were claimed. Timestamps are set from status
 // transitions: StartedAt on first entering in_progress, CompletedAt on entering
 // completed (cleared again if the item leaves it).
-func reconcileTodos(prev, next []TodoItem, now time.Time) ([]TodoItem, []bool) {
+func reconcileTodos(prev, next []TodoItem, now time.Time, floor int) ([]TodoItem, []bool) {
 	matched := make([]bool, len(prev))
 	claim := func(ok func(TodoItem) bool) int {
 		for i := range prev {
@@ -142,7 +142,10 @@ func reconcileTodos(prev, next []TodoItem, now time.Time) ([]TodoItem, []bool) {
 		}
 		return -1
 	}
-	counter := 0
+	// floor is the highest number any earlier ID in the session used, so an
+	// ID freed by dropping a completed todo is never handed to a new one
+	// (older steps still carry it).
+	counter := floor
 	for _, p := range prev {
 		if n, err := strconv.Atoi(strings.TrimPrefix(p.ID, "t")); err == nil && strings.HasPrefix(p.ID, "t") && n > counter {
 			counter = n
@@ -164,7 +167,9 @@ func reconcileTodos(prev, next []TodoItem, now time.Time) ([]TodoItem, []bool) {
 		var base TodoItem
 		if idx >= 0 {
 			base = prev[idx]
-		} else {
+		}
+		if base.ID == "" {
+			// New, or a todo saved before IDs existed: it gets an identity now.
 			counter++
 			base.ID = "t" + strconv.Itoa(counter)
 		}

@@ -185,3 +185,14 @@ func (m *Model) recordDensity(id stack.NodeID, d density) {
 	}
 	m.effDensity[m.expandKey(id)] = d
 }
+
+// applyTranscriptConfig resets the global detail level and the task-fold
+// toggle to the configured values, dropping per-node overrides. It runs for a
+// new session and when [tui.transcript] changes.
+func (m *Model) applyTranscriptConfig() {
+	tr := m.state.Config.TUI.Transcript
+	m.density = parseDensity(tr.Density)
+	m.foldTasks = tr.FoldFinishedTasks
+	m.nodeDensity = map[stack.NodeID]density{}
+	m.invalidateTranscript()
+}

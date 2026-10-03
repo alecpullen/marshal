@@ -192,7 +192,7 @@ func taskDiffStat(n *stack.Node) string {
 	for _, st := range n.Children {
 		for _, row := range st.Children {
 			for _, ev := range row.Tools {
-				if ev.ToolName == "file.write_patch" || ev.ToolName == "patch.apply" {
+				if isDiffTool(ev.ToolName) {
 					da, dr := diffCounts(ev.ResultContent)
 					a, r = a+da, r+dr
 				}
@@ -218,9 +218,9 @@ func renderReceipt(r *stack.ReceiptInfo, width int) string {
 		parts = append(parts, compactDuration(r.Duration))
 	}
 	if r.Tasks > 0 {
-		parts = append(parts, pluralN(r.Tasks, "task"))
+		parts = append(parts, pluralCount(r.Tasks, "task", "tasks"))
 	}
-	parts = append(parts, pluralN(r.Steps, "step"), pluralN(r.Tools, "tool"))
+	parts = append(parts, pluralCount(r.Steps, "step", "steps"), pluralCount(r.Tools, "tool", "tools"))
 	if r.Files > 0 {
 		parts = append(parts, fmt.Sprintf("±%d files", r.Files))
 		if r.Files == 1 {
@@ -235,9 +235,7 @@ func renderReceipt(r *stack.ReceiptInfo, width int) string {
 	return gutterPrefix(g, gc) + mutedStyle().Render(text) + "\n"
 }
 
-func pluralN(n int, word string) string {
-	if n == 1 {
-		return "1 " + word
-	}
-	return fmt.Sprintf("%d %ss", n, word)
+// pluralCount is "1 step" / "3 steps".
+func pluralCount(n int, one, many string) string {
+	return fmt.Sprintf("%d %s", n, plural(n, one, many))
 }

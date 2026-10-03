@@ -50,7 +50,9 @@ type ReceiptInfo struct {
 
 func isShellFamily(name string) bool { return name == "shell.run" || name == "test.run" }
 
-func eventFailed(ev registry.AuditEvent) bool {
+// EventFailed is the one definition of a failed call: an error, a denial, or
+// a non-zero exit. The task failure rule and the step glyph both use it.
+func EventFailed(ev registry.AuditEvent) bool {
 	return ev.Error != "" || ev.Approval == registry.ApprovalDenied ||
 		(ev.CommandExitCode != nil && *ev.CommandExitCode != 0)
 }
@@ -182,7 +184,7 @@ func fillTask(n *Node, todos []db.TodoItem) {
 	if last != nil {
 		for _, row := range last.Children {
 			for _, ev := range row.Tools {
-				if eventFailed(ev) {
+				if EventFailed(ev) {
 					t.UnresolvedFailure = true
 				}
 			}

@@ -223,15 +223,10 @@ func countToolCalls(rows []*stack.Node) int {
 // inside the frame, and every line (continuations included) shifts with it.
 func renderToolRow(ev registry.AuditEvent, expanded bool, callers []string, width int) string {
 	out := indentLines(renderCompletedToolCall(ev, expanded, callers, width-stepRowIndent), stepRowIndent)
-	if !expanded && toolFailed(ev) {
+	if !expanded && stack.EventFailed(ev) {
 		out += failedTail(ev, width)
 	}
 	return out
-}
-
-func toolFailed(ev registry.AuditEvent) bool {
-	return ev.Error != "" || ev.Approval == registry.ApprovalDenied ||
-		(ev.CommandExitCode != nil && *ev.CommandExitCode != 0)
 }
 
 // failedTail shows the last few lines of a failed call's output under its
@@ -321,8 +316,7 @@ func hasToolRows(rows []*stack.Node) bool {
 func stepFailed(rows []*stack.Node) bool {
 	for _, r := range rows {
 		for _, ev := range r.Tools {
-			if ev.Error != "" || ev.Approval == registry.ApprovalDenied ||
-				(ev.CommandExitCode != nil && *ev.CommandExitCode != 0) {
+			if stack.EventFailed(ev) {
 				return true
 			}
 		}

@@ -1,8 +1,11 @@
 package session
 
 import (
-	"marshal/internal/tools/registry"
+	"strconv"
+	"strings"
 	"time"
+
+	"marshal/internal/tools/registry"
 
 	"marshal/internal/db"
 )
@@ -223,4 +226,28 @@ func (s *State) OpenStep() (Step, bool) {
 		return Step{}, false
 	}
 	return *live, true
+}
+
+// TodoIDFloor is the highest "t<n>" number any todo or recorded step in the
+// session has carried. todo.write starts new IDs above it, so an ID released
+// by dropping a todo is never reused for a different one.
+func (s *State) TodoIDFloor() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	floor := 0
+	note := func(id string) {
+		if !strings.HasPrefix(id, "t") {
+			return
+		}
+		if n, err := strconv.Atoi(id[1:]); err == nil && n > floor {
+			floor = n
+		}
+	}
+	for _, td := range s.todos {
+		note(td.ID)
+	}
+	for _, st := range s.steps {
+		note(st.TodoID)
+	}
+	return floor
 }

@@ -177,6 +177,7 @@ func (m *Model) refreshViewport() {
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
 	m.setBrowseItems(bitems, tree)
+	m.taskSteps = countTaskSteps(turns)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	content := strings.Join(blocks, "\n")
@@ -282,6 +283,19 @@ func (m *Model) noteRegionRows(id stack.NodeID, rows int) {
 	if rows > m.regionRows[id] {
 		m.regionRows[id] = rows
 	}
+}
+
+// countTaskSteps sums the steps under each task header, per todo ID.
+func countTaskSteps(turns []*stack.Node) map[string]int {
+	counts := map[string]int{}
+	for _, turn := range turns {
+		for _, n := range turn.Children {
+			if n.Kind == stack.KindTask && n.Task != nil {
+				counts[n.Task.TodoID] += n.Task.Steps
+			}
+		}
+	}
+	return counts
 }
 
 // collectSeen records every node ID a block can address: the block, its rows,

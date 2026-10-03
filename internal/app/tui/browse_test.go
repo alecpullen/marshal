@@ -368,3 +368,85 @@ func TestOpenWithoutEditorSaysSo(t *testing.T) {
 		t.Fatal("expected a notice when $EDITOR is unset")
 	}
 }
+
+func TestMovingTheCursorStopsFollowing(t *testing.T) {
+	m := browseFixture(t)
+	m = pressKeys(m, "esc")
+	m.viewportFollow = true // as after G on a live node
+	m = pressKeys(m, "k")
+	if m.viewportFollow {
+		t.Fatal("moving the cursor must turn follow off, or the next refresh snaps the viewport back to the bottom")
+	}
+}
+
+func TestFlashClearAndEditorErrorsAreHandledInUpdate(t *testing.T) {
+	m := browseFixture(t)
+	gen := m.suggestionGen
+	m = sendMsg(m, flashClearMsg{})
+	if m.suggestionGen != gen {
+		t.Fatal("flashClearMsg must not reach the textarea path, which bumps suggestionGen")
+	}
+	m = sendMsg(m, editorDoneMsg{err: fmt.Errorf("exec: \"nvimm\": not found")})
+	if !m.flashActive() || !strings.Contains(m.flash, "nvimm") {
+		t.Fatalf("an editor failure should be shown, flash = %q", m.flash)
+	}
+}
+
+func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
+	m := browseFixture(t)
+	root := m.state.Workspace().ActiveRoot
+	outside := t.TempDir()
+	for _, p := range []string{".", "/etc", outside} {
+		n := &stack.Node{Kind: stack.KindTool, Tools: []registry.AuditEvent{{ToolName: "search.grep", Args: []byte(fmt.Sprintf(`{"path":%q}`, p))}}}
+		if path, _ := m.nodeFile(n); path != "" {
+			t.Errorf("path %q resolved to %q; directories and outside paths must not open (root %s)", p, path, root)
+		}
+	}
+}
+
+func TestTranscriptConfigChangeReappliesToTheRunningSession(t *testing.T) {
+	m := browseFixture(t)
+	m.foldTasks = false
+	m.density = densityFull
+	cfg := m.state.Config
+	cfg.TUI.Transcript.Density = "outline"
+	cfg.TUI.Transcript.FoldFinishedTasks = true
+	m.applyNewConfig(cfg)
+	if m.density != densityOutline || !m.foldTasks {
+		t.Fatalf("density %v foldTasks %v after the config changed", m.density, m.foldTasks)
+	}
+	// An unrelated reload leaves the user's Ctrl+G choice alone.
+	m.density = densityFull
+	m.applyNewConfig(cfg)
+	if m.density != densityFull {
+		t.Fatal("a reload that did not touch [tui.transcript] must not reset the density")
+	}
+}
+
+func TestTasksPanelStepCountsMatchTheTaskHeaders(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "One", Status: "in_progress", StartedAt: time.Now()}, {ID: "t2", Content: "Two", Status: "pending"}})
+	a := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(a, "Doing one.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: a, ToolCallID: "a", Args: []byte(`{"path":"x"}`), ResultSummary: "ok"})
+	m.state.EndStep(a)
+	// Narrate, then mark task two in progress: this step is stored under t1
+	// but renders under t2.
+	b := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(b, "Moving on to two.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "todo.write", StepID: b, ToolCallID: "w",
+		Args: []byte(`{"todos":[{"id":"t1","content":"One","status":"completed"},{"id":"t2","content":"Two","status":"in_progress"}]}`)})
+	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "One", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()}, {ID: "t2", Content: "Two", Status: "in_progress", StartedAt: time.Now()}})
+	m.state.EndStep(b)
+	c := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(c, "Working on two.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: c, ToolCallID: "c", Args: []byte(`{"path":"y"}`), ResultSummary: "ok"})
+	m.state.EndStep(c)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if m.taskSteps["t1"] != 1 || m.taskSteps["t2"] != 2 {
+		t.Fatalf("taskSteps = %v, want t1:1 t2:2 (the narrated todo.write step renders under t2)", m.taskSteps)
+	}
+}

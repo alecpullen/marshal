@@ -310,3 +310,15 @@ func TestBeginStepBindsInProgressTodoAndSurvivesResume(t *testing.T) {
 		t.Fatalf("bindings after resume = %v", got)
 	}
 }
+
+func TestTodoIDFloorCoversIDsOnlyStepsStillCarry(t *testing.T) {
+	st := plainState()
+	st.AddMessage(RoleUser, "go", ContentTypePlain)
+	_ = st.SetTodos([]db.TodoItem{{ID: "t1", Content: "a", Status: "pending"}, {ID: "t4", Content: "b", Status: "in_progress"}})
+	step := st.BeginStep(Actor{}) // bound to t4
+	st.EndStep(step)
+	_ = st.SetTodos([]db.TodoItem{{ID: "t1", Content: "a", Status: "pending"}}) // t4 dropped
+	if got := st.TodoIDFloor(); got != 4 {
+		t.Fatalf("floor = %d, want 4 (the step still carries t4)", got)
+	}
+}

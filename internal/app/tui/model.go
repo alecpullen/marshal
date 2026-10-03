@@ -396,8 +396,11 @@ type Model struct {
 	// Browse mode (Esc): a cursor over the rendered nodes. browseItems is
 	// rebuilt on every full refresh; browseTree indexes the nodes for copy,
 	// open and inspect.
-	browsing    bool
-	osc52Noted  bool
+	browsing   bool
+	osc52Noted bool
+	// taskSteps counts steps per todo as the transcript groups them (with the
+	// render-time re-binding), so the Tasks panel agrees with the headers.
+	taskSteps   map[string]int
 	cursor      stack.NodeID
 	browseNodes []stack.NodeID
 	browseItems []browseItem
@@ -889,7 +892,12 @@ func relPath(workingDir, path string) string {
 // status line (the policy engine is rebuilt from the same value by the
 // runtime reload).
 func (m *Model) applyNewConfig(cfg config.Config) {
+	prevTranscript := m.state.Config.TUI.Transcript
 	m.state.Config = cfg
+	if cfg.TUI.Transcript != prevTranscript {
+		// An edit to [tui.transcript] takes effect in the running session.
+		m.applyTranscriptConfig()
+	}
 	m.approvalMode = policy.ParseApprovalMode(cfg.Agent.ApprovalMode)
 	m.setReg = nil
 	m.setPopup = nil
@@ -1915,6 +1923,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsheet.RunCommandMsg:
 		m.closeSessionSheet()
 		return m.dispatchCommand("/" + msg.Command)
+	case flashClearMsg:
+		// Only wakes the view; it must not reach the textarea path, which
+		// would bump the suggestion generation and drop an in-flight result.
+		return m, nil
+	case editorDoneMsg:
+		if msg.err != nil {
+			return m, m.setFlash("$EDITOR failed: " + msg.err.Error())
+		}
+		return m, nil
 	case inspector.ClosedMsg, inspector.NavigateMsg, inspector.CopyMsg, inspector.OpenMsg:
 		cmd, _ := m.handleInspectorMsg(msg)
 		return m, cmd

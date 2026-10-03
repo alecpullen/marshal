@@ -175,8 +175,7 @@ func TestTasksDocShowsStepCountsAndDurations(t *testing.T) {
 		{ID: "t2", Content: "Live one", Status: "in_progress", StartedAt: now.Add(-90 * time.Second)},
 		{ID: "t3", Content: "Later", Status: "pending"},
 	}
-	steps := []session.Step{{ID: 1, TodoID: "t1"}, {ID: 2, TodoID: "t1"}, {ID: 3, TodoID: "t2"}}
-	doc := tasksDoc(todos, steps, now)
+	doc := tasksDoc(todos, map[string]int{"t1": 2, "t2": 1}, now)
 	if got := doc.Rows[0].Detail; got != "2 steps · 3m00s" {
 		t.Errorf("completed row detail = %q", got)
 	}
@@ -329,5 +328,16 @@ func TestDensityMatrix(t *testing.T) {
 				t.Errorf("%s: contains(%q) = %v, want %v\n%s", c.name, sub, got, want, c.text)
 			}
 		}
+	}
+}
+
+func TestNowBarIgnoresATaskStartedBeforeThisTurn(t *testing.T) {
+	now := time.Now()
+	in := nowBarInput{
+		Width: 80, Busy: true, Now: now, TurnStartedAt: now.Add(-5 * time.Second),
+		Todos: []db.TodoItem{{ID: "t1", Content: "Carried over", Status: "in_progress", StartedAt: now.Add(-5 * time.Hour)}},
+	}
+	if _, _, elapsed := nowBarHead(in); strings.Contains(elapsed, "h") || strings.Contains(elapsed, "300m") {
+		t.Fatalf("a carried-over task must not put hours on a new turn's clock, got %q", elapsed)
 	}
 }

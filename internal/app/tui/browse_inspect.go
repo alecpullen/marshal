@@ -175,7 +175,7 @@ func (m *Model) toolDetail(n *stack.Node) inspector.Detail {
 	if ev.Error != "" {
 		output = strings.TrimRight(output, "\n") + "\n\nerror: " + ev.Error
 	}
-	if ev.ToolName == "file.write_patch" || ev.ToolName == "patch.apply" {
+	if isDiffTool(ev.ToolName) {
 		sec("diff", ev.ResultContent)
 		if ev.Error != "" {
 			sec("output", "error: "+ev.Error)
@@ -283,11 +283,7 @@ func (m *Model) handleInspectorMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.stepInspector(v.Delta)
 		return nil, true
 	case inspector.CopyMsg:
-		text := plainText(v.Text)
-		if text == "" {
-			return m.setFlash("Nothing to copy"), true
-		}
-		return tea.Batch(tea.SetClipboard(text), m.setFlash(fmt.Sprintf("Copied %d lines", strings.Count(text, "\n")+1))), true
+		return m.copyText(v.Text), true
 	case inspector.OpenMsg:
 		return m.openCursorFile(), true
 	}

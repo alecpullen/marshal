@@ -151,6 +151,9 @@ func (m *Model) moveCursor(to int) {
 	}
 	to = max(0, min(to, len(m.browseItems)-1))
 	m.cursor = m.browseItems[to].id
+	// Reading earlier output must not be undone by a refresh snapping the
+	// viewport back to the bottom; only G on a live node re-enables follow.
+	m.viewportFollow = false
 	m.invalidateTranscript()
 	m.refreshViewport()
 	m.scrollToCursor()
@@ -190,6 +193,7 @@ func (m *Model) cursorToVisible() {
 
 func (m *Model) moveCursorNoScroll(i int) {
 	m.cursor = m.browseItems[i].id
+	m.viewportFollow = false
 	m.invalidateTranscript()
 	m.refreshViewport()
 }

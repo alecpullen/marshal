@@ -111,7 +111,7 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	m.effDensity = nil
 	m.viewStack = nil
 	m.invalidateTranscript()
-	m.density = parseDensity(m.state.Config.TUI.Transcript.Density)
+	m.applyTranscriptConfig()
 	m.nodeRegions = nil
 	// The old session's changed-files list must never render in the new
 	// session while the sheetBaseRefMsg round-trips; re-read it below.

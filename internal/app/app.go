@@ -430,6 +430,7 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 			// escalation got, and the longest failed streak behind it.
 			FailedRepeatStreak:      m.FailedRepeatStreak,
 			HighestFailedRepeatTier: m.HighestFailedRepeatTier,
+			IntentNudges:            m.IntentNudges,
 			Outcome:                 m.Outcome,
 			SalvageReason:           m.SalvageReason,
 			PromptTokens:            m.PromptTokens,
@@ -977,6 +978,8 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		runner.MaxToolResultChars = cfg.Agent.MaxToolResultChars
 	}
 	runner.PlanFirst = cfg.Agent.PlanFirst
+	runner.NarrationPrompt = cfg.Agent.NarrationPrompt
+	runner.IntentNudge = cfg.Agent.IntentNudge
 	runner.SuppressParseRepairFeedback = !cfg.Agent.ParseRepairFeedbackEnabled()
 	runner.VerificationGate = cfg.Agent.VerificationGateEnabled()
 	if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
@@ -1287,6 +1290,8 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	// same [agent] verification_gate default as the parent runner; a preset
 	// override still wins per-route (Runner.verificationGateOn).
 	r.VerificationGate = s.cfg.Agent.VerificationGateEnabled()
+	r.NarrationPrompt = s.cfg.Agent.NarrationPrompt
+	r.IntentNudge = s.cfg.Agent.IntentNudge
 	r.Pricing = pricing.Lookup(route.Preset, s.state.Logger()) // closes role-runner pricing gap
 	// AI-03: per-runner rollover for pipeline (child-session) runners only.
 	// Each child gets a minted session ID with its own agent_sessions row
@@ -1331,6 +1336,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	var customAddendum string
 	if route.CustomAgent != nil {
 		ca := route.CustomAgent
+		r.ActorLabel = ca.Name
 		customAddendum = ca.SystemPrompt
 		if len(ca.ToolDenylist) > 0 {
 			r.Registry = agent.DenylistView(r.Registry, ca.ToolDenylist)
@@ -1504,6 +1510,9 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 
 		childRunner := agent.NewRunner(p, childReg, childPol, childState, route.Preset.Model)
 		childRunner.Role = agent.RoleSDDPlanAuthor
+		childRunner.ActorLabel = "plan author"
+		childRunner.NarrationPrompt = cfg.Agent.NarrationPrompt
+		childRunner.IntentNudge = cfg.Agent.IntentNudge
 		childRunner.SkillIndex = skillIndex
 		childRunner.MemoryProvider = &dbMemoryProvider{db: database}
 		childRunner.ProjectID = projectID
@@ -1858,6 +1867,11 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		}
 		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
 		child.Role = role
+		child.NarrationPrompt = cfg.Agent.NarrationPrompt
+		child.IntentNudge = cfg.Agent.IntentNudge
+		if req.Agent != "" {
+			child.ActorLabel = req.Agent
+		}
 		child.MaxToolIterations = iters
 		child.TemperatureOverride = tempOverride
 		child.ThinkingOverride = thinkOverride

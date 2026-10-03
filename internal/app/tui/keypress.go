@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
 )
 
@@ -103,8 +104,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	// Suggestion accept/dismiss keys are routed before the textarea sees
 	// them, following the existing priority-routing pattern. Right accepts
 	// only at end-of-input; Tab accepts only when the completion popup is
-	// closed (popup priority wins); Esc dismisses only when idle (cancel
-	// takes precedence while busy).
+	// closed (popup priority wins); Esc dismisses whether busy or idle.
 	if m.suggestion != "" && !m.suggestionDismissed {
 		switch msg.String() {
 		case "right":
@@ -118,18 +118,10 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 				return *m, nil, true
 			}
 		case "esc":
-			if !m.busy {
-				m.suggestionDismissed = true
-				m.refreshViewport()
-				return *m, nil, true
-			}
+			m.suggestionDismissed = true
+			m.refreshViewport()
+			return *m, nil, true
 		}
-	}
-
-	// Leaving the empty input disarms lane-cursor mode so a later blank
-	// Enter cannot drill from a stale cursor position.
-	if m.laneCursorActive && msg.String() != "up" && msg.String() != "down" && msg.String() != "enter" {
-		m.laneCursorActive = false
 	}
 
 	switch msg.String() {
@@ -145,34 +137,28 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "esc":
-		// F18: dismiss the active completion popup first. Only if
-		// nothing is up do we fall through to cancelling the in-flight
-		// turn.
+		// Esc only closes things; it never cancels a turn (Ctrl+C, twice,
+		// does). Dismiss the active completion popup first.
 		if m.activeCompletionPopup() != nil {
 			m.activeCompletionPopup().dismiss()
 			m.completionSuppressed = true
 			return *m, nil, true
 		}
 		// While drilled into a subagent, Esc pops back to the parent
-		// transcript rather than cancelling the in-flight turn. Ctrl+X
-		// while drilled into a running subagent stops that subagent;
-		// Ctrl+C cancels the whole turn.
+		// transcript. Ctrl+X while drilled into a running subagent stops
+		// that subagent; Ctrl+C (twice) stops the whole turn.
 		if m.popDrill() {
 			m.refreshViewport()
 			return *m, nil, true
 		}
-		// An idle esc dismisses the notice banner: there is no turn to
-		// cancel and the banner is the most recent thing asking for
-		// attention. Busy turns fall through to cancelTurn as before.
-		if !m.busy {
-			if _, ok := m.state.Notice(); ok {
-				m.state.DismissNotice()
-				m.refreshViewport()
-				return *m, nil, true
-			}
+		// Dismiss the notice banner, busy or idle: it is the most recent
+		// thing asking for attention.
+		if _, ok := m.state.Notice(); ok {
+			m.state.DismissNotice()
+			m.refreshViewport()
+			return *m, nil, true
 		}
 		m.resetHistoryNav()
-		m.cancelTurn()
 		return *m, nil, true
 	case "ctrl+o":
 		m.openSettingsBrowser("")
@@ -207,18 +193,15 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return *m, nil, true
 	case "ctrl+g":
 		m.detailExpanded = !m.detailExpanded
-		m.itemExpanded = map[itemKey]bool{}
-		m.clearActiveToolExpansions()
-		m.lastTranscriptHash = 0
+		m.expanded = map[stack.NodeID]bool{}
+		m.invalidateTranscript()
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+t":
 		if !readlineShortcutAvailable() {
 			return *m, nil, false
 		}
-		// Cycle the pinned todo panel: expanded → collapsed → hidden.
-		// State persists for the session.
-		m.cycleTodoPanelMode()
+		m.toggleTasksPanel()
 		return *m, nil, true
 	case "ctrl+s":
 		if !readlineShortcutAvailable() {
@@ -241,10 +224,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if !readlineShortcutAvailable() {
 			return *m, nil, false
 		}
-		// Toggle the widescreen side rail for the session. Not persisted;
-		// [tui.side_panel].enabled is the durable setting.
-		m.railHidden = !m.railHidden
-		m.resize(m.rawWidth, m.rawHeight)
+		m.openSessionSheet()
 		return *m, nil, true
 	case "ctrl+r":
 		if m.state.HasBackup() {
@@ -312,22 +292,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.viewportFollow = true
 		return *m, nil, true
 	case "up":
-		// F6: keyboard drill-in. When the input is empty, the agents lane
-		// is showing, and the user is not already drilled into a subagent,
-		// up/down move the lane cursor instead of recalling prompt history
-		// or popping the drill. This runs before the completion popup
-		// precedence checks so a visible popup still wins.
-		if m.input.Value() == "" && len(m.viewStack) == 0 {
-			entries := m.agentLaneEntries()
-			if len(entries) == 0 {
-				m.laneCursor = 0
-				m.laneCursorActive = false
-			} else {
-				m.laneCursor = max(m.laneCursor-1, 0)
-				m.laneCursorActive = true
-				return *m, nil, true
-			}
-		}
 		// Completion popups keep precedence over drill exit and prompt
 		// history.
 		if p := m.activeCompletionPopup(); p != nil {
@@ -345,18 +309,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "down":
-		// F6: keyboard drill-in (see the "up" case above).
-		if m.input.Value() == "" && len(m.viewStack) == 0 {
-			entries := m.agentLaneEntries()
-			if len(entries) == 0 {
-				m.laneCursor = 0
-				m.laneCursorActive = false
-			} else {
-				m.laneCursor = min(m.laneCursor+1, len(entries)-1)
-				m.laneCursorActive = true
-				return *m, nil, true
-			}
-		}
 		if p := m.activeCompletionPopup(); p != nil {
 			p.moveDown()
 			return *m, nil, true
@@ -392,7 +344,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "ctrl+x":
 		// If the user is drilled into a running subagent, Ctrl+X stops
 		// that specific subagent instead of touching the steering queue.
-		// Esc still pops the drill; Ctrl+C cancels the whole turn.
+		// Esc still pops the drill; Ctrl+C (twice) stops the whole turn.
 		if m.busy && len(m.viewStack) > 0 {
 			if top := m.viewStack[len(m.viewStack)-1]; top.Status == session.SubagentRunning {
 				if m.state.CancelSubagent(top.ID) {
@@ -411,25 +363,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "enter":
-		// F6: keyboard drill-in. Only when the user explicitly navigated
-		// the agents lane (laneCursorActive) with an empty input does
-		// Enter drill into the selected subagent. Otherwise a blank Enter
-		// keeps its existing steering-drain behavior below.
-		if m.laneCursorActive && m.input.Value() == "" {
-			entries := m.agentLaneEntries()
-			if m.laneCursor >= 0 && m.laneCursor < len(entries) {
-				m.drillIntoSubagent(entries[m.laneCursor])
-				m.lastTranscriptHash = 0
-				m.refreshViewport()
-				m.laneCursor = 0
-				m.laneCursorActive = false
-				return *m, nil, true
-			}
-			// The lane emptied under the cursor; fall through to the
-			// normal Enter handling.
-			m.laneCursor = 0
-			m.laneCursorActive = false
-		}
 		// F18: if a popup is visible, accept the selection. Commands
 		// and setting values submit immediately (single Enter = accept
 		// + run); file paths and setting keys accept only so the user
@@ -474,12 +407,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.lastInputForPopups = ""
 		m.cmdArgMode = false
 		m.cmdArgPrefix = ""
-		// The all-done todo summary belongs to the finished turn; the next
-		// user turn clears it (a fresh list from the agent brings it back —
-		// see refreshViewport).
-		if todosAllDone(m.state.Todos()) {
-			m.todosDismissed = true
-		}
 		// A finished run's collapsed summary belongs to that run; the
 		// next user turn clears it, same as the all-done todo summary.
 		m.clearFinishedRun()

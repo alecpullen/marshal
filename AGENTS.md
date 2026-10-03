@@ -36,7 +36,7 @@ The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config
 
 This tree is complete for `internal/`. Check here before building
 something — several subsystems that sound like they need writing already
-exist (the docked-panel host, the side rail, the provider connect flow).
+exist (the docked-panel host, the session sheet, the provider connect flow).
 
 ```
 cmd/marshal/main.go                   — thin entrypoint, delegates to internal/app
@@ -60,7 +60,8 @@ internal/trust/                       — folder-trust store, resolver, project-
 TUI
 internal/app/tui/                     — Bubble Tea model (View/Update/Init); model.go is the hub
 internal/app/tui/dock/                — hosts a single interactive panel above the input area
-internal/app/tui/sidepanel/           — widescreen side rail: read-only sections, fit/collapse algorithm
+internal/app/tui/sessionsheet/        — session sheet (Ctrl+B): read-only sections in a docked panel
+internal/app/tui/stack/               — transcript view model: turn → step → row (structure only, no styling)
 internal/app/tui/settings/            — /settings browser: field list, pane stack, config frames
 internal/app/tui/connect/             — provider connect flow (template → base URL → key → probe → model)
 internal/app/tui/agents/              — /agents roster panel with per-role attribution

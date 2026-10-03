@@ -40,6 +40,8 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.MaxToolResultChars, file.Agent.MaxToolResultChars)
 		set(&cfg.Agent.MaxStructuredOutputChars, file.Agent.MaxStructuredOutputChars)
 		set(&cfg.Agent.PlanFirst, file.Agent.PlanFirst)
+		set(&cfg.Agent.NarrationPrompt, file.Agent.NarrationPrompt)
+		set(&cfg.Agent.IntentNudge, file.Agent.IntentNudge)
 		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
 		set(&cfg.Agent.ApprovalMode, file.Agent.ApprovalMode)
 		set(&cfg.Agent.HistoryBudgetTokens, file.Agent.HistoryBudgetTokens)

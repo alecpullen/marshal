@@ -14,7 +14,7 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/strutil"
+	"marshal/internal/commands"
 )
 
 // stripANSI removes SGR escape sequences so tests can inspect visible runes
@@ -35,10 +35,10 @@ const (
 	// adds above the completion popup's match rows.
 	completionPanelChromeRows = 1
 	// minTranscriptRows is the transcript floor reserved when budgeting the
-	// textarea's MaxHeight. The todo panel still takes priority over the
-	// transcript when space is tight — the pinned todo list is most useful
+	// textarea's MaxHeight. The now bar still takes priority over the
+	// transcript when space is tight — the progress row is most useful
 	// while the agent is working — but the floor is a readable window rather
-	// than a single row: the todo panel, SDD panel, live strip, and completion
+	// than a single row: the now bar, dock panel, and completion
 	// popup all stack above the input, and a busy session could squeeze the
 	// transcript to one line.
 	minTranscriptRows = 4
@@ -75,38 +75,31 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
+	plan := planNowBar(m.nowBarInput())
+	m.nowBarMemo = &plan
+	// The sheet's data func must see this frame's model, not the copy it was
+	// opened from, or it would render stale values.
+	if m.sheetPanel != nil {
+		m.sheetPanel.SetData(m.sheetDataFor)
+	}
+	if m.tasksPanel != nil {
+		m.tasksPanel.SetSource(func() commands.Doc { return tasksDoc(m.viewedTodos()) })
+	}
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
-
-	// The SDD run panel is a full-width top bar rendered above the left
-	// column and the side rail. It owns the only spinner on screen during a
-	// run, so the turn spinner row collapses entirely (see turnSpinnerRows).
-	topBar := m.renderRunPanel()
 
 	var left string
 	if m.dock.FullFrameOpen() {
 		// A FullFrame panel owns everything above the status line: the
-		// transcript, todo panel, run panel, live strip, and input area are hidden.
+		// transcript, now bar, and input area are hidden.
 		left = dockView
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
-		// The spinner groups with the transcript whose progress it
-		// describes, keeping the todo list adjacent to the input. During
-		// an SDD run the top bar owns the only spinner, so this row
-		// collapses entirely (see turnSpinnerRows). An idle spinner
-		// renders "", which JoinVertical would pad into a blank row
-		// above the todo panel — skip it instead.
-		if spinner := m.renderTurnSpinner(); spinner != "" {
-			rows = append(rows, spinner)
-		}
-		if todo := m.renderTodoPanel(); todo != "" {
-			rows = append(rows, todo)
-		}
-		if strip := m.renderLiveStrip(); strip != "" {
-			rows = append(rows, strip)
-		}
-		if lane := m.renderActivityLane(); lane != "" {
-			rows = append(rows, lane)
+		// The now bar carries every live-progress surface in one place just
+		// above the input: the run/todo progress row, the turn spinner, and
+		// the running agents, browser, jobs and watches.
+		if bar := renderNowBar(plan, m.leftWidth); bar != "" {
+			rows = append(rows, bar)
 		}
 		if dockView != "" {
 			rows = append(rows, dockView)
@@ -115,40 +108,18 @@ func (m *Model) viewString() string {
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
 	// Hard invariant: the left column must never be taller than the frame
-	// minus the status line and any top bar. Every panel is budgeted (see
-	// the *Rows helpers), but a budget miscount in any state used to push
-	// the input area and status footer off the bottom of the screen. Clip
-	// surplus rows from the top — the transcript is the topmost block and
-	// is scrollable, so nothing the user must always see is lost.
-	leftHeight := m.height - statusLineRows
-	if topBar != "" {
-		leftHeight -= lipgloss.Height(topBar)
-	}
-	left = clipLeftColumn(left, leftHeight)
-	// The rail renders whenever there is relevant data: parent-scoped when
-	// not drilled in, child-scoped while drilled into a real subagent (the
-	// breadcrumb already identifies the drilled-in state). It stays hidden
-	// for pipeline/SDD card drill-ins, whose transcript is still the
-	// parent's and which have no child state to scope to.
-	if m.railEnabled() {
-		child := m.drilledRailState()
-		if child != nil || len(m.viewStack) == 0 {
-			d := m.railData()
-			if child != nil {
-				d = m.childRailData(child)
-			}
-			railHeight := m.height - statusLineRows
-			if rv := m.rail.View(d, m.railWidth, railHeight); rv != "" {
-				rv = chrome.PaintBand(rv, m.railWidth, theme.Current().ChromeBG())
-				left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
-			}
-		}
-	}
-	if topBar != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, topBar, left, m.renderStatusLine(m.width))
-	}
+	// minus the status line. Every panel is budgeted (see the *Rows
+	// helpers), but a budget miscount in any state used to push the input
+	// area and status footer off the bottom of the screen. Clip surplus
+	// rows from the top — the transcript is the topmost block and is
+	// scrollable, so nothing the user must always see is lost.
+	left = clipLeftColumn(left, m.height-statusLineRows)
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
 }
+
+// clipLeftColumnHook is a test seam: set, it is told how many rows
+// clipLeftColumn trimmed. A non-zero trim means a height budget is wrong.
+var clipLeftColumnHook func(trimmed int)
 
 // clipLeftColumn trims s to at most maxRows, dropping surplus lines from
 // the top so bottom chrome (input area, status line) stays on screen even
@@ -160,6 +131,9 @@ func clipLeftColumn(s string, maxRows int) string {
 	height := lipgloss.Height(s)
 	if height <= maxRows {
 		return s
+	}
+	if clipLeftColumnHook != nil {
+		clipLeftColumnHook(height - maxRows)
 	}
 	lines := strings.Split(s, "\n")
 	return strings.Join(lines[height-maxRows:], "\n")
@@ -195,35 +169,6 @@ func (m Model) renderTranscriptFrame() string {
 		content = lipgloss.JoinVertical(lipgloss.Left, crumb, content)
 	}
 	return chrome.PaintBand(content, m.leftWidth, theme.Current().TranscriptBG())
-}
-
-// renderTurnSpinner renders the pinned spinner row directly above the todo
-// panel. Visibility answers one question — is the agent still running? — and
-// so is driven by the turn-level busy flag rather than session.Activity's
-// Kind, which resets to ActivityIdle between phases. The row shows elapsed
-// time plus the current activity label when the activity is a slow, stable
-// kind (tool call, approval, question, reconnect). Fast-churning thinking
-// labels stay out of the row — the transcript's live blocks show them.
-//
-// The row is always reserved (see turnSpinnerRows); it renders blank while
-// idle so the transcript frame does not shift when a turn starts.
-func (m *Model) renderTurnSpinner() string {
-	if !m.busy || m.turnStartedAt.IsZero() {
-		return ""
-	}
-	elapsed := m.now().Sub(m.turnStartedAt)
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	text := spinnerLabel(m.turnSpinnerFrame(), formatElapsed(elapsed))
-	// F5: only slow/stable kinds pin a label here; streaming thinking
-	// labels flicker faster than they can be read.
-	act := m.state.Activity()
-	if spinnerShowsLabel(act.Kind) && act.Label != "" {
-		label := m.state.PinnedSpinnerLabel(act)
-		text += " · " + label
-	}
-	return statusBusyStyle().Render(" " + strutil.Truncate(text, max(m.leftWidth-1, 1), true))
 }
 
 func (m Model) renderInputArea() string {
@@ -265,7 +210,7 @@ func (m Model) renderInputArea() string {
 		case m.approvalModel != nil:
 			rows = append(rows, m.approvalModel.View())
 		default:
-			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth))
+			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth, m.approvalWhyFor(m.approvalOwner(), tc)))
 		}
 	} else {
 		if m.state.SDDProgress().Active {

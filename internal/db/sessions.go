@@ -19,6 +19,9 @@ type Message struct {
 	CreatedAt       time.Time
 	Final           bool
 	ParentID        int64
+	// StepSeq is the step that produced the message (narration only); 0 when
+	// the message belongs to no step.
+	StepSeq int64
 }
 
 type Session struct {
@@ -208,6 +211,12 @@ func (db *DB) UpdateSessionWorkspace(sessionID, activeRoot, branch, targetBranch
 // parent message's DB id (0 = root, stored as NULL). Returns the inserted
 // row id.
 func (db *DB) SaveMessage(sessionID string, role string, content string, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration, final bool, parentID int64) (int64, error) {
+	return db.SaveMessageStep(sessionID, role, content, contentType, createdAt, reasoning, thinkDuration, final, parentID, 0)
+}
+
+// SaveMessageStep is SaveMessage plus the step the message belongs to
+// (stepSeq 0 stores NULL).
+func (db *DB) SaveMessageStep(sessionID string, role string, content string, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration, final bool, parentID int64, stepSeq int64) (int64, error) {
 	var reasoningArg sql.NullString
 	if reasoning != "" {
 		reasoningArg = sql.NullString{String: reasoning, Valid: true}
@@ -224,10 +233,14 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 	if parentID > 0 {
 		parentArg = sql.NullInt64{Int64: parentID, Valid: true}
 	}
+	var stepArg sql.NullInt64
+	if stepSeq > 0 {
+		stepArg = sql.NullInt64{Int64: stepSeq, Valid: true}
+	}
 	res, err := db.sqlDB.Exec(
-		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg,
+		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg, stepArg,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("save message: %w", err)
@@ -285,7 +298,7 @@ WITH RECURSIVE chain(id, parent_id) AS (
      WHERE m.session_id = ?
 )
 SELECT m.id, m.role, m.content, m.content_type, m.reasoning, m.think_duration_ms,
-       m.created_at, m.final, m.parent_id
+       m.created_at, m.final, m.parent_id, m.step_seq
   FROM messages m
   JOIN chain c ON m.id = c.id
  ORDER BY m.id ASC`
@@ -300,7 +313,8 @@ func scanMessage(rows *sql.Rows) (Message, error) {
 	var contentType sql.NullString
 	var final sql.NullInt64
 	var parentID sql.NullInt64
-	if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID); err != nil {
+	var stepSeq sql.NullInt64
+	if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID, &stepSeq); err != nil {
 		return Message{}, fmt.Errorf("scan message: %w", err)
 	}
 	if contentType.Valid {
@@ -315,6 +329,9 @@ func scanMessage(rows *sql.Rows) (Message, error) {
 	m.Final = final.Valid && final.Int64 != 0
 	if parentID.Valid {
 		m.ParentID = parentID.Int64
+	}
+	if stepSeq.Valid {
+		m.StepSeq = stepSeq.Int64
 	}
 	parsed, err := time.Parse(time.RFC3339, created)
 	if err != nil {
@@ -376,7 +393,7 @@ func (db *DB) ListBranches(sessionID string) ([]int64, error) {
 // GetMessages returns all messages for a session in chronological order.
 func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id
+		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq
 		 FROM messages
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,

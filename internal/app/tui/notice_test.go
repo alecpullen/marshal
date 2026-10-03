@@ -211,7 +211,7 @@ func TestEscDismissesNoticeWhenIdle(t *testing.T) {
 
 // Regression: the notice banner is rendered into the transcript, so
 // dismissing it must repaint the viewport. Before the notice was folded
-// into transcriptHash, refreshViewport early-returned on an unchanged hash
+// into the content signature, refreshViewport early-returned on an unchanged hash
 // and the banner stayed on screen after esc-dismiss (and after the TTL
 // auto-dismiss) until an unrelated transcript change forced a repaint.
 func TestEscDismissRepaintsBannerAway(t *testing.T) {
@@ -236,7 +236,7 @@ func TestEscDismissRepaintsBannerAway(t *testing.T) {
 // Regression: the TTL auto-dismiss path in handleAgentTick must also
 // repaint the banner away. The tick dismisses the notice and then exits
 // through the !busy && !successPulse && !noticePending guard, so the
-// repaint relies on the notice being folded into transcriptHash.
+// repaint relies on the notice being folded into the content signature.
 func TestTickDismissRepaintsBannerAway(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "down", SetAt: time.Unix(100, 0)})

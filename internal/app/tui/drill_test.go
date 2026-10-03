@@ -28,13 +28,13 @@ func TestClickRunningCardDrillsInAndBack(t *testing.T) {
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 	m.state.RegisterSubagent("explore repo", child)
 	m.resize(80, 24)
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	// Locate the subagent card's click region.
-	var region clickRegion
+	var region nodeRegion
 	found := false
-	for _, r := range m.clickRegions {
+	for _, r := range m.nodeRegions {
 		if r.target.subagent != nil && r.target.subagent.Label == "explore repo" {
 			region, found = r, true
 			break
@@ -52,7 +52,7 @@ func TestClickRunningCardDrillsInAndBack(t *testing.T) {
 		t.Fatalf("click should drill into the subagent, viewStack len = %d", len(mm.viewStack))
 	}
 
-	mm.lastTranscriptHash = 0
+	mm.invalidateTranscript()
 	mm.refreshViewport()
 	if content := stripANSI(mm.viewport.GetContent()); !strings.Contains(content, "child says hi") {
 		t.Fatalf("drilled view should show the child transcript:\n%s", content)
@@ -60,7 +60,7 @@ func TestClickRunningCardDrillsInAndBack(t *testing.T) {
 
 	// A later child update is reflected while drilled in.
 	child.AddMessage(session.RoleAssistant, "child second update", session.ContentTypePlain)
-	mm.lastTranscriptHash = 0
+	mm.invalidateTranscript()
 	mm.refreshViewport()
 	if content := stripANSI(mm.viewport.GetContent()); !strings.Contains(content, "child second update") {
 		t.Fatalf("drilled view should show the later child update:\n%s", content)
@@ -75,7 +75,7 @@ func TestClickRunningCardDrillsInAndBack(t *testing.T) {
 	if len(parent.viewStack) != 0 {
 		t.Fatalf("esc should pop the drill stack, len = %d", len(parent.viewStack))
 	}
-	parent.lastTranscriptHash = 0
+	parent.invalidateTranscript()
 	parent.refreshViewport()
 	if content := stripANSI(parent.viewport.GetContent()); !strings.Contains(content, "parent normal text") {
 		t.Fatalf("after popping, the parent transcript should be restored:\n%s", content)
@@ -86,11 +86,11 @@ func TestSubagentCardHasClickTarget(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	m.state.RegisterSubagent("explore repo", child)
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	found := false
-	for _, r := range m.clickRegions {
+	for _, r := range m.nodeRegions {
 		if r.target.subagent != nil && r.target.subagent.Label == "explore repo" {
 			found = true
 			if r.startLine < 0 || r.endLine <= r.startLine {
@@ -106,10 +106,10 @@ func TestSubagentCardHasClickTarget(t *testing.T) {
 func TestSubagentCardWithoutChildIsNotClickable(t *testing.T) {
 	m := newTestModel(t)
 	m.state.RegisterSubagent("status only", nil)
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	for _, r := range m.clickRegions {
+	for _, r := range m.nodeRegions {
 		if r.target.subagent != nil {
 			t.Fatalf("childless subagent card must not be clickable, got target %+v", r.target.subagent)
 		}
@@ -286,7 +286,7 @@ func TestAgentRunAuditSuppressedInParentView(t *testing.T) {
 		ToolName:      "file.read",
 		ResultSummary: "ordinary tool stays",
 	})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	content := stripANSI(m.viewport.GetContent())
@@ -344,8 +344,8 @@ func TestRenderSubagentCardContent(t *testing.T) {
 		Summary:   "found three entry points",
 	}
 	collapsed := stripANSI(renderSubagentCard(done, false, "⠋", regionView{}, 80))
-	if strings.Contains(collapsed, "found three entry points") {
-		t.Fatalf("collapsed card must hide the summary, got:\n%s", collapsed)
+	if !strings.Contains(collapsed, "found three entry points") {
+		t.Fatalf("a settled card shows its summary headline, got:\n%s", collapsed)
 	}
 	if strings.Contains(collapsed, "ctrl+f to drill in") {
 		t.Fatalf("childless card must not offer drill-down, got:\n%s", collapsed)
@@ -423,7 +423,7 @@ func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
 
 	view := m.state.RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view)
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	// Verify we're drilled in.
@@ -432,14 +432,8 @@ func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
 	}
 
 	// Find the click region for the child's thinking block.
-	key := itemKey{ts: ts, kind: session.KindThinking}
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.key == key {
-			region, found = r, true
-		}
-	}
+	key := thinkID(ts)
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the child's thinking block while drilled in")
 	}

@@ -230,7 +230,7 @@ const tabStop = 8
 // ansi.StringWidth, which counts "\t" as a single cell — but the terminal
 // advances to the next multiple of tabStop, so unexpanded tabs make every
 // wrap decision undercount and the rendered line ends up wider than the
-// viewport, spilling under the side rail. Expanding at the point raw content
+// viewport, spilling past the column edge. Expanding at the point raw content
 // enters the renderers keeps measurement and rendering in agreement.
 //
 // Input is raw content, never styled output: the column accounting has no
@@ -712,7 +712,7 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 			Title:      v.Label,
 			Right:      dur,
 			Meta:       strings.Join(meta, dimSeparator),
-			Body:       subagentTailLines(v.Child, subagentTailBudget),
+			Body:       subagentBodyLines(v.Child, subagentTailBudget),
 			MaxRows:    liveregion.SubagentRows,
 			Offset:     rv.offset,
 			MinRows:    rv.minRows,
@@ -725,6 +725,10 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 		out = liveregion.Render(spec, th)
 	} else {
 		out = settledSubagentRow(v, expanded, dur, meta, width)
+		// The child's final summary headline, under the row.
+		if h := subagentSummaryHeadline(v.Summary); h != "" && !expanded {
+			out += continuation() + mutedStyle().Render(ansi.Truncate(h, max(contentWidth(width)-2, 1), "…")) + "\n"
+		}
 	}
 
 	if expanded && v.Summary != "" {
@@ -1325,7 +1329,11 @@ func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
 	}
 }
 
-func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
+func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int, why ...approvalWhy) string {
+	var w approvalWhy
+	if len(why) > 0 {
+		w = why[0]
+	}
 	var b strings.Builder
 	headParts := []string{}
 	if tc.Name == "shell.run" {
@@ -1349,6 +1357,21 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 		}
 		b.WriteString(warningStyle().Render(hl))
 		b.WriteString("\n")
+	}
+
+	for _, line := range []string{w.ownerLine(tc), w.whyLine()} {
+		if line == "" {
+			continue
+		}
+		for i, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
+			if i == 0 {
+				b.WriteString(gutterPrefix(" ", warningColor))
+			} else {
+				b.WriteString(continuation())
+			}
+			b.WriteString(mutedStyle().Render(wl))
+			b.WriteString("\n")
+		}
 	}
 
 	// Reason is a separate fact from Risk: riskText above shows whichever

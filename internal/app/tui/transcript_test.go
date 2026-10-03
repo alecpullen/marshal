@@ -69,53 +69,6 @@ func TestRendererCacheEvicts(t *testing.T) {
 	}
 }
 
-func TestTranscriptHashDistinguishesContent(t *testing.T) {
-	a := transcriptHash([]session.TranscriptItem{
-		{
-			Kind:      session.KindMessage,
-			Timestamp: time.Unix(0, 1),
-			Message:   &session.Message{Role: session.RoleUser, Content: "hello", ContentType: session.ContentTypePlain},
-		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
-	b := transcriptHash([]session.TranscriptItem{
-		{
-			Kind:      session.KindMessage,
-			Timestamp: time.Unix(0, 1),
-			Message:   &session.Message{Role: session.RoleUser, Content: "goodbye", ContentType: session.ContentTypePlain},
-		},
-	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
-	if a == b {
-		t.Fatal("hash should differ for different content")
-	}
-}
-
-func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
-	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil); got == base {
-		t.Fatal("transcript hash must change with the spinner frame — otherwise the live tool row freezes")
-	}
-	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}, session.Notice{}, false, nil, nil, nil); got == base {
-		t.Fatal("hash must change with the active tool call")
-	}
-}
-
-// The notice banner is rendered into the transcript, so its presence and
-// identity must bust the viewport cache. Without this, esc-dismiss and the
-// TTL auto-dismiss repaint nothing and the banner stays on screen.
-func TestTranscriptHashCoversNotice(t *testing.T) {
-	base := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{}, false, nil, nil, nil)
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom"}, true, nil, nil, nil); got == base {
-		t.Fatal("hash must change when a notice appears")
-	}
-	up := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, true, nil, nil, nil)
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(200, 0)}, true, nil, nil, nil); got == up {
-		t.Fatal("hash must change with the notice timestamp")
-	}
-	if got := transcriptHash(nil, 0, false, 80, nil, nil, "", session.ActiveToolCall{}, session.Notice{Message: "boom", SetAt: time.Unix(100, 0)}, false, nil, nil, nil); got == up {
-		t.Fatal("hash must change when a notice is dismissed")
-	}
-}
-
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
 	if !strings.Contains(out, "❯") || !strings.Contains(out, "fix the tests") {

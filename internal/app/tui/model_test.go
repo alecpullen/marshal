@@ -33,8 +33,9 @@ import (
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
+	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
-	"marshal/internal/app/tui/sidepanel"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
@@ -327,7 +328,13 @@ func TestCtrlCQuits(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	_, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	select {
+	case <-state.Done():
+		t.Fatal("first Ctrl+C must only arm")
+	default:
+	}
+	_, cmd = updated.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("quit command is nil")
 	}
@@ -339,7 +346,7 @@ func TestCtrlCQuits(t *testing.T) {
 	}
 }
 
-func TestEscCancelsInFlightTurn(t *testing.T) {
+func TestEscDoesNotCancelInFlightTurn(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(80, 24)
@@ -350,11 +357,8 @@ func TestEscCancelsInFlightTurn(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = updated.(Model)
 
-	if !cancelled {
-		t.Fatal("Esc should cancel the in-flight agent turn")
-	}
-	if m.agentCancel != nil {
-		t.Fatal("agentCancel should be cleared after Esc")
+	if cancelled || m.agentCancel == nil || !m.busy {
+		t.Fatal("Esc must not cancel the in-flight agent turn")
 	}
 }
 
@@ -1692,12 +1696,12 @@ func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
 	}
 }
 
-// collectRailBaseRefs executes a cmd chain (which may be a tea.Sequence or
-// tea.Batch) and returns every railBaseRefMsg it produces. The sequence msg
+// collectSheetBaseRefs executes a cmd chain (which may be a tea.Sequence or
+// tea.Batch) and returns every sheetBaseRefMsg it produces. The sequence msg
 // type is unexported, so it is unwrapped via reflection.
-func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
+func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 	t.Helper()
-	var refs []railBaseRefMsg
+	var refs []sheetBaseRefMsg
 	var walk func(c tea.Cmd)
 	walk = func(c tea.Cmd) {
 		if c == nil {
@@ -1712,7 +1716,7 @@ func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
 		}
 		// tea.Sequence returns an unexported sequenceMsg []Cmd (Cmd is
 		// func() tea.Msg); unwrap via reflection so we can collect the
-		// railBaseRefCmd inside it.
+		// sheetBaseRefCmd inside it.
 		rv := reflect.ValueOf(msg)
 		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Func {
 			for i := 0; i < rv.Len(); i++ {
@@ -1722,7 +1726,7 @@ func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
 			}
 			return
 		}
-		if rb, ok := msg.(railBaseRefMsg); ok {
+		if rb, ok := msg.(sheetBaseRefMsg); ok {
 			refs = append(refs, rb)
 		}
 	}
@@ -1730,12 +1734,12 @@ func collectRailBaseRefs(t *testing.T, cmd tea.Cmd) []railBaseRefMsg {
 	return refs
 }
 
-func TestAgentFinishedAdvancesRailBaseRef(t *testing.T) {
+func TestAgentFinishedAdvancesSheetBaseRef(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	initRailTestRepo(t, dir)
+	initSheetTestRepo(t, dir)
 
 	m := newTestModel(t)
 	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
@@ -1746,16 +1750,16 @@ func TestAgentFinishedAdvancesRailBaseRef(t *testing.T) {
 	if m.busy {
 		t.Fatal("busy should be cleared after agentFinishedMsg")
 	}
-	refs := collectRailBaseRefs(t, cmd)
+	refs := collectSheetBaseRefs(t, cmd)
 	if len(refs) != 1 {
-		t.Fatalf("expected 1 railBaseRefMsg from the cmd chain, got %d", len(refs))
+		t.Fatalf("expected 1 sheetBaseRefMsg from the cmd chain, got %d", len(refs))
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
 	if refs[0].ref != string(want[:len(want)-1]) {
-		t.Errorf("railBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
 	}
 }
 
@@ -2021,12 +2025,12 @@ func TestSuggestionClearedOnTurnStart(t *testing.T) {
 	}
 }
 
-func TestAgentFinishedAdvancesRailBaseRefWhenCancelled(t *testing.T) {
+func TestAgentFinishedAdvancesSheetBaseRefWhenCancelled(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	initRailTestRepo(t, dir)
+	initSheetTestRepo(t, dir)
 
 	m := newTestModel(t)
 	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
@@ -2038,16 +2042,16 @@ func TestAgentFinishedAdvancesRailBaseRefWhenCancelled(t *testing.T) {
 	if m.cancelling {
 		t.Fatal("cancelling flag should be cleared after agentFinishedMsg")
 	}
-	refs := collectRailBaseRefs(t, cmd)
+	refs := collectSheetBaseRefs(t, cmd)
 	if len(refs) != 1 {
-		t.Fatalf("expected 1 railBaseRefMsg from the cancelled cmd chain, got %d", len(refs))
+		t.Fatalf("expected 1 sheetBaseRefMsg from the cancelled cmd chain, got %d", len(refs))
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
 	if refs[0].ref != string(want[:len(want)-1]) {
-		t.Errorf("railBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
 	}
 }
 
@@ -2777,7 +2781,7 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	initRailTestRepo(t, dir)
+	initSheetTestRepo(t, dir)
 	// Move to a feature branch so the branch name is distinctive.
 	if out, err := exec.Command("git", "-C", dir, "checkout", "-b", "feat-new").CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
@@ -2794,7 +2798,7 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	// Pre-set stale git info and a stale changed-files rail.
 	model.gitInfo = gitinfo.Info{Branch: "old", InRepo: true}
 	model.lastGitRead = time.Unix(50, 0)
-	model.railChanged = []sidepanel.ChangedFile{{Path: "old.txt"}}
+	model.sheetChanged = []sessionsheet.ChangedFile{{Path: "old.txt"}}
 
 	model.input.SetValue("/new")
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -2806,26 +2810,26 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	if m.gitInfo.Branch != "feat-new" {
 		t.Errorf("gitInfo.Branch = %q, want feat-new after /new", m.gitInfo.Branch)
 	}
-	if m.railChanged != nil {
-		t.Errorf("railChanged = %+v, want nil after /new", m.railChanged)
+	if m.sheetChanged != nil {
+		t.Errorf("sheetChanged = %+v, want nil after /new", m.sheetChanged)
 	}
 	if m.lastGitRead.Before(time.Unix(50, 0)) {
 		t.Errorf("lastGitRead = %v, want refreshed after /new", m.lastGitRead)
 	}
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd (railBaseRefCmd) from /new")
+		t.Fatal("expected a non-nil cmd (sheetBaseRefCmd) from /new")
 	}
 	msg := cmd()
-	rb, ok := msg.(railBaseRefMsg)
+	rb, ok := msg.(sheetBaseRefMsg)
 	if !ok {
-		t.Fatalf("cmd() returned %T, want railBaseRefMsg", msg)
+		t.Fatalf("cmd() returned %T, want sheetBaseRefMsg", msg)
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
 	if rb.ref != string(want[:len(want)-1]) {
-		t.Errorf("railBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
+		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
 	}
 }
 
@@ -3245,7 +3249,7 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 	viewWithTool := stripANSI(m.View().Content)
 
 	state.ClearActiveToolCall()
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 	viewWithoutTool := stripANSI(m.View().Content)
 
@@ -3570,18 +3574,20 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	m.queuedCount = 2
 	cancelled := false
 	m.agentCancel = func() { cancelled = true }
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = updated.(Model)
-	if !cancelled {
-		t.Fatal("Esc should cancel the in-flight agent turn")
+	for range 2 {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+		m = updated.(Model)
 	}
-	// After Esc, the queue is NOT cleared yet — that happens in
+	if !cancelled {
+		t.Fatal("double Ctrl+C should cancel the in-flight agent turn")
+	}
+	// After the stop, the queue is NOT cleared yet — that happens in
 	// handleAgentFinished. Verify the flag is set.
 	if !m.cancelling {
-		t.Fatal("cancelling flag should be set after Esc")
+		t.Fatal("cancelling flag should be set after stop")
 	}
 	// Simulate the agent finishing.
-	updated, _ = m.Update(agentFinishedMsg{err: context.Canceled})
+	updated, _ := m.Update(agentFinishedMsg{err: context.Canceled})
 	m = updated.(Model)
 	if len(m.state.SteeringQueue()) != 0 {
 		t.Fatalf("queue not dropped on agent finish: %v", m.state.SteeringQueue())
@@ -3884,8 +3890,8 @@ func TestAtInsideWordDoesNotTrigger(t *testing.T) {
 }
 
 // F18: Esc dismisses the active popup without cancelling the in-flight
-// turn. A subsequent Esc with no popup cancels the turn as before.
-func TestEscDismissesPopupBeforeCancelTurn(t *testing.T) {
+// turn. A subsequent Esc with no popup is a no-op: Esc never cancels.
+func TestEscDismissesPopupAndNeverCancelsTurn(t *testing.T) {
 	m := newViewTestModelWithRegistry(t, 80, 24)
 	m.busy = true
 	m.input.SetValue("/p")
@@ -3905,8 +3911,8 @@ func TestEscDismissesPopupBeforeCancelTurn(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = updated.(Model)
-	if !cancelled {
-		t.Fatal("second Esc with no popup should cancel the turn")
+	if cancelled {
+		t.Fatal("Esc must never cancel the turn")
 	}
 }
 
@@ -4617,14 +4623,21 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 		trigger func(m *Model) tea.Cmd
 	}{
 		{
-			// Ctrl+C interrupts on the first press and quits on the second;
-			// this table covers the shutdown half.
+			// A double Ctrl+C stops the turn; once idle, another double
+			// press quits. This table covers the shutdown half.
 			name: "ctrl+c",
 			trigger: func(m *Model) tea.Cmd {
-				updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-				*m = updated.(Model)
-				updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-				*m = updated.(Model)
+				var cmd tea.Cmd
+				for range 2 {
+					updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+					*m = updated.(Model)
+				}
+				m.busy = false
+				for range 2 {
+					updated, c := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+					*m = updated.(Model)
+					cmd = c
+				}
 				return cmd
 			},
 		},
@@ -5750,7 +5763,7 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 	}
 }
 
-func TestTodoPanelFollowsDrilledSubagent(t *testing.T) {
+func TestNowBarFollowsDrilledSubagentTodos(t *testing.T) {
 	m := newTestModel(t)
 	if err := m.state.SetTodos([]native.TodoItem{{Content: "parent task", Status: native.TodoPending}}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
@@ -5760,19 +5773,20 @@ func TestTodoPanelFollowsDrilledSubagent(t *testing.T) {
 		t.Fatalf("child SetTodos: %v", err)
 	}
 
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: childState})
-	body := m.renderTodoPanel()
+	body := nowBarOut(m)
 	if !strings.Contains(body, "child task") {
-		t.Fatalf("drilled panel must show the child's todos:\n%s", body)
+		t.Fatalf("drilled bar must show the child's todos:\n%s", body)
 	}
 	if strings.Contains(body, "parent task") {
-		t.Fatalf("drilled panel must not show the parent's todos:\n%s", body)
+		t.Fatalf("drilled bar must not show the parent's todos:\n%s", body)
 	}
 
 	m.viewStack = nil
-	body = m.renderTodoPanel()
+	body = nowBarOut(m)
 	if !strings.Contains(body, "parent task") {
-		t.Fatalf("undrilled panel must show the parent's todos:\n%s", body)
+		t.Fatalf("undrilled bar must show the parent's todos:\n%s", body)
 	}
 }
 
@@ -6808,9 +6822,15 @@ func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
 	}
 }
 
-func TestCtrlTCyclesTodoPanelMode(t *testing.T) {
+func ctrlT(m Model) Model {
+	mm, _ := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	return mm.(Model)
+}
+
+func TestCtrlTOpensTasksPanelListingEveryTodo(t *testing.T) {
 	m := newTestModel(t)
 	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "scaffold parser", Status: native.TodoCompleted},
 		{Content: "implement parser", Status: native.TodoInProgress},
 		{Content: "add tests", Status: native.TodoPending},
 	}); err != nil {
@@ -6818,68 +6838,75 @@ func TestCtrlTCyclesTodoPanelMode(t *testing.T) {
 	}
 	m.refreshViewport()
 
-	if m.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("initial mode = %v, want expanded", m.todoPanelMode)
+	m = ctrlT(m)
+	if !m.dock.IsOpen() {
+		t.Fatal("Ctrl+T with todos must open a docked panel")
 	}
-	press := func() {
-		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-		if !handled {
-			t.Fatal("ctrl+t must be handled globally")
+	view := stripANSI(m.dock.View(m.leftWidth, m.height))
+	for _, want := range []string{"Tasks 1/3", "scaffold parser", "implement parser", "add tests"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Tasks panel missing %q:\n%s", want, view)
 		}
-		m = mm.(Model)
 	}
-	press()
-	if m.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("after one press mode = %v, want collapsed", m.todoPanelMode)
-	}
-	if strings.Contains(m.renderTodoPanel(), "\n") {
-		t.Fatal("collapsed panel must be a single row")
-	}
-	press()
-	if m.todoPanelMode != todoPanelHidden {
-		t.Fatalf("after two presses mode = %v, want hidden", m.todoPanelMode)
-	}
-	if m.renderTodoPanel() != "" {
-		t.Fatal("hidden panel must render nothing")
-	}
-	press()
-	if m.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("after three presses mode = %v, want expanded again", m.todoPanelMode)
+
+	m = ctrlT(m)
+	if m.dock.IsOpen() {
+		t.Fatal("a second Ctrl+T must close the Tasks panel")
 	}
 }
 
-func TestAllDoneTodoSummaryClearsOnNextTurn(t *testing.T) {
+func TestEscClosesTasksPanel(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.state.SetTodos([]native.TodoItem{{Content: "a", Status: native.TodoPending}}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m = ctrlT(m)
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = mm.(Model)
+	if cmd != nil {
+		mm, _ = m.Update(cmd())
+		m = mm.(Model)
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("Esc must close the Tasks panel")
+	}
+}
+
+func TestCtrlTWithoutTodosOnlyAddsNotice(t *testing.T) {
+	m := newTestModel(t)
+	m = ctrlT(m)
+	if m.dock.IsOpen() {
+		t.Fatal("Ctrl+T with no todos must open nothing")
+	}
+	var found bool
+	for _, msg := range m.state.Messages() {
+		if strings.Contains(msg.Content, "No task list in this session.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the no-task-list notice")
+	}
+}
+
+func TestAllDoneTodosLeaveTheNowBar(t *testing.T) {
 	m := newTestModel(t)
 	if err := m.state.SetTodos([]native.TodoItem{
 		{Content: "scaffold parser", Status: native.TodoCompleted},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m.refreshViewport()
-	if !strings.Contains(stripANSI(m.renderTodoPanel()), "1 tasks done") {
-		t.Fatalf("all-done summary should show before the next turn:\n%s", m.renderTodoPanel())
+	if got := nowBarOut(m); got != "" {
+		t.Fatalf("a finished todo list must not occupy the bar:\n%s", got)
 	}
-
-	m.input.SetValue("next thing")
-	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !handled {
-		t.Fatal("enter must be handled")
-	}
-	m = mm.(Model)
-	m.refreshViewport()
-	if m.renderTodoPanel() != "" {
-		t.Fatalf("all-done summary must clear on the next user turn:\n%s", m.renderTodoPanel())
-	}
-
-	// An agent rewrite brings the panel back.
 	if err := m.state.SetTodos([]native.TodoItem{
 		{Content: "new work", Status: native.TodoInProgress},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m.refreshViewport()
-	if !strings.Contains(stripANSI(m.renderTodoPanel()), "new work") {
-		t.Fatal("a rewritten todo list must un-dismiss the panel")
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
+	if !strings.Contains(stripANSI(nowBarOut(m)), "new work") {
+		t.Fatal("a fresh todo list must show in the bar")
 	}
 }
 
@@ -7559,24 +7586,24 @@ func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 
 func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 	m := newTestModel(t)
-	keyA := activeToolKey{startedAt: time.Unix(500, 0), name: "shell.run"}
-	keyB := activeToolKey{startedAt: time.Unix(501, 0), name: "shell.run"}
-	m.toggleActiveToolExpanded(keyA) // expand tool A
+	keyA := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
+	keyB := stack.NodeID{Kind: stack.KindTool, Key: "tool:b"}
+	m.toggleExpanded(keyA) // expand tool A
 
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0)})
-	m.lastTranscriptHash = 0
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0), ToolCallID: "a"})
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	// A new tool starts (different StartedAt): the old override must stay
 	// inert in the map, and the new tool must be collapsed.
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0)})
-	m.lastTranscriptHash = 0
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0), ToolCallID: "b"})
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	if !m.activeToolIsExpanded(keyA) {
+	if !m.isToolExpanded(keyA, true) {
 		t.Fatal("expected tool A's override to be retained (inert) after a new tool starts")
 	}
-	if m.activeToolIsExpanded(keyB) {
+	if m.isToolExpanded(keyB, true) {
 		t.Fatal("expected the new tool B to be collapsed")
 	}
 }
@@ -7659,21 +7686,15 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 	m.resize(80, 24)
 	child := newChildState(t)
 	started := time.Now()
-	child.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started})
+	child.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started, ToolCallID: "child_call"})
 	m.state.RegisterSubagent("child", child)
 	m.drillIntoLatestRunningSubagent()
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	// Locate the active-tool region (resolved from the child's transcript).
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.isActiveTool {
-			region, found = r, true
-			break
-		}
-	}
+	key := stack.NodeID{Kind: stack.KindTool, Key: "tool:child_call"}
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the child's active tool call")
 	}
@@ -7683,15 +7704,14 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
 	mm := asModel(t, updated)
 
-	key := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started})
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the child's active tool call to expand on click")
 	}
 
 	// A repaint while drilled in must keep the child's override.
-	mm.lastTranscriptHash = 0
+	mm.invalidateTranscript()
 	mm.refreshViewport()
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the child's override to survive a refreshViewport repaint")
 	}
 }
@@ -8375,7 +8395,7 @@ func TestTurnSpinnerDropsStreamingThinkingLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "very long streaming thought line"})
-	if out := m.renderTurnSpinner(); strings.Contains(out, "very long streaming") {
+	if out := nowBarOut(m); strings.Contains(out, "very long streaming") {
 		t.Fatal("thinking labels must not appear in the pinned spinner row")
 	}
 }
@@ -8386,7 +8406,7 @@ func TestTurnSpinnerKeepsStableActivityLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
-	if out := m.renderTurnSpinner(); !strings.Contains(out, "shell: go test") {
+	if out := nowBarOut(m); !strings.Contains(out, "shell: go test") {
 		t.Fatalf("tool labels should render in the spinner row, got %q", out)
 	}
 }
@@ -8417,7 +8437,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// First tool label is adopted immediately.
 	clock = start
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: config.go"})
-	out := m.renderTurnSpinner()
+	out := nowBarOut(m)
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("first label should be adopted immediately, got %q", out)
 	}
@@ -8426,7 +8446,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	clock = start.Add(200 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test"})
-	out = m.renderTurnSpinner()
+	out = nowBarOut(m)
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("old label should persist within dwell window, got %q", out)
 	}
@@ -8437,7 +8457,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// 600ms after the first label was pinned, the dwell has elapsed.
 	clock = start.Add(600 * time.Millisecond)
 	m.now = func() time.Time { return clock }
-	out = m.renderTurnSpinner()
+	out = nowBarOut(m)
 	if !strings.Contains(out, "shell.run: go test") {
 		t.Fatalf("new label should appear after dwell expires, got %q", out)
 	}
@@ -8462,13 +8482,13 @@ func TestTurnSpinnerLabelDwellResetsOnKindChange(t *testing.T) {
 	m.turnStartedAt = start
 
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: a.go"})
-	m.renderTurnSpinner()
+	nowBarOut(m)
 
 	// 100ms later, kind changes to Approval — should adopt immediately.
 	clock = start.Add(100 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: "approve: shell.run"})
-	out := m.renderTurnSpinner()
+	out := nowBarOut(m)
 	if !strings.Contains(out, "approve: shell.run") {
 		t.Fatalf("kind change should adopt new label immediately, got %q", out)
 	}

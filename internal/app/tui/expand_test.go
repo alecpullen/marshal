@@ -8,12 +8,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
-	"marshal/internal/tools/registry"
+	"marshal/internal/app/tui/stack"
 )
 
 func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
 	m := newTestModel(t)
-	key := itemKey{ts: time.Unix(100, 0), kind: session.KindThinking}
+	key := thinkID(time.Unix(100, 0))
 
 	if m.isExpanded(key) {
 		t.Fatal("expected collapsed by default (detailExpanded starts false)")
@@ -24,7 +24,7 @@ func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
 		t.Fatal("expected expanded once the global default flips")
 	}
 
-	m.toggleItemExpanded(key)
+	m.toggleExpanded(key)
 	if m.isExpanded(key) {
 		t.Fatal("expected the per-item override to win over the global default")
 	}
@@ -37,8 +37,8 @@ func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
 
 func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 	m := newTestModel(t)
-	key := itemKey{ts: time.Unix(100, 0), kind: session.KindThinking}
-	m.toggleItemExpanded(key) // override to true (default false -> true)
+	key := thinkID(time.Unix(100, 0))
+	m.toggleExpanded(key) // override to true (default false -> true)
 	if !m.isExpanded(key) {
 		t.Fatal("precondition: override should read expanded")
 	}
@@ -54,18 +54,18 @@ func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 	if !mm.isExpanded(key) {
 		t.Fatal("expected item to follow the flipped global default")
 	}
-	if len(mm.itemExpanded) != 0 {
-		t.Fatalf("itemExpanded = %v, want cleared", mm.itemExpanded)
+	if len(mm.expanded) != 0 {
+		t.Fatalf("expanded = %v, want cleared", mm.expanded)
 	}
 }
 
 func TestCtrlGClearsActiveToolOverrides(t *testing.T) {
 	m := newTestModel(t)
-	keyA := activeToolKey{startedAt: time.Unix(500, 0), name: "shell.run"}
-	keyB := activeToolKey{startedAt: time.Unix(501, 0), name: "file.read"}
-	m.toggleActiveToolExpanded(keyA)
-	m.toggleActiveToolExpanded(keyB)
-	if !m.activeToolIsExpanded(keyA) || !m.activeToolIsExpanded(keyB) {
+	keyA := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
+	keyB := stack.NodeID{Kind: stack.KindTool, Key: "tool:b"}
+	m.toggleExpanded(keyA)
+	m.toggleExpanded(keyB)
+	if !m.isToolExpanded(keyA, true) || !m.isToolExpanded(keyB, true) {
 		t.Fatal("precondition: both overrides should be set")
 	}
 
@@ -75,10 +75,11 @@ func TestCtrlGClearsActiveToolOverrides(t *testing.T) {
 	}
 	mm := asModel(t, updated)
 
-	if len(mm.activeToolExpanded) != 0 {
-		t.Fatalf("activeToolExpanded = %v, want cleared", mm.activeToolExpanded)
+	if len(mm.expanded) != 0 {
+		t.Fatalf("expanded = %v, want cleared", mm.expanded)
 	}
-	if mm.activeToolIsExpanded(keyA) || mm.activeToolIsExpanded(keyB) {
+	// A running call ignores the global default: it stays collapsed.
+	if mm.isToolExpanded(keyA, true) || mm.isToolExpanded(keyB, true) {
 		t.Fatal("expected all active-tool overrides to be cleared")
 	}
 }
@@ -89,7 +90,7 @@ func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
 	ts2 := time.Unix(301, 0)
 	m.state.LogThinking(session.ThinkingEntry{Text: "reasoning one", Duration: time.Second, StartedAt: ts1})
 	m.state.LogThinking(session.ThinkingEntry{Text: "reasoning two", Duration: time.Second, StartedAt: ts2})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	content := m.viewport.GetContent()
@@ -97,8 +98,8 @@ func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
 		t.Fatalf("expected both thinking blocks collapsed by default, got: %s", content)
 	}
 
-	m.toggleItemExpanded(itemKey{ts: ts1, kind: session.KindThinking})
-	m.lastTranscriptHash = 0
+	m.toggleExpanded(thinkID(ts1))
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	content = m.viewport.GetContent()
@@ -107,17 +108,5 @@ func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
 	}
 	if strings.Contains(content, "reasoning two") {
 		t.Fatal("expected the other item to remain collapsed")
-	}
-}
-
-func TestItemKeyForGroupUsesFirstEvent(t *testing.T) {
-	events := []registry.AuditEvent{
-		{ToolName: "file.read", Timestamp: time.Unix(200, 0)},
-		{ToolName: "file.read", Timestamp: time.Unix(201, 0)},
-	}
-	key := itemKeyForGroup(events)
-	want := itemKey{ts: time.Unix(200, 0), kind: session.KindAudit}
-	if key != want {
-		t.Fatalf("itemKeyForGroup = %+v, want %+v", key, want)
 	}
 }

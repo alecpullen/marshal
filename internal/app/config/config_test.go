@@ -1973,3 +1973,34 @@ func TestWorktreeSeedReplacesWholesale(t *testing.T) {
 		t.Fatalf("Seed = %#v, want %#v (later layer replaces the slice wholesale)", cfg.Worktree.Seed, want)
 	}
 }
+
+func TestNarrationConfigDefaultsOnAndOverrides(t *testing.T) {
+	cfg := Default()
+	if !cfg.Agent.NarrationPrompt || !cfg.Agent.IntentNudge {
+		t.Fatalf("narration_prompt/intent_nudge must default on: %+v", cfg.Agent)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[agent]\nnarration_prompt = false\nintent_nudge = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: t.TempDir(), WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Agent.NarrationPrompt || loaded.Agent.IntentNudge {
+		t.Fatalf("file values must override the defaults: %+v", loaded.Agent)
+	}
+	// And they survive a save.
+	out := filepath.Join(t.TempDir(), ".marshal", "config.toml")
+	if err := SaveProjectConfig(out, loaded, Layers{}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	if !strings.Contains(string(data), "narration_prompt = false") || !strings.Contains(string(data), "intent_nudge = false") {
+		t.Fatalf("saved config lost the overrides:\n%s", data)
+	}
+}

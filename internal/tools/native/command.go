@@ -64,7 +64,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 				Content: fmt.Sprintf("job_id: %s", id),
 			}, nil
 		}
-		return t.runShellCommand(ctx, args.Command, timeout)
+		return t.runShellCommand(ctx, call.ID, args.Command, timeout)
 	}
 	return tool
 }
@@ -87,7 +87,7 @@ func (t *toolSet) testRunTool() registry.Tool {
 		if command == "" {
 			command = t.testCommand
 		}
-		return t.runShellCommand(ctx, command, defaultTestTimeout)
+		return t.runShellCommand(ctx, call.ID, command, defaultTestTimeout)
 	}
 	return tool
 }
@@ -105,7 +105,7 @@ func gitHygieneNote(cmd string) string {
 	return ""
 }
 
-func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout time.Duration) (registry.ToolResult, error) {
+func (t *toolSet) runShellCommand(ctx context.Context, callID, command string, timeout time.Duration) (registry.ToolResult, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return registry.ToolResult{}, fmt.Errorf("command is required")
@@ -118,7 +118,7 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 
 	var stdoutObs, stderrObs io.Writer
 	if t.sessionState != nil {
-		stdoutObs = &activeToolOutputWriter{state: t.sessionState}
+		stdoutObs = &activeToolOutputWriter{state: t.sessionState, callID: callID}
 		stderrObs = stdoutObs
 	}
 	result, err := t.runner.Run(ctx, CommandRequest{
@@ -159,14 +159,15 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 // activeToolOutputWriter forwards streamed bytes into the active tool-call
 // transcript row. It is safe for concurrent stdout/stderr writes.
 type activeToolOutputWriter struct {
-	state *session.State
+	state  *session.State
+	callID string
 }
 
 func (w *activeToolOutputWriter) Write(p []byte) (int, error) {
 	if w.state == nil || len(p) == 0 {
 		return len(p), nil
 	}
-	w.state.AppendActiveToolCallOutput(string(p))
+	w.state.AppendActiveToolCallOutput(w.callID, string(p))
 	return len(p), nil
 }
 

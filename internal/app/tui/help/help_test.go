@@ -29,7 +29,7 @@ func TestFooterIdle(t *testing.T) {
 
 func TestFooterBusyShowsCancelAndQueue(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{Busy: true}))
-	if !strings.Contains(out, "Esc cancel") || !strings.Contains(out, "Ctrl+X clear queue") {
+	if !strings.Contains(out, "Ctrl+C stop") || !strings.Contains(out, "Ctrl+X clear queue") {
 		t.Fatalf("busy footer missing cancel/queue hints: %q", out)
 	}
 }

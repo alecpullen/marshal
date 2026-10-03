@@ -205,9 +205,10 @@ type TUIConfig struct {
 	Suggestions string `toml:"suggestions"`
 }
 
-// SidePanelConfig controls the widescreen side rail. MinWidth is the frame
-// width at which the rail appears; WidthPct/MinCols/MaxCols size it. Hidden
-// lists section IDs to suppress.
+// SidePanelConfig is what remains of the removed widescreen side rail. Only
+// Hidden is honoured: it lists section IDs the Ctrl+B session sheet omits.
+// Enabled, MinWidth, WidthPct, MinCols and MaxCols are ignored but still
+// parsed, so existing config files load; Diagnose warns when one is set.
 type SidePanelConfig struct {
 	Enabled  bool     `toml:"enabled"`
 	MinWidth int      `toml:"min_width"`
@@ -460,6 +461,14 @@ type AgentConfig struct {
 	MaxToolResultChars       int  `toml:"max_tool_result_chars"`
 	MaxStructuredOutputChars int  `toml:"max_structured_output_chars"`
 	PlanFirst                bool `toml:"plan_first"`
+	// NarrationPrompt asks the model to open each tool-calling response with
+	// one sentence saying what it is about to do, which the TUI shows as the
+	// step's headline. Native tool mode only. Default true.
+	NarrationPrompt bool `toml:"narration_prompt"`
+	// IntentNudge re-prompts once per turn when a short "I'll do X next"
+	// reply arrives with no tool call, guarding against models that obey the
+	// narration prompt and then stop. Default true.
+	IntentNudge bool `toml:"intent_nudge"`
 	// HistoryBudgetTokens is an explicit ceiling for cross-turn history
 	// replay (the agent's "previous turn" budget). 0 = derive from
 	// model window via historyBudget: window/8, clamped to

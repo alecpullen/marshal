@@ -276,6 +276,17 @@ CREATE TABLE IF NOT EXISTS project_skills (
 );
 CREATE INDEX IF NOT EXISTS idx_project_skills_project ON project_skills(project_id);
 
+CREATE TABLE IF NOT EXISTS steps (
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    turn_message_id INTEGER,
+    actor_role TEXT, actor_label TEXT, model TEXT, provider TEXT,
+    todo_id TEXT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    PRIMARY KEY (session_id, seq)
+);
+
 CREATE TABLE IF NOT EXISTS session_mail (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

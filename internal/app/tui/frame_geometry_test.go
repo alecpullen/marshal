@@ -165,10 +165,11 @@ func TestInputAndFooterVisibleWithTodosAndFullTranscript(t *testing.T) {
 			}
 			m.refreshViewport()
 
-			// Precondition: the todo panel must actually be showing.
+			// Precondition: the todo progress row must actually be showing.
 			frame := stripANSI(m.viewString())
-			if !strings.Contains(frame, "tasks 1/3") {
-				t.Fatalf("todo panel missing; scenario no longer exercises the bug:\n%s", frame)
+			// An unfinished list is only pinned while a turn runs.
+			if tc.busy && !strings.Contains(frame, "1/3 · second task") {
+				t.Fatalf("todo progress row missing; scenario no longer exercises the bug:\n%s", frame)
 			}
 
 			lines := strings.Split(frame, "\n")

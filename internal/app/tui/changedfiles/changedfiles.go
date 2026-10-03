@@ -1,5 +1,5 @@
 // Package changedfiles reads the working tree's diff against a base ref
-// for the side panel's changed-files section. Every failure path returns
+// for the session sheet's changed-files section. Every failure path returns
 // nil: this is telemetry and must never break a turn or block a render.
 package changedfiles
 
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"marshal/internal/app/tui/sidepanel"
+	"marshal/internal/app/tui/sessionsheet"
 )
 
 // readTimeout bounds the git subprocess. A slow or hung git must not
@@ -20,7 +20,7 @@ const readTimeout = 2 * time.Second
 // Read returns the files changed in workingDir since baseRef, including
 // untracked-but-staged files and untracked-and-unstaged new files. Returns
 // nil on any error.
-func Read(workingDir, baseRef string) []sidepanel.ChangedFile {
+func Read(workingDir, baseRef string) []sessionsheet.ChangedFile {
 	if workingDir == "" || baseRef == "" {
 		return nil
 	}
@@ -84,7 +84,7 @@ func Read(workingDir, baseRef string) []sidepanel.ChangedFile {
 	// Fourth pass: untracked-and-unstaged new files. None of the diff
 	// passes above report these (they only see tracked content), so list
 	// them explicitly and append as additions. Respect .gitignore via
-	// --exclude-standard so ignored files never surface in the rail.
+	// --exclude-standard so ignored files never surface in the session sheet.
 	ctx4, cancel4 := context.WithTimeout(context.Background(), readTimeout)
 	defer cancel4()
 
@@ -100,7 +100,7 @@ func Read(workingDir, baseRef string) []sidepanel.ChangedFile {
 		if _, ok := byPath[path]; ok {
 			continue
 		}
-		files = append(files, sidepanel.ChangedFile{
+		files = append(files, sessionsheet.ChangedFile{
 			Path: path, Status: 'A', Added: 1,
 		})
 	}
@@ -135,8 +135,8 @@ func parseNameStatus(out string) map[string]rune {
 
 // parseNumstat parses the output of `git diff --numstat` into ChangedFile
 // entries. Returns nil for empty or unparseable output.
-func parseNumstat(out string) []sidepanel.ChangedFile {
-	var files []sidepanel.ChangedFile
+func parseNumstat(out string) []sessionsheet.ChangedFile {
+	var files []sessionsheet.ChangedFile
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
@@ -154,7 +154,7 @@ func parseNumstat(out string) []sidepanel.ChangedFile {
 		} else if added == 0 && removed > 0 {
 			status = 'D'
 		}
-		files = append(files, sidepanel.ChangedFile{
+		files = append(files, sessionsheet.ChangedFile{
 			Path: parts[2], Status: status, Added: added, Removed: removed,
 		})
 	}

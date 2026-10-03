@@ -47,6 +47,8 @@ type fileAgent struct {
 	MaxToolResultChars       *int     `toml:"max_tool_result_chars"`
 	MaxStructuredOutputChars *int     `toml:"max_structured_output_chars"`
 	PlanFirst                *bool    `toml:"plan_first"`
+	NarrationPrompt          *bool    `toml:"narration_prompt"`
+	IntentNudge              *bool    `toml:"intent_nudge"`
 	SubtaskIterations        *int     `toml:"subtask_iterations"`
 	ApprovalMode             *string  `toml:"approval_mode"`
 	HistoryBudgetTokens      *int     `toml:"history_budget_tokens"`

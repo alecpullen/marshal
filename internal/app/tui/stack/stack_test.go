@@ -335,6 +335,42 @@ func TestBuildLiveThinkingBeforeAnyStepIsPassthrough(t *testing.T) {
 	}
 }
 
+func TestBuildLiveThinkingOnlyInLatestTurn(t *testing.T) {
+	for _, withStep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("withStep=%t", withStep), func(t *testing.T) {
+			snap := Snapshot{
+				Items:      []session.TranscriptItem{userMsg(1, 0), final(2, 1), userMsg(3, 2)},
+				Busy:       true,
+				InProgress: session.InProgressMessage{Active: true, Reasoning: "current reasoning", StartedAt: at(3)},
+			}
+			if withStep {
+				snap.Steps = []session.Step{step(1, 3, 0, "")}
+				snap.Steps[0].TurnMsgID = 3
+			}
+			turns := Build(snap)
+			count := 0
+			var visit func(*Node, bool)
+			visit = func(n *Node, latest bool) {
+				if n.Step != nil && n.Step.LiveThinking != "" {
+					count++
+					if !latest {
+						t.Fatal("current reasoning appeared in a previous turn")
+					}
+				}
+				for _, ch := range n.Children {
+					visit(ch, latest)
+				}
+			}
+			for i, turn := range turns {
+				visit(turn, i == len(turns)-1)
+			}
+			if count != 1 {
+				t.Fatalf("got %d live reasoning blocks, want 1", count)
+			}
+		})
+	}
+}
+
 func TestBuildUnstampedActiveCallStandsAlone(t *testing.T) {
 	nodes := Build(Snapshot{
 		Items:       []session.TranscriptItem{userMsg(1, 0)},

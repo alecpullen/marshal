@@ -98,6 +98,8 @@ func renderTask(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 		if out == "" {
 			continue
 		}
+		b.WriteString("\n")
+		lines++
 		n := strings.Count(out, "\n")
 		subs = append(subs, subRegion{id: ch.ID, start: lines, end: lines + n})
 		for _, s := range ssubs {

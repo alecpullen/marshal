@@ -427,7 +427,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 	reasoning := ""
-	if s.InProgress.Active && s.InProgress.Reasoning != "" {
+	if lastTurn && s.InProgress.Active && s.InProgress.Reasoning != "" {
 		reasoning = s.InProgress.Reasoning
 	}
 	liveThinkingPlaced := false

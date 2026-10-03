@@ -100,6 +100,8 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 		if s == "" {
 			return
 		}
+		// Separate logical rows without including the gap in their hit regions.
+		write("\n")
 		sub.id = id
 		sub.start = lines
 		write(s)

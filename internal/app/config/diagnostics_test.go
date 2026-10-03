@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"marshal/internal/llm/routing"
+	"marshal/internal/trust"
 )
 
 func diagPaths(ds []Diagnostic) []string {
@@ -377,5 +378,65 @@ func TestDiagnoseOrdersErrorsBeforeWarnings(t *testing.T) {
 		if ds[i-1].Severity > ds[i].Severity {
 			t.Errorf("unsorted severities: %v", ds)
 		}
+	}
+}
+
+func sidePanelDiagnostics(ds []Diagnostic) []Diagnostic {
+	var out []Diagnostic
+	for _, d := range ds {
+		if d.Path == "tui.side_panel" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func TestDiagnoseWarnsOnceForDeadSidePanelKeys(t *testing.T) {
+	home, work, userPath, projectPath := hoistPaths(t)
+	// enabled = true equals the default, so only raw-key presence can see it.
+	writeFile(t, userPath, "[tui.side_panel]\nenabled = true\nmin_cols = 40\n")
+	writeFile(t, projectPath, "[tui.side_panel]\nwidth_pct = 30\n")
+
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work, TrustResolver: trust.FixedResolver{Decision: trust.DecisionTrustSession}})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	got := sidePanelDiagnostics(Diagnose(l.Merged, l))
+	if len(got) != 1 {
+		t.Fatalf("side_panel diagnostics = %d, want exactly 1: %+v", len(got), got)
+	}
+	d := got[0]
+	if d.Severity != SeverityWarning {
+		t.Errorf("severity = %v, want warning", d.Severity)
+	}
+	if !strings.Contains(d.Message, "the side rail was removed; use Ctrl+B for the session sheet") {
+		t.Errorf("message = %q", d.Message)
+	}
+	if !strings.Contains(d.Source, "user config") || !strings.Contains(d.Source, "project config") {
+		t.Errorf("source = %q, want both layers named", d.Source)
+	}
+}
+
+func TestDiagnoseQuietForDefaultsAndHiddenOnly(t *testing.T) {
+	home, work, userPath, _ := hoistPaths(t)
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if got := sidePanelDiagnostics(Diagnose(l.Merged, l)); len(got) != 0 {
+		t.Fatalf("defaults produced side_panel diagnostics: %+v", got)
+	}
+
+	// hidden is the one key that keeps its meaning.
+	writeFile(t, userPath, "[tui.side_panel]\nhidden = [\"repo\"]\n")
+	l, err = LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if got := sidePanelDiagnostics(Diagnose(l.Merged, l)); len(got) != 0 {
+		t.Fatalf("hidden-only config produced side_panel diagnostics: %+v", got)
+	}
+	if len(l.Merged.TUI.SidePanel.Hidden) != 1 {
+		t.Fatalf("hidden not honoured: %+v", l.Merged.TUI.SidePanel)
 	}
 }

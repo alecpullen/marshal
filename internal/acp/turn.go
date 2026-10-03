@@ -1038,8 +1038,8 @@ type TelemetryToolStat struct {
 
 // buildToolStats aggregates an audit log by tool name, most-called first
 // (ties break alphabetically), the same ordering as the TUI's
-// sidepanel.ToolStats — reimplemented here rather than imported to keep
-// internal/acp free of any internal/app/tui/sidepanel dependency.
+// sessionsheet.ToolStats — reimplemented here rather than imported to keep
+// internal/acp free of any internal/app/tui/sessionsheet dependency.
 func buildToolStats(events []registry.AuditEvent) []TelemetryToolStat {
 	idx := map[string]*TelemetryToolStat{}
 	for _, e := range events {

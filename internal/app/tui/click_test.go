@@ -9,7 +9,6 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/db"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
@@ -214,117 +213,19 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 	}
 }
 
-func TestMouseClickTodoPanelCyclesMode(t *testing.T) {
+func TestNowBarClickDrillsIntoAgent(t *testing.T) {
 	m := newTestModel(t)
-	m.resize(80, 24)
-	todos := make([]db.TodoItem, 0, 8)
-	for i := 0; i < 8; i++ {
-		status := native.TodoPending
-		if i == 3 {
-			status = native.TodoInProgress
-		}
-		todos = append(todos, db.TodoItem{Content: "todo item", Status: status})
-	}
-	if err := m.state.SetTodos(todos); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	m.lastTranscriptHash = 0
-	m.refreshViewport()
-
-	if m.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("initial mode = %v, want expanded", m.todoPanelMode)
-	}
-
-	top, _, ok := m.todoPanelBand()
-	if !ok {
-		t.Fatal("expected a todo panel band after seeding todos")
-	}
-
-	updated, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top, Button: tea.MouseLeft})
-	mm := asModel(t, updated)
-	if mm.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("click in the todo band should advance to collapsed, got %v", mm.todoPanelMode)
-	}
-
-	// Control: a click just above the band (inside the viewport) must not
-	// cycle the mode.
-	ctrl, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top - 1, Button: tea.MouseLeft})
-	cc := asModel(t, ctrl)
-	if cc.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("click above the band must not cycle, got %v", cc.todoPanelMode)
-	}
-
-	// Control: a click past the left column width must not cycle either.
-	ctrl2, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 5, Y: top, Button: tea.MouseLeft})
-	cc2 := asModel(t, ctrl2)
-	if cc2.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("click past leftWidth must not cycle, got %v", cc2.todoPanelMode)
-	}
-}
-
-// TestMouseClickTodoPanelNeverHides verifies that repeated clicks on the
-// todo panel toggle between expanded and collapsed and never enter the
-// hidden state — a click should never make the panel vanish.
-func TestMouseClickTodoPanelNeverHides(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(80, 24)
-	todos := make([]db.TodoItem, 0, 8)
-	for i := 0; i < 8; i++ {
-		todos = append(todos, db.TodoItem{Content: "todo item", Status: native.TodoPending})
-	}
-	if err := m.state.SetTodos(todos); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	m.lastTranscriptHash = 0
-	m.refreshViewport()
-
-	top, _, ok := m.todoPanelBand()
-	if !ok {
-		t.Fatal("expected a todo panel band after seeding todos")
-	}
-
-	// First click: expanded → collapsed.
-	u1, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top, Button: tea.MouseLeft})
-	m1 := asModel(t, u1)
-	if m1.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("first click mode = %v, want collapsed", m1.todoPanelMode)
-	}
-	// The band moves when the panel collapses (viewport height changes);
-	// recompute it for the next click.
-	top1, _, ok1 := m1.todoPanelBand()
-	if !ok1 {
-		t.Fatal("expected a todo panel band after first click")
-	}
-	// Second click: collapsed → expanded (NOT hidden).
-	u2, _ := m1.Update(tea.MouseClickMsg{X: 2, Y: top1, Button: tea.MouseLeft})
-	m2 := asModel(t, u2)
-	if m2.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("second click mode = %v, want expanded (never hidden)", m2.todoPanelMode)
-	}
-	// Third click: back to collapsed.
-	top2, _, ok2 := m2.todoPanelBand()
-	if !ok2 {
-		t.Fatal("expected a todo panel band after second click")
-	}
-	u3, _ := m2.Update(tea.MouseClickMsg{X: 2, Y: top2, Button: tea.MouseLeft})
-	m3 := asModel(t, u3)
-	if m3.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("third click mode = %v, want collapsed", m3.todoPanelMode)
-	}
-}
-
-func TestAgentLaneClickDrillsIn(t *testing.T) {
-	m := newTestModel(t)
+	m.resize(100, 40)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 
-	top, _, ok := m.agentLaneBand()
+	plan := m.nowBarPlan()
+	top, _, ok := m.nowBarBand(plan)
 	if !ok {
-		t.Fatal("expected an agent lane band")
+		t.Fatal("expected a now bar band")
 	}
-	// Row 0 is the separator rule, row 1 the caption, row 2 the first agent.
-	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 2}); !handled {
+	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + plan.agentRowStart}); !handled {
 		t.Fatal("a click on an agent row must be handled")
 	}
 	if len(m.viewStack) != 1 {
@@ -332,44 +233,50 @@ func TestAgentLaneClickDrillsIn(t *testing.T) {
 	}
 }
 
-// The separator and caption rows are not agents; clicking them must not drill.
-func TestAgentLaneClickOnChromeDoesNothing(t *testing.T) {
+// Rows above the first agent (the progress/turn row) are not agents;
+// clicking them is consumed but must not drill.
+func TestNowBarClickOnProgressRowDoesNothing(t *testing.T) {
 	m := newTestModel(t)
+	m.resize(100, 40)
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-time.Second)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
-	top, _, _ := m.agentLaneBand()
-	// Rows 0 (separator) and 1 (caption) are chrome.
-	for _, y := range []int{top, top + 1} {
-		m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: y})
+
+	plan := m.nowBarPlan()
+	if plan.agentRowStart != 1 {
+		t.Fatalf("agentRowStart = %d, want 1 under a turn row", plan.agentRowStart)
+	}
+	top, _, _ := m.nowBarBand(plan)
+	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top}); !handled {
+		t.Fatal("a click inside the bar must be consumed")
 	}
 	if len(m.viewStack) != 0 {
-		t.Fatal("clicking the chrome rows must not drill in")
+		t.Fatal("clicking the turn row must not drill in")
 	}
 }
 
-// The band must sit directly below the live strip (the job lane no longer
-// exists as a separate stacked row).
-func TestLaneBandSitsBelowLiveStrip(t *testing.T) {
+// The band sits directly below the transcript viewport.
+func TestNowBarBandSitsBelowViewport(t *testing.T) {
 	m := newTestModel(t)
+	m.resize(100, 40)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.jobs = []native.JobInfo{runningJob(1, "go test ./...", time.Second)}
 	m.refreshViewport()
-	top, _, ok := m.agentLaneBand()
+	top, _, ok := m.nowBarBand(m.nowBarPlan())
 	if !ok {
 		t.Fatal("expected a band")
 	}
-	want := m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
-		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows()
-	if top != want {
-		t.Fatalf("band top = %d, want %d (lane must sit below the live strip)", top, want)
+	if want := m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height(); top != want {
+		t.Fatalf("band top = %d, want %d", top, want)
 	}
 }
 
-func TestNoAgentLaneNoBand(t *testing.T) {
+func TestNoNowBarNoBand(t *testing.T) {
 	m := newTestModel(t)
-	if _, _, ok := m.agentLaneBand(); ok {
-		t.Fatal("no running agents means no band")
+	if _, _, ok := m.nowBarBand(m.nowBarPlan()); ok {
+		t.Fatal("nothing live means no band")
 	}
 }

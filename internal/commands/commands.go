@@ -143,12 +143,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					}
 				}
 				res := Panel("Help", false, rows)
-				res.Doc.Footer = "⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /models\n" +
+				res.Doc.Footer = "⏎ send · esc close/dismiss · tab/shift+tab mode · alt+m /models\n" +
+					"ctrl+c ctrl+c stop the turn (quit when idle) · ctrl+x clear queue\n" +
 					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n" +
-					"pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom · ctrl+b side rail\n" +
-					"while drilled into a running agent: esc pop out · ctrl+x stop agent · ctrl+c cancel turn\n" +
-					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling).\n" +
-					"ctrl+b hides the side rail first so a selection does not span it."
+					"ctrl+b session sheet · pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n" +
+					"while drilled into a running agent: esc pop out · ctrl+x stop agent\n" +
+					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling)."
 				return res
 			},
 		},

@@ -1,7 +1,7 @@
 // Package glyph is the TUI's single glyph vocabulary.
 //
 // It is a leaf package so that both the tui package and its sub-packages
-// (chrome, listpanel, sidepanel, picker, …) reference the same constants;
+// (chrome, listpanel, sessionsheet, picker, …) reference the same constants;
 // sub-packages cannot import tui itself.
 package glyph
 
@@ -85,4 +85,10 @@ const (
 	// watch is a monitor, not a running process. U+25CB (○, White Circle,
 	// Geometric Shapes) — single-cell, broad terminal-font coverage.
 	Watch = "○"
+
+	// ProgressFull and ProgressEmpty draw the now bar's progress blocks
+	// (▰▰▱▱ 2/4). U+25B0/U+25B1 are Geometric Shapes — single-cell, broad
+	// terminal-font coverage. They carry no meaning outside a block run.
+	ProgressFull  = "▰"
+	ProgressEmpty = "▱"
 )

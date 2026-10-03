@@ -30,7 +30,6 @@ import (
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/changedfiles"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
@@ -45,8 +44,8 @@ import (
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
+	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
-	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
@@ -251,13 +250,6 @@ type Model struct {
 	fileIndexLoaded      bool
 	lastInputForPopups   string
 	completionSuppressed bool
-	// laneCursor is the keyboard-selected row in the agents lane (F6).
-	// Up/Down move it while the input is empty and the lane is non-empty;
-	// Enter drills into the selected subagent. laneCursorActive is set
-	// only once the user explicitly navigates the lane, so a blank Enter
-	// keeps its existing steering-drain behavior until then.
-	laneCursor       int
-	laneCursorActive bool
 	// cmdArgMode arms argument completion right after a command is
 	// accepted from the popup. While armed and the input still carries
 	// the accepted "/<cmd> " prefix, commandTrigger keeps firing so
@@ -307,17 +299,17 @@ type Model struct {
 	jobEvents <-chan pubsub.Event[native.JobEvent]
 	jobCount  int
 	// jobs is the cached JobInfo snapshot from the latest JobEvent, used by
-	// the job lane above the input. Nil/empty when no broker is wired.
+	// the now bar above the input. Nil/empty when no broker is wired.
 	jobs []native.JobInfo
 
 	// watchBroker is the watch-event broker; the pump cmd returned from Init
 	// (and re-armed from Update on each watchMsg) bridges it into watchMsg
 	// values. watchEvents is the persistent subscription channel. When
-	// watchBroker is nil (tests, fallback), the lane renders no watch rows.
+	// watchBroker is nil (tests, fallback), the now bar renders no watch rows.
 	watchBroker *pubsub.Broker[watch.Event]
 	watchEvents <-chan pubsub.Event[watch.Event]
 	// watches is the cached watch snapshot from the latest watch.Event, used
-	// by the activity lane above the input. Nil/empty when no broker is wired.
+	// by the now bar above the input. Nil/empty when no broker is wired.
 	watches []watch.Event
 
 	// F16: steering broker pump. steeringBroker is the F16 message broker;
@@ -358,16 +350,9 @@ type Model struct {
 	rawHeight int
 	width     int // clamped to ≥ minTerminalWidth/Height (internal geometry)
 	height    int
-	// leftWidth is the width of the left column — everything except the
-	// side rail. When the rail is absent it equals width. The status line
-	// is the one component that keeps the full frame width.
+	// leftWidth is the width of the single content column. It always equals
+	// width; the name survives from when a side rail took the remainder.
 	leftWidth int
-	// railWidth is the side rail's width, 0 when the rail is not shown.
-	railWidth int
-	// rail is the side panel's section stack.
-	rail *sidepanel.Rail
-	// railHidden is the session-only Ctrl+B override. Not persisted.
-	railHidden bool
 	// mouseReleased is the session-only Ctrl+S override that hands the mouse
 	// back to the terminal so click-drag text selection works without the
 	// terminal's modifier key. Not persisted; [tui].mouse_capture is the
@@ -375,25 +360,25 @@ type Model struct {
 	// the terminal cannot deliver events to both — so this is a toggle rather
 	// than something the two features can share.
 	mouseReleased bool
-	// railRepoStats is refreshed on turn boundaries, never during render.
-	railRepoStats sidepanel.RepoStats
-	// railTurns is the recent turn-metrics cache, refreshed when a turn
+	// sheetRepoStats is refreshed on turn boundaries, never during render.
+	sheetRepoStats sessionsheet.RepoStats
+	// sheetTurns is the recent turn-metrics cache, refreshed when a turn
 	// completes. Never queried during render.
-	railTurns []db.TurnMetricsRow
-	// railTotals is the session-scoped usage aggregate the rail footer
-	// reports. Refreshed alongside railTurns.
-	railTotals db.UsageTotals
-	// railBaseRef is the commit the changed-files section diffs against,
+	sheetTurns []db.TurnMetricsRow
+	// sheetTotals is the session-scoped usage aggregate the sheet footer
+	// reports. Refreshed alongside sheetTurns.
+	sheetTotals db.UsageTotals
+	// sheetBaseRef is the commit the changed-files section diffs against,
 	// rebased when the workspace changes and after each completed turn
 	// (see handleWorkspaceMsg/handleAgentFinished).
-	railBaseRef string
-	// railChanged is the changed-files cache, refreshed on turn boundaries.
-	railChanged []sidepanel.ChangedFile
-	// railFleet is the agent-worktree cache, refreshed on turn boundaries
+	sheetBaseRef string
+	// sheetChanged is the changed-files cache, refreshed on turn boundaries.
+	sheetChanged []sessionsheet.ChangedFile
+	// sheetFleet is the agent-worktree cache, refreshed on turn boundaries
 	// (ListFleet shells out to git per worktree). Ahead/behind is against
 	// the project root's HEAD.
-	railFleet []worktree.FleetRow
-	viewport  viewport.Model
+	sheetFleet []worktree.FleetRow
+	viewport   viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -444,9 +429,12 @@ type Model struct {
 	// rollbackArmed is the first half of Ctrl+R's arm-then-confirm. Cleared
 	// by any other keypress; see handleKeypress.
 	rollbackArmed bool
-	// interruptArmed is set when Ctrl+C has interrupted a turn, so a second
-	// press quits. Cleared by any other keypress.
-	interruptArmed bool
+	// ctrlCArmedAt/ctrlCArmedFor record a first Ctrl+C press. A second press
+	// for the same action within ctrlCWindow fires it; any other keypress
+	// disarms. Never read directly for display: use ctrlCArmed, which
+	// accounts for expiry.
+	ctrlCArmedAt   time.Time
+	ctrlCArmedFor  ctrlCAction
 	viewportFollow bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
@@ -489,13 +477,14 @@ type Model struct {
 	successPulseAt time.Time
 	now            func() time.Time
 
-	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
-	// todosDismissed hides the all-done summary from the next turn
-	// onward; todosSig detects the agent rewriting the list, which
-	// un-dismisses it.
-	todoPanelMode  todoPanelMode
-	todosDismissed bool
-	todosSig       string
+	// tasksPanel is the open Ctrl+T Tasks panel, kept so a second Ctrl+T
+	// can tell it apart from other docked panels.
+	tasksPanel *docpanel.Panel
+	// nowBarMemo is the plan viewString computed for the frame in flight; nil
+	// outside viewString. It lives only on that call's model copy.
+	nowBarMemo *nowBarPlan
+	// sheetPanel is the open Ctrl+B session sheet, kept for the same reason.
+	sheetPanel *sessionsheet.Panel
 
 	// connectReturnToSettings and connectReturnFilter track whether the
 	// connect wizard was opened from the settings browser, so completing
@@ -801,7 +790,7 @@ func WithJobBroker(ctx context.Context, broker *pubsub.Broker[native.JobEvent]) 
 
 // WithWatchBroker wires the pub/sub broker for watch events. The model
 // subscribes via pumpWatchEvents from Init and re-arms the pump on each
-// watchMsg. When broker is nil the lane renders no watch rows (tests,
+// watchMsg. When broker is nil the now bar renders no watch rows (tests,
 // fallback).
 func WithWatchBroker(ctx context.Context, broker *pubsub.Broker[watch.Event]) Option {
 	return func(m *Model) {
@@ -1464,7 +1453,7 @@ func New(state *session.State, opts ...Option) Model {
 
 	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
-	m.railBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
+	m.sheetBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
 
 	m.histIdx = -1
 	if state.Config.History.Enabled {
@@ -1474,14 +1463,13 @@ func New(state *session.State, opts ...Option) Model {
 			}
 		}
 	}
-	m.rebuildRail()
 
 	if database := state.DB(); database != nil {
 		if projectID := m.memoryProject; projectID != 0 {
 			files, ferr := database.CountFiles(projectID)
 			syms, serr := database.CountSymbols(projectID)
 			if ferr == nil && serr == nil {
-				m.railRepoStats = sidepanel.RepoStats{Files: files, Symbols: syms}
+				m.sheetRepoStats = sessionsheet.RepoStats{Files: files, Symbols: syms}
 			}
 		}
 	}
@@ -1508,6 +1496,11 @@ func blinkCmd() tea.Cmd {
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{blinkCmd()}
+	// Read HEAD and the changed files off-thread so ±N files is right from
+	// the first frame instead of waiting for a turn to end.
+	if cmd := sheetBaseRefCmd(m.state.Workspace().ActiveRoot); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	if m.jobEvents != nil {
 		cmds = append(cmds, pumpJobEvents(m.jobEvents))
 	}
@@ -1539,11 +1532,7 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
-	cfg := m.state.Config.TUI.SidePanel
-	if m.railHidden {
-		cfg.Enabled = false
-	}
-	m.leftWidth, m.railWidth = sidepanel.Geometry(width, minTerminalWidth, cfg)
+	m.leftWidth = width
 
 	// Input interior: the ▍ bar (1 cell) + 1 right margin = 2 reserved
 	// cells. The textarea's SetWidth sets the text wrap width and
@@ -1554,104 +1543,134 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.nowBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
-// railEnabled reports whether the side rail is being rendered.
-func (m Model) railEnabled() bool { return m.railWidth > 0 }
-
-// refreshRailTurns reloads the turn-metrics cache the side panel reads.
+// refreshSheetTurns reloads the turn-metrics cache the session sheet reads.
 // Called on turn completion, never from View.
-func (m *Model) refreshRailTurns() {
+func (m *Model) refreshSheetTurns() {
 	database := m.state.DB()
-	if database == nil || !m.railEnabled() {
+	if database == nil {
 		return
 	}
 	if rows, err := database.RecentTurnMetrics(m.memoryProject, 24); err == nil {
-		m.railTurns = rows
+		m.sheetTurns = rows
 	}
 	if totals, err := database.SessionUsage(m.memoryProject, m.state.SessionID()); err == nil {
-		m.railTotals = totals
+		m.sheetTotals = totals
 	}
 }
 
-// refreshRailChanged reloads the changed-files cache. Shells out to git,
+// refreshSheetChanged reloads the changed-files cache. Shells out to git,
 // so it runs on turn boundaries only — never from View.
-func (m *Model) refreshRailChanged() {
-	if !m.railEnabled() {
-		return
-	}
-	m.railChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.railBaseRef)
+func (m *Model) refreshSheetChanged() {
+	m.sheetChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.sheetBaseRef)
 }
 
-// refreshRailFleet reloads the agent-worktree cache the side panel reads.
+// refreshSheetFleet reloads the agent-worktree cache the session sheet reads.
 // Shells out to git (ListFleet runs several subprocesses per worktree), so
 // it runs on turn boundaries only — never from View. Ahead/behind is
 // against the project root's HEAD, not the active root: the fleet describes
 // the whole project's agent worktrees, not the checked-out one.
-func (m *Model) refreshRailFleet() {
-	if !m.railEnabled() {
-		return
-	}
+func (m *Model) refreshSheetFleet() {
 	root := m.state.Workspace().ProjectRoot
 	if root == "" {
 		root = m.state.WorkingDir
 	}
 	base, err := worktree.CLIGitOps{}.RevParse(root, "HEAD")
 	if err != nil {
-		m.railFleet = nil
+		m.sheetFleet = nil
 		return
 	}
 	rows, err := worktree.ListFleet(worktree.CLIGitOps{}, root, base)
 	if err != nil {
-		m.railFleet = nil
+		m.sheetFleet = nil
 		return
 	}
-	m.railFleet = rows
+	m.sheetFleet = rows
 }
 
-// rebuildRail constructs the side rail from the full section list, filtering
-// out any section whose ID appears in the config's hidden list. Both the
-// constructor and tests call this so there is a single code path.
-func (m *Model) rebuildRail() {
-	all := []sidepanel.Section{
-		sidepanel.SwarmSection{},
-		sidepanel.SDDSection{},
-		sidepanel.ContextSection{},
-		sidepanel.ChangedSection{},
-		sidepanel.WorktreesSection{},
-		sidepanel.WorkingSetSection{},
-		sidepanel.ToolsSection{},
-		sidepanel.RulesSection{},
-		sidepanel.RepoSection{},
-		sidepanel.SkillsSection{},
-		sidepanel.SessionSection{},
-	}
+// sheetSections is the session sheet's section list, minus any section the
+// config's [tui.side_panel].hidden names.
+func (m Model) sheetSections() []sessionsheet.Section {
 	hidden := map[string]bool{}
 	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
 		hidden[id] = true
 	}
-	visible := make([]sidepanel.Section, 0, len(all))
+	all := sessionsheet.DefaultSections()
+	visible := make([]sessionsheet.Section, 0, len(all))
 	for _, s := range all {
 		if !hidden[s.ID()] {
 			visible = append(visible, s)
 		}
 	}
-	m.rail = sidepanel.New(visible...)
+	return visible
 }
 
-// railData assembles the side panel's render snapshot. Everything here is
+// openSessionSheet opens the Ctrl+B session sheet (or closes it, if it is
+// already the open panel). The turn, changed-file and fleet caches are
+// refreshed once on open; the panel then reads them live.
+func (m *Model) openSessionSheet() {
+	if m.sheetOpen() {
+		m.closeSessionSheet()
+		return
+	}
+	m.refreshSheetCaches()
+	panel := sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
+	// Opening a panel with nothing in it would leave an invisible dock that
+	// swallows keys until Esc (every section hidden or irrelevant).
+	if !panel.HasContent() {
+		m.state.AddMessage(session.RoleSystem, "Nothing to show in the session sheet.", session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	m.tasksPanel = nil // opening replaces the Tasks panel if it was up
+	m.sheetPanel = panel
+	m.dock.Open(m.sheetPanel)
+	m.refreshViewport()
+}
+
+// sheetOpen reports whether the session sheet is the open dock panel.
+func (m Model) sheetOpen() bool {
+	return m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel)
+}
+
+func (m *Model) closeSessionSheet() {
+	if m.sheetOpen() {
+		m.dock.CloseNow()
+	}
+	m.sheetPanel = nil
+	m.refreshViewport()
+}
+
+// refreshSheetCaches reloads every turn-boundary cache the sheet reads.
+func (m *Model) refreshSheetCaches() {
+	m.refreshSheetTurns()
+	m.refreshSheetChanged()
+	m.refreshSheetFleet()
+}
+
+// sheetDataFor is the sheet's data source: the drilled-in subagent's
+// snapshot while drilled into a real child, the parent's otherwise.
+func (m Model) sheetDataFor() sessionsheet.Data {
+	if child := m.drilledSheetState(); child != nil {
+		return m.childSheetData(child)
+	}
+	return m.sheetData()
+}
+
+// sheetData assembles the session sheet's render snapshot. Everything here is
 // either already in memory or cached on turn boundaries — this runs once
 // per frame and must never query the DB or shell out.
-func (m Model) railData() sidepanel.Data {
-	return sidepanel.Data{
+func (m Model) sheetData() sessionsheet.Data {
+	return sessionsheet.Data{
 		State:   m.state,
 		Git:     m.gitInfo,
-		Repo:    m.railRepoStats,
-		Turns:   m.railTurns,
-		Totals:  m.railTotals,
-		Changed: m.railChanged,
-		Fleet:   m.railFleet,
+		Repo:    m.sheetRepoStats,
+		Turns:   m.sheetTurns,
+		Totals:  m.sheetTotals,
+		Changed: m.sheetChanged,
+		Fleet:   m.sheetFleet,
 		Pack:    m.state.ContextPack(),
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
@@ -1663,11 +1682,11 @@ func (m Model) railData() sidepanel.Data {
 	}
 }
 
-// drilledRailState returns the child session the rail should render while
-// drilled into a subagent, or nil when the rail should show the parent (no
+// drilledSheetState returns the child session the sheet should render while
+// drilled into a subagent, or nil when the sheet should show the parent (no
 // drill-in, or a pipeline/SDD card with no Child state). Mirrors
 // refreshViewport's transcriptState resolution.
-func (m Model) drilledRailState() *session.State {
+func (m Model) drilledSheetState() *session.State {
 	if len(m.viewStack) == 0 {
 		return nil
 	}
@@ -1678,77 +1697,97 @@ func (m Model) drilledRailState() *session.State {
 	return v.Child
 }
 
-// childRailData assembles a rail snapshot scoped to a drilled-in subagent:
+// childSheetData assembles a sheet snapshot scoped to a drilled-in subagent:
 // session-scoped telemetry (audit trail, rules, skills) comes from the
 // child, while environment-level sections (git, repo index) stay parent-
 // sourced — they describe the workspace, not the conversation. Parent turn
 // telemetry (Changed/Pack/Swarm/SDD/Turns/Totals) is omitted: it has no
 // per-child meaning and nothing per-child is cached at turn boundaries yet.
-func (m Model) childRailData(child *session.State) sidepanel.Data {
-	return sidepanel.Data{
+func (m Model) childSheetData(child *session.State) sessionsheet.Data {
+	return sessionsheet.Data{
 		State:  child,
 		Audit:  child.AuditLog(),
 		Rules:  child.SessionRules(),
 		Skills: child.ActiveSkills(),
 		Git:    m.gitInfo,
-		Repo:   m.railRepoStats,
+		Repo:   m.sheetRepoStats,
 		// Fleet stays parent-sourced like Git/Repo: the agent worktrees
 		// describe the project's workspace, not the drilled-in conversation.
-		Fleet:   m.railFleet,
+		Fleet:   m.sheetFleet,
 		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Clear interruptArmed for any non-keypress message so a stale flag
-	// doesn't cause the next Ctrl+C to quit instead of interrupt. Only an
-	// immediate second Ctrl+C (no intervening messages) should quit.
-	//
-	// The two internal tick messages are exempt: while a turn is busy they
-	// fire every 80-150ms, so clearing on them would wipe the armed flag
-	// almost immediately and the documented "Press Ctrl+C again to quit"
-	// second press would re-interrupt instead of quitting.
-	if _, ok := msg.(tea.KeyPressMsg); !ok {
-		switch msg.(type) {
-		case agentTickMsg, spinnerTickMsg:
-			// Background churn; do not clear the armed quit.
-		default:
-			m.interruptArmed = false
-		}
+// ctrlCAction is what a double Ctrl+C will do.
+type ctrlCAction int
+
+const (
+	ctrlCNone ctrlCAction = iota
+	ctrlCStop
+	ctrlCQuit
+)
+
+// ctrlCExpiredMsg only triggers a repaint once an armed Ctrl+C has lapsed.
+type ctrlCExpiredMsg struct{}
+
+// ctrlCWindow is how long a first Ctrl+C stays armed.
+const ctrlCWindow = 3 * time.Second
+
+// ctrlCArmed returns the armed action, or ctrlCNone once the window has
+// expired. Rendering calls this too, so a stale arm shows as disarmed
+// without needing a timer message.
+func (m Model) ctrlCArmed() ctrlCAction {
+	if m.ctrlCArmedFor == ctrlCNone || m.now().Sub(m.ctrlCArmedAt) > ctrlCWindow {
+		return ctrlCNone
 	}
-	// Ctrl+C interrupts an in-flight turn on the first press and quits on the
-	// second. Checked before any overlay routing so it can never be captured
-	// by a form's keymap.
+	return m.ctrlCArmedFor
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Ctrl+C never stops a turn or quits on a single press: the first press
+	// arms (shown on the status line), a second within ctrlCWindow fires.
+	// Checked before any overlay routing so it can never be captured by a
+	// form's keymap.
 	//
-	// It used to quit outright on the first press. Ctrl+C is the universal
-	// "stop what you're doing" reflex, so the moment a user most wants to
-	// interrupt a slow or misbehaving turn was exactly the moment they lost
-	// the session — and with AltScreen there is no scrollback to read
-	// afterwards. Esc already had the interrupt semantics; the better-known
-	// key just did the more destructive thing.
+	// Non-key messages do not disarm: the window expires on its own, and a
+	// turn that ends between the presses must not clear the arm (the second
+	// press then sees a mismatched action and re-arms for quit rather than
+	// turning a stop into a quit).
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		if k.String() == "ctrl+c" {
-			if m.busy && !m.interruptArmed {
-				m.interruptArmed = true
-				m.cancelTurn()
-				m.state.AddMessage(session.RoleSystem,
-					"Turn interrupted. Press Ctrl+C again to quit.",
-					session.ContentTypePlain)
-				m.refreshViewport()
-				return m, nil
+			// Stop only a turn that has not been cancelled yet: cancelTurn
+			// leaves busy set until agentFinishedMsg, so a turn that ignores
+			// cancellation would otherwise make Ctrl+C unable to quit.
+			want := ctrlCQuit
+			if (m.busy || m.agentCancel != nil) && !m.cancelling {
+				want = ctrlCStop
 			}
-			return m, m.beginShutdown(true)
+			if m.ctrlCArmed() == want {
+				m.ctrlCArmedFor = ctrlCNone
+				if want == ctrlCStop {
+					m.cancelTurn()
+					m.state.AddMessage(session.RoleSystem, "Turn stopped.",
+						session.ContentTypePlain)
+					m.refreshViewport()
+					return m, nil
+				}
+				return m, m.beginShutdown(true)
+			}
+			m.ctrlCArmedFor = want
+			m.ctrlCArmedAt = m.now()
+			// Nothing else repaints an idle session, so schedule a repaint for
+			// when the window lapses; otherwise the hint would outlive the arm.
+			return m, tea.Tick(ctrlCWindow+50*time.Millisecond, func(time.Time) tea.Msg { return ctrlCExpiredMsg{} })
 		}
-		// Any other keypress clears the armed quit, so Ctrl+C never quits
-		// on a press the user has mentally separated from the interrupt.
-		m.interruptArmed = false
+		// Any other keypress disarms, so Ctrl+C never fires on a press the
+		// user has mentally separated from the first.
+		m.ctrlCArmedFor = ctrlCNone
 	}
 
 	// WindowSizeMsg must always resize the underlying layout (and the
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
-		wasRailEnabled := m.railEnabled()
 		m.resize(ws.Width, ws.Height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.leftWidth-4, 30))
@@ -1766,19 +1805,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// current branch even if it changed in another tool.
 		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 		m.lastGitRead = m.now()
-		// A narrow→wide resize newly enables the rail; refreshRailChanged
-		// is gated on railEnabled(), so without this the changed section
-		// would stay empty until the next turn/workspace event. Fires at
-		// most once per disabled→enabled transition.
-		if !wasRailEnabled && m.railEnabled() {
-			m.refreshRailChanged()
-			m.refreshRailFleet()
-		}
 		m.refreshViewport()
 		return m, nil
 	}
 
 	switch msg := msg.(type) {
+	case ctrlCExpiredMsg:
+		return m, nil
 	case settings.ChangedMsg:
 		if msg.BlockedReason != "" {
 			m.applyNewConfig(msg.Cfg)
@@ -1901,6 +1934,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
+	case sessionsheet.ClosedMsg:
+		m.closeSessionSheet()
+		return m, nil
+	case sessionsheet.RunCommandMsg:
+		m.closeSessionSheet()
+		return m.dispatchCommand("/" + msg.Command)
 	case docpanel.ClosedMsg:
 		m.dock.CloseNow()
 		m.refreshViewport()
@@ -1983,7 +2022,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, railBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, sheetBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2318,6 +2357,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			// Ctrl+T and Ctrl+B are global toggles between the two panels they
+			// own: the key that opened a panel closes it, and the other key
+			// switches to the other panel, rather than being swallowed.
+			if k, ok := msg.(tea.KeyPressMsg); ok && m.input.Value() == "" && !m.editingCommand && (m.tasksOpen() || m.sheetOpen()) {
+				switch k.String() {
+				case "ctrl+t":
+					m.toggleTasksPanel()
+					return m, nil
+				case "ctrl+b":
+					m.openSessionSheet()
+					return m, nil
+				}
+			}
 			return m, m.dock.Update(msg)
 		default:
 			// A panel's own async results (install finished, scan returned)
@@ -2441,10 +2493,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
 			return m, cmd
 		}
-		if cmd, handled := m.handleAgentLaneClick(msg); handled {
-			return m, cmd
-		}
-		if cmd, handled := m.handleTodoPanelClick(msg); handled {
+		if cmd, handled := m.handleNowBarClick(msg); handled {
 			return m, cmd
 		}
 		return m, nil
@@ -2916,10 +2965,7 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
 			return *m, cmd, true
 		}
-		if cmd, handled := m.handleAgentLaneClick(msg); handled {
-			return *m, cmd, true
-		}
-		if cmd, handled := m.handleTodoPanelClick(msg); handled {
+		if cmd, handled := m.handleNowBarClick(msg); handled {
 			return *m, cmd, true
 		}
 		return *m, nil, false
@@ -3032,7 +3078,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.nowBarRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -3048,84 +3094,11 @@ func (m Model) scrollHintRows() int {
 	return 0
 }
 
-// turnSpinnerRows reports the rows reserved for the pinned turn spinner
-// above the input. The row exists only while a turn is running: reserving
-// it while idle rendered as a blank line directly above the todo panel.
-// During an SDD run the row collapses to zero: the run panel owns the only
-// spinner. Mirrors renderTurnSpinner's render condition exactly.
-func (m Model) turnSpinnerRows() int {
-	if m.state.SDDProgress().Active {
-		return 0
-	}
-	if !m.busy || m.turnStartedAt.IsZero() {
-		return 0
-	}
-	return 1
-}
-
-// liveStripRows reports the rows the live strip occupies: 1 while a
-// swarm/SDD run or browser session is live, 0 otherwise.
-func (m Model) liveStripRows() int {
-	if m.renderLiveStrip() == "" {
-		return 0
-	}
-	return 1
-}
-
-// renderTodoPanel renders the pinned todo panel for the current frame.
-// The all-done summary is suppressed once the user has started another
-// turn (spec: the summary "clears on the next user turn").
-func (m Model) renderTodoPanel() string {
-	todos := m.viewedTodos()
-	if m.todosDismissed && todosAllDone(todos) {
-		return ""
-	}
-	out := renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.leftWidth)
-	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
-}
-
-// todoPanelRows reports the rows the pinned todo panel occupies.
-func (m Model) todoPanelRows() int {
-	body := m.renderTodoPanel()
-	if body == "" {
-		return 0
-	}
-	return lipgloss.Height(body)
-}
-
-// renderRunPanel renders the consolidated SDD run panel for the current
-// frame. The panel owns the only spinner on screen during a run; the
-// glyph comes from turnSpinnerFrame so it shares the 200ms flash gate.
-func (m Model) renderRunPanel() string {
-	out := renderRunPanel(m.state.SDDProgress(), m.turnSpinnerFrame(), m.now(), m.width)
-	return chrome.PaintBand(out, m.width, theme.Current().ChromeBG())
-}
-
-// runPanelRows reports the rows the run panel occupies. The panel is
-// rendered as a top bar (view.go) but its height must be budgeted —
-// otherwise the frame grows taller than the terminal and the input area is
-// pushed off the bottom of the screen.
-func (m Model) runPanelRows() int {
-	panel := m.renderRunPanel()
-	if panel == "" {
-		return 0
-	}
-	return lipgloss.Height(panel)
-}
-
-// stripShowsBrowser reports whether the live strip is currently rendering
-// the browser session (rather than a swarm or SDD run).
-func (m Model) stripShowsBrowser() bool {
-	return m.state.BrowserInfo().SessionOpen &&
-		!m.state.SwarmProgress().Active &&
-		!m.state.SDDProgress().Active
-}
-
-// ShouldShowStatusURL returns false when the live strip already shows the
+// ShouldShowStatusURL returns false when the now bar already shows the
 // browser URL and tool name. The right-side status segment omits the URL
 // then to avoid duplication.
 func (m Model) ShouldShowStatusURL() bool {
-	return !m.stripShowsBrowser()
+	return !m.nowBarPlan().showsBrowser
 }
 
 // dockRows reports the rows the docked panel occupied at last render, so the
@@ -3134,7 +3107,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.nowBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -3668,10 +3641,6 @@ func (m *Model) refreshViewport() {
 	busy := m.busy || activeTool || streamLen > 0
 
 	todos := m.viewedTodos()
-	if sig := todoSignature(todos); sig != m.todosSig {
-		m.todosSig = sig
-		m.todosDismissed = false
-	}
 	queued := m.state.SteeringQueue()
 	notice, noticeUp := m.state.Notice()
 	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows)
@@ -4249,7 +4218,7 @@ func spinnerLabel(spinner, label string) string {
 // has been running for at least 200ms, or "" when the activity just started.
 // This avoids a flash of the spinner glyph before the user can perceive the
 // activity. For ActivityIdle it always returns "". During an SDD run it
-// always returns "": the run panel owns the only spinner on screen, so
+// always returns "": the now bar owns the only spinner on screen, so
 // transcript activity rows render their static glyph with elapsed time.
 func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	if kind == session.ActivityIdle {
@@ -4280,8 +4249,8 @@ func (m Model) turnSpinnerFrame() string {
 	return m.spinnerFrame
 }
 
-// cancelTurn cancels the in-flight agent turn, if any. Shared by Esc and
-// the /stop command. The steering queue is NOT cleared here — that happens
+// cancelTurn cancels the in-flight agent turn, if any. Shared by double
+// Ctrl+C and the /stop command. The steering queue is NOT cleared here — that happens
 // in handleAgentFinished so the finishing goroutine can observe the
 // cancellation state and avoid double-processing.
 func (m *Model) cancelTurn() bool {
@@ -4470,9 +4439,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.restoreRunner()
 		m.restoreRunner = nil
 	}
-	m.refreshRailTurns()
-	m.refreshRailChanged()
-	m.refreshRailFleet()
+	// The changed-file count is refreshed off-thread by the sheetBaseRefCmd
+	// returned below. The turn and fleet caches are read only by the session
+	// sheet: refresh them here while it is open, otherwise when it opens.
+	if m.sheetOpen() {
+		m.refreshSheetTurns()
+		m.refreshSheetFleet()
+	}
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
@@ -4514,10 +4487,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.updateViewportHeight()
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
-	// Rebase the changed-files rail onto the active root's HEAD so committed
-	// agent work stops inflating the diff; the railBaseRefMsg handler sets the
+	// Rebase the changed-files base ref onto the active root's HEAD so committed
+	// agent work stops inflating the diff; the sheetBaseRefMsg handler sets the
 	// new base and refreshes the cache after the next tick.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, railBaseRefCmd(m.state.Workspace().ActiveRoot)}
+	cmds := []tea.Cmd{tickCmd(), flushCmd, sheetBaseRefCmd(m.state.Workspace().ActiveRoot)}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
@@ -4683,11 +4656,11 @@ func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 
 // handleWatchMsg handles a watchMsg, shared by Update and
 // handleRuntimeMessage. It updates the cached watch snapshot so the
-// activity lane can render watch rows, then re-arms the pump.
+// now bar can render watch rows, then re-arms the pump.
 func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
 	// Update the cached snapshot: replace any existing entry with the same
 	// WatchID, append new ones. Terminal states (fired/stopped/error) are
-	// kept so the lane can show the last known state until the watch is
+	// kept so the now bar can show the last known state until the watch is
 	// removed from the manager's list.
 	updated := false
 	for i, w := range m.watches {
@@ -4718,7 +4691,7 @@ func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
 			// already stuck via the helper's *m assignment. The wake cmd
 			// AND the pump re-arm must both ride the return: the pump is a
 			// chain — each watchMsg returns the next pump cmd, and
-			// dropping it would permanently stall the watch-event lane.
+			// dropping it would permanently stall the watch-event pump.
 			m.refreshViewport()
 			flush := m.flushPendingModelOptions()
 			if m.watchEvents == nil {
@@ -4753,14 +4726,14 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 // handleWorkspaceMsg handles a workspaceMsg: the session's active root
 // changed, so re-read git info for the new root immediately rather than
 // waiting for the 5s tick, then re-arm the pump. It also returns a
-// railBaseRefCmd so the changed-files rail rebases onto the new root's HEAD
+// sheetBaseRefCmd so the changed-files cache rebases onto the new root's HEAD
 // off the UI thread.
 func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
 	var baseCmd tea.Cmd
 	if msg.activeRoot != "" {
 		m.gitInfo = gitinfo.Read(msg.activeRoot)
 		m.lastGitRead = m.now()
-		baseCmd = railBaseRefCmd(msg.activeRoot)
+		baseCmd = sheetBaseRefCmd(msg.activeRoot)
 	}
 	if m.workspaceEvents == nil {
 		return m, baseCmd
@@ -4779,27 +4752,27 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 	return m, pumpSubagentEvents(m.subagentEvents)
 }
 
-// handleRailBaseRef handles a railBaseRefMsg: a freshly-read HEAD SHA for
-// the changed-files rail. It rebases the base ref and refreshes the cache.
-// refreshRailChanged runs two git diff subprocesses synchronously here; that
-// matches the existing turn-boundary behavior and happens at most once per
-// workspace change, so it is acceptable on the UI thread.
-func (m Model) handleRailBaseRef(msg railBaseRefMsg) (Model, tea.Cmd) {
+// handleSheetBaseRef handles a sheetBaseRefMsg: a freshly-read HEAD SHA for
+// the changed-files cache. It rebases the base ref and installs the diff the
+// command already read off-thread, so the handler does no git work.
+func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 	// Drop msgs whose dir is no longer the active root: linked worktrees
 	// share the object store, so a stale in-flight cmd from a previous
-	// workspace/session could otherwise rebase the rail against the wrong
+	// workspace/session could otherwise rebase the session sheet against the wrong
 	// tree and produce a misleading diff.
 	if msg.dir != m.state.Workspace().ActiveRoot {
 		return m, nil
 	}
-	if msg.ref != "" {
-		m.railBaseRef = msg.ref
+	if msg.ref == "" {
+		// git could not read HEAD; keep the base and the cache as they were.
+		return m, nil
 	}
-	m.refreshRailChanged()
+	m.sheetBaseRef = msg.ref
+	m.sheetChanged = msg.changed
 	// No explicit refreshViewport here: Bubble Tea re-renders after every
-	// Update, and the rail reads m.railChanged directly in View, so the
-	// updated cache is picked up on the next frame. refreshViewport only
-	// rebuilds the transcript viewport, which this message does not touch.
+	// Update, and the status line and session sheet read m.sheetChanged
+	// directly in View. refreshViewport only rebuilds the transcript
+	// viewport, which this message does not touch.
 	return m, nil
 }
 
@@ -4871,8 +4844,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkspaceMsg(msg)
 	case subagentMsg:
 		return m.handleSubagentMsg(msg)
-	case railBaseRefMsg:
-		return m.handleRailBaseRef(msg)
+	case sheetBaseRefMsg:
+		return m.handleSheetBaseRef(msg)
 	case agentTickMsg:
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:

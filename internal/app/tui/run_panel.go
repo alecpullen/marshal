@@ -6,48 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 )
-
-// renderRunPanel renders the run's orientation row: where the run is and
-// roughly how much is left, in exactly one line.
-//
-// It deliberately does not show the plan checklist. Every row this panel
-// occupies is subtracted from the transcript viewport (model.go), and the
-// transcript is where a run's actual content now lives — verify output,
-// review findings, commits. /run shows the checklist on demand instead, at
-// no cost to the transcript.
-//
-// After the run ends it collapses to a one-line summary until the next user
-// turn clears it (keypress.go).
-func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, width int) string {
-	if !p.Active && !p.Finished {
-		return ""
-	}
-	width = max(width, 1)
-	if p.Finished {
-		return runPanelBar(runPanelFinishedLine(p, width), width)
-	}
-	return runPanelBar(runPanelSummaryLine(p, spinner, now, width), width)
-}
-
-// runPanelBar renders content as a full-width horizontal bar with no
-// background, replacing the old vertical chrome rail. It keeps the width
-// layout semantics so the text spans the full frame.
-func runPanelBar(content string, width int) string {
-	if width < 1 {
-		width = 1
-	}
-	return lipgloss.NewStyle().
-		Width(width).
-		MaxWidth(width).
-		Render(content)
-}
 
 // runSeg is one segment of the summary line. Higher priority drops first;
 // priority 0 is never dropped. glue joins the segment to its predecessor
@@ -80,6 +44,17 @@ func joinRunSegs(segs []runSeg) string {
 // truncating mid-word. The drop order is documented in the run-panel layout
 // spec; the task counter is the floor and always survives.
 func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, width int) string {
+	g := spinner
+	if g == "" {
+		g = glyph.Running
+	}
+	return gutterPrefix(g, accentColor) + runPanelSummaryText(p, now, max(width-3, 1))
+}
+
+// runPanelSummaryText is runPanelSummaryLine without its gutter glyph, fit
+// to budget cells. The now bar composes its own glyph and progress blocks
+// around it.
+func runPanelSummaryText(p session.SDDProgress, now time.Time, budget int) string {
 	segs := []runSeg{{text: fmt.Sprintf("task %d/%d", p.CurrentTask, p.TotalTasks), priority: 0}}
 
 	// Percent counts completed tasks only: the in-flight task is not done,
@@ -117,7 +92,6 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 
 	// Drop the lowest-priority segment until the line fits, always keeping
 	// segs[0]. Mirrors the status line's loop (status.go).
-	budget := max(width-3, 1)
 	text := joinRunSegs(segs)
 	for len(segs) > 1 && ansi.StringWidth(text) > budget {
 		worst := 1
@@ -130,12 +104,7 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 		text = joinRunSegs(segs)
 	}
 
-	g := spinner
-	if g == "" {
-		g = glyph.Running
-	}
-	return gutterPrefix(g, accentColor) +
-		statusBusyStyle().Render(ansi.Truncate(text, budget, "…"))
+	return statusBusyStyle().Render(ansi.Truncate(text, budget, "…"))
 }
 
 // runPanelFinishedLine renders the collapsed post-run summary:
@@ -144,6 +113,13 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 // When the panel is narrow the resume hint is dropped first, then the
 // reason.
 func runPanelFinishedLine(p session.SDDProgress, width int) string {
+	g, c, text := runPanelFinishedParts(p, max(width-3, 1))
+	return gutterPrefix(g, c) + text
+}
+
+// runPanelFinishedParts is runPanelFinishedLine split into its glyph, glyph
+// colour and label (fit to budget cells), for the now bar.
+func runPanelFinishedParts(p session.SDDProgress, budget int) (string, color.Color, string) {
 	elapsed := p.EndedAt.Sub(p.StartedAt)
 	if elapsed < 0 {
 		elapsed = 0
@@ -167,7 +143,6 @@ func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	if !p.Succeeded {
 		hint = " — /run for details · /sdd to resume"
 	}
-	budget := max(width-3, 1)
 	label := base + reason + hint
 	if ansi.StringWidth(label) > budget && hint != "" {
 		label = base + reason
@@ -175,5 +150,5 @@ func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	if ansi.StringWidth(label) > budget && reason != "" {
 		label = base
 	}
-	return gutterPrefix(g, c) + theme.MutedStyle().Render(ansi.Truncate(label, budget, "…"))
+	return g, c, theme.MutedStyle().Render(ansi.Truncate(label, budget, "…"))
 }

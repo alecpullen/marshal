@@ -235,22 +235,26 @@ type State struct {
 	activeTools    map[string]*ActiveToolCall
 	// steps is every step created or restored in this session, in sequence
 	// order; nextStepSeq is the next sequence number to hand out.
-	steps          []Step
-	nextStepSeq    int64
-	sessionRules   []string
-	auditLog       []registry.AuditEvent
-	thinkingLog    []ThinkingEntry
-	lastBackup     []BackupFile
-	contextPack    contextpack.Pack
-	activeRoute    RouteInfo
-	turnToolCache  map[string]registry.ToolResult
-	toolCacheOrder []string
-	toolCacheBytes int
-	activity       Activity
-	plan           []string
-	todos          []db.TodoItem
-	scratchpad     map[string]db.ScratchpadEntry
-	activeSkills   map[string]bool
+	steps        []Step
+	nextStepSeq  int64
+	sessionRules []string
+	auditLog     []registry.AuditEvent
+	thinkingLog  []ThinkingEntry
+	lastBackup   []BackupFile
+	contextPack  contextpack.Pack
+	// requestInspection is the bounded snapshot of the last conversation
+	// attempt Marshal submitted to its provider adapter. It is in-memory only
+	// (see request_inspection.go): nothing persists it, and it is never logged.
+	requestInspection *RequestInspection
+	activeRoute       RouteInfo
+	turnToolCache     map[string]registry.ToolResult
+	toolCacheOrder    []string
+	toolCacheBytes    int
+	activity          Activity
+	plan              []string
+	todos             []db.TodoItem
+	scratchpad        map[string]db.ScratchpadEntry
+	activeSkills      map[string]bool
 	// skillOrder records activation sequence per skill so eviction can pick
 	// the least-recently-activated. Kept separate from activeSkills because
 	// ActiveSkills() must stay alphabetically sorted for prefix caching —

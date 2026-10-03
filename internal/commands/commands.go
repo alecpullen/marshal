@@ -192,9 +192,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "context",
-			Description: "Show context window usage",
+			Description: "Show context window usage, or the last request sent",
+			Args:        "[request]",
 			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) Result {
+				if len(args) > 0 && args[0] == "request" {
+					return lastRequestPanel(state)
+				}
 				msgs := state.Messages()
 				var totalChars int
 				for _, m := range msgs {
@@ -213,6 +217,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					Row{Text: "Turn budget", Detail: fmt.Sprintf("%s tokens (%s)",
 						strutil.CompactTokens(threshold), source)},
 				)
+				if row, ok := lastRequestRow(state); ok {
+					rows = append(rows, row)
+				}
 				pack := state.ContextPack()
 				if pack.IsEmpty() {
 					rows = append(rows, Row{Text: "Pack", Detail: "not built yet"})

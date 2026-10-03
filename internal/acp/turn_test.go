@@ -3274,3 +3274,79 @@ func TestPostTurnLatchStartsFollowOnTurn(t *testing.T) {
 		t.Fatal("the post-turn latch did not start a follow-on turn")
 	}
 }
+
+// publishToolEvents runs a turn that publishes the given events and returns
+// every projected session update.
+func publishToolEvents(t *testing.T, publish func(b *pubsub.Broker[session.Event])) []map[string]any {
+	t.Helper()
+	broker := pubsub.NewBroker[session.Event]()
+	var mu sync.Mutex
+	var updates []map[string]any
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					publish(broker)
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				updates = append(updates, p.Update)
+			}
+			return nil
+		},
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_ids","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return updates
+}
+
+// Concurrent calls of the same tool used to pair by tool name, so the second
+// result attached to the wrong call. Real IDs pair them exactly.
+func TestToolCallEventsPairByRealIDForConcurrentSameToolCalls(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	updates := publishToolEvents(t, func(b *pubsub.Broker[session.Event]) {
+		b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "file.read", ToolCallID: "c1", StartedAt: t0}})
+		b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "file.read", ToolCallID: "c2", StartedAt: t0.Add(time.Second)}})
+		// c1 finishes: the state republishes the call still running (c2).
+		b.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{ToolName: "file.read", ToolCallID: "c1", ResultContent: "one"}})
+		b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "file.read", ToolCallID: "c2", StartedAt: t0.Add(time.Second)}})
+		b.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{ToolName: "file.read", ToolCallID: "c2", ResultContent: "two"}})
+	})
+	var got []string
+	for _, u := range updates {
+		got = append(got, fmt.Sprintf("%v:%v:%v", u["kind"], u["toolCallId"], u["output"]))
+	}
+	want := []string{"tool_call:c1:<nil>", "tool_call:c2:<nil>", "tool_call_update:c1:one", "tool_call_update:c2:two"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("updates = %v\nwant     %v (no duplicate announce of c2)", got, want)
+	}
+}
+
+// Providers that reuse IDs like call_0 across calls must still announce each
+// call, since the earlier one finished.
+func TestToolCallIDReuseAfterFinishAnnouncesAgain(t *testing.T) {
+	updates := publishToolEvents(t, func(b *pubsub.Broker[session.Event]) {
+		for range 2 {
+			b.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{Name: "noop", ToolCallID: "call_0", StartedAt: time.Unix(1, 0)}})
+			b.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{ToolName: "noop", ToolCallID: "call_0", ResultSummary: "ok"}})
+		}
+	})
+	var kinds []string
+	for _, u := range updates {
+		kinds = append(kinds, fmt.Sprint(u["kind"]))
+	}
+	if strings.Join(kinds, ",") != "tool_call,tool_call_update,tool_call,tool_call_update" {
+		t.Fatalf("kinds = %v", kinds)
+	}
+}

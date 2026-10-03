@@ -461,6 +461,14 @@ type AgentConfig struct {
 	MaxToolResultChars       int  `toml:"max_tool_result_chars"`
 	MaxStructuredOutputChars int  `toml:"max_structured_output_chars"`
 	PlanFirst                bool `toml:"plan_first"`
+	// NarrationPrompt asks the model to open each tool-calling response with
+	// one sentence saying what it is about to do, which the TUI shows as the
+	// step's headline. Native tool mode only. Default true.
+	NarrationPrompt bool `toml:"narration_prompt"`
+	// IntentNudge re-prompts once per turn when a short "I'll do X next"
+	// reply arrives with no tool call, guarding against models that obey the
+	// narration prompt and then stop. Default true.
+	IntentNudge bool `toml:"intent_nudge"`
 	// HistoryBudgetTokens is an explicit ceiling for cross-turn history
 	// replay (the agent's "previous turn" budget). 0 = derive from
 	// model window via historyBudget: window/8, clamped to

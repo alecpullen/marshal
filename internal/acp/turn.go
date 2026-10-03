@@ -296,6 +296,10 @@ type turnProjection struct {
 	lastThinking string
 	lastToolID   string
 	lastToolName string
+	// announced holds the tool-call IDs already sent as running, so the
+	// re-publish that follows one of several concurrent calls ending does
+	// not announce a still-running call a second time.
+	announced map[string]bool
 }
 
 // toolTextCap bounds args/output text in tool_call wire events.
@@ -350,9 +354,22 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 	case session.EventActiveToolChanged:
 		if ev.Payload.ActiveTool != nil {
 			atc := ev.Payload.ActiveTool
-			id := fmt.Sprintf("%s-%d", atc.Name, atc.StartedAt.UnixNano())
+			// The runner's real call ID pairs a running call with its result
+			// exactly, including for concurrent calls. The name+time guess is
+			// only for sources that carry no ID.
+			id := atc.ToolCallID
+			if id == "" {
+				id = fmt.Sprintf("%s-%d", atc.Name, atc.StartedAt.UnixNano())
+			}
 			proj.lastToolID = id
 			proj.lastToolName = atc.Name
+			if proj.announced == nil {
+				proj.announced = map[string]bool{}
+			}
+			if proj.announced[id] {
+				return nil, false
+			}
+			proj.announced[id] = true
 			return map[string]any{
 				"kind":       "tool_call",
 				"toolCallId": id,
@@ -368,10 +385,16 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 			if ae.Error != "" {
 				status = "error"
 			}
-			id := proj.lastToolID
-			if id == "" || ae.ToolName != proj.lastToolName {
-				id = fmt.Sprintf("%s-%d", ae.ToolName, ae.Timestamp.UnixNano())
+			id := ae.ToolCallID
+			if id == "" {
+				id = proj.lastToolID
+				if id == "" || ae.ToolName != proj.lastToolName {
+					id = fmt.Sprintf("%s-%d", ae.ToolName, ae.Timestamp.UnixNano())
+				}
 			}
+			// The call is finished; some providers reuse IDs like call_0, so a
+			// later call under the same ID must announce itself again.
+			delete(proj.announced, id)
 			output := ae.ResultContent
 			if output == "" {
 				output = ae.ResultSummary

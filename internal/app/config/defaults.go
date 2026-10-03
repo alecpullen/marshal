@@ -21,6 +21,8 @@ func Default() Config {
 			Default: "local_balanced",
 		},
 		Agent: AgentConfig{
+			NarrationPrompt:        true,
+			IntentNudge:            true,
 			ApprovalMode:           "default",
 			MaxTouchedFileBytes:    65536, // 64 KiB
 			MaxConcurrentSubagents: 3,

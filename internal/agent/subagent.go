@@ -82,14 +82,14 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summar
 	if prompt == "" {
 		return "", "", errors.New("agent.run: prompt is required")
 	}
+	// RunTask can return a task alongside an error: a child that wrote its
+	// final answer and then failed (a turn-end hook, a cancel) still has a
+	// report, and the parent should see it next to the failure.
 	task, err := child.RunTask(ctx, prompt)
-	if err != nil {
+	if task == nil {
 		return "", "", err
 	}
-	if task == nil {
-		return "", "", nil
-	}
-	return task.Summary, task.SalvagedReason, nil
+	return task.Summary, task.SalvagedReason, err
 }
 
 // SubtaskScopeView returns a registry view for a subtask child. It excludes
@@ -493,8 +493,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 // await result and the completion message read identically.
 func subagentResultText(id int64, label, summary, salvagedReason, errText string) (summaryLine, content string) {
 	if errText != "" {
-		return fmt.Sprintf("subagent %d failed: %s", id, label),
-			fmt.Sprintf("subagent %d (%s) failed: %s", id, label, errText)
+		content = fmt.Sprintf("subagent %d (%s) failed: %s", id, label, errText)
+		if summary != "" {
+			content += "\n\n[note: the subagent wrote this report before it failed; it may be incomplete.]\n\n" + summary
+		}
+		return fmt.Sprintf("subagent %d failed: %s", id, label), content
 	}
 	if salvagedReason != "" {
 		hint := salvageReasonHint(salvagedReason)

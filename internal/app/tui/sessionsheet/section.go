@@ -33,7 +33,7 @@ type ChangedFile struct {
 	Removed int
 }
 
-// Data is everything the rail can render. The Model assembles it once per
+// Data is everything the session sheet can render. The Model assembles it once per
 // frame. Sections never reach outside it, and everything expensive (DB
 // queries, git subprocesses) is cached in on turn boundaries — never
 // computed during render.
@@ -87,7 +87,7 @@ type Data struct {
 	Spinner string
 }
 
-// Section is one read-only block in the rail. Sections are pure functions
+// Section is one read-only block in the session sheet. Sections are pure functions
 // of Data: no state, no Update, no focus.
 type Section interface {
 	// ID is the stable identifier used by the config's hidden list.

@@ -34,10 +34,10 @@ const (
 	// adds above the completion popup's match rows.
 	completionPanelChromeRows = 1
 	// minTranscriptRows is the transcript floor reserved when budgeting the
-	// textarea's MaxHeight. The todo panel still takes priority over the
+	// textarea's MaxHeight. The now bar still takes priority over the
 	// transcript when space is tight — the pinned todo list is most useful
 	// while the agent is working — but the floor is a readable window rather
-	// than a single row: the todo panel, SDD panel, live strip, and completion
+	// than a single row: the now bar, dock panel, and completion
 	// popup all stack above the input, and a busy session could squeeze the
 	// transcript to one line.
 	minTranscriptRows = 4

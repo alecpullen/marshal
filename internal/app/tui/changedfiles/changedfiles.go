@@ -1,5 +1,5 @@
 // Package changedfiles reads the working tree's diff against a base ref
-// for the side panel's changed-files section. Every failure path returns
+// for the session sheet's changed-files section. Every failure path returns
 // nil: this is telemetry and must never break a turn or block a render.
 package changedfiles
 

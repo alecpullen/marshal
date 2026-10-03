@@ -21,7 +21,7 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
 }
 
-// SDDSection mirrors the run panel when the side rail is open: the summary
+// SDDSection mirrors the run summary in the session sheet: the summary
 // (task count, phase, detail) plus the plan checklist with the same status
 // derivation. It is a mirror, not a replacement — the main column's panel
 // stays.

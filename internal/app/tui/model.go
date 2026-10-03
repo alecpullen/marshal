@@ -309,7 +309,7 @@ type Model struct {
 	watchBroker *pubsub.Broker[watch.Event]
 	watchEvents <-chan pubsub.Event[watch.Event]
 	// watches is the cached watch snapshot from the latest watch.Event, used
-	// by the activity lane above the input. Nil/empty when no broker is wired.
+	// by the now bar above the input. Nil/empty when no broker is wired.
 	watches []watch.Event
 
 	// F16: steering broker pump. steeringBroker is the F16 message broker;
@@ -4186,7 +4186,7 @@ func spinnerLabel(spinner, label string) string {
 // has been running for at least 200ms, or "" when the activity just started.
 // This avoids a flash of the spinner glyph before the user can perceive the
 // activity. For ActivityIdle it always returns "". During an SDD run it
-// always returns "": the run panel owns the only spinner on screen, so
+// always returns "": the now bar owns the only spinner on screen, so
 // transcript activity rows render their static glyph with elapsed time.
 func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	if kind == session.ActivityIdle {
@@ -4618,7 +4618,7 @@ func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 
 // handleWatchMsg handles a watchMsg, shared by Update and
 // handleRuntimeMessage. It updates the cached watch snapshot so the
-// activity lane can render watch rows, then re-arms the pump.
+// now bar can render watch rows, then re-arms the pump.
 func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
 	// Update the cached snapshot: replace any existing entry with the same
 	// WatchID, append new ones. Terminal states (fired/stopped/error) are
@@ -4722,7 +4722,7 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 	// Drop msgs whose dir is no longer the active root: linked worktrees
 	// share the object store, so a stale in-flight cmd from a previous
-	// workspace/session could otherwise rebase the rail against the wrong
+	// workspace/session could otherwise rebase the session sheet against the wrong
 	// tree and produce a misleading diff.
 	if msg.dir != m.state.Workspace().ActiveRoot {
 		return m, nil
@@ -4732,7 +4732,7 @@ func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 	}
 	m.refreshSheetChanged()
 	// No explicit refreshViewport here: Bubble Tea re-renders after every
-	// Update, and the rail reads m.sheetChanged directly in View, so the
+	// Update, and the session sheet reads m.sheetChanged directly in View, so the
 	// updated cache is picked up on the next frame. refreshViewport only
 	// rebuilds the transcript viewport, which this message does not touch.
 	return m, nil

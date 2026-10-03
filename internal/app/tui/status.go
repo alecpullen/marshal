@@ -284,7 +284,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	if sp := m.state.SDDProgress(); sp.Active {
-		// The run panel owns task counts and phase; the status line keeps
+		// The now bar owns task counts and phase; the status line keeps
 		// only the mode cue (modeSegment) and the token budget.
 		if sp.TokensMax > 0 || sp.TokensUsed > 0 {
 			var seg string

@@ -7480,6 +7480,45 @@ func TestOpenConnectOnStartYieldsToTrustPrompt(t *testing.T) {
 	_ = decided
 }
 
+func TestModelsRefreshesCachedCodexAndUpdatesPicker(t *testing.T) {
+	state := newTestState(t)
+	state.Config.Privacy.RemoteProvidersAllowed = true
+	state.Config.Providers = map[string]config.ProviderConfig{
+		"codex": {Type: "openai_codex", Template: "openai-codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth"},
+	}
+	m := New(state)
+	m.discovered["codex"] = []schema.ModelInfo{{ID: "gpt-5.6-luna"}}
+	if cmd := m.openModels(); cmd == nil {
+		t.Fatal("cached Codex catalog prevented a live refresh")
+	}
+	updated, _ := m.Update(probe.ResultMsg{
+		FieldID: "models", Provider: "codex",
+		Models: []schema.ModelInfo{{ID: "gpt-6.1-sol"}, {ID: "gpt-6-sol"}, {ID: "gpt-6-luna"}},
+	})
+	m = asModel(t, updated)
+	view := stripANSI(m.connectModel.View(100, 30))
+	for _, id := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
+		if !strings.Contains(view, id) {
+			t.Fatalf("new model %s missing from picker: %s", id, view)
+		}
+	}
+	if strings.Contains(view, "gpt-5.6-luna") {
+		t.Fatalf("picker retained the old catalog: %s", view)
+	}
+}
+
+func TestCodexCachedRefreshRespectsRemotePrivacy(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Privacy.RemoteProvidersAllowed = false
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"codex": {Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api"},
+	}
+	m.discovered["codex"] = []schema.ModelInfo{{ID: "gpt-5.6-luna"}}
+	if cmd := m.probeProviders([]string{"codex"}); cmd != nil {
+		t.Fatal("Codex refresh bypassed remote privacy setting")
+	}
+}
+
 func TestModelCacheSeedsDiscoveredAtStartup(t *testing.T) {
 	dir := t.TempDir()
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}

@@ -4836,14 +4836,16 @@ func (m *Model) openModels() tea.Cmd {
 
 // probeProviders dispatches a probe for each named provider that has no
 // cached entry and whose endpoint is permitted by the remote-provider
-// gate. Used by openModels and by the manual refresh key.
+// gate. Codex refreshes even with a cached entry: its catalog is versioned
+// and account-specific, so a saved list may omit newly available models.
+// Used by openModels and by the manual refresh key.
 func (m *Model) probeProviders(names []string) tea.Cmd {
 	var cmds []tea.Cmd
 	for _, n := range names {
-		if cached, ok := m.discovered[n]; ok && len(cached) > 0 {
+		pc := m.state.Config.Providers[n]
+		if cached, ok := m.discovered[n]; ok && len(cached) > 0 && pc.Type != "openai_codex" {
 			continue
 		}
-		pc := m.state.Config.Providers[n]
 		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
 			continue
 		}

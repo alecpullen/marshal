@@ -85,4 +85,10 @@ const (
 	// watch is a monitor, not a running process. U+25CB (○, White Circle,
 	// Geometric Shapes) — single-cell, broad terminal-font coverage.
 	Watch = "○"
+
+	// ProgressFull and ProgressEmpty draw the now bar's progress blocks
+	// (▰▰▱▱ 2/4). U+25B0/U+25B1 are Geometric Shapes — single-cell, broad
+	// terminal-font coverage. They carry no meaning outside a block run.
+	ProgressFull  = "▰"
+	ProgressEmpty = "▱"
 )

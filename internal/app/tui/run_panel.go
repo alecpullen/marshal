@@ -80,6 +80,17 @@ func joinRunSegs(segs []runSeg) string {
 // truncating mid-word. The drop order is documented in the run-panel layout
 // spec; the task counter is the floor and always survives.
 func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, width int) string {
+	g := spinner
+	if g == "" {
+		g = glyph.Running
+	}
+	return gutterPrefix(g, accentColor) + runPanelSummaryText(p, now, max(width-3, 1))
+}
+
+// runPanelSummaryText is runPanelSummaryLine without its gutter glyph, fit
+// to budget cells. The now bar composes its own glyph and progress blocks
+// around it.
+func runPanelSummaryText(p session.SDDProgress, now time.Time, budget int) string {
 	segs := []runSeg{{text: fmt.Sprintf("task %d/%d", p.CurrentTask, p.TotalTasks), priority: 0}}
 
 	// Percent counts completed tasks only: the in-flight task is not done,
@@ -117,7 +128,6 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 
 	// Drop the lowest-priority segment until the line fits, always keeping
 	// segs[0]. Mirrors the status line's loop (status.go).
-	budget := max(width-3, 1)
 	text := joinRunSegs(segs)
 	for len(segs) > 1 && ansi.StringWidth(text) > budget {
 		worst := 1
@@ -130,12 +140,7 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 		text = joinRunSegs(segs)
 	}
 
-	g := spinner
-	if g == "" {
-		g = glyph.Running
-	}
-	return gutterPrefix(g, accentColor) +
-		statusBusyStyle().Render(ansi.Truncate(text, budget, "…"))
+	return statusBusyStyle().Render(ansi.Truncate(text, budget, "…"))
 }
 
 // runPanelFinishedLine renders the collapsed post-run summary:
@@ -144,6 +149,13 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 // When the panel is narrow the resume hint is dropped first, then the
 // reason.
 func runPanelFinishedLine(p session.SDDProgress, width int) string {
+	g, c, text := runPanelFinishedParts(p, max(width-3, 1))
+	return gutterPrefix(g, c) + text
+}
+
+// runPanelFinishedParts is runPanelFinishedLine split into its glyph, glyph
+// colour and label (fit to budget cells), for the now bar.
+func runPanelFinishedParts(p session.SDDProgress, budget int) (string, color.Color, string) {
 	elapsed := p.EndedAt.Sub(p.StartedAt)
 	if elapsed < 0 {
 		elapsed = 0
@@ -167,7 +179,6 @@ func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	if !p.Succeeded {
 		hint = " — /run for details · /sdd to resume"
 	}
-	budget := max(width-3, 1)
 	label := base + reason + hint
 	if ansi.StringWidth(label) > budget && hint != "" {
 		label = base + reason
@@ -175,5 +186,5 @@ func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	if ansi.StringWidth(label) > budget && reason != "" {
 		label = base
 	}
-	return gutterPrefix(g, c) + theme.MutedStyle().Render(ansi.Truncate(label, budget, "…"))
+	return g, c, theme.MutedStyle().Render(ansi.Truncate(label, budget, "…"))
 }

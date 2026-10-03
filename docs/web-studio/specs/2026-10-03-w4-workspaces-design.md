@@ -384,7 +384,7 @@ production store is empty. W4 adds:
 - **The `vault` kind.** `{kind:"vault", ref:"vault:git/github", user?}`.
   `Resolve` (`credential.go:69`) fetches the value through the provider
   at use time, and `gitEnv` (`git.go:35`) is unchanged.
-- **Persistence.** Credentials are stored in `fleet.json` (workspace v9)
+- **Persistence.** Credentials are stored in `fleet.json` (workspace v10)
   without values. `NewFleet` loads them, which replaces the empty
   `NewCredentialStore(nil)` at `fleet.go:232`.
 - **Routes:**

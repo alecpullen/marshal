@@ -30,7 +30,6 @@ import (
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/changedfiles"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
@@ -251,13 +250,6 @@ type Model struct {
 	fileIndexLoaded      bool
 	lastInputForPopups   string
 	completionSuppressed bool
-	// laneCursor is the keyboard-selected row in the agents lane (F6).
-	// Up/Down move it while the input is empty and the lane is non-empty;
-	// Enter drills into the selected subagent. laneCursorActive is set
-	// only once the user explicitly navigates the lane, so a blank Enter
-	// keeps its existing steering-drain behavior until then.
-	laneCursor       int
-	laneCursorActive bool
 	// cmdArgMode arms argument completion right after a command is
 	// accepted from the popup. While armed and the input still carries
 	// the accepted "/<cmd> " prefix, commandTrigger keeps firing so
@@ -492,13 +484,9 @@ type Model struct {
 	successPulseAt time.Time
 	now            func() time.Time
 
-	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
-	// todosDismissed hides the all-done summary from the next turn
-	// onward; todosSig detects the agent rewriting the list, which
-	// un-dismisses it.
-	todoPanelMode  todoPanelMode
-	todosDismissed bool
-	todosSig       string
+	// tasksPanel is the open Ctrl+T Tasks panel, kept so a second Ctrl+T
+	// can tell it apart from other docked panels.
+	tasksPanel *docpanel.Panel
 
 	// connectReturnToSettings and connectReturnFilter track whether the
 	// connect wizard was opened from the settings browser, so completing
@@ -1557,7 +1545,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.nowBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -2334,6 +2322,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			// Ctrl+T toggles the Tasks panel, so the key that opened it also
+			// closes it.
+			if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+t" && m.input.Value() == "" && !m.editingCommand &&
+				m.tasksPanel != nil && m.dock.Panel() == dock.Panel(m.tasksPanel) {
+				m.toggleTasksPanel()
+				return m, nil
+			}
 			return m, m.dock.Update(msg)
 		default:
 			// A panel's own async results (install finished, scan returned)
@@ -2457,10 +2452,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
 			return m, cmd
 		}
-		if cmd, handled := m.handleAgentLaneClick(msg); handled {
-			return m, cmd
-		}
-		if cmd, handled := m.handleTodoPanelClick(msg); handled {
+		if cmd, handled := m.handleNowBarClick(msg); handled {
 			return m, cmd
 		}
 		return m, nil
@@ -2932,10 +2924,7 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if cmd, handled := m.handleTranscriptClick(msg); handled {
 			return *m, cmd, true
 		}
-		if cmd, handled := m.handleAgentLaneClick(msg); handled {
-			return *m, cmd, true
-		}
-		if cmd, handled := m.handleTodoPanelClick(msg); handled {
+		if cmd, handled := m.handleNowBarClick(msg); handled {
 			return *m, cmd, true
 		}
 		return *m, nil, false
@@ -3048,7 +3037,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.nowBarRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -3064,84 +3053,11 @@ func (m Model) scrollHintRows() int {
 	return 0
 }
 
-// turnSpinnerRows reports the rows reserved for the pinned turn spinner
-// above the input. The row exists only while a turn is running: reserving
-// it while idle rendered as a blank line directly above the todo panel.
-// During an SDD run the row collapses to zero: the run panel owns the only
-// spinner. Mirrors renderTurnSpinner's render condition exactly.
-func (m Model) turnSpinnerRows() int {
-	if m.state.SDDProgress().Active {
-		return 0
-	}
-	if !m.busy || m.turnStartedAt.IsZero() {
-		return 0
-	}
-	return 1
-}
-
-// liveStripRows reports the rows the live strip occupies: 1 while a
-// swarm/SDD run or browser session is live, 0 otherwise.
-func (m Model) liveStripRows() int {
-	if m.renderLiveStrip() == "" {
-		return 0
-	}
-	return 1
-}
-
-// renderTodoPanel renders the pinned todo panel for the current frame.
-// The all-done summary is suppressed once the user has started another
-// turn (spec: the summary "clears on the next user turn").
-func (m Model) renderTodoPanel() string {
-	todos := m.viewedTodos()
-	if m.todosDismissed && todosAllDone(todos) {
-		return ""
-	}
-	out := renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.leftWidth)
-	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
-}
-
-// todoPanelRows reports the rows the pinned todo panel occupies.
-func (m Model) todoPanelRows() int {
-	body := m.renderTodoPanel()
-	if body == "" {
-		return 0
-	}
-	return lipgloss.Height(body)
-}
-
-// renderRunPanel renders the consolidated SDD run panel for the current
-// frame. The panel owns the only spinner on screen during a run; the
-// glyph comes from turnSpinnerFrame so it shares the 200ms flash gate.
-func (m Model) renderRunPanel() string {
-	out := renderRunPanel(m.state.SDDProgress(), m.turnSpinnerFrame(), m.now(), m.width)
-	return chrome.PaintBand(out, m.width, theme.Current().ChromeBG())
-}
-
-// runPanelRows reports the rows the run panel occupies. The panel is
-// rendered as a top bar (view.go) but its height must be budgeted —
-// otherwise the frame grows taller than the terminal and the input area is
-// pushed off the bottom of the screen.
-func (m Model) runPanelRows() int {
-	panel := m.renderRunPanel()
-	if panel == "" {
-		return 0
-	}
-	return lipgloss.Height(panel)
-}
-
-// stripShowsBrowser reports whether the live strip is currently rendering
-// the browser session (rather than a swarm or SDD run).
-func (m Model) stripShowsBrowser() bool {
-	return m.state.BrowserInfo().SessionOpen &&
-		!m.state.SwarmProgress().Active &&
-		!m.state.SDDProgress().Active
-}
-
-// ShouldShowStatusURL returns false when the live strip already shows the
+// ShouldShowStatusURL returns false when the now bar already shows the
 // browser URL and tool name. The right-side status segment omits the URL
 // then to avoid duplication.
 func (m Model) ShouldShowStatusURL() bool {
-	return !m.stripShowsBrowser()
+	return !nowBarShowsBrowser(m.nowBarInput())
 }
 
 // dockRows reports the rows the docked panel occupied at last render, so the
@@ -3150,7 +3066,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.laneRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.nowBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -3684,10 +3600,6 @@ func (m *Model) refreshViewport() {
 	busy := m.busy || activeTool || streamLen > 0
 
 	todos := m.viewedTodos()
-	if sig := todoSignature(todos); sig != m.todosSig {
-		m.todosSig = sig
-		m.todosDismissed = false
-	}
 	queued := m.state.SteeringQueue()
 	notice, noticeUp := m.state.Notice()
 	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc, notice, noticeUp, m.regionOffset, m.callers, m.regionRows)

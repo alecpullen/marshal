@@ -334,3 +334,16 @@ func (m Model) nowBarPlan() nowBarPlan { return planNowBar(m.nowBarInput()) }
 // nowBarRows is the bar's height for the frame budget, read from the same
 // plan the renderer uses.
 func (m Model) nowBarRows() int { return len(m.nowBarPlan().rows) }
+
+// nowBarShowsBrowser reports whether the bar renders the browser session's
+// URL. The compact summary only does when it has no progress text to show.
+func nowBarShowsBrowser(in nowBarInput) bool {
+	if !in.Browser.SessionOpen {
+		return false
+	}
+	if in.Height >= nowBarCompactHeight {
+		return true
+	}
+	_, text, _ := nowBarHead(in)
+	return text == ""
+}

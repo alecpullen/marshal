@@ -3,9 +3,12 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/native"
@@ -38,6 +41,18 @@ func TestFrameInvariants(t *testing.T) {
 				m.viewStack = append(m.viewStack, subs[0])
 			}
 		}},
+		{"busy turn row", func(t *testing.T, m *Model) {
+			m.busy = true
+			m.turnStartedAt = m.now().Add(-72 * time.Second)
+		}},
+		{"sdd+todos+agents", func(t *testing.T, m *Model) {
+			m.busy = true
+			m.turnStartedAt = m.now().Add(-72 * time.Second)
+			m.state.SetSDDProgress(session.SDDProgress{Active: true, TotalTasks: 7, DoneTasks: 3, CurrentTask: 4, Phase: "verifying"})
+			registerRunningSubagent(t, m, "reviewer")
+			registerRunningSubagent(t, m, "tester")
+			mustSetTodos(t, m, native.TodoItem{Content: "a task", Status: native.TodoInProgress})
+		}},
 		{"many-todos+agents", func(t *testing.T, m *Model) {
 			for _, n := range []string{"a", "b", "c", "d"} {
 				registerRunningSubagent(t, m, n)
@@ -58,25 +73,35 @@ func TestFrameInvariants(t *testing.T) {
 		for _, w := range []int{80, 100, 140, 200} {
 			for _, h := range []int{24, 30, 40} {
 				for _, depth := range []theme.Depth{theme.DepthFlat, theme.DepthRaised, theme.DepthFull} {
-					for mode := todoPanelExpanded; mode < todoPanelModeCount; mode++ {
-						th := prev
-						th.Depth = depth
-						theme.Reload(th)
+					th := prev
+					th.Depth = depth
+					theme.Reload(th)
 
-						m := newTestModel(t)
-						m.resize(w, h)
-						v.setup(t, &m)
-						m.todoPanelMode = mode
+					m := newTestModel(t)
+					m.resize(w, h)
+					v.setup(t, &m)
 
-						for i, line := range strings.Split(m.viewString(), "\n") {
-							if strings.Contains(line, doubled) {
-								t.Errorf("[%s w=%d h=%d depth=%v mode=%d] doubled rail on row %d: %q",
-									v.name, w, h, depth, mode, i, line)
-							}
-							if lw := ansi.StringWidth(line); lw > w {
-								t.Errorf("[%s w=%d h=%d depth=%v mode=%d] row %d is %d wide, frame is %d: %q",
-									v.name, w, h, depth, mode, i, lw, w, line)
-							}
+					trimmed := 0
+					clipLeftColumnHook = func(n int) { trimmed += n }
+					view := m.viewString()
+					clipLeftColumnHook = nil
+
+					if trimmed != 0 {
+						t.Errorf("[%s w=%d h=%d depth=%v] clipLeftColumn trimmed %d rows: the height budget is off",
+							v.name, w, h, depth, trimmed)
+					}
+					if got := lipgloss.Height(view); got != h {
+						t.Errorf("[%s w=%d h=%d depth=%v] frame is %d rows tall, want %d",
+							v.name, w, h, depth, got, h)
+					}
+					for i, line := range strings.Split(view, "\n") {
+						if strings.Contains(line, doubled) {
+							t.Errorf("[%s w=%d h=%d depth=%v] doubled rail on row %d: %q",
+								v.name, w, h, depth, i, line)
+						}
+						if lw := ansi.StringWidth(line); lw > w {
+							t.Errorf("[%s w=%d h=%d depth=%v] row %d is %d wide, frame is %d: %q",
+								v.name, w, h, depth, i, lw, w, line)
 						}
 					}
 				}

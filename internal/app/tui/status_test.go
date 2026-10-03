@@ -393,22 +393,35 @@ func TestShouldShowStatusURLReturnsTrueWhenNoBrowserSession(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsBrowserSegmentWhenStripIsBusyWithSwarm(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.state.SetBrowserInfo(session.BrowserInfo{
-		SessionOpen: true,
-		URL:         "https://example.com/docs",
-		Mode:        "standalone",
-	})
-	m.state.SetSwarmProgress(session.SwarmProgress{
-		Active: true,
-		Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
-	})
-	if !m.ShouldShowStatusURL() {
-		t.Fatal("status URL must reappear when the live strip is showing swarm progress")
-	}
-	if !strings.Contains(stripANSI(m.renderStatusLine(100)), "example.com") {
-		t.Fatal("status line should carry the browser URL while swarm owns the strip")
+// On a tall frame the now bar carries the browser row beside swarm progress,
+// so the status line drops its duplicate URL. On a short frame the compact
+// bar is busy with swarm progress and has no room for the browser, so the
+// status line carries it.
+func TestStatusLineBrowserSegmentFollowsNowBar(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		height     int
+		wantStatus bool
+	}{
+		{"tall frame, bar shows browser", 40, false},
+		{"short frame, bar shows swarm only", 24, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newStatusTestModel(t)
+			m.resize(120, tc.height)
+			m.state.SetBrowserInfo(session.BrowserInfo{
+				SessionOpen: true,
+				URL:         "https://example.com/docs",
+				Mode:        "standalone",
+			})
+			m.state.SetSwarmProgress(session.SwarmProgress{
+				Active: true,
+				Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
+			})
+			if got := m.ShouldShowStatusURL(); got != tc.wantStatus {
+				t.Fatalf("ShouldShowStatusURL() = %v, want %v", got, tc.wantStatus)
+			}
+		})
 	}
 }
 

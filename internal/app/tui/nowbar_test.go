@@ -6,11 +6,24 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/native"
+	"marshal/internal/watch"
 )
+
+// registerRunningSubagent registers a running background child on the test
+// model's session. The bar only tracks views with a live Child state;
+// pipeline/SDD cards (Child == nil) are already pinned by the progress row.
+func registerRunningSubagent(t *testing.T, m *Model, label string) {
+	t.Helper()
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	m.state.RegisterSubagent(label, child)
+}
 
 var nowBarT0 = time.Unix(10_000, 0)
 
@@ -196,5 +209,115 @@ func TestProgressBlocks(t *testing.T) {
 		if got := stripANSI(progressBlocks(c.done, c.total, c.max)); got != c.want {
 			t.Errorf("progressBlocks(%d,%d,%d) = %q, want %q", c.done, c.total, c.max, got, c.want)
 		}
+	}
+}
+
+func TestNowBarModelAgentsSkipPipelineCards(t *testing.T) {
+	m := newTestModel(t)
+	m.state.RegisterSubagent("card", nil)
+	if rows := m.nowBarRows(); rows != 0 {
+		t.Fatalf("a Child-less card must not occupy the bar, rows = %d", rows)
+	}
+	registerRunningSubagent(t, &m, "reviewer")
+	if rows := m.nowBarRows(); rows != 1 {
+		t.Fatalf("one running subagent = %d rows, want 1", rows)
+	}
+}
+
+func TestNowBarModelRowsMatchRender(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-5 * time.Second)
+	for i := range 6 {
+		registerRunningSubagent(t, &m, fmt.Sprintf("agent %d", i))
+	}
+	m.height = 40
+	out := renderNowBar(m.nowBarPlan(), m.leftWidth)
+	if got, want := lipgloss.Height(out), m.nowBarRows(); got != want {
+		t.Fatalf("rendered %d rows, budget says %d", got, want)
+	}
+}
+
+func TestNowBarAgentRowShowsModelAndProviderOnlyWhenDifferent(t *testing.T) {
+	in := nowBarBase()
+	in.Provider = "ollama"
+	in.Agents = nowBarAgents(2)
+	in.Agents[0].Model = "qwen"
+	in.Agents[0].Provider = "ollama"
+	in.Agents[1].Model = "gpt"
+	in.Agents[1].Provider = "openai"
+	plain := stripANSI(strings.Join(planNowBar(in).rows, "\n"))
+	if !strings.Contains(plain, "qwen") || strings.Contains(plain, "qwen @") {
+		t.Errorf("same-provider child should show the model alone:\n%s", plain)
+	}
+	if !strings.Contains(plain, "gpt @ openai") {
+		t.Errorf("off-parent child should show the provider:\n%s", plain)
+	}
+}
+
+// ↑ on an empty input recalls prompt history even with a running subagent:
+// there is no lane cursor to capture it.
+func TestUpArrowRecallsHistoryWithRunningSubagent(t *testing.T) {
+	m := newTestModel(t)
+	registerRunningSubagent(t, &m, "reviewer")
+	m.history = []string{"previous prompt"}
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	m = mm.(Model)
+	if m.input.Value() != "previous prompt" {
+		t.Fatalf("input = %q, want history recall", m.input.Value())
+	}
+	if len(m.viewStack) != 0 {
+		t.Fatal("↑ must not drill into an agent")
+	}
+}
+
+func nowBarOut(m Model) string { return renderNowBar(m.nowBarPlan(), m.leftWidth) }
+
+func TestNowBarEmptyWithoutLiveWork(t *testing.T) {
+	m := newTestModel(t)
+	if got := nowBarOut(m); got != "" {
+		t.Fatalf("idle bar must render nothing, got %q", got)
+	}
+	m.jobs = []native.JobInfo{{ID: "job-1", Command: "x", Status: native.StatusCompleted}}
+	if got := nowBarOut(m); got != "" {
+		t.Fatalf("finished jobs must render nothing, got %q", got)
+	}
+}
+
+func TestNowBarShowsJobsAndWatchesAfterAgents(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	registerRunningSubagent(t, &m, "reviewer")
+	m.jobs = []native.JobInfo{runningJob(1, "npm run dev", time.Minute)}
+	m.watches = []watch.Event{watchEvent("w1", "build", watch.KindCommand, watch.StateWatching)}
+	plain := stripANSI(nowBarOut(m))
+	lines := strings.Split(plain, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want 3 rows (agent, job, watch), got %d:\n%s", len(lines), plain)
+	}
+	for i, want := range []string{"reviewer", "job-1  npm run dev", "build  command  watching"} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("row %d missing %q: %q", i, want, lines[i])
+		}
+	}
+	if !strings.Contains(lines[1], glyph.Job) || !strings.Contains(lines[2], glyph.Watch) {
+		t.Errorf("job/watch rows lost their markers:\n%s", plain)
+	}
+}
+
+func TestNowBarCapsJobsAndWatchesWithOverflow(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	for i := range 5 {
+		m.jobs = append(m.jobs, runningJob(i+1, "cmd", time.Second))
+		m.watches = append(m.watches, watchEvent("w", "cmd", watch.KindCommand, watch.StateWatching))
+	}
+	plain := stripANSI(nowBarOut(m))
+	if got := strings.Count(plain, "\n") + 1; got != nowBarMaxRows {
+		t.Fatalf("bar rendered %d rows, cap is %d:\n%s", got, nowBarMaxRows, plain)
+	}
+	if !strings.Contains(plain, "… 7 more") {
+		t.Fatalf("expected a shared overflow row:\n%s", plain)
 	}
 }

@@ -5760,7 +5760,7 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 	}
 }
 
-func TestTodoPanelFollowsDrilledSubagent(t *testing.T) {
+func TestNowBarFollowsDrilledSubagentTodos(t *testing.T) {
 	m := newTestModel(t)
 	if err := m.state.SetTodos([]native.TodoItem{{Content: "parent task", Status: native.TodoPending}}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
@@ -5771,18 +5771,18 @@ func TestTodoPanelFollowsDrilledSubagent(t *testing.T) {
 	}
 
 	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: childState})
-	body := m.renderTodoPanel()
+	body := nowBarOut(m)
 	if !strings.Contains(body, "child task") {
-		t.Fatalf("drilled panel must show the child's todos:\n%s", body)
+		t.Fatalf("drilled bar must show the child's todos:\n%s", body)
 	}
 	if strings.Contains(body, "parent task") {
-		t.Fatalf("drilled panel must not show the parent's todos:\n%s", body)
+		t.Fatalf("drilled bar must not show the parent's todos:\n%s", body)
 	}
 
 	m.viewStack = nil
-	body = m.renderTodoPanel()
+	body = nowBarOut(m)
 	if !strings.Contains(body, "parent task") {
-		t.Fatalf("undrilled panel must show the parent's todos:\n%s", body)
+		t.Fatalf("undrilled bar must show the parent's todos:\n%s", body)
 	}
 }
 
@@ -6818,9 +6818,15 @@ func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
 	}
 }
 
-func TestCtrlTCyclesTodoPanelMode(t *testing.T) {
+func ctrlT(m Model) Model {
+	mm, _ := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	return mm.(Model)
+}
+
+func TestCtrlTOpensTasksPanelListingEveryTodo(t *testing.T) {
 	m := newTestModel(t)
 	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "scaffold parser", Status: native.TodoCompleted},
 		{Content: "implement parser", Status: native.TodoInProgress},
 		{Content: "add tests", Status: native.TodoPending},
 	}); err != nil {
@@ -6828,68 +6834,74 @@ func TestCtrlTCyclesTodoPanelMode(t *testing.T) {
 	}
 	m.refreshViewport()
 
-	if m.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("initial mode = %v, want expanded", m.todoPanelMode)
+	m = ctrlT(m)
+	if !m.dock.IsOpen() {
+		t.Fatal("Ctrl+T with todos must open a docked panel")
 	}
-	press := func() {
-		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-		if !handled {
-			t.Fatal("ctrl+t must be handled globally")
+	view := stripANSI(m.dock.View(m.leftWidth, m.height))
+	for _, want := range []string{"Tasks 1/3", "scaffold parser", "implement parser", "add tests"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Tasks panel missing %q:\n%s", want, view)
 		}
-		m = mm.(Model)
 	}
-	press()
-	if m.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("after one press mode = %v, want collapsed", m.todoPanelMode)
-	}
-	if strings.Contains(m.renderTodoPanel(), "\n") {
-		t.Fatal("collapsed panel must be a single row")
-	}
-	press()
-	if m.todoPanelMode != todoPanelHidden {
-		t.Fatalf("after two presses mode = %v, want hidden", m.todoPanelMode)
-	}
-	if m.renderTodoPanel() != "" {
-		t.Fatal("hidden panel must render nothing")
-	}
-	press()
-	if m.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("after three presses mode = %v, want expanded again", m.todoPanelMode)
+
+	m = ctrlT(m)
+	if m.dock.IsOpen() {
+		t.Fatal("a second Ctrl+T must close the Tasks panel")
 	}
 }
 
-func TestAllDoneTodoSummaryClearsOnNextTurn(t *testing.T) {
+func TestEscClosesTasksPanel(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.state.SetTodos([]native.TodoItem{{Content: "a", Status: native.TodoPending}}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m = ctrlT(m)
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = mm.(Model)
+	if cmd != nil {
+		mm, _ = m.Update(cmd())
+		m = mm.(Model)
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("Esc must close the Tasks panel")
+	}
+}
+
+func TestCtrlTWithoutTodosOnlyAddsNotice(t *testing.T) {
+	m := newTestModel(t)
+	m = ctrlT(m)
+	if m.dock.IsOpen() {
+		t.Fatal("Ctrl+T with no todos must open nothing")
+	}
+	var found bool
+	for _, msg := range m.state.Messages() {
+		if strings.Contains(msg.Content, "No task list in this session.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the no-task-list notice")
+	}
+}
+
+func TestAllDoneTodosLeaveTheNowBar(t *testing.T) {
 	m := newTestModel(t)
 	if err := m.state.SetTodos([]native.TodoItem{
 		{Content: "scaffold parser", Status: native.TodoCompleted},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m.refreshViewport()
-	if !strings.Contains(stripANSI(m.renderTodoPanel()), "1 tasks done") {
-		t.Fatalf("all-done summary should show before the next turn:\n%s", m.renderTodoPanel())
+	if got := nowBarOut(m); got != "" {
+		t.Fatalf("a finished todo list must not occupy the bar:\n%s", got)
 	}
-
-	m.input.SetValue("next thing")
-	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !handled {
-		t.Fatal("enter must be handled")
-	}
-	m = mm.(Model)
-	m.refreshViewport()
-	if m.renderTodoPanel() != "" {
-		t.Fatalf("all-done summary must clear on the next user turn:\n%s", m.renderTodoPanel())
-	}
-
-	// An agent rewrite brings the panel back.
 	if err := m.state.SetTodos([]native.TodoItem{
 		{Content: "new work", Status: native.TodoInProgress},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m.refreshViewport()
-	if !strings.Contains(stripANSI(m.renderTodoPanel()), "new work") {
-		t.Fatal("a rewritten todo list must un-dismiss the panel")
+	if !strings.Contains(stripANSI(nowBarOut(m)), "new work") {
+		t.Fatal("a fresh todo list must show in the bar")
 	}
 }
 
@@ -8385,7 +8397,7 @@ func TestTurnSpinnerDropsStreamingThinkingLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "very long streaming thought line"})
-	if out := m.renderTurnSpinner(); strings.Contains(out, "very long streaming") {
+	if out := nowBarOut(m); strings.Contains(out, "very long streaming") {
 		t.Fatal("thinking labels must not appear in the pinned spinner row")
 	}
 }
@@ -8396,7 +8408,7 @@ func TestTurnSpinnerKeepsStableActivityLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
-	if out := m.renderTurnSpinner(); !strings.Contains(out, "shell: go test") {
+	if out := nowBarOut(m); !strings.Contains(out, "shell: go test") {
 		t.Fatalf("tool labels should render in the spinner row, got %q", out)
 	}
 }
@@ -8427,7 +8439,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// First tool label is adopted immediately.
 	clock = start
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: config.go"})
-	out := m.renderTurnSpinner()
+	out := nowBarOut(m)
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("first label should be adopted immediately, got %q", out)
 	}
@@ -8436,7 +8448,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	clock = start.Add(200 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test"})
-	out = m.renderTurnSpinner()
+	out = nowBarOut(m)
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("old label should persist within dwell window, got %q", out)
 	}
@@ -8447,7 +8459,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// 600ms after the first label was pinned, the dwell has elapsed.
 	clock = start.Add(600 * time.Millisecond)
 	m.now = func() time.Time { return clock }
-	out = m.renderTurnSpinner()
+	out = nowBarOut(m)
 	if !strings.Contains(out, "shell.run: go test") {
 		t.Fatalf("new label should appear after dwell expires, got %q", out)
 	}
@@ -8472,13 +8484,13 @@ func TestTurnSpinnerLabelDwellResetsOnKindChange(t *testing.T) {
 	m.turnStartedAt = start
 
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: a.go"})
-	m.renderTurnSpinner()
+	nowBarOut(m)
 
 	// 100ms later, kind changes to Approval — should adopt immediately.
 	clock = start.Add(100 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: "approve: shell.run"})
-	out := m.renderTurnSpinner()
+	out := nowBarOut(m)
 	if !strings.Contains(out, "approve: shell.run") {
 		t.Fatalf("kind change should adopt new label immediately, got %q", out)
 	}

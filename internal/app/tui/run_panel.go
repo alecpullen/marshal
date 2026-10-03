@@ -6,48 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 )
-
-// renderRunPanel renders the run's orientation row: where the run is and
-// roughly how much is left, in exactly one line.
-//
-// It deliberately does not show the plan checklist. Every row this panel
-// occupies is subtracted from the transcript viewport (model.go), and the
-// transcript is where a run's actual content now lives — verify output,
-// review findings, commits. /run shows the checklist on demand instead, at
-// no cost to the transcript.
-//
-// After the run ends it collapses to a one-line summary until the next user
-// turn clears it (keypress.go).
-func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, width int) string {
-	if !p.Active && !p.Finished {
-		return ""
-	}
-	width = max(width, 1)
-	if p.Finished {
-		return runPanelBar(runPanelFinishedLine(p, width), width)
-	}
-	return runPanelBar(runPanelSummaryLine(p, spinner, now, width), width)
-}
-
-// runPanelBar renders content as a full-width horizontal bar with no
-// background, replacing the old vertical chrome rail. It keeps the width
-// layout semantics so the text spans the full frame.
-func runPanelBar(content string, width int) string {
-	if width < 1 {
-		width = 1
-	}
-	return lipgloss.NewStyle().
-		Width(width).
-		MaxWidth(width).
-		Render(content)
-}
 
 // runSeg is one segment of the summary line. Higher priority drops first;
 // priority 0 is never dropped. glue joins the segment to its predecessor

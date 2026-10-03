@@ -61,89 +61,43 @@ func (m *Model) regionAt(line int) (clickTarget, bool) {
 	return clickTarget{}, false
 }
 
-// todoPanelBand returns the half-open screen-row range [top, bottom) the
-// pinned todo panel occupies, or false when it isn't rendered. The panel
-// sits directly below the transcript frame (scroll hint + breadcrumb +
-// viewport) and the turn-spinner row (view.go:95-107).
+// nowBarBand returns the half-open screen-row range [top, bottom) the now
+// bar occupies, or false when it isn't rendered. The frame order
+// (view.go) is: scroll hint, breadcrumb, transcript viewport, now bar.
 //
-// This math is coupled to viewString()'s layout invariants: the spinner and
-// breadcrumb rows are only emitted when their *Rows() helpers return
-// nonzero, and each helper returns 0 when that element isn't rendered. The
-// viewport height here is used raw (m.viewport.Height()) while the render
-// path guards it with max(height, 1); in practice the viewport is always
-// >= 1, so the two agree, but keep them in sync if the render guard ever
-// changes. The band also depends on todoPanelRows() matching the panel's
-// rendered height.
-func (m *Model) todoPanelBand() (top, bottom int, ok bool) {
-	rows := m.todoPanelRows()
-	if rows == 0 {
+// This math is coupled to viewString()'s layout: the hint and breadcrumb
+// rows are only emitted when their *Rows() helpers return nonzero. The
+// viewport height is used raw here while the render path guards it with
+// max(height, 1); the viewport is always >= 1, so the two agree.
+func (m *Model) nowBarBand(plan nowBarPlan) (top, bottom int, ok bool) {
+	if len(plan.rows) == 0 || m.dock.FullFrameOpen() {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() + m.turnSpinnerRows()
-	return top, top + rows, true
+	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height()
+	return top, top + len(plan.rows), true
 }
 
-// handleTodoPanelClick toggles the pinned todo panel between expanded and
-// collapsed when a left click lands in its row band. It deliberately does
-// NOT cycle into the hidden state — a click should never make the panel
-// vanish. Ctrl+T still cycles through all three states (expanded →
-// collapsed → hidden).
-func (m *Model) handleTodoPanelClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
+// handleNowBarClick drills into the subagent whose now-bar row was clicked.
+// The bar is often the only handle on a running child: its transcript card
+// can scroll far out of view while the parent keeps working. Clicks on other
+// bar rows are consumed so they do not fall through to the transcript.
+func (m *Model) handleNowBarClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return nil, false
 	}
 	if msg.X < 0 || msg.X >= m.leftWidth {
 		return nil, false
 	}
-	top, bottom, ok := m.todoPanelBand()
+	plan := m.nowBarPlan()
+	top, bottom, ok := m.nowBarBand(plan)
 	if !ok || msg.Y < top || msg.Y >= bottom {
 		return nil, false
 	}
-	m.toggleTodoPanelMode()
-	m.lastTranscriptHash = 0
-	m.refreshViewport()
-	return nil, true
-}
-
-// agentLaneBand returns the half-open screen-row range the consolidated
-// lane occupies. The frame order (view.go) is: transcript frame, turn
-// spinner, todo panel, live strip, consolidated lane — so the lane sits
-// directly below the live strip.
-func (m *Model) agentLaneBand() (top, bottom int, ok bool) {
-	rows := m.laneRows()
-	if rows == 0 {
-		return 0, 0, false
-	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
-		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows()
-	return top, top + rows, true
-}
-
-// handleAgentLaneClick drills into the subagent whose row was clicked.
-// The lane is often the only handle on a running child: its transcript card
-// can scroll far out of view while the parent keeps working.
-func (m *Model) handleAgentLaneClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
-	if msg.Button != tea.MouseLeft {
-		return nil, false
-	}
-	if msg.X < 0 || msg.X >= m.leftWidth {
-		return nil, false
-	}
-	top, bottom, ok := m.agentLaneBand()
-	if !ok || msg.Y < top || msg.Y >= bottom {
-		return nil, false
-	}
-	// Row 0 is the separator rule, row 1 the caption; agents start at row 2.
-	const chromeRows = 2
-	idx := msg.Y - top - chromeRows
-	entries := m.agentLaneEntries()
-	if idx < 0 || idx >= len(entries) {
-		// The header line or the overflow row. Consume the click
-		// so it does not fall through to the transcript underneath.
+	idx := msg.Y - top - plan.agentRowStart
+	if idx < 0 || idx >= len(plan.agents) {
 		return nil, true
 	}
-	m.laneCursorActive = false
-	m.drillIntoSubagent(entries[idx])
+	m.drillIntoSubagent(plan.agents[idx])
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
 	return nil, true

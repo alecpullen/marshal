@@ -10,6 +10,19 @@ import (
 	"marshal/internal/app/session"
 )
 
+// renderRunPanel renders the run's status line (active summary or finished
+// summary) as the old top bar did, so the line builders keep their coverage
+// now that the now bar composes them.
+func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, width int) string {
+	switch {
+	case p.Finished:
+		return runPanelFinishedLine(p, width)
+	case p.Active:
+		return runPanelSummaryLine(p, spinner, now, width)
+	}
+	return ""
+}
+
 func runPanelFixture() session.SDDProgress {
 	return session.SDDProgress{
 		Active:      true,
@@ -342,13 +355,14 @@ func TestRunPanelShowsAgentFallbackPhase(t *testing.T) {
 	}
 }
 
-func TestRunPanelOccupiesOneRow(t *testing.T) {
+func TestSDDRunOccupiesOneNowBarRow(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.width, m.height = 100, 40
+	m.leftWidth = 100
 	m.state.SetSDDProgress(etaTestProgress())
 
-	if got := m.runPanelRows(); got != 1 {
-		t.Errorf("runPanelRows() = %d, want 1 — reclaiming transcript rows is the "+
+	if got := m.nowBarRows(); got != 1 {
+		t.Errorf("nowBarRows() = %d, want 1 — reclaiming transcript rows is the "+
 			"reason for this change", got)
 	}
 }

@@ -55,6 +55,7 @@ internal/app/app.go                   — Run(), dependency wiring, signal handl
 internal/app/config/                  — TOML config loading, defaults, merge rules
 internal/app/logging/                 — slog logger construction
 internal/app/session/                 — in-memory app state, message list, shutdown context
+internal/app/clipboard/               — local clipboard helpers (pbcopy, wl-copy, xclip, xsel); OSC 52 fallback lives in the TUI
 internal/trust/                       — folder-trust store, resolver, project-config hashing
 
 TUI

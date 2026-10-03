@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -89,20 +91,75 @@ func (m *Model) copyCursorNode() tea.Cmd {
 	return m.copyText(m.nodeCopyText(m.currentNode()))
 }
 
-// copyText puts text on the clipboard over OSC 52 and says how much. Browse
-// mode and the inspector both copy through it, so both give the same notices,
-// including the one for terminals known not to honour OSC 52.
+// copyText puts text on the clipboard and says how much. Browse mode and the
+// inspector both copy through it, so both give the same notices.
+//
+// A local clipboard helper is preferred because it confirms the write and works
+// in terminals without OSC 52 (Terminal.app). It is skipped over SSH, where it
+// would write the remote machine's clipboard; then, or when it fails, the copy
+// goes to the terminal over OSC 52.
 func (m *Model) copyText(raw string) tea.Cmd {
 	text := plainText(raw)
 	if text == "" {
 		return m.setFlash("Nothing to copy")
 	}
-	msg := fmt.Sprintf("Copied %d lines", strings.Count(text, "\n")+1)
-	if osc52Unsupported() && !m.osc52Noted {
+	if m.localClipboardUsable() {
+		w := m.copyWriter
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), copyTimeout)
+			defer cancel()
+			return copyDoneMsg{text: text, err: w.Write(ctx, text)}
+		}
+	}
+	return m.copyOverOSC52(text, nil)
+}
+
+// copyTimeout bounds a local clipboard write so a hung helper cannot hold the
+// command open.
+const copyTimeout = 3 * time.Second
+
+// copyDoneMsg reports a finished local clipboard write.
+type copyDoneMsg struct {
+	text string
+	err  error
+}
+
+// handleCopyDone reports a local write, or falls back to OSC 52 when it failed.
+func (m *Model) handleCopyDone(msg copyDoneMsg) tea.Cmd {
+	if msg.err != nil {
+		return m.copyOverOSC52(msg.text, msg.err)
+	}
+	return m.setFlash("Copied " + copyLines(msg.text))
+}
+
+// copyOverOSC52 asks the terminal to copy text. localErr is why the local
+// helper was not used, when it was tried and failed.
+func (m *Model) copyOverOSC52(text string, localErr error) tea.Cmd {
+	msg := "Copied " + copyLines(text)
+	switch {
+	case localErr != nil:
+		msg = fmt.Sprintf("Copy sent over OSC 52 (local clipboard failed: %v)", localErr)
+	case osc52Unsupported() && !m.osc52Noted:
 		m.osc52Noted = true
 		msg = "Copy sent (OSC 52); your terminal may not support it"
 	}
 	return tea.Batch(tea.SetClipboard(text), m.setFlash(msg))
+}
+
+// localClipboardUsable reports whether copy should use the local helper: one is
+// wired, it resolves, and the session is not remote.
+func (m *Model) localClipboardUsable() bool {
+	if m.copyWriter == nil || (m.copyRemote != nil && m.copyRemote()) {
+		return false
+	}
+	if av, ok := m.copyWriter.(interface{ Available() bool }); ok && !av.Available() {
+		return false
+	}
+	return true
+}
+
+func copyLines(text string) string {
+	return pluralCount(strings.Count(text, "\n")+1, "line", "lines")
 }
 
 var pathLineRE = regexp.MustCompile(`([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+):(\d+)`)

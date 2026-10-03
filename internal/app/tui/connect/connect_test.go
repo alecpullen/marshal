@@ -1049,6 +1049,37 @@ func TestOAuthDoneFailureStaysOnLoginStep(t *testing.T) {
 	}
 }
 
+func TestOAuthCopyLinkCopiesFullURL(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m.step = stepOAuthLogin
+	m.picker = nil
+	m.oauthDisplay = &oauthDisplay{}
+	full := "https://auth.openai.com/oauth/authorize?state=" + strings.Repeat("x", 180) + "&code_challenge=complete"
+	m.oauthDisplay.ShowURL(full)
+	if view := ansi.Strip(m.View(80, 24)); !strings.Contains(view, "[c] Copy sign-in link") {
+		t.Fatalf("missing copy action: %s", view)
+	}
+	for _, key := range []tea.KeyPressMsg{tea.KeyPressMsg{Code: 'c'}, tea.KeyPressMsg{Code: tea.KeyEnter}} {
+		_, cmd := m.Update(key)
+		if cmd == nil {
+			t.Fatal("copy action returned no command")
+		}
+		msg, ok := cmd().(CopyLinkMsg)
+		if !ok || msg.URL != full {
+			t.Fatalf("copy action did not preserve the complete URL: %T", msg)
+		}
+	}
+}
+
+func TestOAuthCopyWaitsForURL(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m.step = stepOAuthLogin
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c'})
+	if cmd != nil {
+		t.Fatal("copy should wait until the authorization URL exists")
+	}
+}
+
 // TestOAuthDoneSuccessAdvancesToProbing: a successful sign-in proceeds to
 // the model probe, which is where the token is first exercised.
 func TestOAuthDoneSuccessAdvancesToProbing(t *testing.T) {

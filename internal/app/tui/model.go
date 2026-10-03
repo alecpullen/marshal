@@ -1940,6 +1940,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copyDoneMsg:
 		cmd := m.handleCopyDone(msg)
 		return m, cmd
+	case connect.CopyLinkMsg:
+		return m, m.copyText(msg.URL)
 	case flashClearMsg:
 		// Only wakes the view; it must not reach the textarea path, which
 		// would bump the suggestion generation and drop an in-flight result.

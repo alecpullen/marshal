@@ -21,6 +21,16 @@ func clockedModel(t *testing.T) (Model, *time.Time) {
 	return m, &now
 }
 
+// assertNotShutDown fails if the model began shutting the session down.
+func assertNotShutDown(t *testing.T, m Model) {
+	t.Helper()
+	select {
+	case <-m.state.Done():
+		t.Fatal("session was shut down")
+	default:
+	}
+}
+
 func press(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	mm, cmd := m.Update(msg)
 	return mm.(Model), cmd
@@ -36,13 +46,11 @@ func busyModel(t *testing.T) (Model, *time.Time, *bool) {
 
 func TestCtrlCBusyFirstPressOnlyArms(t *testing.T) {
 	m, _, cancelled := busyModel(t)
-	m, cmd := press(m, ctrlC)
+	m, _ = press(m, ctrlC)
 	if *cancelled || !m.busy {
 		t.Fatal("first Ctrl+C must not cancel the turn")
 	}
-	if cmd != nil {
-		t.Fatal("first Ctrl+C must not quit")
-	}
+	assertNotShutDown(t, m)
 	if !strings.Contains(m.renderStatusLine(120), "Ctrl+C again to stop the turn") {
 		t.Fatalf("status line missing armed text: %q", m.renderStatusLine(120))
 	}
@@ -52,13 +60,11 @@ func TestCtrlCBusySecondPressStops(t *testing.T) {
 	m, now, cancelled := busyModel(t)
 	m, _ = press(m, ctrlC)
 	*now = now.Add(2 * time.Second)
-	m, cmd := press(m, ctrlC)
+	m, _ = press(m, ctrlC)
 	if !*cancelled {
 		t.Fatal("second Ctrl+C within the window did not cancel")
 	}
-	if cmd != nil {
-		t.Fatal("stopping a turn must not quit")
-	}
+	assertNotShutDown(t, m)
 	if m.ctrlCArmed() != ctrlCNone {
 		t.Fatal("firing must disarm")
 	}
@@ -82,15 +88,13 @@ func TestCtrlCBusyExpiredReArms(t *testing.T) {
 
 func TestCtrlCIdleNeedsTwoPresses(t *testing.T) {
 	m, now := clockedModel(t)
-	m, cmd := press(m, ctrlC)
-	if cmd != nil {
-		t.Fatal("first idle Ctrl+C must not quit")
-	}
+	m, _ = press(m, ctrlC)
+	assertNotShutDown(t, m)
 	if !strings.Contains(m.renderStatusLine(120), "Ctrl+C again to quit") {
 		t.Fatal("status line missing quit arm text")
 	}
 	*now = now.Add(time.Second)
-	if _, cmd = press(m, ctrlC); cmd == nil {
+	if _, cmd := press(m, ctrlC); cmd == nil {
 		t.Fatal("second idle Ctrl+C within the window did not quit")
 	}
 }
@@ -100,10 +104,8 @@ func TestCtrlCTurnEndingBetweenPressesNeverQuits(t *testing.T) {
 	m, _ = press(m, ctrlC)
 	m.busy = false
 	m.agentCancel = nil
-	m, cmd := press(m, ctrlC)
-	if cmd != nil {
-		t.Fatal("a stop arm must not turn into a quit when the turn ends")
-	}
+	m, _ = press(m, ctrlC)
+	assertNotShutDown(t, m)
 	if m.ctrlCArmed() != ctrlCQuit {
 		t.Fatal("expected re-arm for quit")
 	}
@@ -172,5 +174,30 @@ func TestEscBusyDrilledPopsDrillWithoutCancel(t *testing.T) {
 	}
 	if *cancelled {
 		t.Fatal("popping a drill must not cancel the turn")
+	}
+}
+
+// A turn that ignores cancellation stays busy; a second double press must
+// then quit rather than "stop" again.
+func TestCtrlCQuitsWhenCancelledTurnIsStillWindingDown(t *testing.T) {
+	m, _, cancelled := busyModel(t)
+	m, _ = press(m, ctrlC)
+	m, _ = press(m, ctrlC)
+	if !*cancelled || !m.cancelling || !m.busy {
+		t.Fatal("setup: expected a cancelled turn that is still busy")
+	}
+	m, _ = press(m, ctrlC)
+	if m.ctrlCArmed() != ctrlCQuit {
+		t.Fatalf("armed = %v, want quit while the cancelled turn winds down", m.ctrlCArmed())
+	}
+	if _, cmd := press(m, ctrlC); cmd == nil {
+		t.Fatal("second press must quit")
+	}
+}
+
+func TestCtrlCArmReturnsRepaintTick(t *testing.T) {
+	m, _ := clockedModel(t)
+	if _, cmd := press(m, ctrlC); cmd == nil {
+		t.Fatal("arming must schedule a repaint for when the window lapses")
 	}
 }

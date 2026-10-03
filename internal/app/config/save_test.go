@@ -423,11 +423,9 @@ func TestSaveProjectConfigRoundTripsTUI(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")
 	cfg := Default()
-	cfg.TUI = TUIConfig{
-		Theme:   "catppuccin",
-		Palette: map[string]string{"accent": "#cba6f7"},
-		Mode:    "ask",
-	}
+	cfg.TUI.Theme = "catppuccin"
+	cfg.TUI.Palette = map[string]string{"accent": "#cba6f7"}
+	cfg.TUI.Mode = "ask"
 
 	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
@@ -1065,7 +1063,6 @@ func TestSaveSidePanelRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")
 	cfg := Default()
-	cfg.TUI.SidePanel.WidthPct = 33
 	cfg.TUI.SidePanel.Hidden = []string{"repo", "rules"}
 
 	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
@@ -1074,9 +1071,6 @@ func TestSaveSidePanelRoundTrip(t *testing.T) {
 	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-	if loaded.TUI.SidePanel.WidthPct != 33 {
-		t.Errorf("WidthPct = %d, want 33", loaded.TUI.SidePanel.WidthPct)
 	}
 	if len(loaded.TUI.SidePanel.Hidden) != 2 {
 		t.Errorf("Hidden = %v, want 2 entries", loaded.TUI.SidePanel.Hidden)
@@ -1610,5 +1604,29 @@ func TestSaveUserConfigSectionDeletePreservesOtherSections(t *testing.T) {
 	}
 	if !strings.Contains(s, "kept-profile") {
 		t.Errorf("unrelated section was disturbed:\n%s", s)
+	}
+}
+
+// A saved config must never carry the deprecated side_panel sizing keys:
+// the app would then warn about a file it wrote itself on every load.
+func TestSaveWritesOnlyHiddenSidePanelKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".marshal", "config.toml")
+	cfg := Default()
+	cfg.TUI.SidePanel.Hidden = []string{"skills"}
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	s := string(data)
+	if !strings.Contains(s, "hidden") {
+		t.Fatalf("hidden not persisted:\n%s", s)
+	}
+	for _, dead := range []string{"min_width", "width_pct", "min_cols", "max_cols"} {
+		if strings.Contains(s, dead) {
+			t.Errorf("saved config carries deprecated key %q:\n%s", dead, s)
+		}
+	}
+	if strings.Contains(s, "enabled") && strings.Contains(s, "side_panel") && strings.Contains(s[strings.Index(s, "side_panel"):], "enabled") {
+		t.Errorf("saved config carries side_panel.enabled:\n%s", s)
 	}
 }

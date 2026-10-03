@@ -630,6 +630,7 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	m.refreshViewport()
 
 	frame := stripANSI(m.viewString())
@@ -716,10 +717,10 @@ func TestTurnSpinnerReservedWhenIdle(t *testing.T) {
 	}
 }
 
-// TestNoBlankRowAboveNowBarWhenIdle pins the reported bug: an idle session
+// TestNoBlankRowAboveNowBar pins the reported bug: an idle session
 // with todos showed a blank line above its progress row — the
 // always-reserved (but empty) turn-spinner row. Nothing is reserved now.
-func TestNoBlankRowAboveNowBarWhenIdle(t *testing.T) {
+func TestNoBlankRowAboveNowBar(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	if err := m.state.SetTodos([]native.TodoItem{
 		{Content: "first task", Status: "completed"},
@@ -733,6 +734,7 @@ func TestNoBlankRowAboveNowBarWhenIdle(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("transcript filler %d", i), session.ContentTypePlain)
 	}
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	m.refreshViewport()
 
 	lines := strings.Split(stripANSI(m.viewString()), "\n")

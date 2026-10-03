@@ -1451,7 +1451,6 @@ func New(state *session.State, opts ...Option) Model {
 	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
 	m.sheetBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
-	m.refreshSheetChanged()
 
 	m.histIdx = -1
 	if state.Config.History.Enabled {
@@ -1707,6 +1706,9 @@ const (
 	ctrlCQuit
 )
 
+// ctrlCExpiredMsg only triggers a repaint once an armed Ctrl+C has lapsed.
+type ctrlCExpiredMsg struct{}
+
 // ctrlCWindow is how long a first Ctrl+C stays armed.
 const ctrlCWindow = 3 * time.Second
 
@@ -1732,8 +1734,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// turning a stop into a quit).
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		if k.String() == "ctrl+c" {
+			// Stop only a turn that has not been cancelled yet: cancelTurn
+			// leaves busy set until agentFinishedMsg, so a turn that ignores
+			// cancellation would otherwise make Ctrl+C unable to quit.
 			want := ctrlCQuit
-			if m.busy || m.agentCancel != nil {
+			if (m.busy || m.agentCancel != nil) && !m.cancelling {
 				want = ctrlCStop
 			}
 			if m.ctrlCArmed() == want {
@@ -1749,7 +1754,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.ctrlCArmedFor = want
 			m.ctrlCArmedAt = m.now()
-			return m, nil
+			// Nothing else repaints an idle session, so schedule a repaint for
+			// when the window lapses; otherwise the hint would outlive the arm.
+			return m, tea.Tick(ctrlCWindow+50*time.Millisecond, func(time.Time) tea.Msg { return ctrlCExpiredMsg{} })
 		}
 		// Any other keypress disarms, so Ctrl+C never fires on a press the
 		// user has mentally separated from the first.
@@ -1781,6 +1788,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case ctrlCExpiredMsg:
+		return m, nil
 	case settings.ChangedMsg:
 		if msg.BlockedReason != "" {
 			m.applyNewConfig(msg.Cfg)
@@ -4407,7 +4416,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.restoreRunner()
 		m.restoreRunner = nil
 	}
-	m.refreshSheetCaches()
+	// Only the changed-file count (status line) is kept warm at turn end. The
+	// fleet and turn caches shell out to git and the DB and are read only by
+	// the session sheet, which refreshes them when it opens.
+	m.refreshSheetChanged()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {

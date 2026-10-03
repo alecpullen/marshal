@@ -328,8 +328,10 @@ func TestCtrlCQuits(t *testing.T) {
 	model := New(state)
 
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	if cmd != nil {
+	select {
+	case <-state.Done():
 		t.Fatal("first Ctrl+C must only arm")
+	default:
 	}
 	_, cmd = updated.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
@@ -5770,6 +5772,7 @@ func TestNowBarFollowsDrilledSubagentTodos(t *testing.T) {
 		t.Fatalf("child SetTodos: %v", err)
 	}
 
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: childState})
 	body := nowBarOut(m)
 	if !strings.Contains(body, "child task") {
@@ -6900,6 +6903,7 @@ func TestAllDoneTodosLeaveTheNowBar(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	if !strings.Contains(stripANSI(nowBarOut(m)), "new work") {
 		t.Fatal("a fresh todo list must show in the bar")
 	}

@@ -59,6 +59,10 @@ type nowBarPlan struct {
 	// the row index of the first one. Clicks map back through them.
 	agents        []session.SubagentView
 	agentRowStart int
+	// showsBrowser reports whether the browser session's URL made it onto
+	// the bar (it can fold into `… N more`), so the status line knows
+	// whether it must carry the URL itself.
+	showsBrowser bool
 }
 
 // planNowBar selects the bar's rows: one progress row (SDD, else swarm,
@@ -68,16 +72,18 @@ func planNowBar(in nowBarInput) nowBarPlan {
 	inner := max(in.Width-1, 1)
 
 	head, headText, elapsed := nowBarHead(in)
-	actors, agentIdx := nowBarActors(in)
+	actors, agentIdx, browserIdx := nowBarActors(in)
 
-	hasWork := head != "" || len(actors) > 0
-	if !hasWork {
+	if head == "" && len(actors) == 0 {
 		return nowBarPlan{}
 	}
 
 	if in.Height < nowBarCompactHeight {
 		row := nowBarSummary(in, headText, elapsed, inner)
-		return nowBarPlan{rows: []string{chromeRailWidth(row, dimColor, inner)}}
+		return nowBarPlan{
+			rows:         []string{nowBarRail(row, inner)},
+			showsBrowser: in.Browser.SessionOpen && headText == "",
+		}
 	}
 
 	var plan nowBarPlan
@@ -98,14 +104,30 @@ func planNowBar(in nowBarInput) nowBarPlan {
 		}
 		plan.rows = append(plan.rows, a)
 	}
+	plan.showsBrowser = browserIdx >= 0 && browserIdx < len(shown)
 	if overflow > 0 {
 		plan.rows = append(plan.rows, dimStyle().Render(fmt.Sprintf("… %d more", overflow)))
 	}
 	for i := range plan.rows {
-		plan.rows[i] = chromeRailWidth(plan.rows[i], dimColor, inner)
+		plan.rows[i] = nowBarRail(plan.rows[i], inner)
 	}
 	return plan
 }
+
+// nowBarRail prefixes the dim rail and guarantees the row is one screen
+// line. Row text embeds agent- and user-supplied strings (todo content, job
+// commands, page titles); a stray newline would split one plan row across
+// several screen lines and make the height budget undercount.
+func nowBarRail(row string, inner int) string {
+	return chromeRailWidth(oneLine(row), dimColor, inner)
+}
+
+// oneLine flattens line breaks and tabs to single spaces.
+func oneLine(s string) string {
+	return nowBarFlatten.Replace(s)
+}
+
+var nowBarFlatten = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
 
 // nowBarHead builds the progress or turn row. It returns the finished row
 // (with the elapsed time right-aligned when busy), the bare text the
@@ -117,37 +139,48 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 	if g == "" {
 		g = glyph.Running
 	}
-	var blocks string
+
+	// Pick the progress source first: the budget the text must fit depends
+	// on the glyph, the blocks and the elapsed clock sharing its row.
+	const (
+		srcNone = iota
+		srcSDD
+		srcSDDDone
+		srcSwarm
+		srcTodos
+	)
+	src, blocks, todoText := srcNone, "", ""
 	switch {
 	case in.SDD.Active:
+		src = srcSDD
 		blocks = progressBlocks(in.SDD.DoneTasks, in.SDD.TotalTasks, nowBarMaxBlocks)
-		text = runPanelSummaryText(in.SDD, in.Now, inner)
 	case in.SDD.Finished:
-		fg, c, t := runPanelFinishedParts(in.SDD, inner)
-		text = t
-		g = lipgloss.NewStyle().Foreground(c).Render(fg)
+		src = srcSDDDone
 		blocks = progressBlocks(in.SDD.DoneTasks, in.SDD.TotalTasks, nowBarMaxBlocks)
 	case in.Swarm.Active:
-		text = statusBusyStyle().Render(swarmStripText(in.Swarm))
-	default:
-		done, inProgress := todoProgress(in.Todos)
-		if len(in.Todos) > 0 && done < len(in.Todos) {
+		src = srcSwarm
+	case in.Busy:
+		// An unfinished list is only pinned while a turn runs. Idle, a list
+		// the agent abandoned would otherwise hold a row for the rest of the
+		// session; Ctrl+T still shows it.
+		if done, inProgress := todoProgress(in.Todos); len(in.Todos) > 0 && done < len(in.Todos) {
+			src = srcTodos
 			blocks = progressBlocks(done, len(in.Todos), nowBarMaxBlocks)
-			text = fmt.Sprintf("%d/%d", done, len(in.Todos))
+			todoText = fmt.Sprintf("%d/%d", done, len(in.Todos))
 			if c := nowBarTodoFocus(in.Todos, inProgress); c != "" {
-				text += " · " + c
+				todoText += " · " + c
 			}
 		}
 	}
 
-	if text == "" {
+	if src == srcNone {
 		// No progress source: the turn row, only while busy.
 		if !in.Busy || in.TurnStartedAt.IsZero() {
 			return "", "", ""
 		}
 		text = spinnerLabel(in.Spinner, nowBarElapsed(in))
 		if in.ActivityLabel != "" {
-			text += " · " + in.ActivityLabel
+			text += " · " + oneLine(in.ActivityLabel)
 		}
 		text = statusBusyStyle().Render(strutil.Truncate(text, max(inner-1, 1), true))
 		return " " + text, text, ""
@@ -156,6 +189,30 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 	if in.Busy && !in.TurnStartedAt.IsZero() {
 		elapsed = nowBarElapsed(in)
 	}
+	// Cells the text may use: the row minus the " g " glyph cell group, the
+	// blocks and their space, and the right-aligned clock and its gap.
+	budget := inner - 3
+	if blocks != "" {
+		budget -= ansi.StringWidth(blocks) + 1
+	}
+	if elapsed != "" {
+		budget -= ansi.StringWidth(elapsed) + 1
+	}
+	budget = max(budget, 1)
+
+	switch src {
+	case srcSDD:
+		text = runPanelSummaryText(in.SDD, in.Now, budget)
+	case srcSDDDone:
+		fg, c, t := runPanelFinishedParts(in.SDD, budget)
+		text = t
+		g = lipgloss.NewStyle().Foreground(c).Render(fg)
+	case srcSwarm:
+		text = statusBusyStyle().Render(ansi.Truncate(swarmStripText(in.Swarm), budget, "…"))
+	case srcTodos:
+		text = ansi.Truncate(todoText, budget, "…")
+	}
+
 	left := " " + styledGlyph(g, in) + " "
 	if blocks != "" {
 		left += blocks + " "
@@ -180,11 +237,11 @@ func nowBarElapsed(in nowBarInput) string {
 // pending one.
 func nowBarTodoFocus(todos []native.TodoItem, inProgress int) string {
 	if inProgress >= 0 {
-		return todos[inProgress].Content
+		return oneLine(todos[inProgress].Content)
 	}
 	for _, t := range todos {
 		if t.Status != native.TodoCompleted {
-			return t.Content
+			return oneLine(t.Content)
 		}
 	}
 	return ""
@@ -205,11 +262,12 @@ func nowBarJustify(left, right string, width int) string {
 // nowBarActors renders the actor rows in order — subagents, browser, jobs,
 // watches — and, aligned by index, a pointer to the subagent behind each
 // agent row (nil for the rest).
-func nowBarActors(in nowBarInput) (rows []string, agents []*session.SubagentView) {
+func nowBarActors(in nowBarInput) (rows []string, agents []*session.SubagentView, browserIdx int) {
+	browserIdx = -1
 	inner := max(in.Width-1, 1)
 	for i := range in.Agents {
 		v := &in.Agents[i]
-		label := fmt.Sprintf("#%d  %s", v.ID, v.Label)
+		label := fmt.Sprintf("#%d  %s", v.ID, oneLine(v.Label))
 		if v.Model != "" {
 			label += dimSeparator + v.Model
 			if v.Provider != "" && v.Provider != in.Provider {
@@ -222,6 +280,7 @@ func nowBarActors(in nowBarInput) (rows []string, agents []*session.SubagentView
 		agents = append(agents, v)
 	}
 	if in.Browser.SessionOpen {
+		browserIdx = len(rows)
 		rows = append(rows, " "+browserStripText(in.Browser, in.Spinner))
 		agents = append(agents, nil)
 	}
@@ -233,7 +292,7 @@ func nowBarActors(in nowBarInput) (rows []string, agents []*session.SubagentView
 		rows = append(rows, " "+t)
 		agents = append(agents, nil)
 	}
-	return rows, agents
+	return rows, agents, browserIdx
 }
 
 // nowBarSummary is the one-row form for short frames:
@@ -306,6 +365,7 @@ func (m Model) nowBarInput() nowBarInput {
 		Width:         max(m.leftWidth, 1),
 		Height:        m.height,
 	}
+	in.Browser.Title = oneLine(in.Browser.Title)
 	if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
 		in.ActivityLabel = m.state.PinnedSpinnerLabel(act)
 	}
@@ -318,13 +378,13 @@ func (m Model) nowBarInput() nowBarInput {
 	for _, j := range m.runningJobs() {
 		line := fmt.Sprintf("%s  %s  %s",
 			j.ID,
-			strutil.Truncate(j.Command, max(width/2, 12), true),
+			strutil.Truncate(oneLine(j.Command), max(width/2, 12), true),
 			formatElapsed(max(now.Sub(j.StartedAt), 0)))
 		in.JobTexts = append(in.JobTexts, dimStyle().Render(glyph.Job+" "+line))
 	}
 	for _, w := range m.runningWatches() {
 		in.WatchTexts = append(in.WatchTexts,
-			dimStyle().Render(glyph.Watch+" "+fmt.Sprintf("%s  %s  %s", w.Name, w.Kind, w.State)))
+			dimStyle().Render(glyph.Watch+" "+fmt.Sprintf("%s  %s  %s", oneLine(w.Name), w.Kind, w.State)))
 	}
 	return in
 }
@@ -336,14 +396,9 @@ func (m Model) nowBarPlan() nowBarPlan { return planNowBar(m.nowBarInput()) }
 func (m Model) nowBarRows() int { return len(m.nowBarPlan().rows) }
 
 // nowBarShowsBrowser reports whether the bar renders the browser session's
-// URL. The compact summary only does when it has no progress text to show.
+// URL. It can be absent even with a session open: the compact summary only
+// carries it when it has no progress text, and in the full layout the row
+// can fold into `… N more`.
 func nowBarShowsBrowser(in nowBarInput) bool {
-	if !in.Browser.SessionOpen {
-		return false
-	}
-	if in.Height >= nowBarCompactHeight {
-		return true
-	}
-	_, text, _ := nowBarHead(in)
-	return text == ""
+	return planNowBar(in).showsBrowser
 }

@@ -75,11 +75,11 @@ func TestPlanNowBar(t *testing.T) {
 			in.Todos = nowBarTodos("completed", "completed", "in_progress", "pending")
 			return in
 		}, 1, []string{"▰▰▱▱", "2/4 · task 3", "1m 12s", "⠋"}, nil},
-		{"todos idle still shown", func() nowBarInput {
+		{"abandoned todos do not pin the bar when idle", func() nowBarInput {
 			in := nowBarBase()
 			in.Todos = nowBarTodos("completed", "pending")
 			return in
-		}, 1, []string{"1/2 · task 2"}, nil},
+		}, 0, nil, nil},
 		{"todos all done disappear", func() nowBarInput {
 			in := nowBarBase()
 			in.Todos = nowBarTodos("completed", "completed")
@@ -319,5 +319,93 @@ func TestNowBarCapsJobsAndWatchesWithOverflow(t *testing.T) {
 	}
 	if !strings.Contains(plain, "… 7 more") {
 		t.Fatalf("expected a shared overflow row:\n%s", plain)
+	}
+}
+
+// The SDD text must be fit to what is left after the glyph, blocks and
+// elapsed clock, so low-priority segments are dropped whole instead of the
+// row being cut mid-word with an ellipsis.
+func TestNowBarSDDRowDropsSegmentsInsteadOfTruncating(t *testing.T) {
+	in := nowBarBase()
+	in.Width = 60
+	in.Busy, in.TurnStartedAt, in.Spinner = true, nowBarT0.Add(-72*time.Second), "⠋"
+	in.SDD = session.SDDProgress{
+		Active: true, TotalTasks: 7, DoneTasks: 3, CurrentTask: 4,
+		Phase: "verifying", PhaseStartedAt: nowBarT0.Add(-20 * time.Second),
+		StartedAt: nowBarT0.Add(-10 * time.Minute), Detail: "src/auth/handler.go",
+	}
+	plan := planNowBar(in)
+	if len(plan.rows) != 1 {
+		t.Fatalf("rows = %d", len(plan.rows))
+	}
+	plain := stripANSI(plan.rows[0])
+	if strings.Contains(plain, "…") {
+		t.Errorf("row was truncated rather than dropping segments: %q", plain)
+	}
+	if !strings.Contains(plain, "task 4/7") || !strings.Contains(plain, "1m 12s") {
+		t.Errorf("row lost the task counter or clock: %q", plain)
+	}
+	if w := lipgloss.Width(plain); w > in.Width {
+		t.Errorf("row is %d cells, frame is %d", w, in.Width)
+	}
+}
+
+// Embedded line breaks in todo content, job commands and page titles must
+// not split a plan row across screen lines.
+func TestNowBarRowsAreSingleLines(t *testing.T) {
+	in := nowBarBase()
+	in.Busy, in.TurnStartedAt = true, nowBarT0.Add(-time.Second)
+	in.Todos = []native.TodoItem{{Content: "step one\nstep two", Status: native.TodoInProgress}}
+	in.JobTexts = []string{"┆ job-1  cat <<EOF\nline2\nEOF  3s"}
+	in.Browser = session.BrowserInfo{SessionOpen: true, URL: "https://example.com", Title: "a\nb"}
+	in.Agents = nowBarAgents(1)
+	in.Agents[0].Label = "review\nthe diff"
+	plan := planNowBar(in)
+	for i, r := range plan.rows {
+		if strings.Contains(r, "\n") {
+			t.Errorf("row %d spans lines: %q", i, r)
+		}
+	}
+	if got := lipgloss.Height(renderNowBar(plan, in.Width)); got != len(plan.rows) {
+		t.Errorf("rendered %d lines for %d plan rows", got, len(plan.rows))
+	}
+}
+
+// When the browser row folds into `… N more`, the status line must keep the
+// URL instead of both surfaces dropping it.
+func TestNowBarShowsBrowserOnlyWhenRowIsVisible(t *testing.T) {
+	in := nowBarBase()
+	in.Busy, in.TurnStartedAt = true, nowBarT0.Add(-time.Second)
+	in.Browser = session.BrowserInfo{SessionOpen: true, URL: "https://example.com"}
+
+	in.Agents = nowBarAgents(1)
+	if !nowBarShowsBrowser(in) {
+		t.Error("browser row is visible with one agent; the status line should drop its copy")
+	}
+	in.Agents = nowBarAgents(3) // turn row + 2 agents + overflow row
+	if nowBarShowsBrowser(in) {
+		t.Error("browser row folded into the overflow; the status line must carry the URL")
+	}
+}
+
+func TestTasksPanelStaysLiveWhileTodosChange(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	if err := m.state.SetTodos([]native.TodoItem{{Content: "first draft", Status: native.TodoInProgress}}); err != nil {
+		t.Fatal(err)
+	}
+	m = ctrlT(m)
+	if view := stripANSI(m.viewString()); !strings.Contains(view, "Tasks 0/1") || !strings.Contains(view, "first draft") {
+		t.Fatalf("initial panel wrong:\n%s", view)
+	}
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "first draft", Status: native.TodoCompleted},
+		{Content: "rewritten plan", Status: native.TodoPending},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view := stripANSI(m.viewString())
+	if !strings.Contains(view, "Tasks 1/2") || !strings.Contains(view, "rewritten plan") {
+		t.Fatalf("open Tasks panel did not follow the todo list:\n%s", view)
 	}
 }

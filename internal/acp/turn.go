@@ -1157,6 +1157,9 @@ type TelemetryChangedFile struct {
 	Removed int    `json:"removed"`
 }
 
+// buildChangedFiles reports the working tree's changed files for telemetry.
+// Untracked and binary files report Added and Removed as 0: git gives no line
+// counts for them, so the path is listed but "how much" is unknown.
 func (m *TurnManager) buildChangedFiles(sessionID string, state *session.State) []TelemetryChangedFile {
 	ref := m.baseRefFor(sessionID, state.WorkingDir)
 	files := changedfiles.Read(state.WorkingDir, ref)

@@ -165,7 +165,16 @@ load (conflicting entries stay project-local with a deprecation diagnostic).
 
 ### Specs and plans
 
-Historical design specs and implementation plans are archived in `.docs-archive/superpowers/specs/` and `.docs-archive/superpowers/plans/`. They are intentionally gitignored and must not be committed to the repo. If you need to write a new spec or plan, keep it in a gitignored location (for example, under `.docs-archive/superpowers/`) and do not add it to the public git tree.
+Feature design docs and phase specs live in the public tree under
+`docs/<feature>/` (for example `docs/single-stack/` and
+`docs/web-studio/`). Commit them with the work they describe, and keep
+them current when decisions change. Reviewers should not flag them as
+violations.
+
+Historical specs and plans are archived in `.docs-archive/superpowers/specs/`
+and `.docs-archive/superpowers/plans/`. That archive is gitignored and
+stays out of the repo. Scratch execution plans and drafts that aren't meant
+to be published can also go there.
 
 ## Design constraints
 

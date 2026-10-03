@@ -65,7 +65,7 @@ func (ToolsSection) Clippable() bool { return true }
 func (ToolsSection) Relevant(d Data) bool { return len(d.Audit) > 0 }
 
 // shortToolName drops the namespace so "file.read" reads as "read" in a
-// 30-column rail. MCP tools keep their server segment.
+// narrow sheet. MCP tools keep their server segment.
 func shortToolName(name string) string {
 	if strings.HasPrefix(name, "mcp.") {
 		return name

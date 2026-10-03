@@ -9,7 +9,7 @@ import (
 // Body styling helpers. Sections emit otherwise-unstyled strings; these are
 // the only way a section body applies color, so the set of things color can
 // mean stays small and auditable. Color encodes state — never section
-// identity — so the rail is fully legible with NO_COLOR set.
+// identity — so the sheet is fully legible with NO_COLOR set.
 
 func styleSuccess(s string) string {
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess).Render(s)

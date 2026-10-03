@@ -13,7 +13,7 @@ import (
 )
 
 // formatElapsed formats a duration for the finished summary line, matching
-// the run panel's format: "23m 41s" or "12s".
+// the now bar's format: "23m 41s" or "12s".
 func formatElapsed(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
@@ -53,7 +53,7 @@ func (SDDSection) Render(d Data, width, maxRows int) []string {
 		if !d.SDD.Succeeded && d.SDD.Error != "" {
 			reason = " · " + d.SDD.Error
 		}
-		// The rail is space-constrained: it points at the outcome panel for
+		// The sheet is space-constrained: it points at the outcome panel for
 		// both outcomes and leaves the resume instruction to the outcome doc.
 		hint = " — /run for details"
 		line := base + reason + hint
@@ -97,7 +97,7 @@ func (SDDSection) Render(d Data, width, maxRows int) []string {
 	// Window the checklist around the current task rather than truncating
 	// from the top: on a long plan the active task is the one row that must
 	// never be clipped away. This is the same policy (and the same helper)
-	// the main run panel's checklist uses. The summary rows above are held
+	// the /run checklist uses. The summary rows above are held
 	// out of the window so they always survive.
 	if budget := maxRows - len(rows); maxRows > 0 && budget > 0 && len(tasks) > budget {
 		focus := min(max(d.SDD.CurrentTask-1, 0), len(tasks)-1)

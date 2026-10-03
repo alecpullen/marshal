@@ -849,8 +849,12 @@ func TestChangedFileCountAppearsAfterTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.busy = true
-	mm, _ := m.Update(agentFinishedMsg{})
+	mm, cmd := m.Update(agentFinishedMsg{})
 	m = asModel(t, mm)
+	for _, msg := range collectSheetBaseRefs(t, cmd) {
+		mm, _ = m.Update(msg)
+		m = asModel(t, mm)
+	}
 	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") {
 		t.Fatalf("status line missing ±1 file after the turn:\n%s", got)
 	}

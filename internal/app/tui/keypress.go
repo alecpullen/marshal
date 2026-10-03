@@ -344,7 +344,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "ctrl+x":
 		// If the user is drilled into a running subagent, Ctrl+X stops
 		// that specific subagent instead of touching the steering queue.
-		// Esc still pops the drill; Ctrl+C cancels the whole turn.
+		// Esc still pops the drill; Ctrl+C (twice) stops the whole turn.
 		if m.busy && len(m.viewStack) > 0 {
 			if top := m.viewStack[len(m.viewStack)-1]; top.Status == session.SubagentRunning {
 				if m.state.CancelSubagent(top.ID) {

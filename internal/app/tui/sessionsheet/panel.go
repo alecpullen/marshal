@@ -78,6 +78,9 @@ func NewPanel(sections []Section, data func() Data) *Panel {
 // opened from.
 func (p *Panel) SetData(data func() Data) { p.data = data }
 
+// HasContent reports whether any section currently has something to show.
+func (p *Panel) HasContent() bool { return len(p.relevant(p.data())) > 0 }
+
 // Sizing keeps the transcript visible above the sheet.
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
 
@@ -126,12 +129,15 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	d := p.data()
 	live := p.relevant(d)
+	pw := layout.PanelWidth(width)
 	if len(live) == 0 {
-		return ""
+		// Sections can all go quiet while the sheet is open. Say so rather
+		// than rendering nothing, so a panel that still owns the keys is
+		// never invisible.
+		return chrome.PanelWithHints("Session", "esc close", theme.MutedStyle().Render("Nothing to show."), pw, 2, true, theme.Current())
 	}
 	p.sel = min(max(p.sel, 0), len(live)-1)
 
-	pw := layout.PanelWidth(width)
 	inner := max(pw-3, 1)
 	budget := maxHeight - 1 // the panel's own title row
 

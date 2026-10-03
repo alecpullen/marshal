@@ -299,13 +299,13 @@ type Model struct {
 	jobEvents <-chan pubsub.Event[native.JobEvent]
 	jobCount  int
 	// jobs is the cached JobInfo snapshot from the latest JobEvent, used by
-	// the job lane above the input. Nil/empty when no broker is wired.
+	// the now bar above the input. Nil/empty when no broker is wired.
 	jobs []native.JobInfo
 
 	// watchBroker is the watch-event broker; the pump cmd returned from Init
 	// (and re-armed from Update on each watchMsg) bridges it into watchMsg
 	// values. watchEvents is the persistent subscription channel. When
-	// watchBroker is nil (tests, fallback), the lane renders no watch rows.
+	// watchBroker is nil (tests, fallback), the now bar renders no watch rows.
 	watchBroker *pubsub.Broker[watch.Event]
 	watchEvents <-chan pubsub.Event[watch.Event]
 	// watches is the cached watch snapshot from the latest watch.Event, used
@@ -480,6 +480,9 @@ type Model struct {
 	// tasksPanel is the open Ctrl+T Tasks panel, kept so a second Ctrl+T
 	// can tell it apart from other docked panels.
 	tasksPanel *docpanel.Panel
+	// nowBarMemo is the plan viewString computed for the frame in flight; nil
+	// outside viewString. It lives only on that call's model copy.
+	nowBarMemo *nowBarPlan
 	// sheetPanel is the open Ctrl+B session sheet, kept for the same reason.
 	sheetPanel *sessionsheet.Panel
 
@@ -787,7 +790,7 @@ func WithJobBroker(ctx context.Context, broker *pubsub.Broker[native.JobEvent]) 
 
 // WithWatchBroker wires the pub/sub broker for watch events. The model
 // subscribes via pumpWatchEvents from Init and re-arms the pump on each
-// watchMsg. When broker is nil the lane renders no watch rows (tests,
+// watchMsg. When broker is nil the now bar renders no watch rows (tests,
 // fallback).
 func WithWatchBroker(ctx context.Context, broker *pubsub.Broker[watch.Event]) Option {
 	return func(m *Model) {
@@ -1493,6 +1496,11 @@ func blinkCmd() tea.Cmd {
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{blinkCmd()}
+	// Read HEAD and the changed files off-thread so ±N files is right from
+	// the first frame instead of waiting for a turn to end.
+	if cmd := sheetBaseRefCmd(m.state.Workspace().ActiveRoot); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	if m.jobEvents != nil {
 		cmds = append(cmds, pumpJobEvents(m.jobEvents))
 	}
@@ -1603,18 +1611,32 @@ func (m Model) sheetSections() []sessionsheet.Section {
 // already the open panel). The turn, changed-file and fleet caches are
 // refreshed once on open; the panel then reads them live.
 func (m *Model) openSessionSheet() {
-	if m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel) {
+	if m.sheetOpen() {
 		m.closeSessionSheet()
 		return
 	}
 	m.refreshSheetCaches()
-	m.sheetPanel = sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
+	panel := sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
+	// Opening a panel with nothing in it would leave an invisible dock that
+	// swallows keys until Esc (every section hidden or irrelevant).
+	if !panel.HasContent() {
+		m.state.AddMessage(session.RoleSystem, "Nothing to show in the session sheet.", session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	m.tasksPanel = nil // opening replaces the Tasks panel if it was up
+	m.sheetPanel = panel
 	m.dock.Open(m.sheetPanel)
 	m.refreshViewport()
 }
 
+// sheetOpen reports whether the session sheet is the open dock panel.
+func (m Model) sheetOpen() bool {
+	return m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel)
+}
+
 func (m *Model) closeSessionSheet() {
-	if m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel) {
+	if m.sheetOpen() {
 		m.dock.CloseNow()
 	}
 	m.sheetPanel = nil
@@ -2335,17 +2357,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			// Ctrl+T toggles the Tasks panel, so the key that opened it also
-			// closes it.
-			if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+t" && m.input.Value() == "" && !m.editingCommand &&
-				m.tasksPanel != nil && m.dock.Panel() == dock.Panel(m.tasksPanel) {
-				m.toggleTasksPanel()
-				return m, nil
-			}
-			if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+b" && m.input.Value() == "" && !m.editingCommand &&
-				m.sheetPanel != nil && m.dock.Panel() == dock.Panel(m.sheetPanel) {
-				m.closeSessionSheet()
-				return m, nil
+			// Ctrl+T and Ctrl+B are global toggles between the two panels they
+			// own: the key that opened a panel closes it, and the other key
+			// switches to the other panel, rather than being swallowed.
+			if k, ok := msg.(tea.KeyPressMsg); ok && m.input.Value() == "" && !m.editingCommand && (m.tasksOpen() || m.sheetOpen()) {
+				switch k.String() {
+				case "ctrl+t":
+					m.toggleTasksPanel()
+					return m, nil
+				case "ctrl+b":
+					m.openSessionSheet()
+					return m, nil
+				}
 			}
 			return m, m.dock.Update(msg)
 		default:
@@ -3075,7 +3098,7 @@ func (m Model) scrollHintRows() int {
 // browser URL and tool name. The right-side status segment omits the URL
 // then to avoid duplication.
 func (m Model) ShouldShowStatusURL() bool {
-	return !nowBarShowsBrowser(m.nowBarInput())
+	return !m.nowBarPlan().showsBrowser
 }
 
 // dockRows reports the rows the docked panel occupied at last render, so the
@@ -4226,8 +4249,8 @@ func (m Model) turnSpinnerFrame() string {
 	return m.spinnerFrame
 }
 
-// cancelTurn cancels the in-flight agent turn, if any. Shared by Esc and
-// the /stop command. The steering queue is NOT cleared here — that happens
+// cancelTurn cancels the in-flight agent turn, if any. Shared by double
+// Ctrl+C and the /stop command. The steering queue is NOT cleared here — that happens
 // in handleAgentFinished so the finishing goroutine can observe the
 // cancellation state and avoid double-processing.
 func (m *Model) cancelTurn() bool {
@@ -4416,10 +4439,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.restoreRunner()
 		m.restoreRunner = nil
 	}
-	// Only the changed-file count (status line) is kept warm at turn end. The
-	// fleet and turn caches shell out to git and the DB and are read only by
-	// the session sheet, which refreshes them when it opens.
-	m.refreshSheetChanged()
+	// The changed-file count is refreshed off-thread by the sheetBaseRefCmd
+	// returned below. The turn and fleet caches are read only by the session
+	// sheet: refresh them here while it is open, otherwise when it opens.
+	if m.sheetOpen() {
+		m.refreshSheetTurns()
+		m.refreshSheetFleet()
+	}
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
@@ -4461,7 +4487,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.updateViewportHeight()
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
-	// Rebase the changed-files rail onto the active root's HEAD so committed
+	// Rebase the changed-files base ref onto the active root's HEAD so committed
 	// agent work stops inflating the diff; the sheetBaseRefMsg handler sets the
 	// new base and refreshes the cache after the next tick.
 	cmds := []tea.Cmd{tickCmd(), flushCmd, sheetBaseRefCmd(m.state.Workspace().ActiveRoot)}
@@ -4634,7 +4660,7 @@ func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
 	// Update the cached snapshot: replace any existing entry with the same
 	// WatchID, append new ones. Terminal states (fired/stopped/error) are
-	// kept so the lane can show the last known state until the watch is
+	// kept so the now bar can show the last known state until the watch is
 	// removed from the manager's list.
 	updated := false
 	for i, w := range m.watches {
@@ -4665,7 +4691,7 @@ func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
 			// already stuck via the helper's *m assignment. The wake cmd
 			// AND the pump re-arm must both ride the return: the pump is a
 			// chain — each watchMsg returns the next pump cmd, and
-			// dropping it would permanently stall the watch-event lane.
+			// dropping it would permanently stall the watch-event pump.
 			m.refreshViewport()
 			flush := m.flushPendingModelOptions()
 			if m.watchEvents == nil {
@@ -4700,7 +4726,7 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 // handleWorkspaceMsg handles a workspaceMsg: the session's active root
 // changed, so re-read git info for the new root immediately rather than
 // waiting for the 5s tick, then re-arm the pump. It also returns a
-// sheetBaseRefCmd so the changed-files rail rebases onto the new root's HEAD
+// sheetBaseRefCmd so the changed-files cache rebases onto the new root's HEAD
 // off the UI thread.
 func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
 	var baseCmd tea.Cmd
@@ -4727,10 +4753,8 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 }
 
 // handleSheetBaseRef handles a sheetBaseRefMsg: a freshly-read HEAD SHA for
-// the changed-files rail. It rebases the base ref and refreshes the cache.
-// refreshSheetChanged runs two git diff subprocesses synchronously here; that
-// matches the existing turn-boundary behavior and happens at most once per
-// workspace change, so it is acceptable on the UI thread.
+// the changed-files cache. It rebases the base ref and installs the diff the
+// command already read off-thread, so the handler does no git work.
 func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 	// Drop msgs whose dir is no longer the active root: linked worktrees
 	// share the object store, so a stale in-flight cmd from a previous
@@ -4739,14 +4763,16 @@ func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 	if msg.dir != m.state.Workspace().ActiveRoot {
 		return m, nil
 	}
-	if msg.ref != "" {
-		m.sheetBaseRef = msg.ref
+	if msg.ref == "" {
+		// git could not read HEAD; keep the base and the cache as they were.
+		return m, nil
 	}
-	m.refreshSheetChanged()
+	m.sheetBaseRef = msg.ref
+	m.sheetChanged = msg.changed
 	// No explicit refreshViewport here: Bubble Tea re-renders after every
-	// Update, and the session sheet reads m.sheetChanged directly in View, so the
-	// updated cache is picked up on the next frame. refreshViewport only
-	// rebuilds the transcript viewport, which this message does not touch.
+	// Update, and the status line and session sheet read m.sheetChanged
+	// directly in View. refreshViewport only rebuilds the transcript
+	// viewport, which this message does not touch.
 	return m, nil
 }
 

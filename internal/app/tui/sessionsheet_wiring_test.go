@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
 
@@ -184,5 +185,109 @@ func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 	joined := strings.Join(names, ",")
 	if !strings.Contains(joined, "zchild-only-probe") || strings.Contains(joined, "zparent-only-probe") {
 		t.Errorf("sheet audit = %q, want the child's only", joined)
+	}
+}
+
+func TestCtrlTAndCtrlBSwitchBetweenPanels(t *testing.T) {
+	m, dir := gitModel(t)
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644)
+	if err := m.state.SetTodos([]native.TodoItem{{Content: "a task", Status: native.TodoPending}}); err != nil {
+		t.Fatal(err)
+	}
+
+	m = ctrlB(m)
+	if !m.sheetOpen() {
+		t.Fatal("setup: sheet should be open")
+	}
+	m = ctrlT(m)
+	if !m.tasksOpen() || m.sheetOpen() {
+		t.Fatal("Ctrl+T with the sheet open must switch to the Tasks panel")
+	}
+	m = ctrlB(m)
+	if !m.sheetOpen() || m.tasksOpen() {
+		t.Fatal("Ctrl+B with the Tasks panel open must switch to the sheet")
+	}
+	m = ctrlB(m)
+	if m.dock.IsOpen() {
+		t.Fatal("Ctrl+B on the open sheet must still close it")
+	}
+}
+
+func TestSessionSheetWithNothingToShowDoesNotOpen(t *testing.T) {
+	m := newTestModel(t)
+	var hidden []string
+	for _, s := range sessionsheet.DefaultSections() {
+		hidden = append(hidden, s.ID())
+	}
+	m.state.Config.TUI.SidePanel.Hidden = hidden
+	m = ctrlB(m)
+	if m.dock.IsOpen() || m.sheetPanel != nil {
+		t.Fatal("an empty sheet must not open: it would swallow keys invisibly")
+	}
+	var found bool
+	for _, msg := range m.state.Messages() {
+		if strings.Contains(msg.Content, "Nothing to show in the session sheet.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected a notice explaining why nothing opened")
+	}
+}
+
+// If every section goes quiet while the sheet is open, the panel must still
+// render something visible and Esc must still close it.
+func TestSessionSheetThatEmptiesWhileOpenStaysVisible(t *testing.T) {
+	panel := sessionsheet.NewPanel(nil, func() sessionsheet.Data { return sessionsheet.Data{} })
+	if out := stripANSI(panel.View(100, 20)); !strings.Contains(out, "Nothing to show") {
+		t.Fatalf("empty panel rendered %q", out)
+	}
+	if cmd := panel.Update(tea.KeyPressMsg{Code: tea.KeyEsc}); cmd == nil {
+		t.Fatal("Esc must close an empty panel")
+	}
+}
+
+// ±N files must be right from startup: Init reads HEAD and the diff off the
+// UI thread and the handler installs both.
+func TestInitLoadsChangedFilesOffThread(t *testing.T) {
+	m, dir := gitModel(t)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.sheetChanged) != 0 {
+		t.Fatal("New must not run git for the changed files")
+	}
+	var found *sheetBaseRefMsg
+	for _, msg := range collectSheetBaseRefs(t, m.Init()) {
+		found = &msg
+	}
+	if found == nil {
+		t.Fatal("Init must schedule a base-ref/changed-files read")
+	}
+	mm, _ := m.Update(*found)
+	m = asModel(t, mm)
+	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") {
+		t.Fatalf("status line missing ±1 file after startup:\n%s", got)
+	}
+}
+
+// Turn end does no git work on the UI thread: the diff arrives with the
+// sheetBaseRefMsg, not from a synchronous refresh that the message then
+// overwrites.
+func TestTurnEndDoesNotDiffSynchronously(t *testing.T) {
+	m, dir := gitModel(t)
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644)
+	m.busy = true
+	mm, cmd := m.Update(agentFinishedMsg{})
+	m = asModel(t, mm)
+	if len(m.sheetChanged) != 0 {
+		t.Fatal("handleAgentFinished diffed on the UI thread")
+	}
+	for _, msg := range collectSheetBaseRefs(t, cmd) {
+		mm, _ = m.Update(msg)
+		m = asModel(t, mm)
+	}
+	if len(m.sheetChanged) != 1 {
+		t.Fatalf("sheetChanged = %v after the base-ref message", m.sheetChanged)
 	}
 }

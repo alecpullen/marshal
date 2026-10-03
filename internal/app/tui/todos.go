@@ -91,11 +91,16 @@ func tasksDoc(todos []native.TodoItem) commands.Doc {
 	return commands.Doc{Title: fmt.Sprintf("Tasks %d/%d", done, len(todos)), Rows: rows}
 }
 
+// tasksOpen reports whether the Tasks panel is the open dock panel.
+func (m Model) tasksOpen() bool {
+	return m.tasksPanel != nil && m.dock.Panel() == dock.Panel(m.tasksPanel)
+}
+
 // toggleTasksPanel is Ctrl+T: close the Tasks panel if it is the open dock
 // panel, otherwise open it on the viewed todo list. With no todos it leaves
 // a notice instead of opening an empty panel.
 func (m *Model) toggleTasksPanel() {
-	if m.tasksPanel != nil && m.dock.Panel() == dock.Panel(m.tasksPanel) {
+	if m.tasksOpen() {
 		m.dock.CloseNow()
 		m.tasksPanel = nil
 		m.refreshViewport()
@@ -107,6 +112,7 @@ func (m *Model) toggleTasksPanel() {
 		m.refreshViewport()
 		return
 	}
+	m.sheetPanel = nil // opening replaces the session sheet if it was up
 	m.tasksPanel = docpanel.New(tasksDoc(todos), m.state)
 	m.dock.Open(m.tasksPanel)
 	m.refreshViewport()

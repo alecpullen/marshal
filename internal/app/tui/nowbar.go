@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
@@ -135,7 +136,7 @@ var nowBarFlatten = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t",
 // there is neither progress nor a running turn.
 func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 	inner := max(in.Width-1, 1)
-	g := in.Spinner
+	g, gc := in.Spinner, accentColor
 	if g == "" {
 		g = glyph.Running
 	}
@@ -204,29 +205,18 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 	case srcSDD:
 		text = runPanelSummaryText(in.SDD, in.Now, budget)
 	case srcSDDDone:
-		fg, c, t := runPanelFinishedParts(in.SDD, budget)
-		text = t
-		g = lipgloss.NewStyle().Foreground(c).Render(fg)
+		g, gc, text = runPanelFinishedParts(in.SDD, budget)
 	case srcSwarm:
 		text = statusBusyStyle().Render(ansi.Truncate(swarmStripText(in.Swarm), budget, "…"))
 	case srcTodos:
 		text = ansi.Truncate(todoText, budget, "…")
 	}
 
-	left := " " + styledGlyph(g, in) + " "
+	left := " " + lipgloss.NewStyle().Foreground(gc).Render(g) + " "
 	if blocks != "" {
 		left += blocks + " "
 	}
 	return nowBarJustify(left+text, elapsed, inner), text, elapsed
-}
-
-// styledGlyph colours the progress row's glyph. A finished-run glyph arrives
-// pre-styled, so only the raw spinner/running glyphs are painted here.
-func styledGlyph(g string, in nowBarInput) string {
-	if strings.Contains(g, "\x1b") {
-		return g
-	}
-	return lipgloss.NewStyle().Foreground(accentColor).Render(g)
 }
 
 func nowBarElapsed(in nowBarInput) string {
@@ -346,7 +336,7 @@ func renderNowBar(p nowBarPlan, width int) string {
 	if len(p.rows) == 0 {
 		return ""
 	}
-	return paintLane(strings.Join(p.rows, "\n"), width)
+	return chrome.PaintBand(strings.Join(p.rows, "\n"), width, theme.Current().ChromeBG())
 }
 
 // nowBarInput snapshots the model for planNowBar.
@@ -389,16 +379,17 @@ func (m Model) nowBarInput() nowBarInput {
 	return in
 }
 
-func (m Model) nowBarPlan() nowBarPlan { return planNowBar(m.nowBarInput()) }
+// nowBarPlan returns this frame's plan. viewString plans once up front and
+// memoizes it on its model copy, because the height budget, the renderer and
+// the status line all read the plan within one frame; outside a frame (key
+// handling, clicks) it plans fresh.
+func (m Model) nowBarPlan() nowBarPlan {
+	if m.nowBarMemo != nil {
+		return *m.nowBarMemo
+	}
+	return planNowBar(m.nowBarInput())
+}
 
 // nowBarRows is the bar's height for the frame budget, read from the same
 // plan the renderer uses.
 func (m Model) nowBarRows() int { return len(m.nowBarPlan().rows) }
-
-// nowBarShowsBrowser reports whether the bar renders the browser session's
-// URL. It can be absent even with a session open: the compact summary only
-// carries it when it has no progress text, and in the full layout the row
-// can fold into `… N more`.
-func nowBarShowsBrowser(in nowBarInput) bool {
-	return planNowBar(in).showsBrowser
-}

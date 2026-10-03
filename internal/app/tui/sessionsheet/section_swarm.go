@@ -12,7 +12,7 @@ import (
 	"marshal/internal/strutil"
 )
 
-// SwarmSection is the full role roster. The live strip shows one line for
+// SwarmSection is the full role roster. The now bar shows one line for
 // the whole run; this is the roster panel the hairline-gutter redesign
 // removed, restored where there is room for it.
 type SwarmSection struct{}

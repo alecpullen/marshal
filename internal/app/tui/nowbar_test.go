@@ -379,11 +379,11 @@ func TestNowBarShowsBrowserOnlyWhenRowIsVisible(t *testing.T) {
 	in.Browser = session.BrowserInfo{SessionOpen: true, URL: "https://example.com"}
 
 	in.Agents = nowBarAgents(1)
-	if !nowBarShowsBrowser(in) {
+	if !planNowBar(in).showsBrowser {
 		t.Error("browser row is visible with one agent; the status line should drop its copy")
 	}
 	in.Agents = nowBarAgents(3) // turn row + 2 agents + overflow row
-	if nowBarShowsBrowser(in) {
+	if planNowBar(in).showsBrowser {
 		t.Error("browser row folded into the overflow; the status line must carry the URL")
 	}
 }

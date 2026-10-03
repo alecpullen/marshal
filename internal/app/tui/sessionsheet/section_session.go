@@ -10,7 +10,7 @@ import (
 )
 
 // SessionSection is the rail's pinned footer: turn count, elapsed time,
-// and cumulative token usage. It has no title — the rail introduces it
+// and cumulative token usage. It has no title — the sheet introduces it
 // with a bare rule so it reads as a footer rather than a fifth section.
 type SessionSection struct{}
 

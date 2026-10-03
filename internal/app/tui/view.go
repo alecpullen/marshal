@@ -36,7 +36,7 @@ const (
 	completionPanelChromeRows = 1
 	// minTranscriptRows is the transcript floor reserved when budgeting the
 	// textarea's MaxHeight. The now bar still takes priority over the
-	// transcript when space is tight — the pinned todo list is most useful
+	// transcript when space is tight — the progress row is most useful
 	// while the agent is working — but the floor is a readable window rather
 	// than a single row: the now bar, dock panel, and completion
 	// popup all stack above the input, and a busy session could squeeze the
@@ -75,6 +75,8 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
+	plan := planNowBar(m.nowBarInput())
+	m.nowBarMemo = &plan
 	// The sheet's data func must see this frame's model, not the copy it was
 	// opened from, or it would render stale values.
 	if m.sheetPanel != nil {
@@ -96,7 +98,7 @@ func (m *Model) viewString() string {
 		// The now bar carries every live-progress surface in one place just
 		// above the input: the run/todo progress row, the turn spinner, and
 		// the running agents, browser, jobs and watches.
-		if bar := renderNowBar(m.nowBarPlan(), m.leftWidth); bar != "" {
+		if bar := renderNowBar(plan, m.leftWidth); bar != "" {
 			rows = append(rows, bar)
 		}
 		if dockView != "" {

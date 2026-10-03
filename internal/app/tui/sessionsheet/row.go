@@ -6,7 +6,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Shared row layout for the rail body. Sections that compose their own rows
+// Shared row layout for the sheet body. Sections that compose their own rows
 // with ad-hoc format strings drift apart by a column or two — which is how
 // CONTEXT's fill-bar percentage ended up one cell out of line with the
 // composition percentages directly beneath it — and adjacent sections then
@@ -15,7 +15,7 @@ import (
 // Everything below is measured in cells with ansi.StringWidth so glyphs and
 // styled values participate in the math correctly.
 
-// railIndent is the leading space every rail body row carries, setting the
+// railIndent is the leading space every sheet body row carries, setting the
 // body in from the divider gutter.
 const railIndent = 1
 
@@ -25,7 +25,7 @@ const railIndent = 1
 //
 // The right column is reserved before the label is sized. That ordering is
 // the whole point: sizing the label first and letting the row clip destroys
-// the values, which is where a telemetry rail's information actually lives.
+// the values, which is where a telemetry sheet's information actually lives.
 //
 // label must be plain text — it is the only part that gets truncated, and
 // cutting styled text would sever an escape sequence. marker and right may
@@ -36,7 +36,7 @@ const railIndent = 1
 //
 // The right column is reserved before the label is sized. That ordering is
 // the whole point: sizing the label first and letting the row clip destroys
-// the values, which is where a telemetry rail's information actually lives.
+// the values, which is where a telemetry sheet's information actually lives.
 //
 // label must be plain text — it is the only part that gets truncated, and
 // cutting styled text would sever an escape sequence. marker and right may
@@ -96,7 +96,7 @@ func railBudget(marker, right string, width int) int {
 // a directory name. "…el/section_context.go" reads as noise;
 // "…/dockpanel/section_context.go" reads as a location.
 //
-// The rail shows file paths in two sections and they must shorten the same
+// The sheet shows file paths in two sections and they must shorten the same
 // way, or the same file appears under two different names one block apart.
 func shortenPath(path string, budget int) string {
 	if budget < 1 {

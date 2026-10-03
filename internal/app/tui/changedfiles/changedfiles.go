@@ -84,7 +84,7 @@ func Read(workingDir, baseRef string) []sessionsheet.ChangedFile {
 	// Fourth pass: untracked-and-unstaged new files. None of the diff
 	// passes above report these (they only see tracked content), so list
 	// them explicitly and append as additions. Respect .gitignore via
-	// --exclude-standard so ignored files never surface in the rail.
+	// --exclude-standard so ignored files never surface in the session sheet.
 	ctx4, cancel4 := context.WithTimeout(context.Background(), readTimeout)
 	defer cancel4()
 

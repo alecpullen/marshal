@@ -11,6 +11,8 @@ type ThinkingEntry struct {
 	Text      string
 	Duration  time.Duration
 	StartedAt time.Time
+	// StepID is the step whose model response produced the reasoning.
+	StepID StepID
 }
 
 // InProgressMessage holds the reasoning text accumulated for the model call

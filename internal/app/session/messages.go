@@ -131,6 +131,9 @@ type Message struct {
 	// when the provider reported usage. In-memory only, like
 	// ToolCallCount — it feeds the session export's .usage block.
 	Usage string
+	// StepID is the step that produced the message. Set only for narration
+	// (ContentTypeNarration); 0 for everything else.
+	StepID StepID
 }
 
 // loadFromDB reconstructs the in-memory message tree and scratchpad state
@@ -160,6 +163,7 @@ func (s *State) loadFromDB() {
 		return
 	}
 
+	var idMap map[int64]int64 // DB message id -> in-memory id, valid only during this load
 	if leafDBID != 0 {
 		dbMessages, err := s.db.MessagesOnBranch(s.sessionID, leafDBID)
 		if err != nil {
@@ -200,6 +204,7 @@ func (s *State) loadFromDB() {
 					ThinkDuration: thinkDur,
 					CreatedAt:     dm.CreatedAt,
 					Final:         dm.Final,
+					StepID:        dm.StepSeq,
 				}
 				s.parentOf[imID] = imParent
 				if imParent != 0 {
@@ -228,9 +233,11 @@ func (s *State) loadFromDB() {
 			s.rebuildActiveBranch()
 			// The translation map is only needed while loading; drop it so the
 			// session doesn't carry a stale dual-id mapping for its lifetime.
+			idMap = s.dbIDToImID
 			s.dbIDToImID = nil
 		}
 	}
+	s.loadStepsLocked(idMap)
 
 	// Restore scratchpad entries from the per-key scratchpad_entries table.
 	// This is independent of message state so a session with scratchpad data
@@ -254,6 +261,60 @@ func (s *State) loadFromDB() {
 	}
 }
 
+// loadStepsLocked restores the session's steps and the tool-call rows that
+// belong to steps on the active branch, so a resumed transcript shows the same
+// tool rows it had before exit. idMap translates DB message ids to the
+// in-memory ids allocated by loadFromDB. Rows with no step (written before
+// steps existed) are not restored, as before. Callers must hold s.mu.
+func (s *State) loadStepsLocked(idMap map[int64]int64) {
+	rows, err := s.db.GetSteps(s.sessionID)
+	if err != nil {
+		s.logger.Warn("failed to load steps", "error", err, "session_id", s.sessionID)
+		return
+	}
+	for _, r := range rows {
+		if r.Seq >= s.nextStepSeq {
+			s.nextStepSeq = r.Seq + 1
+		}
+		// Only the active branch's messages are loaded, so a step whose turn
+		// message is not among them belongs to a branch that is not in memory
+		// (a rewound turn). Dropping it keeps its tool rows hidden too; a step
+		// with no turn message at all (TurnMessageID 0) is kept.
+		if r.TurnMessageID > 0 && idMap[r.TurnMessageID] == 0 {
+			continue
+		}
+		s.steps = append(s.steps, Step{
+			ID:        r.Seq,
+			TurnMsgID: idMap[r.TurnMessageID],
+			Actor:     Actor{Role: r.ActorRole, Label: r.ActorLabel, Model: r.Model, Provider: r.Provider},
+			TodoID:    r.TodoID,
+			StartedAt: r.StartedAt,
+			EndedAt:   r.EndedAt,
+		})
+	}
+	if len(rows) == 0 {
+		return
+	}
+	calls, err := s.db.GetToolCalls(s.sessionID)
+	if err != nil {
+		s.logger.Warn("failed to load tool calls", "error", err, "session_id", s.sessionID)
+		return
+	}
+	onBranch := s.branchIDsLocked()
+	known := make(map[StepID]bool, len(s.steps))
+	for _, st := range s.steps {
+		known[st.ID] = true
+	}
+	for _, c := range calls {
+		// A call whose step was dropped above belongs to a rewound branch.
+		if c.StepID > 0 && known[c.StepID] && s.stepOnBranchLocked(c.StepID, onBranch) {
+			// Appended directly, not via LogToolCall: a restored row must not
+			// be persisted again or counted in this turn's ledger.
+			s.auditLog = append(s.auditLog, c)
+		}
+	}
+}
+
 func (s *State) persistenceEnabled() bool {
 	return s.db != nil && s.sessionID != "" && s.logger != nil
 }
@@ -266,6 +327,12 @@ func (s *State) persistenceEnabled() bool {
 // anyway, and holding it closes the race where a concurrent Rewind /
 // SwitchBranch could orphan a stashed pointer mid-promotion.
 func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string) {
+	s.appendMessageStepped(role, content, contentType, final, salvaged, salvageReason, toolCallCount, usage, 0)
+}
+
+// appendMessageStepped is appendMessage plus the step the message belongs to
+// (0 = none).
+func (s *State) appendMessageStepped(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string, stepID StepID) {
 	s.mu.Lock()
 	reasoning := s.inProgress.Reasoning
 	var thinkDuration time.Duration
@@ -285,7 +352,7 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	persisted := false
 	if s.persistenceEnabled() {
 		var err error
-		dbID, err = s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), createdAt, reasoning, thinkDuration, final, s.leafDBID)
+		dbID, err = s.db.SaveMessageStep(s.sessionID, string(role), content, string(contentType), createdAt, reasoning, thinkDuration, final, s.leafDBID, stepID)
 		if err != nil {
 			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
 		} else {
@@ -340,6 +407,7 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 		SalvageReason: salvageReason,
 		ToolCallCount: toolCallCount,
 		Usage:         usage,
+		StepID:        stepID,
 	}
 	s.messages = append(s.messages, msg)
 	s.parentOf[id] = parent

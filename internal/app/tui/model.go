@@ -3512,17 +3512,7 @@ func (m *Model) popOldestSteering() (string, bool) {
 // isUserTurn reports whether a transcript item is a user prompt, the boundary
 // the turn separator marks.
 func isUserTurn(item session.TranscriptItem) bool {
-	return item.Kind == session.KindMessage &&
-		item.Message != nil &&
-		item.Message.Role == session.RoleUser &&
-		// A subagent report is stored under RoleUser for history replay but
-		// is not a turn the user took; treating it as one emits a turn
-		// separator above a block that renders nothing.
-		item.Message.ContentType != session.ContentTypeSubagentReport &&
-		item.Message.ContentType != session.ContentTypeWatchReport &&
-		// A mid-turn steering message renders (compact dim marker) but is
-		// not a turn boundary either — no separator above an aside.
-		item.Message.ContentType != session.ContentTypeSteering
+	return item.Kind == session.KindMessage && session.IsUserTurnMessage(item.Message)
 }
 
 // hasConversationTurns reports whether the transcript holds any real

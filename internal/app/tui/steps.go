@@ -222,8 +222,44 @@ func countToolCalls(rows []*stack.Node) int {
 // top-level row, indented: width is reduced by the indent so wrapping stays
 // inside the frame, and every line (continuations included) shifts with it.
 func renderToolRow(ev registry.AuditEvent, expanded bool, callers []string, width int) string {
-	return indentLines(renderCompletedToolCall(ev, expanded, callers, width-stepRowIndent), stepRowIndent)
+	out := indentLines(renderCompletedToolCall(ev, expanded, callers, width-stepRowIndent), stepRowIndent)
+	if !expanded && toolFailed(ev) {
+		out += failedTail(ev, width)
+	}
+	return out
 }
+
+func toolFailed(ev registry.AuditEvent) bool {
+	return ev.Error != "" || ev.Approval == registry.ApprovalDenied ||
+		(ev.CommandExitCode != nil && *ev.CommandExitCode != 0)
+}
+
+// failedTail shows the last few lines of a failed call's output under its
+// collapsed row, so the reason is visible without opening it. The tail is the
+// useful end: a test run prints its failures last.
+func failedTail(ev registry.AuditEvent, width int) string {
+	text := strings.TrimRight(ev.ResultContent, "\n")
+	if text == "" {
+		text = ev.Error
+	}
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > failedTailLines {
+		lines = lines[len(lines)-failedTailLines:]
+	}
+	var b strings.Builder
+	room := max(width-stepRowIndent-continuationIndent-2, 8)
+	for _, l := range lines {
+		b.WriteString(strings.Repeat(" ", stepRowIndent+continuationIndent) +
+			mutedStyle().Render(ansi.Truncate(strings.TrimRight(l, " \t\r"), room, "…")) + "\n")
+	}
+	return b.String()
+}
+
+// failedTailLines is how many output lines a failed row shows collapsed.
+const failedTailLines = 3
 
 // renderToolGroupRow is renderToolRow for a merged same-tool run.
 func renderToolGroupRow(evs []registry.AuditEvent, expanded bool, width int) string {

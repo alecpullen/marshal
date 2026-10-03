@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"image/color"
+	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -75,8 +77,18 @@ func (m Model) viewedTodos() []native.TodoItem {
 
 // tasksDoc builds the Ctrl+T Tasks panel: one row per todo, using the same
 // glyphs as todoLine. docpanel supplies the `esc close` hint.
-func tasksDoc(todos []native.TodoItem) commands.Doc {
+//
+// Each row also carries its step count (steps grouped by the todo they were
+// bound to), its duration once completed, or its live elapsed time while in
+// progress.
+func tasksDoc(todos []native.TodoItem, steps []session.Step, now time.Time) commands.Doc {
 	done, _ := todoProgress(todos)
+	stepCount := map[string]int{}
+	for _, st := range steps {
+		if st.TodoID != "" {
+			stepCount[st.TodoID]++
+		}
+	}
 	rows := make([]commands.Row, 0, len(todos))
 	for _, t := range todos {
 		g := glyph.Ambient
@@ -86,9 +98,29 @@ func tasksDoc(todos []native.TodoItem) commands.Doc {
 		case native.TodoInProgress:
 			g = glyph.Running
 		}
-		rows = append(rows, commands.Row{Text: g + " " + t.Content})
+		var detail []string
+		if n := stepCount[t.ID]; t.ID != "" && n > 0 {
+			detail = append(detail, pluralN(n, "step"))
+		}
+		switch {
+		case t.Status == native.TodoCompleted && !t.StartedAt.IsZero() && !t.CompletedAt.IsZero():
+			detail = append(detail, compactDuration(t.CompletedAt.Sub(t.StartedAt)))
+		case t.Status == native.TodoInProgress && !t.StartedAt.IsZero():
+			detail = append(detail, compactDuration(now.Sub(t.StartedAt)))
+		}
+		rows = append(rows, commands.Row{Text: g + " " + t.Content, Detail: strings.Join(detail, " · ")})
 	}
 	return commands.Doc{Title: fmt.Sprintf("Tasks %d/%d", done, len(todos)), Rows: rows}
+}
+
+// viewedSteps is viewedTodos for steps: the drilled-in child's, else ours.
+func (m Model) viewedSteps() []session.Step {
+	if len(m.viewStack) > 0 {
+		if child := m.viewStack[len(m.viewStack)-1].Child; child != nil {
+			return child.Steps()
+		}
+	}
+	return m.state.Steps()
 }
 
 // tasksOpen reports whether the Tasks panel is the open dock panel.
@@ -113,7 +145,7 @@ func (m *Model) toggleTasksPanel() {
 		return
 	}
 	m.sheetPanel = nil // opening replaces the session sheet if it was up
-	m.tasksPanel = docpanel.New(tasksDoc(todos), m.state)
+	m.tasksPanel = docpanel.New(tasksDoc(todos, m.viewedSteps(), m.now()), m.state)
 	m.dock.Open(m.tasksPanel)
 	m.refreshViewport()
 }

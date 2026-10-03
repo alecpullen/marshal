@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
@@ -164,5 +165,169 @@ func TestPreTaskSessionsRenderWithoutHeadersOrErrors(t *testing.T) {
 	}
 	if !strings.Contains(text, "Old-style step.") {
 		t.Fatalf("the step still renders:\n%s", text)
+	}
+}
+
+func TestTasksDocShowsStepCountsAndDurations(t *testing.T) {
+	now := time.Now()
+	todos := []db.TodoItem{
+		{ID: "t1", Content: "Done one", Status: "completed", StartedAt: now.Add(-5 * time.Minute), CompletedAt: now.Add(-2 * time.Minute)},
+		{ID: "t2", Content: "Live one", Status: "in_progress", StartedAt: now.Add(-90 * time.Second)},
+		{ID: "t3", Content: "Later", Status: "pending"},
+	}
+	steps := []session.Step{{ID: 1, TodoID: "t1"}, {ID: 2, TodoID: "t1"}, {ID: 3, TodoID: "t2"}}
+	doc := tasksDoc(todos, steps, now)
+	if got := doc.Rows[0].Detail; got != "2 steps · 3m00s" {
+		t.Errorf("completed row detail = %q", got)
+	}
+	if got := doc.Rows[1].Detail; got != "1 step · 1m30s" {
+		t.Errorf("in-progress row detail = %q", got)
+	}
+	if got := doc.Rows[2].Detail; got != "" {
+		t.Errorf("pending row detail = %q", got)
+	}
+}
+
+func TestNowBarClockIsTheInProgressTasksElapsedTime(t *testing.T) {
+	now := time.Now()
+	in := nowBarInput{
+		Width: 80, Busy: true, Now: now, TurnStartedAt: now.Add(-10 * time.Minute),
+		Todos: []db.TodoItem{
+			{ID: "t1", Content: "Working", Status: "in_progress", StartedAt: now.Add(-42 * time.Second)},
+			{ID: "t2", Content: "Next", Status: "pending"},
+		},
+	}
+	_, _, elapsed := nowBarHead(in)
+	if elapsed != "42s" {
+		t.Fatalf("elapsed = %q, want the task's 42s rather than the turn's 10m", elapsed)
+	}
+	in.Todos[0].StartedAt = time.Time{}
+	if _, _, elapsed = nowBarHead(in); !strings.Contains(elapsed, "10m") {
+		t.Fatalf("with no task start the turn clock is used, got %q", elapsed)
+	}
+}
+
+func TestFailedRowShowsItsLastOutputLinesCollapsed(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	exit := 2
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Running the build. It may break.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: id, ToolCallID: "b",
+		Args: []byte(`{"command":"make"}`), ResultSummary: "exit 2", CommandExitCode: &exit,
+		ResultContent: "line1\nline2\nline3\nline4\nboom: the real reason"})
+	m.state.EndStep(id)
+	text := viewText(&m)
+	if !strings.Contains(text, "boom: the real reason") || !strings.Contains(text, "line3") {
+		t.Fatalf("a failed row shows its last lines:\n%s", text)
+	}
+	if strings.Contains(text, "line1") {
+		t.Fatalf("only the last 3 lines:\n%s", text)
+	}
+}
+
+// Golden rows for the task chrome: exact text at 80 and 140 columns. Durations
+// are fixed through the todo timestamps so the rows are deterministic.
+func TestTaskChromeGolden(t *testing.T) {
+	start := time.Now().Add(-10 * time.Minute)
+	for _, width := range []int{80, 140} {
+		m := newTestModel(t)
+		m.resize(width, 60)
+		m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "in_progress", StartedAt: start}})
+		id := m.state.BeginStep(session.Actor{})
+		m.state.AddNarration(id, "Reading the parser. It is small.")
+		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"p.go"}`), ResultSummary: "ok"})
+		m.state.EndStep(id)
+		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}})
+		lines := transcriptLines(&m)
+
+		var folded string
+		for _, l := range lines {
+			if strings.Contains(l, "Wire the parser") {
+				folded = strings.TrimRight(l, " ")
+			}
+		}
+		want := " ✓ 1/1 Wire the parser"
+		tail := "1 step · 1 tool · 3m00s ▹"
+		if !strings.HasPrefix(folded, want) || !strings.HasSuffix(folded, tail) {
+			t.Errorf("w=%d folded row = %q, want prefix %q and suffix %q", width, folded, want, tail)
+		}
+		if got := len([]rune(folded)); got > width {
+			t.Errorf("w=%d folded row is %d wide", width, got)
+		}
+
+		// Unfold: the open header is a rule ending in the task's duration.
+		m.foldTasks = false
+		var header string
+		for _, l := range transcriptLines(&m) {
+			if strings.Contains(l, "1/1 Wire the parser") {
+				header = strings.TrimRight(l, " ")
+			}
+		}
+		if !strings.HasPrefix(header, " ✓ 1/1 Wire the parser ─") || !strings.HasSuffix(header, "3m00s") {
+			t.Errorf("w=%d open header = %q", width, header)
+		}
+		if got := len([]rune(header)); got != width {
+			t.Errorf("w=%d open header should fill the frame, is %d wide", width, got)
+		}
+	}
+}
+
+func TestReceiptGolden(t *testing.T) {
+	for _, width := range []int{80, 140} {
+		m := newTestModel(t)
+		m.resize(width, 60)
+		scriptedTasks(t, &m, 2, 2, true)
+		var receipt string
+		for _, l := range transcriptLines(&m) {
+			if strings.Contains(l, "done ·") {
+				receipt = strings.TrimRight(l, " ")
+			}
+		}
+		if !strings.HasPrefix(receipt, " ✓ done · ") || !strings.Contains(receipt, "2 tasks · 4 steps · 4 tools") {
+			t.Errorf("w=%d receipt = %q", width, receipt)
+		}
+	}
+}
+
+func TestSalvagedTurnReceiptSaysSo(t *testing.T) {
+	r := &stack.ReceiptInfo{Duration: time.Minute, Steps: 3, Tools: 4, Salvaged: true}
+	if got := stripANSI(renderReceipt(r, 100)); !strings.Contains(got, "salvaged") || !strings.Contains(got, "!") && !strings.Contains(got, "⚠") {
+		t.Fatalf("salvaged receipt = %q", got)
+	}
+}
+
+// The density matrix for one step with narration, reasoning and a tool call.
+func TestDensityMatrix(t *testing.T) {
+	build := func(d density) string {
+		m := newTestModel(t)
+		m.resize(120, 80)
+		m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+		id := m.state.BeginStep(session.Actor{})
+		m.state.AddNarration(id, "Reading the config. The second sentence is detail that only full shows in a wrapped block.")
+		m.state.LogThinking(session.ThinkingEntry{Text: "private reasoning text", Duration: 2 * time.Second, StartedAt: time.Now(), StepID: id})
+		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "r",
+			Args: []byte(`{"path":"cfg.go"}`), ResultSummary: "12 lines", ResultContent: "package cfg\nvar Secret = 1"})
+		m.state.EndStep(id)
+		m.density = d
+		return viewText(&m)
+	}
+	outline, steps, full := build(densityOutline), build(densitySteps), build(densityFull)
+
+	for _, c := range []struct {
+		name, text string
+		want       map[string]bool // substring -> expected present
+	}{
+		{"outline", outline, map[string]bool{"Reading the config.": true, "Read file": false, "thought for": false, "1 tool": true}},
+		{"steps", steps, map[string]bool{"Reading the config.": true, "Read file": true, "thought for": true, "private reasoning text": false, "var Secret": false}},
+		{"full", full, map[string]bool{"Reading the config.": true, "private reasoning text": true, "var Secret": true}},
+	} {
+		for sub, want := range c.want {
+			if got := strings.Contains(c.text, sub); got != want {
+				t.Errorf("%s: contains(%q) = %v, want %v\n%s", c.name, sub, got, want, c.text)
+			}
+		}
 	}
 }

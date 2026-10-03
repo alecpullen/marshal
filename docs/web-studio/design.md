@@ -729,6 +729,9 @@ convenience backend for local use.
 
 ## 9. Roadmap
 
+The phase specs and implementation plans, in execution order, are
+indexed in [`README.md`](README.md).
+
 | Phase | Ships |
 |---|---|
 | **W1 · Foundation** | Design system and shell; `viewmodel` move and the `_marshal/stack` stream; transcript rendering with browse keys; Home inbox; owner and origin fields in the data model |

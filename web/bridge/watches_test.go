@@ -271,8 +271,8 @@ func TestRerouteAppliesOnFireAndUndoRestores(t *testing.T) {
 	if e == nil || e.Reason != "watch:disk" {
 		t.Fatalf("reroute not audited with its reason: %+v", e)
 	}
-	if _, ok := h.f.ws.WatchRule("w1"); ok {
-		t.Fatal("the rule outlived its firing")
+	if rule, ok := h.f.ws.WatchRule("w1"); ok && rule.Reroute != nil {
+		t.Fatal("the reroute outlived its firing")
 	}
 	// The watch event itself reaches the fleet stream, tagged studio.
 	var sawWatch bool
@@ -399,5 +399,77 @@ func TestWorkspaceV7MigratesToV8AndKeepsWatchRules(t *testing.T) {
 	}
 	if _, ok := reloaded.WatchRule("w1"); ok {
 		t.Fatal("rule survived deletion")
+	}
+}
+
+// listedWatch fetches GET /api/watches and returns the row with the id.
+func listedWatch(t *testing.T, s *Server, id string) map[string]json.RawMessage {
+	t.Helper()
+	var rows []map[string]json.RawMessage
+	decodeBody(t, doReq(t, s, http.MethodGet, "/api/watches", nil, nil), &rows)
+	for _, r := range rows {
+		if string(r["id"]) == `"`+id+`"` {
+			return r
+		}
+	}
+	t.Fatalf("watch %s not listed: %v", id, rows)
+	return nil
+}
+
+func TestWatchesListMergesTheStoredTripActions(t *testing.T) {
+	h := newRoutingHarness(t)
+	h.ctl.results["session/watch_list"] = map[string]any{"watches": []map[string]any{
+		{"id": "w1", "name": "disk", "state": "watching"},
+		{"id": "w9", "name": "other", "state": "watching"},
+	}}
+	rec := doReq(t, h.s, http.MethodPost, "/api/watches", map[string]any{
+		"spec":   map[string]any{"name": "disk", "notify": false, "resume": true},
+		"onTrip": map[string]any{"reroute": map[string]any{"role": "implementer", "preset": "fast"}},
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start = %d %s", rec.Code, rec.Body.String())
+	}
+
+	row := listedWatch(t, h.s, "w1")
+	if string(row["notify"]) != "false" || string(row["resume"]) != "true" {
+		t.Fatalf("notify/resume = %s/%s", row["notify"], row["resume"])
+	}
+	var onTrip struct {
+		Notify  bool         `json:"notify"`
+		Resume  bool         `json:"resume"`
+		Reroute *RerouteRule `json:"reroute"`
+	}
+	if err := json.Unmarshal(row["onTrip"], &onTrip); err != nil {
+		t.Fatal(err)
+	}
+	if onTrip.Notify || !onTrip.Resume || onTrip.Reroute == nil ||
+		onTrip.Reroute.Role != "implementer" || onTrip.Reroute.Preset != "fast" {
+		t.Fatalf("onTrip = %s", row["onTrip"])
+	}
+	// A watch the bridge never stored a rule for is left as the engine sent it.
+	other := listedWatch(t, h.s, "w9")
+	if _, ok := other["onTrip"]; ok {
+		t.Fatalf("an unknown watch gained onTrip: %v", other)
+	}
+
+	// Once the reroute has fired, notify and resume stay listed; the spent
+	// reroute does not.
+	h.fire("fired")
+	waitFor(t, 5*time.Second, "reroute applied", func() bool { return h.binding("implementer") == `{"preset":"fast"}` })
+	row = listedWatch(t, h.s, "w1")
+	if string(row["resume"]) != "true" || strings.Contains(string(row["onTrip"]), "reroute") {
+		t.Fatalf("after firing: %v", row)
+	}
+}
+
+func TestWatchesListDefaultsNotifyToTrue(t *testing.T) {
+	h := newRoutingHarness(t)
+	h.ctl.results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w1", "name": "disk"}}}
+	if rec := doReq(t, h.s, http.MethodPost, "/api/watches", map[string]any{"spec": map[string]any{"name": "disk"}}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("start = %d", rec.Code)
+	}
+	row := listedWatch(t, h.s, "w1")
+	if string(row["notify"]) != "true" || string(row["resume"]) != "false" {
+		t.Fatalf("notify/resume = %s/%s", row["notify"], row["resume"])
 	}
 }

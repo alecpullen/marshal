@@ -168,6 +168,12 @@ type workspaceFile struct {
 type WatchRule struct {
 	// Reroute rebinds a role to a preset on the active routing profile.
 	Reroute *RerouteRule `json:"reroute,omitempty"`
+	// Notify and Resume echo the trip actions the watch was started with.
+	// The engine's watch list does not report them, so the bridge keeps
+	// them to show in GET /api/watches. A nil Notify means the engine's
+	// default, which is to notify.
+	Notify *bool `json:"notify,omitempty"`
+	Resume bool  `json:"resume,omitempty"`
 }
 
 // RerouteRule names the role to rebind and the preset to bind it to.

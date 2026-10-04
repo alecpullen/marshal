@@ -94,6 +94,16 @@ func (l *rerouteLog) releaseUndo(id string) {
 	}
 }
 
+// watchRuleKey is the workspace key for a watch's rule. Watch ids are only
+// unique within one owner, so agent watches are namespaced; Studio watches
+// keep the bare id.
+func watchRuleKey(owner, id string) string {
+	if owner == studioOwner {
+		return id
+	}
+	return owner + "/" + id
+}
+
 // onControlNotification forwards the control agent's watch events to the
 // fleet stream, tagged "studio", and runs a fired watch's reroute rule.
 func (f *Fleet) onControlNotification(method string, params json.RawMessage) {
@@ -167,14 +177,21 @@ func (f *Fleet) setRoleBinding(ctx context.Context, snap routingSnapshot, role s
 // it, and tells the fleet. It runs at most once per watch: the rule is
 // dropped first, so a repeated event cannot reroute twice.
 func (f *Fleet) applyReroute(watchID, watchName string, rule RerouteRule) {
-	if err := f.ws.DeleteWatchRule(watchID); err != nil {
+	// Spend the reroute but keep the rest of the rule, so the watch still
+	// lists the notify and resume it was started with.
+	stored, _ := f.ws.WatchRule(watchID)
+	spent := stored
+	spent.Reroute = nil
+	if err := f.ws.PutWatchRule(watchID, spent); err != nil {
 		slog.Default().Warn("webbridge: drop watch rule failed", "watch", watchID, "err", err)
 	}
 	if err := f.rerouteRole(watchID, watchName, rule); err != nil {
 		slog.Default().Warn("webbridge: reroute failed", "watch", watchName, "err", err)
 		// The rule was spent but nothing changed: put it back so the watch
 		// can still act the next time it fires, and leave a record.
-		if perr := f.ws.PutWatchRule(watchID, WatchRule{Reroute: &rule}); perr != nil {
+		restored := stored
+		restored.Reroute = &rule
+		if perr := f.ws.PutWatchRule(watchID, restored); perr != nil {
 			slog.Default().Warn("webbridge: restore watch rule failed", "watch", watchID, "err", perr)
 		}
 		f.auditf(AuditEvent{Event: AuditRerouteFailed, OwnerID: DefaultOwnerID,
@@ -320,6 +337,28 @@ func (f *Fleet) watchSources() []watchSource {
 	return srcs
 }
 
+// mergeWatchRule adds what the bridge holds about a watch to its list row:
+// the trip actions it was started with. A watch with no stored rule (one
+// started outside the bridge) is left as the engine reported it.
+func (f *Fleet) mergeWatchRule(row map[string]json.RawMessage, owner string) {
+	var id string
+	if json.Unmarshal(row["id"], &id) != nil || id == "" {
+		return
+	}
+	rule, ok := f.ws.WatchRule(watchRuleKey(owner, id))
+	if !ok {
+		return
+	}
+	notify := rule.Notify == nil || *rule.Notify
+	onTrip := map[string]any{"notify": notify, "resume": rule.Resume}
+	if rule.Reroute != nil {
+		onTrip["reroute"] = rule.Reroute
+	}
+	row["notify"], _ = json.Marshal(notify)
+	row["resume"], _ = json.Marshal(rule.Resume)
+	row["onTrip"], _ = json.Marshal(onTrip)
+}
+
 // ListWatches merges every source's watches, each tagged with its owner.
 // Sources are asked in parallel under a short timeout; one that fails or
 // does not support watches contributes nothing rather than failing the
@@ -351,6 +390,7 @@ func (f *Fleet) ListWatches(ctx context.Context) []json.RawMessage {
 			owner, _ := json.Marshal(src.owner)
 			for _, w := range res.Watches {
 				w["agentId"] = owner
+				f.mergeWatchRule(w, src.owner)
 				if b, err := json.Marshal(w); err == nil {
 					results[i] = append(results[i], b)
 				}
@@ -429,8 +469,15 @@ func (s *Server) startWatch(w http.ResponseWriter, r *http.Request) {
 	var id, name string
 	_ = json.Unmarshal(res["id"], &id)
 	_ = json.Unmarshal(res["name"], &name)
-	if rule != nil && id != "" {
-		if err := s.fleet.ws.PutWatchRule(id, WatchRule{Reroute: rule}); err != nil {
+	if id != "" {
+		wr := WatchRule{Reroute: rule}
+		var spec struct {
+			Notify *bool `json:"notify"`
+			Resume bool  `json:"resume"`
+		}
+		_ = json.Unmarshal(body.Spec, &spec)
+		wr.Notify, wr.Resume = spec.Notify, spec.Resume
+		if err := s.fleet.ws.PutWatchRule(watchRuleKey(owner, id), wr); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -489,9 +536,7 @@ func (s *Server) stopWatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if owner == studioOwner {
-		_ = s.fleet.ws.DeleteWatchRule(id)
-	}
+	_ = s.fleet.ws.DeleteWatchRule(watchRuleKey(owner, id))
 	s.fleet.auditf(AuditEvent{Event: AuditWatchStopped, OwnerID: DefaultOwnerID,
 		AgentID: agentIfOwner(owner), Detail: owner + ":" + id})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})

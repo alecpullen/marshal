@@ -13,6 +13,7 @@
   import Usage from './views/Usage.svelte'
   import Watches from './views/Watches.svelte'
   import Gallery from './views/workspaces/Gallery.svelte'
+  import Designer from './views/workspaces/Designer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -246,6 +247,10 @@
       <div class="h-full overflow-y-auto">
         {#if workspacesRoute.view === 'gallery'}
           <Gallery agents={$fleet.agents} onNavigate={navigate} />
+        {:else if workspacesRoute.view === 'edit' && workspacesRoute.name}
+          {#key workspacesRoute.name}
+            <Designer name={workspacesRoute.name} onNavigate={navigate} />
+          {/key}
         {/if}
       </div>
     {:else if hash === '#watches'}

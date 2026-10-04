@@ -43,7 +43,12 @@
     defaultRef = settings.status === 'fulfilled' ? (settings.value.workspace ?? '') : ''
     // Preselect the project default when nothing was chosen and it can run.
     const d = items.find((w) => refOf(w) === defaultRef)
-    if (!value && d && !unbuilt(d)) onChange(refOf(d))
+    const current = items.find((w) => refOf(w) === value)
+    // A remembered choice that no longer exists or can no longer run falls back to the default.
+    if (!value || !current || unbuilt(current)) {
+      if (d && !unbuilt(d)) onChange(refOf(d))
+      else if (value) onChange('')
+    }
   })
 </script>
 

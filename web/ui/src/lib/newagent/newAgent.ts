@@ -43,3 +43,26 @@ export function loadRemembered(): Remembered {
     return {}
   }
 }
+
+const WS_KEY = 'marshal.ui.newagent.workspace'
+
+/** The workspace last chosen for a project, kept apart from the main choice because it is per project. */
+export function loadWorkspace(project: string): string {
+  try {
+    const m = JSON.parse(localStorage.getItem(WS_KEY) ?? '{}') as Record<string, string>
+    return m[project] ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function rememberWorkspace(project: string, ref: string): void {
+  try {
+    const m = JSON.parse(localStorage.getItem(WS_KEY) ?? '{}') as Record<string, string>
+    if (ref) m[project] = ref
+    else delete m[project]
+    localStorage.setItem(WS_KEY, JSON.stringify(m))
+  } catch {
+    // Not persisted; the project default applies next time.
+  }
+}

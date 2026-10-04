@@ -68,7 +68,8 @@ func (m *Model) regionAt(line int) (clickTarget, bool) {
 
 // nowBarBand returns the half-open screen-row range [top, bottom) the now
 // bar occupies, or false when it isn't rendered. The frame order
-// (view.go) is: scroll hint, breadcrumb, transcript viewport, now bar.
+// (view.go) is: scroll hint, breadcrumb, todo strip, transcript viewport,
+// todo band, now bar.
 //
 // This math is coupled to viewString()'s layout: the hint and breadcrumb
 // rows are only emitted when their *Rows() helpers return nonzero. The
@@ -78,7 +79,7 @@ func (m *Model) nowBarBand(plan nowBarPlan) (top, bottom int, ok bool) {
 	if len(plan.rows) == 0 || m.dock.FullFrameOpen() {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.todoStripRows() + m.viewport.Height()
+	top = m.scrollHintRows() + m.breadcrumbRows() + m.todoStripRows() + m.viewport.Height() + m.todoBandRows()
 	return top, top + len(plan.rows), true
 }
 

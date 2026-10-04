@@ -259,7 +259,7 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return renderReceipt(n.Receipt, width), nil
 	case n.Kind == viewmodel.KindQueue:
-		// The waiting todos live in the pinned strip above the transcript.
+		// The waiting todos live in the pinned band below the transcript.
 		return "", nil
 	case n.Kind == viewmodel.KindStep && n.Step != nil:
 		return renderStep(n, c, width, m.density)

@@ -1,6 +1,6 @@
 [profile]
 default = 'single'
-active_preset = 'ollama-cloud-2/kimi-k3'
+active_preset = 'ollama-cloud-2/deepseek-v4.1-flash'
 
 [agent]
 max_tool_iterations = 0

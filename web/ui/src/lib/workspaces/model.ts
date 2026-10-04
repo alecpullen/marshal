@@ -52,11 +52,12 @@ const GATE_LANG: Record<string, string> = { go: 'go', npm: 'node', node: 'node',
  * there is no command or its first word is not in the table, so the UI
  * says nothing rather than guessing.
  */
-export function gateRunnable(toolchains: string[], gateCommand: string | undefined): 'runnable' | 'may-skip' | 'unknown' {
-  const first = gateCommand?.trim().split(/\s+/)[0]
-  const lang = first ? GATE_LANG[first] : undefined
-  if (!lang) return 'unknown'
-  return toolchains.some((t) => t.split('@')[0] === lang) ? 'runnable' : 'may-skip'
+export function gateRunnable(toolchains: string[], gateCommands: string | undefined | (string | undefined)[]): 'runnable' | 'may-skip' | 'unknown' {
+  const cmds = Array.isArray(gateCommands) ? gateCommands : [gateCommands]
+  const langs = cmds.map((c) => GATE_LANG[c?.trim().split(/\s+/)[0] ?? '']).filter((l): l is string => !!l)
+  if (langs.length === 0) return 'unknown'
+  const have = new Set(toolchains.map((t) => t.split('@')[0]))
+  return langs.every((l) => have.has(l)) ? 'runnable' : 'may-skip'
 }
 
 /** `▦ name@v3`, the tag the session header and Live wall show for an agent's workspace. */

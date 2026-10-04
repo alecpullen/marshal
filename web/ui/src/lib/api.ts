@@ -885,8 +885,9 @@ export interface WorkspaceListItem {
   /** The latest parsed doc, for the content chips; absent when it did not parse. */
   doc?: WSDoc
 }
-export interface WSLoaded { source: string; doc: WSDoc; sections: WSSection[]; diagnostics: WSDiag[]; draft?: boolean; version?: number }
-export interface BuildsInfo { versions: TemplateVersion[]; pool?: number; starts?: { coldMs: number; warmMs: number }; poolIdle?: number }
+export interface WSLoaded { source: string; doc: WSDoc; sections: WSSection[]; diagnostics: WSDiag[]; /** 0 when the draft was read, else the published version. */ version?: number; meta?: TemplateMeta }
+export interface PoolStatus { size: number; idle: number; starting: number }
+export interface BuildsInfo { versions: TemplateVersion[] | null; pool?: PoolStatus; starts?: { coldMs: number; warmMs: number } }
 export type WorkspaceFrom = 'blank' | `starter:${string}` | `devcontainer:${string}` | `snapshot:${string}`
 export interface SecretsStatus { backend: string; healthy: boolean; error?: string }
 export interface NetRow { host: string; requests: number; blocked: number; bytesUp: number; bytesDown: number; lastSeen: number; decision: string; injected?: boolean; rule?: string }
@@ -903,7 +904,7 @@ export async function getWorkspace(name: string, version?: number): Promise<WSLo
 }
 export async function saveWorkspaceDraft(name: string, source: string): Promise<WSLoaded> { return request('PUT', `${wsPath(name)}/draft`, { source }) }
 export async function patchWorkspace(name: string, layer: number, value: unknown): Promise<WSLoaded> { return request('POST', `${wsPath(name)}/patch`, { layer, value }) }
-export async function publishWorkspace(name: string): Promise<{ version: number }> { return request('POST', `${wsPath(name)}/publish`, {}) }
+export async function publishWorkspace(name: string): Promise<TemplateVersion> { return request('POST', `${wsPath(name)}/publish`, {}) }
 export async function diffWorkspace(name: string, a: number, b: number): Promise<string> {
   const r = await request<string | { diff: string }>('GET', `${wsPath(name)}/diff?a=${a}&b=${b}`)
   return typeof r === 'string' ? r : r.diff
@@ -920,4 +921,7 @@ export async function getNetworkHosts(workspace: string): Promise<{ processMode:
   return request('GET', `/api/network?workspace=${encodeURIComponent(workspace)}&view=hosts`)
 }
 export async function listRepos(): Promise<RepoInfo[]> { return request('GET', '/api/repos') }
+/** The project's verify-gate commands (W4.2); both empty means the gate has nothing to run. */
+export interface ProjectHealth { verify?: { build: string; test: string } }
+export async function getProjectHealth(root: string): Promise<ProjectHealth> { return request('GET', `/api/projects/health?root=${encodeURIComponent(root)}`) }
 export async function getProjectSettings(root: string): Promise<ProjectSettings> { return request('GET', `/api/projects/settings?root=${encodeURIComponent(root)}`) }

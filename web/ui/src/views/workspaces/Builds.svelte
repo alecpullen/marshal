@@ -25,7 +25,7 @@
   async function load() {
     try {
       const b = await listBuilds(name)
-      versions = b.versions
+      versions = b.versions ?? []
       error = ''
       if (selected === null && versions.length) selected = versions[versions.length - 1].n
     } catch (e) {

@@ -10,7 +10,7 @@ vi.mock('../../lib/api.js', async (importActual) => {
     ...actual,
     getWorkspace: vi.fn(), patchWorkspace: vi.fn(), saveWorkspaceDraft: vi.fn(), publishWorkspace: vi.fn(), diffWorkspace: vi.fn(),
     listBuilds: vi.fn(), startBuild: vi.fn(), setWorkspacePool: vi.fn(), rotateWorkspaceCA: vi.fn(), getSecretsStatus: vi.fn(),
-    getNetworkHosts: vi.fn(), listRepos: vi.fn(),
+    getNetworkHosts: vi.fn(), listRepos: vi.fn(), listProjects: vi.fn(), getProjectHealth: vi.fn(),
   }
 })
 
@@ -42,10 +42,12 @@ const loaded = (over: Partial<WSLoaded> = {}): WSLoaded => ({ source: SRC, doc: 
 
 beforeEach(() => {
   vi.mocked(api.getWorkspace).mockResolvedValue(loaded())
-  vi.mocked(api.listBuilds).mockResolvedValue({ versions: [{ n: 1, at: 0, buildStatus: 'ok', sizeBytes: 100 * 1024 * 1024 }], pool: 0, starts: { coldMs: 42000, warmMs: 1500 } })
+  vi.mocked(api.listBuilds).mockResolvedValue({ versions: [{ n: 1, at: 0, buildStatus: 'ok', sizeBytes: 100 * 1024 * 1024 }], pool: { size: 0, idle: 1, starting: 0 }, starts: { coldMs: 42000, warmMs: 1500 } })
   vi.mocked(api.getSecretsStatus).mockResolvedValue({ backend: 'local', healthy: true })
   vi.mocked(api.getNetworkHosts).mockResolvedValue({ processMode: false, rows: [{ host: 'proxy.golang.org', requests: 7, blocked: 0, bytesUp: 0, bytesDown: 0, lastSeen: 0, decision: 'allow' }] })
   vi.mocked(api.listRepos).mockResolvedValue([{ id: 'lib' }])
+  vi.mocked(api.listProjects).mockResolvedValue([{ root: '/p', available: true }] as api.ProjectStatus[])
+  vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'go build ./...', test: 'go test ./...' } })
 })
 
 async function open() {
@@ -119,7 +121,7 @@ describe('Designer', () => {
 
   it('publish asks first and shows the diff from the published version', async () => {
     vi.mocked(api.diffWorkspace).mockResolvedValue('@@ -1 +1 @@\n-apt = ["git"]\n+apt = ["git", "make"]')
-    vi.mocked(api.publishWorkspace).mockResolvedValue({ version: 2 })
+    vi.mocked(api.publishWorkspace).mockResolvedValue({ n: 2, at: '', buildStatus: 'pending' })
     await open()
     await waitFor(() => expect(api.listBuilds).toHaveBeenCalled())
     await fireEvent.click(await screen.findByRole('button', { name: 'Publish' }))
@@ -208,5 +210,18 @@ describe('Designer', () => {
     await fireEvent.input(within(card(4)).getByLabelText('Mount target'), { target: { value: '/lib' } })
     await fireEvent.change(within(card(4)).getByLabelText('Mount target'))
     await waitFor(() => expect(api.patchWorkspace).toHaveBeenCalledWith('svc', 4, [{ repo: 'lib', volume: '', target: '/lib', readonly: true }]))
+  })
+
+  it('checks the verify gate against a picked project, using its build and test commands', async () => {
+    await open()
+    const gate = await screen.findByTestId('side-gate')
+    expect(gate.textContent).toContain('Pick a project')
+    await fireEvent.change(await within(gate).findByLabelText('Gate project'), { target: { value: '/p' } })
+    await waitFor(() => expect(within(gate).getByText('runnable')).toBeTruthy())
+    expect(api.getProjectHealth).toHaveBeenCalledWith('/p')
+    vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'npm run build', test: 'npm test' } })
+    await fireEvent.change(within(gate).getByLabelText('Gate project'), { target: { value: '' } })
+    await fireEvent.change(within(gate).getByLabelText('Gate project'), { target: { value: '/p' } })
+    await waitFor(() => expect(within(gate).getByText('may be skipped')).toBeTruthy())
   })
 })

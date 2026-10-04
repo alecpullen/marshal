@@ -6,7 +6,7 @@ import type { WSDoc, WorkspaceListItem } from '../api.js'
 
 vi.mock('../api.js', async (importActual) => {
   const actual = await importActual<typeof import('../api.js')>()
-  return { ...actual, listWorkspaces: vi.fn(), getProjectSettings: vi.fn() }
+  return { ...actual, listWorkspaces: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn() }
 })
 
 afterEach(cleanup)
@@ -25,6 +25,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.listWorkspaces).mockResolvedValue(items)
   vi.mocked(api.getProjectSettings).mockResolvedValue({ workspace: 'go-service' })
+  vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: '', test: '' } })
 })
 
 const options = () => [...(screen.getByLabelText('Workspace') as HTMLSelectElement).options]
@@ -76,15 +77,21 @@ describe('WorkspaceChip', () => {
   })
 
   it('warns when the workspace cannot run the project gate', async () => {
-    render(WorkspaceChip, { project: '/p', value: 'node-app', onChange: vi.fn(), gateCommand: 'go test ./...' })
+    vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'go build ./...', test: 'go test ./...' } })
+    render(WorkspaceChip, { project: '/p', value: 'node-app', onChange: vi.fn() })
     expect((await screen.findByTestId('gate-warning')).textContent).toContain('Verify gate may be skipped')
   })
 
   it('is quiet when the gate is runnable or unknown', async () => {
-    const { rerender } = render(WorkspaceChip, { project: '/p', value: 'go-service', onChange: vi.fn(), gateCommand: 'go test ./...' })
+    vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'go build ./...', test: 'go test ./...' } })
+    const { rerender } = render(WorkspaceChip, { project: '/p', value: 'go-service', onChange: vi.fn() })
     await waitFor(() => expect(options().length).toBeGreaterThan(1))
     expect(screen.queryByTestId('gate-warning')).toBeNull()
-    await rerender({ project: '/p', value: 'node-app', onChange: vi.fn(), gateCommand: undefined })
+    // An empty gate has nothing to run, so there is nothing to warn about.
+    vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: '', test: '' } })
+    cleanup()
+    render(WorkspaceChip, { project: '/p', value: 'node-app', onChange: vi.fn() })
+    await waitFor(() => expect(options().length).toBeGreaterThan(1))
     expect(screen.queryByTestId('gate-warning')).toBeNull()
   })
 })

@@ -4,7 +4,7 @@
   import Button from '../../lib/ui/Button.svelte'
   import Tag from '../../lib/ui/Tag.svelte'
   import CreateModal from '../../lib/workspaces/CreateModal.svelte'
-  import { listWorkspaces, errMessage, type WorkspaceListItem } from '../../lib/api'
+  import { getWorkspace, listWorkspaces, errMessage, type WorkspaceListItem } from '../../lib/api'
   import type { AgentRow } from '../../lib/fleet'
   import { shortName } from '../../lib/utils'
   import { buildTone, contentChips, latestVersion, poolLabel } from '../../lib/workspaces/model'
@@ -19,6 +19,14 @@
   onMount(async () => {
     try {
       items = await listWorkspaces()
+      // The list carries no doc, so the content chips come from one detail read per Studio card.
+      for (const w of items) {
+        if (w.source !== 'studio' || w.doc) continue
+        void getWorkspace(w.name).then(
+          (r) => (items = items.map((x) => (x === w ? { ...x, doc: r.doc } : x))),
+          () => {},
+        )
+      }
     } catch (e) {
       error = errMessage(e)
     } finally {

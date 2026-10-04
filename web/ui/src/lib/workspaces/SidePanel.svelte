@@ -3,14 +3,14 @@
   import Tag from '../ui/Tag.svelte'
   import Button from '../ui/Button.svelte'
   import DiffLines from '../DiffLines.svelte'
-  import { diffWorkspace, errMessage, type BuildsInfo, type WSDoc } from '../api'
+  import { diffWorkspace, errMessage, getProjectHealth, listProjects, type BuildsInfo, type ProjectStatus, type WSDoc } from '../api'
+  import { shortName } from '../utils'
   import { buildTone, gateRunnable } from './model'
 
   let {
     name,
     doc,
     builds,
-    gateCommand,
     onPatch,
     onPool,
     onRotateCA,
@@ -19,8 +19,6 @@
     name: string
     doc: WSDoc
     builds: BuildsInfo | null
-    /** The project's verify-gate command; the check is skipped when the bridge does not expose one. */
-    gateCommand?: string
     onPatch: (layer: number, value: unknown) => void
     onPool: (size: number) => void
     onRotateCA: () => Promise<void>
@@ -29,7 +27,30 @@
 
   const versions = $derived(builds?.versions ?? [])
   const latest = $derived(versions.length ? versions[versions.length - 1] : undefined)
-  const gate = $derived(gateRunnable(doc.workspace.toolchains, gateCommand))
+  // The designer is not project-scoped, so the gate is checked against a project the user picks.
+  let projects = $state<ProjectStatus[]>([])
+  let gateProject = $state('')
+  let gateCommands = $state<string[]>([])
+  $effect(() => {
+    void listProjects().then(
+      (p) => (projects = p),
+      () => (projects = []),
+    )
+  })
+  $effect(() => {
+    const root = gateProject
+    gateCommands = []
+    if (!root) return
+    let live = true
+    getProjectHealth(root).then(
+      (h) => live && (gateCommands = h.verify ? [h.verify.build, h.verify.test] : []),
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+  })
+  const gate = $derived(gateRunnable(doc.workspace.toolchains, gateCommands))
   const injected = $derived(Object.keys(doc.inject).length)
   const mb = (b?: number) => (b ? `${(b / 1024 / 1024).toFixed(0)} MB` : '—')
   const secs = (ms?: number) => (ms ? `${(ms / 1000).toFixed(1)} s` : '—')
@@ -84,10 +105,10 @@
     {/if}
     <label class="flex items-center gap-2 text-xs text-muted">
       Warm pool
-      <select class="rounded border border-border bg-bg px-1.5 py-1 text-fg" aria-label="Pool size" value={String(builds?.pool ?? 0)} onchange={(e) => onPool(Number(e.currentTarget.value))}>
+      <select class="rounded border border-border bg-bg px-1.5 py-1 text-fg" aria-label="Pool size" value={String(builds?.pool?.size ?? 0)} onchange={(e) => onPool(Number(e.currentTarget.value))}>
         {#each [0, 1, 2, 3, 4] as n (n)}<option value={String(n)}>{n}</option>{/each}
       </select>
-      {#if builds?.poolIdle !== undefined}<span>{builds.poolIdle} idle</span>{/if}
+      {#if builds?.pool}<span>{builds.pool.idle} idle</span>{/if}
     </label>
     <button type="button" class="w-fit cursor-pointer text-xs text-accent hover:underline" onclick={() => onNavigate(`#workspaces/${encodeURIComponent(name)}/builds`)}>Builds</button>
   </section>
@@ -96,7 +117,11 @@
     <h3 class={h}>Verify gate</h3>
     {#if gate === 'runnable'}<Tag tone="ok">runnable</Tag>
     {:else if gate === 'may-skip'}<Tag tone="warn">may be skipped</Tag>
-    {:else}<p class="text-xs text-muted">Checked against the project's gate command when you start an agent.</p>{/if}
+    {:else}<p class="text-xs text-muted">{gateProject ? 'This project has no gate command to check.' : 'Pick a project to check its gate command.'}</p>{/if}
+    <select class="rounded border border-border bg-bg px-1.5 py-1 text-xs" aria-label="Gate project" bind:value={gateProject}>
+      <option value="">Project…</option>
+      {#each projects as p (p.root)}<option value={p.root}>{shortName(p.root)}</option>{/each}
+    </select>
   </section>
 
   <section class="flex flex-col gap-1.5" data-testid="side-policy">

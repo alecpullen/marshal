@@ -7,7 +7,7 @@ import type { AgentRow } from '../../lib/fleet'
 
 vi.mock('../../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../../lib/api.js')>()
-  return { ...actual, listWorkspaces: vi.fn(), createWorkspace: vi.fn(), listProjects: vi.fn() }
+  return { ...actual, listWorkspaces: vi.fn(), getWorkspace: vi.fn(), createWorkspace: vi.fn(), listProjects: vi.fn() }
 })
 
 afterEach(cleanup)
@@ -112,5 +112,13 @@ describe('Gallery', () => {
   it('rejects an invalid name before posting', async () => {
     await openCreate('Bad Name')
     expect((screen.getByText('Create') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('reads each Studio card\'s doc for the chips when the list omits it', async () => {
+    vi.mocked(api.listWorkspaces).mockResolvedValue([{ source: 'studio', name: 'svc', published: 1, usage: 0 }])
+    vi.mocked(api.getWorkspace).mockResolvedValue({ source: '', doc: doc(), sections: [], diagnostics: [] })
+    render(Gallery, { agents, onNavigate: vi.fn() })
+    await waitFor(() => expect(screen.getByTestId('ws-card').textContent).toContain('go@1.23'))
+    expect(api.getWorkspace).toHaveBeenCalledWith('svc')
   })
 })

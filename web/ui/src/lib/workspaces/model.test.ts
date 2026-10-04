@@ -15,6 +15,12 @@ describe('gateRunnable', () => {
   ])('%s with %j is %s', (cmd, tc, want) => {
     expect(gateRunnable(tc, cmd)).toBe(want)
   })
+  it('needs every mapped command covered; unmapped ones are ignored', () => {
+    expect(gateRunnable(['go@1'], ['go build ./...', 'go test ./...'])).toBe('runnable')
+    expect(gateRunnable(['go@1'], ['go build ./...', 'npm test'])).toBe('may-skip')
+    expect(gateRunnable(['go@1'], ['make', 'go test'])).toBe('runnable')
+    expect(gateRunnable(['go@1'], ['', ''])).toBe('unknown')
+  })
   it('is unknown without a command or for an unmapped first word', () => {
     expect(gateRunnable(['go@1'], undefined)).toBe('unknown')
     expect(gateRunnable(['go@1'], '  ')).toBe('unknown')

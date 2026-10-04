@@ -46,7 +46,7 @@
   // Source responses older than the latest edit are dropped.
   let editSeq = 0
 
-  const published = $derived(builds?.versions.length ? builds.versions[builds.versions.length - 1].n : 0)
+  const published = $derived(builds?.versions?.length ? builds.versions[builds.versions.length - 1].n : 0)
 
   async function loadAux() {
     // Each of these is decoration: a bridge without the route leaves its panel empty rather than failing the page.
@@ -55,7 +55,7 @@
     if (s.status === 'fulfilled') secrets = s.value
     if (r.status === 'fulfilled') repos = r.value
     if (h.status === 'fulfilled') hosts = h.value.rows
-    const n = builds?.versions.length ? builds.versions[builds.versions.length - 1].n : 0
+    const n = builds?.versions?.length ? builds.versions[builds.versions.length - 1].n : 0
     if (n) {
       try {
         publishedNet = (await getWorkspace(name, n)).doc.network
@@ -176,7 +176,7 @@
   async function pool(size: number) {
     try {
       await setWorkspacePool(name, size)
-      if (builds) builds = { ...builds, pool: size }
+      if (builds) builds = { ...builds, pool: { idle: 0, starting: 0, ...builds.pool, size } }
     } catch (e) {
       error = errMessage(e)
     }

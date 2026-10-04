@@ -12,6 +12,7 @@
   import Settings from './views/Settings.svelte'
   import Usage from './views/Usage.svelte'
   import Watches from './views/Watches.svelte'
+  import Gallery from './views/workspaces/Gallery.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -21,7 +22,7 @@
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -155,6 +156,7 @@
   const libraryRoute = $derived(parseLibraryRoute(hash))
   const settingsRoute = $derived(parseSettingsRoute(hash))
   const usageRoute = $derived(parseUsageRoute(hash))
+  const workspacesRoute = $derived(parseWorkspacesRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -239,6 +241,12 @@
     {:else if usageRoute}
       <div class="h-full overflow-y-auto">
         <Usage tab={usageRoute.tab} agents={$fleet.agents} budgetTick={$fleet.budgetTick} onNavigate={navigate} />
+      </div>
+    {:else if workspacesRoute}
+      <div class="h-full overflow-y-auto">
+        {#if workspacesRoute.view === 'gallery'}
+          <Gallery agents={$fleet.agents} onNavigate={navigate} />
+        {/if}
       </div>
     {:else if hash === '#watches'}
       <div class="h-full overflow-y-auto">

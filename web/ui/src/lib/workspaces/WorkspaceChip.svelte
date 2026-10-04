@@ -22,6 +22,7 @@
   let items = $state<WorkspaceListItem[]>([])
   let defaultRef = $state('')
   let gateCommands = $state<string[]>([])
+  let loaded = $state(false)
 
   // Studio entries need a successful build to spawn; repo entries without version info are left to the bridge.
   const unbuilt = (w: WorkspaceListItem) => {
@@ -29,24 +30,38 @@
     return v ? v.buildStatus !== 'ok' : w.source === 'studio'
   }
   const refOf = workspaceRef
-  const ordered = $derived([...items].sort((a, b) => Number(refOf(b) === defaultRef) - Number(refOf(a) === defaultRef)))
-  const chosen = $derived(items.find((w) => refOf(w) === value))
+
+  // The project default can be pinned (`name@3`); its option carries the pin and is judged by that version.
+  const pinned = $derived(/^(.*)@(\d+)$/.exec(defaultRef))
+  const defBase = $derived(pinned ? pinned[1] : defaultRef)
+  const isDefault = (w: WorkspaceListItem) => defBase !== '' && refOf(w) === defBase
+  const valueOf = (w: WorkspaceListItem) => (isDefault(w) && pinned ? defaultRef : refOf(w))
+  const blocked = (w: WorkspaceListItem) => {
+    if (isDefault(w) && pinned) return (w.versions ?? []).find((v) => v.n === Number(pinned[2]))?.buildStatus !== 'ok'
+    return unbuilt(w)
+  }
+  const ordered = $derived([...items].sort((a, b) => Number(isDefault(b)) - Number(isDefault(a))))
+  const chosen = $derived(items.find((w) => valueOf(w) === value))
+  const defaultItem = $derived(items.find(isDefault))
+  // Choosing nothing makes the bridge use the project default, so an unbuilt one fails the spawn.
+  const defaultBlocked = $derived(!!defaultRef && loaded && (!defaultItem || blocked(defaultItem)))
   const gate = $derived(chosen?.doc ? gateRunnable(chosen.doc.workspace.toolchains, gateCommands) : 'unknown')
 
   const summary = (w: WorkspaceListItem) =>
-    [refOf(w) === defaultRef ? 'default' : '', unbuilt(w) ? 'Build first' : '', ...contentChips(w.doc).slice(0, 3), poolLabel(w.pool)].filter(Boolean).join(' · ')
+    [isDefault(w) ? 'default' : '', blocked(w) ? 'Build first' : '', ...contentChips(w.doc).slice(0, 3), poolLabel(w.pool)].filter(Boolean).join(' · ')
 
   onMount(async () => {
     const [list, settings, health] = await Promise.allSettled([listWorkspaces(), getProjectSettings(project), getProjectHealth(project)])
     if (health.status === 'fulfilled' && health.value.verify) gateCommands = [health.value.verify.build, health.value.verify.test]
     items = list.status === 'fulfilled' ? list.value.filter((w) => w.source === 'studio' || w.project === project) : []
     defaultRef = settings.status === 'fulfilled' ? (settings.value.workspace ?? '') : ''
-    // Preselect the project default when nothing was chosen and it can run.
-    const d = items.find((w) => refOf(w) === defaultRef)
-    const current = items.find((w) => refOf(w) === value)
+    loaded = true
+    // Preselect the project default when nothing usable was chosen and it can run.
+    const d = items.find(isDefault)
+    const current = items.find((w) => valueOf(w) === value)
     // A remembered choice that no longer exists or can no longer run falls back to the default.
-    if (!value || !current || unbuilt(current)) {
-      if (d && !unbuilt(d)) onChange(refOf(d))
+    if (!value || !current || blocked(current)) {
+      if (d && !blocked(d)) onChange(valueOf(d))
       else if (value) onChange('')
     }
   })
@@ -55,12 +70,22 @@
 <label class="flex flex-col gap-1 text-xs text-muted">
   Workspace
   <select class="rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg" aria-label="Workspace" {value} onchange={(e) => onChange(e.currentTarget.value)}>
-    <option value="">None (profile image)</option>
+    <!-- With a project default, "none" would still mean the default, so it is not offered. -->
+    {#if defaultRef}
+      <option value="" disabled>Choose a workspace</option>
+    {:else}
+      <option value="">None (profile image)</option>
+    {/if}
     {#each ordered as w (`${w.source}:${w.name}`)}
-      <option value={refOf(w)} disabled={unbuilt(w)}>{w.name} — {summary(w)}</option>
+      <option value={valueOf(w)} disabled={blocked(w)}>{w.name} — {summary(w)}</option>
     {/each}
   </select>
 </label>
+{#if defaultBlocked}
+  <p role="alert" class="text-xs text-warn" data-testid="default-warning">
+    The project default workspace ({defaultRef}) {defaultItem ? 'is not built' : 'was not found'}. Build it first, or pick another workspace; starting without one will fail.
+  </p>
+{/if}
 {#if gate === 'may-skip'}
   <p class="text-xs text-warn" data-testid="gate-warning">Verify gate may be skipped: this workspace has no toolchain for the project's gate command.</p>
 {/if}

@@ -94,4 +94,45 @@ describe('WorkspaceChip', () => {
     await waitFor(() => expect(options().length).toBeGreaterThan(1))
     expect(screen.queryByTestId('gate-warning')).toBeNull()
   })
+
+  it('does not offer None when a project default exists', async () => {
+    render(WorkspaceChip, { project: '/p', value: '', onChange: vi.fn() })
+    await waitFor(() => expect(options().length).toBeGreaterThan(1))
+    expect(options()[0].disabled).toBe(true)
+    expect(options()[0].textContent).toContain('Choose a workspace')
+    expect(options().some((o) => o.textContent?.includes('None'))).toBe(false)
+  })
+
+  it('offers None when there is no project default', async () => {
+    vi.mocked(api.getProjectSettings).mockResolvedValue({})
+    render(WorkspaceChip, { project: '/p', value: '', onChange: vi.fn() })
+    await waitFor(() => expect(options().length).toBeGreaterThan(1))
+    expect(options()[0].textContent).toContain('None')
+    expect(screen.queryByTestId('default-warning')).toBeNull()
+  })
+
+  it('warns that an unbuilt default will fail the spawn instead of falling back silently', async () => {
+    vi.mocked(api.getProjectSettings).mockResolvedValue({ workspace: 'fresh' })
+    render(WorkspaceChip, { project: '/p', value: '', onChange: vi.fn() })
+    expect((await screen.findByTestId('default-warning')).textContent).toContain('not built')
+  })
+
+  it('marks and preselects a pinned default, sending the pinned reference', async () => {
+    vi.mocked(api.getProjectSettings).mockResolvedValue({ workspace: 'go-service@1' })
+    const onChange = vi.fn()
+    render(WorkspaceChip, { project: '/p', value: '', onChange })
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('go-service@1'))
+    const o = options().find((x) => x.value === 'go-service@1')!
+    expect(o.textContent).toContain('default')
+    expect(screen.queryByTestId('default-warning')).toBeNull()
+  })
+
+  it('judges a pinned default by that version\'s build, not the latest', async () => {
+    vi.mocked(api.listWorkspaces).mockResolvedValue([{ source: 'studio', name: 'go-service', published: 2, usage: 0, versions: [{ n: 1, at: 0, buildStatus: 'failed' }, { n: 2, at: 0, buildStatus: 'ok' }] }])
+    vi.mocked(api.getProjectSettings).mockResolvedValue({ workspace: 'go-service@1' })
+    const onChange = vi.fn()
+    render(WorkspaceChip, { project: '/p', value: '', onChange })
+    expect((await screen.findByTestId('default-warning')).textContent).toContain('go-service@1')
+    expect(onChange).not.toHaveBeenCalled()
+  })
 })

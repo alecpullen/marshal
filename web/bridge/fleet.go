@@ -123,6 +123,9 @@ type Fleet struct {
 	// Nil means the real runner (exec.Command); tests inject a fake so the
 	// derive path is exercisable without a daemon.
 	runner commandRunner
+	// streamer starts long-lived runtime processes (terminals). Nil means
+	// the real starter; tests inject a fake.
+	streamer streamStarter
 
 	// git runs hardened git subprocesses for remote sources (mirroring,
 	// worktree prep). Nil when git was not found at startup; local-path

@@ -189,6 +189,18 @@ func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, st
 	if err != nil {
 		return wsExtras{}, err
 	}
+	name := storeName
+	if a.Workspace != nil {
+		name = a.Workspace.Name
+	}
+	if name != "" {
+		merged := make(map[string]string, len(env)+1)
+		for k, v := range env {
+			merged[k] = v
+		}
+		merged["MARSHAL_WORKSPACE"] = name
+		env = merged
+	}
 	return wsExtras{mounts: append(mounts, netMounts...), env: env}, nil
 }
 

@@ -26,10 +26,9 @@ type fleetDelta struct {
 	Run json.RawMessage `json:"run,omitempty"`
 	// Watch is a watch event on a "watch" delta, verbatim from the agent.
 	Watch json.RawMessage `json:"event,omitempty"`
-	// Reroute is the payload of a "reroute" delta.
-	Reroute *Reroute `json:"reroute,omitempty"`
-	// Budget is the payload of a "budget" delta.
-	Budget *budgetDelta `json:"budget,omitempty"`
+	// At is when the bridge received a "run" update, in Unix milliseconds,
+	// so clients can order and freshen run rows.
+	At int64 `json:"at,omitempty"`
 	// Usage carries a telemetry update's new usage rows to the ledger. It
 	// is not streamed: the fleet SSE only needs the telemetry digest.
 	Usage json.RawMessage `json:"-"`
@@ -114,6 +113,9 @@ type agentLive struct {
 	run    json.RawMessage
 	runAt  time.Time
 	runErr string
+	// runGen counts the runs the bridge started on this agent, so a late
+	// error from an earlier run cannot overwrite a newer run's state.
+	runGen uint64
 }
 type liveState struct {
 	mu     sync.Mutex
@@ -145,9 +147,9 @@ func (s *liveState) apply(d fleetDelta) {
 	a.updatedAt = time.Now().UTC()
 }
 
-// setRunErr records how the last run the bridge started ended: empty for
-// a clean finish, the error text otherwise.
-func (s *liveState) setRunErr(id, msg string) {
+// beginRun starts a new run generation: it clears the previous run's error
+// and returns the token the run's final error must present to be recorded.
+func (s *liveState) beginRun(id string) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := s.agents[id]
@@ -155,7 +157,20 @@ func (s *liveState) setRunErr(id, msg string) {
 		a = &agentLive{}
 		s.agents[id] = a
 	}
-	a.runErr = msg
+	a.runGen++
+	a.runErr = ""
+	return a.runGen
+}
+
+// setRunErr records how a run the bridge started ended: the error text, or
+// nothing when it finished cleanly. It is dropped when a newer run has
+// begun since gen was issued.
+func (s *liveState) setRunErr(id string, gen uint64, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a := s.agents[id]; a != nil && a.runGen == gen {
+		a.runErr = msg
+	}
 }
 
 // classifyRegistryEvent maps a bridge-originated registry event (from

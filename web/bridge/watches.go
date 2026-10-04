@@ -69,11 +69,28 @@ func (l *rerouteLog) get(id string) (Reroute, bool) {
 	return *r, true
 }
 
-func (l *rerouteLog) markUndone(id string) {
+// claimUndo atomically marks a reroute undone and returns it, so two
+// concurrent undos cannot both proceed. releaseUndo reverts the claim when
+// the undo then fails.
+func (l *rerouteLog) claimUndo(id string) (Reroute, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.byID[id]
+	if !ok {
+		return Reroute{}, fmt.Errorf("%w: %s", ErrUnknownReroute, id)
+	}
+	if r.Undone {
+		return Reroute{}, fmt.Errorf("%w: already undone", errRerouteConflict)
+	}
+	r.Undone = true
+	return *r, nil
+}
+
+func (l *rerouteLog) releaseUndo(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if r := l.byID[id]; r != nil {
-		r.Undone = true
+		r.Undone = false
 	}
 }
 
@@ -153,22 +170,34 @@ func (f *Fleet) applyReroute(watchID, watchName string, rule RerouteRule) {
 	if err := f.ws.DeleteWatchRule(watchID); err != nil {
 		slog.Default().Warn("webbridge: drop watch rule failed", "watch", watchID, "err", err)
 	}
+	if err := f.rerouteRole(watchID, watchName, rule); err != nil {
+		slog.Default().Warn("webbridge: reroute failed", "watch", watchName, "err", err)
+		// The rule was spent but nothing changed: put it back so the watch
+		// can still act the next time it fires, and leave a record.
+		if perr := f.ws.PutWatchRule(watchID, WatchRule{Reroute: &rule}); perr != nil {
+			slog.Default().Warn("webbridge: restore watch rule failed", "watch", watchID, "err", perr)
+		}
+		f.auditf(AuditEvent{Event: AuditRerouteFailed, OwnerID: DefaultOwnerID,
+			Detail: sectionRouting + ":" + rule.Role, Reason: "watch:" + watchName})
+	}
+}
+
+func (f *Fleet) rerouteRole(watchID, watchName string, rule RerouteRule) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	f.routingMu.Lock()
+	defer f.routingMu.Unlock()
 	snap, err := f.routingSnapshot(ctx)
 	if err != nil {
-		slog.Default().Warn("webbridge: reroute skipped", "watch", watchName, "err", err)
-		return
+		return err
 	}
 	if snap.DefaultProfile == "" || snap.Profiles[snap.DefaultProfile] == nil {
-		slog.Default().Warn("webbridge: reroute skipped: no active routing profile", "watch", watchName)
-		return
+		return errors.New("no active routing profile")
 	}
 	from := snap.Profiles[snap.DefaultProfile][rule.Role]
 	to, _ := json.Marshal(map[string]string{"preset": rule.Preset})
 	if err := f.setRoleBinding(ctx, snap, rule.Role, to); err != nil {
-		slog.Default().Warn("webbridge: reroute failed", "watch", watchName, "err", err)
-		return
+		return err
 	}
 	rr := &Reroute{
 		ID: newAgentID(), WatchID: watchID, Watch: watchName, Role: rule.Role,
@@ -177,35 +206,74 @@ func (f *Fleet) applyReroute(watchID, watchName string, rule RerouteRule) {
 	f.reroutes.put(rr)
 	f.auditf(AuditEvent{Event: AuditModelsChanged, OwnerID: DefaultOwnerID,
 		Detail: sectionRouting + ":" + rule.Role, Reason: "watch:" + watchName})
-	_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{
-		Kind: "reroute", SessionID: studioOwner, AgentID: studioOwner, Reroute: rr})
+	f.emitReroute(rr)
+	return nil
+}
+
+// rerouteDelta is a "reroute" fleet delta. Its fields are flat, as the spec
+// lists them, with from and to as display names rather than raw bindings.
+type rerouteDelta struct {
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId"`
+	AgentID   string `json:"agentId"`
+	ID        string `json:"id"`
+	WatchID   string `json:"watchId"`
+	Watch     string `json:"watch"`
+	Role      string `json:"role"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	At        int64  `json:"at"`
+}
+
+func (f *Fleet) emitReroute(rr *Reroute) {
+	_, _ = f.fleetLog.Append(fleetStreamKey, rerouteDelta{
+		Kind: "reroute", SessionID: studioOwner, AgentID: studioOwner,
+		ID: rr.ID, WatchID: rr.WatchID, Watch: rr.Watch, Role: rr.Role,
+		From: bindingLabel(rr.From), To: bindingLabel(rr.To), At: rr.At.UnixMilli(),
+	})
+}
+
+// bindingLabel names a role binding for display: its preset, else its
+// custom agent, else empty (an unbound role).
+func bindingLabel(raw json.RawMessage) string {
+	var b struct {
+		Preset      string `json:"preset"`
+		CustomAgent string `json:"customAgent"`
+	}
+	if json.Unmarshal(raw, &b) != nil {
+		return ""
+	}
+	if b.Preset != "" {
+		return b.Preset
+	}
+	return b.CustomAgent
 }
 
 // UndoReroute restores a role's earlier binding. It refuses when the
 // binding is no longer the one the reroute set, so an undo never
 // overwrites an edit made since.
 func (f *Fleet) UndoReroute(ctx context.Context, id string) (Reroute, error) {
-	rr, ok := f.reroutes.get(id)
-	if !ok {
-		return Reroute{}, fmt.Errorf("%w: %s", ErrUnknownReroute, id)
-	}
-	if rr.Undone {
-		return Reroute{}, fmt.Errorf("%w: already undone", errRerouteConflict)
-	}
-	snap, err := f.routingSnapshot(ctx)
+	rr, err := f.reroutes.claimUndo(id)
 	if err != nil {
 		return Reroute{}, err
 	}
+	f.routingMu.Lock()
+	defer f.routingMu.Unlock()
+	snap, err := f.routingSnapshot(ctx)
+	if err != nil {
+		f.reroutes.releaseUndo(id)
+		return Reroute{}, err
+	}
 	if snap.DefaultProfile != rr.Profile || !sameJSON(snap.Profiles[rr.Profile][rr.Role], rr.To) {
+		f.reroutes.releaseUndo(id)
 		return Reroute{}, fmt.Errorf("%w: the %s binding changed since", errRerouteConflict, rr.Role)
 	}
 	if err := f.setRoleBinding(ctx, snap, rr.Role, rr.From); err != nil {
+		f.reroutes.releaseUndo(id)
 		return Reroute{}, err
 	}
-	f.reroutes.markUndone(id)
 	f.auditf(AuditEvent{Event: AuditModelsChanged, OwnerID: DefaultOwnerID,
 		Detail: sectionRouting + ":" + rr.Role, Reason: "undo-watch:" + rr.Watch})
-	rr.Undone = true
 	return rr, nil
 }
 

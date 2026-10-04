@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -73,6 +74,11 @@ func (f *Fleet) startRun(ctx context.Context, agentID string, req RunRequest, pl
 	default:
 		return fmt.Errorf("%w: kind must be %q or %q", errInvalidRun, RunSDD, RunSwarm)
 	}
+	// Gated here, not only in the HTTP handler, so an approved intake plan
+	// cannot start a run on a paused agent or a blocked day.
+	if err := f.budgetGate(agentID); err != nil {
+		return err
+	}
 	rt, err := f.runtimeForAgent(agentID)
 	if err != nil {
 		return err
@@ -100,7 +106,6 @@ func (f *Fleet) startRun(ctx context.Context, agentID string, req RunRequest, pl
 		}
 		params["planPath"] = string(inAgent)
 	}
-	f.live.setRunErr(agentID, "")
 	_, err = f.dispatchRun(ctx, rt, agentID, method, params)
 	return err
 }
@@ -111,6 +116,7 @@ func (f *Fleet) startRun(ctx context.Context, agentID string, req RunRequest, pl
 // to the caller, and any final error is recorded on the agent.
 func (f *Fleet) dispatchRun(ctx context.Context, rt *agentRuntime, agentID, method string, params map[string]any) (json.RawMessage, error) {
 	bg := context.WithoutCancel(ctx)
+	gen := f.live.beginRun(agentID)
 	type outcome struct {
 		raw json.RawMessage
 		err error
@@ -119,7 +125,7 @@ func (f *Fleet) dispatchRun(ctx context.Context, rt *agentRuntime, agentID, meth
 	go func() {
 		raw, err := rt.child.Request(bg, method, params)
 		if err != nil {
-			f.live.setRunErr(agentID, err.Error())
+			f.live.setRunErr(agentID, gen, err.Error())
 		}
 		done <- outcome{raw, err}
 	}()
@@ -136,8 +142,10 @@ type runListEntry struct {
 	Name    string          `json:"name,omitempty"`
 	Project string          `json:"project"`
 	Run     json.RawMessage `json:"run"`
-	At      time.Time       `json:"at"`
-	Error   string          `json:"error,omitempty"`
+	// At is when the digest arrived, in Unix milliseconds like the run
+	// delta and the usage rows.
+	At    int64  `json:"at"`
+	Error string `json:"error,omitempty"`
 }
 
 // listRuns reports every agent that has produced a run digest, newest
@@ -152,10 +160,10 @@ func (f *Fleet) listRuns() []runListEntry {
 		}
 		out = append(out, runListEntry{
 			AgentID: a.ID, Name: a.Name, Project: a.Project,
-			Run: live.run, At: live.runAt, Error: live.runErr,
+			Run: live.run, At: live.runAt.UnixMilli(), Error: live.runErr,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	sort.Slice(out, func(i, j int) bool { return out[i].At > out[j].At })
 	return out
 }
 
@@ -196,11 +204,8 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if err := s.fleet.budgetGate(body.AgentID); err != nil {
-		writeErr(w, err)
-		return
-	}
 	agentID := body.AgentID
+	fresh := false
 	if agentID == "" {
 		if err := ValidateProjectRoot(body.Project); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -209,16 +214,26 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
 			Name: runName(req), Origin: OriginUI, Isolated: true,
 		})
-		if id == "" {
+		if err != nil {
+			// Spawn can return an id with an error (the agent exists but is
+			// not usable). Either way the request failed: discard it.
+			if id != "" {
+				s.fleet.discardFresh(id)
+			}
 			writeErr(w, err)
 			return
 		}
 		agentID = id
+		fresh = true
 	} else if _, err := s.fleet.RuntimeForSession(agentID); err != nil {
 		writeErr(w, err)
 		return
 	}
 	if err := s.fleet.StartRun(r.Context(), agentID, req); err != nil {
+		// An agent spawned only for this run must not outlive its failure.
+		if fresh {
+			s.fleet.discardFresh(agentID)
+		}
 		writeErr(w, err)
 		return
 	}
@@ -285,4 +300,14 @@ func (s *Server) answerRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"agentId": rt.id})
+}
+
+// discardFresh stops and forgets an agent that was spawned for a request
+// that then failed, so no idle agent is left behind.
+func (f *Fleet) discardFresh(id string) {
+	f.stopAgent(id)
+	if err := f.ws.RemoveAgent(id); err != nil {
+		slog.Default().Warn("webbridge: discard fresh agent failed", "agent", id, "err", err)
+	}
+	f.live.remove(id)
 }

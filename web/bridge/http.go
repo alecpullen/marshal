@@ -353,16 +353,12 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := s.fleet.budgetGate(""); err != nil {
-		writeErr(w, err)
-		return
-	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
 		Name: body.Name, Mode: body.Mode, Isolated: body.Isolated, Branch: body.Branch, BaseRef: body.BaseRef,
 		Routing: body.Routing,
 	})
 	if id == "" {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeErr(w, err)
 		return
 	}
 	if body.Prompt != "" {

@@ -45,13 +45,16 @@ type Budgets struct {
 	OnAgentCap  string  `json:"onAgentCap"`
 }
 
-// budgetDelta is the payload of a "budget" fleet delta.
+// budgetDelta is a "budget" fleet delta. Its fields are flat, as the spec
+// lists them.
 type budgetDelta struct {
-	Scope    string  `json:"scope"`
-	AgentID  string  `json:"agentId,omitempty"`
-	SpentUSD float64 `json:"spentUsd"`
-	CapUSD   float64 `json:"capUsd"`
-	Action   string  `json:"action"`
+	Kind      string  `json:"kind"`
+	SessionID string  `json:"sessionId"`
+	Scope     string  `json:"scope"`
+	AgentID   string  `json:"agentId,omitempty"`
+	SpentUSD  float64 `json:"spentUsd"`
+	CapUSD    float64 `json:"capUsd"`
+	Action    string  `json:"action"`
 }
 
 // budgetState enforces the caps. The engine only stores them: spend spans
@@ -68,10 +71,10 @@ type budgetState struct {
 	cfg    Budgets
 	// day is the UTC date daySpend refers to.
 	day        string
-	daySpend   float64
+	daySpend   int64 // micro-dollars
 	dayAlerted bool
 	blockedDay string
-	agentSpend map[string]float64
+	agentSpend map[string]int64 // micro-dollars
 	agentAlert map[string]bool
 	paused     map[string]bool
 	overridden map[string]bool
@@ -81,7 +84,7 @@ type budgetState struct {
 func newBudgetState(f *Fleet) *budgetState {
 	return &budgetState{
 		f:          f,
-		agentSpend: map[string]float64{},
+		agentSpend: map[string]int64{},
 		agentAlert: map[string]bool{},
 		paused:     map[string]bool{},
 		overridden: map[string]bool{},
@@ -140,11 +143,11 @@ func (b *budgetState) ensureLoaded() {
 	defer b.mu.Unlock()
 	b.cfg, b.loaded, b.day = cfg, true, today
 	b.daySpend = 0
-	b.agentSpend = map[string]float64{}
+	b.agentSpend = map[string]int64{}
 	for _, r := range rows {
-		b.agentSpend[r.AgentID] += r.CostUSD
+		b.agentSpend[r.AgentID] += r.micro()
 		if dayOf(r.started()) == today {
-			b.daySpend += r.CostUSD
+			b.daySpend += r.micro()
 		}
 		// A row appended while this seed ran is also counted by its own
 		// checkBudgets call; remembering it lets that call skip the add.
@@ -183,12 +186,12 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 	if _, counted := b.seededRows[row.key()]; counted {
 		delete(b.seededRows, row.key())
 	} else {
-		b.agentSpend[row.AgentID] += row.CostUSD
+		b.agentSpend[row.AgentID] += row.micro()
 		if dayOf(row.started()) == b.day {
-			b.daySpend += row.CostUSD
+			b.daySpend += row.micro()
 		}
 	}
-	if cap := b.cfg.DailyUSD; cap > 0 && b.daySpend >= cap && !b.dayAlerted {
+	if cap := b.cfg.DailyUSD; cap > 0 && b.daySpend >= usdToMicro(cap) && !b.dayAlerted {
 		b.dayAlerted = true
 		action := b.cfg.OnDailyCap
 		if action != budgetBlock {
@@ -197,9 +200,9 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 		if action == budgetBlock {
 			b.blockedDay = b.day
 		}
-		deltas = append(deltas, budgetDelta{Scope: "daily", SpentUSD: b.daySpend, CapUSD: cap, Action: action})
+		deltas = append(deltas, budgetDelta{Scope: "daily", SpentUSD: microToUSD(b.daySpend), CapUSD: cap, Action: action})
 	}
-	if cap := b.cfg.PerAgentUSD; cap > 0 && b.agentSpend[row.AgentID] >= cap &&
+	if cap := b.cfg.PerAgentUSD; cap > 0 && b.agentSpend[row.AgentID] >= usdToMicro(cap) &&
 		!b.agentAlert[row.AgentID] && !b.overridden[row.AgentID] {
 		b.agentAlert[row.AgentID] = true
 		action := b.cfg.OnAgentCap
@@ -211,13 +214,13 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 			cancelAgent = row.AgentID
 		}
 		deltas = append(deltas, budgetDelta{Scope: "agent", AgentID: row.AgentID,
-			SpentUSD: b.agentSpend[row.AgentID], CapUSD: cap, Action: action})
+			SpentUSD: microToUSD(b.agentSpend[row.AgentID]), CapUSD: cap, Action: action})
 	}
 	b.mu.Unlock()
 
 	for _, d := range deltas {
-		d := d
-		_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{Kind: "budget", AgentID: d.AgentID, Budget: &d})
+		d.Kind, d.SessionID = "budget", d.AgentID
+		_, _ = f.fleetLog.Append(fleetStreamKey, d)
 	}
 	if cancelAgent != "" {
 		if rt, err := f.runtimeForAgent(cancelAgent); err == nil {
@@ -264,14 +267,14 @@ func (b *budgetState) applyBudgets(cfg Budgets, now time.Time) {
 	b.cfg, b.loaded = cfg, true
 	b.rollover(now)
 	b.dayAlerted = false
-	if cfg.DailyUSD <= 0 || b.daySpend < cfg.DailyUSD || cfg.OnDailyCap != budgetBlock {
+	if cfg.DailyUSD <= 0 || b.daySpend < usdToMicro(cfg.DailyUSD) || cfg.OnDailyCap != budgetBlock {
 		b.blockedDay = ""
 	}
 	for id := range b.agentAlert {
 		delete(b.agentAlert, id)
 	}
 	for id := range b.paused {
-		if cfg.PerAgentUSD <= 0 || b.agentSpend[id] < cfg.PerAgentUSD || cfg.OnAgentCap != budgetPause {
+		if cfg.PerAgentUSD <= 0 || b.agentSpend[id] < usdToMicro(cfg.PerAgentUSD) || cfg.OnAgentCap != budgetPause {
 			delete(b.paused, id)
 		} else {
 			b.agentAlert[id] = true
@@ -294,6 +297,9 @@ type budgetReport struct {
 		Blocked  bool    `json:"blocked"`
 	} `json:"daily"`
 	Agents []budgetAgentSpend `json:"agents"`
+	// Loaded is false while the caps could not be read from the engine, so
+	// clients know Budgets is the zero value rather than the real caps.
+	Loaded bool `json:"loaded"`
 }
 
 func (f *Fleet) budgetReport() budgetReport {
@@ -304,12 +310,12 @@ func (f *Fleet) budgetReport() budgetReport {
 	now := f.now()
 	b.rollover(now)
 	var rep budgetReport
-	rep.Budgets = b.cfg
-	rep.Daily.Day, rep.Daily.SpentUSD = b.day, b.daySpend
+	rep.Budgets, rep.Loaded = b.cfg, b.loaded
+	rep.Daily.Day, rep.Daily.SpentUSD = b.day, microToUSD(b.daySpend)
 	rep.Daily.Blocked = b.blockedDay != "" && b.blockedDay == b.day
 	rep.Agents = []budgetAgentSpend{}
 	for id, spent := range b.agentSpend {
-		rep.Agents = append(rep.Agents, budgetAgentSpend{AgentID: id, SpentUSD: spent,
+		rep.Agents = append(rep.Agents, budgetAgentSpend{AgentID: id, SpentUSD: microToUSD(spent),
 			Paused: b.paused[id], Overridden: b.overridden[id]})
 	}
 	sort.Slice(rep.Agents, func(i, j int) bool { return rep.Agents[i].SpentUSD > rep.Agents[j].SpentUSD })

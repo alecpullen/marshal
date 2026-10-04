@@ -153,6 +153,10 @@ type Fleet struct {
 	clock func() time.Time
 	// reroutes holds automatic rebindings so they can be undone.
 	reroutes rerouteLog
+	// routingMu serialises read-modify-write of the routing section: a
+	// reroute, an undo and the models routes all replace profiles wholesale,
+	// so interleaving them would drop an edit.
+	routingMu sync.Mutex
 	// lib remembers which control session staged each library install.
 	lib libraryState
 	// newControl builds the control agent's Child. Nil means production
@@ -780,6 +784,12 @@ func (f *Fleet) resolveSource(opts SpawnOptions, origin string) (gitSource, erro
 }
 
 func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (string, error) {
+	// The daily cap gates every way an agent can start: the UI, an issue,
+	// an approved intake submission and MCP all come through here. There is
+	// no agent yet, so only the daily cap can apply.
+	if err := f.budgetGate(""); err != nil {
+		return "", err
+	}
 	origin := opts.Origin
 	if origin == "" {
 		origin = OriginUI
@@ -1209,6 +1219,9 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 			d.SessionID = rt.id
 			if d.Kind == "run" || d.Kind == "watch" {
 				d.AgentID = rt.id
+			}
+			if d.Kind == "run" {
+				d.At = f.now().UnixMilli()
 			}
 			if d.Kind == "telemetry" && len(d.Usage) > 0 {
 				// Off the read goroutine: the budget check may need the

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,10 +34,25 @@ type UsageRow struct {
 	CacheReadTokens  int     `json:"cacheReadTokens"`
 	CacheWriteTokens int     `json:"cacheWriteTokens"`
 	CostUSD          float64 `json:"costUsd"`
-	AgentID          string  `json:"agentId"`
-	Project          string  `json:"project"`
-	Origin           string  `json:"origin"`
+	// CostMicroUSD is the cost in millionths of a dollar. CostUSD is whole
+	// cents, so a cheap turn reads 0 there; sum this field instead.
+	CostMicroUSD int64  `json:"costMicroUsd"`
+	AgentID      string `json:"agentId"`
+	Project      string `json:"project"`
+	Origin       string `json:"origin"`
 }
+
+// micro is the row's cost in millionths of a dollar. An older agent sends
+// only CostUSD, which converts at its own (whole-cent) precision.
+func (r UsageRow) micro() int64 {
+	if r.CostMicroUSD != 0 {
+		return r.CostMicroUSD
+	}
+	return usdToMicro(r.CostUSD)
+}
+
+func usdToMicro(usd float64) int64 { return int64(math.Round(usd * 1e6)) }
+func microToUSD(m int64) float64   { return float64(m) / 1e6 }
 
 func (r UsageRow) key() string { return fmt.Sprintf("%s:%d", r.AgentID, r.ID) }
 
@@ -238,9 +254,10 @@ func (f *Fleet) usageReport(window time.Duration, label, by string, now time.Tim
 	}
 	rep := usageReport{Range: label, Series: []usagePoint{}}
 	groups := map[string]*usagePoint{}
-	var durationMs int64
+	var durationMs, totalMicro int64
+	micros := map[string]int64{}
 	for _, r := range rows {
-		rep.Totals.CostUSD += r.CostUSD
+		totalMicro += r.micro()
 		rep.Totals.PromptTokens += r.PromptTokens
 		rep.Totals.CompletionTokens += r.CompletionTokens
 		durationMs += r.DurationMs
@@ -250,9 +267,10 @@ func (f *Fleet) usageReport(window time.Duration, label, by string, now time.Tim
 			g = &usagePoint{Key: key}
 			groups[key] = g
 		}
-		g.CostUSD += r.CostUSD
+		micros[key] += r.micro()
 		g.Tokens += r.PromptTokens + r.CompletionTokens
 	}
+	rep.Totals.CostUSD = microToUSD(totalMicro)
 	rep.Totals.AgentHours = float64(durationMs) / 3.6e6
 	rep.Totals.PRsShipped = f.prsShipped(from, now)
 
@@ -265,7 +283,8 @@ func (f *Fleet) usageReport(window time.Duration, label, by string, now time.Tim
 			}
 		}
 	}
-	for _, g := range groups {
+	for key, g := range groups {
+		g.CostUSD = microToUSD(micros[key])
 		rep.Series = append(rep.Series, *g)
 	}
 	sort.Slice(rep.Series, func(i, j int) bool {

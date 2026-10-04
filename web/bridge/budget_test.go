@@ -89,9 +89,9 @@ func budgetDeltas(f *Fleet) []budgetDelta {
 	events := f.fleetLog.Tail(fleetStreamKey)
 	var out []budgetDelta
 	for _, e := range events {
-		var d fleetDelta
-		if json.Unmarshal(e.Data, &d) == nil && d.Kind == "budget" && d.Budget != nil {
-			out = append(out, *d.Budget)
+		var d budgetDelta
+		if json.Unmarshal(e.Data, &d) == nil && d.Kind == "budget" {
+			out = append(out, d)
 		}
 	}
 	return out

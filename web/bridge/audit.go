@@ -36,6 +36,7 @@ const (
 	AuditBudgetOverride  = "budget_override"
 	AuditWatchStarted    = "watch_started"
 	AuditWatchStopped    = "watch_stopped"
+	AuditRerouteFailed   = "reroute_failed"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

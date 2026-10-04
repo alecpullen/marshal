@@ -229,12 +229,12 @@ func (h *routingHarness) fire(state string) {
 	}})
 }
 
-func rerouteDeltas(f *Fleet) []Reroute {
-	var out []Reroute
+func rerouteDeltas(f *Fleet) []rerouteDelta {
+	var out []rerouteDelta
 	for _, e := range f.fleetLog.Tail(fleetStreamKey) {
-		var d fleetDelta
-		if json.Unmarshal(e.Data, &d) == nil && d.Kind == "reroute" && d.Reroute != nil {
-			out = append(out, *d.Reroute)
+		var d rerouteDelta
+		if json.Unmarshal(e.Data, &d) == nil && d.Kind == "reroute" {
+			out = append(out, d)
 		}
 	}
 	return out
@@ -258,13 +258,13 @@ func TestRerouteAppliesOnFireAndUndoRestores(t *testing.T) {
 	if h.binding("reviewer") != `{"preset":"slow"}` {
 		t.Fatal("a reroute disturbed another role's binding")
 	}
-	var deltas []Reroute
+	var deltas []rerouteDelta
 	waitFor(t, 5*time.Second, "reroute delta", func() bool {
 		deltas = rerouteDeltas(h.f)
 		return len(deltas) == 1
 	})
 	d := deltas[0]
-	if d.Role != "implementer" || d.Watch != "disk" || string(d.From) != `{"preset":"slow"}` || string(d.To) != `{"preset":"fast"}` || d.ID == "" {
+	if d.Role != "implementer" || d.Watch != "disk" || d.From != "slow" || d.To != "fast" || d.ID == "" || d.At == 0 {
 		t.Fatalf("delta = %+v", d)
 	}
 	e := findEvent(auditTail(t, h.f), AuditModelsChanged)

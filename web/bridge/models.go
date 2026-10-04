@@ -38,7 +38,9 @@ func (s *Server) modelsMutation(section, method string) http.HandlerFunc {
 		for k, v := range body {
 			params[k] = v
 		}
+		s.fleet.routingMu.Lock()
 		raw, err := s.fleet.controlCall(r.Context(), method, params, false)
+		s.fleet.routingMu.Unlock()
 		if err != nil {
 			writeErr(w, err)
 			return

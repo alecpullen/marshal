@@ -31,6 +31,7 @@ const maxStagedTokens = 256
 type libraryState struct {
 	mu     sync.Mutex
 	staged map[string]string // token -> session id
+	order  []string          // tokens, oldest first
 }
 
 func (l *libraryState) remember(token, sessionID string) {
@@ -39,8 +40,15 @@ func (l *libraryState) remember(token, sessionID string) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.staged == nil || len(l.staged) >= maxStagedTokens {
+	if l.staged == nil {
 		l.staged = make(map[string]string)
+	}
+	if _, ok := l.staged[token]; !ok {
+		for len(l.order) >= maxStagedTokens {
+			delete(l.staged, l.order[0])
+			l.order = l.order[1:]
+		}
+		l.order = append(l.order, token)
 	}
 	l.staged[token] = sessionID
 }
@@ -56,6 +64,12 @@ func (l *libraryState) forget(token string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.staged, token)
+	for i, t := range l.order {
+		if t == token {
+			l.order = append(l.order[:i], l.order[i+1:]...)
+			break
+		}
+	}
 }
 
 // librarySession picks the control-agent session a library operation runs

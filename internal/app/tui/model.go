@@ -4638,7 +4638,9 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 // handleSpinnerTick handles a spinnerTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleSpinnerTick(msg spinnerTickMsg) (Model, tea.Cmd) {
-	if !m.busy {
+	// A parent turn can finish while background children are still running.
+	// Their cards share this animation clock, so keep ticking until they settle.
+	if !m.busy && !m.state.HasRunningSubagent() {
 		return m, nil
 	}
 	m.spinnerFrame = m.spinner.Next()

@@ -128,6 +128,44 @@ func TestSpinnerTickMsgDoesNotAdvanceOrReArmWhenNotBusy(t *testing.T) {
 	}
 }
 
+func TestSpinnerContinuesAfterParentFinishesWhileSubagentRuns(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 40)
+	m.busy = true
+	registerRunningSubagent(t, &m, "reviewer")
+	childID := state.Subagents()[0].ID
+
+	updated, _ := m.Update(agentFinishedMsg{})
+	m = updated.(Model)
+	if m.busy {
+		t.Fatal("parent should be idle after its turn finishes")
+	}
+
+	for i := 0; i < 2; i++ {
+		before := m.spinnerFrame
+		updated, cmd := m.Update(spinnerTickMsg{})
+		m = updated.(Model)
+		if m.spinnerFrame == before {
+			t.Fatal("spinner should advance while a subagent is still running")
+		}
+		if cmd == nil {
+			t.Fatal("spinner should re-arm while a subagent is still running")
+		}
+		if _, ok := cmd().(spinnerTickMsg); !ok {
+			t.Fatal("re-armed command should produce a spinner tick")
+		}
+	}
+
+	state.FinishSubagent(childID, "done", nil)
+	before := m.spinnerFrame
+	updated, cmd := m.Update(spinnerTickMsg{})
+	m = updated.(Model)
+	if m.spinnerFrame != before || cmd != nil {
+		t.Fatal("spinner should stop when the parent and all children are idle")
+	}
+}
+
 func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	now := time.Unix(100, 0)

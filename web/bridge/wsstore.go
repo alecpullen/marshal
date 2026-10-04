@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -348,6 +349,25 @@ func (s *TemplateStore) FailInterrupted() (map[string][]int, error) {
 		}
 	}
 	return out, nil
+}
+
+// DraftChanged reports whether the draft differs from the published
+// version. A template that was never published always has draft changes.
+func (s *TemplateStore) DraftChanged(m TemplateMeta) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	draft, err := os.ReadFile(filepath.Join(s.tdir(m.Name), "draft.toml"))
+	if err != nil {
+		return false
+	}
+	if m.Published == 0 {
+		return true
+	}
+	pub, err := os.ReadFile(filepath.Join(s.tdir(m.Name), fmt.Sprintf("v%d.toml", m.Published)))
+	if err != nil {
+		return true
+	}
+	return !bytes.Equal(draft, pub)
 }
 
 // SetPool sets the warm-pool size, 0 to 4.

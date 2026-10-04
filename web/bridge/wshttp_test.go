@@ -330,3 +330,30 @@ func TestUnifiedDiff(t *testing.T) {
 func contextWithCancelAfter(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.Context(), d)
 }
+
+func TestWorkspacesHTTPListFlagsDraftChanges(t *testing.T) {
+	s, e := wsServer(t)
+	publishDoc(t, e.f, "svc", sampleDoc("svc"))
+	draftChanges := func() bool {
+		var list []workspaceEntry
+		decodeBody(t, doReq(t, s, http.MethodGet, "/api/workspaces", nil, nil), &list)
+		for _, en := range list {
+			if en.Name == "svc" {
+				return en.DraftChanges
+			}
+		}
+		t.Fatal("svc not listed")
+		return false
+	}
+	if draftChanges() {
+		t.Fatal("a freshly published template reports draft changes")
+	}
+	changed := sampleDoc("svc")
+	changed.Packages.Apt = append(changed.Packages.Apt, "jq")
+	if err := e.f.templates.SaveDraft("svc", wsSrc(t, changed)); err != nil {
+		t.Fatal(err)
+	}
+	if !draftChanges() {
+		t.Fatal("an edited draft reports no changes")
+	}
+}

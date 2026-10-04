@@ -37,6 +37,9 @@ type workspaceEntry struct {
 	Versions  []TemplateVersion `json:"versions,omitempty"`
 	// Usage counts the agents that run on this workspace.
 	Usage int `json:"usage"`
+	// DraftChanges is true when a Studio template's draft differs from its
+	// published version (always true before the first publish).
+	DraftChanges bool `json:"draftChanges,omitempty"`
 }
 
 // workspaceUsage counts agents by "<source>:<name>".
@@ -63,7 +66,7 @@ func (f *Fleet) ListWorkspaces() ([]workspaceEntry, error) {
 	use := f.workspaceUsage()
 	out := []workspaceEntry{}
 	for _, m := range metas {
-		out = append(out, workspaceEntry{Source: "studio", Name: m.Name, Published: m.Published, Pool: m.Pool, Versions: m.Versions, Usage: use["studio:"+m.Name]})
+		out = append(out, workspaceEntry{Source: "studio", Name: m.Name, Published: m.Published, Pool: m.Pool, Versions: m.Versions, Usage: use["studio:"+m.Name], DraftChanges: f.templates.DraftChanged(m)})
 	}
 	for _, root := range f.ws.Projects() {
 		if projectTrust(root) != "trusted" {

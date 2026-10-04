@@ -77,6 +77,10 @@ type agentRuntime struct {
 	// warning only — the spawn is never refused on skew.
 	versionWarning bool
 
+	// caps are the capability names the agent advertised in initialize.
+	// Set once during startRuntime, before the runtime is published.
+	caps map[string]bool
+
 	spawnErr error
 }
 
@@ -147,6 +151,8 @@ type Fleet struct {
 	// clock is the time source for budget days and usage windows. Nil
 	// means time.Now.
 	clock func() time.Time
+	// reroutes holds automatic rebindings so they can be undone.
+	reroutes rerouteLog
 	// lib remembers which control session staged each library install.
 	lib libraryState
 	// newControl builds the control agent's Child. Nil means production
@@ -588,11 +594,20 @@ func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
 		AgentInfo struct {
 			Version string `json:"version"`
 		} `json:"agentInfo"`
+		AgentCapabilities   map[string]json.RawMessage `json:"agentCapabilities"`
+		SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities"`
 	}
 	if uerr := json.Unmarshal(raw, &res); uerr != nil {
 		slog.Default().Warn("webbridge: decode initialize handshake failed",
 			"agent", rt.id, "err", uerr)
 		return
+	}
+	rt.caps = make(map[string]bool, len(res.AgentCapabilities)+len(res.SessionCapabilities))
+	for k := range res.AgentCapabilities {
+		rt.caps[k] = true
+	}
+	for k := range res.SessionCapabilities {
+		rt.caps[k] = true
 	}
 	agentVersion := res.AgentInfo.Version
 	// Both sides must carry a real version; an empty or "dev" value on
@@ -1192,7 +1207,7 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 			// notifications carry the ACP session id. Each runtime owns
 			// exactly one session, so the agent id is rt.id.
 			d.SessionID = rt.id
-			if d.Kind == "run" {
+			if d.Kind == "run" || d.Kind == "watch" {
 				d.AgentID = rt.id
 			}
 			if d.Kind == "telemetry" && len(d.Usage) > 0 {

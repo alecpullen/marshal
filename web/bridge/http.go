@@ -131,10 +131,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/stack", s.sessionStack)
 	s.mux.HandleFunc("GET /api/sessions/{id}/nodes/{nodeId}", s.sessionNode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/last-request", s.sessionLastRequest)
+	s.mux.HandleFunc("GET /api/sessions/{id}/roster", s.sessionRoster)
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
 	s.libraryRoutes()
 	s.modelsRoutes()
 	s.budgetRoutes()
+	s.watchRoutes()
 	s.mux.HandleFunc("GET /api/runs", s.listRuns)
 	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
 	s.mux.HandleFunc("POST /api/runs", s.startRun)
@@ -184,6 +186,10 @@ func writeErr(w http.ResponseWriter, err error) {
 	var rpc *rpcError
 	var budget ErrBudget
 	switch {
+	case errors.Is(err, ErrUnknownReroute):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errRerouteConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.As(err, &budget):
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "budget_exceeded", "scope": budget.Scope})
 	case errors.Is(err, ErrUnknownSession):
@@ -854,6 +860,22 @@ func (s *Server) sessionLastRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := reg.LastRequest(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, result)
+}
+
+// sessionRoster proxies the roster of live role bindings, for the Runs
+// page's roles legend.
+func (s *Server) sessionRoster(w http.ResponseWriter, r *http.Request) {
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := reg.Roster(r.Context(), sessionID)
 	if err != nil {
 		writeErr(w, err)
 		return

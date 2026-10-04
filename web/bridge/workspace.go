@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const workspaceVersion = 7
+const workspaceVersion = 8
 
 // DefaultOwnerID is the single implicit owner in a single-operator
 // deployment. Every agent carries an owner from the first commit so that
@@ -159,6 +159,21 @@ type workspaceFile struct {
 	SubmittedIssues map[string][]int `json:"submittedIssues,omitempty"`
 	// Reviews maps an agent ID to its review comments (v7).
 	Reviews map[string][]ReviewComment `json:"reviews,omitempty"`
+	// WatchRules maps a Studio watch id to the action the bridge takes when
+	// it fires (v8). The engine knows nothing of these rules.
+	WatchRules map[string]WatchRule `json:"watchRules,omitempty"`
+}
+
+// WatchRule is what the bridge does when a Studio watch fires.
+type WatchRule struct {
+	// Reroute rebinds a role to a preset on the active routing profile.
+	Reroute *RerouteRule `json:"reroute,omitempty"`
+}
+
+// RerouteRule names the role to rebind and the preset to bind it to.
+type RerouteRule struct {
+	Role   string `json:"role"`
+	Preset string `json:"preset"`
 }
 
 type Workspace struct {
@@ -171,6 +186,7 @@ type Workspace struct {
 	pending         map[string]PendingSpawn
 	submittedIssues map[string][]int
 	reviews         map[string][]ReviewComment
+	watchRules      map[string]WatchRule
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -182,6 +198,7 @@ func NewWorkspace(path string) *Workspace {
 		pending:         make(map[string]PendingSpawn),
 		submittedIssues: make(map[string][]int),
 		reviews:         make(map[string][]ReviewComment),
+		watchRules:      make(map[string]WatchRule),
 	}
 }
 
@@ -238,6 +255,10 @@ func (w *Workspace) Load() (string, error) {
 	w.reviews = make(map[string][]ReviewComment, len(f.Reviews))
 	for id, cs := range f.Reviews {
 		w.reviews[id] = append([]ReviewComment(nil), cs...)
+	}
+	w.watchRules = make(map[string]WatchRule, len(f.WatchRules))
+	for id, r := range f.WatchRules {
+		w.watchRules[id] = r
 	}
 	return "", nil
 }
@@ -302,6 +323,12 @@ func (w *Workspace) save() error {
 		f.Reviews = make(map[string][]ReviewComment, len(w.reviews))
 		for id, cs := range w.reviews {
 			f.Reviews[id] = append([]ReviewComment(nil), cs...)
+		}
+	}
+	if len(w.watchRules) > 0 {
+		f.WatchRules = make(map[string]WatchRule, len(w.watchRules))
+		for id, r := range w.watchRules {
+			f.WatchRules[id] = r
 		}
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
@@ -603,4 +630,35 @@ func (w *Workspace) ResolveReviewComment(agentID, id string, at time.Time) error
 		}
 	}
 	return fmt.Errorf("%w: review comment %s", ErrUnknownReviewComment, id)
+}
+
+// PutWatchRule stores the action to take when a Studio watch fires.
+func (w *Workspace) PutWatchRule(watchID string, r WatchRule) error {
+	if watchID == "" {
+		return errors.New("watch rule needs a watch id")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.watchRules[watchID] = r
+	return w.save()
+}
+
+// WatchRule returns the rule stored for a Studio watch.
+func (w *Workspace) WatchRule(watchID string) (WatchRule, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	r, ok := w.watchRules[watchID]
+	return r, ok
+}
+
+// DeleteWatchRule forgets a watch's rule. Deleting an absent rule is not
+// an error.
+func (w *Workspace) DeleteWatchRule(watchID string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.watchRules[watchID]; !ok {
+		return nil
+	}
+	delete(w.watchRules, watchID)
+	return w.save()
 }

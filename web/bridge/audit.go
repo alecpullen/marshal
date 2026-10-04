@@ -34,6 +34,8 @@ const (
 	AuditModelsChanged   = "models_changed"
 	AuditBudgetsChanged  = "budgets_changed"
 	AuditBudgetOverride  = "budget_override"
+	AuditWatchStarted    = "watch_started"
+	AuditWatchStopped    = "watch_stopped"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

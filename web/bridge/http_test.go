@@ -690,3 +690,32 @@ func TestSessionStackBadSubagent(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 }
+
+const testRosterResult = `{"roles":[{"role":"implementer","preset":"fast","model":"m"}]}`
+
+func TestSessionRosterRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		id     string
+		rpcErr *rpcError
+		status int
+		body   string
+	}{
+		{"passthrough", "s-1", nil, http.StatusOK, testRosterResult},
+		{"unknown", "nope", nil, http.StatusNotFound, `{"error":"bridge: unknown session"}`},
+		{"unsupported", "s-1", &rpcError{Code: -32601, Message: "method not found"}, http.StatusNotImplemented, `{"error":"roster_unsupported"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ct := &captureTransport{results: map[string]json.RawMessage{"session/agents_roster": json.RawMessage(testRosterResult)}}
+			if tc.rpcErr != nil {
+				ct.errs = map[string]*rpcError{"session/agents_roster": tc.rpcErr}
+			}
+			s, reg, _, _ := newTestServer(t, "", ct)
+			reg.track("s-1", AgentPath("/tmp/work"))
+			rec := doReq(t, s, http.MethodGet, "/api/sessions/"+tc.id+"/roster", nil, nil)
+			if rec.Code != tc.status || strings.TrimSpace(rec.Body.String()) != tc.body {
+				t.Fatalf("response = %d %s, want %d %s", rec.Code, rec.Body.String(), tc.status, tc.body)
+			}
+		})
+	}
+}

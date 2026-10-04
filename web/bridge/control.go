@@ -149,6 +149,7 @@ func (f *Fleet) control(ctx context.Context) (*controlRuntime, error) {
 			c.projectSessions = make(map[string]string)
 			c.mu.Unlock()
 		}
+		child.OnNotification = f.onControlNotification
 		if err := child.Start(); err != nil {
 			return nil, fmt.Errorf("bridge: start control agent: %w (stderr: %s)", err, child.StderrLog())
 		}

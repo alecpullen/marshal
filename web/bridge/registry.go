@@ -299,6 +299,11 @@ func (r *Registry) StackNode(ctx context.Context, id, nodeID string, subagentID 
 	return r.call(ctx, id, "session/stack_node", "stack_node", params)
 }
 
+// Roster proxies session/agents_roster: every role's live model binding.
+func (r *Registry) Roster(ctx context.Context, id string) (json.RawMessage, error) {
+	return r.call(ctx, id, "session/agents_roster", "roster", nil)
+}
+
 // Run proxies session/run: the SDD or swarm run detail.
 func (r *Registry) Run(ctx context.Context, id string) (json.RawMessage, error) {
 	return r.call(ctx, id, "session/run", "run", nil)

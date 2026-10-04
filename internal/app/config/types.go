@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	"marshal/internal/llm/routing"
@@ -39,6 +40,60 @@ type Config struct {
 	Skills        SkillsConfig                          `toml:"skills"`
 	LSP           LSPConfig                             `toml:"lsp"`
 	Scratchpad    ScratchpadConfig                      `toml:"scratchpad"`
+	Budgets       BudgetsConfig                         `toml:"budgets"`
+	// SessionRouting is a per-session routing choice supplied by the host
+	// (ACP session/new). It is never read from or written to a config file.
+	SessionRouting SessionRouting `toml:"-"`
+}
+
+// SessionRouting selects a routing profile for one session and rebinds
+// individual roles to presets. The zero value changes nothing.
+type SessionRouting struct {
+	// Profile names the profile to use instead of [profile] default.
+	Profile string
+	// Overrides binds roles to preset names within that profile.
+	Overrides map[routing.AgentRole]string
+}
+
+// Empty reports whether the routing changes nothing.
+func (r SessionRouting) Empty() bool { return r.Profile == "" && len(r.Overrides) == 0 }
+
+// ValidateSessionRouting checks r against the config: the profile must exist,
+// every override role must be a known role and every override value a known
+// preset.
+func (c Config) ValidateSessionRouting(r SessionRouting) error {
+	if r.Profile != "" {
+		if _, ok := c.AgentProfiles[r.Profile]; !ok {
+			return fmt.Errorf("unknown profile %q", r.Profile)
+		}
+	}
+	for role, preset := range r.Overrides {
+		known := false
+		for _, ar := range routing.AllRoles {
+			if ar == role {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("unknown role %q", role)
+		}
+		if _, ok := c.Models.Presets[preset]; !ok {
+			return fmt.Errorf("role %q: unknown preset %q", role, preset)
+		}
+	}
+	return nil
+}
+
+// BudgetsConfig holds spend caps. It is user-global only (project configs
+// never set it); the engine stores it and the web bridge enforces it, because
+// spend spans agents. Zero caps mean no cap.
+type BudgetsConfig struct {
+	DailyUSD    float64 `toml:"daily_usd"`
+	PerAgentUSD float64 `toml:"per_agent_usd"`
+	// OnDailyCap is "warn" or "block"; OnAgentCap is "warn" or "pause".
+	OnDailyCap string `toml:"on_daily_cap"`
+	OnAgentCap string `toml:"on_agent_cap"`
 }
 
 // ScratchpadConfig limits the agent's working-memory scratchpad so it

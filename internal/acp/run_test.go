@@ -118,10 +118,14 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			t.Fatalf("sessionCapabilities.close = %v, want empty object", closeObj)
 		}
 
-		for _, name := range []string{"stackNode", "subagentStacks", "lastRequest", "filesView", "commitDraft", "stepDiffs"} {
+		for _, name := range []string{"stackNode", "subagentStacks", "lastRequest", "filesView", "commitDraft", "stepDiffs", "runDetail", "watchAccess"} {
 			if c, ok := sessionCaps[name].(map[string]any); !ok || len(c) != 0 {
 				t.Fatalf("sessionCapabilities.%s = %v, want empty object", name, sessionCaps[name])
 			}
+		}
+
+		if c, ok := caps["configAccess"].(map[string]any); !ok || len(c) != 0 {
+			t.Fatalf("agentCapabilities.configAccess = %v, want empty object", caps["configAccess"])
 		}
 
 		stackCap, ok := sessionCaps["stackView"]

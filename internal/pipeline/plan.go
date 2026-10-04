@@ -25,6 +25,11 @@ type TaskSpec struct {
 	N     int
 	Title string
 	Body  string
+	// DependsOn lists the task numbers this task needs finished first. It
+	// comes from a "Depends on: 1, 3" line in the body (removed from Body);
+	// a task without the line depends on the previous task, and the first
+	// task on nothing. "Depends on: none" is an explicit empty list.
+	DependsOn []int
 }
 
 // Plan is a parsed plan file. Slug is the file's base name without its
@@ -84,7 +89,120 @@ func ParsePlan(path string) (*Plan, error) {
 		return nil, fmt.Errorf("pipeline plan: %s contains no `## Task N:` or `### Task N:` sections", path)
 	}
 	p.GlobalConstraints = extractSection(lines, "## Global Constraints")
+	if err := p.resolveDependencies(); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+var dependsOnRe = regexp.MustCompile(`^\s*Depends on:\s*(.+?)\s*$`)
+
+// resolveDependencies fills DependsOn on every task, strips the
+// "Depends on:" line from each body, and rejects unknown numbers,
+// self-dependencies and cycles.
+func (p *Plan) resolveDependencies() error {
+	known := make(map[int]bool, len(p.Tasks))
+	for _, t := range p.Tasks {
+		known[t.N] = true
+	}
+	for i := range p.Tasks {
+		t := &p.Tasks[i]
+		lines := strings.Split(t.Body, "\n")
+		explicit := false
+		inFence := false
+		for j, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inFence = !inFence
+				continue
+			}
+			if inFence {
+				continue
+			}
+			m := dependsOnRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			explicit = true
+			for _, part := range strings.Split(m[1], ",") {
+				part = strings.TrimSpace(part)
+				// "none" and "-" are an explicit empty list: a root task.
+				if part == "" || strings.EqualFold(part, "none") || part == "-" {
+					continue
+				}
+				n, err := strconv.Atoi(part)
+				if err != nil {
+					return fmt.Errorf("plan %s: task %d: depends on unknown task %q", p.Slug, t.N, part)
+				}
+				t.DependsOn = append(t.DependsOn, n)
+			}
+			lines = append(lines[:j], lines[j+1:]...)
+			t.Body = strings.Join(lines, "\n")
+			break
+		}
+		if !explicit && i > 0 {
+			t.DependsOn = []int{p.Tasks[i-1].N}
+		}
+		for _, d := range t.DependsOn {
+			if d == t.N || !known[d] {
+				return fmt.Errorf("plan %s: task %d: depends on unknown task %d", p.Slug, t.N, d)
+			}
+		}
+	}
+	return p.checkDependencyCycles()
+}
+
+// checkDependencyCycles runs a depth-first search over DependsOn and
+// reports the first cycle as "3 → 5 → 3".
+func (p *Plan) checkDependencyCycles() error {
+	deps := make(map[int][]int, len(p.Tasks))
+	for _, t := range p.Tasks {
+		deps[t.N] = t.DependsOn
+	}
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := map[int]int{}
+	var path []int
+	var visit func(n int) []int
+	visit = func(n int) []int {
+		state[n] = visiting
+		path = append(path, n)
+		for _, d := range deps[n] {
+			switch state[d] {
+			case visiting:
+				start := 0
+				for k, v := range path {
+					if v == d {
+						start = k
+						break
+					}
+				}
+				cycle := append([]int(nil), path[start:]...)
+				return append(cycle, d)
+			case 0:
+				if c := visit(d); c != nil {
+					return c
+				}
+			}
+		}
+		path = path[:len(path)-1]
+		state[n] = done
+		return nil
+	}
+	for _, t := range p.Tasks {
+		if state[t.N] != 0 {
+			continue
+		}
+		if c := visit(t.N); c != nil {
+			parts := make([]string, len(c))
+			for i, n := range c {
+				parts[i] = strconv.Itoa(n)
+			}
+			return fmt.Errorf("plan %s: dependency cycle: %s", p.Slug, strings.Join(parts, " → "))
+		}
+	}
+	return nil
 }
 
 // extractSection returns the body of the named "## " section: every line

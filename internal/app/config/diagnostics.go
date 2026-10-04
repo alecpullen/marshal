@@ -217,6 +217,24 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
+	// 8b: [budgets] is user-global only; invalid values fall back to defaults.
+	if layers.ProjectBudgetsIgnored {
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "budgets",
+			Message:  "[budgets] is user-global only; the project config's section was ignored",
+			Source:   LayerProject.String(),
+		})
+	}
+	for _, path := range layers.BudgetFixes {
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     path,
+			Message:  "invalid value; using the default",
+			Source:   LayerUser.String(),
+		})
+	}
+
 	// 9: MCP server auth mode. config.mcp.set validates this before writing,
 	// but merge() copies the field verbatim, so a hand-edited config.toml could
 	// carry a value that is silently ignored at runtime: an unknown mode, or

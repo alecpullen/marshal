@@ -104,9 +104,25 @@ type options struct {
 	knowledgeHook     func(ctx context.Context, state *session.State, database *db.DB)
 	workers           []worker.Worker
 	configReloader    func(config.Config) error
+	sessionRouting    config.SessionRouting
 }
 
 type Option func(*options)
+
+// ErrInvalidSessionRouting is returned (wrapped) by StartRuntime when the
+// routing given to WithSessionRouting names an unknown profile, role or
+// preset.
+var ErrInvalidSessionRouting = errors.New("invalid session routing")
+
+// WithSessionRouting gives the runtime's session its own routing: profile
+// (when non-empty) replaces the configured default profile, and overrides
+// rebind roles to presets. Both apply for the life of the session, including
+// across config reloads. The TUI path never sets it.
+func WithSessionRouting(profile string, overrides map[routing.AgentRole]string) Option {
+	return func(opts *options) {
+		opts.sessionRouting = config.SessionRouting{Profile: profile, Overrides: overrides}
+	}
+}
 
 var (
 	shutdownKnowledgeTimeout = 2 * time.Second
@@ -2458,6 +2474,13 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// could interleave.
 	rt.reloadMu.Lock()
 	defer rt.reloadMu.Unlock()
+
+	// A reload loads config from disk, which knows nothing of the session's
+	// own routing; carry it over so the session keeps its profile and
+	// overrides.
+	if cfg.SessionRouting.Empty() && rt.State != nil {
+		cfg.SessionRouting = rt.State.Config.SessionRouting
+	}
 
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)

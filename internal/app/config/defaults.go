@@ -130,6 +130,7 @@ func Default() Config {
 			MaxTotalTokens:  0,
 		},
 		Worktree: WorktreeConfig{},
+		Budgets:  BudgetsConfig{OnDailyCap: "warn", OnAgentCap: "warn"},
 		Web: WebConfig{
 			Enabled:      true,
 			FetchTimeout: 30 * time.Second,

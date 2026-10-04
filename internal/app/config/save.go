@@ -544,6 +544,18 @@ func writeSections(file *configFile, cfg Config, def Config) {
 // should use api_key_env to reference an environment variable instead of
 // embedding the key directly.
 func writeGlobalSections(file *configFile, cfg Config, baseline ...Config) {
+	// [budgets] is user-global only. A section equal to the defaults is
+	// removed so resetting a cap does not leave the old value on disk.
+	if cfg.Budgets == Default().Budgets {
+		file.Budgets = nil
+	} else {
+		file.Budgets = &fileBudgets{
+			DailyUSD:    &cfg.Budgets.DailyUSD,
+			PerAgentUSD: &cfg.Budgets.PerAgentUSD,
+			OnDailyCap:  &cfg.Budgets.OnDailyCap,
+			OnAgentCap:  &cfg.Budgets.OnAgentCap,
+		}
+	}
 	// The section is written when the caller has entries or carried a
 	// baseline for it — a baseline map without matching entries is an
 	// intentional clear (e.g. the last key deleted), which must persist.

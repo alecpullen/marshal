@@ -172,12 +172,14 @@ func (m *TurnManager) notifyStackPatch(sessionID string, patch stackPatch) {
 func (m *TurnManager) flushStack(sessionID string, st *session.State, busy bool) {
 	m.flushProjector(sessionID, 0, st, busy, false, false)
 	m.flushChildStacks(sessionID, st)
+	m.flushRun(sessionID, st)
 }
 
 // flushDirtyStack avoids rebuilding the tree on idle ticks during a turn.
 func (m *TurnManager) flushDirtyStack(sessionID string, st *session.State) {
 	m.flushProjector(sessionID, 0, st, true, false, true)
 	m.flushChildStacks(sessionID, st)
+	m.flushRun(sessionID, st)
 }
 
 // flushProjector diffs one projector against st and notifies on change.
@@ -304,6 +306,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 		m.notifyStackPatch(request.SessionID, patch)
 	}
 	p.dirty = false
+	m.watchRun(request.SessionID, rt.State)
 	snapshot := StackSnapshot{SessionID: request.SessionID, SubagentID: request.SubagentID, Rev: p.rev, Roots: make([]string, 0, len(tree.Roots)), Nodes: make([]viewmodel.WireNode, 0, len(tree.Nodes))}
 	snapshot.Roots = append(snapshot.Roots, tree.Roots...)
 	snapshot.Nodes = append(snapshot.Nodes, tree.Nodes...)
@@ -312,6 +315,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 
 // dropStacks stops the idle flusher and forgets every projector of a session.
 func (m *TurnManager) dropStacks(sessionID string) {
+	m.dropRun(sessionID)
 	prefix := sessionID + "#"
 	m.stacksMu.Lock()
 	defer m.stacksMu.Unlock()
@@ -367,6 +371,7 @@ func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 				}
 				m.flushProjector(sessionID, 0, cur.State, false, false, true)
 				m.flushChildStacks(sessionID, cur.State)
+				m.flushRun(sessionID, cur.State)
 			}
 		}
 	}()

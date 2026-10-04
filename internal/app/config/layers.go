@@ -37,8 +37,14 @@ type Layers struct {
 	// "models.presets.x/y"). All three are empty unless the project layer
 	// was applied.
 	HoistedProviders []string
-	HoistedPresets   []string
-	HoistConflicts   []string
+	// ProjectBudgetsIgnored reports that the project file carried a
+	// [budgets] section, which is user-global only and was not applied.
+	ProjectBudgetsIgnored bool
+	// BudgetFixes lists the dotted paths of [budgets] values that were
+	// invalid and replaced by their defaults.
+	BudgetFixes    []string
+	HoistedPresets []string
+	HoistConflicts []string
 	// HoistError is set when the hoist migration failed to persist. The
 	// merged config is unaffected (it was built from both files before the
 	// hoist ran) and the next load retries.
@@ -105,11 +111,17 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		}
 	}
 	var projectFile configFile
+	projectBudgetsIgnored := false
 	if applyProject {
 		var err error
 		projectFile, err = loadFile(projectPath)
 		if err != nil {
 			return Layers{}, err
+		}
+		// [budgets] is user-global only: a project file never sets it.
+		if projectFile.Budgets != nil {
+			projectBudgetsIgnored = true
+			projectFile.Budgets = nil
 		}
 		if err := merge(&cfg, projectFile); err != nil {
 			return Layers{}, fmt.Errorf("merge config %s: %w", projectPath, err)
@@ -156,8 +168,11 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	migrated := MigrateLegacyAgentModel(&cfg, legacyProvider, legacyModel)
 	migrated = MigrateEmbeddingRoleBinding(&cfg) || migrated
 	coercePresetPricing(&cfg)
+	budgetFixes := normalizeBudgets(&cfg.Budgets)
 	return Layers{
-		Default: def, User: user, Merged: cfg, Migrated: migrated,
+		ProjectBudgetsIgnored: projectBudgetsIgnored,
+		BudgetFixes:           budgetFixes,
+		Default:               def, User: user, Merged: cfg, Migrated: migrated,
 		SubtaskIterationsSet: subtaskSet,
 		SidePanelIgnoredBy:   sidePanelIgnoredBy(userFile, projectFile),
 		HoistedProviders:     hoistedProviders,
@@ -438,4 +453,27 @@ func assignReflect(dst reflect.Value, value any) error {
 		return nil
 	}
 	return fmt.Errorf("cannot assign %T to %s", value, dst.Type())
+}
+
+// normalizeBudgets replaces invalid [budgets] values with their defaults and
+// returns the dotted paths it fixed: unknown actions, and negative caps.
+func normalizeBudgets(b *BudgetsConfig) []string {
+	var fixed []string
+	if b.DailyUSD < 0 {
+		b.DailyUSD = 0
+		fixed = append(fixed, "budgets.daily_usd")
+	}
+	if b.PerAgentUSD < 0 {
+		b.PerAgentUSD = 0
+		fixed = append(fixed, "budgets.per_agent_usd")
+	}
+	if b.OnDailyCap != "warn" && b.OnDailyCap != "block" {
+		b.OnDailyCap = "warn"
+		fixed = append(fixed, "budgets.on_daily_cap")
+	}
+	if b.OnAgentCap != "warn" && b.OnAgentCap != "pause" {
+		b.OnAgentCap = "warn"
+		fixed = append(fixed, "budgets.on_agent_cap")
+	}
+	return fixed
 }

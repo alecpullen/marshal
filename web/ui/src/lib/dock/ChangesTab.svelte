@@ -15,6 +15,7 @@
     dock,
     gate = undefined,
     changedFiles = 0,
+    drilled = false,
   }: {
     agentId: string
     sessionId: string
@@ -22,6 +23,8 @@
     dock: DockState
     gate?: GateRecord
     changedFiles?: number
+    /** Showing a subagent's transcript, whose node ids step diffs do not cover. */
+    drilled?: boolean
   } = $props()
 
   const edit = $derived(latestEdit(stack))
@@ -80,7 +83,7 @@
 
   let stepDiffs = $state<StepDiff[] | 'unsupported' | null>(null)
   $effect(() => {
-    if (dock.mode !== 'select') return
+    if (dock.mode !== 'select' || drilled) return
     editKey
     getStepDiffs(sessionId)
       .then((r) => (stepDiffs = r))
@@ -108,7 +111,9 @@
 
   {#if error}<div class="m-3 rounded-md border border-danger bg-danger/10 p-2 text-xs">{error}</div>{/if}
 
-  {#if dock.mode === 'select'}
+  {#if dock.mode === 'select' && drilled}
+    <p class="p-3 text-xs text-muted">Changes aren't tracked per subagent. Go back to the main transcript to filter by step.</p>
+  {:else if dock.mode === 'select'}
     {#if stepDiffs === 'unsupported'}
       <p class="p-3 text-xs text-muted">Per-step changes need a newer agent.</p>
     {:else if shown.length === 0}

@@ -85,6 +85,23 @@ describe('InspectTab', () => {
     expect(await screen.findByText('Full detail needs a newer agent.')).toBeTruthy()
   })
 
+  it('keeps the previous detail up while a live node refetches', async () => {
+    const detail = { calls: [{ toolName: 'file.write_patch', diff: '+added' }] }
+    let release: (v: unknown) => void = () => {}
+    ;(api.getNode as Mock).mockResolvedValueOnce({ node: nodes[3], detail }).mockReturnValueOnce(new Promise((r) => (release = r)))
+    const p = props('tool:2')
+    const { rerender } = render(InspectTab, p)
+    await screen.findByTestId('diff-lines')
+    // A patch gives the same node a new wire object, so the cache misses.
+    const next = new Map(p.stack.nodes)
+    next.set('tool:2', { ...nodes[3], live: true })
+    await rerender({ ...p, stack: { ...p.stack, nodes: next } })
+    await waitFor(() => expect(api.getNode).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: 'Diff' })).toBeTruthy()
+    expect(screen.getByTestId('diff-lines')).toBeTruthy()
+    release({ node: nodes[3], detail })
+  })
+
   it('offers the last model request on the newest step only', async () => {
     ;(api.getNode as Mock).mockResolvedValue({ node: nodes[1], detail: {} })
     ;(api.getLastRequest as Mock).mockResolvedValue({
@@ -146,6 +163,12 @@ describe('ChangesTab', () => {
     expect(screen.getByText(/3 changed files/)).toBeTruthy()
   })
 
+  it('says step changes are not tracked per subagent while drilled in', async () => {
+    render(ChangesTab, { ...base, drilled: true, dock: initialDock({ tab: 'changes', mode: 'select', selected: 'step:9' }) })
+    expect(await screen.findByText(/aren't tracked per subagent/)).toBeTruthy()
+    expect(api.getStepDiffs).not.toHaveBeenCalled()
+  })
+
   it('filters to the selected step in select mode', async () => {
     ;(api.getStepDiffs as Mock).mockResolvedValue([
       { stepNode: 'step:1', turnNode: 'turn:1', headline: 'Fix the parser', files: ['p.go'], diff: '+a' },
@@ -167,6 +190,24 @@ describe('FilesTab', () => {
     await waitFor(() => expect(document.querySelector('[data-line="2"]')?.className).toContain('bg-accent'))
     expect(document.querySelector('[data-line="1"]')?.className).not.toContain('bg-accent')
     expect(await screen.findByRole('button', { name: /a\.go/ })).toBeTruthy()
+  })
+
+  it('ignores a read that resolves after a newer one', async () => {
+    ;(api.listFiles as Mock).mockResolvedValue({ entries: [] })
+    let slow: (v: unknown) => void = () => {}
+    ;(api.readFile as Mock).mockImplementation((_a: string, path: string) =>
+      path === 'a.go'
+        ? new Promise((r) => (slow = r))
+        : Promise.resolve({ path, size: 1, binary: false, truncated: false, content: 'file B' }),
+    )
+    const props = { agentId: 'a1', stack: stackOf(nodes), dock: initialDock({ tab: 'files' }) }
+    const { rerender } = render(FilesTab, { ...props, request: { path: 'a.go', seq: 1 } })
+    await rerender({ ...props, request: { path: 'b.go', seq: 2 } })
+    await screen.findByText('file B')
+    slow({ path: 'a.go', size: 1, binary: false, truncated: false, content: 'file A' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.queryByText('file A')).toBeNull()
+    expect(screen.getByText('file B')).toBeTruthy()
   })
 
   it('notes a binary file', async () => {

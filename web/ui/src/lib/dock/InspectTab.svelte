@@ -32,13 +32,20 @@
 
   let detail = $state<NodeDetailResponse | 'unsupported' | 'error' | 'loading'>('loading')
   let sub = $state('output')
+  let detailKey = ''
 
   // Refetched whenever the wire node changes; the cache makes unchanged ones free.
+  // Only a different node (or transcript) resets to loading: a live node gets a
+  // new object on every patch, and the previous detail stays up while it refetches.
   $effect(() => {
     const n = node
     if (!n) return
+    const key = `${subagentId ?? 0}:${n.id}`
+    if (key !== detailKey) {
+      detailKey = key
+      detail = 'loading'
+    }
     let stale = false
-    detail = 'loading'
     cache
       .get(sessionId, n.id, n, subagentId)
       .then((r) => !stale && (detail = r))

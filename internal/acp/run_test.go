@@ -118,6 +118,12 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			t.Fatalf("sessionCapabilities.close = %v, want empty object", closeObj)
 		}
 
+		for _, name := range []string{"stackNode", "subagentStacks", "lastRequest", "filesView", "commitDraft", "stepDiffs"} {
+			if c, ok := sessionCaps[name].(map[string]any); !ok || len(c) != 0 {
+				t.Fatalf("sessionCapabilities.%s = %v, want empty object", name, sessionCaps[name])
+			}
+		}
+
 		stackCap, ok := sessionCaps["stackView"]
 		if !ok {
 			t.Fatal("sessionCapabilities.stackView missing")

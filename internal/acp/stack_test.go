@@ -73,7 +73,7 @@ func stackPatchFromNotice(t *testing.T, n stackNotice) stackPatch {
 	}
 	for key := range fields {
 		switch key {
-		case "kind", "rev", "baseRev", "roots", "upsert", "remove":
+		case "kind", "rev", "baseRev", "roots", "upsert", "remove", "subagentId":
 		default:
 			t.Fatalf("unexpected JSON key %s", key)
 		}
@@ -395,5 +395,116 @@ func TestStackRequiresSessionID(t *testing.T) {
 	_, err := m.Stack(context.Background(), json.RawMessage(`{}`))
 	if err == nil || err.Error() != "acp: session/stack requires sessionId" {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStackSubagentSnapshotAndPatch(t *testing.T) {
+	s := newSyncStack(t)
+	s.st.AddMessage(session.RoleUser, "parent", session.ContentTypePlain)
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	child.AddMessage(session.RoleUser, "child prompt", session.ContentTypePlain)
+	v := s.st.RegisterSubagent("worker", child)
+
+	params, _ := json.Marshal(StackParams{SessionID: "s1", SubagentID: v.ID})
+	got, err := s.Stack(context.Background(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := got.(StackSnapshot)
+	found := false
+	for _, n := range snap.Nodes {
+		found = found || (n.Message != nil && n.Message.Content == "child prompt")
+	}
+	if !found || snap.SubagentID != v.ID {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+
+	child.AddMessage(session.RoleUser, "second", session.ContentTypePlain)
+	s.flushChildStacks("s1", s.st)
+	ns := s.notices()
+	if len(ns) != 1 {
+		t.Fatalf("notices = %d", len(ns))
+	}
+	if patch := stackPatchFromNotice(t, ns[0]); patch.SubagentID != v.ID {
+		t.Fatalf("patch subagentId = %d, want %d", patch.SubagentID, v.ID)
+	}
+}
+
+func TestStackSubagentErrors(t *testing.T) {
+	s := newSyncStack(t)
+	s.st.RegisterSubagent("detached", nil)
+	var id int64
+	s.st.RegisterSubagent("x", nil)
+	for _, sv := range s.st.Subagents() {
+		id = sv.ID
+	}
+	for _, c := range []struct {
+		id   int64
+		want string
+	}{{999999, "unknown subagent"}, {id, "no separate transcript"}} {
+		params, _ := json.Marshal(StackParams{SessionID: "s1", SubagentID: c.id})
+		if _, err := s.Stack(context.Background(), params); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("subagent %d: error = %v, want %q", c.id, err, c.want)
+		}
+	}
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestStackIdleFlushWithoutTurn(t *testing.T) {
+	s := newSyncStack(t)
+	s.st.AddMessage(session.RoleUser, "first", session.ContentTypePlain)
+	if _, err := s.Stack(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.dropStacks("s1") })
+	s.st.AddMessage(session.RoleUser, "second", session.ContentTypePlain)
+	s.broker.Publish(session.EventActivityChanged, session.Event{})
+	waitFor(t, "idle stack_patch", func() bool { return len(s.notices()) > 0 })
+	p := stackPatchFromNotice(t, s.notices()[0])
+	if p.Kind != "stack_patch" {
+		t.Fatalf("patch = %+v", p)
+	}
+}
+
+func TestStackIdleStopsWhenSessionGone(t *testing.T) {
+	s := newSyncStack(t)
+	if _, err := s.Stack(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.gone = true
+	s.mu.Unlock()
+	waitFor(t, "projectors removed", func() bool {
+		s.stacksMu.Lock()
+		defer s.stacksMu.Unlock()
+		return len(s.stacks) == 0
+	})
+}
+
+func TestStackIdleStartsFromSubagentActivation(t *testing.T) {
+	s := newSyncStack(t)
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	child.AddMessage(session.RoleUser, "one", session.ContentTypePlain)
+	v := s.st.RegisterSubagent("worker", child)
+	params, _ := json.Marshal(StackParams{SessionID: "s1", SubagentID: v.ID})
+	if _, err := s.Stack(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.dropStacks("s1") })
+	child.AddMessage(session.RoleUser, "two", session.ContentTypePlain)
+	waitFor(t, "idle child patch", func() bool { return len(s.notices()) > 0 })
+	if p := stackPatchFromNotice(t, s.notices()[0]); p.SubagentID != v.ID {
+		t.Fatalf("patch = %+v", p)
 	}
 }

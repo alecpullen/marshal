@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const workspaceVersion = 6
+const workspaceVersion = 7
 
 // DefaultOwnerID is the single implicit owner in a single-operator
 // deployment. Every agent carries an owner from the first commit so that
@@ -157,6 +157,8 @@ type workspaceFile struct {
 	Clients         []MCPClient      `json:"clients,omitempty"`
 	Pending         []PendingSpawn   `json:"pending,omitempty"`
 	SubmittedIssues map[string][]int `json:"submittedIssues,omitempty"`
+	// Reviews maps an agent ID to its review comments (v7).
+	Reviews map[string][]ReviewComment `json:"reviews,omitempty"`
 }
 
 type Workspace struct {
@@ -168,6 +170,7 @@ type Workspace struct {
 	clients         map[string]MCPClient
 	pending         map[string]PendingSpawn
 	submittedIssues map[string][]int
+	reviews         map[string][]ReviewComment
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -178,6 +181,7 @@ func NewWorkspace(path string) *Workspace {
 		clients:         make(map[string]MCPClient),
 		pending:         make(map[string]PendingSpawn),
 		submittedIssues: make(map[string][]int),
+		reviews:         make(map[string][]ReviewComment),
 	}
 }
 
@@ -230,6 +234,10 @@ func (w *Workspace) Load() (string, error) {
 	w.submittedIssues = make(map[string][]int, len(f.SubmittedIssues))
 	for id, nums := range f.SubmittedIssues {
 		w.submittedIssues[id] = append([]int(nil), nums...)
+	}
+	w.reviews = make(map[string][]ReviewComment, len(f.Reviews))
+	for id, cs := range f.Reviews {
+		w.reviews[id] = append([]ReviewComment(nil), cs...)
 	}
 	return "", nil
 }
@@ -288,6 +296,12 @@ func (w *Workspace) save() error {
 		f.SubmittedIssues = make(map[string][]int, len(w.submittedIssues))
 		for id, nums := range w.submittedIssues {
 			f.SubmittedIssues[id] = append([]int(nil), nums...)
+		}
+	}
+	if len(w.reviews) > 0 {
+		f.Reviews = make(map[string][]ReviewComment, len(w.reviews))
+		for id, cs := range w.reviews {
+			f.Reviews[id] = append([]ReviewComment(nil), cs...)
 		}
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
@@ -362,6 +376,7 @@ func (w *Workspace) RemoveProject(root string) error {
 	for id, a := range w.agents {
 		if a.Project == root {
 			delete(w.agents, id)
+			delete(w.reviews, id)
 		}
 	}
 	return w.save()
@@ -396,6 +411,7 @@ func (w *Workspace) RemoveAgent(id string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.agents, id)
+	delete(w.reviews, id)
 	return w.save()
 }
 func (w *Workspace) MarkAllInterrupted() error {
@@ -546,4 +562,45 @@ func (w *Workspace) SweepExpired(now time.Time) int {
 		_ = w.save()
 	}
 	return removed
+}
+
+// PutReviewComment stores a review comment under its agent.
+func (w *Workspace) PutReviewComment(c ReviewComment) error {
+	if c.ID == "" || c.AgentID == "" {
+		return errors.New("review comment needs an id and an agent id")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	list := w.reviews[c.AgentID]
+	for i := range list {
+		if list[i].ID == c.ID {
+			list[i] = c
+			return w.save()
+		}
+	}
+	w.reviews[c.AgentID] = append(list, c)
+	return w.save()
+}
+
+// ReviewComments returns a copy of an agent's comments, oldest first.
+func (w *Workspace) ReviewComments(agentID string) []ReviewComment {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := append([]ReviewComment(nil), w.reviews[agentID]...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out
+}
+
+// ResolveReviewComment marks a comment resolved at the given time.
+func (w *Workspace) ResolveReviewComment(agentID, id string, at time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	list := w.reviews[agentID]
+	for i := range list {
+		if list[i].ID == id {
+			list[i].ResolvedAt = at
+			return w.save()
+		}
+	}
+	return fmt.Errorf("%w: review comment %s", ErrUnknownReviewComment, id)
 }

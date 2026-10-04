@@ -298,6 +298,12 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 					"sddDispatch":           map[string]any{},
 					"sessionTelemetry":      map[string]any{},
 					"stackView":             map[string]any{},
+					"stackNode":             map[string]any{},
+					"subagentStacks":        map[string]any{},
+					"lastRequest":           map[string]any{},
+					"filesView":             map[string]any{},
+					"commitDraft":           map[string]any{},
+					"stepDiffs":             map[string]any{},
 					"memoryAccess":          map[string]any{},
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
@@ -329,6 +335,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/stack", turns.Stack)
+	srv.Handle("session/stack_node", turns.StackNode)
+	srv.Handle("session/last_request", turns.LastRequest)
+	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	srv.Handle("session/swarm_start", turns.SwarmStart)
@@ -411,6 +420,17 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	})
 	srv.Handle("session/commit", exitMgr.Commit)
 	srv.Handle("session/verify", exitMgr.Verify)
+	srv.Handle("session/commit_draft", exitMgr.CommitDraft)
+
+	filesMgr := NewFilesManager(func(sessionID string) (*session.State, bool) {
+		rt, ok := manager.Get(sessionID)
+		if !ok || rt == nil || rt.State == nil {
+			return nil, false
+		}
+		return rt.State, true
+	})
+	srv.Handle("session/files", filesMgr.Files)
+	srv.Handle("session/file", filesMgr.File)
 
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {

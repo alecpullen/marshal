@@ -304,6 +304,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 					"filesView":             map[string]any{},
 					"commitDraft":           map[string]any{},
 					"stepDiffs":             map[string]any{},
+					"runDetail":             map[string]any{},
 					"memoryAccess":          map[string]any{},
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
@@ -338,6 +339,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/stack_node", turns.StackNode)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
+	srv.Handle("session/run", turns.Run)
 	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	srv.Handle("session/swarm_start", turns.SwarmStart)

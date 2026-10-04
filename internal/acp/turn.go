@@ -223,6 +223,14 @@ type TurnManager struct {
 	stacksMu sync.Mutex
 	stacks   map[string]*stackProjector
 
+	// runMu guards the run-detail state behind session/run and run_progress:
+	// which sessions a client watches, the hash of the last detail sent, and
+	// the last non-empty swarm progress (the live copy is cleared at run end).
+	runMu     sync.Mutex
+	runActive map[string]bool
+	runHashes map[string]uint64
+	lastSwarm map[string]session.SwarmProgress
+
 	// cancelTimeout overrides cancelWait for testing; zero means use the
 	// default const. Access is safe without a mutex because it is set
 	// only during construction and read only in CancelAndWait.
@@ -251,6 +259,9 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		pipelineRunners: map[string]*sddRun{},
 		baseRefs:        map[string]string{},
 		stacks:          map[string]*stackProjector{},
+		runActive:       map[string]bool{},
+		runHashes:       map[string]uint64{},
+		lastSwarm:       map[string]session.SwarmProgress{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
@@ -1478,6 +1489,7 @@ func (m *TurnManager) SwarmStatus(ctx context.Context, params json.RawMessage) (
 	if rt.State == nil {
 		return nil, &jsonRPCError{Code: internalError, Message: "session has no state"}
 	}
+	m.recordSwarm(p.SessionID, rt.State)
 	prog := rt.State.SwarmProgress()
 	result := SwarmStatusResult{
 		Goal:       prog.Goal,

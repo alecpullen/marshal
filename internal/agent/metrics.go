@@ -60,11 +60,13 @@ type TurnMetrics struct {
 	// thresholds requires.
 	FailedRepeatStreak      int
 	HighestFailedRepeatTier int
-	PromptTokens            int
-	CompletionTokens        int
-	ReasoningTokens         int
-	CacheReadTokens         int
-	CacheWriteTokens        int
+	// IntentNudges counts intent-only-final nudges sent this turn (0 or 1).
+	IntentNudges     int
+	PromptTokens     int
+	CompletionTokens int
+	ReasoningTokens  int
+	CacheReadTokens  int
+	CacheWriteTokens int
 	// EstimatedCostCents is the estimated cost in hundredths of a cent
 	// (1/10000 of a dollar), computed from the token counts and the
 	// pricing table at metrics-emission time. 0 for local/unpriced models.

@@ -51,7 +51,10 @@ const (
 	// autonomous runs are the point of configuring them.
 	LocalDefaultMaxToolIterations = 25
 	groundingNudgeMessage         = "You have not made any tool calls this turn, but this task requires code changes or commands. If the work is already done from an earlier turn, verify it now with a tool call (for example, re-read the changed file or re-run the test command) before declaring completion. Otherwise, use the appropriate tool to make the change now."
-	verificationNudgeMessage      = "You made changes this session (last change: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
+	// intentNudgeMessage is sent once per turn when a short "I'll do X next"
+	// reply arrives with no tool call (see looksLikeIntentOnly).
+	intentNudgeMessage       = "You said what you would do next but did not call a tool. Call the tool now, or give your final answer."
+	verificationNudgeMessage = "You made changes this session (last change: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
 	// emptyModelResponsePlaceholder stands in for a truly empty model
 	// response when recording the assistant's turn in the conversation.
 	// Some providers reject the next request outright if any assistant
@@ -314,6 +317,25 @@ type Runner struct {
 	// RoleGeneral, so existing single-agent construction is unchanged.
 	// Swarm sub-runners set this to planner/repo_scout/implementer/reviewer.
 	Role AgentRole
+
+	// ActorLabel names this runner in step owner labels ("reviewer #1",
+	// "implementer", a custom agent's name). Empty for the orchestrator,
+	// which has no owner label; a prettified role name is used when a role
+	// is set but no label was given.
+	ActorLabel string
+
+	// NarrationPrompt adds the "say what you are about to do" directive to
+	// the native-tools system prompt. IntentNudge re-prompts once per turn
+	// when a short forward-intent sentence arrives with no tool call.
+	NarrationPrompt bool
+	IntentNudge     bool
+
+	// curStep is the step opened for the model response in flight, and
+	// curModel/curProvider the route it used. Written only by the run loop
+	// between model calls; tool workers only read them.
+	curStep     session.StepID
+	curModel    string
+	curProvider string
 
 	// SystemPromptAddendum, when non-empty, is appended to the system
 	// prompt after the role addendum. Set by custom-agent runner
@@ -587,6 +609,8 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.SkillIndex = other.SkillIndex
 	r.LimitsTable = other.LimitsTable
 	r.Role = other.Role
+	r.NarrationPrompt = other.NarrationPrompt
+	r.IntentNudge = other.IntentNudge
 	r.WriteGate = other.WriteGate
 	r.WatchTransferrer = other.WatchTransferrer
 	r.UsageObserver = other.UsageObserver
@@ -678,6 +702,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	defer r.endOpenStep()
 	// I-2: clear the subagent report queue at turn end. A child that
 	// finishes after the final loop-top drain pushes its report to the
 	// queue AND persists it as a RoleUser message. Without this clear,
@@ -716,6 +741,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}()
 
 	priorTranscript := r.State.Messages()
+	// Publish the prompt before any model-backed startup work so the TUI
+	// can show it while title generation is still running. Keep the history
+	// snapshot above this insertion to avoid replaying the goal twice.
+	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	// Turn-start titling: initial title on the first turn; later turns
 	// re-title only when the user explicitly starts a new task. Synchronous
 	// by design (single-model safe); failures and timeouts keep the current
@@ -723,7 +752,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if r.TitleManager != nil && r.State.SubagentDepth() == 0 {
 		r.TitleManager.OnUserTurn(ctx, goal)
 	}
-	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	// If the previous turn was interrupted (Esc), surface a one-line note in
 	// the user's transcript so they know where things stopped. The model
 	// gets its full orientation from the persisted RoleUser interrupt marker
@@ -812,6 +840,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		r.turnRequestOptions.contextWindow = nil
 	}
 	r.turnRequestOptions.thinking = route.Preset.Thinking
+	r.turnRequestOptions.thinkingOptions = route.Preset.ThinkingOptions
 	if r.ThinkingOverride != "" {
 		r.turnRequestOptions.thinking = r.ThinkingOverride
 	}
@@ -874,6 +903,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			Roster:       r.agentRoster(),
 			LoadedNames:  r.State.LoadedToolNames(),
 			SystemAccess: r.State.SystemAccess(),
+			Narration:    r.NarrationPrompt,
 		}),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
@@ -978,6 +1008,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
+	intentNudgeSent := false
 	verificationNudgeSent := false
 	gateOn := r.verificationGateOn(route)
 	budget := newTurnBudget(r.effectiveMaxToolIterations(route), task.Class, len(task.Plan))
@@ -1112,6 +1143,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				Roster:       r.agentRoster(),
 				LoadedNames:  currentLoadedTools,
 				SystemAccess: currentSystemAccess,
+				Narration:    r.NarrationPrompt,
 			})
 			lastRenderedSkills = currentSkills
 			lastRenderedLoadedTools = currentLoadedTools
@@ -1176,6 +1208,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 		}
 
+		// One model response is one step. The plan_first planning call and
+		// the finalize/stall calls are not steps.
+		r.beginStep(turnModel, turnProvider.Name())
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
 		r.setTurnFinishReason(res.FinishReason)
 		if err != nil {
@@ -1256,6 +1291,25 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
 					continue
 				}
+				// Intent-only final: with the narration prompt on, some models
+				// obey "say what you are about to do" and then stop, emitting
+				// only that sentence and no tool call. A short forward-intent
+				// reply after tool work is far likelier to be that than a real
+				// answer, so ask once. A model that really was finished just
+				// repeats its answer, which is accepted below.
+				if r.IntentNudge && !intentNudgeSent && toolCallCountThisTurn > 0 && looksLikeIntentOnly(res.Text) {
+					intentNudgeSent = true
+					budget.overhead++
+					countIterations()
+					r.withStats(func(s *turnStats) { s.m.IntentNudges++ })
+					// Show what the model said: without it the nudge appears
+					// in the transcript with nothing before it.
+					r.State.AddNarration(r.curStep, strings.TrimSpace(res.Text))
+					r.State.AddMessage(session.RoleSystem, intentNudgeMessage, session.ContentTypePlain)
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text})
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: intentNudgeMessage})
+					continue
+				}
 				// Verification gate: a turn that changed something should have
 				// verified those changes before finishing. One nudge per turn;
 				// a repeat final is accepted normally below. Opt-in: skipped
@@ -1328,6 +1382,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					Text:      inProgress.Reasoning,
 					Duration:  time.Since(inProgress.StartedAt),
 					StartedAt: inProgress.StartedAt,
+					StepID:    r.curStep,
 				})
 			}
 
@@ -1343,7 +1398,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// where the identical text is already present on the very next
 			// line.
 			if narration := strings.TrimSpace(res.Text); narration != "" {
-				r.State.AddMessage(session.RoleAssistant, narration, session.ContentTypeNarration)
+				r.State.AddNarration(r.curStep, narration)
 			}
 
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
@@ -1460,7 +1515,22 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				Text:      inProgress.Reasoning,
 				Duration:  time.Since(inProgress.StartedAt),
 				StartedAt: inProgress.StartedAt,
+				StepID:    r.curStep,
 			})
+		}
+
+		// Envelope mode requires a rationale on every action, and until now
+		// the runner discarded it. When the response carries tool work or
+		// asks the user something, it is the step's narration. On final and
+		// answer actions it is not shown: the content is the message.
+		//
+		// A batch is narrated only once it has passed validation: a rejected
+		// batch executes nothing, and its rationale would leave a narrated
+		// step that did nothing.
+		narrate := func() {
+			if rationale := strings.TrimSpace(action.Rationale); rationale != "" && actionNarrates(action) {
+				r.State.AddNarration(r.curStep, rationale)
+			}
 		}
 
 		if len(action.Actions) > 0 {
@@ -1478,6 +1548,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}
+			narrate()
+			r.assignEnvelopeCallIDs(action.Actions)
 			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
 			if execErr != nil {
 				return task, r.failTurn(task, execErr)
@@ -1492,6 +1564,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			continue
 		}
 
+		narrate()
 		switch action.Type {
 		case ActionAnswer, ActionFinal:
 			// Grounding, same rule as the native path: a non-question task
@@ -1539,6 +1612,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			return task, nil
 		case ActionToolCall, ActionPatch:
 			toolCallCountThisTurn++
+			if action.ToolCallID == "" {
+				action.ToolCallID = r.envelopeCallID(0)
+			}
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
 				return task, r.failTurn(task, err)

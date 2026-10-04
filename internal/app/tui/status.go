@@ -50,6 +50,15 @@ func modeStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary).Bold(true)
 }
 
+// modeSegmentStyle is modeStyle, but violet while browsing so the mode change
+// is visible even where the word is clipped.
+func (m Model) modeSegmentStyle() lipgloss.Style {
+	if m.browsing && !m.hasPendingApproval() {
+		return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary).Bold(true)
+	}
+	return modeStyle()
+}
+
 // untrustedStyle colors the untrusted warning segment.
 func untrustedStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning).Bold(true)
@@ -83,7 +92,7 @@ func (m Model) renderStatusLine(width int) string {
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
-	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() {
+	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() && m.ctrlCArmed() == ctrlCNone {
 		fits := func(s string) bool {
 			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
 		}
@@ -93,6 +102,12 @@ func (m Model) renderStatusLine(width int) string {
 		if !fits(right) {
 			hints := m.footerHints()
 			hints.SuppressMouseHint = true
+			right = help.Footer(hints)
+		}
+		if !fits(right) {
+			hints := m.footerHints()
+			hints.SuppressMouseHint = true
+			hints.SuppressBrowseHint = true
 			right = help.Footer(hints)
 		}
 		if !fits(right) {
@@ -152,6 +167,9 @@ func (m Model) modeSegment() string {
 	if m.state.PendingQuestion() != nil {
 		return "answering"
 	}
+	if m.browsing {
+		return "browse"
+	}
 	mode := string(m.approvalMode)
 	if mode == "" {
 		mode = "default"
@@ -167,11 +185,11 @@ func (m Model) modeSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, think=4, gen=4,
+//	mode=0, untrusted=0, route=1, local=2, ctx=3, ±files=4, think=4, gen=4,
 //	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
-		{text: modeStyle().Render(m.modeSegment()), priority: 0},
+		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0},
 	}
 
 	if !m.state.Trusted() {
@@ -215,6 +233,17 @@ func (m Model) statusLeftSegments() []statusSeg {
 	if used, window := m.state.TurnUsage(); window > 0 {
 		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
 			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
+	}
+
+	// Changed-file count against the base ref, so the working tree's state
+	// stays visible now that the rail is gone. Refreshed on turn boundaries
+	// and workspace events, never during render.
+	if n := len(m.sheetChanged); n > 0 {
+		word := "files"
+		if n == 1 {
+			word = "file"
+		}
+		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("±%d %s", n, word)), priority: 4})
 	}
 
 	// Subscription quota from an OAuth-backed provider. Rendered as
@@ -273,7 +302,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	if sp := m.state.SDDProgress(); sp.Active {
-		// The run panel owns task counts and phase; the status line keeps
+		// The now bar owns task counts and phase; the status line keeps
 		// only the mode cue (modeSegment) and the token budget.
 		if sp.TokensMax > 0 || sp.TokensUsed > 0 {
 			var seg string
@@ -331,6 +360,12 @@ func browserStatusText(bi session.BrowserInfo) string {
 }
 
 func (m Model) statusRightSegment() string {
+	switch m.ctrlCArmed() {
+	case ctrlCStop:
+		return warningStyle().Render("Ctrl+C again to stop the turn")
+	case ctrlCQuit:
+		return warningStyle().Render("Ctrl+C again to quit")
+	}
 	if m.hasPendingApproval() {
 		return warningStyle().Render(glyph.Warning + " approval")
 	}
@@ -339,6 +374,9 @@ func (m Model) statusRightSegment() string {
 			return warningStyle().Render(glyph.Warning + " warning")
 		}
 		return errorStyle().Render("✘ error")
+	}
+	if m.flashActive() {
+		return dimStyle().Render(m.flash)
 	}
 	return help.Footer(m.footerHints())
 }
@@ -384,10 +422,10 @@ func (m Model) footerHints() help.FooterHints {
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
 		TodosActive:          len(m.state.Todos()) > 0,
-		RailEnabled:          m.railEnabled(),
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),
+		Browsing:             m.browsing,
 	}
 }
 

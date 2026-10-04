@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marshal Single Stack</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+/* Layout: one reading column (~68ch) with terminal figures allowed to run wider, mirroring the single-stack idea itself. */
+:root {
+  --bg: #f3f3f1;
+  --surface: #ffffff;
+  --fg: #1d1c1a;
+  --muted: #5f5d58;
+  --line: #d9d7d2;
+  --accent: #b9471d;
+  --accent-soft: #fbe6dc;
+  --violet: #7d3fa8;
+  --ok: #0d7a66;
+  --warn: #9a5a00;
+  --term-bg: #0e0e10;
+  --term-bar: #1c1c20;
+  --font-body: "Instrument Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141416; --surface: #1c1c1f; --fg: #e9e7e3; --muted: #a3a09a; --line: #34343a;
+    --accent: #ff875f; --accent-soft: #3a2219; --violet: #d787ff; --ok: #3fd4b4; --warn: #ffaf5f;
+    --term-bg: #0a0a0c; --term-bar: #1a1a1e; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141416; --surface: #1c1c1f; --fg: #e9e7e3; --muted: #a3a09a; --line: #34343a;
+  --accent: #ff875f; --accent-soft: #3a2219; --violet: #d787ff; --ok: #3fd4b4; --warn: #ffaf5f;
+  --term-bg: #0a0a0c; --term-bar: #1a1a1e; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--font-body); margin: 0; }
+.wrap { max-width: 980px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 80px; }
+.prose { max-width: 68ch; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.2; }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 700; letter-spacing: -0.02em; margin: 0.2em 0 0.3em; }
+h2 { font-size: 1.6rem; font-weight: 650; margin: 0 0 0.6em; letter-spacing: -0.01em; }
+h3 { font-size: 1.1rem; font-weight: 650; margin: 1.6em 0 0.4em; }
+p { margin: 0 0 1em; }
+code { font-family: var(--font-mono); font-size: 0.86em; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0.05em 0.3em; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.lede { font-size: 1.15rem; color: var(--muted); max-width: 62ch; }
+section { padding-block: 48px 8px; border-top: 1px solid var(--line); margin-top: 40px; }
+section > .sec-no { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); letter-spacing: 0.06em; }
+
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.9rem; margin: 24px 0 0; }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-color: var(--accent); }
+
+.verdict { background: var(--accent-soft); border-radius: 10px; padding: 18px 22px; margin: 28px 0; }
+.verdict h2 { font-size: 1.05rem; margin: 0 0 0.5em; color: var(--accent); }
+.verdict ol { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+
+/* terminal figures: always dark, by design — they depict the real TUI */
+figure.term { margin: 22px 0; width: fit-content; max-width: 100%; min-width: 0; }
+figure.term .tbar { background: var(--term-bar); border-radius: 8px 8px 0 0; padding: 7px 12px; display: flex; gap: 6px; align-items: center; }
+figure.term .tbar i { width: 10px; height: 10px; border-radius: 50%; background: #3a3a40; display: inline-block; }
+figure.term .tbar span { font: 12px var(--font-mono); color: #8a8a90; margin-left: 8px; }
+figure.term pre { margin: 0; background: var(--term-bg); color: #bcbcbc; font: 12.5px/1.45 var(--font-mono); padding: 12px 6px 14px; border-radius: 0 0 8px 8px; overflow-x: auto; max-width: 100%; min-width: min(100%, calc(var(--cols) * 1ch + 12px)); }
+figure.term figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 8px; max-width: 70ch; }
+pre .fg { color: #bcbcbc } pre .br { color: #eeeeee } pre .b { color: #eeeeee; font-weight: 700 }
+pre .bb { color: #eeeeee; font-weight: 700 } pre .m { color: #9e9e9e } pre .d { color: #6c6c6c }
+pre .dim-i { color: #8a8a8a; font-style: italic }
+pre .a { color: #ff875f } pre .ab { color: #ff875f; font-weight: 700 } pre .v { color: #d787ff } pre .vb { color: #d787ff; font-weight: 700 }
+pre .g { color: #ffaf00 } pre .ok { color: #00d7af } pre .er { color: #ff87af } pre .wa { color: #ffaf5f }
+pre .cur { color: #ff875f } pre .sbar { background: #1a1a1d }
+pre .sel { background: #4e4e4e } pre .sel2 { background: #3a3a3a }
+
+.compare { display: flex; gap: 8px; margin-top: 30px; }
+.compare button { font: 600 0.85rem var(--font-body); padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+.compare button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.compare button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 430px), 1fr)); gap: 0 24px; }
+.grid2 > * { min-width: 0; }
+
+.findings { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+.findings li { display: grid; grid-template-columns: 2.2em 1fr; gap: 4px; }
+.findings li > b { font-family: var(--font-mono); color: var(--accent); font-weight: 700; }
+.findings li p { margin: 0; }
+.findings li .ref { font-size: 0.85rem; color: var(--muted); }
+
+/* zone diagram */
+.zones { display: grid; gap: 4px; max-width: 560px; margin: 20px 0 8px; font-size: 0.92rem; }
+.zone { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 10px 14px; display: grid; grid-template-columns: 7.5em 1fr; gap: 10px; align-items: baseline; }
+.zone b { font-family: var(--font-mono); font-size: 0.82rem; color: var(--accent); }
+.zone.tall { padding-block: 34px; }
+.zone small { color: var(--muted); display: block; }
+
+.rules { padding-left: 1.2em; display: grid; gap: 8px; }
+
+.tbl { overflow-x: auto; margin: 18px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 640px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
+td.size { font-family: var(--font-mono); white-space: nowrap; }
+.pill { display: inline-block; font: 600 0.72rem var(--font-mono); padding: 2px 7px; border-radius: 999px; border: 1px solid currentColor; }
+.pill.s { color: var(--ok); } .pill.m { color: var(--warn); } .pill.l { color: var(--accent); }
+tr.rec td { background: var(--accent-soft); }
+kbd { font: 0.8rem var(--font-mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface); white-space: nowrap; }
+
+.phases { display: grid; gap: 14px; counter-reset: ph; }
+.phase { border-left: 3px solid var(--line); padding: 2px 0 2px 16px; }
+.phase h3 { margin: 0 0 4px; }
+.phase h3 span { font-family: var(--font-mono); color: var(--accent); font-size: 0.85rem; margin-right: 8px; }
+.phase p, .phase ul { margin: 0 0 0.4em; }
+.phase ul { padding-left: 1.2em; }
+.qs { padding-left: 1.2em; display: grid; gap: 10px; }
+.foot { color: var(--muted); font-size: 0.85rem; margin-top: 50px; }
+@media (prefers-reduced-motion: no-preference) { nav.toc a, .compare button { transition: color .15s, background .15s; } }
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Marshal TUI · design proposal</div>
+  <h1>Marshal Single Stack</h1>
+  <p class="lede">A one-column layout for narrow and half-width terminals. Tool calls are grouped under the narration that explains them, tasks show the agent's progress, and every item can be opened for more detail.</p>
+  <nav class="toc" aria-label="Sections">
+    <a href="#found">What the code does today</a><a href="#stack">The stack</a><a href="#steps">Steps</a><a href="#detail">Detail on demand</a><a href="#progress">Progress</a><a href="#ownership">Ownership</a><a href="#dock">Now dock</a><a href="#nav">Navigation</a><a href="#rail">The sidebar</a><a href="#directions">Directions</a><a href="#change">What changes</a><a href="#phases">Rollout</a><a href="#decide">Decisions</a>
+  </nav>
+</header>
+
+<div class="verdict">
+  <h2>Recommendation in brief</h2>
+  <ol>
+    <li><strong>Make the step the main unit of the transcript.</strong> A step is one model response: its narration becomes the step's headline, and the tool calls from that response sit indented beneath it. This needs a step ID in the data model. Today narration and tool calls are stored in separate logs and only lined up by timestamp.</li>
+    <li><strong>Use the todo list to structure the transcript into tasks.</strong> Each todo becomes a task header. A task folds to a single line once it is done, so the transcript stays short enough to scan.</li>
+    <li><strong>Replace five progress widgets with one "now dock"</strong> above the input. It shows only work that is currently running, and it uses no rows when idle.</li>
+    <li><strong>Remove the side rail.</strong> Its key numbers move to the status line. Its sections move into a session sheet that opens on <kbd>ctrl+b</kbd>. The section renderers can be reused as they are.</li>
+  </ol>
+</div>
+
+<div class="compare" role="group" aria-label="Compare layouts">
+  <button type="button" id="btn-new" aria-pressed="true">Proposed</button>
+  <button type="button" id="btn-old" aria-pressed="false">Today</button>
+</div>
+<div id="fig-new"><figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>marshal — 80×24 (proposed)</span></div><pre><span class="a"> ❯ </span><span class="fg">Add an empty-input guard to the parser and cover it with tests</span>
+
+<span class="ok"> ✓ </span><span class="m">1/4 </span><span class="fg">Read the parser and existing tests</span>             <span class="d">3 steps · 7 tools · 41s ▹ </span>
+<span class="ok"> ✓ </span><span class="m">2/4 </span><span class="fg">Add the guard clause</span>                         <span class="d">2 steps · ✎ +7 −1 · 1m02s ▹ </span>
+ <span class="d">─ </span><span class="m">3/4 </span><span class="bb">Cover the guard with tests</span> <span class="d">───────────────────────────────────────</span> <span class="d">1m18s </span>
+
+<span class="ok"> ✓ </span><span class="br">I&#x27;ll add a table case next to the existing parser tests.</span>                 <span class="d">12s </span>
+<span class="m">     ≡ </span><span class="fg">parser_test.go</span><span class="d"> · 412 lines</span>
+<span class="m">     ✎ </span><span class="fg">TestParse/empty</span><span class="d"> · parser_test.go</span>                                <span class="d">+18 −0 ▹ </span>
+
+<span class="er"> ✗ </span><span class="br">Running the package tests to check the new case.</span>                          <span class="d">6s </span>
+<span class="m">     › </span><span class="fg">go test ./internal/parser/...</span><span class="d"> · </span><span class="er">exit 1</span>                                 <span class="d">▿ </span>
+<span class="m">       --- FAIL: TestParse/empty (0.00s)</span>
+<span class="m">           parser_test.go:88: got ErrSyntax, want ErrEmpty</span>
+
+<span class="a"> ⠋ </span><span class="br">The guard returns the wrong error; switching it to ErrEmpty.</span>              <span class="d">4s </span>
+<span class="d">     ⚙ </span><span class="d">thought for 3s ▹</span>
+<span class="a">     ✎ </span><span class="fg">Parse</span><span class="d"> · parser.go</span>                                              <span class="a">⠋ running </span>
+
+<span class="d">▍</span><span class="a"> ▰▰▰▱ </span><span class="m">3/4 </span><span class="b">Cover the guard with tests</span>                                     <span class="d">4m21s </span>
+<span class="d">▍</span><span class="v"> ⧉ </span><span class="v">reviewer #1</span><span class="m">  Checking the error message matches the spec</span>                <span class="d">38s </span>
+<span class="d">▍</span><span class="m"> ┆ </span><span class="m">job-3</span><span class="m">  go test -race ./... · 214 lines</span>                                <span class="d">1m02s </span>
+<span class="a">▍</span><span class="a">❯ </span><span class="cur">█</span>
+<span class="sbar"><span class="ab"> edit</span><span class="d"> · </span><span class="fg">qwen3-coder @ ollama</span><span class="m"> · ctx 41% · ±3 files · main</span>                 <span class="m">? help </span></span></pre><figcaption>The same moment in the proposed single stack. Finished tasks fold to one line each. Each step leads with what the agent said it was doing, and the tool calls sit underneath it. The dock above the input lists only the work that is live right now.</figcaption></figure></div>
+<div id="fig-old" hidden><figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>marshal — 80×30 (today)</span></div><pre><span class="a"> ❯ </span><span class="fg">Add an empty-input guard to the parser and cover it with tests</span>
+
+<span class="m"> · </span><span class="fg">I&#x27;ll start by reading the parser and its tests.</span>
+
+<span class="m"> ≡ </span><span class="ok">read parser.go · 212 lines ▹</span>
+
+<span class="m"> ≡ </span><span class="ok">read parser_test.go · 412 lines ▹</span>
+
+<span class="m"> · </span><span class="fg">Adding the guard before the tokenizer loop.</span>
+
+<span class="m"> ✎ </span><span class="ok">Parse · +6 −1 ▹</span>
+<span class="d">   ▍ </span><span class="d">parser.go +6 −1</span>
+
+<span class="er"> ✗ </span><span class="er">go test ./internal/parser/... · exit 1 ▹</span>
+
+<span class="a"> ▸ </span><span class="g">⠋ edit · 2s</span>
+<span class="m">   internal/parser/parser.go</span>
+<span class="wa"> ⠋ 4m21s · edit</span>
+<span class="m">▍</span><span class="m">tasks 2/4 </span><span class="d">────────────────────────────────────────────────────────────</span>
+<span class="m">▍</span><span class="ok"> ✓ </span><span class="m">Read the parser and existing tests</span>
+<span class="m">▍</span><span class="ok"> ✓ </span><span class="m">Add the guard clause</span>
+<span class="m">▍</span><span class="a"> ▸ </span><span class="b">Cover the guard with tests</span>
+<span class="m">▍</span><span class="m"> · </span><span class="fg">Run the full suite</span>
+<span class="m">▍</span><span class="d">──────────────────────────────────────────────────────────────────────────────</span>
+<span class="m">▍</span><span class="m">1 agent · 1 job</span>
+<span class="m">▍</span><span class="m"> ⠋ </span><span class="m">#1  reviewer · 38s</span>
+<span class="m">▍</span><span class="m"> ┆ </span><span class="m">job-3 go test -race ./... · 1m02s</span>
+<span class="a">▍</span><span class="a">❯ </span><span class="cur">█</span>
+<span class="sbar"><span class="ab"> edit</span><span class="d"> · </span><span class="fg">qwen3-coder @ ollama</span><span class="m"> · local · ctx 41% · main</span>      <span class="m">ctrl+c stop · ? help </span></span></pre><figcaption>Roughly what a 30-row, half-width window shows today. Narration and tool rows are siblings separated by blank lines; progress is split across a spinner row, the todo panel and the activity lane. The side rail never appears because it needs 120+ columns.</figcaption></figure></div>
+
+<section id="found">
+  <div class="sec-no">01</div>
+  <h2>What the code does today</h2>
+  <div class="prose">
+  <p>Most of the pieces this proposal needs already exist. The changes are mostly about how they are put together.</p>
+  </div>
+  <ul class="findings prose">
+    <li><b>1</b><div><p><strong>You rarely see the rail.</strong> It only appears at 120+ columns (<code>min_width = 120</code>, 25% width), so in a half-width window it never shows. When it does show, it takes a quarter of the transcript's width. You can turn it off today with <code>[tui.side_panel] enabled = false</code> or <kbd>ctrl+b</kbd>.</p><p class="ref">sidepanel/geometry.go · config/defaults.go:188</p></div></li>
+    <li><b>2</b><div><p><strong>Progress is split across six places.</strong> The run bar, turn spinner, todo panel, live strip, activity lane and status-line cluster each have their own renderer and their own row-count helper, and the two must agree. <code>resize()</code> subtracts nine separate heights, and <code>clipLeftColumn</code> exists to catch the cases where those counts are wrong.</p><p class="ref">view.go:72–110 · model.go:1558 · agentlane.go laneRows</p></div></li>
+    <li><b>3</b><div><p><strong>Narration and tool calls are unrelated rows.</strong> <code>State.Transcript()</code> merges separate logs (messages, audit, thinking, subagents, run events, job exits) and sorts them by timestamp. Nothing records that "Checking the guard first." led to the three tool calls after it. The only grouping is <code>groupTranscript</code>, which joins consecutive calls to the same tool.</p><p class="ref">session/session.go:1584 · agent/runner.go:1346 · toolgroup.go</p></div></li>
+    <li><b>4</b><div><p><strong>Ownership is recorded but not shown.</strong> <code>AuditEvent</code> stores <code>AgentRole</code> and <code>Model</code>, but no transcript row displays them. Narration messages have no actor field at all. A running subagent card shows the last few raw log lines, not what the agent says it is doing.</p><p class="ref">tools/registry/audit.go:17 · transcript.go renderSubagentCard</p></div></li>
+    <li><b>5</b><div><p><strong>Detail mostly needs the mouse.</strong> Opening a single item takes a click. The keyboard has only <kbd>ctrl+g</kbd>, which expands or collapses everything at once. Expand state is keyed on <code>(timestamp, kind)</code>, which works but cannot point at a tool call inside a step.</p><p class="ref">expand.go · click.go · keypress.go:208</p></div></li>
+    <li><b>6</b><div><p><strong>Todos are not linked to the transcript.</strong> <code>TodoItem</code> has only <code>Content</code> and <code>Status</code>, with no ID and no timestamps. The pinned panel shows the plan, but you cannot tell which work belonged to which task, or how long each took.</p><p class="ref">db/todos.go:9 · todos.go</p></div></li>
+  </ul>
+</section>
+
+<section id="stack">
+  <div class="sec-no">02</div>
+  <h2>The stack</h2>
+  <div class="prose"><p>The screen is four zones stacked top to bottom, with no side columns. Your eyes stay near the input, so anything live sits just above it. The transcript holds history and stays out of the way until you open something.</p></div>
+  <div class="zones" aria-label="Zone diagram">
+    <div class="zone tall"><b>transcript</b><span>Turn → task → step → tool call<small>Finished work folds up and live work stays open. Scrollable, with keyboard browsing.</small></span></div>
+    <div class="zone"><b>now dock</b><span>0–4 rows: the plan's progress bar, plus any running agents, jobs and watches</span></div>
+    <div class="zone"><b>input</b><span>Unchanged. Approval and question panels still take its place when needed.</span></div>
+    <div class="zone"><b>status</b><span>Mode · model · ctx % · changed files · branch (the most useful numbers from the rail)</span></div>
+  </div>
+  <h3>Principles</h3>
+  <ol class="rules prose">
+    <li><strong>Each fact appears in one place.</strong> A running tool shows in its step. The dock only repeats it after you scroll away from that step.</li>
+    <li><strong>Glyphs show state; prose says what is happening.</strong> The left column is only state glyphs (<code>⠋ ✓ ✗ ·</code>), so you can see failures by scanning down one column. The headline next to each glyph is the agent's own sentence.</li>
+    <li><strong>Things shrink as they finish.</strong> Running work is open, a finished step reduces to its rows, and a finished task reduces to one line. The final answer is never folded.</li>
+    <li><strong>Every item has more detail one key away.</strong> Every row has outline, steps, full and inspector views, so nothing is hidden for good.</li>
+    <li><strong>It works from 60 columns up.</strong> The right-aligned metadata (owner, duration, counts) is dropped first, then the dock shrinks to one row. Headlines are never cut short to make room for metadata.</li>
+  </ol>
+</section>
+
+<section id="steps">
+  <div class="sec-no">03</div>
+  <h2>Steps</h2>
+  <div class="prose"><p>A step pairs what the agent said it would do with what it then did. The runner already produces both from the same model response, at <code>runner.go:1346</code>, which stores the narration and then runs the tool calls. The change is to give both the same ID so the transcript can group them.</p></div>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>step anatomy</span></div><pre><span class="er"> ✗ </span><span class="br">Running the package tests to check the new case.</span>            <span class="v">implementer · 6s </span>
+<span class="d">   </span><span class="m">The fixture lives in testdata/, so I need the module root.</span>
+<span class="d">     ⚙ </span><span class="d">thought for 2s ▹</span>
+<span class="m">     ≡ </span><span class="fg">testdata/empty.txt</span><span class="d"> · 0 lines</span>
+<span class="m">     › </span><span class="fg">go test ./internal/parser/...</span><span class="d"> · </span><span class="er">exit 1</span>                            <span class="d">6.1s ▹ </span>
+
+<span class="ok"> ✓ </span><span class="dim-i">read 2 files · searched &quot;ErrEmpty&quot;</span>                             <span class="d">inferred · 1s </span>
+<span class="m">     ≡ </span><span class="fg">parser.go</span><span class="d"> · </span><span class="m">≡ </span><span class="fg">lexer.go</span><span class="d"> · </span><span class="m">◈ </span><span class="fg">&quot;ErrEmpty&quot; 7 matches</span></pre><figcaption>A step is one model response: the narration it wrote and the tool calls it made in that response. If the model said nothing, Marshal writes a headline from the tool calls and labels it as inferred.</figcaption></figure>
+  <ul class="rules prose">
+    <li><strong>Headline:</strong> the first sentence of the narration, in bright text. The rest of the narration sits muted beneath it and folds away at outline density.</li>
+    <li><strong>Glyph:</strong> the step's overall state: running, ok, or the worst outcome among its tools. A failed test turns the step's glyph red, so you can spot failures from the top of the screen.</li>
+    <li><strong>Tool rows:</strong> indented to column 5, which the code already defines as <code>nestedBodyIndent</code>. The existing row logic (<code>symbolSubject</code>, <code>shellSubject</code>, diff stats, callers) is reused. Repeated reads are merged within the step only.</li>
+    <li><strong>Thinking:</strong> appears as a row inside the step ("thought for 3s ▹") instead of a separate box between items.</li>
+    <li><strong>No narration:</strong> Marshal writes a headline from the tool calls, in dim italic and labelled <em>inferred</em>, so you can always tell the agent's words from Marshal's. A prompt change (see <a href="#change">What changes</a>) makes this case rare.</li>
+  </ul>
+</section>
+
+<section id="detail">
+  <div class="sec-no">04</div>
+  <h2>Detail on demand</h2>
+  <div class="prose"><p>Instead of a single expand toggle, there are four levels of detail. <kbd>ctrl+g</kbd> cycles the default level for the whole transcript, and in browse mode <kbd>↵</kbd> changes the level for one item. The inspector is a full-screen panel built on the dock's existing <code>FullFrame</code> mode.</p></div>
+  <div class="grid2">
+    <figure class="term" style="--cols:72"><div class="tbar"><i></i><i></i><i></i><span>density: outline</span></div><pre><span class="ok"> ✓ </span><span class="m">1/4 </span><span class="fg">Read the parser and existing tests</span>                 <span class="d">3 steps · 41s </span>
+<span class="ok"> ✓ </span><span class="m">2/4 </span><span class="fg">Add the guard clause</span>                             <span class="d">2 steps · 1m02s </span>
+<span class="a"> ⠋ </span><span class="m">3/4 </span><span class="bb">Cover the guard with tests</span>                       <span class="d">3 steps · 1m18s </span>
+<span class="ok">     ✓ </span><span class="fg">I&#x27;ll add a table case next to the existing parser tests.</span>       <span class="d">2 </span>
+<span class="er">     ✗ </span><span class="fg">Running the package tests to check the new case.</span>               <span class="d">1 </span>
+<span class="a">     ⠋ </span><span class="fg">The guard returns the wrong error; switching to…</span>               <span class="d">1 </span>
+<span class="m"> · </span><span class="m">4/4 </span><span class="m">Run the full suite</span></pre><figcaption>Outline: one line per step, with a tool count on the right. Good for "where are we?"</figcaption></figure>
+    <figure class="term" style="--cols:72"><div class="tbar"><i></i><i></i><i></i><span>density: steps (default)</span></div><pre><span class="er"> ✗ </span><span class="br">Running the package tests to check the new case.</span>                  <span class="d">6s </span>
+<span class="m">     › </span><span class="fg">go test ./internal/parser/...</span><span class="d"> · </span><span class="er">exit 1</span>                         <span class="d">▹ </span>
+
+<span class="a"> ⠋ </span><span class="br">The guard returns the wrong error; switching it…</span>                  <span class="d">4s </span>
+<span class="a">     ✎ </span><span class="fg">Parse</span><span class="d"> · parser.go</span>                                      <span class="a">⠋ running </span></pre><figcaption>Steps: the headline plus one row per tool call. Failures show their first lines automatically.</figcaption></figure>
+    <figure class="term" style="--cols:72"><div class="tbar"><i></i><i></i><i></i><span>density: full</span></div><pre><span class="er"> ✗ </span><span class="br">Running the package tests to check the new case.</span>                  <span class="d">6s </span>
+<span class="d">   </span><span class="m">The fixture lives in testdata/, so I need the module root.</span>
+<span class="d">     ⚙ </span><span class="d">thought for 2s ▿</span>
+<span class="d">     ▍ </span><span class="d">The test asserts ErrEmpty but Parse returns ErrSyntax</span>
+<span class="d">     ▍ </span><span class="d">because the guard sits after tokenize()…</span>
+<span class="m">     › </span><span class="fg">go test ./internal/parser/...</span><span class="d"> · </span><span class="er">exit 1</span>                         <span class="d">▿ </span>
+<span class="d">     ▍ </span><span class="m">=== RUN   TestParse/empty</span>
+<span class="d">     ▍ </span><span class="m">    parser_test.go:88: got ErrSyntax, want ErrEmpty</span>
+<span class="d">     ▍ </span><span class="m">--- FAIL: TestParse/empty (0.00s)</span>
+<span class="d">     ▍ </span><span class="m">FAIL  marshal/internal/parser  0.41s</span></pre><figcaption>Full: the whole narration, reasoning and tool output inline. This replaces today's Ctrl+G "expand everything".</figcaption></figure>
+    <figure class="term" style="--cols:72"><div class="tbar"><i></i><i></i><i></i><span>inspector (full-frame panel)</span></div><pre><span class="a"> ◂ </span><span class="b">step 3.2 · tool 1/1</span>                                        <span class="m">esc close </span>
+<span class="m"> › </span><span class="br">go test ./internal/parser/...</span>
+ <span class="d">───────────────────────────────────────────────────────────────────────</span>
+<span class="m"> actor    </span><span class="v">implementer</span><span class="fg"> · qwen3-coder @ ollama</span>
+<span class="m"> why      </span><span class="fg">Running the package tests to check the new case.</span>
+<span class="m"> timing   </span><span class="fg">14:02:11 · 6.1s · </span><span class="er">exit 1</span>
+<span class="m"> sandbox  </span><span class="fg">restricted · network off · cwd internal/parser</span>
+<span class="m"> approval </span><span class="fg">auto · rule &quot;go test *&quot;</span>
+<span class="m"> tokens   </span><span class="fg">in 31.2k · out 214 · finish tool_calls</span>
+ <span class="d">─ </span><span class="m">output · 38 lines</span> <span class="d">───────────────────────────────────────────────────</span>
+<span class="fg"> === RUN   TestParse/empty</span>
+<span class="fg">     parser_test.go:88: got ErrSyntax, want ErrEmpty</span>
+<span class="er"> --- FAIL: TestParse/empty (0.00s)</span>
+<span class="sbar"><span class="m"> tab section · y copy · o open parser_test.go:88 · n/p next/prev</span>        </span></pre><figcaption>Inspector: everything known about one step or tool call, in a full-frame dock panel. The dock already supports full-frame panels.</figcaption></figure>
+  </div>
+</section>
+
+<section id="progress">
+  <div class="sec-no">05</div>
+  <h2>Progress</h2>
+  <div class="prose">
+  <p>The todo list already describes the agent's plan. In this proposal it also structures the transcript. When a todo becomes in-progress, a task header line is drawn. Every step records which task was active when it started. When the task completes, it folds into one line with a summary: steps, tools, edits and time. Tasks you expand stay open.</p>
+  <p>This gives you the "how far along are we?" answer twice: in the scrollback as a list of finished tasks, and in the dock as a progress bar. With no plan (short turns), there are no task headers and steps sit directly under the prompt.</p>
+  </div>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>turn end</span></div><pre><span class="ok"> ✓ </span><span class="m">3/4 </span><span class="fg">Cover the guard with tests</span>                     <span class="d">4 steps · ✎ +19 · 2m40s ▹ </span>
+<span class="ok"> ✓ </span><span class="m">4/4 </span><span class="fg">Run the full suite</span>                                        <span class="d">1 step · 22s ▹ </span>
+
+<span class="a"> ▍ </span><span class="fg">Added an </span><span class="g">ErrEmpty</span><span class="fg"> guard at the top of </span><span class="g">Parse</span><span class="fg"> and a table</span>
+<span class="a"> ▍ </span><span class="fg">case for empty, whitespace-only and nil input. The CLI now exits 2</span>
+<span class="a"> ▍ </span><span class="fg">on empty input, matching docs/spec/cli.md.</span>
+
+<span class="ok"> ✓ done</span><span class="d"> · 6m40s · 4 tasks · 11 steps · 19 tools · ±3 files · 212k tok</span></pre><figcaption>When the turn finishes, every task folds, the final answer is shown in full, and a one-line receipt summarises the turn. Its numbers come from the per-turn usage that used to sit in the rail.</figcaption></figure>
+  <h3>Folding rules</h3>
+  <ul class="rules prose">
+    <li>A task folds when it completes, unless it contains a failure that was never fixed, or you expanded it.</li>
+    <li>Plan runs (<code>/sdd</code>) use the same structure one level up: run → plan task → steps. Run events (verify gate, review verdict, commit) become steps owned by the controller.</li>
+    <li>If the agent rewrites its todo list partway through, tasks are matched by ID. Removed tasks keep their history and show "dropped".</li>
+  </ul>
+</section>
+
+<section id="ownership">
+  <div class="sec-no">06</div>
+  <h2>Ownership</h2>
+  <div class="prose"><p>Each step answers who did it. The orchestrator is the default owner and has no label. Any other owner (a subagent, a pipeline role, a custom agent) gets a label when it takes over, and the label is not repeated on every row. This is how chat apps group consecutive messages from the same person.</p></div>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>ownership — parallel subagents</span></div><pre><span class="a"> ⠋ </span><span class="br">Splitting the review: one agent on the API, one on tests.</span>              <span class="d">1m04s </span>
+<span class="v">     ⧉ </span><span class="v">reviewer #1</span><span class="fg"> · api surface</span>                      <span class="d">sonnet @ anthropic  ⠋ 38s </span>
+<span class="a">       ⠋ </span><span class="fg">Checking the error message matches the spec.</span>
+<span class="d">         </span><span class="d">≡ docs/parser.md · ◈ &quot;ErrEmpty&quot; · 4 tools</span>                       <span class="m">ctrl+f </span>
+<span class="v">     ⧉ </span><span class="v">reviewer #2</span><span class="fg"> · test coverage</span>                                        <span class="ok">✓ 52s </span>
+<span class="ok">       ✓ </span><span class="fg">No gaps: empty, whitespace-only and nil readers covered.</span>             <span class="d">▹ </span></pre><figcaption>Each subagent card shows the latest thing that agent said it was doing, instead of the last few raw log lines. The model is listed only when it differs from yours. Ctrl+F or Enter opens the agent's own stack.</figcaption></figure>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>ownership — plan run (sdd)</span></div><pre> <span class="d">─ </span><span class="m">task 3/7 </span><span class="bb">Wire the guard into the CLI</span> <span class="d">─────────────────────────────────</span> <span class="d">6m12s </span>
+<span class="g">   implementer</span><span class="d"> · qwen3-coder @ ollama</span>
+<span class="ok"> ✓ </span><span class="br">Threading the new error through cmd/parse.go.</span>                            <span class="d">41s </span>
+<span class="m">     ✎ </span><span class="fg">run</span><span class="d"> · cmd/parse.go</span>                                               <span class="d">+9 −2 ▹ </span>
+<span class="ok"> ✓ </span><span class="fg">verify</span><span class="d"> · go build ./... &amp;&amp; go test ./...</span>                          <span class="ok">passed 18s </span>
+<span class="v">   reviewer</span><span class="d"> · sonnet @ anthropic</span>
+<span class="er"> ✗ </span><span class="br">Exit code is 0 on ErrEmpty; the spec says 2.</span>                             <span class="d">22s </span>
+<span class="m">     ≡ </span><span class="fg">docs/spec/cli.md</span>
+<span class="er">     ↳ </span><span class="er">blocking</span><span class="fg"> · cmd/parse.go:44</span>                                             <span class="d">▹ </span>
+<span class="g">   implementer</span><span class="d"> · fix round 1/2</span>
+<span class="a"> ⠋ </span><span class="br">Returning exit 2 for ErrEmpty.</span>                                            <span class="d">6s </span></pre><figcaption>When several roles share one transcript, a small owner label appears only where the owner changes. Each role keeps one colour for the whole session, and its name is always written out, so the label still works with NO_COLOR.</figcaption></figure>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>approval — with the why attached</span></div><pre><span class="a"> ⠋ </span><span class="br">Running the race detector before I commit.</span>                                <span class="d">9s </span>
+<span class="wa">     › </span><span class="fg">go test -race ./...</span>                                      <span class="wa">waiting for you </span>
+
+<span class="wa">▍</span><span class="g"> implementer</span><span class="fg"> wants to run a command</span>
+<span class="wa">▍</span><span class="br">   go test -race ./...</span>
+<span class="wa">▍</span><span class="m">   why   </span><span class="fg">&quot;Running the race detector before I commit.&quot;</span>
+<span class="wa">▍</span><span class="m">   risk  </span><span class="fg">medium · sandbox restricted · network off</span>
+<span class="wa">▍</span><span class="ab"> ▸ approve </span><span class="m">  always &quot;go test *&quot;   deny   edit   i inspect</span>
+<span class="sbar"><span class="ab"> approval</span><span class="d"> · </span><span class="fg">qwen3-coder @ ollama</span><span class="m"> · ctx 44%</span>                              <span class="m">y/n/a/e </span></span></pre><figcaption>The approval prompt quotes the narration of the step that asked for it, so you can see why the agent wants to run the command when you decide.</figcaption></figure>
+</section>
+
+<section id="dock">
+  <div class="sec-no">07</div>
+  <h2>Now dock</h2>
+  <div class="prose"><p>The dock replaces <code>renderTurnSpinner</code>, <code>renderTodoPanel</code>, <code>renderLiveStrip</code>, <code>renderActivityLane</code> and <code>renderRunPanel</code>. One function plans its rows, and the same plan is used to both render and measure it. <code>lanePlan</code> already works this way, so the pattern exists in the code.</p></div>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>now dock — states</span></div><pre><span class="d"> a · single turn, no plan</span>
+<span class="d">▍</span><span class="a"> ⠋ </span><span class="fg">working</span><span class="m"> · step 4 · ✎ Parse</span>                                            <span class="d">1m12s </span>
+
+<span class="d"> b · plan + background work</span>
+<span class="d">▍</span><span class="a"> ▰▰▰▱ </span><span class="m">3/4 </span><span class="b">Cover the guard with tests</span>                                     <span class="d">4m21s </span>
+<span class="d">▍</span><span class="v"> ⧉ </span><span class="v">reviewer #1</span><span class="m">  Checking the error message matches the spec</span>                <span class="d">38s </span>
+<span class="d">▍</span><span class="m"> ┆ </span><span class="m">job-3</span><span class="m">  go test -race ./... · 214 lines</span>                                <span class="d">1m02s </span>
+
+<span class="d"> c · scrolled up: the live step is mirrored so it never disappears</span>
+<span class="d">▍</span><span class="a"> ↓ </span><span class="fg">The guard returns the wrong error; switching…</span><span class="a"> ⠋ ✎</span>                       <span class="m">End </span>
+<span class="d">▍</span><span class="a"> ▰▰▰▱ </span><span class="m">3/4 </span><span class="b">Cover the guard with tests</span>                                     <span class="d">4m21s </span>
+
+<span class="d"> d · plan run (replaces the top run bar)</span>
+<span class="d">▍</span><span class="a"> ▰▰▰▱▱▱▱ </span><span class="b">task 4/7</span><span class="m"> · verifying 2m14s · fix 1/2</span>                      <span class="d">~6–25m left </span>
+<span class="d">▍</span><span class="ok"> ✓ implement</span><span class="a">  ⠋ verify</span><span class="m">  · review  · commit</span>
+
+<span class="d"> e · short window (&lt; 24 rows): one row, always</span>
+<span class="d">▍</span><span class="a"> ▰▰▰▱ </span><span class="b">3/4 tests</span><span class="m"> · ⧉2 ┆1</span>                                                  <span class="d">4m21s </span></pre><figcaption>One surface, one row budget. It replaces the turn spinner, the todo panel, the live strip, the activity lane and the run bar. When nothing is running it takes no rows.</figcaption></figure>
+</section>
+
+<section id="nav">
+  <div class="sec-no">08</div>
+  <h2>Navigation</h2>
+  <div class="prose"><p>Browse mode puts a cursor on the stack. Typing stays the default. You enter browse mode on purpose and leave with <kbd>esc</kbd>. Mouse clicks keep working: each click maps to a step or row ID instead of a range of lines.</p></div>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>browse mode</span></div><pre><span class="ok"> ✓ </span><span class="m">1/4 </span><span class="fg">Read the parser and existing tests</span>                       <span class="d">3 steps · 41s ▹ </span>
+<span class="ok"> ✓ </span><span class="m">2/4 </span><span class="fg">Add the guard clause</span>                                   <span class="d">2 steps · 1m02s ▹ </span>
+ <span class="d">─ </span><span class="m">3/4 </span><span class="bb">Cover the guard with tests</span> <span class="d">───────────────────────────────────────</span> <span class="d">1m18s </span>
+<span class="ok"> ✓ </span><span class="br">I&#x27;ll add a table case next to the existing parser tests.</span>                 <span class="d">12s </span>
+<span class="sel"><span class="er"> ✗ </span><span class="br">Running the package tests to check the new case.</span>                          <span class="d">6s </span></span>
+<span class="sel2"><span class="m">     › </span><span class="fg">go test ./internal/parser/...</span><span class="d"> · </span><span class="er">exit 1</span>                                 <span class="d">▹ </span></span>
+<span class="a"> ⠋ </span><span class="br">The guard returns the wrong error; switching it to ErrEmpty.</span>              <span class="d">4s </span>
+<span class="sbar"><span class="vb"> BROWSE</span><span class="m">  j/k step  J/K task  ↵ open  i inspect  y copy  o file  esc</span>             </span></pre><figcaption>A keyboard cursor over the stack, so every item can be opened without a mouse. Enter cycles the selected item through the density levels, i opens the inspector, and esc returns to the input.</figcaption></figure>
+  <div class="tbl"><table>
+    <thead><tr><th>Key</th><th>Today</th><th>Proposed</th></tr></thead>
+    <tbody>
+      <tr><td><kbd>shift+↑</kbd></td><td>—</td><td>Enter browse mode at the latest step (key still to be decided; see <a href="#decide">Decisions</a>)</td></tr>
+      <tr><td><kbd>j</kbd> <kbd>k</kbd> / <kbd>J</kbd> <kbd>K</kbd></td><td>—</td><td>Next/previous step or tool row / next/previous task or turn</td></tr>
+      <tr><td><kbd>↵</kbd> <kbd>i</kbd></td><td>click</td><td>Change this item's detail level / open the inspector</td></tr>
+      <tr><td><kbd>y</kbd> <kbd>o</kbd> <kbd>f</kbd></td><td>—</td><td>Copy output or diff / open the file at its line / open a subagent's own stack</td></tr>
+      <tr><td><kbd>ctrl+g</kbd></td><td>expand all on/off</td><td>Cycle the default density: outline → steps → full</td></tr>
+      <tr><td><kbd>ctrl+t</kbd></td><td>todo panel expanded/collapsed/hidden</td><td>Toggle task folding (keep finished tasks open)</td></tr>
+      <tr><td><kbd>ctrl+b</kbd></td><td>show/hide side rail</td><td>Open/close the session sheet</td></tr>
+      <tr><td><kbd>ctrl+f</kbd></td><td>open the latest running subagent</td><td>Unchanged</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="rail">
+  <div class="sec-no">09</div>
+  <h2>The sidebar</h2>
+  <div class="prose"><p>The rail held real information. It just took a whole column to show it. Each section gets a new home, and the <code>Section</code> interface (<code>Render(d, width, maxRows)</code> and <code>OneLine</code>) doesn't depend on screen position, so the session sheet can reuse the renderers unchanged.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Rail section</th><th>Always visible</th><th>On demand</th></tr></thead>
+    <tbody>
+      <tr><td>swarm · sdd</td><td>Now dock (run bar, agent rows)</td><td><code>/run</code>, <code>/agents</code>, run events in the stack</td></tr>
+      <tr><td>context</td><td>status <code>ctx 41%</code></td><td>sheet, <code>/context</code></td></tr>
+      <tr><td>changed</td><td>status <code>±3 files</code></td><td>sheet, <code>/diff</code></td></tr>
+      <tr><td>session (turns, tokens, cost)</td><td>turn-end summary line</td><td>sheet</td></tr>
+      <tr><td>worktrees · working set · tools · rules · repo · skills</td><td>—</td><td>sheet, <code>/worktrees</code>, <code>/log</code>, <code>/skills</code></td></tr>
+    </tbody>
+  </table></div>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>session sheet (ctrl+b) — the side rail, as a dock panel</span></div><pre> <span class="d">─ </span><span class="b">session</span> <span class="d">─────────────────────────────────────────────────────────────</span> <span class="m">ctrl+b </span>
+<span class="m"> context  </span><span class="a">▰▰▰▰▱▱▱▱▱▱ </span><span class="fg">41% · 53k/128k · map 12k · files 22k · rules 3k</span>
+<span class="m"> changed  </span><span class="fg">M parser.go +7 −1 · M parser_test.go +18 · A testdata/empty.txt</span>
+<span class="m"> usage    </span><span class="fg">6 turns · 212k tok · local · last turn 31k</span>
+<span class="m"> skills   </span><span class="fg">go-testing · repo-conventions</span>
+<span class="m"> rules    </span><span class="fg">allow &quot;go test *&quot; · allow &quot;go build *&quot;</span>
+<span class="m"> fleet    </span><span class="fg">main · 2 agent worktrees (1 ahead)</span>
+<span class="m"> repo     </span><span class="fg">1,204 files · 9.8k symbols · Go 88% · TS 9%</span>
+<span class="sbar"><span class="m"> ↑↓ section · ↵ open (/context, /diff, /branches…) · esc close</span>                  </span></pre><figcaption>The existing sidepanel.Section implementations already render at any width, so they can be moved into a docked panel that opens on demand without being rewritten. Nothing is permanently on screen.</figcaption></figure>
+</section>
+
+<section id="directions">
+  <div class="sec-no">10</div>
+  <h2>Directions</h2>
+  <div class="prose"><p>These are three ways to go, from least to most change. Everything above describes B.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>What you get</th><th>What it costs</th></tr></thead>
+    <tbody>
+      <tr><td><strong>A · Consolidate</strong></td><td>Rail removed, now dock, status line takes the rail's numbers, session sheet. Narration groups its tool calls using a timestamp heuristic.</td><td>TUI changes only, no schema change. The heuristic can misgroup when calls run in parallel and in older sessions.</td></tr>
+      <tr class="rec"><td><strong>B · Steps and tasks</strong> (recommended)</td><td>Everything in A, plus real step and owner IDs, task headers, folding, the detail ladder, browse mode, the inspector, and approvals that show the agent's reasoning.</td><td>Schema migration, runner and pipeline changes, and a new transcript view model. This is the work described in <a href="#change">What changes</a>.</td></tr>
+      <tr><td><strong>C · Ledger and focus</strong></td><td>The screen splits in two: a compact list of steps on top and the selected step's detail below. It fits the most information on screen.</td><td>Everything in B, plus a fixed split that suits a log viewer more than a conversation. Narration gets cut down to short labels.</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="term" style="--cols:80"><div class="tbar"><i></i><i></i><i></i><span>direction C — ledger + focus</span></div><pre> <span class="d">─ </span><span class="b">steps</span> <span class="d">──────────────────────────────────────────────────────────</span> <span class="d">3/4 · 4m21s </span>
+<span class="ok">  ✓ </span><span class="d">14:01 </span><span class="fg">read parser + tests</span>                                           <span class="d">3 tools </span>
+<span class="ok">  ✓ </span><span class="d">14:02 </span><span class="fg">add guard clause</span>                                              <span class="d">✎ +6 −1 </span>
+<span class="ok">  ✓ </span><span class="d">14:03 </span><span class="fg">add table test</span>                                                  <span class="d">✎ +18 </span>
+<span class="sel"><span class="er"> ▸✗ </span><span class="d">14:03 </span><span class="br">run package tests</span>                                              <span class="er">exit 1 </span></span>
+<span class="a">  ⠋ </span><span class="d">14:04 </span><span class="fg">switch guard to ErrEmpty</span>                                          <span class="a">✎ ⠋ </span>
+ <span class="d">─ </span><span class="b">focus · run package tests</span> <span class="d">─────────────────────────────────────────────</span> <span class="d">6.1s </span>
+<span class="fg">  Running the package tests to check the new case.</span>
+<span class="m">  › </span><span class="fg">go test ./internal/parser/...</span><span class="d"> · </span><span class="er">exit 1</span>
+<span class="m">    --- FAIL: TestParse/empty (0.00s)</span>
+<span class="m">        parser_test.go:88: got ErrSyntax, want ErrEmpty</span>
+<span class="a">▍</span><span class="a">❯ </span><span class="cur">█</span></pre><figcaption>An alternative. The top half is a compact list of steps and the bottom half shows the selected one. It packs a lot in, but it reads like a log viewer rather than a conversation, and narration gets squeezed into short labels.</figcaption></figure>
+</section>
+
+<section id="change">
+  <div class="sec-no">11</div>
+  <h2>What changes</h2>
+  <div class="prose"><p>Sizes are relative: <span class="pill s">S</span> is a day or two, <span class="pill m">M</span> about a week, <span class="pill l">L</span> several weeks including tests. The TUI package has about 37k lines, a large share of them tests (<code>model_test.go</code> alone is about 9k), so updating tests is a large part of the work.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Layer</th><th>Change</th><th>Where</th><th>Size</th></tr></thead>
+    <tbody>
+      <tr><td>Data model</td><td>Add <code>StepID</code> to <code>Message</code>, <code>AuditEvent</code>, <code>ThinkingEntry</code> and <code>ActiveToolCall</code>. Add <code>ToolCallID</code> to <code>AuditEvent</code> to link a running call to its finished record. Add an <code>Actor</code> (role, subagent ID, model) to narration messages.</td><td>session/messages.go, session/session.go, tools/registry/audit.go</td><td class="size"><span class="pill m">M</span></td></tr>
+      <tr><td>Persistence</td><td>Add <code>step_id</code> and actor columns to the message and audit tables. Older sessions without step IDs are grouped with the A-style heuristic.</td><td>db/migrations.go, db/*</td><td class="size"><span class="pill s">S</span></td></tr>
+      <tr><td>Todos</td><td>Give <code>TodoItem</code> an <code>ID</code>, <code>StartedAt</code> and <code>CompletedAt</code>. The stored JSON stays compatible. Steps record the active todo ID. The todo tool's schema accepts optional IDs and matches by content when none is given.</td><td>db/todos.go, tools/native/todos.go</td><td class="size"><span class="pill s">S</span></td></tr>
+      <tr><td>Agent runner</td><td>Assign a step ID for each model response and pass it into <code>executeNativeToolCalls</code> and audit logging. Add a prompt line asking the model to state its intent in one sentence before calling tools, with an <code>agent.narration</code> setting of <code>require</code>, <code>allow</code> or <code>off</code>.</td><td>agent/runner.go, agent prompts</td><td class="size"><span class="pill m">M</span></td></tr>
+      <tr><td>Subagents · pipeline</td><td>Expose a child's latest narration as <code>SubagentView.Headline</code>, replacing <code>SubagentActivityTail</code> on the card. Pipeline roles tag their narration and audit events with an actor. Run events (verify, review, commit) become controller steps.</td><td>session/subagents.go, pipeline/*</td><td class="size"><span class="pill m">M</span></td></tr>
+      <tr><td>Transcript view model</td><td>New package (<code>tui/stack</code>) that builds the Turn → Task → Step → Row tree incrementally, with stable node IDs. This replaces <code>itemKey{ts,kind}</code>. Each node caches its rendered output, so a spinner tick no longer re-renders the whole transcript with glamour. <code>refreshViewport</code> currently rebuilds every block whenever its hash changes.</td><td>model.go:3629 refreshViewport, expand.go, toolgroup.go</td><td class="size"><span class="pill l">L</span></td></tr>
+      <tr><td>Renderers</td><td>New renderers for the step header, task header and turn-end summary. The tool-row logic is moved out of <code>renderCompletedToolCall</code> into a reusable row renderer. Narration and thinking renderers become parts of a step.</td><td>transcript.go, narration.go, runevent.go</td><td class="size"><span class="pill m">M</span></td></tr>
+      <tr><td>Now dock</td><td>New <code>nowdock</code> component with a single plan used for both rendering and measuring. Five renderers and five <code>*Rows()</code> helpers are deleted, and <code>resize()</code> gets much simpler.</td><td>view.go, todos.go, livestrip.go, agentlane.go, lane.go, run_panel.go</td><td class="size"><span class="pill m">M</span></td></tr>
+      <tr><td>Rail removal</td><td>Delete <code>Rail</code>, <code>fit</code>, <code>Geometry</code> and the horizontal join in <code>viewString</code>, so <code>leftWidth</code> equals the full width. Keep the sections and host them in a <code>sessionsheet</code> dock panel. The rail caches (turns, changed files, fleet) move to that panel's turn-boundary refresh.</td><td>sidepanel/*, model.go:1529–1700, view.go</td><td class="size"><span class="pill s">S</span></td></tr>
+      <tr><td>Input · keys · click</td><td>Browse mode and its cursor state, the inspector panel, the density cycle on <kbd>ctrl+g</kbd>, and click hit-testing by node ID.</td><td>keypress.go, click.go, help/</td><td class="size"><span class="pill m">M</span></td></tr>
+      <tr><td>Approvals</td><td>Show the step headline and owner in the approval panel and the mode-elevation picker.</td><td>approval.go, transcript.go renderApprovalPanel</td><td class="size"><span class="pill s">S</span></td></tr>
+      <tr><td>Config</td><td>Deprecate <code>[tui.side_panel]</code> (parse it and show a diagnostic). Add <code>[tui.transcript] density</code> and <code>fold_finished</code>, and <code>[tui.dock] max_rows</code>. Update the settings browser fields.</td><td>config/types.go, merge.go, save.go, tui/settings</td><td class="size"><span class="pill s">S</span></td></tr>
+      <tr><td>Tests</td><td>Rewrite the transcript, view and frame tests around the tree. Keep the frame-invariant and indent-contract tests, which carry over. Delete the sidepanel geometry and fit tests.</td><td>*_test.go across tui/</td><td class="size"><span class="pill l">L</span></td></tr>
+      <tr><td>Other clients (later)</td><td><code>/export</code> HTML and the ACP web UI could show the same step tree if the JSON contract gains <code>steps</code>. The web client must stay standard-library only.</td><td>internal/export, web/</td><td class="size"><span class="pill m">M</span></td></tr>
+    </tbody>
+  </table></div>
+  <h3>Risks</h3>
+  <ul class="rules prose">
+    <li><strong>Local models that don't narrate.</strong> Many small models output tool calls with no text. Inferred headlines cover this, but the transcript will feel less personal with those models. If <code>require</code> is set, it costs a few output tokens per step.</li>
+    <li><strong>Parallel tool calls.</strong> A step can run several calls at once. The current single <code>ActiveToolCall</code> becomes a list, which affects the status line and the spinner logic.</li>
+    <li><strong>Render cost in long sessions.</strong> The node cache is required. Without it, a tree of hundreds of steps re-rendered through glamour on every spinner frame would be slower than today.</li>
+  </ul>
+</section>
+
+<section id="phases">
+  <div class="sec-no">12</div>
+  <h2>Rollout</h2>
+  <div class="phases">
+    <div class="phase"><h3><span>P0</span>Today, config only</h3><p>Set <code>[tui.side_panel] enabled = false</code>. Nothing else changes.</p></div>
+    <div class="phase"><h3><span>P1</span>Consolidate (direction A)</h3><ul><li>Now dock replaces the five widgets. Status line gains ctx %, changed files and cost.</li><li>Session sheet on <kbd>ctrl+b</kbd>. Rail code deleted.</li><li>Narration groups tool calls by heuristic, behind <code>[tui.transcript] steps = "heuristic"</code>.</li></ul><p>TUI only, can ship on its own, and quickly confirms the single-column layout works for you.</p></div>
+    <div class="phase"><h3><span>P2</span>Real steps</h3><ul><li>StepID, ToolCallID and Actor end to end, with the migration. Narration prompt setting.</li><li><code>tui/stack</code> view model with the node cache. Step renderer, owner labels, subagent headlines, approvals that show the agent's reasoning.</li></ul></div>
+    <div class="phase"><h3><span>P3</span>Tasks and navigation</h3><ul><li>Todo IDs and timestamps, task headers, folding, turn-end summary.</li><li>Detail ladder, browse mode, inspector.</li></ul></div>
+    <div class="phase"><h3><span>P4</span>Beyond the TUI</h3><p>Step tree in <code>/export</code> and the ACP JSON contract.</p></div>
+  </div>
+</section>
+
+<section id="decide">
+  <div class="sec-no">13</div>
+  <h2>Decisions for you</h2>
+  <ol class="qs prose">
+    <li><strong>Should finished tasks fold by default?</strong> I recommend yes, with <kbd>ctrl+t</kbd> to keep them open for the session.</li>
+    <li><strong>How hard should Marshal push models to narrate?</strong> The options are <code>require</code> (a prompt instruction), <code>allow</code> (use narration when present and infer otherwise) or <code>off</code>. I'd default to <code>allow</code> and see how your local models behave.</li>
+    <li><strong>Which key enters browse mode?</strong> <kbd>shift+↑</kbd> is easy to discover but not every terminal reports it. Alternatives are <kbd>alt+↑</kbd>, or <kbd>esc</kbd> when the input is empty and the agent is idle. <kbd>esc</kbd> can't be used while the agent is working, because it cancels the turn.</li>
+    <li><strong>Should the owner label sit on the right or as a heading?</strong> The mockups use a heading line where the owner changes, plus a right-aligned label on single steps. Right-aligned labels are the first thing dropped at narrow widths.</li>
+    <li><strong>Delete the rail or keep it as an option?</strong> I recommend deleting the layout code, since the sections live on in the sheet. Keeping both means maintaining two layouts.</li>
+    <li><strong>Should P1 ship by itself first?</strong> It's cheap and shows whether the single column feels right before the schema work in P2.</li>
+  </ol>
+  <p class="foot">Based on the marshal tree at <code>633fd21</code>. All mockups use the Warm Sunset 256-colour palette and the glyphs from <code>tui/glyph</code>. The only new glyphs are the progress-bar blocks <code>▰▱</code> (U+25B0/25B1, single-cell Geometric Shapes).</p>
+</section>
+</div>
+
+<script>
+(function () {
+  var bNew = document.getElementById('btn-new'), bOld = document.getElementById('btn-old');
+  var fNew = document.getElementById('fig-new'), fOld = document.getElementById('fig-old');
+  function show(old) {
+    fNew.hidden = old; fOld.hidden = !old;
+    bNew.setAttribute('aria-pressed', String(!old)); bOld.setAttribute('aria-pressed', String(old));
+  }
+  bNew.addEventListener('click', function () { show(false); });
+  bOld.addEventListener('click', function () { show(true); });
+})();
+</script>
+
+</body>
+</html>

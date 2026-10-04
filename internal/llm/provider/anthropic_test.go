@@ -488,10 +488,14 @@ func TestAnthropicThinkingBudgetMapping(t *testing.T) {
 	if b, ok := parseThinking(t, req); !ok || b != 16384 {
 		t.Fatalf("high thinking = (%d, %v), want (16384, true)", b, ok)
 	}
-	// "off" -> no thinking block even with a provider budget configured.
+	// "off" explicitly disables thinking even with a provider budget configured.
 	req.Thinking = "off"
-	if _, ok := parseThinking(t, req); ok {
-		t.Fatal("off thinking must not emit a thinking block")
+	body, err := p.buildChatRequestBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"thinking":{"type":"disabled"}`) {
+		t.Fatalf("off must explicitly disable thinking: %s", body)
 	}
 }
 

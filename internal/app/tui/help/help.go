@@ -28,9 +28,6 @@ type FooterHints struct {
 	// TodosActive is true when the session has a non-empty todo list, so
 	// the Ctrl+T panel toggle is actionable.
 	TodosActive bool
-	// RailEnabled is true when the side rail is configured and the terminal
-	// is wide enough, so the Ctrl+B toggle is actionable.
-	RailEnabled bool
 	// MouseReleased reports that the mouse currently belongs to the terminal
 	// (Ctrl+S). The hint's label flips on it: a user who has released the
 	// mouse needs to be told how to get wheel scrolling back, and a user who
@@ -43,6 +40,9 @@ type FooterHints struct {
 	// caller retries with this set when the full cluster overflows, which
 	// makes the mouse hint the first thing shed rather than the last.
 	SuppressMouseHint bool
+	// SuppressBrowseHint drops the Esc browse hint, the second thing shed
+	// (after the mouse hint) when the cluster does not fit.
+	SuppressBrowseHint bool
 	// RunActive is true when a subagent is running, so the Ctrl+F drill-in
 	// hint is actionable.
 	RunActive bool
@@ -52,6 +52,8 @@ type FooterHints struct {
 	// SkillGatePending is true while a skill-load gate dialog is up, so
 	// the footer shows the gate's navigation keys instead of the chat keys.
 	SkillGatePending bool
+	// Browsing is true in browse mode (Esc): the footer shows its keys.
+	Browsing bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -73,7 +75,12 @@ func Footer(h FooterHints) string {
 	showMouseHint := false
 
 	var segs []string
-	if h.QuestionPending {
+	if h.Browsing && !h.QuestionPending && !h.SkillGatePending && !h.ApprovalPending {
+		segs = append(segs,
+			pair("j/k", "move"), pair("↵", "detail"), pair("i", "inspect"),
+			pair("y", "copy"), pair("o", "open"), pair("esc", "back"))
+		return strings.Join(segs, sep.Render(""))
+	} else if h.QuestionPending {
 		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
 	} else if h.SkillGatePending {
 		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
@@ -93,7 +100,7 @@ func Footer(h FooterHints) string {
 		segs = append(segs,
 			pair("Enter", "send"),
 			pair("Shift+Enter", "newline"),
-			pair("Esc", "cancel"),
+			pair("Ctrl+C", "stop"),
 			pair("Ctrl+X", "clear queue"),
 		)
 		if h.RunActive {
@@ -107,15 +114,16 @@ func Footer(h FooterHints) string {
 			pair("Tab", "mode"),
 			pair("/", "cmd"),
 		)
+		if !h.SuppressBrowseHint {
+			segs = append(segs, pair("Esc", "browse"))
+		}
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
 		}
 		if h.TodosActive {
 			segs = append(segs, pair("Ctrl+T", "tasks"))
 		}
-		if h.RailEnabled {
-			segs = append(segs, pair("Ctrl+B", "rail"))
-		}
+		segs = append(segs, pair("Ctrl+B", "session"))
 		showMouseHint = true
 	}
 	if h.QueueNonEmpty {

@@ -304,3 +304,84 @@ func TestTodoWriteSchemaAdvertisesDropUnfinished(t *testing.T) {
 		t.Fatal("schema must not use a mode enum")
 	}
 }
+
+func TestReconcileTodos(t *testing.T) {
+	t0 := time.Unix(100, 0)
+	t1 := time.Unix(200, 0)
+	prev := []TodoItem{
+		{ID: "t1", Content: "Write the parser", Status: TodoInProgress, StartedAt: t0},
+		{ID: "t2", Content: "Add tests", Status: TodoPending},
+		{ID: "t7", Content: "Update docs", Status: TodoPending},
+	}
+	next := []TodoItem{
+		{ID: "t7", Content: "Docs, rewritten", Status: TodoPending}, // by ID, content changed
+		{Content: "Write the parser", Status: TodoCompleted},        // exact content
+		{Content: "  add TESTS ", Status: TodoInProgress},           // case-folded and trimmed
+		{Content: "Something brand new", Status: TodoInProgress},    // new
+	}
+	got, matched := reconcileTodos(prev, next, t1, 0)
+	if matched[0] != true || matched[1] != true || matched[2] != true {
+		t.Fatalf("matched = %v", matched)
+	}
+	if got[0].ID != "t7" || got[0].Content != "Docs, rewritten" {
+		t.Errorf("by-ID match = %+v", got[0])
+	}
+	if got[1].ID != "t1" || !got[1].StartedAt.Equal(t0) || !got[1].CompletedAt.Equal(t1) {
+		t.Errorf("exact match must keep StartedAt and set CompletedAt: %+v", got[1])
+	}
+	if got[2].ID != "t2" || !got[2].StartedAt.Equal(t1) {
+		t.Errorf("case-folded match = %+v", got[2])
+	}
+	if got[3].ID != "t8" || !got[3].StartedAt.Equal(t1) {
+		t.Errorf("new item must get the next counter and start now: %+v", got[3])
+	}
+}
+
+func TestReconcileTodosClearsCompletionWhenReopened(t *testing.T) {
+	t0 := time.Unix(100, 0)
+	prev := []TodoItem{{ID: "t1", Content: "a", Status: TodoCompleted, StartedAt: t0, CompletedAt: t0}}
+	got, _ := reconcileTodos(prev, []TodoItem{{Content: "a", Status: TodoInProgress}}, time.Unix(300, 0), 0)
+	if !got[0].CompletedAt.IsZero() || !got[0].StartedAt.Equal(t0) {
+		t.Fatalf("reopened item = %+v", got[0])
+	}
+}
+
+func TestOldTodoJSONDecodesWithZeroNewFields(t *testing.T) {
+	var items []TodoItem
+	if err := json.Unmarshal([]byte(`[{"content":"x","status":"pending"}]`), &items); err != nil {
+		t.Fatal(err)
+	}
+	if items[0].ID != "" || !items[0].StartedAt.IsZero() {
+		t.Fatalf("%+v", items[0])
+	}
+	out, _ := json.Marshal(items)
+	if strings.Contains(string(out), "started_at") || strings.Contains(string(out), `"id"`) {
+		t.Fatalf("zero fields must be omitted for old readers: %s", out)
+	}
+}
+
+func TestReconcileTodosNeverReusesAFreedID(t *testing.T) {
+	now := time.Unix(100, 0)
+	// t2 was dropped, but the session floor remembers it was handed out.
+	prev := []TodoItem{{ID: "t1", Content: "A", Status: TodoPending}}
+	got, _ := reconcileTodos(prev, []TodoItem{{Content: "A", Status: TodoPending}, {Content: "Deploy", Status: TodoPending}}, now, 2)
+	if got[1].ID != "t3" {
+		t.Fatalf("new todo reused an old ID: %+v", got[1])
+	}
+}
+
+func TestReconcileTodosGivesLegacyItemsAnIdentity(t *testing.T) {
+	prev := []TodoItem{{Content: "Old", Status: TodoPending}} // saved before IDs existed
+	got, _ := reconcileTodos(prev, []TodoItem{{Content: "Old", Status: TodoInProgress}}, time.Unix(100, 0), 0)
+	if got[0].ID == "" {
+		t.Fatal("a matched legacy todo must get an ID")
+	}
+}
+
+func TestEnsureTodoIDsCoversCarriedLegacyItems(t *testing.T) {
+	items := []TodoItem{{ID: "t3", Content: "a"}, {Content: "old, carried over"}, {Content: "another"}}
+	ensureTodoIDs(items, 5)
+	if items[0].ID != "t3" || items[1].ID != "t6" || items[2].ID != "t7" {
+		t.Fatalf("ids = %q %q %q", items[0].ID, items[1].ID, items[2].ID)
+	}
+}

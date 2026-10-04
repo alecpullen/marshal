@@ -44,29 +44,20 @@ func interfaceFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
-				f := &field{ID: "tui.side_panel.enabled", Title: "Side panel", Kind: kindToggle,
-					TomlPath: "tui.side_panel.enabled",
-					Desc:     "show the widescreen side rail on wide terminals",
-					GetBool:  func() bool { return s.cfg.TUI.SidePanel.Enabled },
-					SetBool:  func(v bool) { s.cfg.TUI.SidePanel.Enabled = v }}
+				f := enumField("tui.transcript.density", "Transcript detail", []string{"outline", "steps", "full"},
+					func() string { return s.cfg.TUI.Transcript.Density },
+					func(v string) { s.cfg.TUI.Transcript.Density = v })
+				f.TomlPath = "tui.transcript.density"
+				f.Desc = "starting detail level; Ctrl+G cycles it (outline · steps · full)"
 				SetFieldWriteGlobal(f, true)
 				return f
 			}(),
 			func() *field {
-				f := intField("tui.side_panel.min_width", "Side panel min width",
-					func() int { return s.cfg.TUI.SidePanel.MinWidth },
-					80, func(v int) { s.cfg.TUI.SidePanel.MinWidth = v })
-				f.TomlPath = "tui.side_panel.min_width"
-				f.Desc = "frame width at which the side rail appears"
-				SetFieldWriteGlobal(f, true)
-				return f
-			}(),
-			func() *field {
-				f := intField("tui.side_panel.width_pct", "Side panel width %",
-					func() int { return s.cfg.TUI.SidePanel.WidthPct },
-					10, func(v int) { s.cfg.TUI.SidePanel.WidthPct = v })
-				f.TomlPath = "tui.side_panel.width_pct"
-				f.Desc = "percentage of frame width the rail occupies"
+				f := &field{ID: "tui.transcript.fold_finished_tasks", Title: "Fold finished tasks", Kind: kindToggle,
+					TomlPath: "tui.transcript.fold_finished_tasks",
+					Desc:     "collapse a completed task to one row (z toggles in browse mode)",
+					GetBool:  func() bool { return s.cfg.TUI.Transcript.FoldFinishedTasks },
+					SetBool:  func(v bool) { s.cfg.TUI.Transcript.FoldFinishedTasks = v }}
 				SetFieldWriteGlobal(f, true)
 				return f
 			}(),

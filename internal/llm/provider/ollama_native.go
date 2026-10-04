@@ -20,13 +20,14 @@ import (
 // OpenAI-compatible shim. The native API is required for keep_alive (model
 // warm-ness control) and per-model capability probing via /api/show.
 type OllamaNative struct {
-	name         string
-	baseURL      string
-	apiKey       string
-	httpClient   *http.Client
-	capabilities schema.ProviderCapabilities
-	keepAlive    string
-	limitsTable  *limits.Table
+	thinkingLookup func(string) *schema.ThinkingOptions
+	name           string
+	baseURL        string
+	apiKey         string
+	httpClient     *http.Client
+	capabilities   schema.ProviderCapabilities
+	keepAlive      string
+	limitsTable    *limits.Table
 
 	capsMu    sync.Mutex
 	capsCache map[string]ollamaModelCaps
@@ -46,10 +47,8 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 		client = defaultHTTPClient()
 	}
 	caps := DefaultCapabilities()
-	// Ollama's think toggle is a different mechanism than the
-	// reasoning_effort/budget_tokens control; report no reasoning capability
-	// so the thinking preset field is not sent on the wire.
-	caps.Reasoning = false
+	// Native Ollama encodes effort through its model-specific think field.
+	caps.Reasoning = true
 	// Structured output (format / response_format) is NOT advertised by
 	// default: ollama.com cloud silently ignores format and format:"json"
 	// (verified 2026-09-03), and /api/show offers no way to tell an
@@ -64,14 +63,15 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 		caps = *opts.Capabilities
 	}
 	return &OllamaNative{
-		name:         opts.Name,
-		baseURL:      strings.TrimRight(opts.BaseURL, "/"),
-		apiKey:       opts.APIKey,
-		httpClient:   client,
-		capabilities: caps,
-		keepAlive:    opts.KeepAlive,
-		limitsTable:  opts.LimitsTable,
-		capsCache:    make(map[string]ollamaModelCaps),
+		thinkingLookup: opts.ThinkingLookup,
+		name:           opts.Name,
+		baseURL:        strings.TrimRight(opts.BaseURL, "/"),
+		apiKey:         opts.APIKey,
+		httpClient:     client,
+		capabilities:   caps,
+		keepAlive:      opts.KeepAlive,
+		limitsTable:    opts.LimitsTable,
+		capsCache:      make(map[string]ollamaModelCaps),
 	}, nil
 }
 
@@ -102,13 +102,15 @@ func (p *OllamaNative) connHint(err error) error {
 // the server did not report capabilities (old Ollama) or the probe failed;
 // callers then fall back to the provider-level config value.
 type ollamaModelCaps struct {
-	tools         bool
-	thinking      bool
-	contextWindow int
-	known         bool
+	tools           bool
+	thinking        bool
+	contextWindow   int
+	known           bool
+	thinkingOptions *schema.ThinkingOptions
 }
 
 type ollamaShowResponse struct {
+	Thinking     *ollamaThinkingMetadata    `json:"thinking"`
 	Capabilities []string                   `json:"capabilities"`
 	ModelInfo    map[string]json.RawMessage `json:"model_info"`
 }
@@ -116,6 +118,7 @@ type ollamaShowResponse struct {
 // --- wire types ---
 
 type ollamaChatRequest struct {
+	Think     any             `json:"think,omitempty"`
 	Model     string          `json:"model"`
 	Messages  []ollamaMessage `json:"messages"`
 	Stream    bool            `json:"stream"`
@@ -229,7 +232,24 @@ func (p *OllamaNative) buildChatRequestBody(req schema.ChatRequest) ([]byte, err
 			format = json.RawMessage(`"json"`)
 		}
 	}
+
+	var think any
+	if req.ThinkingOptions != nil && req.ThinkingOptions.Mode == "effort" && req.Thinking != "" && req.Thinking != "default" {
+		think = req.Thinking
+	} else {
+		switch req.Thinking {
+		case "", "default":
+		case "off", "none":
+			think = false
+		case "on":
+			think = true
+		default:
+			think = req.Thinking
+		}
+	}
+
 	return json.Marshal(ollamaChatRequest{
+		Think:     think,
 		Model:     req.Model,
 		Messages:  messages,
 		Stream:    req.Stream,
@@ -285,6 +305,9 @@ func ollamaUsageFrom(chunk ollamaChatChunk) *schema.TokenUsage {
 // HTTP-200 NDJSON stream, which is why the first stream event is peeked at
 // before the channel is handed back.
 func (p *OllamaNative) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	if req.ThinkingOptions == nil && p.thinkingLookup != nil {
+		req.ThinkingOptions = p.thinkingLookup(req.Model)
+	}
 	events, err := p.chat(ctx, req)
 	if err != nil {
 		if isStrictSystemPositionError(err) && hasTrailingSystemMessage(req.Messages) {
@@ -520,6 +543,17 @@ func (p *OllamaNative) probeModelCaps(ctx context.Context, model string) ollamaM
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return ollamaModelCaps{}
 	}
+	if parsed.Thinking != nil {
+		caps := ollamaModelCaps{thinkingOptions: parsed.Thinking.options(), contextWindow: contextLengthFromModelInfo(parsed.ModelInfo)}
+		if parsed.Capabilities != nil {
+			caps.known = true
+			for _, c := range parsed.Capabilities {
+				caps.tools = caps.tools || c == "tools"
+				caps.thinking = caps.thinking || c == "thinking"
+			}
+		}
+		return caps
+	}
 	if parsed.Capabilities == nil {
 		return ollamaModelCaps{} // old server: field absent entirely
 	}
@@ -596,5 +630,15 @@ func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 		}
 		models = append(models, info)
 	}
+	enrichThinkingOptions(ctx, models, func(ctx context.Context, model string) *schema.ThinkingOptions {
+		caps := p.cachedCaps(ctx, model)
+		if caps.thinkingOptions != nil {
+			return caps.thinkingOptions
+		}
+		if caps.known && !caps.thinking {
+			return &schema.ThinkingOptions{Mode: "toggle"}
+		}
+		return nil
+	})
 	return models, nil
 }

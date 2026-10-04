@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
+	"sync"
 
 	"marshal/internal/llm/schema"
 	"marshal/internal/llm/streaming"
@@ -26,6 +28,9 @@ const anthropicDefaultMaxTokens = 8192
 // giving marshal prompt caching, native tool use, and extended thinking —
 // none of which are reachable through the OpenAI-compatible shim.
 type Anthropic struct {
+	thinkingMu           sync.RWMutex
+	modelThinking        map[string]*schema.ThinkingOptions
+	thinkingLookup       func(string) *schema.ThinkingOptions
 	name                 string
 	baseURL              string
 	apiKey               string
@@ -50,7 +55,13 @@ func NewAnthropic(opts Options) (*Anthropic, error) {
 	if opts.Capabilities != nil {
 		caps = *opts.Capabilities
 	}
+	modelThinking := make(map[string]*schema.ThinkingOptions)
+	for model, options := range opts.ModelThinking {
+		modelThinking[model] = cloneThinkingOptions(options)
+	}
 	return &Anthropic{
+		modelThinking:        modelThinking,
+		thinkingLookup:       opts.ThinkingLookup,
 		name:                 opts.Name,
 		baseURL:              strings.TrimRight(opts.BaseURL, "/"),
 		apiKey:               opts.APIKey,
@@ -114,10 +125,11 @@ type anthropicToolChoice struct {
 
 type anthropicThinking struct {
 	Type         string `json:"type"`
-	BudgetTokens int    `json:"budget_tokens"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type anthropicRequest struct {
+	OutputConfig  *anthropicOutputConfig  `json:"output_config,omitempty"`
 	Model         string                  `json:"model"`
 	MaxTokens     int                     `json:"max_tokens"`
 	System        []anthropicContentBlock `json:"system,omitempty"`
@@ -239,6 +251,14 @@ func anthropicToolCallsFromBlocks(blocks []anthropicContentBlock) []schema.ToolC
 // --- request building ---
 
 func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
+	if req.ThinkingOptions == nil && p.thinkingLookup != nil {
+		req.ThinkingOptions = p.thinkingLookup(req.Model)
+	}
+	if req.ThinkingOptions == nil {
+		p.thinkingMu.RLock()
+		req.ThinkingOptions = p.modelThinking[req.Model]
+		p.thinkingMu.RUnlock()
+	}
 	return buildAnthropicRequestBody(req, p.thinkingBudget, p.thinkingBudgetMargin)
 }
 
@@ -284,6 +304,7 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 	// unchanged.
 	var thinking *anthropicThinking
 	budget := thinkingBudget
+	adaptive := req.ThinkingOptions != nil && req.ThinkingOptions.Mode == "adaptive"
 	if req.Thinking != "" {
 		switch req.Thinking {
 		case "off":
@@ -296,7 +317,7 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 			budget = 16384
 		}
 	}
-	if budget > 0 {
+	if budget > 0 && !adaptive {
 		margin := thinkingBudgetMargin
 		if margin == 0 {
 			// Auto: max(2048, maxTokens/4).
@@ -313,6 +334,22 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 		thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
 	}
 
+	if req.Thinking == "off" && !adaptive {
+		thinking = &anthropicThinking{Type: "disabled"}
+	}
+	var outputConfig *anthropicOutputConfig
+	if adaptive {
+		// Adaptive models do not accept fixed thinking budgets.
+		thinking = nil
+		if req.Thinking != "" && req.Thinking != "default" {
+			if req.Thinking == "off" {
+				thinking = &anthropicThinking{Type: "disabled"}
+			} else {
+				thinking = &anthropicThinking{Type: "adaptive"}
+				outputConfig = &anthropicOutputConfig{Effort: req.Thinking}
+			}
+		}
+	}
 	var toolChoice *anthropicToolChoice
 	switch req.ToolChoice {
 	case "auto":
@@ -333,9 +370,10 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 		Tools:         tools,
 		ToolChoice:    toolChoice,
 		Thinking:      thinking,
+		OutputConfig:  outputConfig,
 	}
 	// Extended thinking rejects temperature/top_p overrides.
-	if thinking == nil {
+	if thinking == nil && !adaptive {
 		body.Temperature = req.Temperature
 		body.TopP = req.TopP
 	}
@@ -569,35 +607,111 @@ func streamAnthropicChatEvents(body io.ReadCloser, capture *wireCapture, events 
 
 // --- model listing ---
 
-type anthropicModelsResponse struct {
-	Data []struct {
-		ID string `json:"id"`
-	} `json:"data"`
+type anthropicOutputConfig struct {
+	Effort string `json:"effort"`
 }
 
-// Models lists available models via GET /v1/models. The endpoint reports no
-// context-window metadata; limits come from the static catalog or config.
+type anthropicCapabilitySupport struct {
+	Supported bool `json:"supported"`
+}
+type anthropicModelEntry struct {
+	ID             string `json:"id"`
+	MaxInputTokens int    `json:"max_input_tokens"`
+	MaxTokens      int    `json:"max_tokens"`
+	Capabilities   *struct {
+		Effort   map[string]json.RawMessage `json:"effort"`
+		Thinking *struct {
+			Supported bool `json:"supported"`
+			Types     struct {
+				Adaptive anthropicCapabilitySupport `json:"adaptive"`
+				Enabled  anthropicCapabilitySupport `json:"enabled"`
+			} `json:"types"`
+		} `json:"thinking"`
+	} `json:"capabilities"`
+}
+
+func (m anthropicModelEntry) thinkingOptions() *schema.ThinkingOptions {
+	if m.Capabilities == nil || m.Capabilities.Thinking == nil {
+		return nil
+	}
+	thinking := m.Capabilities.Thinking
+	options := &schema.ThinkingOptions{Mode: "budget"}
+	if !thinking.Supported {
+		return options
+	}
+	if thinking.Types.Adaptive.Supported {
+		options.Mode = "adaptive"
+		for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
+			var support anthropicCapabilitySupport
+			if json.Unmarshal(m.Capabilities.Effort[level], &support) == nil && support.Supported {
+				options.Levels = append(options.Levels, level)
+			}
+		}
+		// The API does not advertise whether disabled is permitted; do not guess.
+	} else if thinking.Types.Enabled.Supported {
+		options.Levels = []string{"off", "low", "medium", "high"}
+	}
+	return options
+}
+
+type anthropicModelsResponse struct {
+	Data    []anthropicModelEntry `json:"data"`
+	HasMore bool                  `json:"has_more"`
+	LastID  string                `json:"last_id"`
+}
+
+// Models lists available models and their advertised limits and capabilities.
+
 func (p *Anthropic) Models(ctx context.Context) ([]schema.ModelInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models", nil)
+	var models []schema.ModelInfo
+	after := ""
+	seen := map[string]bool{}
+	for {
+		endpoint := p.baseURL + "/v1/models"
+		if after != "" {
+			endpoint += "?after_id=" + url.QueryEscape(after)
+		}
+		page, err := p.fetchModelsPage(ctx, endpoint)
+		if err != nil {
+			return nil, err
+		}
+		for _, model := range page.Data {
+			info := schema.ModelInfo{ID: model.ID, OwnedBy: "anthropic", ContextWindow: model.MaxInputTokens, MaxOutputTokens: model.MaxTokens, Thinking: model.thinkingOptions()}
+			models = append(models, info)
+			if info.Thinking != nil {
+				p.thinkingMu.Lock()
+				p.modelThinking[model.ID] = info.Thinking
+				p.thinkingMu.Unlock()
+			}
+		}
+		if !page.HasMore {
+			return models, nil
+		}
+		if page.LastID == "" || seen[page.LastID] {
+			return nil, fmt.Errorf("provider %q: invalid models pagination cursor", p.name)
+		}
+		after = page.LastID
+		seen[after] = true
+	}
+}
+
+func (p *Anthropic) fetchModelsPage(ctx context.Context, endpoint string) (anthropicModelsResponse, error) {
+	var parsed anthropicModelsResponse
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("provider %q: build models request: %w", p.name, err)
+		return parsed, fmt.Errorf("provider %q: build models request: %w", p.name, err)
 	}
 	p.setHeaders(req)
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("provider %q: models request failed: %w", p.name, err)
+		return parsed, fmt.Errorf("provider %q: models request failed: %w", p.name, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, HTTPError(p.name, resp)
+		return parsed, HTTPError(p.name, resp)
 	}
-	var parsed anthropicModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("provider %q: decode models response: %w", p.name, err)
+		return parsed, fmt.Errorf("provider %q: decode models response: %w", p.name, err)
 	}
-	models := make([]schema.ModelInfo, 0, len(parsed.Data))
-	for _, m := range parsed.Data {
-		models = append(models, schema.ModelInfo{ID: m.ID, OwnedBy: "anthropic"})
-	}
-	return models, nil
+	return parsed, nil
 }

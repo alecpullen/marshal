@@ -9,7 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/db"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
@@ -21,16 +21,14 @@ func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
 	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
 	m.state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
 	_ = ts2
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	found := false
-	for _, r := range m.clickRegions {
-		if r.target.key == (itemKey{ts: ts1, kind: session.KindThinking}) {
-			found = true
-			if r.startLine < 0 || r.endLine <= r.startLine {
-				t.Fatalf("invalid region for thinking block: %+v", r)
-			}
+	if r, ok := regionOf(&m, thinkID(ts1)); ok {
+		found = true
+		if r.startLine < 0 || r.endLine <= r.startLine {
+			t.Fatalf("invalid region for thinking block: %+v", r)
 		}
 	}
 	if !found {
@@ -67,17 +65,26 @@ func TestContentLineForClickRejectsOutsideViewport(t *testing.T) {
 
 func TestRegionAtFindsContainingRegion(t *testing.T) {
 	m := newTestModel(t)
-	m.clickRegions = []clickRegion{
-		{startLine: 0, endLine: 2, target: clickTarget{key: itemKey{ts: time.Unix(1, 0), kind: session.KindThinking}}},
-		{startLine: 3, endLine: 5, target: clickTarget{isActiveTool: true}},
+	step := stack.NodeID{Kind: stack.KindStep, Key: "step:1"}
+	row := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
+	other := stack.NodeID{Kind: stack.KindStep, Key: "step:2"}
+	m.nodeRegions = []nodeRegion{
+		{startLine: 0, endLine: 6, target: clickTarget{node: step}},
+		{startLine: 2, endLine: 4, target: clickTarget{node: row}},
+		{startLine: 7, endLine: 9, target: clickTarget{node: other}},
 	}
 
-	if _, ok := m.regionAt(2); ok {
-		t.Fatal("line 2 is the separator between blocks and should not match")
+	if _, ok := m.regionAt(6); ok {
+		t.Fatal("line 6 is the separator between blocks and should not match")
 	}
-	target, ok := m.regionAt(4)
-	if !ok || !target.isActiveTool {
-		t.Fatalf("regionAt(4) = %+v, %v, want the active-tool region", target, ok)
+	if target, ok := m.regionAt(3); !ok || target.node != row {
+		t.Fatalf("regionAt(3) = %+v, %v, want the narrower row inside the step", target, ok)
+	}
+	if target, ok := m.regionAt(5); !ok || target.node != step {
+		t.Fatalf("regionAt(5) = %+v, %v, want the step header region", target, ok)
+	}
+	if target, ok := m.regionAt(8); !ok || target.node != other {
+		t.Fatalf("regionAt(8) = %+v, %v, want the second step", target, ok)
 	}
 }
 
@@ -86,17 +93,11 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	m.resize(80, 24)
 	ts := time.Unix(700, 0)
 	m.state.LogThinking(session.ThinkingEntry{Text: "click me", Duration: time.Second, StartedAt: ts})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := itemKey{ts: ts, kind: session.KindThinking}
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.key == key {
-			region, found = r, true
-		}
-	}
+	key := thinkID(ts)
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the thinking block")
 	}
@@ -118,19 +119,12 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	started := time.Now()
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started})
-	m.lastTranscriptHash = 0
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started, ToolCallID: "call_a"})
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	// Locate the active-tool region.
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.isActiveTool {
-			region, found = r, true
-			break
-		}
-	}
+	key := stack.NodeID{Kind: stack.KindTool, Key: "tool:call_a"}
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the active tool call")
 	}
@@ -140,21 +134,19 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
 	mm := asModel(t, updated)
 
-	key := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started})
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the click to expand the active tool call")
 	}
 
 	// A repaint (hash invalidation + rebuild) must keep the override.
-	mm.lastTranscriptHash = 0
+	mm.invalidateTranscript()
 	mm.refreshViewport()
-	if !mm.activeToolIsExpanded(key) {
+	if !mm.isToolExpanded(key, true) {
 		t.Fatal("expected the override to survive a refreshViewport repaint")
 	}
 
-	// A different StartedAt (new tool call) collapses back.
-	key2 := activeToolKeyFor(session.ActiveToolCall{Name: "shell.run", StartedAt: started.Add(time.Second)})
-	if mm.activeToolIsExpanded(key2) {
+	// A different call collapses back.
+	if mm.isToolExpanded(stack.NodeID{Kind: stack.KindTool, Key: "tool:call_b"}, true) {
 		t.Fatal("expected a different tool call to be collapsed")
 	}
 }
@@ -164,13 +156,13 @@ func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	m.resize(80, 24)
 	ts := time.Unix(701, 0)
 	m.state.LogThinking(session.ThinkingEntry{Text: "leave me collapsed", Duration: time.Second, StartedAt: ts})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	updated, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 10, Y: 0, Button: tea.MouseLeft})
 	mm := asModel(t, updated)
 
-	key := itemKey{ts: ts, kind: session.KindThinking}
+	key := thinkID(ts)
 	if mm.isExpanded(key) {
 		t.Fatal("expected an out-of-bounds click to be a no-op")
 	}
@@ -186,17 +178,11 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 		Error:     "boom",
 		Args:      []byte(`{"command": "echo hi"}`),
 	})
-	m.lastTranscriptHash = 0
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := itemKey{ts: ts, kind: session.KindAudit}
-	var region clickRegion
-	found := false
-	for _, r := range m.clickRegions {
-		if r.target.key == key {
-			region, found = r, true
-		}
-	}
+	key := toolIDAt(ts)
+	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the failed tool call")
 	}
@@ -214,117 +200,19 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 	}
 }
 
-func TestMouseClickTodoPanelCyclesMode(t *testing.T) {
+func TestNowBarClickDrillsIntoAgent(t *testing.T) {
 	m := newTestModel(t)
-	m.resize(80, 24)
-	todos := make([]db.TodoItem, 0, 8)
-	for i := 0; i < 8; i++ {
-		status := native.TodoPending
-		if i == 3 {
-			status = native.TodoInProgress
-		}
-		todos = append(todos, db.TodoItem{Content: "todo item", Status: status})
-	}
-	if err := m.state.SetTodos(todos); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	m.lastTranscriptHash = 0
-	m.refreshViewport()
-
-	if m.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("initial mode = %v, want expanded", m.todoPanelMode)
-	}
-
-	top, _, ok := m.todoPanelBand()
-	if !ok {
-		t.Fatal("expected a todo panel band after seeding todos")
-	}
-
-	updated, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top, Button: tea.MouseLeft})
-	mm := asModel(t, updated)
-	if mm.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("click in the todo band should advance to collapsed, got %v", mm.todoPanelMode)
-	}
-
-	// Control: a click just above the band (inside the viewport) must not
-	// cycle the mode.
-	ctrl, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top - 1, Button: tea.MouseLeft})
-	cc := asModel(t, ctrl)
-	if cc.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("click above the band must not cycle, got %v", cc.todoPanelMode)
-	}
-
-	// Control: a click past the left column width must not cycle either.
-	ctrl2, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 5, Y: top, Button: tea.MouseLeft})
-	cc2 := asModel(t, ctrl2)
-	if cc2.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("click past leftWidth must not cycle, got %v", cc2.todoPanelMode)
-	}
-}
-
-// TestMouseClickTodoPanelNeverHides verifies that repeated clicks on the
-// todo panel toggle between expanded and collapsed and never enter the
-// hidden state — a click should never make the panel vanish.
-func TestMouseClickTodoPanelNeverHides(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(80, 24)
-	todos := make([]db.TodoItem, 0, 8)
-	for i := 0; i < 8; i++ {
-		todos = append(todos, db.TodoItem{Content: "todo item", Status: native.TodoPending})
-	}
-	if err := m.state.SetTodos(todos); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	m.lastTranscriptHash = 0
-	m.refreshViewport()
-
-	top, _, ok := m.todoPanelBand()
-	if !ok {
-		t.Fatal("expected a todo panel band after seeding todos")
-	}
-
-	// First click: expanded → collapsed.
-	u1, _ := m.Update(tea.MouseClickMsg{X: 2, Y: top, Button: tea.MouseLeft})
-	m1 := asModel(t, u1)
-	if m1.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("first click mode = %v, want collapsed", m1.todoPanelMode)
-	}
-	// The band moves when the panel collapses (viewport height changes);
-	// recompute it for the next click.
-	top1, _, ok1 := m1.todoPanelBand()
-	if !ok1 {
-		t.Fatal("expected a todo panel band after first click")
-	}
-	// Second click: collapsed → expanded (NOT hidden).
-	u2, _ := m1.Update(tea.MouseClickMsg{X: 2, Y: top1, Button: tea.MouseLeft})
-	m2 := asModel(t, u2)
-	if m2.todoPanelMode != todoPanelExpanded {
-		t.Fatalf("second click mode = %v, want expanded (never hidden)", m2.todoPanelMode)
-	}
-	// Third click: back to collapsed.
-	top2, _, ok2 := m2.todoPanelBand()
-	if !ok2 {
-		t.Fatal("expected a todo panel band after second click")
-	}
-	u3, _ := m2.Update(tea.MouseClickMsg{X: 2, Y: top2, Button: tea.MouseLeft})
-	m3 := asModel(t, u3)
-	if m3.todoPanelMode != todoPanelCollapsed {
-		t.Fatalf("third click mode = %v, want collapsed", m3.todoPanelMode)
-	}
-}
-
-func TestAgentLaneClickDrillsIn(t *testing.T) {
-	m := newTestModel(t)
+	m.resize(100, 40)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 
-	top, _, ok := m.agentLaneBand()
+	plan := m.nowBarPlan()
+	top, _, ok := m.nowBarBand(plan)
 	if !ok {
-		t.Fatal("expected an agent lane band")
+		t.Fatal("expected a now bar band")
 	}
-	// Row 0 is the separator rule, row 1 the caption, row 2 the first agent.
-	if _, handled := m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + 2}); !handled {
+	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + plan.agentRowStart}); !handled {
 		t.Fatal("a click on an agent row must be handled")
 	}
 	if len(m.viewStack) != 1 {
@@ -332,44 +220,50 @@ func TestAgentLaneClickDrillsIn(t *testing.T) {
 	}
 }
 
-// The separator and caption rows are not agents; clicking them must not drill.
-func TestAgentLaneClickOnChromeDoesNothing(t *testing.T) {
+// Rows above the first agent (the progress/turn row) are not agents;
+// clicking them is consumed but must not drill.
+func TestNowBarClickOnProgressRowDoesNothing(t *testing.T) {
 	m := newTestModel(t)
+	m.resize(100, 40)
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-time.Second)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
-	top, _, _ := m.agentLaneBand()
-	// Rows 0 (separator) and 1 (caption) are chrome.
-	for _, y := range []int{top, top + 1} {
-		m.handleAgentLaneClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: y})
+
+	plan := m.nowBarPlan()
+	if plan.agentRowStart != 1 {
+		t.Fatalf("agentRowStart = %d, want 1 under a turn row", plan.agentRowStart)
+	}
+	top, _, _ := m.nowBarBand(plan)
+	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top}); !handled {
+		t.Fatal("a click inside the bar must be consumed")
 	}
 	if len(m.viewStack) != 0 {
-		t.Fatal("clicking the chrome rows must not drill in")
+		t.Fatal("clicking the turn row must not drill in")
 	}
 }
 
-// The band must sit directly below the live strip (the job lane no longer
-// exists as a separate stacked row).
-func TestLaneBandSitsBelowLiveStrip(t *testing.T) {
+// The band sits directly below the transcript viewport.
+func TestNowBarBandSitsBelowViewport(t *testing.T) {
 	m := newTestModel(t)
+	m.resize(100, 40)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.jobs = []native.JobInfo{runningJob(1, "go test ./...", time.Second)}
 	m.refreshViewport()
-	top, _, ok := m.agentLaneBand()
+	top, _, ok := m.nowBarBand(m.nowBarPlan())
 	if !ok {
 		t.Fatal("expected a band")
 	}
-	want := m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height() +
-		m.turnSpinnerRows() + m.todoPanelRows() + m.liveStripRows()
-	if top != want {
-		t.Fatalf("band top = %d, want %d (lane must sit below the live strip)", top, want)
+	if want := m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height(); top != want {
+		t.Fatalf("band top = %d, want %d", top, want)
 	}
 }
 
-func TestNoAgentLaneNoBand(t *testing.T) {
+func TestNoNowBarNoBand(t *testing.T) {
 	m := newTestModel(t)
-	if _, _, ok := m.agentLaneBand(); ok {
-		t.Fatal("no running agents means no band")
+	if _, _, ok := m.nowBarBand(m.nowBarPlan()); ok {
+		t.Fatal("nothing live means no band")
 	}
 }

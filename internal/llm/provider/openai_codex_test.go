@@ -173,8 +173,15 @@ func TestCodexChatRequestShape(t *testing.T) {
 	p := newTestCodex(t, server.URL, engine)
 
 	events, err := p.Chat(t.Context(), schema.ChatRequest{
-		Model:    "gpt-5.6-luna",
-		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		Model: "gpt-5.6-luna",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleSystem, Content: "Marshal harness capabilities"},
+			{Role: schema.RoleSystem, Content: "Repository instructions"},
+			{Role: schema.RoleUser, Content: "hi"},
+			{Role: schema.RoleSystem, Content: "Runtime guidance"},
+			{Role: schema.RoleAssistant, Content: "working"},
+			{Role: schema.RoleSystem, Content: "Follow-up guidance"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -197,6 +204,26 @@ func TestCodexChatRequestShape(t *testing.T) {
 	}
 
 	// Body: store=false, stream=true, and the required include list.
+	if got := gotBody["instructions"]; got != "Marshal harness capabilities\n\nRepository instructions" {
+		t.Errorf("instructions = %v, want complete harness prompt", got)
+	}
+	input, ok := gotBody["input"].([]any)
+	if !ok || len(input) != 4 {
+		t.Fatalf("input = %v, want four conversation messages", gotBody["input"])
+	}
+	for i, role := range []string{"user", "developer", "assistant", "developer"} {
+		item := input[i].(map[string]any)
+		if item["role"] != role {
+			t.Errorf("input[%d].role = %v, want %s", i, item["role"], role)
+		}
+	}
+	for i, text := range []string{"hi", "Runtime guidance", "working", "Follow-up guidance"} {
+		item := input[i].(map[string]any)
+		parts := item["content"].([]any)
+		if parts[0].(map[string]any)["text"] != text {
+			t.Errorf("input[%d] lost its content", i)
+		}
+	}
 	if got := gotBody["store"]; got != false {
 		t.Errorf("store = %v, want false", got)
 	}

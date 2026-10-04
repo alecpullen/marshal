@@ -42,6 +42,7 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		Reason:       reason,
 		Diff:         diff,
 		Schema:       tool.Description,
+		StepID:       r.curStep,
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	r.State.SetPendingApproval(tc)

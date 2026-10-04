@@ -143,12 +143,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					}
 				}
 				res := Panel("Help", false, rows)
-				res.Doc.Footer = "⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /models\n" +
-					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n" +
-					"pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom · ctrl+b side rail\n" +
-					"while drilled into a running agent: esc pop out · ctrl+x stop agent · ctrl+c cancel turn\n" +
-					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling).\n" +
-					"ctrl+b hides the side rail first so a selection does not span it."
+				res.Doc.Footer = "⏎ send · esc close/dismiss · tab/shift+tab mode · alt+m /models\n" +
+					"ctrl+c ctrl+c stop the turn (quit when idle) · ctrl+x clear queue\n" +
+					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g cycle detail (outline/steps/full) · ctrl+t tasks · ctrl+r rollback\n" +
+					"ctrl+b session sheet · pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n" +
+					"browse mode (esc): j/k move · J/K task · ↵ detail · i inspect · y copy · o open · f agent · z fold · ? keys\n" +
+					"while drilled into a running agent: esc pop out · ctrl+x stop agent\n" +
+					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling)."
 				return res
 			},
 		},
@@ -191,9 +192,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "context",
-			Description: "Show context window usage",
+			Description: "Show context window usage, or the last request sent",
+			Args:        "[request]",
 			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) Result {
+				if len(args) > 0 && args[0] == "request" {
+					return lastRequestPanel(state)
+				}
 				msgs := state.Messages()
 				var totalChars int
 				for _, m := range msgs {
@@ -212,6 +217,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					Row{Text: "Turn budget", Detail: fmt.Sprintf("%s tokens (%s)",
 						strutil.CompactTokens(threshold), source)},
 				)
+				if row, ok := lastRequestRow(state); ok {
+					rows = append(rows, row)
+				}
 				pack := state.ContextPack()
 				if pack.IsEmpty() {
 					rows = append(rows, Row{Text: "Pack", Detail: "not built yet"})

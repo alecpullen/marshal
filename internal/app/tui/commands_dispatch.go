@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -16,6 +15,7 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/pipeline"
 	"marshal/internal/worktree"
@@ -107,16 +107,15 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	// Drop per-message UI state that belongs to the old session.
-	m.itemExpanded = make(map[itemKey]bool)
+	m.nodeDensity = make(map[stack.NodeID]density)
+	m.effDensity = nil
 	m.viewStack = nil
-	m.lastTranscriptHash = 0
-	m.detailExpanded = false
-	m.clearActiveToolExpansions()
-	m.activeToolStartedAt = time.Time{}
-	m.clickRegions = nil
+	m.invalidateTranscript()
+	m.applyTranscriptConfig()
+	m.nodeRegions = nil
 	// The old session's changed-files list must never render in the new
-	// session while the railBaseRefMsg round-trips; re-read it below.
-	m.railChanged = nil
+	// session while the sheetBaseRefMsg round-trips; re-read it below.
+	m.sheetChanged = nil
 
 	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
 	if name != "" {
@@ -124,7 +123,7 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	return m, railBaseRefCmd(m.state.Workspace().ActiveRoot)
+	return m, sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
 }
 
 func init() {
@@ -375,9 +374,9 @@ func init() {
 			return m, cmd
 		},
 		"options": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.openModelOptions()
+			cmd := m.openModelOptions()
 			m.refreshViewport()
-			return m, nil
+			return m, cmd
 		},
 		"profiles": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openSettingsBrowser("profiles")

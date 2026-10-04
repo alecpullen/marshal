@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
 )
 
@@ -26,12 +27,7 @@ func subjectFirstTool(name string) bool {
 	case "file.write_patch", "file.write", "file.read", "symbols.find":
 		return true
 	}
-	return isShellFamily(name)
-}
-
-// isShellFamily reports whether a tool's subject is a command line.
-func isShellFamily(name string) bool {
-	return name == "shell.run" || name == "test.run"
+	return stack.IsShellFamily(name)
 }
 
 // shellSubject renders a command row: the command itself, then its exit
@@ -170,7 +166,15 @@ func symbolLabel(s registry.SymbolRef) string {
 // diff is on the audit event, and splitDiffFiles in transcript.go already
 // parses diffs in this layer.
 func diffStat(diff string) string {
-	added, removed := 0, 0
+	added, removed := diffCounts(diff)
+	if added == 0 && removed == 0 {
+		return ""
+	}
+	return fmt.Sprintf("+%d −%d", added, removed)
+}
+
+// diffCounts is the number of added and removed lines in a unified diff.
+func diffCounts(diff string) (added, removed int) {
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
@@ -181,8 +185,5 @@ func diffStat(diff string) string {
 			removed++
 		}
 	}
-	if added == 0 && removed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("+%d −%d", added, removed)
+	return added, removed
 }

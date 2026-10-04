@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Severity ranks a diagnostic. SeverityError < SeverityWarning < SeverityInfo
@@ -254,6 +255,36 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 				Source:   source,
 			})
 		}
+	}
+
+	// 10: [tui.side_panel] sizing keys. The side rail was removed in favour
+	// of the Ctrl+B session sheet, so enabled/min_width/width_pct/min_cols/
+	// max_cols still parse (existing files must keep loading) but do
+	// nothing. One diagnostic however many layers set them; hidden keeps
+	// its meaning as the sheet's section filter and is not reported.
+	if len(layers.SidePanelIgnoredBy) > 0 {
+		sources := make([]string, len(layers.SidePanelIgnoredBy))
+		for i, l := range layers.SidePanelIgnoredBy {
+			sources[i] = l.String()
+		}
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "tui.side_panel",
+			Message:  "tui.side_panel.enabled/min_width/width_pct/min_cols/max_cols are ignored — the side rail was removed; use Ctrl+B for the session sheet",
+			Source:   strings.Join(sources, ", "),
+		})
+	}
+
+	// 11: [tui.transcript] density. An unknown level is read as "steps".
+	switch cfg.TUI.Transcript.Density {
+	case "", "outline", "steps", "full":
+	default:
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "tui.transcript.density",
+			Message:  "unknown density " + strconv.Quote(cfg.TUI.Transcript.Density) + " (accepted: \"outline\", \"steps\", \"full\"); using \"steps\"",
+			Source:   layers.ProvenanceOf("tui.transcript.density").SetBy.String(),
+		})
 	}
 
 	// Sort: errors before warnings, then by Path within each group.

@@ -36,7 +36,7 @@ The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config
 
 This tree is complete for `internal/`. Check here before building
 something — several subsystems that sound like they need writing already
-exist (the docked-panel host, the side rail, the provider connect flow).
+exist (the docked-panel host, the session sheet, the provider connect flow).
 
 ```
 cmd/marshal/main.go                   — thin entrypoint, delegates to internal/app
@@ -55,12 +55,15 @@ internal/app/app.go                   — Run(), dependency wiring, signal handl
 internal/app/config/                  — TOML config loading, defaults, merge rules
 internal/app/logging/                 — slog logger construction
 internal/app/session/                 — in-memory app state, message list, shutdown context
+internal/app/clipboard/               — local clipboard helpers (pbcopy, wl-copy, xclip, xsel); OSC 52 fallback lives in the TUI
 internal/trust/                       — folder-trust store, resolver, project-config hashing
 
 TUI
 internal/app/tui/                     — Bubble Tea model (View/Update/Init); model.go is the hub
 internal/app/tui/dock/                — hosts a single interactive panel above the input area
-internal/app/tui/sidepanel/           — widescreen side rail: read-only sections, fit/collapse algorithm
+internal/app/tui/sessionsheet/        — session sheet (Ctrl+B): read-only sections in a docked panel
+internal/app/tui/stack/               — transcript view model: turn → task → step → row, plus turn receipts (structure only, no styling)
+internal/app/tui/inspector/           — full-screen inspector for one step or tool call (browse mode `i`)
 internal/app/tui/settings/            — /settings browser: field list, pane stack, config frames
 internal/app/tui/connect/             — provider connect flow (template → base URL → key → probe → model)
 internal/app/tui/agents/              — /agents roster panel with per-role attribution
@@ -162,7 +165,16 @@ load (conflicting entries stay project-local with a deprecation diagnostic).
 
 ### Specs and plans
 
-Historical design specs and implementation plans are archived in `.docs-archive/superpowers/specs/` and `.docs-archive/superpowers/plans/`. They are intentionally gitignored and must not be committed to the repo. If you need to write a new spec or plan, keep it in a gitignored location (for example, under `.docs-archive/superpowers/`) and do not add it to the public git tree.
+Feature design docs and phase specs live in the public tree under
+`docs/<feature>/` (for example `docs/single-stack/` and
+`docs/web-studio/`). Commit them with the work they describe, and keep
+them current when decisions change. Reviewers should not flag them as
+violations.
+
+Historical specs and plans are archived in `.docs-archive/superpowers/specs/`
+and `.docs-archive/superpowers/plans/`. That archive is gitignored and
+stays out of the repo. Scratch execution plans and drafts that aren't meant
+to be published can also go there.
 
 ## Design constraints
 

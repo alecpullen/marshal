@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -20,10 +22,21 @@ func TestSubagentResultText(t *testing.T) {
 			name:        "failed shape",
 			id:          7,
 			label:       "build",
-			summary:     "some summary",
 			errText:     "boom",
 			wantSummary: "subagent 7 failed: build",
 			wantContent: "subagent 7 (build) failed: boom",
+		},
+		{
+			// A child can write its final answer and then fail (a turn-end
+			// hook error, a cancel). The report it wrote is still the parent's
+			// best evidence of what the child did.
+			name:        "failed with partial report",
+			id:          7,
+			label:       "build",
+			summary:     "some summary",
+			errText:     "boom",
+			wantSummary: "subagent 7 failed: build",
+			wantContent: "subagent 7 (build) failed: boom\n\n[note: the subagent wrote this report before it failed; it may be incomplete.]\n\nsome summary",
 		},
 		{
 			name:           "stalled salvage",
@@ -117,5 +130,15 @@ func TestSubagentResultTextSalvageWording(t *testing.T) {
 	}
 	if strings.Contains(weird, "budget") {
 		t.Errorf("unknown-reason content must not mention budget: %q", weird)
+	}
+}
+
+func TestRunSubagentChildPreservesPartialTaskOnError(t *testing.T) {
+	child := &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+		return &Task{Summary: "partial work report", SalvagedReason: "budget"}, context.Canceled
+	}}
+	summary, salvaged, err := runSubagentChild(t.Context(), child, "work")
+	if summary != "partial work report" || salvaged != "budget" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("partial result discarded: %q %q %v", summary, salvaged, err)
 	}
 }

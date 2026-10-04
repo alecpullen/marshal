@@ -1,0 +1,1059 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marshal Web Studio Design</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: a reading column for the proposal, with product mockups drawn at a fixed 1280px design width and scaled to fit. */
+:root {
+  --bg: #f4f3f1; --surface: #ffffff; --fg: #1c1b1a; --muted: #5d5a55; --line: #dcd9d4;
+  --accent: #c2491f; --accent-soft: #fbe5da; --ok: #0b7a63; --warn: #9a5a00; --err: #b4234f; --info: #1d6f99;
+  --font-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --font-ui: "Geist", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131215; --surface: #1b1a1e; --fg: #ebe8e3; --muted: #a29d96; --line: #333038;
+    --accent: #ff875f; --accent-soft: #3a2219; --ok: #3fd4b4; --warn: #ffaf5f; --err: #ff87af; --info: #5fd7ff;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131215; --surface: #1b1a1e; --fg: #ebe8e3; --muted: #a29d96; --line: #333038;
+  --accent: #ff875f; --accent-soft: #3a2219; --ok: #3fd4b4; --warn: #ffaf5f; --err: #ff87af; --info: #5fd7ff;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--font-body); margin: 0; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 90px; }
+.prose { max-width: 70ch; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.2; }
+h1 { font-size: clamp(2rem, 5vw, 3rem); margin: .15em 0 .3em; letter-spacing: -.02em; }
+h2 { font-size: 1.65rem; margin: 0 0 .5em; letter-spacing: -.01em; }
+h3 { font-size: 1.12rem; margin: 1.4em 0 .4em; }
+p { margin: 0 0 1em; }
+a { color: var(--accent); }
+code { font-family: var(--font-mono); font-size: .84em; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: .05em .3em; overflow-wrap: anywhere; }
+.eyebrow { font: 500 .76rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.lede { font-size: 1.15rem; color: var(--muted); max-width: 64ch; }
+section { border-top: 1px solid var(--line); margin-top: 48px; padding-block: 44px 0; }
+.sec-no { font: .76rem var(--font-mono); color: var(--muted); letter-spacing: .06em; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .9rem; margin-top: 22px; }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-color: var(--accent); }
+.verdict { background: var(--accent-soft); border-radius: 10px; padding: 18px 22px; margin: 28px 0; }
+.verdict h2 { font-size: 1.05rem; color: var(--accent); margin-bottom: .5em; }
+.verdict ol { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+.rules { padding-left: 1.2em; display: grid; gap: 8px; }
+.tbl { overflow-x: auto; margin: 18px 0; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; min-width: 720px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: .76rem; letter-spacing: .06em; text-transform: uppercase; }
+td.n { font-family: var(--font-mono); white-space: nowrap; }
+.pill { display: inline-block; font: 600 .7rem var(--font-mono); padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.p-built { color: var(--ok); } .p-api { color: var(--info); } .p-part { color: var(--warn); } .p-new { color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: .88rem; color: var(--muted); }
+.inv { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 18px; margin-top: 18px; }
+.inv > div { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; }
+.inv h3 { margin: 0 0 .5em; display: flex; gap: 8px; align-items: center; }
+.inv ul { margin: 0; padding-left: 1.1em; display: grid; gap: 5px; font-size: .92rem; }
+.inv li span { color: var(--muted); }
+
+/* option switcher */
+.page { margin-top: 34px; }
+.page-head { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: baseline; justify-content: space-between; }
+.page-head h3 { margin: 0; font-size: 1.3rem; }
+.opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.opts button { font: 600 .84rem var(--font-body); padding: 6px 13px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+.opts button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.opts button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.optnote { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 6px 26px; margin: 12px 0 0; font-size: .93rem; }
+.optnote p { margin: 0; }
+.optnote b { color: var(--accent); }
+.rec { font: 600 .68rem var(--font-mono); color: var(--ok); border: 1px solid currentColor; border-radius: 999px; padding: 1px 7px; margin-left: 6px; vertical-align: 2px; }
+
+/* mockup frame: fixed design width, scaled by script to fit */
+.frame { margin: 16px 0 6px; width: 100%; overflow: hidden; border-radius: 12px; border: 1px solid var(--line); background: #0c0b0d; }
+.frame .mock { width: 1280px; transform-origin: top left; }
+.cap { font-size: .88rem; color: var(--muted); max-width: 80ch; margin-top: 8px; }
+
+/* ---------- product mock kit (always dark: Marshal is a dark product) ---------- */
+.mock {
+  --m-bg: #121113; --m-panel: #18171a; --m-raise: #201f23; --m-hover: #27252b; --m-line: #2c2a30; --m-line2: #39363e;
+  --m-fg: #ece9e4; --m-sub: #c9c4bd; --m-mut: #96918a; --m-dim: #67635e;
+  --m-acc: #ff875f; --m-acc2: #ff875f24; --m-vio: #d787ff; --m-gold: #ffaf00; --m-ok: #3fd4b4; --m-err: #ff87af; --m-warn: #ffaf5f; --m-info: #5fd7ff;
+  background: var(--m-bg); color: var(--m-fg); font: 13px/1.45 var(--font-ui); -webkit-font-smoothing: antialiased;
+}
+.mock * { box-sizing: border-box; }
+.mock .chrome { height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #0c0b0d; border-bottom: 1px solid var(--m-line); }
+.mock .chrome i { width: 10px; height: 10px; border-radius: 50%; background: #3a373e; }
+.mock .chrome .url { margin-left: 14px; font: 12px var(--font-mono); color: var(--m-mut); background: var(--m-panel); border: 1px solid var(--m-line); border-radius: 6px; padding: 3px 12px; flex: 0 1 460px; }
+.mock .app { display: flex; height: 720px; }
+.mock .app.tall { height: 780px; }
+.mock .rail { width: 52px; flex: none; background: #0f0e10; border-right: 1px solid var(--m-line); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; }
+.mock .rail .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--m-acc); color: #1a0d07; font: 700 15px var(--font-ui); display: grid; place-items: center; margin-bottom: 8px; }
+.mock .rail b { width: 36px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: var(--m-mut); font: 500 15px var(--font-mono); position: relative; }
+.mock .rail b.on { background: var(--m-raise); color: var(--m-fg); }
+.mock .rail b em { position: absolute; top: 3px; right: 2px; font: 700 9px var(--font-ui); background: var(--m-warn); color: #201200; border-radius: 6px; padding: 0 4px; font-style: normal; }
+.mock .rail .sp { flex: 1; }
+.mock .side { width: 256px; flex: none; background: var(--m-panel); border-right: 1px solid var(--m-line); display: flex; flex-direction: column; min-height: 0; }
+.mock .side.w220 { width: 220px; }
+.mock .side .sh { padding: 12px 14px 8px; display: flex; align-items: center; justify-content: space-between; }
+.mock .proj { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.mock .proj .sq { width: 20px; height: 20px; border-radius: 5px; background: #2b3b37; color: var(--m-ok); display: grid; place-items: center; font: 600 11px var(--font-mono); }
+.mock .grp { padding: 10px 14px 4px; font: 600 10.5px var(--font-ui); color: var(--m-dim); text-transform: uppercase; letter-spacing: .07em; display: flex; justify-content: space-between; }
+.mock .it { margin: 1px 6px; padding: 7px 8px; border-radius: 7px; display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px; align-items: center; }
+.mock .it.on { background: var(--m-raise); }
+.mock .it .t { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mock .it .s { grid-column: 2 / 4; color: var(--m-mut); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mock .it .r { color: var(--m-dim); font: 11px var(--font-mono); }
+.mock .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--m-dim); }
+.mock .dot.run { background: var(--m-acc); box-shadow: 0 0 0 3px #ff875f2e; }
+.mock .dot.need { background: var(--m-warn); box-shadow: 0 0 0 3px #ffaf5f2e; }
+.mock .dot.ok { background: var(--m-ok); } .mock .dot.err { background: var(--m-err); } .mock .dot.q { background: transparent; border: 1.5px solid var(--m-mut); }
+.mock .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mock .hdr { height: 50px; flex: none; border-bottom: 1px solid var(--m-line); display: flex; align-items: center; gap: 10px; padding: 0 16px; }
+.mock .hdr .ttl { font: 600 14.5px var(--font-ui); }
+.mock .hdr .meta { color: var(--m-mut); font-size: 12px; display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.mock .hdr .grow { flex: 1; }
+.mock .tag { font: 500 11px var(--font-mono); color: var(--m-sub); background: var(--m-raise); border: 1px solid var(--m-line); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+.mock .tag.acc { color: var(--m-acc); border-color: #ff875f55; background: #ff875f14; }
+.mock .tag.vio { color: var(--m-vio); border-color: #d787ff55; background: #d787ff12; }
+.mock .tag.gold { color: var(--m-gold); border-color: #ffaf0055; background: #ffaf0012; }
+.mock .tag.ok { color: var(--m-ok); border-color: #3fd4b455; background: #3fd4b412; }
+.mock .tag.err { color: var(--m-err); border-color: #ff87af55; background: #ff87af12; }
+.mock .tag.warn { color: var(--m-warn); border-color: #ffaf5f55; background: #ffaf5f12; }
+.mock .btn { font: 500 12.5px var(--font-ui); padding: 5px 11px; border-radius: 7px; border: 1px solid var(--m-line2); background: var(--m-raise); color: var(--m-fg); white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
+.mock .btn.pri { background: var(--m-acc); border-color: var(--m-acc); color: #1d0e07; font-weight: 600; }
+.mock .btn.ghost { background: transparent; }
+.mock .btn.okb { background: #3fd4b41f; border-color: #3fd4b466; color: var(--m-ok); }
+.mock .btn.sm { padding: 3px 8px; font-size: 11.5px; }
+.mock .kbd { font: 500 10.5px var(--font-mono); color: var(--m-mut); border: 1px solid var(--m-line2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+.mock .mut { color: var(--m-mut); } .mock .dim { color: var(--m-dim); } .mock .mono { font-family: var(--font-mono); }
+.mock .accc { color: var(--m-acc); } .mock .okc { color: var(--m-ok); } .mock .errc { color: var(--m-err); } .mock .warnc { color: var(--m-warn); } .mock .vioc { color: var(--m-vio); } .mock .goldc { color: var(--m-gold); } .mock .infoc { color: var(--m-info); }
+.mock .tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--m-line); height: 38px; align-items: flex-end; flex: none; }
+.mock .tabs span { padding: 8px 11px; color: var(--m-mut); font-weight: 500; border-bottom: 2px solid transparent; white-space: nowrap; }
+.mock .tabs span.on { color: var(--m-fg); border-color: var(--m-acc); }
+.mock .card { background: var(--m-panel); border: 1px solid var(--m-line); border-radius: 10px; }
+.mock .pad { padding: 14px 16px; }
+.mock .scroll { overflow: hidden; flex: 1; min-height: 0; }
+.mock .h { font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; color: var(--m-dim); }
+
+/* web transcript: the TUI stack, restyled */
+.mock .tx { max-width: 720px; margin: 0 auto; padding: 18px 22px 10px; display: flex; flex-direction: column; gap: 10px; }
+.mock .you { align-self: flex-end; max-width: 78%; background: var(--m-raise); border: 1px solid var(--m-line); border-radius: 12px 12px 4px 12px; padding: 9px 13px; color: var(--m-fg); }
+.mock .task { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; background: var(--m-panel); border: 1px solid var(--m-line); }
+.mock .task .n { font: 500 11px var(--font-mono); color: var(--m-mut); }
+.mock .task .x { flex: 1; font-weight: 500; }
+.mock .task .r { color: var(--m-dim); font: 11px var(--font-mono); }
+.mock .taskopen { display: flex; align-items: center; gap: 9px; margin-top: 4px; }
+.mock .taskopen .x { font-weight: 600; }
+.mock .taskopen .ln { flex: 1; height: 1px; background: var(--m-line2); }
+.mock .step { padding: 2px 0 2px 0; }
+.mock .sh2 { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: baseline; }
+.mock .sh2 .g { font: 600 12px var(--font-mono); text-align: center; }
+.mock .sh2 .hl { color: var(--m-fg); font-weight: 500; }
+.mock .sh2 .hl.inf { color: var(--m-mut); font-style: italic; font-weight: 400; }
+.mock .sh2 .mt { font: 11px var(--font-mono); color: var(--m-dim); white-space: nowrap; }
+.mock .rows { margin: 4px 0 0 26px; border-left: 1px solid var(--m-line2); padding-left: 10px; display: flex; flex-direction: column; gap: 2px; }
+.mock .tr { display: grid; grid-template-columns: 16px 1fr auto; gap: 7px; font: 12px var(--font-mono); color: var(--m-sub); align-items: baseline; padding: 2px 6px; border-radius: 5px; }
+.mock .tr.sel { background: var(--m-raise); }
+.mock .tr .c { color: var(--m-dim); text-align: center; }
+.mock .tr .q { color: var(--m-dim); }
+.mock .out { margin: 2px 0 2px 23px; font: 11.5px var(--font-mono); color: var(--m-mut); background: #0e0d0f; border: 1px solid var(--m-line); border-radius: 6px; padding: 6px 9px; white-space: pre; }
+.mock .answer { border-left: 2px solid var(--m-acc); padding: 2px 0 2px 12px; color: var(--m-sub); }
+.mock .receipt { font: 11.5px var(--font-mono); color: var(--m-mut); }
+.mock .nowbar { margin: 0 16px; border: 1px solid var(--m-line); border-bottom: none; border-radius: 10px 10px 0 0; background: var(--m-panel); padding: 7px 12px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.mock .nowbar .nr { display: flex; align-items: center; gap: 8px; }
+.mock .nowbar .nr .grow { flex: 1; color: var(--m-mut); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mock .segbar { display: inline-flex; gap: 2px; }
+.mock .segbar i { width: 16px; height: 5px; border-radius: 2px; background: var(--m-line2); }
+.mock .segbar i.f { background: var(--m-acc); }
+.mock .segbar i.d { background: var(--m-ok); }
+.mock .composer { margin: 0 16px 14px; border: 1px solid var(--m-line2); border-radius: 0 0 12px 12px; background: var(--m-raise); padding: 10px 12px; }
+.mock .composer.solo { border-radius: 12px; }
+.mock .composer .ph { color: var(--m-dim); min-height: 36px; }
+.mock .composer .bar { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.mock .composer .bar .grow { flex: 1; }
+.mock .diff { font: 11.5px/1.55 var(--font-mono); }
+.mock .diff div { padding: 0 10px; white-space: pre; }
+.mock .diff .a { background: #3fd4b414; color: #9fe8d6; }
+.mock .diff .d { background: #ff87af14; color: #f3b3c8; }
+.mock .diff .hh { color: var(--m-info); background: #5fd7ff0d; }
+.mock .diff .ln { color: var(--m-dim); display: inline-block; width: 30px; }
+.mock .chk { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12.5px; }
+.mock .bar2 { height: 6px; border-radius: 3px; background: var(--m-line); overflow: hidden; }
+.mock .bar2 i { display: block; height: 100%; background: var(--m-acc); border-radius: 3px; }
+.mock .grid { display: grid; gap: 12px; }
+.mock input.fake, .mock .fake { background: #0f0e10; border: 1px solid var(--m-line2); border-radius: 7px; padding: 6px 9px; color: var(--m-sub); font: 12.5px var(--font-ui); }
+.mock .tog { width: 28px; height: 16px; border-radius: 9px; background: var(--m-line2); position: relative; flex: none; }
+.mock .tog::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--m-mut); }
+.mock .tog.on { background: var(--m-acc); } .mock .tog.on::after { left: 14px; background: #1d0e07; }
+.mock .lr { display: flex; align-items: center; gap: 10px; }
+.mock .lr .grow { flex: 1; min-width: 0; }
+.mock .hr { height: 1px; background: var(--m-line); }
+.mock .wire { background: var(--m-raise); border: 1px dashed var(--m-line2); border-radius: 8px; color: var(--m-dim); display: grid; place-items: center; font: 500 12px var(--font-mono); }
+@media (prefers-reduced-motion: no-preference) {
+  .mock .dot.run { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 5px #ff875f14; } }
+}
+
+/* ---- additions for the high-fidelity pass ---- */
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px 26px; margin: 12px 0 0; font-size: .93rem; padding: 0; list-style: none; }
+.notes li { display: grid; grid-template-columns: 1.6em 1fr; gap: 4px; }
+.notes li b.k { font: 600 .78rem var(--font-mono); color: var(--accent); }
+.state-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+.state-row span { font: 600 .72rem var(--font-mono); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; color: var(--muted); }
+.state-row span.on { color: var(--accent); border-color: var(--accent); }
+.mock .av { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; font: 600 10px var(--font-ui); color: #1a1714; flex: none; }
+.mock .av.you { background: #ff875f; } .mock .av.bot { background: #5fd7ff; } .mock .av.ci { background: #ffaf00; } .mock .av.sam { background: #d787ff; }
+.mock .pop { position: absolute; background: var(--m-raise); border: 1px solid var(--m-line2); border-radius: 10px; box-shadow: 0 18px 50px #000a; z-index: 3; }
+.mock .toast { position: absolute; right: 18px; bottom: 18px; background: var(--m-raise); border: 1px solid var(--m-line2); border-left: 3px solid var(--m-ok); border-radius: 8px; padding: 9px 12px; box-shadow: 0 10px 30px #0008; font-size: 12.5px; z-index: 3; }
+.mock .strip { width: 46px; flex: none; border-left: 1px solid var(--m-line); background: var(--m-panel); display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 0; }
+.mock .strip b { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: var(--m-mut); font: 500 14px var(--font-mono); position: relative; background: transparent; }
+.mock .strip b em { position: absolute; bottom: -2px; right: -3px; font: 700 9px var(--font-ui); border-radius: 6px; padding: 0 4px; font-style: normal; background: var(--m-line2); color: var(--m-fg); }
+.mock .strip b em.err { background: var(--m-err); color: #2a0612; } .mock .strip b em.acc { background: var(--m-acc); color: #1d0e07; }
+.mock .dockhead { height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--m-line); }
+.mock .follow { font: 500 11px var(--font-mono); color: var(--m-acc); background: #ff875f14; border: 1px solid #ff875f44; border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+.mock .follow.sel { color: var(--m-vio); background: #d787ff14; border-color: #d787ff44; }
+.mock .kv { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; font-size: 12.5px; }
+.mock .kv > span:nth-child(odd) { color: var(--m-mut); }
+.mock .outline { padding: 12px 10px; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
+.mock .outline .o { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; padding: 4px 6px; border-radius: 6px; align-items: baseline; }
+.mock .outline .o.t { font-weight: 600; margin-top: 6px; }
+.mock .outline .o.on { background: #d787ff1a; outline: 1px solid #d787ff55; }
+.mock .outline .o .m { font: 11px var(--font-mono); color: var(--m-dim); }
+.mock .tbl2 { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mock .tbl2 th { text-align: left; font: 600 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; color: var(--m-dim); padding: 8px 10px; border-bottom: 1px solid var(--m-line); }
+.mock .tbl2 td { padding: 8px 10px; border-bottom: 1px solid var(--m-line); vertical-align: middle; }
+.mock .tbl2 tr.hl td { background: #ffaf5f0d; }
+.mock .seg { display: inline-flex; border: 1px solid var(--m-line2); border-radius: 7px; overflow: hidden; }
+.mock .seg span { padding: 4px 10px; font-size: 12px; color: var(--m-mut); border-right: 1px solid var(--m-line2); }
+.mock .seg span:last-child { border-right: none; }
+.mock .seg span.on { background: var(--m-raise); color: var(--m-fg); }
+.mock .spark { display: block; }
+.mock .node { position: absolute; width: 214px; background: var(--m-panel); border: 1px solid var(--m-line2); border-radius: 10px; padding: 10px 12px; }
+.mock .node.on { border-color: var(--m-acc); box-shadow: 0 0 0 3px #ff875f1f; }
+.mock .node.done { border-color: #3fd4b455; }
+.mock .node.wait { opacity: .62; }
+.mock .lanes td.cell { padding: 6px 8px; }
+.mock .cellbox { border-radius: 7px; padding: 6px 8px; font-size: 12px; display: flex; gap: 6px; align-items: center; border: 1px solid var(--m-line); background: var(--m-panel); }
+.mock .cellbox.ok { border-color: #3fd4b444; background: #3fd4b40d; }
+.mock .cellbox.run { border-color: var(--m-acc); background: #ff875f12; }
+.mock .cellbox.warn { border-color: #ffaf5f55; background: #ffaf5f0f; }
+.mock .cellbox.idle { color: var(--m-dim); border-style: dashed; }
+.mock .srcsync { background: #ff875f1c; box-shadow: inset 2px 0 0 var(--m-acc); }
+.mock .pub { background: #f6f4f0; color: #1c1b1a; }
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Marshal · web UI design · high fidelity</div>
+  <h1>Marshal Web Studio Design</h1>
+  <p class="lede">The chosen direction drawn in detail: the session layout that merges the workbench with the focus and inspector views, the pages you picked, and six new feature pages. All sample data is illustrative.</p>
+  <nav class="toc" aria-label="Sections">
+    <a href="#session">Agent session</a><a href="#home">Home &amp; live wall</a><a href="#new">New agent</a><a href="#review">Review &amp; ship</a><a href="#runs">Runs</a><a href="#ws">Workspaces</a><a href="#watch">Watch monitors</a><a href="#net">Network inspector</a><a href="#prbot">PR review bot</a><a href="#ci">CI fixer</a><a href="#memory">Shared memory</a><a href="#status">Status page</a><a href="#users">Multiple users</a>
+  </nav>
+</header>
+
+<div class="verdict">
+  <h2>Decisions so far</h2>
+  <ol>
+    <li><strong>Home</strong> is the inbox, with a separate <strong>Live wall</strong> page. <strong>New agent</strong> is prompt first. <strong>Review &amp; ship</strong> is pull-request style.</li>
+    <li><strong>Runs</strong> have stage lanes and a task graph. <strong>Workspaces</strong> use the layer builder, with the source file editable next to it.</li>
+    <li><strong>Agent session</strong> merges the workbench and focus + inspector options into one layout, shown in four states below.</li>
+    <li>The Warm Sunset theme stays. The design leaves room for <strong>multiple users</strong> (owners, avatars, roles), but building it comes later.</li>
+  </ol>
+</div>
+
+<section id="session">
+  <div class="sec-no">01</div>
+  <h2>Agent session: one layout, four states</h2>
+  <div class="prose">
+    <p>The transcript stays in the centre and follows the TUI's rules. To its right is a <strong>dock</strong>, which replaces both the workbench and the inspector drawer. The dock has the same tabs in every state (Inspect, Changes, Files, Terminal, Preview), and two things decide what it shows:</p>
+    <ul class="rules">
+      <li><strong>Size:</strong> collapsed (focus), docked (about 440px), or expanded (about 65% of the width, with the transcript shrinking to an outline).</li>
+      <li><strong>What it follows:</strong> the <em>agent</em> while nothing is selected, or your <em>selection</em> once you pick a step or tool row with a click or browse keys. Esc, or "back to live", returns it to following the agent.</li>
+    </ul>
+    <p>The inspector isn't a separate drawer any more. It's the Inspect tab while you have something selected. The other tabs follow the selection too: Changes filters to the hunks the selected step made, and Terminal jumps to the output of the selected command. You can pin a tab so a selection doesn't switch it.</p>
+  </div>
+  <div class="state-row"><span>⌘J or \ · cycles collapsed → docked → expanded</span><span>i · inspect selection</span><span>Esc · back to live</span><span>⌘P · pin tab</span></div>
+
+  <h3>State 1 · Focus (dock collapsed)</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / agents / guard-empty-input</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b class="on" title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="dot run"></span><span class="ttl">guard-empty-input</span><span class="meta"><span class="tag">agent/guard-empty-input</span><span class="tag gold">▦ go-service</span><span class="tag">qwen3-coder</span><span class="tag acc">edit</span></span><span class="grow"></span><span class="av you" title="started by you">A</span><span class="btn ghost">⏸ Pause</span><span class="btn pri">Review &amp; ship</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+            <div class="scroll"><div class="tx" style="max-width:780px">
+              <div class="you">Add an empty-input guard to the parser and cover it with tests</div>
+              <div class="task"><span class="okc">✓</span><span class="n">1/4</span><span class="x">Read the parser and existing tests</span><span class="r">3 steps · 7 tools · 41s ▸</span></div>
+              <div class="task"><span class="okc">✓</span><span class="n">2/4</span><span class="x">Add the guard clause</span><span class="r">2 steps · ✎ +7 −1 · 1m02s ▸</span></div>
+              <div class="taskopen"><span class="accc mono">◐</span><span class="mono mut" style="font-size:11px">3/4</span><span class="x">Cover the guard with tests</span><span class="ln"></span><span class="mono dim" style="font-size:11px">1m18s</span></div>
+              <div class="step"><div class="sh2"><span class="g okc">✓</span><span class="hl">I'll add a table case next to the existing parser tests.</span><span class="mt">12s</span></div>
+                <div class="rows"><div class="tr"><span class="c">≡</span><span>parser_test.go <span class="q">· 412 lines</span></span><span></span></div><div class="tr"><span class="c">✎</span><span>TestParse/empty <span class="q">· parser_test.go</span></span><span class="okc">+18</span></div></div></div>
+              <div class="step"><div class="sh2"><span class="g errc">✗</span><span class="hl">Running the package tests to check the new case.</span><span class="mt">6s</span></div>
+                <div class="rows"><div class="tr"><span class="c">›</span><span>go test ./internal/parser/... <span class="errc">· exit 1</span></span><span class="dim">▾</span></div></div>
+                <div class="out" style="margin-left:37px">--- FAIL: TestParse/empty (0.00s)
+    parser_test.go:88: got ErrSyntax, want ErrEmpty</div></div>
+              <div class="step"><div class="sh2"><span class="g accc">⠋</span><span class="hl">The guard returns the wrong error; switching it to ErrEmpty.</span><span class="mt">4s</span></div>
+                <div class="rows"><div class="tr"><span class="c">⚙</span><span class="q">thought for 3s ▸</span><span></span></div><div class="tr"><span class="c accc">✎</span><span>Parse <span class="q">· parser.go</span></span><span class="accc">running</span></div></div></div>
+            </div></div>
+            <div style="max-width:780px;width:100%;margin:0 auto">
+              <div class="nowbar"><div class="nr"><span class="segbar"><i class="d"></i><i class="d"></i><i class="f"></i><i></i></span><b>3/4 Cover the guard with tests</b><span class="grow"></span><span class="mono dim">4m21s</span></div><div class="nr"><span class="vioc mono">⧉</span><span class="vioc">reviewer #1</span><span class="grow">Checking the error message matches the spec</span><span class="mono dim">38s</span></div></div>
+              <div class="composer"><div class="ph">Steer the agent, or queue a follow-up…  <span class="dim">@ files · / commands</span></div><div class="bar"><span class="tag acc">edit ▾</span><span class="tag">qwen3-coder ▾</span><span class="grow"></span><span class="mut" style="font-size:11.5px">ctx 41%</span><span class="btn sm pri">Send ↵</span></div></div>
+            </div>
+          </div>
+          <div class="strip"><b title="Inspect">⌖</b><b title="Changes">±<em class="err">✗</em></b><b title="Files">≡</b><b title="Terminal">›<em class="acc">•</em></b><b title="Preview">◇</b><span style="flex:1"></span><b title="Expand dock">⇤</b></div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>The transcript gets the full width, capped at a readable 780px. This is the TUI view with web styling.</span></li>
+    <li><b class="k">2</b><span>The collapsed dock is a 46px strip. Its badges keep the workbench in view: a red mark on Changes means the gate is failing, and a dot on Terminal means there's unread output.</span></li>
+    <li><b class="k">3</b><span>Clicking a badge or pressing <kbd>i</kbd> opens the dock on that tab, so nothing needs two clicks.</span></li>
+  </ul>
+
+  <h3>State 2 · Docked, following the agent</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / agents / guard-empty-input</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b class="on" title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="dot run"></span><span class="ttl">guard-empty-input</span><span class="meta"><span class="tag gold">▦ go-service</span><span class="tag acc">edit</span></span><span class="grow"></span><span class="btn ghost">⏸ Pause</span><span class="btn pri">Review &amp; ship</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+            <div class="scroll"><div class="tx" style="max-width:720px">
+              <div class="task"><span class="okc">✓</span><span class="n">2/4</span><span class="x">Add the guard clause</span><span class="r">1m02s ▸</span></div>
+              <div class="taskopen"><span class="accc mono">◐</span><span class="mono mut" style="font-size:11px">3/4</span><span class="x">Cover the guard with tests</span><span class="ln"></span></div>
+              <div class="step"><div class="sh2"><span class="g okc">✓</span><span class="hl">I'll add a table case next to the existing parser tests.</span><span class="mt">12s</span></div></div>
+              <div class="step"><div class="sh2"><span class="g errc">✗</span><span class="hl">Running the package tests to check the new case.</span><span class="mt">6s</span></div><div class="rows"><div class="tr"><span class="c">›</span><span>go test ./internal/parser/... <span class="errc">· exit 1</span></span><span class="dim">▸</span></div></div></div>
+              <div class="step"><div class="sh2"><span class="g accc">⠋</span><span class="hl">The guard returns the wrong error; switching it to ErrEmpty.</span><span class="mt">4s</span></div><div class="rows"><div class="tr"><span class="c accc">✎</span><span>Parse <span class="q">· parser.go</span></span><span class="accc">running</span></div></div></div>
+            </div></div>
+            <div style="max-width:720px;width:100%;margin:0 auto"><div class="nowbar"><div class="nr"><span class="segbar"><i class="d"></i><i class="d"></i><i class="f"></i><i></i></span><b>3/4 Cover the guard with tests</b><span class="grow"></span><span class="mono dim">4m21s</span></div></div><div class="composer"><div class="ph">Steer the agent…</div></div></div>
+          </div>
+          <div style="width:440px;flex:none;border-left:1px solid var(--m-line);background:var(--m-panel);display:flex;flex-direction:column">
+            <div class="dockhead"><span class="follow">● following agent</span><span class="grow"></span><span class="mut" style="font-size:12px">step 3.3 · editing parser.go</span><span class="kbd">⇥</span></div>
+            <div class="tabs"><span>Inspect</span><span class="on">Changes 3</span><span>Files</span><span>Terminal</span><span>Preview</span></div>
+            <div style="padding:10px 14px">
+              <div class="lr"><span class="h grow">Verify gate · live</span><span class="tag err">1 failing</span></div>
+              <div class="chk"><span class="okc">✓</span>go build ./...<span class="grow"></span><span class="mono dim">8s</span></div>
+              <div class="chk"><span class="errc">✗</span>go test ./internal/parser/...<span class="grow"></span><span class="mono dim">re-runs on next edit</span></div>
+            </div>
+            <div class="hr"></div>
+            <div style="padding:8px 14px;background:#ff875f0d" class="lr"><span class="accc mono">✎</span><span class="mono">parser.go</span><span class="follow" style="font-size:10px">editing now</span><span class="grow"></span><span class="okc mono">+7</span><span class="errc mono">−1</span></div>
+            <div class="diff" style="padding:6px 0">
+              <div class="hh">@@ -40,6 +40,12 @@ func Parse(r io.Reader) (*AST, error) {</div>
+              <div><span class="ln">43</span>	}</div>
+              <div class="a"><span class="ln">44</span>	if len(bytes.TrimSpace(src)) == 0 {</div>
+              <div class="d"><span class="ln">45</span>		return nil, ErrSyntax</div>
+              <div class="a"><span class="ln">45</span>		return nil, ErrEmpty<span class="accc">▍</span></div>
+              <div class="a"><span class="ln">46</span>	}</div>
+            </div>
+            <div class="hr"></div>
+            <div style="padding:8px 14px" class="lr"><span class="mono">parser_test.go</span><span class="grow"></span><span class="okc mono">+18</span></div>
+            <div style="padding:0 14px 8px" class="lr"><span class="mono">testdata/empty.txt</span><span class="grow"></span><span class="okc mono">+0</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>"Following agent" means the dock shows whatever the agent touches right now: the file it's editing scrolls into view, and the gate re-runs after edits.</span></li>
+    <li><b class="k">2</b><span>This is the default while a turn runs, and it's the workbench from the earlier options page.</span></li>
+    <li><b class="k">3</b><span>The transcript stays readable at about 680px. The dock's width can be dragged, and Marshal remembers it per person.</span></li>
+  </ul>
+
+  <h3>State 3 · Docked, following your selection</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / agents / guard-empty-input#step-3.2</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b class="on" title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="dot run"></span><span class="ttl">guard-empty-input</span><span class="meta"><span class="tag gold">▦ go-service</span><span class="tag acc">edit</span></span><span class="grow"></span><span class="tag vio">BROWSE · j/k move · Esc back to live</span><span class="btn pri">Review &amp; ship</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+            <div class="scroll"><div class="tx" style="max-width:720px">
+              <div class="taskopen"><span class="accc mono">◐</span><span class="mono mut" style="font-size:11px">3/4</span><span class="x">Cover the guard with tests</span><span class="ln"></span></div>
+              <div class="step"><div class="sh2"><span class="g okc">✓</span><span class="hl">I'll add a table case next to the existing parser tests.</span><span class="mt">12s</span></div></div>
+              <div class="step" style="background:#d787ff12;border-radius:8px;padding:6px;margin:0 -6px;outline:1px solid #d787ff55"><div class="sh2"><span class="g errc">✗</span><span class="hl">Running the package tests to check the new case.</span><span class="mt">implementer · 6s</span></div><div class="rows"><div class="tr sel"><span class="c">›</span><span>go test ./internal/parser/... <span class="errc">· exit 1</span></span><span class="vioc">◂</span></div></div></div>
+              <div class="step"><div class="sh2"><span class="g accc">⠋</span><span class="hl">The guard returns the wrong error; switching it to ErrEmpty.</span><span class="mt">4s</span></div></div>
+            </div></div>
+            <div style="max-width:720px;width:100%;margin:0 auto"><div class="nowbar"><div class="nr"><span class="accc mono">↓</span><span class="grow">live: switching the guard to ErrEmpty · ✎ parser.go</span><span class="kbd">Esc</span></div></div><div class="composer"><div class="ph">Ask about this step, or steer…</div></div></div>
+          </div>
+          <div style="width:440px;flex:none;border-left:1px solid var(--m-line);background:var(--m-panel);display:flex;flex-direction:column">
+            <div class="dockhead"><span class="follow sel">◆ step 3.2 · tool 1/1</span><span class="grow"></span><span class="btn sm ghost">Back to live</span><span class="btn sm ghost" title="pin tab">⌖ Pin</span></div>
+            <div class="tabs"><span class="on">Inspect</span><span>Changes <span class="dim">0</span></span><span>Files</span><span>Terminal <span class="vioc">●</span></span><span>Preview</span></div>
+            <div style="padding:12px 14px">
+              <div class="lr" style="margin-bottom:10px"><span class="mono">›</span><b class="mono" style="font-size:13px">go test ./internal/parser/...</b></div>
+              <div class="kv">
+                <span>actor</span><span><span class="goldc">implementer</span> · qwen3-coder @ ollama</span>
+                <span>why</span><span>Running the package tests to check the new case.</span>
+                <span>timing</span><span class="mono">14:02:11 · 6.1s · <span class="errc">exit 1</span></span>
+                <span>sandbox</span><span>container · network off · cwd internal/parser</span>
+                <span>approval</span><span>auto · rule <span class="mono">go test *</span></span>
+                <span>call</span><span class="mono dim">s3:call_7f3a</span>
+              </div>
+            </div>
+            <div class="tabs" style="height:32px"><span class="on">output</span><span>args</span><span>narration</span><span>thinking</span></div>
+            <div class="diff" style="padding:8px 0;color:var(--m-sub)"><div>=== RUN   TestParse/empty</div><div class="d">    parser_test.go:88: got ErrSyntax, want ErrEmpty</div><div class="d">--- FAIL: TestParse/empty (0.00s)</div><div>FAIL  marshal/internal/parser  0.41s</div></div>
+            <div class="card pad" style="margin:4px 14px;font-size:12.5px"><div class="h">Fixed by</div><div class="lr" style="margin-top:6px"><span class="accc mono">⠋</span><span class="grow">step 3.3 · switching it to ErrEmpty</span><span class="btn sm">Go ›</span></div></div>
+            <div style="margin-top:auto;padding:10px 14px;border-top:1px solid var(--m-line)" class="lr"><span class="btn sm">y Copy</span><span class="btn sm">o parser_test.go:88</span><span class="grow"></span><span class="btn sm">‹ p</span><span class="btn sm">n ›</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>Selecting a node (Esc into browse mode, or a click) switches the dock to that node. It's the TUI inspector, inline.</span></li>
+    <li><b class="k">2</b><span>The other tabs keep the selection: Changes counts the hunks this step made, and Terminal shows this command's full run.</span></li>
+    <li><b class="k">3</b><span>The now bar becomes the live mirror ("↓ live: …"), so the running agent is never out of sight. Esc returns to following the agent.</span></li>
+  </ul>
+
+  <h3>State 4 · Expanded, transcript as outline</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / agents / guard-empty-input?dock=wide</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b class="on" title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="dot run"></span><span class="ttl">guard-empty-input</span><span class="meta"><span class="tag gold">▦ go-service</span></span><span class="grow"></span><span class="btn pri">Review &amp; ship</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="width:330px;flex:none;border-right:1px solid var(--m-line);display:flex;flex-direction:column">
+            <div class="outline">
+              <div class="o t"><span class="okc">✓</span><span>1/4 Read the parser and tests</span><span class="m">41s</span></div>
+              <div class="o t"><span class="okc">✓</span><span>2/4 Add the guard clause</span><span class="m">1m02s</span></div>
+              <div class="o"><span class="okc">✓</span><span>Adding the guard before the tokenizer loop.</span><span class="m">✎ 1</span></div>
+              <div class="o"><span class="okc">✓</span><span>Checking the call sites still compile.</span><span class="m">› 1</span></div>
+              <div class="o t"><span class="accc">◐</span><span>3/4 Cover the guard with tests</span><span class="m">1m18s</span></div>
+              <div class="o"><span class="okc">✓</span><span>I'll add a table case next to the tests.</span><span class="m">✎ 1</span></div>
+              <div class="o on"><span class="errc">✗</span><span>Running the package tests…</span><span class="m">› 1</span></div>
+              <div class="o"><span class="accc">⠋</span><span>Switching the guard to ErrEmpty.</span><span class="m">✎ 1</span></div>
+              <div class="o t" style="opacity:.6"><span class="dim">·</span><span>4/4 Run the full suite</span><span class="m"></span></div>
+            </div>
+            <div style="margin-top:auto;padding:10px" class="composer solo"><div class="ph" style="min-height:20px">Steer…</div></div>
+          </div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--m-panel)">
+            <div class="dockhead"><span class="follow sel">◆ step 3.2</span><span class="grow"></span><span class="seg"><span>Inspect</span><span>Changes</span><span>Files</span><span class="on">Terminal</span><span>Preview</span></span><span class="btn sm ghost">⇥ Dock</span></div>
+            <div style="padding:6px 14px" class="lr mut"><span class="tag">container · go-service</span><span style="font-size:12px">/work/marshal</span><span class="grow"></span><span class="tag warn">typing pauses the agent</span></div>
+            <div class="diff" style="flex:1;background:#0b0a0c;padding:10px 6px;color:var(--m-sub)">
+              <div class="dim"># replay of step 3.2 · go test ./internal/parser/...</div>
+              <div>=== RUN   TestParse</div><div>=== RUN   TestParse/basic</div><div>=== RUN   TestParse/empty</div>
+              <div class="errc">    parser_test.go:88: got ErrSyntax, want ErrEmpty</div><div class="errc">--- FAIL: TestParse/empty (0.00s)</div><div>--- PASS: TestParse/basic (0.00s)</div><div>FAIL  marshal/internal/parser  0.41s</div>
+              <div style="margin-top:8px"><span class="okc">you@guard-empty-input</span>:<span class="infoc">/work/marshal</span>$ go test ./internal/parser/... -run TestParse/empty -count=1</div>
+              <div>ok    marshal/internal/parser  0.38s</div>
+              <div><span class="okc">you@guard-empty-input</span>:<span class="infoc">/work/marshal</span>$ <span class="accc">▍</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>Expanding the dock turns the transcript into an outline of tasks and step headlines (the TUI's outline density). It works as a navigator: pick a headline and the dock follows it.</span></li>
+    <li><b class="k">2</b><span>Use this for terminal work, long diffs or the preview while the agent keeps running. The composer stays in reach at the foot of the outline.</span></li>
+    <li><b class="k">3</b><span>The terminal shows the selected command's replay, then your own shell in the same container. Typing pauses the agent until you hand control back.</span></li>
+  </ul>
+</section>
+
+<section id="home">
+  <div class="sec-no">02</div>
+  <h2>Home and the live wall</h2>
+  <div class="prose"><p>Home is the inbox, where you make decisions. The live wall is its own page in the rail, for watching many agents at once. Both read the fleet event stream the bridge already sends.</p></div>
+  <h3>Home · Inbox</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / home</span></div>
+    <div class="app tall">
+      <div class="rail"><div class="logo">●</div><b class="on" title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main" style="position:relative">
+        <div class="hdr"><span class="ttl">Inbox</span><span class="seg" style="margin-left:8px"><span class="on">Mine</span><span>Everyone</span></span><span class="meta" style="margin-left:6px">4 projects · 9 agents</span><span class="grow"></span><span class="fake" style="width:240px">⌕ Filter  <span class="kbd" style="float:right">/</span></span><span class="btn pri">+ New agent</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;padding:16px 22px;display:flex;flex-direction:column;gap:12px;min-width:0">
+            <div class="lr"><span class="h grow">Needs you · 2</span><span class="mut" style="font-size:12px">oldest first</span></div>
+            <div class="card pad" style="border-color:#ffaf5f66">
+              <div class="lr"><span class="dot need"></span><b>dep-upgrade-q4</b><span class="tag">marshal</span><span class="mut" style="font-size:12px">step 2.1 · implementer</span><span class="grow"></span><span class="av ci" title="started by nightly schedule">⏱</span><span class="mono dim">waiting 2m</span></div>
+              <div style="margin:10px 0 8px 18px;display:grid;grid-template-columns:70px 1fr;gap:4px 12px;font-size:12.5px"><span class="mut">wants to</span><span class="mono" style="color:var(--m-fg)">go mod tidy</span><span class="mut">why</span><span>"Tidying modules after bumping charm.land/bubbletea to v2.1."</span><span class="mut">risk</span><span>low · container · network to <span class="mono">proxy.golang.org</span> only</span></div>
+              <div class="lr" style="margin-left:18px"><span class="btn sm ghost">Open agent</span><span class="grow"></span><span class="btn sm">Deny</span><span class="btn sm">Allow "go mod *" in go-service</span><span class="btn sm pri">Approve once</span></div>
+            </div>
+            <div class="card pad" style="border-color:#ffaf5f66">
+              <div class="lr"><span class="dot need"></span><b>records-cleanup</b><span class="tag">parser-kit</span><span class="grow"></span><span class="av you">A</span><span class="mono dim">waiting 9m</span></div>
+              <div style="margin:10px 0 8px 18px;font-size:13px">Should deletion archive the record or remove it permanently?</div>
+              <div class="lr" style="margin-left:18px"><span class="btn sm">Archive (soft delete)</span><span class="btn sm">Delete permanently</span><span class="fake" style="flex:1">Or reply in your own words…</span></div>
+            </div>
+            <div class="lr" style="margin-top:4px"><span class="h grow">Ready to ship · 2</span><span class="btn sm ghost">Ship all with passing gates</span></div>
+            <div class="card">
+              <div class="lr pad" style="padding-block:10px"><span class="dot ok"></span><b style="width:150px">fix-ollama-ids</b><span class="tag">marshal</span><span class="tag ok">gate ✓ 3/3</span><span class="mono mut" style="font-size:12px">±4 · +61 −12</span><span class="mut grow" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Scoped provider tool-call IDs per step in ACP updates.</span><span class="btn sm">Review</span><span class="btn sm okb">Open PR</span></div>
+              <div class="hr"></div>
+              <div class="lr pad" style="padding-block:10px"><span class="dot ok"></span><b style="width:150px">pr-34-review</b><span class="tag">marshal</span><span class="tag vio">review bot</span><span class="mono mut" style="font-size:12px">3 findings</span><span class="mut grow" style="font-size:12px">Draft review on PR #34 is ready to post.</span><span class="btn sm">Read</span><span class="btn sm okb">Post review</span></div>
+            </div>
+            <div class="lr" style="margin-top:4px"><span class="h grow">Running · 4</span></div>
+            <div class="card">
+              <div class="lr pad" style="padding-block:9px"><span class="dot run"></span><b style="width:150px">guard-empty-input</b><span class="segbar"><i class="d"></i><i class="d"></i><i class="f"></i><i></i></span><span class="grow mut" style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">The guard returns the wrong error; switching it to ErrEmpty.</span><span class="mono dim">4m</span></div><div class="hr"></div>
+              <div class="lr pad" style="padding-block:9px"><span class="dot run"></span><b style="width:150px">sdd · cli-exit-codes</b><span class="segbar"><i class="d"></i><i class="d"></i><i class="d"></i><i class="f"></i><i></i><i></i><i></i></span><span class="grow mut" style="font-size:12.5px">task 4/7 · <span class="vioc">reviewer</span> · exit code is 0 on ErrEmpty</span><span class="mono dim">18m</span></div><div class="hr"></div>
+              <div class="lr pad" style="padding-block:9px"><span class="dot run"></span><b style="width:150px">ci-fix · main #412</b><span class="tag gold">CI fixer</span><span class="grow mut" style="font-size:12.5px">Reproducing the failing TestWatchResume locally.</span><span class="mono dim">3m</span></div>
+            </div>
+          </div>
+          <div style="width:300px;flex:none;border-left:1px solid var(--m-line);padding:16px;display:flex;flex-direction:column;gap:18px;background:var(--m-panel)">
+            <div><div class="h">Capacity</div>
+              <div class="lr" style="margin-top:8px"><span class="grow">Agent containers</span><span class="mono">4 / 6</span></div><div class="bar2"><i style="width:66%"></i></div>
+              <div class="lr" style="margin-top:8px"><span class="grow">Warm pool · go-service</span><span class="mono">2 ready</span></div><div class="bar2"><i style="width:100%;background:var(--m-ok)"></i></div>
+              <div class="lr" style="margin-top:8px"><span class="grow">State volume</span><span class="mono">12.4 / 30 GB</span></div><div class="bar2"><i style="width:41%;background:var(--m-info)"></i></div></div>
+            <div><div class="h">Today</div>
+              <svg class="spark" viewBox="0 0 260 50" width="100%" height="50" aria-hidden="true"><path d="M0 44 L20 40 L40 42 L60 30 L80 34 L100 22 L120 28 L140 18 L160 24 L180 12 L200 20 L220 10 L240 16 L260 8 L260 50 L0 50 Z" fill="#ff875f22"/><path d="M0 44 L20 40 L40 42 L60 30 L80 34 L100 22 L120 28 L140 18 L160 24 L180 12 L200 20 L220 10 L240 16 L260 8" stroke="#ff875f" stroke-width="2" fill="none"/><circle cx="260" cy="8" r="3" fill="#ff875f"/></svg>
+              <div class="lr"><span class="grow">Spend</span><span class="mono">$3.18 <span class="dim">/ $10 cap</span></span></div><div class="lr"><span class="grow">Local share</span><span class="mono">61%</span></div><div class="lr"><span class="grow">Shipped</span><span class="mono">5 PRs</span></div></div>
+            <div><div class="h">Watches</div><div style="margin-top:8px;display:grid;gap:6px;font-size:12px"><div class="lr"><span class="okc">○</span><span class="grow">main CI green</span><span class="dim mono">2m</span></div><div class="lr"><span class="warnc">○</span><span class="grow">ollama latency &gt; 2s</span><span class="dim mono">tripped</span></div></div></div>
+          </div>
+        </div>
+        <div class="toast"><span class="okc">✓</span> PR #34 opened for fix-ollama-ids · <span class="accc">View</span></div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>Approvals quote the step's narration ("why") and offer a scoped "always" rule tied to the workspace, so routine approvals stop coming back.</span></li>
+    <li><b class="k">2</b><span>The "Mine / Everyone" switch and the avatars (you, a schedule, CI) are ready for multiple users. With one operator they show only who or what started each agent.</span></li>
+    <li><b class="k">3</b><span>Work from the PR review bot and the CI fixer arrives in the same groups, tagged by origin. There's no separate inbox per feature.</span></li>
+  </ul>
+
+  <h3>Live wall</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / live</span></div>
+    <div class="app tall">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b class="on" title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="ttl">Live</span><span class="meta">6 running · 1 needs you</span><span class="grow"></span><span class="seg"><span class="on">All</span><span>marshal</span><span>parser-kit</span><span>Runs only</span></span><span class="seg"><span class="on">3 across</span><span>4</span></span><span class="btn">Pause all</span></div>
+        <div style="flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:1fr 1fr;gap:12px;padding:14px">
+          <div class="card pad" style="display:flex;flex-direction:column;gap:6px;border-color:#ff875f55"><div class="lr"><span class="dot run"></span><b>guard-empty-input</b><span class="tag">marshal</span><span class="grow"></span><span class="mono dim">4m21s</span></div><div class="lr"><span class="segbar"><i class="d"></i><i class="d"></i><i class="f"></i><i></i></span><span class="mut" style="font-size:12px">3/4 Cover the guard with tests</span></div><div class="hr"></div>
+            <div class="sh2"><span class="g okc">✓</span><span class="hl" style="font-size:12.5px">I'll add a table case next to the existing tests.</span><span class="mt">12s</span></div><div class="sh2"><span class="g errc">✗</span><span class="hl" style="font-size:12.5px">Running the package tests to check the new case.</span><span class="mt">6s</span></div><div class="sh2"><span class="g accc">⠋</span><span class="hl" style="font-size:12.5px">Switching the guard to ErrEmpty.</span><span class="mt">4s</span></div>
+            <div class="lr" style="margin-top:auto;font-size:11.5px"><span class="tag">qwen3-coder</span><span class="tag gold">▦ go-service</span><span class="grow"></span><span class="tag err">gate ✗ 1</span></div></div>
+          <div class="card pad" style="display:flex;flex-direction:column;gap:6px;border-color:#ffaf5f88;background:#ffaf5f08"><div class="lr"><span class="dot need"></span><b>dep-upgrade-q4</b><span class="tag">marshal</span><span class="grow"></span><span class="mono warnc">waiting 2m</span></div><div class="hr"></div>
+            <div class="sh2"><span class="g okc">✓</span><span class="hl" style="font-size:12.5px">Bumping charm.land/bubbletea to v2.1.</span><span class="mt">31s</span></div><div class="sh2"><span class="g warnc">?</span><span class="hl" style="font-size:12.5px">Tidying modules after the bump.</span><span class="mt"></span></div><div class="out" style="margin-left:26px">› go mod tidy</div>
+            <div class="lr" style="margin-top:auto"><span class="grow"></span><span class="btn sm">Deny</span><span class="btn sm pri">Approve</span></div></div>
+          <div class="card pad" style="display:flex;flex-direction:column;gap:6px"><div class="lr"><span class="dot run"></span><b>sdd · cli-exit-codes</b><span class="tag">marshal</span><span class="grow"></span><span class="mono dim">18m</span></div><div class="lr"><span class="segbar"><i class="d"></i><i class="d"></i><i class="d"></i><i class="f"></i><i></i><i></i><i></i></span><span class="mut" style="font-size:12px">task 4/7 · ~6–25m left</span></div><div class="hr"></div>
+            <div class="sh2"><span class="g vioc">⧉</span><span class="hl" style="font-size:12.5px"><span class="vioc">reviewer</span> · Exit code is 0 on ErrEmpty; the spec says 2.</span><span class="mt"></span></div><div class="sh2"><span class="g goldc">⧉</span><span class="hl" style="font-size:12.5px"><span class="goldc">implementer</span> · Returning exit 2 for ErrEmpty.</span><span class="mt"></span></div>
+            <div class="lr" style="margin-top:auto;font-size:11.5px"><span class="tag gold">fix 1/2</span><span class="grow"></span><span class="mono dim">$0.41</span></div></div>
+          <div class="card pad" style="display:flex;flex-direction:column;gap:6px"><div class="lr"><span class="dot run"></span><b>ci-fix · main #412</b><span class="tag gold">CI fixer</span><span class="grow"></span><span class="mono dim">3m</span></div><div class="hr"></div>
+            <div class="sh2"><span class="g okc">✓</span><span class="hl" style="font-size:12.5px">Pulling the failed job's log for TestWatchResume.</span><span class="mt">9s</span></div><div class="sh2"><span class="g accc">⠋</span><span class="hl" style="font-size:12.5px">Reproducing the failure with -race -count=20.</span><span class="mt">51s</span></div></div>
+          <div class="card pad" style="display:flex;flex-direction:column;gap:6px"><div class="lr"><span class="dot run"></span><b>pr-36-review</b><span class="tag vio">review bot</span><span class="grow"></span><span class="mono dim">1m</span></div><div class="hr"></div>
+            <div class="sh2"><span class="g accc">⠋</span><span class="hl" style="font-size:12.5px">Reading the diff of PR #36 against main.</span><span class="mt">22s</span></div><div class="lr" style="margin-top:auto;font-size:11.5px"><span class="tag">read-only</span></div></div>
+          <div class="card pad" style="display:flex;flex-direction:column;gap:6px"><div class="lr"><span class="dot run"></span><b>docs-sweep</b><span class="tag">site</span><span class="grow"></span><span class="mono dim">1m</span></div><div class="hr"></div>
+            <div class="sh2"><span class="g okc">✓</span><span class="hl" style="font-size:12.5px">Listing pages that mention the old rail.</span><span class="mt">4s</span></div><div class="sh2"><span class="g accc">⠋</span><span class="hl" style="font-size:12.5px">Reading docs/ARCHITECTURE.md.</span><span class="mt">3s</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>Each tile shows the agent's last three step headlines and its progress: the TUI's outline density, shrunk.</span></li>
+    <li><b class="k">2</b><span>Tiles that need you are tinted and take approvals inline. Clicking a tile opens the session with the dock collapsed.</span></li>
+    <li><b class="k">3</b><span>Filters cover project and "Runs only", and there's a 3 or 4 column grid. Past 12 agents the wall pages instead of shrinking the tiles.</span></li>
+  </ul>
+</section>
+
+<section id="new">
+  <div class="sec-no">03</div>
+  <h2>New agent · prompt first</h2>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / new</span></div>
+    <div class="app" style="height:640px">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b class="on" title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main" style="align-items:center;padding-top:56px;position:relative">
+        <div style="width:760px">
+          <div style="font:600 24px var(--font-ui);margin-bottom:4px">What should the agent do?</div>
+          <div class="mut" style="margin-bottom:14px">It runs in its own worktree and container. Nothing reaches main until you ship it.</div>
+          <div class="composer solo" style="margin:0;position:relative">
+            <div style="min-height:86px;color:var(--m-fg);font-size:14px">Make <span class="mono accc">marshal acp</span> emit <span class="mono">_marshal/stack</span> snapshots and patches, so the web transcript matches the TUI. Move <span class="mono">tui/stack</span> to <span class="mono">internal/viewmodel</span> first.<span class="accc">▍</span></div>
+            <div class="bar"><span class="tag">≡ marshal ▾</span><span class="tag">⎇ main ▾</span><span class="tag gold" style="outline:1px solid var(--m-gold)">▦ go-service ▾</span><span class="tag">qwen3-coder ▾</span><span class="tag acc">edit ▾</span><span class="tag ok">worktree</span><span class="tag">＋ attach</span><span class="grow"></span><span class="btn pri">Start ↵</span></div>
+            <div class="pop" style="left:150px;top:150px;width:330px;padding:6px">
+              <div class="mut" style="font-size:11px;padding:6px 8px">Workspace</div>
+              <div class="it on" style="grid-template-columns:14px 1fr auto"><span class="goldc mono">▦</span><span class="t">go-service <span class="dim">v7</span></span><span class="r">default</span><span class="s">Go 1.26 · Node 22 · golangci-lint · 2 warm</span></div>
+              <div class="it" style="grid-template-columns:14px 1fr auto"><span class="goldc mono">▦</span><span class="t">web-ui <span class="dim">v3</span></span><span class="r"></span><span class="s">Node 22 · Playwright · preview :5173</span></div>
+              <div class="it" style="grid-template-columns:14px 1fr auto"><span class="dim mono">▢</span><span class="t">Blank</span><span class="r"></span><span class="s">marshal + git only · gate may skip</span></div>
+              <div class="hr" style="margin:4px 0"></div>
+              <div class="it" style="grid-template-columns:14px 1fr auto"><span class="dim mono">+</span><span class="t">Design a new workspace…</span><span class="r"></span></div>
+            </div>
+          </div>
+          <div style="height:150px"></div>
+          <div class="lr"><span class="h grow">Or start from</span><span class="seg"><span class="on">Issues</span><span>Recent prompts</span><span>Recipes</span></span></div>
+          <div class="card" style="margin-top:8px">
+            <div class="lr pad" style="padding-block:9px"><span class="mono dim">#88</span><span class="grow">Web transcript doesn't group tool calls under narration</span><span class="tag">ui</span><span class="btn sm">Start</span></div><div class="hr"></div>
+            <div class="lr pad" style="padding-block:9px"><span class="mono dim">#93</span><span class="grow">Tasks panel step counts disagree with headers</span><span class="tag">tui</span><span class="btn sm">Start</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>Every setting is a chip with a project default: project, branch, workspace, model, mode and isolation. Most starts are type and press Enter.</span></li>
+    <li><b class="k">2</b><span>The workspace picker shows what each workspace contains and whether warm containers are ready. It warns when the verify gate would be skipped.</span></li>
+    <li><b class="k">3</b><span>Issues, recent prompts and recipes are tabs underneath, so prompt first doesn't hide the other ways to start.</span></li>
+  </ul>
+</section>
+
+<section id="review">
+  <div class="sec-no">04</div>
+  <h2>Review &amp; ship · PR style</h2>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / agents / fix-ollama-ids / review</span></div>
+    <div class="app tall">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b class="on" title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="dot ok"></span><span class="ttl">fix-ollama-ids</span><span class="meta"><span class="tag">agent/fix-ollama-ids</span><span class="dim">→</span><span class="tag">main</span><span class="tag ok">gate passed</span><span>4 files · +61 −12 · 3 tasks · 9 steps</span></span><span class="grow"></span><span class="seg"><span class="on">Files</span><span>By step</span></span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="width:300px;flex:none;border-right:1px solid var(--m-line);display:flex;flex-direction:column;background:var(--m-panel)">
+            <div style="padding:12px 14px"><div class="h">Verify gate</div>
+              <div class="chk"><span class="okc">✓</span>go build ./...<span class="grow"></span><span class="mono dim">9s</span></div>
+              <div class="chk"><span class="okc">✓</span>go test ./internal/acp/...<span class="grow"></span><span class="mono dim">5s</span></div>
+              <div class="chk"><span class="okc">✓</span>golangci-lint run<span class="grow"></span><span class="mono dim">14s</span></div></div>
+            <div class="hr"></div>
+            <div style="padding:10px 14px"><div class="h">Files</div>
+              <div class="lr" style="margin-top:8px;font:12px var(--font-mono)"><span class="grow" style="background:var(--m-raise);border-radius:4px;padding:3px 6px;color:var(--m-fg)">internal/acp/turn.go</span><span class="okc">+34</span><span class="errc">−9</span></div>
+              <div class="lr" style="margin-top:4px;font:12px var(--font-mono)"><span class="grow" style="padding:3px 6px">internal/acp/turn_test.go</span><span class="okc">+22</span></div>
+              <div class="lr" style="margin-top:4px;font:12px var(--font-mono)"><span class="grow" style="padding:3px 6px">internal/acp/ids.go</span><span class="okc">+5</span><span class="errc">−3</span></div>
+              <div class="lr" style="margin-top:4px;font:12px var(--font-mono)"><span class="grow" style="padding:3px 6px">docs/acp.md</span><span class="okc">+0</span></div></div>
+            <div class="hr"></div>
+            <div style="padding:10px 14px"><div class="h">Conversation</div><div class="lr" style="margin-top:8px;font-size:12px"><span class="av you">A</span><span class="grow">1 comment sent as steering</span><span class="okc">resolved</span></div></div>
+            <div style="margin-top:auto;padding:12px 14px;border-top:1px solid var(--m-line)">
+              <div class="h">Ship</div>
+              <div class="fake" style="margin-top:8px;font-size:12px;min-height:76px;color:var(--m-fg)">acp: scope provider tool-call IDs per step<br><span class="mut">Ollama numbers calls per response, so ollama-0 repeated across steps and ACP clients merged their cards.</span></div>
+              <div class="lr" style="margin-top:8px;font-size:12px"><span class="tog on"></span><span class="grow">Open PR on GitHub · base main</span></div>
+              <div class="lr" style="margin-top:6px;font-size:12px"><span class="tog"></span><span class="grow">Request review from the review bot</span></div>
+              <div class="lr" style="margin-top:10px"><span class="btn sm ghost">Discard</span><span class="btn sm">Merge locally</span><span class="grow"></span><span class="btn pri">Push &amp; open PR</span></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+            <div style="padding:9px 16px;border-bottom:1px solid var(--m-line)" class="lr"><span class="mono">internal/acp/turn.go</span><span class="tag">+34 −9</span><span class="grow"></span><span class="seg"><span class="on">Unified</span><span>Split</span></span><span class="btn sm ghost">Viewed ✓</span></div>
+            <div class="diff" style="padding:8px 0;color:var(--m-sub)">
+              <div class="hh">@@ -356,10 +356,14 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection)</div>
+              <div><span class="ln">356</span>	case session.EventActiveToolChanged:</div><div><span class="ln">357</span>		if ev.Payload.ActiveTool != nil {</div><div><span class="ln">358</span>			atc := ev.Payload.ActiveTool</div>
+              <div class="d"><span class="ln">359</span>			id := fmt.Sprintf("%s-%d", atc.Name, atc.StartedAt.UnixNano())</div>
+              <div class="a"><span class="ln">359</span>			id := atc.ToolCallID</div>
+              <div class="a"><span class="ln">360</span>			if id != "" {</div>
+              <div class="a"><span class="ln">361</span>				id = scopedToolCallID(atc.StepID, id)</div>
+            </div>
+            <div class="card" style="margin:4px 16px 4px 46px;font-size:12.5px">
+              <div class="pad" style="padding-block:10px"><div class="lr"><span class="av you">A</span><b>You</b><span class="dim">· line 361 · 14m ago</span></div><div style="margin:6px 0 0 28px">Does this survive resume, when step numbers restart?</div></div>
+              <div class="hr"></div>
+              <div class="pad" style="padding-block:10px"><div class="lr"><span class="av" style="background:var(--m-acc)">●</span><b>fix-ollama-ids</b><span class="dim">· step 3.2</span></div><div style="margin:6px 0 0 28px">Step numbers come from the <span class="mono">steps</span> table and continue after resume, so scoped IDs stay unique. I added <span class="mono">TestScopedIDsSurviveResume</span>.</div><div class="lr" style="margin:8px 0 0 28px"><span class="tag ok">+22 in turn_test.go</span><span class="grow"></span><span class="btn sm">Resolve</span></div></div>
+            </div>
+            <div class="diff" style="padding:4px 0;color:var(--m-sub)">
+              <div class="a"><span class="ln">362</span>			}</div><div><span class="ln">363</span>			proj.lastToolID = id</div><div><span class="ln">364</span>			proj.lastToolName = atc.Name</div>
+              <div class="hh" style="margin-top:6px">@@ -390,6 +394,10 @@ case session.EventAuditAdded:</div>
+              <div class="a"><span class="ln">394</span>			id := ae.ToolCallID</div><div class="a"><span class="ln">395</span>			if id != "" {</div><div class="a"><span class="ln">396</span>				id = scopedToolCallID(ae.StepID, id)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>The ship panel is today's exit path (commit, gate, push, PR, merge or discard), plus an option to request a review from the review bot before or after opening the PR.</span></li>
+    <li><b class="k">2</b><span>A line comment is sent to the agent as steering. Its reply and new commits appear in the thread, like a PR conversation with the agent.</span></li>
+    <li><b class="k">3</b><span>The "By step" toggle regroups the same diff by task and step, so each hunk shows why it was made.</span></li>
+  </ul>
+</section>
+
+<section id="runs">
+  <div class="sec-no">05</div>
+  <h2>Runs · stage lanes and task graph</h2>
+  <div class="prose"><p>One run page with two views. Lanes suit plan runs, where every task goes through the same stages. The graph suits swarms and planner-split work, where tasks wait on each other. Clicking any cell or node opens that agent's transcript in the dock, using the same dock as the session page.</p></div>
+  <h3>Stage lanes</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / runs / cli-exit-codes</span></div>
+    <div class="app tall">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b class="on" title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="dot run"></span><span class="ttl">cli-exit-codes</span><span class="meta"><span class="tag">plans/cli-exit-codes.md</span><span class="tag">plan run</span><span>task 4/7 · 43% · ~6–25m left · $0.41</span></span><span class="grow"></span><span class="seg"><span class="on">Lanes</span><span>Graph</span><span>Timeline</span></span><span class="btn">Pause</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;min-width:0;padding:12px 16px;display:flex;flex-direction:column;gap:12px">
+            <table class="tbl2 lanes">
+              <thead><tr><th style="width:230px">Task</th><th>Implement <span class="goldc">●</span></th><th>Verify</th><th>Review <span class="vioc">●</span></th><th>Commit</th><th style="width:70px">Time</th></tr></thead>
+              <tbody>
+                <tr><td>1 · Define exit-code table</td><td class="cell"><div class="cellbox ok">✓ 2 steps</div></td><td class="cell"><div class="cellbox ok">✓ build · test</div></td><td class="cell"><div class="cellbox ok">✓ approved</div></td><td class="cell"><div class="cellbox ok mono">a1c9e2</div></td><td class="mono dim">3m10s</td></tr>
+                <tr><td>2 · Map errors to codes</td><td class="cell"><div class="cellbox ok">✓ 3 steps</div></td><td class="cell"><div class="cellbox ok">✓ build · test</div></td><td class="cell"><div class="cellbox ok">✓ approved</div></td><td class="cell"><div class="cellbox ok mono">b7d014</div></td><td class="mono dim">4m02s</td></tr>
+                <tr><td>3 · Wire the guard into the CLI</td><td class="cell"><div class="cellbox ok">✓ 2 rounds</div></td><td class="cell"><div class="cellbox ok">✓ build · test</div></td><td class="cell"><div class="cellbox warn">↺ fix 1/2 → ✓</div></td><td class="cell"><div class="cellbox ok mono">c02f88</div></td><td class="mono dim">6m12s</td></tr>
+                <tr class="hl"><td><b>4 · Exit 2 on ErrEmpty</b></td><td class="cell"><div class="cellbox ok">✓ 1 step</div></td><td class="cell"><div class="cellbox ok">✓ build · test</div></td><td class="cell"><div class="cellbox run"><span class="dot run"></span>reviewing · 2m14s</div></td><td class="cell"><div class="cellbox idle">—</div></td><td class="mono dim">2m14s</td></tr>
+                <tr><td class="mut">5 · Document the codes</td><td class="cell"><div class="cellbox idle">queued</div></td><td class="cell"><div class="cellbox idle">—</div></td><td class="cell"><div class="cellbox idle">—</div></td><td class="cell"><div class="cellbox idle">—</div></td><td></td></tr>
+                <tr><td class="mut">6 · Integration test</td><td class="cell"><div class="cellbox idle">queued</div></td><td class="cell"><div class="cellbox idle">—</div></td><td class="cell"><div class="cellbox idle">—</div></td><td class="cell"><div class="cellbox idle">—</div></td><td></td></tr>
+                <tr><td class="mut">7 · Changelog</td><td class="cell"><div class="cellbox idle">queued</div></td><td class="cell"><div class="cellbox idle">—</div></td><td class="cell"><div class="cellbox idle">—</div></td><td class="cell"><div class="cellbox idle">—</div></td><td></td></tr>
+              </tbody>
+            </table>
+            <div class="lr" style="gap:14px;font-size:12.5px"><span class="goldc">● implementer</span><span class="mut">qwen3-coder @ ollama · 412k tok · local</span><span class="vioc">● reviewer</span><span class="mut">sonnet @ anthropic · 96k tok · $0.41</span><span class="infoc">● branch reviewer</span><span class="mut">after task 7</span></div>
+          </div>
+          <div style="width:400px;flex:none;border-left:1px solid var(--m-line);background:var(--m-panel);display:flex;flex-direction:column">
+            <div class="dockhead"><span class="follow sel">◆ task 4 · review</span><span class="grow"></span><span class="tag vio">reviewer</span></div>
+            <div class="tx" style="padding:12px;max-width:none">
+              <div class="step"><div class="sh2"><span class="g okc">✓</span><span class="hl">Reading the task brief and the diff.</span><span class="mt">8s</span></div><div class="rows"><div class="tr"><span class="c">≡</span><span>task-4-brief.md</span><span></span></div><div class="tr"><span class="c">≡</span><span>review-c02f88..HEAD.diff</span><span></span></div></div></div>
+              <div class="step"><div class="sh2"><span class="g errc">✗</span><span class="hl">Exit code is 0 on ErrEmpty; the spec says 2.</span><span class="mt">22s</span></div><div class="rows"><div class="tr"><span class="c errc">↳</span><span>blocking · cmd/parse.go:44</span><span></span></div></div></div>
+              <div class="step"><div class="sh2"><span class="g accc">⠋</span><span class="hl">Checking the error message matches the spec.</span><span class="mt">6s</span></div></div>
+            </div>
+            <div style="margin-top:auto;padding:10px 12px;border-top:1px solid var(--m-line)" class="lr"><span class="btn sm">Answer a question</span><span class="grow"></span><span class="btn sm">Skip review</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+
+  <h3>Task graph</h3>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / runs / web-stack-swarm?view=graph</span></div>
+    <div class="app tall">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b class="on" title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="dot run"></span><span class="ttl">web-stack-swarm</span><span class="meta"><span class="tag">swarm</span><span>6 tasks · 3 done · 1 running · 2 waiting</span></span><span class="grow"></span><span class="seg"><span>Lanes</span><span class="on">Graph</span><span>Timeline</span></span><span class="btn">Pause</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;position:relative;min-width:0">
+            <svg width="820" height="700" style="position:absolute;inset:0" aria-hidden="true">
+              <defs><marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#4a4650"/></marker></defs>
+              <g stroke="#4a4650" stroke-width="1.6" fill="none" marker-end="url(#ah)">
+                <path d="M244 300 C 290 300, 290 140, 330 140"/>
+                <path d="M244 300 C 290 300, 290 300, 330 300"/>
+                <path d="M244 300 C 290 300, 290 470, 330 470"/>
+                <path d="M544 140 C 580 140, 580 250, 600 250"/>
+                <path d="M544 300 C 572 300, 572 260, 600 255"/>
+                <path d="M544 470 C 580 470, 580 450, 600 440"/>
+              </g>
+              <g stroke="#ff875f" stroke-width="2" fill="none" stroke-dasharray="5 4"><path d="M544 300 C 572 300, 572 260, 600 255"/></g>
+            </svg>
+            <div class="node done" style="left:30px;top:262px"><div class="lr"><span class="okc">✓</span><b>Plan the split</b></div><div class="mut" style="font-size:12px;margin-top:2px"><span class="infoc">planner</span> · 4 tasks · 1m40s</div></div>
+            <div class="node done" style="left:330px;top:100px"><div class="lr"><span class="okc">✓</span><b>Move stack to viewmodel</b></div><div class="mut" style="font-size:12px;margin-top:2px"><span class="goldc">implementer</span> · ±11 files</div><div class="lr" style="margin-top:6px"><span class="tag ok">gate ✓</span></div></div>
+            <div class="node on" style="left:330px;top:258px"><div class="lr"><span class="dot run"></span><b>ACP stack stream</b></div><div class="mut" style="font-size:12px;margin-top:2px"><span class="goldc">implementer</span> · writing patch encoder</div><div class="segbar" style="margin-top:6px"><i class="d"></i><i class="f"></i><i></i></div></div>
+            <div class="node done" style="left:330px;top:430px"><div class="lr"><span class="okc">✓</span><b>Palette tokens</b></div><div class="mut" style="font-size:12px;margin-top:2px"><span class="goldc">implementer</span> · ±2 files</div></div>
+            <div class="node wait" style="left:600px;top:212px"><div class="lr"><span class="dot q"></span><b>Svelte step renderer</b></div><div class="mut" style="font-size:12px;margin-top:2px">waits on: ACP stack stream</div></div>
+            <div class="node wait" style="left:600px;top:402px"><div class="lr"><span class="dot q"></span><b>Branch review</b></div><div class="mut" style="font-size:12px;margin-top:2px"><span class="vioc">reviewer</span> · after all tasks</div></div>
+            <div style="position:absolute;left:20px;bottom:16px" class="lr"><span class="seg"><span>−</span><span>100%</span><span>+</span></span><span class="mut" style="font-size:12px">Dashed line = blocking the next task</span></div>
+          </div>
+          <div style="width:360px;flex:none;border-left:1px solid var(--m-line);background:var(--m-panel);display:flex;flex-direction:column">
+            <div class="dockhead"><span class="follow sel">◆ ACP stack stream</span><span class="grow"></span><span class="tag gold">implementer</span></div>
+            <div style="padding:12px 14px" class="kv"><span>blocks</span><span>Svelte step renderer</span><span>depends on</span><span>Move stack to viewmodel ✓</span><span>workspace</span><span>▦ go-service</span><span>elapsed</span><span class="mono">6m40s</span></div>
+            <div class="hr"></div>
+            <div class="tx" style="padding:12px;max-width:none">
+              <div class="step"><div class="sh2"><span class="g okc">✓</span><span class="hl">Adding a snapshot method to the ACP host.</span><span class="mt">1m</span></div></div>
+              <div class="step"><div class="sh2"><span class="g accc">⠋</span><span class="hl">Writing the patch encoder keyed by node ID.</span><span class="mt">40s</span></div><div class="rows"><div class="tr"><span class="c accc">✎</span><span>stackpatch.go</span><span class="accc">running</span></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>Lanes come from the pipeline's fixed stages and the <code>SDDProgress</code> fields that exist today. Fix rounds show inside the Review cell.</span></li>
+    <li><b class="k">2</b><span>The graph needs task dependencies, which plans don't record yet. A planner-split swarm would produce them. The "blocks" and "depends on" fields drive the dashed critical path.</span></li>
+    <li><b class="k">3</b><span>Both views share the session dock, so drilling into a role's transcript works the same everywhere.</span></li>
+  </ul>
+</section>
+
+<section id="ws">
+  <div class="sec-no">06</div>
+  <h2>Workspaces · layer builder with source</h2>
+  <div class="prose"><p>The layer builder and the template file are two views of one document. Selecting a layer highlights its lines in the source, and editing the source updates the layer. The source pane can be hidden, shown at the side, or opened full width for bulk edits.</p></div>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / workspaces / go-service / edit</span></div>
+    <div class="app tall">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b class="on" title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="ttl">▦ go-service</span><span class="meta"><span class="tag">v7 published</span><span class="tag warn">draft v8 · 2 changes</span><span>used by marshal, parser-kit</span></span><span class="grow"></span><span class="seg"><span>Layers</span><span class="on">Layers + source</span><span>Source</span></span><span class="btn">Test shell</span><span class="btn pri">Build v8</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="width:520px;flex:none;padding:12px 14px;display:flex;flex-direction:column;gap:7px;border-right:1px solid var(--m-line)">
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">1</span><b style="width:120px">Base image</b><span class="grow mono" style="font-size:12px">marshal/agent:0.19</span><span class="tag ok">cached</span></div></div>
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">2</span><b style="width:120px">Toolchains</b><span class="grow lr" style="gap:5px"><span class="tag acc">Go 1.26</span><span class="tag acc">Node 22</span></span><span class="tag ok">cached</span></div></div>
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">3</span><b style="width:120px">Packages</b><span class="grow mono" style="font-size:11.5px">ripgrep jq sqlite3 · golangci-lint</span><span class="tag warn">changed</span></div></div>
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">4</span><b style="width:120px">Libraries</b><span class="grow mono" style="font-size:11.5px">design-system (ro) · go mod cache</span><span class="tag ok">warm</span></div></div>
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">5</span><b style="width:120px">Shared files</b><span class="grow mono" style="font-size:11.5px">fixtures/ → /work/shared (ro)</span></div></div>
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">6</span><b style="width:120px">Secrets</b><span class="grow mono" style="font-size:11.5px">GITHUB_TOKEN ← vault</span><span class="tag">1</span></div></div>
+            <div class="card pad" style="border-color:var(--m-acc);background:#ff875f0a"><div class="lr"><span class="mono dim" style="width:16px">7</span><b style="width:120px">Network</b><span class="grow"></span><span class="tag warn">changed</span></div>
+              <div style="margin:8px 0 0 24px;display:grid;gap:6px;font-size:12px">
+                <div class="lr"><span class="seg"><span>Open</span><span class="on">Allowlist</span><span>Off</span></span><span class="grow"></span><span class="mut">blocked requests ask you</span></div>
+                <div class="lr mono" style="font-size:11.5px"><span class="okc">✓</span><span class="grow">proxy.golang.org</span><span class="dim">seen 212× this week</span></div>
+                <div class="lr mono" style="font-size:11.5px"><span class="okc">✓</span><span class="grow">registry.npmjs.org</span><span class="dim">seen 40×</span></div>
+                <div class="lr mono" style="font-size:11.5px"><span class="okc">✓</span><span class="grow">api.github.com</span><span class="dim">seen 18×</span></div>
+                <div class="lr mono srcsync" style="font-size:11.5px;padding:2px 4px;border-radius:4px"><span class="accc">+</span><span class="grow">sum.golang.org</span><span class="accc">from network inspector</span></div>
+              </div></div>
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">8</span><b style="width:120px">Resources</b><span class="grow mono" style="font-size:11.5px">4 CPU · 8 GB · 20 GB · 2 h</span></div></div>
+            <div class="card pad" style="padding-block:9px"><div class="lr"><span class="mono dim" style="width:16px">9</span><b style="width:120px">Setup script</b><span class="grow mono" style="font-size:11.5px">go mod download</span></div></div>
+          </div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#0b0a0c">
+            <div class="tabs"><span class="on">workspace.toml</span><span>generated Dockerfile</span><span>diff v7 → v8</span><span style="margin-left:auto" class="mut">.marshal/workspaces/go-service.toml</span></div>
+            <div class="diff" style="padding:10px 0;color:var(--m-sub)">
+              <div><span class="ln">1</span>[workspace]</div><div><span class="ln">2</span>name = <span class="okc">"go-service"</span></div><div><span class="ln">3</span>base = <span class="okc">"marshal/agent:0.19"</span></div><div><span class="ln">4</span>toolchains = [<span class="okc">"go@1.26"</span>, <span class="okc">"node@22"</span>]</div>
+              <div><span class="ln">5</span></div><div><span class="ln">6</span>[packages]</div><div><span class="ln">7</span>apt = [<span class="okc">"ripgrep"</span>, <span class="okc">"jq"</span>, <span class="okc">"sqlite3"</span>]</div><div><span class="ln">8</span>go  = [<span class="okc">"github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64"</span>]</div>
+              <div><span class="ln">9</span></div><div><span class="ln">10</span>[[mounts]]</div><div><span class="ln">11</span>repo = <span class="okc">"design-system"</span>; target = <span class="okc">"/lib/design-system"</span>; readonly = <span class="infoc">true</span></div><div><span class="ln">12</span>[[mounts]]</div><div><span class="ln">13</span>volume = <span class="okc">"gomodcache"</span>; target = <span class="okc">"/root/go/pkg/mod"</span></div>
+              <div><span class="ln">14</span></div><div><span class="ln">15</span>[files]</div><div><span class="ln">16</span><span class="okc">"fixtures/"</span> = { target = <span class="okc">"/work/shared"</span>, readonly = <span class="infoc">true</span> }</div>
+              <div><span class="ln">17</span></div><div><span class="ln">18</span>[secrets]</div><div><span class="ln">19</span>GITHUB_TOKEN = <span class="okc">"vault:github/marshal-bot"</span></div>
+              <div><span class="ln">20</span></div>
+              <div class="srcsync"><span class="ln">21</span>[network]</div>
+              <div class="srcsync"><span class="ln">22</span>mode = <span class="okc">"allowlist"</span></div>
+              <div class="srcsync"><span class="ln">23</span>egress = [<span class="okc">"proxy.golang.org"</span>, <span class="okc">"registry.npmjs.org"</span>, <span class="okc">"api.github.com"</span>,</div>
+              <div class="srcsync a"><span class="ln">24</span>          <span class="okc">"sum.golang.org"</span>]<span class="accc">▍</span></div>
+              <div><span class="ln">25</span></div><div><span class="ln">26</span>[resources]</div><div><span class="ln">27</span>cpu = <span class="infoc">4</span>; memory = <span class="okc">"8g"</span>; disk = <span class="okc">"20g"</span>; timeout = <span class="okc">"2h"</span></div>
+              <div><span class="ln">28</span></div><div><span class="ln">29</span>setup = <span class="okc">"go mod download"</span></div>
+            </div>
+            <div style="margin-top:auto;padding:8px 14px;border-top:1px solid var(--m-line);font-size:12px" class="lr"><span class="okc">✓</span><span class="grow mut">Valid · builds layers 3 and 7 only · about 40s</span><span class="mut">Ln 24</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes">
+    <li><b class="k">1</b><span>The network layer is selected, so its lines are highlighted in the source. Both sides edit the same document.</span></li>
+    <li><b class="k">2</b><span>Each host shows how often agents used it. A host added from the network inspector arrives as a marked draft change.</span></li>
+    <li><b class="k">3</b><span>The file lives at <code>.marshal/workspaces/&lt;name&gt;.toml</code>, so it can be reviewed and committed, and the trust hash covers it. Building reruns only the layers that changed.</span></li>
+  </ul>
+</section>
+
+<section id="watch">
+  <div class="sec-no">07</div>
+  <h2>Watch monitors</h2>
+  <div class="prose"><p>Marshal already has watches: background monitors that sample a source and fire when a condition trips. They can wake an agent or start one. This page lists them, shows the history behind each one, and adds new ones.</p></div>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / watches</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b class="on" title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="ttl">Watches</span><span class="meta">7 active · 1 tripped</span><span class="grow"></span><span class="btn pri">+ New watch</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;min-width:0;padding:8px 6px">
+            <table class="tbl2">
+              <thead><tr><th>Watch</th><th>Source</th><th>Condition</th><th>Last 24h</th><th>On trip</th><th>State</th></tr></thead>
+              <tbody>
+                <tr class="hl"><td><b>ollama latency</b></td><td class="mono" style="font-size:11.5px">http GET :11434/api/tags</td><td class="mono" style="font-size:11.5px">p95 &gt; 2s for 5m</td><td><svg width="120" height="24" aria-hidden="true"><path d="M0 18 L15 17 L30 18 L45 16 L60 17 L75 12 L90 6 L105 4 L120 3" stroke="#ffaf5f" stroke-width="2" fill="none"/><circle cx="120" cy="3" r="2.5" fill="#ffaf5f"/></svg></td><td>notify · route to anthropic</td><td><span class="tag warn">tripped 12m</span></td></tr>
+                <tr><td><b>main CI</b></td><td class="mono" style="font-size:11.5px">github checks · main</td><td class="mono" style="font-size:11.5px">conclusion = failure</td><td><svg width="120" height="24" aria-hidden="true"><g fill="#3fd4b4"><rect x="2" y="6" width="10" height="12" rx="2"/><rect x="18" y="6" width="10" height="12" rx="2"/><rect x="34" y="6" width="10" height="12" rx="2"/><rect x="50" y="6" width="10" height="12" rx="2" fill="#ff87af"/><rect x="66" y="6" width="10" height="12" rx="2"/><rect x="82" y="6" width="10" height="12" rx="2"/><rect x="98" y="6" width="10" height="12" rx="2"/></g></svg></td><td>start CI fixer</td><td><span class="tag ok">ok</span></td></tr>
+                <tr><td><b>docker disk</b></td><td class="mono" style="font-size:11.5px">state volume usage</td><td class="mono" style="font-size:11.5px">&gt; 80%</td><td><svg width="120" height="24" aria-hidden="true"><path d="M0 16 L120 14" stroke="#5fd7ff" stroke-width="2" fill="none"/></svg></td><td>prune mirrors</td><td><span class="tag ok">41%</span></td></tr>
+                <tr><td><b>deploy · site</b></td><td class="mono" style="font-size:11.5px">http GET site/healthz</td><td class="mono" style="font-size:11.5px">status ≠ 200</td><td><svg width="120" height="24" aria-hidden="true"><path d="M0 12 L120 12" stroke="#3fd4b4" stroke-width="2" fill="none"/></svg></td><td>wake docs-sweep</td><td><span class="tag ok">ok</span></td></tr>
+                <tr><td><b>job-3 test -race</b></td><td class="mono" style="font-size:11.5px">agent job output</td><td class="mono" style="font-size:11.5px">exits</td><td class="mut">—</td><td>resume guard-empty-input</td><td><span class="tag">running</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="width:380px;flex:none;border-left:1px solid var(--m-line);background:var(--m-panel);display:flex;flex-direction:column">
+            <div class="dockhead"><span class="warnc">○</span><b>ollama latency</b><span class="grow"></span><span class="btn sm">Mute 1h</span></div>
+            <div style="padding:12px 14px">
+              <svg viewBox="0 0 350 120" width="100%" height="120" aria-hidden="true"><g stroke="#2c2a30"><line x1="30" y1="20" x2="350" y2="20"/><line x1="30" y1="60" x2="350" y2="60"/><line x1="30" y1="100" x2="350" y2="100"/></g><line x1="30" y1="60" x2="350" y2="60" stroke="#ffaf5f" stroke-dasharray="4 4"/><g fill="#96918a" font-size="10" font-family="Geist Mono, monospace"><text x="0" y="24">4s</text><text x="0" y="64">2s</text><text x="0" y="104">0s</text></g><path d="M30 92 L70 90 L110 93 L150 88 L190 86 L230 70 L270 44 L310 36 L350 30 L350 100 L30 100 Z" fill="#ffaf5f22"/><path d="M30 92 L70 90 L110 93 L150 88 L190 86 L230 70 L270 44 L310 36 L350 30" stroke="#ffaf5f" stroke-width="2" fill="none"/><circle cx="350" cy="30" r="3.5" fill="#ffaf5f"/></svg>
+              <div class="kv" style="margin-top:8px"><span>sample</span><span>every 30s · from the bridge</span><span>tripped</span><span>14:01 · p95 3.4s</span><span>did</span><span>notified you · routed new agents' default role to sonnet @ anthropic</span><span>clears</span><span>automatically after 10m under 2s</span></div>
+            </div>
+            <div class="hr"></div>
+            <div style="padding:10px 14px"><div class="h">Affected</div><div class="lr" style="margin-top:6px;font-size:12px"><span class="dot run"></span><span class="grow">guard-empty-input kept its route</span><span class="mut">pinned</span></div><div class="lr" style="margin-top:4px;font-size:12px"><span class="dot run"></span><span class="grow">docs-sweep started on sonnet</span><span class="mut">rerouted</span></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes"><li><b class="k">1</b><span>Watches get their own rail entry (○, the TUI's watch glyph). A tripped watch also shows up on Home.</span></li><li><b class="k">2</b><span>The actions are things Marshal already does: wake or resume an agent, start a recipe, notify, prune. Rerouting a role is new.</span></li><li><b class="k">3</b><span>Watches started from inside an agent turn are listed too, marked with that agent, so you can see background jobs agents left running.</span></li></ul>
+</section>
+
+<section id="net">
+  <div class="sec-no">08</div>
+  <h2>Network inspector</h2>
+  <div class="prose"><p>Every outbound connection from agent containers goes through the workspace's egress proxy, which records it. The inspector shows the record per agent or per workspace, and lets you allow or block a host on the spot.</p></div>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / workspaces / go-service / network</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b class="on" title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="ttl">▦ go-service · Network</span><span class="meta"><span class="tag">allowlist</span><span>last 24h · 6 agents</span></span><span class="grow"></span><span class="seg"><span class="on">Hosts</span><span>Requests</span><span>By agent</span></span></div>
+        <div class="card pad" style="margin:12px 16px 4px;border-color:#ffaf5f77;background:#ffaf5f0a"><div class="lr"><span class="warnc">⚠</span><b>dep-upgrade-q4 tried to reach</b><span class="mono">sum.golang.org:443</span><span class="mut">· blocked 3× · go mod tidy is waiting</span><span class="grow"></span><span class="btn sm">Block</span><span class="btn sm">Allow for this agent</span><span class="btn sm pri">Add to workspace</span></div></div>
+        <div style="padding:4px 6px;flex:1">
+          <table class="tbl2">
+            <thead><tr><th>Host</th><th>Rule</th><th>Requests</th><th>Data</th><th>Agents</th><th>Last seen</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">proxy.golang.org</td><td><span class="tag ok">allowed</span></td><td class="mono">212</td><td class="mono">184 MB</td><td>4</td><td class="mono dim">2m</td></tr>
+              <tr class="hl"><td class="mono">sum.golang.org</td><td><span class="tag warn">blocked · pending</span></td><td class="mono">3</td><td class="mono">0 B</td><td>1</td><td class="mono dim">just now</td></tr>
+              <tr><td class="mono">registry.npmjs.org</td><td><span class="tag ok">allowed</span></td><td class="mono">40</td><td class="mono">61 MB</td><td>1</td><td class="mono dim">1h</td></tr>
+              <tr><td class="mono">api.github.com</td><td><span class="tag ok">allowed</span></td><td class="mono">18</td><td class="mono">220 KB</td><td>3</td><td class="mono dim">12m</td></tr>
+              <tr><td class="mono">host.docker.internal:11434</td><td><span class="tag ok">model provider</span></td><td class="mono">1,904</td><td class="mono">41 MB</td><td>6</td><td class="mono dim">now</td></tr>
+              <tr><td class="mono">pastebin.com</td><td><span class="tag err">blocked</span></td><td class="mono">1</td><td class="mono">0 B</td><td>1</td><td class="mono dim">3h</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes"><li><b class="k">1</b><span>A blocked request from a running agent becomes a decision in the inbox, like an approval. "Add to workspace" writes a draft change to the template (see the layer builder).</span></li><li><b class="k">2</b><span>Unexpected destinations stand out, such as the blocked pastebin request. This is a safety tool as much as a debugging one.</span></li><li><b class="k">3</b><span>It needs an egress proxy per workspace network, which is new work. Today the sandbox can only switch the network on or off.</span></li></ul>
+</section>
+
+<section id="prbot">
+  <div class="sec-no">09</div>
+  <h2>PR review bot</h2>
+  <div class="prose"><p>A forge webhook (or the poller) starts a read-only reviewer recipe on new or updated PRs. Reviews arrive as drafts in your inbox. You can post them, edit them, or let them post automatically per project.</p></div>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / automations / pr-review</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b class="on" title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="ttl">PR review bot</span><span class="meta"><span class="tag">marshal</span><span class="tag ok">on</span><span>recipe: Review a PR · sonnet @ anthropic · read-only</span></span><span class="grow"></span><span class="btn">Settings</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="width:380px;flex:none;border-right:1px solid var(--m-line);padding:8px 6px">
+            <div class="it on" style="grid-template-columns:14px 1fr auto"><span class="dot ok"></span><span class="t">#34 acp: scope provider tool-call IDs</span><span class="r">draft</span><span class="s">3 findings · 1 blocking · by fix-ollama-ids</span></div>
+            <div class="it" style="grid-template-columns:14px 1fr auto"><span class="dot run"></span><span class="t">#36 tui: header clocks after idle</span><span class="r">1m</span><span class="s">reviewing · by sam</span></div>
+            <div class="it" style="grid-template-columns:14px 1fr auto"><span class="dot"></span><span class="t">#33 docs: single-stack README</span><span class="r">posted</span><span class="s">no findings · approved</span></div>
+            <div class="it" style="grid-template-columns:14px 1fr auto"><span class="dot"></span><span class="t">#31 readme refresh</span><span class="r">posted</span><span class="s">2 nits</span></div>
+          </div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+            <div style="padding:12px 16px;border-bottom:1px solid var(--m-line)" class="lr"><b>Draft review · #34</b><span class="tag err">request changes</span><span class="grow"></span><span class="btn sm">Edit</span><span class="btn sm">Discard</span><span class="btn sm pri">Post to GitHub</span></div>
+            <div style="padding:12px 16px;display:grid;gap:10px">
+              <div class="card pad"><div class="lr"><span class="tag err">blocking</span><span class="mono">internal/acp/turn.go:361</span></div><div style="margin-top:6px;font-size:12.5px">Scoped IDs use the step number. A child agent's steps also start at 1, so two agents' first calls collide when both stream to the same ACP client.</div><div class="lr" style="margin-top:8px"><span class="mut" style="font-size:12px">evidence: step 4 · read subagent_async.go</span><span class="grow"></span><span class="btn sm">Send to author agent</span></div></div>
+              <div class="card pad"><div class="lr"><span class="tag warn">should fix</span><span class="mono">internal/acp/turn_test.go:88</span></div><div style="margin-top:6px;font-size:12.5px">The reuse test covers native mode only. Add an envelope-mode case with synthesised IDs.</div></div>
+              <div class="card pad"><div class="lr"><span class="tag">nit</span><span class="mono">docs/acp.md</span></div><div style="margin-top:6px;font-size:12.5px">The file was touched, but the ID format isn't documented.</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes"><li><b class="k">1</b><span>When the PR came from a Marshal agent, "Send to author agent" sends the finding back to that agent as steering, which closes the loop without you.</span></li><li><b class="k">2</b><span>It builds on the forge adapters and the issue poller. Webhook intake and posting reviews are new.</span></li><li><b class="k">3</b><span>Per project settings: which PRs (all, labelled, or from agents), the reviewer model, and whether to post automatically or hold drafts.</span></li></ul>
+</section>
+
+<section id="ci">
+  <div class="sec-no">10</div>
+  <h2>CI fixer</h2>
+  <div class="prose"><p>A failed check on a watched branch starts an agent in that branch's workspace. It gets the failing job's log, reproduces the failure, and proposes a fix as a PR or a commit to the branch, depending on the rules.</p></div>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / marshal / automations / ci-fixer</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b class="on" title="Projects">≡</b><b title="Watches">○</b><b title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="ttl">CI fixer</span><span class="meta"><span class="tag">marshal</span><span class="tag ok">on</span><span>branches: main, release/*</span></span><span class="grow"></span><span class="btn">Rules</span></div>
+        <div style="padding:14px 16px;display:grid;grid-template-columns:1.4fr 1fr;gap:14px;flex:1;align-content:start">
+          <div class="card">
+            <div class="lr pad"><span class="dot run"></span><b>main #412 · test (ubuntu, go 1.26)</b><span class="grow"></span><span class="tag err">failed</span></div>
+            <div class="hr"></div>
+            <div class="pad" style="display:grid;gap:10px">
+              <div class="lr" style="gap:6px;font-size:12px"><span class="cellbox ok">✓ log fetched</span><span class="dim">→</span><span class="cellbox run"><span class="dot run"></span>reproducing</span><span class="dim">→</span><span class="cellbox idle">fix</span><span class="dim">→</span><span class="cellbox idle">gate</span><span class="dim">→</span><span class="cellbox idle">PR</span></div>
+              <div class="out" style="margin:0">--- FAIL: TestWatchResume (0.31s)
+    watch_resume_test.go:142: resumed twice; want once
+FAIL marshal/internal/app/tui  12.4s</div>
+              <div class="sh2"><span class="g accc">⠋</span><span class="hl">Reproducing the failure with -race -count=20; it looks timing-dependent.</span><span class="mt">51s</span></div>
+              <div class="lr"><span class="tag">first bad commit: acd2ef8</span><span class="tag">flaky? 3/20 so far</span><span class="grow"></span><span class="btn sm">Open agent</span></div>
+            </div>
+          </div>
+          <div class="card pad"><div class="h">Rules</div>
+            <div style="display:grid;gap:9px;margin-top:10px;font-size:12.5px">
+              <div class="lr"><span class="tog on"></span><span class="grow">Start on failed checks on <span class="mono">main</span>, <span class="mono">release/*</span></span></div>
+              <div class="lr"><span class="tog on"></span><span class="grow">Only if the failure reproduces locally</span></div>
+              <div class="lr"><span class="tog"></span><span class="grow">Push the fix directly to the branch</span></div>
+              <div class="lr"><span class="tog on"></span><span class="grow">Open a PR and request the review bot</span></div>
+              <div class="lr"><span class="grow">Give up after</span><span class="fake">30m · $1.50</span></div>
+              <div class="lr"><span class="grow">Never</span><span class="mut">skip, disable or quarantine tests</span></div>
+            </div>
+            <div class="hr" style="margin:12px 0"></div>
+            <div class="h">Last 30 days</div><div class="lr" style="margin-top:6px;font-size:12.5px"><span class="grow">Fixed and merged</span><span class="mono">7</span></div><div class="lr" style="font-size:12.5px"><span class="grow">Didn't reproduce</span><span class="mono">3</span></div><div class="lr" style="font-size:12.5px"><span class="grow">Gave up</span><span class="mono">1</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes"><li><b class="k">1</b><span>The stages are fixed and visible: fetch the log, reproduce, fix, run the gate, open a PR. Each stage links to its steps in the transcript.</span></li><li><b class="k">2</b><span>The "never skip tests" rule is enforced in the recipe's prompt and policy, not only stated in the UI.</span></li><li><b class="k">3</b><span>It's triggered by the main CI watch (see Watches) or a forge webhook, and runs in the project's default workspace.</span></li></ul>
+</section>
+
+<section id="memory">
+  <div class="sec-no">11</div>
+  <h2>Shared memory across projects</h2>
+  <div class="prose"><p>Marshal's knowledge agent already keeps memories per project, with a confidence score. This page adds a scope to each memory (project, workspace or global) and shows where each one came from, so a lesson learned in one repo can help another.</p></div>
+  <div class="frame"><div class="mock">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">marshal.local / library / memory</span></div>
+    <div class="app">
+      <div class="rail"><div class="logo">●</div><b title="Home">⌂<em>2</em></b><b title="Live">◉</b><b title="Agents">⧉</b><b title="Runs">⋔</b><b title="Workspaces">▦</b><b title="Projects">≡</b><b title="Watches">○</b><b class="on" title="Library">◈</b><span class="sp"></span><b title="Usage">∿</b><b title="Settings">⚙</b></div>
+      <div class="main">
+        <div class="hdr"><span class="ttl">Memory</span><span class="seg" style="margin-left:6px"><span class="on">All scopes</span><span>Global</span><span>Workspace</span><span>Project</span></span><span class="grow"></span><span class="fake" style="width:240px">⌕ Search 212 memories</span></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div style="flex:1;min-width:0;padding:8px 6px">
+            <table class="tbl2">
+              <thead><tr><th>Memory</th><th>Scope</th><th>Confidence</th><th>Used</th></tr></thead>
+              <tbody>
+                <tr class="hl"><td>Go tests in this org run with <span class="mono">-race</span>; CI fails otherwise.</td><td><span class="tag acc">global</span></td><td><div class="bar2" style="width:80px"><i style="width:92%;background:var(--m-ok)"></i></div></td><td class="mono">41×</td></tr>
+                <tr><td>Ollama numbers tool calls per response; never use them as unique IDs.</td><td><span class="tag gold">go-service</span></td><td><div class="bar2" style="width:80px"><i style="width:80%;background:var(--m-ok)"></i></div></td><td class="mono">6×</td></tr>
+                <tr><td>Specs live in docs/single-stack, against AGENTS.md, by owner choice.</td><td><span class="tag">marshal</span></td><td><div class="bar2" style="width:80px"><i style="width:70%;background:var(--m-ok)"></i></div></td><td class="mono">4×</td></tr>
+                <tr><td>parser-kit's fixtures are generated; edit the generator, not the files.</td><td><span class="tag">parser-kit</span></td><td><div class="bar2" style="width:80px"><i style="width:55%;background:var(--m-warn)"></i></div></td><td class="mono">2×</td></tr>
+                <tr><td>Tests that chmod files fail as root in containers.</td><td><span class="tag acc">global</span></td><td><div class="bar2" style="width:80px"><i style="width:38%;background:var(--m-warn)"></i></div></td><td class="mono">1×</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="width:360px;flex:none;border-left:1px solid var(--m-line);background:var(--m-panel);padding:14px;display:flex;flex-direction:column;gap:12px">
+            <div class="h">Go tests run with -race</div>
+            <div class="kv"><span>scope</span><span>global · all projects</span><span>learned</span><span>marshal · ci-fix main #398 · step 5</span><span>confirmed</span><span>parser-kit · 3 agents</span><span>owner</span><span><span class="av you">A</span> you</span></div>
+            <div class="card pad" style="font-size:12.5px"><div class="h">Promoted from project</div><div style="margin-top:6px" class="mut">Raised from marshal to global after it held in a second project. Promoting suggestions requires your approval.</div></div>
+            <div class="lr" style="margin-top:auto"><span class="btn sm">Lower confidence</span><span class="btn sm">Change scope</span><span class="grow"></span><span class="btn sm">Delete</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes"><li><b class="k">1</b><span>Listing, deleting and setting confidence already exist over ACP. Scopes, provenance and promotion between scopes are new.</span></li><li><b class="k">2</b><span>Promotion is suggested when a memory holds in a second project, and never happens silently.</span></li><li><b class="k">3</b><span>The owner field is there for multiple users. Later, a team could share global memories.</span></li></ul>
+</section>
+
+<section id="status">
+  <div class="sec-no">12</div>
+  <h2>Status page</h2>
+  <div class="prose"><p>A read-only link to a run or agent, for someone who doesn't use Marshal. It shows progress, step headlines and the outcome. It never shows tool output, secrets, file contents or the composer. The link expires, and you can revoke it.</p></div>
+  <div class="frame"><div class="mock pub">
+    <div class="chrome" style="background:#e9e6e1;border-color:#d6d2cc"><i></i><i></i><i></i><span class="url" style="background:#fff;color:#5d5a55;border-color:#d6d2cc">status.marshal.local / s / 7Kp2xQ</span></div>
+    <div style="height:640px;padding:34px 0;display:flex;justify-content:center;background:#f6f4f0;color:#1c1b1a">
+      <div style="width:720px;display:flex;flex-direction:column;gap:16px;font-family:var(--font-ui)">
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:26px;height:26px;border-radius:7px;background:#ff875f;color:#1d0e07;display:grid;place-items:center;font-weight:700">●</span><b style="font-size:15px">Marshal</b><span style="color:#6b6760;font-size:13px">· shared by the marshal project</span><span style="flex:1"></span><span style="font:500 12px var(--font-mono);color:#6b6760">updates live</span></div>
+        <div style="background:#fff;border:1px solid #dcd9d4;border-radius:12px;padding:20px 22px">
+          <div style="font:600 20px var(--font-ui)">CLI exit codes</div>
+          <div style="color:#5d5a55;margin-top:4px">Plan run · started 18 minutes ago · about 6–25 minutes left</div>
+          <div style="display:flex;gap:3px;margin:16px 0 6px"><i style="flex:1;height:8px;border-radius:4px;background:#0b7a63"></i><i style="flex:1;height:8px;border-radius:4px;background:#0b7a63"></i><i style="flex:1;height:8px;border-radius:4px;background:#0b7a63"></i><i style="flex:1;height:8px;border-radius:4px;background:#c2491f"></i><i style="flex:1;height:8px;border-radius:4px;background:#e4e0da"></i><i style="flex:1;height:8px;border-radius:4px;background:#e4e0da"></i><i style="flex:1;height:8px;border-radius:4px;background:#e4e0da"></i></div>
+          <div style="font:500 12px var(--font-mono);color:#5d5a55">3 of 7 tasks done</div>
+        </div>
+        <div style="background:#fff;border:1px solid #dcd9d4;border-radius:12px;padding:8px 0">
+          <div style="display:grid;grid-template-columns:24px 1fr auto;gap:10px;padding:9px 20px;align-items:center"><span style="color:#0b7a63">✓</span><span>Define the exit-code table</span><span style="font:12px var(--font-mono);color:#6b6760">3m</span></div>
+          <div style="display:grid;grid-template-columns:24px 1fr auto;gap:10px;padding:9px 20px;align-items:center"><span style="color:#0b7a63">✓</span><span>Map errors to codes</span><span style="font:12px var(--font-mono);color:#6b6760">4m</span></div>
+          <div style="display:grid;grid-template-columns:24px 1fr auto;gap:10px;padding:9px 20px;align-items:center"><span style="color:#0b7a63">✓</span><span>Wire the guard into the CLI</span><span style="font:12px var(--font-mono);color:#6b6760">6m</span></div>
+          <div style="display:grid;grid-template-columns:24px 1fr auto;gap:10px;padding:9px 20px;align-items:center;background:#fbe5da"><span style="color:#c2491f">●</span><span><b>Exit 2 on empty input</b><br><span style="color:#5d5a55;font-size:13px">In review: checking the error message matches the spec.</span></span><span style="font:12px var(--font-mono);color:#6b6760">2m</span></div>
+          <div style="display:grid;grid-template-columns:24px 1fr auto;gap:10px;padding:9px 20px;align-items:center;color:#8a867f"><span>○</span><span>Document the codes · Integration test · Changelog</span><span></span></div>
+        </div>
+        <div style="color:#8a867f;font-size:12px">This page shows progress only. Link expires in 7 days.</div>
+      </div>
+    </div>
+  </div></div>
+  <ul class="notes"><li><b class="k">1</b><span>Light by default: this is for people outside Marshal, often reading on a phone.</span></li><li><b class="k">2</b><span>It's served by the bridge from an unguessable, revocable token, with its own narrow read-only view of the run. It's built from the same view model as the transcript, with tool rows removed.</span></li><li><b class="k">3</b><span>Creating, listing and revoking links is recorded in the audit log.</span></li></ul>
+</section>
+
+<section id="users">
+  <div class="sec-no">13</div>
+  <h2>Multiple users: designed for, built later</h2>
+  <div class="prose">
+    <p>The pages above already leave room for more than one person, so adding users later won't need a redesign:</p>
+    <ul class="rules">
+      <li><strong>Avatars and origins</strong> on agents, approvals, comments and memories (you, a schedule, CI, a teammate).</li>
+      <li><strong>"Mine / Everyone"</strong> on Home and lists. With one operator, "Mine" is everything.</li>
+      <li><strong>An owner field</strong> on agents, runs, workspaces, secrets and memories, from day one in the data model. The bridge already has <code>DefaultOwnerID</code>.</li>
+      <li><strong>Roles</strong> to arrive later: viewer, operator, admin. Every action is already designed as a single operation that can be checked against a role and written to the audit log.</li>
+    </ul>
+    <p>Deferred: user accounts, sign-in, single sign-on, role enforcement, per-user notifications and shared team memory.</p>
+  </div>
+</section>
+
+<p class="cap" style="margin-top:36px">Based on <code>main</code> at <code>acd2ef8</code>. Options and earlier explorations: the Marshal Web Studio proposal page.</p>
+</div>
+<script>
+(function () {
+  var W = 1280;
+  function fit() {
+    document.querySelectorAll('.frame').forEach(function (f) {
+      var m = f.querySelector('.mock');
+      if (!m) return;
+      var s = Math.min(1, f.clientWidth / W);
+      m.style.transform = 'scale(' + s + ')';
+      f.style.height = Math.ceil(m.offsetHeight * s) + 'px';
+    });
+  }
+  if ('ResizeObserver' in window) { new ResizeObserver(fit).observe(document.body); }
+  window.addEventListener('resize', fit);
+  if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fit); }
+  fit();
+})();
+</script>
+
+</body>
+</html>

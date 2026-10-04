@@ -1717,8 +1717,8 @@ func TestUnansweredAnswers(t *testing.T) {
 func TestAppendActiveToolCallOutput(t *testing.T) {
 	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
 	s.SetActiveToolCall(ActiveToolCall{Name: "shell.run", Args: "echo hi", StartedAt: time.Now()})
-	s.AppendActiveToolCallOutput("hello")
-	s.AppendActiveToolCallOutput(" world")
+	s.AppendActiveToolCallOutput("", "hello")
+	s.AppendActiveToolCallOutput("", " world")
 	atc, _ := s.ActiveToolCall()
 	if atc.Output != "hello world" {
 		t.Fatalf("Output = %q, want %q", atc.Output, "hello world")
@@ -2571,7 +2571,7 @@ func TestSetActiveToolCallArgsPreservesOtherFields(t *testing.T) {
 		StartedAt: started,
 	})
 
-	s.SetActiveToolCallArgs("all (2 running)")
+	s.SetActiveToolCallArgs("", "all (2 running)")
 
 	got, ok := s.ActiveToolCall()
 	if !ok {
@@ -2590,7 +2590,7 @@ func TestSetActiveToolCallArgsPreservesOtherFields(t *testing.T) {
 
 func TestSetActiveToolCallArgsNoActiveCallIsNoop(t *testing.T) {
 	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
-	s.SetActiveToolCallArgs("anything") // must not panic
+	s.SetActiveToolCallArgs("", "anything") // must not panic
 	if _, ok := s.ActiveToolCall(); ok {
 		t.Error("an args update must not create an active call")
 	}

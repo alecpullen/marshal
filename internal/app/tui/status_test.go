@@ -8,11 +8,10 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
 )
@@ -393,22 +392,35 @@ func TestShouldShowStatusURLReturnsTrueWhenNoBrowserSession(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsBrowserSegmentWhenStripIsBusyWithSwarm(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.state.SetBrowserInfo(session.BrowserInfo{
-		SessionOpen: true,
-		URL:         "https://example.com/docs",
-		Mode:        "standalone",
-	})
-	m.state.SetSwarmProgress(session.SwarmProgress{
-		Active: true,
-		Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
-	})
-	if !m.ShouldShowStatusURL() {
-		t.Fatal("status URL must reappear when the live strip is showing swarm progress")
-	}
-	if !strings.Contains(stripANSI(m.renderStatusLine(100)), "example.com") {
-		t.Fatal("status line should carry the browser URL while swarm owns the strip")
+// On a tall frame the now bar carries the browser row beside swarm progress,
+// so the status line drops its duplicate URL. On a short frame the compact
+// bar is busy with swarm progress and has no room for the browser, so the
+// status line carries it.
+func TestStatusLineBrowserSegmentFollowsNowBar(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		height     int
+		wantStatus bool
+	}{
+		{"tall frame, bar shows browser", 40, false},
+		{"short frame, bar shows swarm only", 24, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newStatusTestModel(t)
+			m.resize(120, tc.height)
+			m.state.SetBrowserInfo(session.BrowserInfo{
+				SessionOpen: true,
+				URL:         "https://example.com/docs",
+				Mode:        "standalone",
+			})
+			m.state.SetSwarmProgress(session.SwarmProgress{
+				Active: true,
+				Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
+			})
+			if got := m.ShouldShowStatusURL(); got != tc.wantStatus {
+				t.Fatalf("ShouldShowStatusURL() = %v, want %v", got, tc.wantStatus)
+			}
+		})
 	}
 }
 
@@ -459,7 +471,7 @@ func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 func TestStatusLineShowsQueueHint(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.queuedCount = 2
-	line := stripANSI(m.renderStatusLine(120))
+	line := stripANSI(m.renderStatusLine(140))
 	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
 		t.Fatalf("status line missing queue hint:\n%s", line)
 	}
@@ -634,10 +646,10 @@ func TestWorkspaceMsgUpdatesGitInfoWhenDockOpen(t *testing.T) {
 	}
 }
 
-// initRailTestRepo builds a real git repo in dir with one committed file and
+// initSheetTestRepo builds a real git repo in dir with one committed file and
 // returns the base commit SHA. Mirrors the inline pattern in
 // changedfiles_test.go without exporting from that package.
-func initRailTestRepo(t *testing.T, dir string) string {
+func initSheetTestRepo(t *testing.T, dir string) string {
 	t.Helper()
 	for _, args := range [][]string{
 		{"init", "-q", "-b", "main", dir},
@@ -664,12 +676,12 @@ func initRailTestRepo(t *testing.T, dir string) string {
 	return string(out[:len(out)-1])
 }
 
-func TestRefreshRailChangedUsesActiveRoot(t *testing.T) {
+func TestRefreshSheetChangedUsesActiveRoot(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	base := initRailTestRepo(t, dir)
+	base := initSheetTestRepo(t, dir)
 
 	// Create a linked worktree on a new branch.
 	wt := filepath.Join(dir, "wt")
@@ -687,68 +699,22 @@ func TestRefreshRailChangedUsesActiveRoot(t *testing.T) {
 	}
 
 	m := newTestModel(t)
-	m.railWidth = 40 // enable the rail
 	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: wt, Branch: "feat-x"})
-	m.railBaseRef = base
+	m.sheetBaseRef = base
 
-	m.refreshRailChanged()
+	m.refreshSheetChanged()
 
 	found := false
-	for _, f := range m.railChanged {
+	for _, f := range m.sheetChanged {
 		if f.Path == "a.txt" {
 			found = true
 		}
 		if f.Path == "main-only.txt" {
-			t.Errorf("railChanged includes main-checkout file %q, want only worktree changes", f.Path)
+			t.Errorf("sheetChanged includes main-checkout file %q, want only worktree changes", f.Path)
 		}
 	}
 	if !found {
-		t.Errorf("railChanged missing worktree-modified a.txt: %+v", m.railChanged)
-	}
-}
-
-func TestResizeNarrowToWideRefreshesRail(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	dir := t.TempDir()
-	base := initRailTestRepo(t, dir)
-
-	// Modify a file so the rail has something to show.
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
-		t.Fatalf("write a.txt: %v", err)
-	}
-
-	m := newTestModel(t)
-	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir, Branch: "main"})
-	m.railBaseRef = base
-
-	// Narrow resize: below the rail breakpoint (MinWidth=120), the rail is
-	// disabled and the changed section must be empty.
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
-	m = mm.(Model)
-	if m.railEnabled() {
-		t.Fatal("rail enabled at narrow width, want disabled")
-	}
-	if len(m.railChanged) != 0 {
-		t.Fatalf("railChanged at narrow width = %+v, want empty", m.railChanged)
-	}
-
-	// Wide resize: rail becomes enabled and the changed section refreshes
-	// to list the modified file.
-	mm, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
-	m = mm.(Model)
-	if !m.railEnabled() {
-		t.Fatal("rail disabled at wide width, want enabled")
-	}
-	found := false
-	for _, f := range m.railChanged {
-		if f.Path == "a.txt" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("railChanged after narrow→wide missing modified a.txt: %+v", m.railChanged)
+		t.Errorf("sheetChanged missing worktree-modified a.txt: %+v", m.sheetChanged)
 	}
 }
 
@@ -834,5 +800,62 @@ func TestStatusHidesGenerationBeforeAnyCompaction(t *testing.T) {
 	// Generation 0 is the session's first window — not a compaction.
 	if out := m.renderStatusLine(100); strings.Contains(out, "gen ") {
 		t.Errorf("generation 0 should not be shown: %q", out)
+	}
+}
+
+func TestStatusLineShowsChangedFileCount(t *testing.T) {
+	m := newStatusTestModel(t)
+	if strings.Contains(stripANSI(m.renderStatusLine(140)), "±") {
+		t.Fatal("±N files must be hidden when nothing changed")
+	}
+	m.sheetChanged = []sessionsheet.ChangedFile{{Path: "a"}, {Path: "b"}, {Path: "c"}}
+	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±3 files") {
+		t.Fatalf("status line missing ±3 files:\n%s", got)
+	}
+	m.sheetChanged = m.sheetChanged[:1]
+	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") || strings.Contains(got, "±1 files") {
+		t.Fatalf("one changed file must read ±1 file:\n%s", got)
+	}
+}
+
+// ±N files drops before the route and mode segments when the line is tight.
+func TestStatusLineChangedFileCountDropsBeforeRoute(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	m.sheetChanged = []sessionsheet.ChangedFile{{Path: "a"}}
+	var sawBoth bool
+	for w := 120; w >= 20; w -= 2 {
+		line := stripANSI(m.renderStatusLine(w))
+		hasFiles := strings.Contains(line, "±1 file")
+		hasRoute := strings.Contains(line, "qwen @ ollama")
+		if hasFiles && !hasRoute {
+			t.Fatalf("width %d kept ±1 file but dropped the route:\n%s", w, line)
+		}
+		sawBoth = sawBoth || (hasFiles && hasRoute)
+	}
+	if !sawBoth {
+		t.Fatal("never saw ±1 file alongside the route; the test's width sweep is stale")
+	}
+}
+
+// A turn that changes files surfaces ±N files once it finishes.
+func TestChangedFileCountAppearsAfterTurn(t *testing.T) {
+	m, dir := gitModel(t)
+	m.resize(140, 40)
+	if strings.Contains(stripANSI(m.renderStatusLine(140)), "±") {
+		t.Fatal("clean tree must not show ±N files")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.busy = true
+	mm, cmd := m.Update(agentFinishedMsg{})
+	m = asModel(t, mm)
+	for _, msg := range collectSheetBaseRefs(t, cmd) {
+		mm, _ = m.Update(msg)
+		m = asModel(t, mm)
+	}
+	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") {
+		t.Fatalf("status line missing ±1 file after the turn:\n%s", got)
 	}
 }

@@ -40,6 +40,8 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.MaxToolResultChars, file.Agent.MaxToolResultChars)
 		set(&cfg.Agent.MaxStructuredOutputChars, file.Agent.MaxStructuredOutputChars)
 		set(&cfg.Agent.PlanFirst, file.Agent.PlanFirst)
+		set(&cfg.Agent.NarrationPrompt, file.Agent.NarrationPrompt)
+		set(&cfg.Agent.IntentNudge, file.Agent.IntentNudge)
 		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
 		set(&cfg.Agent.ApprovalMode, file.Agent.ApprovalMode)
 		set(&cfg.Agent.HistoryBudgetTokens, file.Agent.HistoryBudgetTokens)
@@ -357,6 +359,10 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.TUI.Mode, file.TUI.Mode)
 		set(&cfg.TUI.MouseCapture, file.TUI.MouseCapture)
 		set(&cfg.TUI.Suggestions, file.TUI.Suggestions)
+		if tr := file.TUI.Transcript; tr != nil {
+			set(&cfg.TUI.Transcript.Density, tr.Density)
+			set(&cfg.TUI.Transcript.FoldFinishedTasks, tr.FoldFinishedTasks)
+		}
 		if sp := file.TUI.SidePanel; sp != nil {
 			set(&cfg.TUI.SidePanel.Enabled, sp.Enabled)
 			set(&cfg.TUI.SidePanel.MinWidth, sp.MinWidth)

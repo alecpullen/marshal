@@ -198,6 +198,8 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&agent.MaxToolResultChars, fileField[int](file.Agent, "MaxToolResultChars"), cfg.Agent.MaxToolResultChars, def.Agent.MaxToolResultChars)
 	putKey(&agent.MaxStructuredOutputChars, fileField[int](file.Agent, "MaxStructuredOutputChars"), cfg.Agent.MaxStructuredOutputChars, def.Agent.MaxStructuredOutputChars)
 	putKey(&agent.PlanFirst, fileField[bool](file.Agent, "PlanFirst"), cfg.Agent.PlanFirst, def.Agent.PlanFirst)
+	putKey(&agent.NarrationPrompt, fileField[bool](file.Agent, "NarrationPrompt"), cfg.Agent.NarrationPrompt, def.Agent.NarrationPrompt)
+	putKey(&agent.IntentNudge, fileField[bool](file.Agent, "IntentNudge"), cfg.Agent.IntentNudge, def.Agent.IntentNudge)
 	putKey(&agent.SubtaskIterations, fileField[int](file.Agent, "SubtaskIterations"), cfg.Agent.SubtaskIterations, def.Agent.SubtaskIterations)
 	putKey(&agent.ApprovalMode, fileField[string](file.Agent, "ApprovalMode"), cfg.Agent.ApprovalMode, def.Agent.ApprovalMode)
 	putKey(&agent.HistoryBudgetTokens, fileField[int](file.Agent, "HistoryBudgetTokens"), cfg.Agent.HistoryBudgetTokens, def.Agent.HistoryBudgetTokens)
@@ -326,16 +328,15 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			Mode:         strutil.Ptr(cfg.TUI.Mode),
 			MouseCapture: strutil.Ptr(cfg.TUI.MouseCapture),
 			Suggestions:  strutil.Ptr(cfg.TUI.Suggestions),
+			Transcript: &fileTranscript{
+				Density:           strutil.Ptr(cfg.TUI.Transcript.Density),
+				FoldFinishedTasks: strutil.Ptr(cfg.TUI.Transcript.FoldFinishedTasks),
+			},
 		}
-		if !reflect.DeepEqual(cfg.TUI.SidePanel, def.TUI.SidePanel) {
-			file.TUI.SidePanel = &fileSidePanel{
-				Enabled:  strutil.Ptr(cfg.TUI.SidePanel.Enabled),
-				MinWidth: strutil.Ptr(cfg.TUI.SidePanel.MinWidth),
-				WidthPct: strutil.Ptr(cfg.TUI.SidePanel.WidthPct),
-				MinCols:  strutil.Ptr(cfg.TUI.SidePanel.MinCols),
-				MaxCols:  strutil.Ptr(cfg.TUI.SidePanel.MaxCols),
-				Hidden:   cfg.TUI.SidePanel.Hidden,
-			}
+		// Only hidden is still meaningful. Writing the deprecated sizing keys
+		// would make every later load warn about a file the app wrote itself.
+		if len(cfg.TUI.SidePanel.Hidden) > 0 {
+			file.TUI.SidePanel = &fileSidePanel{Hidden: cfg.TUI.SidePanel.Hidden}
 		}
 	}
 	if !reflect.DeepEqual(cfg.Swarm, def.Swarm) {
@@ -624,16 +625,9 @@ func mergeMap[T any](disk, next map[string]T, baseline []map[string]T) map[strin
 func normalizedPresets(presets map[string]routing.ModelPreset) map[string]routing.ModelPreset {
 	out := make(map[string]routing.ModelPreset, len(presets))
 	for name, p := range presets {
-		preset := routing.ModelPreset{
-			ContextWindow:    p.ContextWindow,
-			MaxOutputTokens:  p.MaxOutputTokens,
-			ToolCalling:      p.ToolCalling,
-			LocalOnly:        p.LocalOnly,
-			Thinking:         p.Thinking,
-			Temperature:      p.Temperature,
-			Pricing:          p.Pricing,
-			VerificationGate: p.VerificationGate,
-		}
+		// Copy the entire preset so new configurable fields survive every save.
+		// Only identity fields are normalized below.
+		preset := p
 		preset.Name = name
 		preset.Provider, preset.Model, _ = strings.Cut(name, "/")
 		out[name] = preset

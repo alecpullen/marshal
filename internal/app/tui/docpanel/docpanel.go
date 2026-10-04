@@ -27,6 +27,9 @@ type Panel struct {
 	state *session.State
 	doc   commands.Doc
 	stack *listpanel.PaneStack
+	// source, when set, re-supplies the doc on every render so a panel over
+	// changing data (the Ctrl+T Tasks list) stays live.
+	source func() commands.Doc
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -34,11 +37,18 @@ var _ dock.Panel = (*Panel)(nil)
 // New builds a panel for doc. Rows are converted eagerly; drill frames are
 // built lazily by the engine on Enter.
 func New(doc commands.Doc, state *session.State) *Panel {
+	p := &Panel{state: state, doc: doc}
 	root := listpanel.NewFrame(doc.Title, func() []*listpanel.Field {
-		return rowsToFields(doc.Rows, state)
+		return rowsToFields(p.doc.Rows, state)
 	})
-	return &Panel{state: state, doc: doc, stack: listpanel.NewPaneStack(root)}
+	p.stack = listpanel.NewPaneStack(root)
+	return p
 }
+
+// SetSource makes the panel re-read its doc from fn on every render. The
+// Model calls it each frame so fn sees the current model value rather than
+// the copy the panel was opened from.
+func (p *Panel) SetSource(fn func() commands.Doc) { p.source = fn }
 
 // rowsToFields converts Doc rows to engine fields. Shared by the root frame
 // and drill-in children.
@@ -106,6 +116,9 @@ func (p *Panel) Sizing() dock.Sizing {
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 2 {
 		return ""
+	}
+	if p.source != nil {
+		p.doc = p.source()
 	}
 	pw := layout.PanelWidth(width)
 	inner := pw - 3

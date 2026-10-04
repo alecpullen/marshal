@@ -633,7 +633,15 @@ type SystemPromptOptions struct {
 	// file-tools rule is amended and systemAccessDirective is appended
 	// after the mode directive (spec §6).
 	SystemAccess bool
+	// Narration appends narrationAddendum to the native-tools prompt. It is
+	// never added in envelope mode, where `rationale` is already required.
+	Narration bool
 }
+
+// narrationAddendum asks the model to open each tool-calling response with one
+// sentence saying what it is about to do, so the transcript can show that
+// sentence as the step's headline.
+const narrationAddendum = `When you call tools, begin that same response with one short sentence saying what you are about to do and why — for example: "Reading the parser to find where empty input is handled." Never send that sentence on its own without the tool calls. Do not add it to your final answer.`
 
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
 	return buildSystemPrompt(SystemPromptOptions{
@@ -814,6 +822,10 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	b.WriteString("\n")
 	if nativeTools {
 		b.WriteString(nativeOutputFormat)
+		if opts.Narration {
+			b.WriteString("\n\n")
+			b.WriteString(narrationAddendum)
+		}
 		hasWritePatch := false
 		for _, tool := range tools {
 			if tool.Name == "file.write_patch" {

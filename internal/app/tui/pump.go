@@ -3,6 +3,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
@@ -95,13 +96,15 @@ func pumpSubagentEvents(ch <-chan pubsub.Event[session.SubagentEvent]) tea.Cmd {
 	}
 }
 
-// railBaseRefCmd shells out to git rev-parse off the UI thread and returns
-// the result as a railBaseRefMsg. dir is the workspace active root.
-func railBaseRefCmd(dir string) tea.Cmd {
+// sheetBaseRefCmd shells out to git off the UI thread — rev-parse, then the
+// changed-files diff against that ref — and returns both as a
+// sheetBaseRefMsg. dir is the workspace active root.
+func sheetBaseRefCmd(dir string) tea.Cmd {
 	if dir == "" {
 		return nil
 	}
 	return func() tea.Msg {
-		return railBaseRefMsg{dir: dir, ref: gitinfo.HeadSHA(dir)}
+		ref := gitinfo.HeadSHA(dir)
+		return sheetBaseRefMsg{dir: dir, ref: ref, changed: changedfiles.Read(dir, ref)}
 	}
 }

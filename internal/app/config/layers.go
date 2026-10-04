@@ -43,6 +43,11 @@ type Layers struct {
 	// merged config is unaffected (it was built from both files before the
 	// hoist ran) and the next load retries.
 	HoistError error
+	// SidePanelIgnoredBy lists the file layers that set a [tui.side_panel]
+	// key other than hidden. Those keys sized the removed side rail and now
+	// do nothing; presence is read from the raw file mirrors because a
+	// value equal to its default is indistinguishable in the merged config.
+	SidePanelIgnoredBy []LayerID
 }
 
 // LoadLayers loads config and exposes the cumulative snapshots used for
@@ -154,11 +159,33 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	return Layers{
 		Default: def, User: user, Merged: cfg, Migrated: migrated,
 		SubtaskIterationsSet: subtaskSet,
+		SidePanelIgnoredBy:   sidePanelIgnoredBy(userFile, projectFile),
 		HoistedProviders:     hoistedProviders,
 		HoistedPresets:       hoistedPresets,
 		HoistConflicts:       hoistConflicts,
 		HoistError:           hoistError,
 	}, nil
+}
+
+// sidePanelIgnoredBy reports which file layers set a dead [tui.side_panel]
+// key (everything but hidden).
+func sidePanelIgnoredBy(user, project configFile) []LayerID {
+	dead := func(f configFile) bool {
+		if f.TUI == nil || f.TUI.SidePanel == nil {
+			return false
+		}
+		sp := f.TUI.SidePanel
+		return sp.Enabled != nil || sp.MinWidth != nil || sp.WidthPct != nil ||
+			sp.MinCols != nil || sp.MaxCols != nil
+	}
+	var out []LayerID
+	if dead(user) {
+		out = append(out, LayerUser)
+	}
+	if dead(project) {
+		out = append(out, LayerProject)
+	}
+	return out
 }
 
 // LayerID identifies which merge layer supplied a value.

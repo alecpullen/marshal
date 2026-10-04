@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,20 @@ func TestEscResetsHistoryNavigation(t *testing.T) {
 	m, _ = pressKey(m, tea.KeyEscape)
 	if m.histIdx != -1 || m.draft != "" {
 		t.Fatalf("esc should reset history nav: histIdx=%d draft=%q", m.histIdx, m.draft)
+	}
+}
+
+func TestBusySubmitAppearsBeforeNextTick(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = true
+	m.refreshViewport()
+	m.input.SetValue("please check the tests too")
+	m, handled := pressKey(m, tea.KeyEnter)
+	if !handled {
+		t.Fatal("Enter was not handled")
+	}
+	if view := stripANSI(m.viewport.View()); !strings.Contains(view, "please check the tests too") {
+		t.Fatalf("submitted message must be visible without waiting for a tick or broker event; got %q", view)
 	}
 }
 

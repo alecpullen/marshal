@@ -77,6 +77,10 @@ func StartLoopback(ctx context.Context, timeout time.Duration) (*Loopback, error
 // StartLoopbackOnPort binds a 127.0.0.1 listener on the given port (0 asks
 // the kernel for a free one) and waits for the callback.
 func StartLoopbackOnPort(ctx context.Context, port int, timeout time.Duration) (*Loopback, error) {
+	return startLoopbackOnPath(ctx, port, "/callback", timeout)
+}
+
+func startLoopbackOnPath(ctx context.Context, port int, path string, timeout time.Duration) (*Loopback, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
@@ -93,7 +97,7 @@ func StartLoopbackOnPort(ctx context.Context, port int, timeout time.Duration) (
 	closeCh := make(chan struct{})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		res := LoopbackResult{}
 		if errMsg := q.Get("error"); errMsg != "" {
@@ -123,7 +127,7 @@ func StartLoopbackOnPort(ctx context.Context, port int, timeout time.Duration) (
 		default:
 		}
 	})
-	// Reject anything other than /callback on the loopback port — this is
+	// Reject anything other than the callback path on the loopback port — this is
 	// the only legitimate redirect target.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -168,7 +172,7 @@ func StartLoopbackOnPort(ctx context.Context, port int, timeout time.Duration) (
 	}()
 
 	return &Loopback{
-		RedirectURI: fmt.Sprintf("http://127.0.0.1:%d/callback", boundPort),
+		RedirectURI: fmt.Sprintf("http://127.0.0.1:%d%s", boundPort, path),
 		Done:        resultCh,
 		closeCh:     closeCh,
 	}, nil

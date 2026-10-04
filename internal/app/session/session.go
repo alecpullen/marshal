@@ -43,6 +43,7 @@ const (
 	EventChildQuestionChanged    = "child_question_changed"
 	EventPendingSkillGateChanged = "pending_skill_gate_changed"
 	EventBrowserChanged          = "browser_changed"
+	EventStepChanged             = "step_changed"
 )
 
 // Event is the union payload published on the session event broker
@@ -67,6 +68,8 @@ type Event struct {
 	PendingChildQuestion *PendingChildQuestion
 	PendingSkillGate     *PendingSkillGate
 	Browser              *BrowserInfo
+	// Step carries a step that began or ended (EventStepChanged).
+	Step *Step
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -226,12 +229,23 @@ type State struct {
 	skillGateDisabled bool
 	skillGateAllowed  map[string]bool
 	skillGateDenied   map[string]int
-	activeToolCall    *ActiveToolCall
-	sessionRules      []string
-	auditLog          []registry.AuditEvent
-	thinkingLog       []ThinkingEntry
-	lastBackup        []BackupFile
-	contextPack       contextpack.Pack
+	// activeToolCall is the latest in-flight call; activeTools holds every
+	// one by ToolCallID (concurrent calls in envelope mode).
+	activeToolCall *ActiveToolCall
+	activeTools    map[string]*ActiveToolCall
+	// steps is every step created or restored in this session, in sequence
+	// order; nextStepSeq is the next sequence number to hand out.
+	steps        []Step
+	nextStepSeq  int64
+	sessionRules []string
+	auditLog     []registry.AuditEvent
+	thinkingLog  []ThinkingEntry
+	lastBackup   []BackupFile
+	contextPack  contextpack.Pack
+	// requestInspection is the bounded snapshot of the last conversation
+	// attempt Marshal submitted to its provider adapter. It is in-memory only
+	// (see request_inspection.go): nothing persists it, and it is never logged.
+	requestInspection *RequestInspection
 	activeRoute       RouteInfo
 	turnToolCache     map[string]registry.ToolResult
 	toolCacheOrder    []string
@@ -749,6 +763,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		msgByID:                make(map[int64]Message),
 		dbIDToImID:             make(map[int64]int64),
 		nextMsgID:              1,
+		nextStepSeq:            1,
 		workspace:              Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
 		scratchpad:             make(map[string]db.ScratchpadEntry),
 		scratchpadConfig:       scratchpadCfg,
@@ -1596,8 +1611,12 @@ func (s *State) Transcript() []TranscriptItem {
 		})
 	}
 
+	visible := s.stepVisibility(s.branchIDsLocked())
 	for i := range s.auditLog {
 		evt := s.auditLog[i]
+		if !visible(evt.StepID) {
+			continue
+		}
 		items = append(items, TranscriptItem{
 			Timestamp: evt.Timestamp,
 			Kind:      KindAudit,
@@ -1607,6 +1626,9 @@ func (s *State) Transcript() []TranscriptItem {
 
 	for i := range s.thinkingLog {
 		t := s.thinkingLog[i]
+		if !visible(t.StepID) {
+			continue
+		}
 		items = append(items, TranscriptItem{
 			Timestamp: t.StartedAt,
 			Kind:      KindThinking,

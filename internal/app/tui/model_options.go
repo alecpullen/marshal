@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"sort"
 
@@ -11,10 +10,10 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
-	"marshal/internal/app/tui/presetflow"
+	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 // pendingModelOptionsState tracks a model-options config candidate that was
@@ -26,63 +25,31 @@ type pendingModelOptionsState struct {
 	retry      bool
 }
 
-// resolveReasoningSupport reports whether the preset's model is known to
-// accept a thinking-effort control, so the model-options panel can hide the
-// row when it would be a no-op. Any resolution failure leaves the row
-// visible: hiding a working control is worse than showing a dead one.
-// Limit discovery is cache-only — a keypress must never trigger a remote
-// limits refresh — and the capability probe is bounded by
-// presetflow.CapabilityProbeTimeout.
-//
-// Caveat: the limits table is a unified on-disk cache fed by OpenRouter and
-// LiteLLM, keyed by upstream provider/model ids. Lookup accepts variant and
-// unambiguous-prefix matches, so a marshal provider name (e.g. "litellm")
-// serving a fine-tuned non-reasoning variant of a model may inherit the
-// upstream's Reasoning verdict. The panel's "hide only when known" policy
-// makes this self-consistent — the row is hidden only when the table reports
-// a definite yes/no — but a false "no" is possible. The fail-open direction
-// is to show the row, which a variant match cannot override.
+// resolveReasoningSupport controls visibility from resolved provider metadata.
+// Unknown models retain a provider-default row; saved values remain editable.
 func (m *Model) resolveReasoningSupport(presetName string) bool {
-	preset, ok := m.state.Config.Models.Presets[presetName]
-	if !ok {
-		return true
-	}
-	pc, ok := m.state.Config.Providers[preset.Provider]
-	if !ok {
-		return true
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), presetflow.CapabilityProbeTimeout)
-	defer cancel()
-	prov, err := provider.NewFromConfig(preset.Provider, pc, m.dataDir, false, m.state.Config.Agent.ThinkingBudgetMargin)
-	if err != nil {
-		return true
-	}
-	var table *limits.Table
-	if cache, err := limits.Load(m.dataDir); err == nil && len(cache.Table) > 0 {
-		t := limits.NewTable(cache.Table)
-		table = &t
-	}
-	supported, _ := provider.ResolveReasoningSupport(ctx, prov, preset.Provider, preset.Model, table)
-	return supported
+	options := m.modelThinkingOptions(presetName)
+	return options == nil || len(options.Levels) > 0 || m.state.Config.Models.Presets[presetName].Thinking != ""
 }
 
 // openModelOptions opens the model-options panel for the active route's preset.
-func (m *Model) openModelOptions() {
+func (m *Model) openModelOptions() tea.Cmd {
 	route := m.state.ActiveRoute()
 	if !route.Active || route.Preset == "" {
 		m.state.AddMessage(session.RoleSystem, "No active model preset. Use /models to pick one first.", session.ContentTypePlain)
-		return
+		return nil
 	}
 	presetName := route.Preset
 	if m.pendingModelOptions != nil && m.pendingModelOptions.presetName == presetName {
-		m.dock.Open(modeloptions.New(m.pendingModelOptions.cfg, presetName, m.resolveReasoningSupport(presetName)))
-		return
+		m.dock.Open(modeloptions.New(m.pendingModelOptions.cfg, presetName, m.resolveReasoningSupport(presetName), m.modelThinkingOptions(presetName)))
+		return m.probeThinkingOptions(presetName)
 	}
 	if _, ok := m.state.Config.Models.Presets[presetName]; !ok {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Preset %q is not configured.", presetName), session.ContentTypePlain)
-		return
+		return nil
 	}
-	m.dock.Open(modeloptions.New(m.state.Config, presetName, m.resolveReasoningSupport(presetName)))
+	m.dock.Open(modeloptions.New(m.state.Config, presetName, m.resolveReasoningSupport(presetName), m.modelThinkingOptions(presetName)))
+	return m.probeThinkingOptions(presetName)
 }
 
 // openModelOptionsForProvider opens a picker listing the model pairs that use
@@ -212,4 +179,19 @@ func fieldLabel(id string) string {
 		return "Local only"
 	}
 	return id
+}
+
+func (m *Model) modelThinkingOptions(presetName string) *schema.ThinkingOptions {
+	preset := m.state.Config.Models.Presets[presetName]
+	pc := m.state.Config.Providers[preset.Provider]
+	return provider.ResolveThinkingOptions(pc.Type, preset.Model, preset.ThinkingOptions, m.discovered[preset.Provider])
+}
+
+func (m *Model) probeThinkingOptions(presetName string) tea.Cmd {
+	preset := m.state.Config.Models.Presets[presetName]
+	pc, ok := m.state.Config.Providers[preset.Provider]
+	if !ok || (!probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed) {
+		return nil
+	}
+	return probe.Provider("thinking-options", preset.Provider, pc, m.modelCacheDir, m.state.Config.Privacy.RemoteLimitDiscovery, m.state.Config.Agent.ThinkingBudgetMargin)
 }

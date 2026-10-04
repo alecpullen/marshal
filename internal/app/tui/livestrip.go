@@ -7,40 +7,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/app/tui/theme"
-	"marshal/internal/strutil"
 )
-
-// renderLiveStrip renders the one-row activity strip that replaced the
-// swarm roster panel and the browser bar. Only one source is shown at a
-// time, in priority order: an active swarm run, then an open browser
-// session. Returns "" when neither is live. SDD progress is deliberately
-// absent — the run panel owns it (one progress surface per run).
-//
-// Continuous progress lives here; terminal transitions (a role finishing,
-// a phase changing) print `·` events into the transcript instead.
-func (m Model) renderLiveStrip() string {
-	spinner := m.activeSpinnerFrame(session.ActivityTool)
-	if p := m.state.SwarmProgress(); p.Active {
-		out := liveStripLine(spinner, spinnerLabel(spinner, swarmStripText(p)), m.leftWidth)
-		return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
-	}
-	if bi := m.state.BrowserInfo(); bi.SessionOpen {
-		out := liveStripLine(glyph.Ambient, browserStripText(bi, spinner), m.leftWidth)
-		return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
-	}
-	return ""
-}
-
-// liveStripLine renders one gutter-prefixed row clipped to the frame
-// width. The gutter glyph is the spinner frame while work is running, so
-// the strip reads as a live line rather than a panel.
-func liveStripLine(glyph, text string, width int) string {
-	return gutterPrefix(glyph, dimColor) +
-		statusBusyStyle().Render(strutil.Truncate(text, max(width-3, 1), false))
-}
 
 // swarmStripText renders `swarm 3/5 · implementer — round 1/2`.
 func swarmStripText(p session.SwarmProgress) string {

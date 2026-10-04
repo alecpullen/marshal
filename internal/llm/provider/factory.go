@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/schema"
 )
 
@@ -55,6 +57,7 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
 
 		return NewOpenAICompatible(Options{
+			ThinkingLookup:   func(model string) *schema.ThinkingOptions { return cachedThinkingOptions(dataDir, name, pc)[model] },
 			Name:             name,
 			BaseURL:          pc.BaseURL,
 			APIKey:           apiKey,
@@ -79,22 +82,21 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 		caps.JSONMode = pc.StructuredOutput
 		caps.StructuredOutput = pc.StructuredOutput
 		caps.TemperatureLocked = pc.TemperatureLocked
-		// Ollama's think toggle is a different mechanism than the
-		// reasoning_effort/budget_tokens control; report no reasoning
-		// capability so the thinking preset field is not sent on the wire.
-		caps.Reasoning = false
+		// Native Ollama encodes effort through its model-specific think field.
+		caps.Reasoning = true
 		keepAlive := pc.KeepAlive
 		if keepAlive == "" {
 			keepAlive = defaultOllamaKeepAlive
 		}
 		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
 		return NewOllamaNative(Options{
-			Name:         name,
-			BaseURL:      pc.BaseURL,
-			APIKey:       apiKey,
-			Capabilities: &caps,
-			KeepAlive:    keepAlive,
-			LimitsTable:  table,
+			ThinkingLookup: func(model string) *schema.ThinkingOptions { return cachedThinkingOptions(dataDir, name, pc)[model] },
+			Name:           name,
+			BaseURL:        pc.BaseURL,
+			APIKey:         apiKey,
+			Capabilities:   &caps,
+			KeepAlive:      keepAlive,
+			LimitsTable:    table,
 		})
 	case "anthropic":
 		apiKey, err := ResolveAPIKey(pc)
@@ -111,6 +113,8 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 			APIKey:               apiKey,
 			Capabilities:         &caps,
 			ThinkingBudget:       pc.ThinkingBudget,
+			ModelThinking:        cachedThinkingOptions(dataDir, name, pc),
+			ThinkingLookup:       func(model string) *schema.ThinkingOptions { return cachedThinkingOptions(dataDir, name, pc)[model] },
 			ThinkingBudgetMargin: thinkingBudgetMargin,
 		})
 	case "openai_codex":
@@ -125,10 +129,11 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 		// structured output, and reasoning all PASS. Streaming is implied
 		// — the endpoint only accepts stream=true.
 		caps := schema.ProviderCapabilities{
-			ToolCalling:      true,
-			JSONMode:         false,
-			StructuredOutput: true,
-			Reasoning:        true,
+			ToolCalling:       true,
+			JSONMode:          false,
+			StructuredOutput:  true,
+			Reasoning:         true,
+			TemperatureLocked: pc.TemperatureLocked,
 		}
 		return NewOpenAICodex(CodexOptions{
 			Name:             name,
@@ -179,4 +184,21 @@ func ResolveAPIKey(pc config.ProviderConfig) (string, error) {
 		return v, nil
 	}
 	return "", nil // no auth — normal for local Ollama/LM Studio
+}
+
+func cachedThinkingOptions(dataDir, name string, pc config.ProviderConfig) map[string]*schema.ThinkingOptions {
+	if dataDir == "" {
+		return nil
+	}
+	models, ok := modelcache.Load(dataDir).Lookup(name, pc, modelcache.DefaultTTL, time.Now())
+	if !ok {
+		return nil
+	}
+	options := make(map[string]*schema.ThinkingOptions)
+	for _, model := range models {
+		if model.Thinking != nil {
+			options[model.ID] = model.Thinking
+		}
+	}
+	return options
 }

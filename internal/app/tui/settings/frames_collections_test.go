@@ -35,6 +35,30 @@ func TestProviderDetailHasModelOptionsAction(t *testing.T) {
 	}
 }
 
+func TestProviderDetailHasReasoningSummaryToggle(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{"openai-codex": {Type: "openai_codex"}}
+	st := newState(cfg)
+	detail := providersFrame(st).List.Rows()[0].Build()
+	for _, f := range detail.List.Rows() {
+		if f.ID == "providers.openai-codex.reasoning_summary" {
+			if f.Kind != kindToggle || f.GetBool() {
+				t.Fatal("expected a disabled reasoning summary toggle")
+			}
+			f.SetBool(true)
+			if !st.cfg.Providers["openai-codex"].ReasoningSummary {
+				t.Fatal("toggle did not enable reasoning summaries")
+			}
+			f.SetBool(false)
+			if st.cfg.Providers["openai-codex"].ReasoningSummary {
+				t.Fatal("toggle did not disable reasoning summaries")
+			}
+			return
+		}
+	}
+	t.Fatal("provider detail missing reasoning summary toggle")
+}
+
 func TestProviderRowShowsEndpointAndKeySource(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{

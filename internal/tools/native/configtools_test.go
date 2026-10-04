@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -731,6 +732,24 @@ func TestProvidersSetAllowsAPIKeyEnv(t *testing.T) {
 	assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
 		return c.Providers["openai"].APIKeyEnv == "OPENAI_API_KEY"
 	})
+}
+
+func TestProvidersSetReasoningSummary(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		cfg := config.Default()
+		cfg.Providers = map[string]config.ProviderConfig{"openai-codex": {ReasoningSummary: !enabled}}
+		tool, home, projectPath, _, reloaded := setupGlobalOnlyTool(t, cfg, "config.providers.set", (*toolSet).configProvidersSetTool)
+		args := json.RawMessage(fmt.Sprintf(`{"name":"openai-codex","reasoning_summary":%t}`, enabled))
+		if _, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.providers.set", Args: args}); err != nil {
+			t.Fatal(err)
+		}
+		if (*reloaded).Providers["openai-codex"].ReasoningSummary != enabled {
+			t.Fatalf("reasoning_summary not updated to %v", enabled)
+		}
+		assertGlobalWriteOnDisk(t, home, projectPath, func(c config.Config) bool {
+			return c.Providers["openai-codex"].ReasoningSummary == enabled
+		})
+	}
 }
 
 func TestProvidersSetPreservesCapabilityFlags(t *testing.T) {

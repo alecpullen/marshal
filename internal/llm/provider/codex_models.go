@@ -16,10 +16,11 @@ import (
 const codexModelsPath = "/codex/models"
 
 // codexModelsClientVersion is sent as the client_version query parameter.
-// Codex derives this from its own crate version; marshal has no equivalent,
-// so it sends a fixed placeholder. The spike confirmed the endpoint accepts
-// it (docs/codex-spike-findings-2026-09-14.md §4).
-const codexModelsClientVersion = "0.0.0"
+// This pins the catalog protocol version Marshal supports. The server accepts
+// 0.0.0 but returns a legacy catalog without newer models. A live comparison
+// confirmed that 0.160.0 includes the current models with the same credentials.
+// Review this pin when updating the Codex integration.
+const codexModelsClientVersion = "0.160.0"
 
 // codexModelEntry is one entry in the catalog's models array. Only the
 // fields marshal consumes are decoded; the catalog carries much more
@@ -34,8 +35,7 @@ type codexModelEntry struct {
 	Visibility       string `json:"visibility"`
 	SupportedInAPI   bool   `json:"supported_in_api"`
 	Priority         int    `json:"priority"`
-	// DefaultReasoningLevel and SupportedReasoningLevels are decoded for
-	// completeness; marshal's ModelInfo has no field for them yet.
+	// Reasoning controls are retained in ModelInfo and the model cache.
 	DefaultReasoningLevel   string `json:"default_reasoning_level"`
 	SupportedReasoningLevel []struct {
 		Effort      string `json:"effort"`
@@ -132,6 +132,15 @@ func filterCodexModels(entries []codexModelEntry) []schema.ModelInfo {
 			ID:            e.Slug,
 			OwnedBy:       "openai",
 			ContextWindow: e.ContextWindow,
+		}
+
+		if e.SupportedReasoningLevel != nil {
+			info.Thinking = &schema.ThinkingOptions{Default: e.DefaultReasoningLevel, Mode: "effort"}
+			for _, level := range e.SupportedReasoningLevel {
+				if level.Effort != "" {
+					info.Thinking.Levels = append(info.Thinking.Levels, level.Effort)
+				}
+			}
 		}
 		// The catalog reports a max context window larger than the default
 		// for the 5.6/6 family (872k vs 272k). ModelInfo has one field, so

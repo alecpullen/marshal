@@ -101,7 +101,7 @@ internal/worktree/             — git worktree helpers
 - **Provider-flexible** — Ollama, OpenRouter, LM Studio, vLLM, or any OpenAI-compatible endpoint; swap at `/profile`.
 - **Role-based routing** — use small models for search, strong models for patches.
 - **Repository intelligence** — tree-sitter symbol index, repo map, and file summaries.
-- **Context management** — pack builder with token budgets; inspect usage at `/context`.
+- **Context management** — pack builder with token budgets; inspect usage at `/context` and the last request sent at `/context request`.
 - **Safe, sandboxed tools** — shell commands classified, approval-gated, and run isolated by default.
 - **Git integration** — automatically checkpoint the working tree before tooling.
 - **Persistent sessions** — project state, messages, and memory stored in SQLite.

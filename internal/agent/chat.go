@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,10 +57,11 @@ type chatResult struct {
 // wire request". Populated by RunTask after resolveRoute and reset before the
 // turn returns; never shared across turns.
 type turnRequestOptions struct {
-	maxTokens     *int
-	contextWindow *int
-	thinking      string
-	temperature   *float64
+	maxTokens       *int
+	contextWindow   *int
+	thinking        string
+	thinkingOptions *schema.ThinkingOptions
+	temperature     *float64
 }
 
 func intPtr(v int) *int { return &v }
@@ -380,20 +382,33 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		requestTemperature = nil
 	}
 
-	events, err := p.Chat(ctx, schema.ChatRequest{
-		Model:          model,
-		Messages:       messages,
-		Stream:         true,
-		MaxTokens:      r.turnRequestOptions.maxTokens,
-		ContextWindow:  r.turnRequestOptions.contextWindow,
-		ResponseFormat: responseFormat,
-		Tools:          tools,
-		Thinking:       thinking,
-		Temperature:    requestTemperature,
-	})
+	// The request is built as a value so the inspection snapshot describes
+	// what was actually sent, after every capability gate above.
+	req := schema.ChatRequest{
+		Model:           model,
+		Messages:        messages,
+		Stream:          true,
+		MaxTokens:       r.turnRequestOptions.maxTokens,
+		ContextWindow:   r.turnRequestOptions.contextWindow,
+		ResponseFormat:  responseFormat,
+		Tools:           tools,
+		Thinking:        thinking,
+		ThinkingOptions: r.turnRequestOptions.thinkingOptions,
+		Temperature:     requestTemperature,
+	}
+	attemptID := r.captureRequestInspection(p, model, req)
+
+	events, err := p.Chat(ctx, req)
 	if err != nil {
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: inspectionStatusFor(ctx, err),
+			Err:    err.Error(),
+		})
 		return chatResult{}, err
 	}
+	r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+		Status: session.InspectionStreaming,
+	})
 
 	r.State.BeginStreaming()
 	started := r.Now()
@@ -466,6 +481,10 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			// SSE chunk aborts the stream (openai_compatible.go:338), and the
 			// deltas before it can amount to a complete, parseable action.
 			// Discarding them turns a recoverable hiccup into a failed turn.
+			r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+				Status: inspectionStatusFor(ctx, event.Err),
+				Err:    event.Err.Error(),
+			})
 			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, event.Err
 		case schema.ChatEventDone:
 			usage = event.Usage
@@ -475,8 +494,18 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		}
 	}
 	if loopSnippet != "" {
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: session.InspectionCancelled,
+			Err:    errThinkingLoop.Error(),
+		})
 		return chatResult{}, fmt.Errorf("%w: %q", errThinkingLoop, truncateForLog(loopSnippet))
 	}
+	// The stream ended: completion as far as the adapter is concerned, not an
+	// acknowledgement from a server. A cancelled context still wins, so a
+	// provider that finishes a request the user stopped is not shown as done.
+	r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+		Status: inspectionStatusFor(ctx, nil),
+	})
 	if r.UsageObserver != nil && usage != nil {
 		r.UsageObserver(*usage)
 	}
@@ -558,6 +587,102 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 		})
 	}
 	return defs
+}
+
+// requestAttemptSeq numbers conversation attempts process-wide, so an outcome
+// can only land on the snapshot of the attempt that produced it.
+var requestAttemptSeq atomic.Uint64
+
+// captureRequestInspection copies the request into the state's inspection
+// snapshot and returns the attempt ID the outcome must carry. The session
+// package bounds the copy. Nothing here logs: a request's content is the
+// user's conversation.
+func (r *Runner) captureRequestInspection(p provider.Provider, model string, req schema.ChatRequest) uint64 {
+	attemptID := requestAttemptSeq.Add(1)
+	r.State.SetRequestInspection(requestInspectionFor(r, p, model, req, attemptID))
+	return attemptID
+}
+
+// requestInspectionFor converts a wire request into the inspection snapshot.
+func requestInspectionFor(r *Runner, p provider.Provider, model string, req schema.ChatRequest, attemptID uint64) session.RequestInspection {
+	snap := session.RequestInspection{
+		AttemptID:  attemptID,
+		At:         r.Now(),
+		Provider:   p.Name(),
+		Model:      model,
+		Generation: r.State.Generation().ID,
+		LeafID:     r.State.LeafID(),
+		Options: session.InspectionOptions{
+			Thinking:    req.Thinking,
+			Streaming:   req.Stream,
+			MaxTokens:   req.MaxTokens,
+			Temperature: req.Temperature,
+			ToolChoice:  req.ToolChoice,
+		},
+	}
+	if req.ResponseFormat != nil {
+		snap.Options.ResponseFormat = req.ResponseFormat.Type
+	}
+
+	snap.Messages = make([]session.InspectionMessage, 0, len(req.Messages))
+	for i := range req.Messages {
+		m := req.Messages[i]
+		im := session.InspectionMessage{
+			Role:       string(m.Role),
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			calls := make([]session.InspectionToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				calls = append(calls, session.InspectionToolCall{
+					ID:   tc.ID,
+					Name: tc.Name,
+					Args: string(tc.Args),
+				})
+			}
+			im.ToolCalls = calls
+		}
+		snap.Messages = append(snap.Messages, im)
+	}
+
+	snap.Tools = make([]session.InspectionTool, 0, len(req.Tools))
+	for i := range req.Tools {
+		t := req.Tools[i]
+		snap.Tools = append(snap.Tools, session.InspectionTool{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  string(t.Parameters),
+		})
+	}
+
+	// The pack as it stood at dispatch. EstimatedTokens is an estimate of the
+	// pack, not the model's context window.
+	pack := r.State.ContextPack()
+	snap.PackKnown = true
+	snap.PackTokens = pack.TokenUsage.EstimatedTokens
+	snap.PackWindow = pack.TokenUsage.MaxTokens
+	snap.PackTruncated = pack.TokenUsage.Truncated
+	snap.PackSections = len(pack.Sections)
+	return snap
+}
+
+// inspectionStatusFor classifies an attempt's end for the inspection
+// snapshot. A cancellation (the user stopping the turn, or the request
+// timeout) is not a failure. The error is checked first; the context is a
+// backstop for an adapter that swallows the cancellation or a provider that
+// finishes a request the user abandoned.
+func inspectionStatusFor(ctx context.Context, err error) session.InspectionStatus {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return session.InspectionCancelled
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return session.InspectionCancelled
+	}
+	if err != nil {
+		return session.InspectionFailed
+	}
+	return session.InspectionCompleted
 }
 
 // truncateForLog bounds model output for a single log line. Parse failures log

@@ -254,6 +254,8 @@ func (m *Model) View(maxW, maxH int) string {
 			b.WriteString(mutedStyle().Render("If no browser opened, visit:"))
 			b.WriteString("\n")
 			b.WriteString(mutedStyle().Render(strutil.Truncate(u, pw-2, true)))
+			b.WriteString("\n\n")
+			b.WriteString(hintStyle().Render("[c] Copy sign-in link"))
 		} else {
 			b.WriteString(mutedStyle().Render("Opening your browser…"))
 		}
@@ -339,6 +341,9 @@ type OAuthDoneMsg struct {
 	Provider string
 	Err      error
 }
+
+// CopyLinkMsg asks the app shell to copy the complete authorization URL.
+type CopyLinkMsg struct{ URL string }
 
 // oauthDisplay adapts the engine's Display interface to the connect panel.
 // ShowURL records the URL so the panel can render it; Wait returns
@@ -923,6 +928,17 @@ func probeHint(err error) string {
 func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 	ks := k.String()
 	switch m.step {
+	case stepOAuthLogin:
+		if ks == "c" || ks == "enter" {
+			if u := m.oauthURL(); u != "" {
+				return m, func() tea.Msg { return CopyLinkMsg{URL: u} }
+			}
+			return m, nil
+		}
+		if ks == "esc" {
+			return m, m.cancel()
+		}
+		return m, nil
 	case stepBaseURL, stepAPIKey:
 		switch ks {
 		case "esc":

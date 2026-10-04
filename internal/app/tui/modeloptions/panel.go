@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/tui/listpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 // ChangedMsg is emitted when the panel commits a new value. The included
@@ -58,8 +59,10 @@ type Panel struct {
 	presetName string
 	fields     *listpanel.FieldList
 
-	reasoningSupported bool
-	changed            bool
+	reasoningSupported    bool
+	changed               bool
+	thinkingOptions       *schema.ThinkingOptions
+	optionsRefreshPending bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -67,15 +70,17 @@ var _ dock.Panel = (*Panel)(nil)
 // New creates a model-options panel for the named preset in the provided
 // config. Changes mutate an internal copy of cfg; callers receive a fresh
 // copy in ChangedMsg.Config. reasoningSupported controls whether the
-// "Thinking effort" row appears at all: callers resolve it via
-// provider.ResolveReasoningSupport and pass true whenever support is
-// unknown — hiding a working control is worse than showing a dead one.
-func New(cfg config.Config, presetName string, reasoningSupported bool) *Panel {
+// "Thinking effort" row appears. Options are resolved by the provider layer;
+// unknown controls offer provider default and retain any saved value.
+func New(cfg config.Config, presetName string, reasoningSupported bool, options ...*schema.ThinkingOptions) *Panel {
 	cfg = cloneConfig(cfg)
 	p := &Panel{
 		cfg:                cfg,
 		presetName:         presetName,
 		reasoningSupported: reasoningSupported,
+	}
+	if len(options) > 0 {
+		p.thinkingOptions = options[0]
 	}
 	p.fields = listpanel.NewFieldList(p.buildFields)
 	return p
@@ -182,11 +187,29 @@ func (p *Panel) descriptors() []descriptor {
 		},
 	}
 	if p.reasoningSupported {
+		opts := []string{"default"}
+		description := "Supported thinking controls are unknown; provider default sends no override."
+		if p.thinkingOptions != nil {
+			opts = append(opts, p.thinkingOptions.Levels...)
+			description = "Model-specific thinking control; default uses the provider default."
+			if p.thinkingOptions.Default != "" {
+				description += " Reported default: " + p.thinkingOptions.Default + "."
+			}
+		}
+		current := p.cfg.Models.Presets[p.presetName].Thinking
+		found := current == "" || current == "default"
+		for _, option := range opts {
+			found = found || option == current
+		}
+		if !found {
+			opts = append(opts, current)
+			description += " Saved value is unverified for this model."
+		}
 		ds = append(ds, descriptor{
 			id:          "thinking",
 			title:       "Thinking effort",
-			description: "Reasoning effort for thinking-capable models; default leaves the wire untouched.",
-			enumOpts:    []string{"default", "off", "low", "medium", "high"},
+			description: description,
+			enumOpts:    opts,
 			getStr: func(m routing.ModelPreset) string {
 				if m.Thinking == "" {
 					return "default"
@@ -222,15 +245,17 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		// editable, so forward unconditionally.
 	}
 
-	wasCommitted := p.fields.Committed()
-	// Capture the old preset before Update commits the edit, so the
-	// ChangedMsg reports the actual before→after transition.
-	var oldPreset routing.ModelPreset
-	if !wasCommitted {
-		oldPreset = p.cfg.Models.Presets[p.presetName]
-	}
+	// Committed describes one Update call, not a transition between calls.
+	// Consecutive enum cycles and toggles must each emit their own save.
+	oldPreset := p.cfg.Models.Presets[p.presetName]
 	cmd := p.fields.Update(msg)
-	if !wasCommitted && p.fields.Committed() && p.changed {
+	defer func() {
+		if p.optionsRefreshPending && !p.fields.Editing() {
+			p.rebuildFields()
+			p.optionsRefreshPending = false
+		}
+	}()
+	if p.fields.Committed() && p.changed {
 		p.changed = false
 		row := p.fields.CursorRow()
 		if row != nil {
@@ -306,4 +331,22 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// SetThinkingOptions updates asynchronously discovered controls without losing
+// unsaved configuration or interrupting a field edit.
+func (p *Panel) SetThinkingOptions(options *schema.ThinkingOptions) {
+	p.thinkingOptions = options
+	p.reasoningSupported = options == nil || len(options.Levels) > 0 || p.cfg.Models.Presets[p.presetName].Thinking != ""
+	p.optionsRefreshPending = true
+	if !p.fields.Editing() {
+		p.rebuildFields()
+		p.optionsRefreshPending = false
+	}
+}
+
+func (p *Panel) rebuildFields() {
+	cursor := p.fields.Cursor()
+	p.fields = listpanel.NewFieldList(p.buildFields)
+	p.fields.SetCursor(cursor)
 }

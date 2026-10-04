@@ -3,7 +3,8 @@
   import Tile from '../lib/live/Tile.svelte'
   import { paginate, wallAgents } from '../lib/live/wall'
   import { formatLiveRoute, type LiveRoute } from '../lib/routes'
-  import type { AgentRow } from '../lib/fleet'
+  import type { AgentRow, NetworkDecisionItem } from '../lib/fleet'
+  import type { DecideFn } from '../lib/inbox/decision'
   import type { ProjectStatus } from '../lib/api'
   import { shortName } from '../lib/utils'
 
@@ -13,13 +14,20 @@
     route,
     onRefreshPending,
     onNavigate,
+    decisions = [],
+    onDecide = async () => {},
   }: {
     agents: AgentRow[]
     projects: ProjectStatus[]
     route: LiveRoute
     onRefreshPending: () => void
     onNavigate: (hash: string) => void
+    /** Blocked requests; a tile shows the oldest one of its own agent. */
+    decisions?: NetworkDecisionItem[]
+    onDecide?: DecideFn
   } = $props()
+
+  const decisionFor = (id: string) => decisions.filter((d) => d.agentId === id).sort((a, b) => a.at - b.at)[0]
 
   const filtered = $derived(wallAgents(agents, { project: route.project, runsOnly: route.runsOnly }))
   const paged = $derived(paginate(filtered, route.page))
@@ -49,7 +57,7 @@
 
   <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 min-[1600px]:grid-cols-4" data-testid="wall">
     {#each paged.items as a (a.id)}
-      <Tile agent={a} {onRefreshPending} {onNavigate} />
+      <Tile agent={a} {onRefreshPending} {onNavigate} decision={decisionFor(a.id)} {onDecide} />
     {:else}
       <p class="col-span-full text-sm text-muted">{route.runsOnly ? 'No agents are running a plan or swarm.' : 'No agents to show.'}</p>
     {/each}

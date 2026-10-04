@@ -25,9 +25,11 @@
   import ProjectsPanel from './lib/ProjectsPanel.svelte'
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
-  import { createFleetStore } from './lib/fleet'
+  import { createFleetStore, type NetworkDecisionItem } from './lib/fleet'
+  import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
+  import { outcomeFor, type DecisionOutcome } from './lib/inbox/decision'
   import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, redirectLegacy } from './lib/routes'
-  import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
+  import { listPending, listClients, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
 
   let hash = $state('#')
 
@@ -68,6 +70,13 @@
     their own before.
   */
   const { state: fleet, actions } = createFleetStore()
+
+  // What a settled decision shows: a draft toast or a repo-patch modal. Owned here so Home and Live share it.
+  let decisionOutcome = $state<DecisionOutcome | null>(null)
+  async function decideNetwork(item: NetworkDecisionItem, decision: NetDecisionKind) {
+    const res = await actions.decideNetwork(item.agentId, item.host, decision)
+    decisionOutcome = outcomeFor(item, decision, res)
+  }
 
   let pending = $state<PendingSubmission[]>([])
   let clients = $state<MCPClient[]>([])
@@ -234,6 +243,8 @@
           route={liveRoute}
           onRefreshPending={refreshPending}
           onNavigate={navigate}
+          decisions={$fleet.decisions}
+          onDecide={decideNetwork}
         />
       </div>
     {:else if libraryRoute}
@@ -316,6 +327,8 @@
           {pending}
           notices={$fleet.notices}
           onDismissNotice={actions.dismissNotice}
+          decisions={$fleet.decisions}
+          onDecide={decideNetwork}
           onRefreshPending={refreshPending}
           onOpenAgent={(id) => navigate(`#chat/${id}`)}
           onNavigate={navigate}
@@ -341,6 +354,7 @@
   </div>
 {/if}
 
+<DecisionOutcomeView outcome={decisionOutcome} onClose={() => (decisionOutcome = null)} />
 <Palette open={paletteOpen} agents={$fleet.agents} onClose={() => (paletteOpen = false)} onNavigate={navigate} />
 
 <style>

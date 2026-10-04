@@ -3,7 +3,9 @@ import { render, cleanup, screen } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import Home from './Home.svelte'
 import * as api from '../lib/api.js'
-import { toRow } from '../lib/fleet'
+import { toRow, createFleetStore } from '../lib/fleet'
+import { get } from 'svelte/store'
+import { outcomeFor } from '../lib/inbox/decision'
 import type { AgentStatus, PendingSubmission } from '../lib/api.js'
 
 vi.mock('../lib/api.js', async (importActual) => {
@@ -14,6 +16,7 @@ vi.mock('../lib/api.js', async (importActual) => {
     approvePending: vi.fn().mockResolvedValue({ agentId: 'x', status: 'ok' }),
     denyPending: vi.fn().mockResolvedValue(undefined),
     undoReroute: vi.fn().mockResolvedValue(undefined),
+    postNetworkDecision: vi.fn().mockResolvedValue({ ok: true }),
     getDiskUsage: vi.fn().mockRejectedValue(new Error('no disk')),
     listAudit: vi.fn().mockResolvedValue([]),
   }
@@ -91,5 +94,58 @@ describe('Home', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Undo' }))
     expect(await screen.findByText('the reviewer binding changed since')).toBeTruthy()
     expect(onDismissNotice).toHaveBeenCalledWith('r1')
+  })
+})
+
+describe('Home network decisions', () => {
+  const block = (agentId: string, host: string, at: number, workspace = 'go-dev') => ({ kind: 'network_block' as const, sessionId: agentId, agentId, host, workspace, at })
+
+  function mountWithStore() {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta(block('run', 'later.example', 20))
+    actions.applyDelta(block('run', 'first.example', 10))
+    const onDecide = vi.fn(async (item: { agentId: string; host: string }, d: Parameters<typeof actions.decideNetwork>[2]) => {
+      await actions.decideNetwork(item.agentId, item.host, d)
+    })
+    render(Home, { agents, pending: [], decisions: get(state).decisions, onDecide, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    return { state, onDecide }
+  }
+
+  it('lists decisions in Needs you, oldest first, counted with the rest', () => {
+    mountWithStore()
+    expect(screen.getByText(/Needs you · 3$/)).toBeTruthy()
+    const rows = screen.getAllByTestId('network-decision')
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('first.example'),
+      expect.stringContaining('later.example'),
+    ])
+    expect(rows[0].textContent).toContain('run-agent tried to reach first.example')
+    expect(rows[0].textContent).toContain('workspace go-dev')
+  })
+
+  it.each([
+    ['Block', 'block'],
+    ['Allow for this agent', 'allow-agent'],
+    ['Add to workspace', 'add-to-workspace'],
+  ])('%s posts the %s decision for that agent and host', async (label, decision) => {
+    mountWithStore()
+    await userEvent.click(screen.getAllByRole('button', { name: label })[0])
+    expect(api.postNetworkDecision).toHaveBeenCalledWith('run', 'first.example', decision)
+  })
+
+  it('keeps the request and shows the reason when the post fails', async () => {
+    ;(api.postNetworkDecision as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new api.APIError(409, { error: 'agent is not behind the egress proxy' }))
+    mountWithStore()
+    await userEvent.click(screen.getAllByRole('button', { name: 'Allow for this agent' })[0])
+    expect((await screen.findByRole('alert')).textContent).toBe('agent is not behind the egress proxy')
+    expect(screen.getAllByTestId('network-decision')).toHaveLength(2)
+  })
+
+  it('maps add-to-workspace results to a draft toast or a patch modal', () => {
+    const item = { agentId: 'run', host: 'h.example', workspace: 'go-dev', at: 1 }
+    expect(outcomeFor(item, 'block', {})).toBeNull()
+    expect(outcomeFor(item, 'allow-agent', { ok: true })).toBeNull()
+    expect(outcomeFor(item, 'add-to-workspace', { ok: true })).toEqual({ kind: 'draft', workspace: 'go-dev', host: 'h.example' })
+    expect(outcomeFor(item, 'add-to-workspace', { patch: '+egress = ["h.example"]' })).toEqual({ kind: 'patch', workspace: 'go-dev', host: 'h.example', patch: '+egress = ["h.example"]' })
   })
 })

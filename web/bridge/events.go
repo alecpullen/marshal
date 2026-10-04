@@ -303,3 +303,11 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 	// SSE client must park pending approvals/questions rather than deny
 	// them; explicit cancellation and deletion still drain the waits.
 }
+
+// Forget drops a key's replay ring. Live subscribers keep their channels;
+// the key just stops holding memory once its stream has ended.
+func (l *EventLog) Forget(sessionID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.sessions, sessionID)
+}

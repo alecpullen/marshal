@@ -49,6 +49,8 @@ const (
 	AuditWorkspaceSnapshot  = "workspace_snapshot"
 	AuditAgentTimeout       = "agent_timeout"
 	AuditProjectSettings    = "project_settings"
+	AuditTerminalOpened     = "terminal_opened"
+	AuditTerminalClosed     = "terminal_closed"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

@@ -127,6 +127,10 @@ type Fleet struct {
 	// the real starter; tests inject a fake.
 	streamer streamStarter
 
+	// term holds open terminals, created on first use.
+	termOnce sync.Once
+	term     *terminalState
+
 	// git runs hardened git subprocesses for remote sources (mirroring,
 	// worktree prep). Nil when git was not found at startup; local-path
 	// spawns still work, git-sourced spawns fail with a clear error.
@@ -1593,6 +1597,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 // tree — over parking, which detaches and leaves the workspace intact
 // so Resume can restart against it.
 func (f *Fleet) releaseAgent(id string, destroy bool) {
+	f.closeTerminals(id)
 	f.mu.Lock()
 	rt := f.runtimes[id]
 	delete(f.runtimes, id)
@@ -1741,6 +1746,7 @@ func (f *Fleet) StopProject(root string) {
 
 func (f *Fleet) Close() {
 	f.closeOnce.Do(func() { close(f.done) })
+	f.closeAllTerminals()
 	f.stopControl()
 	f.stopEgress()
 	f.mu.Lock()

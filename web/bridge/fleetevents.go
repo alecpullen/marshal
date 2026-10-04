@@ -36,6 +36,10 @@ type fleetDelta struct {
 	// forwarded verbatim from the agent on a "telemetry" delta.
 	ToolStats json.RawMessage `json:"toolStats,omitempty"`
 	Rules     json.RawMessage `json:"rules,omitempty"`
+	// Held and By describe a "hold" delta: whether the agent is held, and
+	// by what ("terminal").
+	Held *bool  `json:"held,omitempty"`
+	By   string `json:"by,omitempty"`
 	// Usage carries a telemetry update's new usage rows to the ledger. It
 	// is not streamed: the fleet SSE only needs the telemetry digest.
 	Usage json.RawMessage `json:"-"`

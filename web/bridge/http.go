@@ -116,6 +116,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments", s.addReviewComment)
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments/{cid}/resolve", s.resolveReviewComment)
 	s.mux.HandleFunc("GET /api/prompts/recent", s.recentPrompts)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal", s.terminalOpen)
+	s.mux.HandleFunc("GET /api/agents/{id}/terminal/{tid}/events", s.terminalEvents)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/input", s.terminalInput)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/resize", s.terminalResize)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/release", s.terminalRelease)
+	s.mux.HandleFunc("DELETE /api/agents/{id}/terminal/{tid}", s.terminalClose)
 	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
 	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
@@ -218,6 +224,12 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 	case errors.As(err, &setup):
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "code": "setup_failed", "output": setup.Output})
+	case errors.Is(err, ErrTooManyTerminals):
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownTerminal):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errTerminalInput):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownReroute):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, errRerouteConflict):

@@ -31,6 +31,7 @@ const (
 	AuditPluginInstalled = "plugin_installed"
 	AuditPluginRemoved   = "plugin_removed"
 	AuditMemoryDeleted   = "memory_deleted"
+	AuditModelsChanged   = "models_changed"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

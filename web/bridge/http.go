@@ -133,6 +133,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/last-request", s.sessionLastRequest)
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
 	s.libraryRoutes()
+	s.modelsRoutes()
 	s.mux.HandleFunc("GET /api/runs", s.listRuns)
 	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
 	s.mux.HandleFunc("POST /api/runs", s.startRun)
@@ -179,6 +180,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // 501, anything else from the child → 502.
 func writeErr(w http.ResponseWriter, err error) {
 	var unsupported ErrUnsupported
+	var rpc *rpcError
 	switch {
 	case errors.Is(err, ErrUnknownSession):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -198,6 +200,10 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.As(err, &unsupported):
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": unsupported.Error()})
+	case errors.As(err, &rpc) && rpc.Code == rpcInvalidParams:
+		// The agent refused the input itself (a bad scope, an unknown
+		// provider), which is the caller's mistake, not a gateway fault.
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": rpc.Message})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 	}
@@ -327,6 +333,8 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		Isolated bool   `json:"isolated"`
 		Branch   string `json:"branch"`
 		BaseRef  string `json:"baseRef"`
+		// Routing picks this agent's models; see SpawnOptions.Routing.
+		Routing json.RawMessage `json:"routing"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -335,8 +343,13 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if err := s.fleet.budgetGate(""); err != nil {
+		writeErr(w, err)
+		return
+	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
 		Name: body.Name, Mode: body.Mode, Isolated: body.Isolated, Branch: body.Branch, BaseRef: body.BaseRef,
+		Routing: body.Routing,
 	})
 	if id == "" {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})

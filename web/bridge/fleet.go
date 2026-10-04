@@ -702,6 +702,9 @@ type SpawnOptions struct {
 	URL      string
 	Ref      string
 	Origin   string
+	// Routing selects per-session model routing, forwarded verbatim as
+	// session/new's routing parameter.
+	Routing json.RawMessage
 }
 
 // gitSource is the resolved remote source for a spawn, or a local path.
@@ -907,6 +910,9 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			iso["baseRef"] = opts.BaseRef
 		}
 		params["isolation"] = iso
+	}
+	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
+		params["routing"] = opts.Routing
 	}
 	raw, err := rt.child.Request(ctx, "session/new", params)
 	if err != nil {

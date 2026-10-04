@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -117,6 +118,17 @@ func (p *poolManager) fill(name string, n int) error {
 	// An older version's idle containers are stale once a newer one is
 	// built and published.
 	p.dropExcept(name, n)
+	// A pooled container starts without egress-proxy wiring (proxy env,
+	// egress network, CA mount), so a workspace that needs the proxy gets
+	// no warm pool: its agents would otherwise run on an open network
+	// without credential injection.
+	doc, _, err := p.f.studioDoc(context.Background(), name, n)
+	if err != nil {
+		return err
+	}
+	if workspaceNeedsProxy(doc) {
+		return nil
+	}
 
 	key := poolKey(name, n)
 	for {
@@ -378,4 +390,10 @@ func (p *poolManager) adopt() {
 			p.fillAsync(m.Name, m.Published)
 		}
 	}
+}
+
+// workspaceNeedsProxy reports whether a workspace's network policy or
+// credential injection can only be enforced through the egress proxy.
+func workspaceNeedsProxy(doc WSDoc) bool {
+	return doc.Network.Mode == EgressModeOff || doc.Network.Mode == EgressModeAllowlist || len(doc.Inject) > 0
 }

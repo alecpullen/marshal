@@ -94,6 +94,9 @@ for both homes:
 | `[[mounts]]` | `repo` or `volume`, `target`, `readonly` | 4 libraries |
 | `[files]` | `"<source>" = {target, readonly}` | 5 shared files |
 | `[secrets]` | `NAME = "vault:<ref>"` (environment injection, last resort) | 6 |
+
+> **W4.2 status:** the bridge parses `[secrets]` name-to-ref pairs (`secretsEnv`) and merges them, but does not yet read them when it builds a container. Putting a secret value in a container's environment shows it in `inspect` and process listings, so it is left out until it has a plan of its own. `[secrets.inject]` (proxy injection) is the supported path.
+
 | `[secrets.inject]` | `"<host>" = {ref = "vault:<ref>", header = "Authorization", format = "Bearer {}"}` | 6 |
 | `[network]` | `mode = open\|allowlist\|off`, `egress = [host or *.suffix]` | 7 |
 | `[resources]` | `cpu`, `memory`, `disk`, `timeout` | 8 |

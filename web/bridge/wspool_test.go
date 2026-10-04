@@ -10,7 +10,9 @@ import (
 // pooledTemplate publishes and builds "svc" with the given pool size.
 func pooledTemplate(t *testing.T, e *wsSpawnEnv, pool int) {
 	t.Helper()
-	publishDoc(t, e.f, "svc", sampleDoc("svc"))
+	doc := sampleDoc("svc")
+	doc.Network = WSNetwork{} // an open network needs no proxy wiring
+	publishDoc(t, e.f, "svc", doc)
 	if err := e.f.templates.SetPool("svc", pool); err != nil {
 		t.Fatal(err)
 	}
@@ -226,5 +228,34 @@ func TestPoolContainersAreListedForReattach(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(gotArgs, " "), "name="+poolContainerPrefix) {
 		t.Fatalf("ps args = %v", gotArgs)
+	}
+}
+
+func TestPoolSkipsWorkspacesThatNeedTheProxy(t *testing.T) {
+	cases := map[string]func(*WSDoc){
+		"allowlist": func(d *WSDoc) { d.Network = WSNetwork{Mode: "allowlist", Egress: []string{"github.com"}} },
+		"off":       func(d *WSDoc) { d.Network = WSNetwork{Mode: "off"} },
+		"inject": func(d *WSDoc) {
+			d.Network = WSNetwork{Mode: "open"}
+			d.Inject = map[string]WSInject{"api.example.com": {Ref: "vault:k", Header: "Authorization"}}
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newWSSpawnEnv(t)
+			doc := sampleDoc("svc")
+			mutate(&doc)
+			publishDoc(t, e.f, "svc", doc)
+			if err := e.f.templates.SetPool("svc", 2); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.f.BuildWorkspace(ctlContext(t), "svc", 1); err != nil {
+				t.Fatal(err)
+			}
+			e.f.pools.wait()
+			if got := poolRuns(e.imgs); len(got) != 0 {
+				t.Fatalf("pool containers started without proxy wiring: %v", got)
+			}
+		})
 	}
 }

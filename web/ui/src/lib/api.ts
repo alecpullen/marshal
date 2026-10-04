@@ -255,14 +255,121 @@ export async function steerSession(id: string, text: string): Promise<void> {
   await request('POST', `/api/sessions/${encodeURIComponent(id)}/steer`, { text })
 }
 
-/** The stack snapshot, or 'unsupported' for an agent that predates session/stack. */
-export async function getStack(sessionId: string): Promise<import('./stack').StackSnapshot | 'unsupported'> {
+/** Maps a 501 `{"error":"<feature>_unsupported"}` to the sentinel; anything else rethrows. */
+async function orUnsupported<T>(call: () => Promise<T>): Promise<T | 'unsupported'> {
   try {
-    return await request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/stack`)
+    return await call()
   } catch (e) {
     if (e instanceof APIError && e.status === 501) return 'unsupported'
     throw e
   }
+}
+
+/** The stack snapshot, or 'unsupported' for an agent that predates session/stack. */
+export async function getStack(sessionId: string, subagentId?: number): Promise<import('./stack').StackSnapshot | 'unsupported'> {
+  const q = subagentId ? `?subagent=${subagentId}` : ''
+  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/stack${q}`))
+}
+
+export interface CallDetail {
+  callId?: string
+  stepId?: number
+  toolName: string
+  args?: string
+  originalArgs?: string
+  output?: string
+  diff?: string
+  error?: string
+  exitCode?: number
+  model?: string
+  finishReason?: string
+  rewritten?: boolean
+  hooks?: unknown[]
+  sandbox?: unknown
+  symbols?: { file: string; name: string; kind?: string }[]
+  notice?: { kind: string; text: string }
+}
+export interface ThoughtDetail { text: string; durationMs?: number }
+export interface TodoDetail { id: string; content: string; status: string; startedAt?: number; completedAt?: number }
+export interface RelationDetail { causedBy?: string[]; fixedBy?: string[] }
+export interface NodeDetail {
+  calls?: CallDetail[]
+  narration?: string[]
+  thinking?: ThoughtDetail[]
+  todo?: TodoDetail
+  relations?: RelationDetail
+}
+export interface NodeDetailResponse { node: import('./stack').WireNode; detail: NodeDetail }
+
+export async function getNode(sessionId: string, nodeId: string, subagentId?: number): Promise<NodeDetailResponse | 'unsupported'> {
+  const q = subagentId ? `?subagent=${subagentId}` : ''
+  return orUnsupported(() =>
+    request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}${q}`),
+  )
+}
+
+export interface RequestMessage {
+  role: string
+  content: string
+  toolCalls?: { id: string; name: string; args: string }[]
+  toolCallId?: string
+  truncated?: boolean
+  omittedBytes?: number
+}
+export interface RequestJSON {
+  attemptId: number
+  at?: number
+  provider?: string
+  model?: string
+  messages: RequestMessage[]
+  tools: { name: string; description?: string; parameters?: string }[]
+  options: { thinking?: string; streaming: boolean; maxTokens?: number; temperature?: number; responseFormat?: string; toolChoice?: string }
+  outcome: { status: string; err?: string; at?: number }
+  truncated?: boolean
+  packTokens?: number
+  packWindow?: number
+  packKnown?: boolean
+}
+
+export async function getLastRequest(sessionId: string): Promise<RequestJSON | 'unsupported'> {
+  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/last-request`))
+}
+
+export interface StepDiff {
+  stepNode: string
+  turnNode: string
+  taskNode?: string
+  headline: string
+  at?: number
+  files: string[]
+  diff: string
+}
+
+export async function getStepDiffs(sessionId: string): Promise<StepDiff[] | 'unsupported'> {
+  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/step-diffs`))
+}
+
+export interface FileList { root?: string; path?: string; entries: { name: string; dir: boolean; size: number }[] }
+export interface FileView { path: string; size: number; binary: boolean; truncated: boolean; content: string }
+
+export async function listFiles(agentId: string, path = ''): Promise<FileList | 'unsupported'> {
+  return orUnsupported(() => request('GET', `/api/agents/${encodeURIComponent(agentId)}/files?path=${encodeURIComponent(path)}`))
+}
+
+export async function readFile(agentId: string, path: string): Promise<FileView | 'unsupported'> {
+  return orUnsupported(() => request('GET', `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(path)}`))
+}
+
+export interface GateRecord { result: GateResult; at: string }
+
+/** The stored verify record, or null when none has run (204). */
+export async function getGate(agentId: string): Promise<GateRecord | null> {
+  const r = await request<GateRecord | undefined>('GET', `/api/agents/${encodeURIComponent(agentId)}/gate`)
+  return r ?? null
+}
+
+export async function runGate(agentId: string): Promise<GateRecord> {
+  return request('POST', `/api/agents/${encodeURIComponent(agentId)}/verify`)
 }
 
 export async function cancelSession(id: string): Promise<void> {

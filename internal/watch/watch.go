@@ -93,6 +93,20 @@ type Info struct {
 	LastError   string
 	CreatedAt   time.Time
 	LastFiredAt time.Time
+	// Samples is the watch's recent sample history, oldest first, capped at
+	// MaxSamples. It is a copy; callers may modify it freely.
+	Samples []SamplePoint
+}
+
+// MaxSamples is how many sample points each watch keeps.
+const MaxSamples = 288
+
+// SamplePoint is one evaluated sample: when, a numeric reading (see
+// sampleValue), and whether the condition tripped on it.
+type SamplePoint struct {
+	At      time.Time
+	Value   float64
+	Tripped bool
 }
 
 // Report is the payload enqueued to the session queue when a watch fires.
@@ -208,6 +222,8 @@ type watch struct {
 	lastFiredAt       time.Time
 	consecutiveErrors int
 	firedThisInterval bool
+	// samples is the ring of the last MaxSamples evaluated samples.
+	samples []SamplePoint
 
 	// waiters are signaled (channel closed) whenever the watch reaches a
 	// terminal state or fires. Guarded by w.mu; closed-and-cleared, never
@@ -414,17 +430,29 @@ func (m *Manager) sampleOnce(w *watch) {
 		w.signalWaitersLocked()
 	}
 	w.mu.Unlock()
-	if w.cond == nil {
-		return
+	tripped := false
+	if w.cond != nil {
+		// The change condition needs a baseline; the first sample never
+		// trips, so a static source never fires on registration (design:
+		// repeat+change+static source -> no fires).
+		if _, isChange := w.cond.(changeCondition); !isChange || hasPrev {
+			tripped = w.cond.Eval(sample, prev)
+		}
 	}
-	// The change condition needs a baseline; skip the first sample so a
-	// static source never fires on registration (design: repeat+change+
-	// static source -> no fires).
-	if _, isChange := w.cond.(changeCondition); isChange && !hasPrev {
-		return
-	}
-	if w.cond.Eval(sample, prev) {
+	w.recordSample(SamplePoint{At: time.Now(), Value: sampleValue(w.condRaw, sample, tripped), Tripped: tripped})
+	if tripped {
 		m.fire(w, sample)
+	}
+}
+
+// recordSample appends p to the watch's history, dropping the oldest points
+// beyond MaxSamples.
+func (w *watch) recordSample(p SamplePoint) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.samples = append(w.samples, p)
+	if n := len(w.samples); n > MaxSamples {
+		w.samples = append(w.samples[:0], w.samples[n-MaxSamples:]...)
 	}
 }
 
@@ -742,6 +770,7 @@ func (w *watch) snapshot() Info {
 		LastError:   w.lastError,
 		CreatedAt:   w.createdAt,
 		LastFiredAt: w.lastFiredAt,
+		Samples:     append([]SamplePoint(nil), w.samples...),
 	}
 }
 

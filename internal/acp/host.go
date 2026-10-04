@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -215,7 +216,10 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 			// Auto-resume seams (spec §5): the gate read is live from the
 			// runtime's config; the SDD-gate check mirrors the TUI's
 			// never-wake-over-an-open-panel rule.
+			usageDB, _ := rt.DB.(*db.DB)
 			crt := &TurnRuntime{
+				DB:        usageDB,
+				ProjectID: rt.ProjectID,
 				SessionID: sessionID,
 				BeginWork: rt.BeginWork,
 				Run:       run,
@@ -287,6 +291,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 			"protocolVersion": 1,
 			"agentCapabilities": map[string]any{
 				"loadSession": true,
+				// Not per session: config/* act on the user-global config.
+				"configAccess": map[string]any{},
 				// workspace/parse, /patch and /format (no session needed).
 				"workspaceFiles": map[string]any{},
 				"sessionCapabilities": map[string]any{
@@ -306,6 +312,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 					"filesView":             map[string]any{},
 					"commitDraft":           map[string]any{},
 					"stepDiffs":             map[string]any{},
+					"runDetail":             map[string]any{},
+					"watchAccess":           map[string]any{},
 					"memoryAccess":          map[string]any{},
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
@@ -347,7 +355,30 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/stack_node", turns.StackNode)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
+	srv.Handle("session/run", turns.Run)
 	srv.HandleNotification("session/cancel", turns.Cancel)
+
+	watches := NewWatchManagerACP(func(sessionID string) (*watch.Manager, *pubsub.Broker[watch.Event], bool) {
+		rt, ok := manager.Get(sessionID)
+		if !ok || rt == nil {
+			return nil, nil, false
+		}
+		broker, _ := rt.WatchBroker.(*pubsub.Broker[watch.Event])
+		return rt.CurrentWatchManager(), broker, true
+	}, h.sink.Notify)
+	srv.Handle("session/watch_list", watches.List)
+	srv.Handle("session/watch_start", watches.Start)
+	srv.Handle("session/watch_stop", watches.Stop)
+
+	home, _ := os.UserHomeDir()
+	cfgMgr := NewConfigManager(home, nil, nil)
+	srv.Handle("config/get", cfgMgr.Get)
+	srv.Handle("config/set_providers", cfgMgr.SetProviders)
+	srv.Handle("config/set_provider_key", cfgMgr.SetProviderKey)
+	srv.Handle("config/set_presets", cfgMgr.SetPresets)
+	srv.Handle("config/set_routing", cfgMgr.SetRouting)
+	srv.Handle("config/set_budgets", cfgMgr.SetBudgets)
+	srv.Handle("config/probe_provider", cfgMgr.ProbeProvider)
 
 	srv.Handle("session/swarm_start", turns.SwarmStart)
 	srv.Handle("session/swarm_status", turns.SwarmStatus)

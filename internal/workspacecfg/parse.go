@@ -10,6 +10,7 @@ import (
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/pelletier/go-toml/v2/unstable"
 )
 
 var (
@@ -235,17 +236,36 @@ func scanSections(src []byte) ([]Section, map[string]int) {
 		key  string
 		line int
 	}
+	// Headers come from the TOML parser, not from matching lines, so text
+	// inside a multi-line string or array that looks like a header is not
+	// one. On a syntax error the headers found before it are kept.
 	var hdrs []hdr
 	first := map[string]int{}
-	for i, ln := range lines {
-		m := headerRe.FindStringSubmatch(ln)
-		if m == nil {
+	var p unstable.Parser
+	p.Reset(src)
+	for p.NextExpression() {
+		n := p.Expression()
+		if n.Kind != unstable.Table && n.Kind != unstable.ArrayTable {
 			continue
 		}
-		key := canonicalKey(m[1])
-		hdrs = append(hdrs, hdr{key, i + 1})
+		var parts []string
+		it := n.Key()
+		offset := -1
+		for it.Next() {
+			kn := it.Node()
+			if offset < 0 {
+				offset = int(kn.Raw.Offset)
+			}
+			parts = append(parts, string(kn.Data))
+		}
+		if offset < 0 {
+			continue
+		}
+		line := 1 + bytes.Count(src[:offset], []byte("\n"))
+		key := canonicalKey(strings.Join(parts, "."))
+		hdrs = append(hdrs, hdr{key, line})
 		if _, ok := first[key]; !ok {
-			first[key] = i + 1
+			first[key] = line
 		}
 	}
 	// Unknown headers still end the preceding section.

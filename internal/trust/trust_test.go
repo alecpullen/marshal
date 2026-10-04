@@ -578,3 +578,25 @@ func TestWorkspaceFileCountsAsProjectConfig(t *testing.T) {
 		t.Fatalf("hash = %q err = %v, want a hash for a workspace-only project", h, err)
 	}
 }
+
+func TestWorkspaceFilesUnreadableDirFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectFile(t, dir, "config.toml", "[project]\n")
+	// A file where the workspaces directory should be: ReadDir fails with
+	// something other than not-exist.
+	writeProjectFile(t, dir, "workspaces", "not a directory")
+	if _, err := ConfigHashFor(dir); err == nil {
+		t.Fatal("ConfigHashFor should return the listing error, not the config-only hash")
+	}
+	if !HasProjectConfig(dir) {
+		t.Fatal("HasProjectConfig should be true when workspace files can't be listed")
+	}
+}
+
+func TestWorkspaceFilesInGlobMetacharDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "proj[1]*")
+	writeProjectFile(t, dir, "workspaces/api.toml", "[workspace]\nname = \"api\"\n")
+	if !HasProjectConfig(dir) {
+		t.Fatal("workspace file in a directory with glob characters was missed")
+	}
+}

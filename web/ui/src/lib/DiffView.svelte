@@ -4,6 +4,7 @@
   import Button from './ui/Button.svelte'
   import { getDiff, type DiffFile } from './api'
   import { diffTotals } from './diff'
+  import DiffLines from './DiffLines.svelte'
 
   let { agentId }: { agentId: string } = $props()
 
@@ -71,7 +72,11 @@
           </span>
         </button>
         {#if open[f.path] !== undefined}
-          <pre class="overflow-x-auto rounded bg-bg p-2 text-xs">{open[f.path] || '(no textual diff)'}</pre>
+          {#if open[f.path]}
+            <DiffLines diff={open[f.path]} />
+          {:else}
+            <pre class="overflow-x-auto rounded bg-bg p-2 text-xs">(no textual diff)</pre>
+          {/if}
         {/if}
       </li>
     {/each}

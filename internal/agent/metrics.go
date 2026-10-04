@@ -67,9 +67,10 @@ type TurnMetrics struct {
 	ReasoningTokens  int
 	CacheReadTokens  int
 	CacheWriteTokens int
-	// EstimatedCostCents is the estimated cost in hundredths of a cent
-	// (1/10000 of a dollar), computed from the token counts and the
-	// pricing table at metrics-emission time. 0 for local/unpriced models.
+	// EstimatedCostCents is the estimated cost in whole US cents (100 = $1),
+	// computed from the token counts and the pricing table at
+	// metrics-emission time; sub-cent amounts truncate. 0 for
+	// local/unpriced models.
 	EstimatedCostCents int64
 	// Quota is the subscription quota reading reported by an OAuth-backed
 	// provider during this turn. nil for every provider that reports none.

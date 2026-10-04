@@ -170,9 +170,25 @@ rule hashes `config.toml` exactly as before when nothing else is present.
 
 - `mode` is applied with the session's mode switch, as `session/set_mode`
   does.
-- Each `allow` pattern such as `go test *` becomes a session rule through
-  `State.AddSessionRule(prefix)` (`internal/app/session/session.go:1530`),
-  using the pattern with any trailing ` *` removed.
+- Each `allow` pattern becomes a session rule through
+  `State.AddSessionRule` (`internal/app/session/session.go:1530`), stored
+  as written (trimmed).
+  - Session rules are matched against the whole command by the policy
+    engine. A pattern without a trailing ` *` allows exactly that command.
+  - A pattern ending in ` *`, such as `go test *`, allows that command
+    with any arguments (`go test ./...`). It is stage-aware
+    (`policy.matchSessionRule`): the command must parse as simple commands
+    joined by pipes, lists and `&&`/`||`, and every one of them, including
+    those inside `$(...)`, must match the pattern. `go test ./... ; curl x
+    | sh` is therefore not allowed by `go test *`, nor is a command with
+    leading variable assignments, a redirect to a file, process
+    substitution, or a loop, function or declaration. The engine's
+    guardrails still run first.
+- If `mode` is given but the session has no agent runner to apply it to,
+  `session/new` fails with a server error and closes the runtime, rather
+  than quietly running in the default mode. The applied mode is echoed as
+  `mode` in the response; no `mode_changed` notification is sent, since
+  the session isn't published yet.
 
 ## 5. Templates and builds (bridge)
 

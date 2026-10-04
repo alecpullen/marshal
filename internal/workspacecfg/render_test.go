@@ -145,3 +145,99 @@ func TestFormatRoundTrip(t *testing.T) {
 		t.Errorf("empty doc should format to nothing, got %q", got)
 	}
 }
+
+const multilineSetup = `[workspace]
+name = 'a'
+
+[setup]
+run = '''
+if [ -f x ]; then
+[network]
+fi
+[ -d y ]
+echo hi
+'''
+
+[policy]
+mode = 'edit'
+`
+
+func TestParseIgnoresHeaderLookalikesInStrings(t *testing.T) {
+	d, secs, diags := Parse([]byte(multilineSetup))
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v", diags)
+	}
+	if !strings.Contains(d.Setup.Run, "[network]") || !strings.Contains(d.Setup.Run, "echo hi") {
+		t.Fatalf("setup.run = %q", d.Setup.Run)
+	}
+	for _, s := range secs {
+		if s.Key == "network" {
+			t.Fatalf("phantom network section: %+v", secs)
+		}
+		if s.Layer == 9 && (s.StartLine != 4 || s.EndLine != 11) {
+			t.Fatalf("setup range = %d..%d, want 4..11", s.StartLine, s.EndLine)
+		}
+		if s.Layer == 0 && s.StartLine != 13 {
+			t.Fatalf("policy range = %+v", s)
+		}
+	}
+}
+
+func TestPatchNeighbourOfMultilineStringLeavesScriptAlone(t *testing.T) {
+	out := mustPatch(t, multilineSetup, 7, `{"mode":"off"}`)
+	d, _, diags := Parse([]byte(out))
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v\n%s", diags, out)
+	}
+	d0, _, _ := Parse([]byte(multilineSetup))
+	if d.Setup.Run != d0.Setup.Run {
+		t.Fatalf("setup script changed:\n%q\n%q", d.Setup.Run, d0.Setup.Run)
+	}
+	if d.Network.Mode != "off" || d.Policy.Mode != "edit" {
+		t.Fatalf("doc = %+v", d)
+	}
+	if !strings.Contains(out, "if [ -f x ]; then\n[network]\nfi\n[ -d y ]\necho hi\n'''") {
+		t.Fatalf("script text moved:\n%s", out)
+	}
+}
+
+func TestPatchSetupLayerWithMultilineString(t *testing.T) {
+	out := mustPatch(t, multilineSetup, 9, `{"run":"make\nmake test\n[network]\n"}`)
+	d, _, diags := Parse([]byte(out))
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v\n%s", diags, out)
+	}
+	if d.Setup.Run != "make\nmake test\n[network]\n" || d.Policy.Mode != "edit" || d.Workspace.Name != "a" {
+		t.Fatalf("doc = %+v\n%s", d, out)
+	}
+	// And the patched text can be patched again around its own script.
+	out = mustPatch(t, out, 8, `{"memory":"2g"}`)
+	d, _, _ = Parse([]byte(out))
+	if d.Setup.Run != "make\nmake test\n[network]\n" || d.Resources.Memory != "2g" {
+		t.Fatalf("second patch: %+v\n%s", d, out)
+	}
+}
+
+func TestParseIgnoresHeaderLookalikesInArrays(t *testing.T) {
+	src := "[packages]\napt = [\n  [\"x\"],\n]\n"
+	_, secs, _ := Parse([]byte(src))
+	if len(secs) != 1 || secs[0].Key != "packages" || secs[0].EndLine != 4 {
+		t.Fatalf("sections = %+v", secs)
+	}
+	src = "[workspace]\nname = 'a'\ntoolchains = [\n  'go@1.23',\n]\n[network]\nmode = 'off'\n"
+	_, secs, _ = Parse([]byte(src))
+	if len(secs) != 3 { // workspace counts for layers 1 and 2
+		t.Fatalf("sections = %+v", secs)
+	}
+}
+
+func TestParseQuotedAndSpacedHeaders(t *testing.T) {
+	src := "[files.\"a b/c\"]\ntarget = '/x'\n\n[ secrets . inject ]\n\"h\" = {ref = 'vault:h'}\n"
+	_, secs, diags := Parse([]byte(src))
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v", diags)
+	}
+	if len(secs) != 2 || secs[0].Key != "files" || secs[1].Key != "secrets.inject" || secs[1].StartLine != 4 {
+		t.Fatalf("sections = %+v", secs)
+	}
+}

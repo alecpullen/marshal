@@ -17,7 +17,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
-	"marshal/internal/tools/policy"
+	"marshal/internal/llm/routing"
 	"marshal/internal/worktree"
 )
 
@@ -114,6 +114,10 @@ type SessionManager struct {
 type SessionResponse struct {
 	SessionID string         `json:"sessionId"`
 	Workspace *WorkspaceInfo `json:"workspace,omitempty"`
+	// Mode echoes the approval mode applied from the request's policy, so
+	// a client can verify it. No mode_changed notification is sent for it:
+	// the session is not published yet, so nobody is attached to hear one.
+	Mode string `json:"mode,omitempty"`
 }
 
 // sessionParams is the subset of ACP session/new and session/load params
@@ -130,45 +134,19 @@ type sessionParams struct {
 	// Name is an optional display name used to derive a branch when
 	// isolation.branch is omitted.
 	Name string `json:"name,omitempty"`
+	// Routing gives the new session its own profile and per-role preset
+	// overrides. Honored by session/new only.
+	Routing *RoutingParams `json:"routing,omitempty"`
 	// Policy, when present, sets the new session's approval mode and
-	// pre-approved command prefixes. Honored by session/new only.
+	// pre-approved commands. Honored by session/new only.
 	Policy *PolicyParams `json:"policy,omitempty"`
 }
 
-// PolicyParams is the session/new policy: an approval mode and command
-// patterns such as "go test *" that become session rules.
-type PolicyParams struct {
-	Mode  string   `json:"mode,omitempty"`
-	Allow []string `json:"allow,omitempty"`
-}
-
-// validate checks the policy before any runtime is started and returns
-// the lowercase-normalized mode.
-func (pp *PolicyParams) validate() (string, error) {
-	mode := strings.ToLower(strings.TrimSpace(pp.Mode))
-	if mode != "" && !policy.ValidApprovalMode(mode) {
-		return "", invalidParamsError("invalid policy.mode %q: want one of plan, default, edit, copilot, auto", pp.Mode)
-	}
-	for i, pat := range pp.Allow {
-		if strings.TrimSpace(pat) == "" {
-			return "", invalidParamsError("policy.allow[%d] must not be empty", i)
-		}
-	}
-	return mode, nil
-}
-
-// applyPolicy sets the approval mode and adds each allow pattern as a
-// session rule, with any trailing " *" removed.
-func applyPolicy(rt *app.Runtime, pp *PolicyParams, mode string) {
-	if mode != "" && rt.Runner != nil {
-		rt.Runner.SetApprovalMode(policy.ParseApprovalMode(mode))
-	}
-	if rt.State == nil {
-		return
-	}
-	for _, pat := range pp.Allow {
-		rt.State.AddSessionRule(strings.TrimSuffix(strings.TrimSpace(pat), " *"))
-	}
+// RoutingParams is the session/new routing parameter. Overrides maps role
+// names to preset names.
+type RoutingParams struct {
+	Profile   string            `json:"profile,omitempty"`
+	Overrides map[string]string `json:"overrides,omitempty"`
 }
 
 // NewSessionManager constructs a SessionManager.
@@ -400,14 +378,30 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 			return nil, err
 		}
 	}
-	rt, err := m.startRuntime(ctx, p)
+	var extra []app.Option
+	if p.Routing != nil && (p.Routing.Profile != "" || len(p.Routing.Overrides) > 0) {
+		overrides := make(map[routing.AgentRole]string, len(p.Routing.Overrides))
+		for role, preset := range p.Routing.Overrides {
+			overrides[routing.AgentRole(role)] = preset
+		}
+		extra = append(extra, app.WithSessionRouting(p.Routing.Profile, overrides))
+	}
+	rt, err := m.startRuntime(ctx, p, extra...)
 	if err != nil {
+		if errors.Is(err, app.ErrInvalidSessionRouting) {
+			return nil, invalidParamsError("%v", err)
+		}
 		return nil, err
 	}
 	if p.Policy != nil {
-		applyPolicy(rt, p.Policy, policyMode)
+		if perr := applyPolicy(rt, p.Policy, policyMode); perr != nil {
+			sCtx, sCancel := shutdownCtx()
+			defer sCancel()
+			_ = m.closeRuntimeOnce(sCtx, rt)
+			return nil, perr
+		}
 	}
-	resp := SessionResponse{SessionID: rt.SessionID}
+	resp := SessionResponse{SessionID: rt.SessionID, Mode: policyMode}
 	if p.Isolation != nil {
 		// Worktree setup is resolved per session from the session's loaded
 		// config: the ACP host never holds a config.Config (config is per-cwd,

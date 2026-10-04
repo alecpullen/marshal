@@ -527,7 +527,7 @@ func evaluateShellRules(cfg *config.Config, sessionRules []string, normCmd strin
 		}
 	}
 	for _, prefix := range sessionRules {
-		if matchRule(normCmd, prefix) {
+		if matchSessionRule(normCmd, prefix) {
 			return DecisionAllow, "allowed by session-approved command: " + prefix
 		}
 	}

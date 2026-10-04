@@ -15,7 +15,7 @@
   import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -128,8 +128,8 @@
     }
   })
 
-  const chatMatch = $derived(/^#chat\/(.+)$/.exec(hash))
-  const chatSessionId = $derived(chatMatch?.[1] ?? null)
+  const chatRoute = $derived(parseChatRoute(hash))
+  const chatSessionId = $derived(chatRoute?.id ?? null)
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -173,7 +173,7 @@
         the first one's store, header and transcript.
       -->
       {#key chatSessionId}
-        <Chat sessionId={chatSessionId} onBack={() => navigate('#')} />
+        <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
       {/key}
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

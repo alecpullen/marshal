@@ -188,6 +188,14 @@ type Runtime struct {
 	closeErr    error
 }
 
+// CurrentWatchManager returns the runtime's watch manager under the pointer
+// mutex, so a concurrent agent-runtime reload cannot race the read.
+func (rt *Runtime) CurrentWatchManager() *watch.Manager {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.WatchManager
+}
+
 // WatchResumeHook is invoked by the watch manager's OnFire closure after
 // a fired report is pushed to the session queue, for runtimes that want to
 // auto-resume an idle session (ACP). It receives the report so the sink
@@ -561,6 +569,12 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if !runOpts.sessionRouting.Empty() {
+		if err := cfg.ValidateSessionRouting(runOpts.sessionRouting); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidSessionRouting, err)
+		}
+		cfg.SessionRouting = runOpts.sessionRouting
 	}
 
 	if err := os.MkdirAll(filepath.Join(workingDir, ".marshal"), 0755); err != nil {

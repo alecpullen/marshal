@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -147,13 +146,26 @@ func Canonicalize(workingDir string) string {
 
 // workspaceFiles lists the repo workspace templates under
 // workingDir/.marshal/workspaces/*.toml, sorted by base name.
-func workspaceFiles(workingDir string) []string {
-	matches, err := filepath.Glob(filepath.Join(workingDir, ".marshal", "workspaces", "*.toml"))
+func workspaceFiles(workingDir string) ([]string, error) {
+	dir := filepath.Join(workingDir, ".marshal", "workspaces")
+	// ReadDir rather than Glob: workingDir may itself contain glob
+	// metacharacters, which would change what a pattern matches.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list workspace files: %w", err)
 	}
-	sort.Slice(matches, func(i, j int) bool { return filepath.Base(matches[i]) < filepath.Base(matches[j]) })
-	return matches
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, e.Name()))
+	}
+	// ReadDir already sorts by file name.
+	return files, nil
 }
 
 // ConfigHashFor returns the SHA-256 hex digest of the project config at
@@ -175,7 +187,10 @@ func ConfigHashFor(workingDir string) (string, error) {
 		missing = true
 		data = nil
 	}
-	files := workspaceFiles(workingDir)
+	files, err := workspaceFiles(workingDir)
+	if err != nil {
+		return "", fmt.Errorf("hash project config: %w", err)
+	}
 	if len(files) == 0 {
 		if missing {
 			return "", nil
@@ -296,5 +311,8 @@ func HasProjectConfig(workingDir string) bool {
 	if _, err := os.Stat(filepath.Join(workingDir, ".marshal", "config.toml")); err == nil {
 		return true
 	}
-	return len(workspaceFiles(workingDir)) > 0
+	// A listing error counts as config present: trust then re-prompts
+	// instead of silently ignoring workspace files.
+	files, err := workspaceFiles(workingDir)
+	return err != nil || len(files) > 0
 }

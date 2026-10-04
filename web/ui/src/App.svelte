@@ -258,6 +258,8 @@
         <Home
           agents={$fleet.agents}
           {pending}
+          notices={$fleet.notices}
+          onDismissNotice={actions.dismissNotice}
           onRefreshPending={refreshPending}
           onOpenAgent={(id) => navigate(`#chat/${id}`)}
           onNavigate={navigate}

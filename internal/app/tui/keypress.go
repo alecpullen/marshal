@@ -439,6 +439,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			// F16: turn is running — enqueue as a steering message
 			// instead of dropping the input.
 			m.state.PushSteering(value)
+			m.queuedCount = len(m.state.SteeringQueue())
+			m.refreshViewport()
 			return *m, nil, true
 		}
 		if m.runner == nil {

@@ -76,6 +76,49 @@ func TestCopyFromTransfersVerificationGate(t *testing.T) {
 	}
 }
 
+type blockingTitleManager struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingTitleManager) OnUserTurn(ctx context.Context, _ string) {
+	close(m.entered)
+	select {
+	case <-m.release:
+	case <-ctx.Done():
+	}
+}
+
+func TestRunnerPublishesUserMessageBeforeTitleGeneration(t *testing.T) {
+	state := newTestState(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: scriptRepeats(1, `{"rationale":"done","action":{"type":"final","content":"ok"}}`),
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	mgr := &blockingTitleManager{entered: make(chan struct{}), release: make(chan struct{})}
+	r.TitleManager = mgr
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.RunTask(ctx, "show me immediately")
+		done <- err
+	}()
+	defer func() {
+		cancel()
+		close(mgr.release)
+		<-done
+	}()
+	select {
+	case <-mgr.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("title generation never started")
+	}
+	messages := state.Messages()
+	if len(messages) != 1 || messages[0].Role != session.RoleUser || messages[0].Content != "show me immediately" {
+		t.Fatalf("user message must be visible while title generation is blocked; got %+v", messages)
+	}
+}
+
 type fakeTitleManager struct{}
 
 func (fakeTitleManager) OnUserTurn(context.Context, string) {}

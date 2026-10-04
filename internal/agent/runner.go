@@ -741,6 +741,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}()
 
 	priorTranscript := r.State.Messages()
+	// Publish the prompt before any model-backed startup work so the TUI
+	// can show it while title generation is still running. Keep the history
+	// snapshot above this insertion to avoid replaying the goal twice.
+	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	// Turn-start titling: initial title on the first turn; later turns
 	// re-title only when the user explicitly starts a new task. Synchronous
 	// by design (single-model safe); failures and timeouts keep the current
@@ -748,7 +752,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if r.TitleManager != nil && r.State.SubagentDepth() == 0 {
 		r.TitleManager.OnUserTurn(ctx, goal)
 	}
-	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	// If the previous turn was interrupted (Esc), surface a one-line note in
 	// the user's transcript so they know where things stopped. The model
 	// gets its full orientation from the persisted RoleUser interrupt marker

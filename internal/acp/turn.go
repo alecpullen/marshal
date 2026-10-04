@@ -174,6 +174,7 @@ type activeTurn struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	clientCancelled atomic.Bool
+	settled         atomic.Bool // runner finished; slot remains reserved through cleanup
 }
 
 // TurnManager dispatches session/prompt and session/cancel. At most one
@@ -218,6 +219,10 @@ type TurnManager struct {
 	baseRefsMu sync.Mutex
 	baseRefs   map[string]string
 
+	// stacksMu guards per-session stack projectors (foundation spec §5).
+	stacksMu sync.Mutex
+	stacks   map[string]*stackProjector
+
 	// cancelTimeout overrides cancelWait for testing; zero means use the
 	// default const. Access is safe without a mutex because it is set
 	// only during construction and read only in CancelAndWait.
@@ -245,6 +250,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		childForwarders: map[string]*childForwarder{},
 		pipelineRunners: map[string]*sddRun{},
 		baseRefs:        map[string]string{},
+		stacks:          map[string]*stackProjector{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
@@ -699,6 +705,7 @@ func (m *TurnManager) runTurn(
 	// forward dispatches one session event to the ACP client. Defined
 	// once and used in both the main loop and the post-run drain.
 	forward := func(ev pubsub.Event[session.Event]) {
+		m.markStackDirty(sessionID)
 		update, hasUpdate := eventToSessionUpdate(ev, proj)
 		if hasUpdate {
 			if notifyErr := m.notify("session/update", SessionUpdateParams{
@@ -855,10 +862,16 @@ func (m *TurnManager) runTurn(
 		}
 	}
 
+	flush := time.NewTicker(stackFlushInterval)
+	defer flush.Stop()
 	forwarding := true
 	var runErrVal error
 	for forwarding {
 		select {
+		case <-flush.C:
+			if rt.State != nil {
+				m.flushDirtyStack(sessionID, rt.State)
+			}
 		case <-turnCtx.Done():
 			// Turn cancelled (client cancel or parent shutdown).
 			subCancel()
@@ -1203,7 +1216,9 @@ func (m *TurnManager) finishTurn(
 	resultOf func(runErr error, slot *activeTurn) (any, error),
 ) (any, error) {
 	result, err := resultOf(runErrVal, slot)
+	slot.settled.Store(true)
 	if rt.State != nil {
+		m.flushStack(sessionID, rt.State, false)
 		if notifyErr := m.notify("session/update", SessionUpdateParams{
 			SessionID: sessionID,
 			Update:    m.buildTelemetry(sessionID, rt.State),

@@ -10,7 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
+	"marshal/internal/viewmodel"
 )
 
 // THE regression test for the reported bug: a running card must not shrink
@@ -39,8 +39,8 @@ func TestSubagentCardDoesNotShrinkWhenTailSourceFlips(t *testing.T) {
 
 func TestRegionRowsArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := stack.NodeID{Kind: stack.KindSubagent, Key: "sub:999"}
-	m.regionRows = map[stack.NodeID]int{gone: 6}
+	gone := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: "sub:999"}
+	m.regionRows = map[viewmodel.NodeID]int{gone: 6}
 	m.refreshViewport()
 	if _, still := m.regionRows[gone]; still {
 		t.Fatal("high-water marks for regions no longer rendered must be pruned")
@@ -59,8 +59,8 @@ func TestRegionScrollRepaintsViewport(t *testing.T) {
 	m.refreshViewport()
 	before := m.viewport.GetContent()
 
-	key := stack.NodeID{Kind: stack.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
-	m.regionOffset = map[stack.NodeID]int{key: 5}
+	key := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
+	m.regionOffset = map[viewmodel.NodeID]int{key: 5}
 	m.refreshViewport()
 	after := m.viewport.GetContent()
 
@@ -107,8 +107,8 @@ func TestWheelOutsideRegionScrollsTranscript(t *testing.T) {
 
 func TestStaleRegionOffsetsArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := stack.NodeID{Kind: stack.KindSubagent, Key: "sub:999"}
-	m.regionOffset = map[stack.NodeID]int{gone: 3}
+	gone := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: "sub:999"}
+	m.regionOffset = map[viewmodel.NodeID]int{gone: 3}
 	m.refreshViewport()
 	if _, still := m.regionOffset[gone]; still {
 		t.Fatal("offsets for regions no longer rendered must be pruned")
@@ -122,8 +122,8 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	child.AppendThinking("line\n")
 	v := m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
-	key := stack.NodeID{Kind: stack.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
-	m.regionOffset = map[stack.NodeID]int{key: 0}
+	key := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
+	m.regionOffset = map[viewmodel.NodeID]int{key: 0}
 	for i := 0; i < 5; i++ {
 		m.scrollLiveRegionAt(tea.MouseWheelMsg{X: 1, Y: 1, Button: tea.MouseWheelDown})
 	}
@@ -148,7 +148,7 @@ func TestWheelOverLiveRegionScrollsRegionAndRepaints(t *testing.T) {
 	v := m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 
-	key := stack.NodeID{Kind: stack.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
+	key := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
 	var region nodeRegion
 	found := false
 	for _, r := range m.nodeRegions {

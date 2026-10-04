@@ -47,8 +47,9 @@ type sessionLog struct {
 
 // EventLog is the bridge's event bus: a per-session ring of recent
 // events plus a subscriber registry for live fan-out. All ACP
-// notifications and bridge-originated events for a session are appended
-// here and broadcast to that session's subscribers.
+// notifications and bridge-originated events for a session are broadcast
+// here to that session's subscribers. All except stack patches are appended
+// to the replay ring.
 //
 // Events appended with an empty session id — permission requests carry
 // no sessionId on the ACP wire — are stored in the "" ring and
@@ -118,6 +119,26 @@ func (l *EventLog) Append(sessionID string, payload any) (int64, error) {
 		s.deliver(ev)
 	}
 	return ev.ID, nil
+}
+
+// Broadcast delivers payload to live subscribers without storing it. Stack
+// patches arrive at up to 5/s and would evict permission prompts and chat
+// history from the 500-event ring.
+func (l *EventLog) Broadcast(sessionID string, payload any) error {
+	data, err := marshalPayload(payload)
+	if err != nil {
+		return err
+	}
+	ev := Event{ID: 0, SessionID: sessionID, Data: data}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for s := range l.subs {
+		if sessionID != "" && s.sessionID != sessionID {
+			continue
+		}
+		s.deliver(ev)
+	}
+	return nil
 }
 
 // Replay returns the retained events with ID > afterID for a session.
@@ -238,7 +259,8 @@ func marshalPayload(payload any) (json.RawMessage, error) {
 
 // Attach wires an EventLog onto a Child and Registry: every inbound ACP
 // notification is appended to the notifying session's log (as a
-// {method, params} envelope), and every registry-emitted event
+// {method, params} envelope), except stack_patch updates, which are
+// broadcast without storing. Every registry-emitted event
 // (bridge_restarted, permission_request, question_request, turn_end)
 // is appended via the registry's OnEvent hook. Existing callbacks are
 // chained, not replaced.
@@ -253,11 +275,18 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 	child.OnNotification = func(method string, params json.RawMessage) {
 		var p struct {
 			SessionID string `json:"sessionId"`
+			Update    struct {
+				Kind string `json:"kind"`
+			} `json:"update"`
 		}
 		_ = json.Unmarshal(params, &p)
 		envelope, err := json.Marshal(map[string]any{"method": method, "params": params})
 		if err == nil {
-			_, _ = l.Append(p.SessionID, json.RawMessage(envelope))
+			if method == "session/update" && p.Update.Kind == "stack_patch" {
+				_ = l.Broadcast(p.SessionID, json.RawMessage(envelope))
+			} else {
+				_, _ = l.Append(p.SessionID, json.RawMessage(envelope))
+			}
 		}
 		if prevNotify != nil {
 			prevNotify(method, params)

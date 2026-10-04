@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // scriptedTasks seeds a turn with n todos, each worked in stepsPer steps, and
@@ -294,7 +294,7 @@ func TestReceiptGolden(t *testing.T) {
 }
 
 func TestSalvagedTurnReceiptSaysSo(t *testing.T) {
-	r := &stack.ReceiptInfo{Duration: time.Minute, Steps: 3, Tools: 4, Salvaged: true}
+	r := &viewmodel.ReceiptInfo{Duration: time.Minute, Steps: 3, Tools: 4, Salvaged: true}
 	if got := stripANSI(renderReceipt(r, 100)); !strings.Contains(got, "salvaged") || !strings.Contains(got, "!") && !strings.Contains(got, "⚠") {
 		t.Fatalf("salvaged receipt = %q", got)
 	}

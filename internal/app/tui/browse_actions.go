@@ -14,22 +14,22 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // nodeCopyText is what `y` puts on the clipboard for a node, ANSI-free.
-func (m *Model) nodeCopyText(n *stack.Node) string {
+func (m *Model) nodeCopyText(n *viewmodel.Node) string {
 	switch {
 	case n == nil:
 		return ""
-	case n.Kind == stack.KindTool && len(n.Tools) > 0:
+	case n.Kind == viewmodel.KindTool && len(n.Tools) > 0:
 		var parts []string
 		for _, ev := range n.Tools {
 			parts = append(parts, toolCopyText(ev))
 		}
 		return strings.Join(parts, "\n\n")
-	case n.Kind == stack.KindStep && n.Step != nil:
+	case n.Kind == viewmodel.KindStep && n.Step != nil:
 		// The narration already opens with the headline; the headline alone
 		// stands in only for a step that did not narrate.
 		var lines []string
@@ -46,7 +46,7 @@ func (m *Model) nodeCopyText(n *stack.Node) string {
 			}
 		}
 		return strings.Join(lines, "\n")
-	case n.Kind == stack.KindTask && n.Task != nil:
+	case n.Kind == viewmodel.KindTask && n.Task != nil:
 		lines := []string{taskTitle(n.Task)}
 		for _, st := range n.Children {
 			if st.Step == nil {
@@ -56,7 +56,7 @@ func (m *Model) nodeCopyText(n *stack.Node) string {
 			lines = append(lines, "- "+head)
 		}
 		return strings.Join(lines, "\n")
-	case n.Kind == stack.KindReceipt && n.Receipt != nil:
+	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return plainText(renderReceipt(n.Receipt, 200))
 	case n.Item != nil && n.Item.Message != nil:
 		return n.Item.Message.Content
@@ -167,7 +167,7 @@ var pathLineRE = regexp.MustCompile(`([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+):(\d+)`)
 // nodeFile resolves the file a node is about: the call's path argument, else
 // the first file it changed, else for a shell row the first path:line in its
 // output that exists inside the workspace.
-func (m *Model) nodeFile(n *stack.Node) (path string, line int) {
+func (m *Model) nodeFile(n *viewmodel.Node) (path string, line int) {
 	if n == nil {
 		return "", 0
 	}
@@ -176,7 +176,7 @@ func (m *Model) nodeFile(n *stack.Node) (path string, line int) {
 	switch {
 	case len(n.Tools) > 0:
 		events = n.Tools
-	case n.Kind == stack.KindStep:
+	case n.Kind == viewmodel.KindStep:
 		for _, row := range n.Children {
 			events = append(events, row.Tools...)
 		}
@@ -201,7 +201,7 @@ func (m *Model) nodeFile(n *stack.Node) (path string, line int) {
 		}
 	}
 	for _, ev := range events {
-		if !stack.IsShellFamily(ev.ToolName) {
+		if !viewmodel.IsShellFamily(ev.ToolName) {
 			continue
 		}
 		for _, mt := range pathLineRE.FindAllStringSubmatch(ev.ResultContent, -1) {

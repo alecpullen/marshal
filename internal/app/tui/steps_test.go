@@ -12,8 +12,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // stepFixture seeds one user turn with one settled step: optional narration
@@ -209,8 +209,8 @@ func TestNarrationWrapsCompletelyWithoutDuplication(t *testing.T) {
 			t.Run(fmt.Sprintf("density=%d/width=%d", d, width), func(t *testing.T) {
 				narration := "The baseline tests are running; I’ll delegate the document import while I prepare the task-by-task execution plan. Second sentence with important details.\n\nThird paragraph with detail."
 				// Exercise the production renderer directly at narrow widths too.
-				si := &stack.StepInfo{Narration: []*session.Message{{Content: narration}}}
-				n := &stack.Node{Kind: stack.KindStep, Step: si}
+				si := &viewmodel.StepInfo{Narration: []*session.Message{{Content: narration}}}
+				n := &viewmodel.Node{Kind: viewmodel.KindStep, Step: si}
 				out, _ := renderStep(n, &stepRenderCtx{}, width, d)
 				plain := stripANSI(out)
 				if strings.Contains(plain, "…") {
@@ -233,8 +233,8 @@ func TestNarrationWrapsCompletelyWithoutDuplication(t *testing.T) {
 
 func TestNarrationMarkdownRemainsWhole(t *testing.T) {
 	for _, text := range []string{"**Checking the parser. Then checking the lexer.**", "```go\nfunc example() {}\n```"} {
-		si := &stack.StepInfo{Narration: []*session.Message{{Content: text}}}
-		out, _ := renderStep(&stack.Node{Kind: stack.KindStep, Step: si}, &stepRenderCtx{}, 80, densitySteps)
+		si := &viewmodel.StepInfo{Narration: []*session.Message{{Content: text}}}
+		out, _ := renderStep(&viewmodel.Node{Kind: viewmodel.KindStep, Step: si}, &stepRenderCtx{}, 80, densitySteps)
 		plain := stripANSI(out)
 		if strings.Contains(plain, "**") || strings.Contains(plain, "```") {
 			t.Fatalf("markdown split or unrendered:\n%s", plain)
@@ -285,12 +285,12 @@ func TestClickOnToolRowTogglesThatRowOnly(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	row := stack.NodeID{Kind: stack.KindTool, Key: fmt.Sprintf("tool:%d:row_a", id)}
+	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:row_a", id)}
 	region, ok := regionOf(&m, row)
 	if !ok {
 		t.Fatal("tool row recorded no region of its own")
 	}
-	stepRegion, ok := regionOf(&m, stack.NodeID{Kind: stack.KindStep, Key: fmt.Sprintf("step:%d", id)})
+	stepRegion, ok := regionOf(&m, viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", id)})
 	if !ok || stepRegion.endLine-stepRegion.startLine <= region.endLine-region.startLine {
 		t.Fatalf("row region %+v should sit inside the step region %+v", region, stepRegion)
 	}
@@ -300,7 +300,7 @@ func TestClickOnToolRowTogglesThatRowOnly(t *testing.T) {
 	if !mm.isExpanded(row) {
 		t.Fatal("click on the row did not expand it")
 	}
-	if mm.isExpanded(stack.NodeID{Kind: stack.KindStep, Key: fmt.Sprintf("step:%d", id)}) || mm.isExpanded(stack.NodeID{Kind: stack.KindTool, Key: fmt.Sprintf("tool:%d:row_b", id)}) {
+	if mm.isExpanded(viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", id)}) || mm.isExpanded(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:row_b", id)}) {
 		t.Fatal("click on a row must not toggle the step or its siblings")
 	}
 }
@@ -318,8 +318,8 @@ func TestSettledStepsAreNotReRenderedOnSpinnerTicks(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 
-	var rendered []stack.NodeID
-	nodeRenderHook = func(id stack.NodeID) { rendered = append(rendered, id) }
+	var rendered []viewmodel.NodeID
+	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
 
 	m.invalidateTranscript()
@@ -356,10 +356,10 @@ func TestExpandingOneStepRendersOnlyThatStep(t *testing.T) {
 	}
 	m.invalidateTranscript()
 	m.refreshViewport()
-	var rendered []stack.NodeID
-	nodeRenderHook = func(id stack.NodeID) { rendered = append(rendered, id) }
+	var rendered []viewmodel.NodeID
+	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
-	target := stack.NodeID{Kind: stack.KindStep, Key: fmt.Sprintf("step:%d", ids[2])}
+	target := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", ids[2])}
 	m.toggleExpanded(target)
 	m.refreshViewport()
 	if len(rendered) != 1 || rendered[0] != target {
@@ -388,23 +388,23 @@ func TestFirstSentence(t *testing.T) {
 }
 
 func TestInferHeadline(t *testing.T) {
-	tool := func(name, args string) *stack.Node {
-		return &stack.Node{Kind: stack.KindTool, Tools: []registry.AuditEvent{{ToolName: name, Args: []byte(args)}}}
+	tool := func(name, args string) *viewmodel.Node {
+		return &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{{ToolName: name, Args: []byte(args)}}}
 	}
 	cases := []struct {
 		name string
-		rows []*stack.Node
+		rows []*viewmodel.Node
 		want string
 	}{
-		{"reads aggregate", []*stack.Node{tool("file.read", `{"path":"a"}`), tool("file.read", `{"path":"b"}`)}, "read 2 files"},
-		{"one read", []*stack.Node{tool("file.read", `{"path":"a"}`)}, "read 1 file"},
-		{"search", []*stack.Node{tool("repo.search", `{"query":"ErrEmpty"}`)}, `searched "ErrEmpty"`},
-		{"shell", []*stack.Node{tool("shell.run", `{"command":"go test ./..."}`)}, "ran go …"},
-		{"edit", []*stack.Node{tool("file.write_patch", `{"path":"internal/a/parser.go"}`)}, "edited parser.go"},
-		{"two clauses", []*stack.Node{tool("file.read", `{"path":"a"}`), tool("repo.search", `{"query":"x"}`)}, `read 1 file · searched "x"`},
-		{"overflow", []*stack.Node{tool("file.read", `{"path":"a"}`), tool("repo.search", `{"query":"x"}`), tool("shell.run", `{"command":"ls"}`)}, `read 1 file · searched "x" …`},
-		{"other tool uses its display name", []*stack.Node{tool("web.fetch", `{}`)}, "Fetch page"},
-		{"agents", []*stack.Node{{Kind: stack.KindSubagent}, {Kind: stack.KindSubagent}}, "dispatched 2 agents"},
+		{"reads aggregate", []*viewmodel.Node{tool("file.read", `{"path":"a"}`), tool("file.read", `{"path":"b"}`)}, "read 2 files"},
+		{"one read", []*viewmodel.Node{tool("file.read", `{"path":"a"}`)}, "read 1 file"},
+		{"search", []*viewmodel.Node{tool("repo.search", `{"query":"ErrEmpty"}`)}, `searched "ErrEmpty"`},
+		{"shell", []*viewmodel.Node{tool("shell.run", `{"command":"go test ./..."}`)}, "ran go …"},
+		{"edit", []*viewmodel.Node{tool("file.write_patch", `{"path":"internal/a/parser.go"}`)}, "edited parser.go"},
+		{"two clauses", []*viewmodel.Node{tool("file.read", `{"path":"a"}`), tool("repo.search", `{"query":"x"}`)}, `read 1 file · searched "x"`},
+		{"overflow", []*viewmodel.Node{tool("file.read", `{"path":"a"}`), tool("repo.search", `{"query":"x"}`), tool("shell.run", `{"command":"ls"}`)}, `read 1 file · searched "x" …`},
+		{"other tool uses its display name", []*viewmodel.Node{tool("web.fetch", `{}`)}, "Fetch page"},
+		{"agents", []*viewmodel.Node{{Kind: viewmodel.KindSubagent}, {Kind: viewmodel.KindSubagent}}, "dispatched 2 agents"},
 		{"nothing", nil, ""},
 	}
 	for _, c := range cases {
@@ -637,8 +637,8 @@ func TestOlderStepWithRunningCallKeepsRendering(t *testing.T) {
 
 	m.invalidateTranscript()
 	m.refreshViewport()
-	var rendered []stack.NodeID
-	nodeRenderHook = func(id stack.NodeID) { rendered = append(rendered, id) }
+	var rendered []viewmodel.NodeID
+	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
 	base := m.now()
 	m.now = func() time.Time { return base.Add(5 * time.Second) }
@@ -663,7 +663,7 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 	m.busy, m.turnStartedAt = true, time.Now()
 	m.density = densityFull // ctrl+g on: settled rows open, running rows stay closed
 
-	row := stack.NodeID{Kind: stack.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
+	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
@@ -683,7 +683,7 @@ func TestExpandStateDoesNotLeakIntoSubagentViews(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	v := m.state.RegisterSubagent("reviewer", child)
-	step1 := stack.NodeID{Kind: stack.KindStep, Key: "step:1"}
+	step1 := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:1"}
 
 	m.toggleExpanded(step1)
 	if !m.isExpanded(step1) {

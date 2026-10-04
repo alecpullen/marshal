@@ -4,22 +4,22 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // thinkID is the node ID of a thinking row that started at ts.
-func thinkID(ts time.Time) stack.NodeID {
-	return stack.ThinkingID(&session.ThinkingEntry{StartedAt: ts})
+func thinkID(ts time.Time) viewmodel.NodeID {
+	return viewmodel.ThinkingID(&session.ThinkingEntry{StartedAt: ts})
 }
 
 // toolIDAt is the node ID of an audit row with no call ID, logged at ts.
-func toolIDAt(ts time.Time) stack.NodeID {
-	return stack.ToolID(registry.AuditEvent{Timestamp: ts})
+func toolIDAt(ts time.Time) viewmodel.NodeID {
+	return viewmodel.ToolID(registry.AuditEvent{Timestamp: ts})
 }
 
 // regionOf returns the narrowest recorded region whose target is id.
-func regionOf(m *Model, id stack.NodeID) (nodeRegion, bool) {
+func regionOf(m *Model, id viewmodel.NodeID) (nodeRegion, bool) {
 	var best nodeRegion
 	found := false
 	for _, r := range m.nodeRegions {

@@ -11,9 +11,9 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/inspector"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 func keyOf(s string) tea.KeyPressMsg {
@@ -81,13 +81,13 @@ func TestEscEntersBrowseModeOnNewestStepAndDoesNotCancelTheTurn(t *testing.T) {
 	if cancelled {
 		t.Fatal("Esc must never cancel a turn")
 	}
-	if m.cursor.Kind != stack.KindStep {
+	if m.cursor.Kind != viewmodel.KindStep {
 		t.Fatalf("cursor = %+v, want the newest step", m.cursor)
 	}
 	steps := 0
-	var newest stack.NodeID
+	var newest viewmodel.NodeID
 	for _, it := range m.browseItems {
-		if it.kind == stack.KindStep {
+		if it.kind == viewmodel.KindStep {
 			steps++
 			newest = it.id
 		}
@@ -154,7 +154,7 @@ func TestEnterCyclesTheNodesDensityAndOnlyThatNode(t *testing.T) {
 func TestEnterOnTheFailedTestRowExpandsItsOutput(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "j") // newest step -> its test row
-	if m.cursor.Kind != stack.KindTool {
+	if m.cursor.Kind != viewmodel.KindTool {
 		t.Fatalf("cursor = %+v, want the tool row", m.cursor)
 	}
 	if strings.Contains(viewText(&m), "boom") && !strings.Contains(stripANSI(m.viewport.GetContent()), "boom") {
@@ -214,8 +214,8 @@ func TestZTogglesTaskFolding(t *testing.T) {
 func TestCursorMovesDoNotInvalidateTheRenderCache(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc")
-	var rendered []stack.NodeID
-	nodeRenderHook = func(id stack.NodeID) { rendered = append(rendered, id) }
+	var rendered []viewmodel.NodeID
+	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
 	m = pressKeys(m, "k", "j", "k")
 	if len(rendered) != 0 {
@@ -397,7 +397,7 @@ func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
 	root := m.state.Workspace().ActiveRoot
 	outside := t.TempDir()
 	for _, p := range []string{".", "/etc", outside} {
-		n := &stack.Node{Kind: stack.KindTool, Tools: []registry.AuditEvent{{ToolName: "search.grep", Args: []byte(fmt.Sprintf(`{"path":%q}`, p))}}}
+		n := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{{ToolName: "search.grep", Args: []byte(fmt.Sprintf(`{"path":%q}`, p))}}}
 		if path, _ := m.nodeFile(n); path != "" {
 			t.Errorf("path %q resolved to %q; directories and outside paths must not open (root %s)", p, path, root)
 		}
@@ -455,7 +455,7 @@ func TestEnterOnAToolRowTogglesAndNeverHidesIt(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "j") // the failing test row
 	row := m.cursor
-	if row.Kind != stack.KindTool {
+	if row.Kind != viewmodel.KindTool {
 		t.Fatalf("cursor = %+v", row)
 	}
 	for i := 0; i < 4; i++ {
@@ -489,7 +489,7 @@ func TestCursorStaysNearWhereItWasWhenItsNodeVanishes(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "g", "j")
 	idx := m.cursorIndex()
-	m.cursor = stack.NodeID{Kind: stack.KindTool, Key: "tool:gone"} // as if it had folded away
+	m.cursor = viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"} // as if it had folded away
 	m.invalidateTranscript()
 	m.browseItems = append([]browseItem(nil), m.browseItems...)
 	m.setBrowseItems(m.browseItems, m.browseTree)

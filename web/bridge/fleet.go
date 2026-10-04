@@ -1162,6 +1162,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 		live := f.live.get(a.ID)
 		st := AgentStatus{
 			ID: a.ID, Project: a.Project, Name: a.Name, Mode: a.Mode,
+			OwnerID: a.OwnerID, Origin: a.Origin, ClientID: a.ClientID,
 			Status: "idle", Activity: live.activity, ContextPct: live.contextPct,
 			ChangedFiles: live.changedFiles, Interrupted: a.Interrupted,
 			Isolated: a.Isolated, Branch: a.Branch, UpdatedAt: live.updatedAt,

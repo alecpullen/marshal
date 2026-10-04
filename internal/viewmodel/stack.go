@@ -1,11 +1,11 @@
-// Package stack turns the session transcript into a tree: turn → step → row.
+// Package viewmodel turns the session transcript into a tree: turn → step → row.
 //
 // It holds structure only, with no styling. Grouping tool calls under the
 // narration that explains them is done here, from the step IDs the runner
 // stamped on each item, with a timestamp heuristic only for sessions that
-// predate step IDs. The tui package renders the tree; keeping the two apart
-// lets the grouping be tested without a terminal.
-package stack
+// predate step IDs. The TUI renders the tree and internal/acp projects it for
+// web clients; keeping the grouping here lets it be tested without either.
+package viewmodel
 
 import (
 	"fmt"

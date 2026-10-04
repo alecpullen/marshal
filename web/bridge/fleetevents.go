@@ -17,6 +17,8 @@ type fleetDelta struct {
 	// payload itself is not streamed — the dashboard refetches the
 	// snapshot, which is the authority on what is still outstanding.
 	PendingKind string `json:"pendingKind,omitempty"`
+	// Gate is the new verify result on a "gate" delta.
+	Gate *gateRecord `json:"gate,omitempty"`
 }
 
 func classifyNotification(method string, params json.RawMessage) (fleetDelta, bool) {
@@ -87,6 +89,9 @@ type liveState struct {
 
 func newLiveState() *liveState { return &liveState{agents: make(map[string]*agentLive)} }
 func (s *liveState) apply(d fleetDelta) {
+	if d.Kind == "gate" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := s.agents[d.SessionID]

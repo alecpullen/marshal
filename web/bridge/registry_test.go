@@ -92,7 +92,7 @@ func TestRegistryStackProxiesResult(t *testing.T) {
 	r := newStackTestRegistry(t, tr)
 	ctx, cancel := testContext(t)
 	defer cancel()
-	got, err := r.Stack(ctx, "s-1")
+	got, err := r.Stack(ctx, "s-1", 0)
 	if err != nil || string(got) != testStackResult {
 		t.Fatalf("Stack = %s, %v; want %s", got, err, testStackResult)
 	}
@@ -107,8 +107,8 @@ func TestRegistryStackUnsupported(t *testing.T) {
 	r := newStackTestRegistry(t, &captureTransport{stackError: &rpcError{Code: -32601, Message: "method not found"}})
 	ctx, cancel := testContext(t)
 	defer cancel()
-	if _, err := r.Stack(ctx, "s-1"); !errors.Is(err, ErrStackUnsupported) {
-		t.Fatalf("Stack error = %v, want ErrStackUnsupported", err)
+	if _, err := r.Stack(ctx, "s-1", 0); !errors.Is(err, ErrUnsupported{Feature: "stack"}) {
+		t.Fatalf("Stack error = %v, want ErrUnsupported{stack}", err)
 	}
 }
 
@@ -116,10 +116,10 @@ func TestRegistryStackOtherErrors(t *testing.T) {
 	r := newStackTestRegistry(t, &captureTransport{stackError: &rpcError{Code: -32000, Message: "failure"}})
 	ctx, cancel := testContext(t)
 	defer cancel()
-	if _, err := r.Stack(ctx, "nope"); !errors.Is(err, ErrUnknownSession) {
+	if _, err := r.Stack(ctx, "nope", 0); !errors.Is(err, ErrUnknownSession) {
 		t.Fatalf("unknown Stack error = %v", err)
 	}
-	_, err := r.Stack(ctx, "s-1")
+	_, err := r.Stack(ctx, "s-1", 0)
 	var rpc *rpcError
 	if !errors.As(err, &rpc) || rpc.Code != -32000 {
 		t.Fatalf("Stack error = %v, want original RPC error", err)
@@ -1045,6 +1045,10 @@ type captureTransport struct {
 	seen        []capturedFrame
 	stackResult json.RawMessage
 	stackError  *rpcError
+	// results and errs answer other methods by name, for tests of the
+	// session proxy routes.
+	results map[string]json.RawMessage
+	errs    map[string]*rpcError
 }
 
 type capturedFrame struct {
@@ -1076,6 +1080,14 @@ func (t *captureTransport) serve(r io.Reader, w io.WriteCloser) {
 		t.seen = append(t.seen, capturedFrame{method: req.Method, params: string(req.Params)})
 		t.mu.Unlock()
 		var result any
+		if e := t.errs[req.Method]; e != nil {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": e})
+			continue
+		}
+		if raw, ok := t.results[req.Method]; ok {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": raw})
+			continue
+		}
 		switch req.Method {
 		case "session/new":
 			result = map[string]any{"sessionId": "s-1"}
@@ -1150,6 +1162,47 @@ func TestLifecycleRequestsCarryMCPServers(t *testing.T) {
 	for _, f := range tr.seen {
 		if f.method == "session/delete" && strings.Contains(f.params, `"mcpServers"`) {
 			t.Fatalf("session/delete payload unexpectedly carries mcpServers: %s", f.params)
+		}
+	}
+}
+
+func TestRegistryStackParamsAndProxies(t *testing.T) {
+	tr := &captureTransport{
+		stackResult: json.RawMessage(testStackResult),
+		results: map[string]json.RawMessage{
+			"session/stack_node":   json.RawMessage(`{"node":{}}`),
+			"session/last_request": json.RawMessage(`{"request":null}`),
+			"session/step_diffs":   json.RawMessage(`{"steps":[]}`),
+		},
+	}
+	r := newStackTestRegistry(t, tr)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := r.Stack(ctx, "s-1", 9); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.StackNode(ctx, "s-1", "tool:4:c1", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.LastRequest(ctx, "s-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.StepDiffs(ctx, "s-1"); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	want := []capturedFrame{
+		{"session/stack", `{"sessionId":"s-1","subagentId":9}`},
+		{"session/stack_node", `{"nodeId":"tool:4:c1","sessionId":"s-1"}`},
+		{"session/last_request", `{"sessionId":"s-1"}`},
+		{"session/step_diffs", `{"sessionId":"s-1"}`},
+	}
+	// session/new is also recorded by track; compare the tail.
+	got := tr.seen[len(tr.seen)-len(want):]
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("frame %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 }

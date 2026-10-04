@@ -18,9 +18,18 @@ var ErrGone = errors.New("bridge: pending request already resolved or expired")
 // Registry does not track. The HTTP layer maps it to 404.
 var ErrUnknownSession = errors.New("bridge: unknown session")
 
-// ErrStackUnsupported indicates the agent has no session/stack method.
-// The HTTP layer maps it to 501 Not Implemented.
-var ErrStackUnsupported = errors.New("stack_unsupported")
+// ErrUnsupported indicates the agent lacks the ACP method behind a feature
+// ("stack", "stack_node", "last_request", …). The HTTP layer maps it to 501
+// Not Implemented with the body {"error": "<feature>_unsupported"}.
+type ErrUnsupported struct{ Feature string }
+
+func (e ErrUnsupported) Error() string { return e.Feature + "_unsupported" }
+
+// isMethodNotFound reports whether err is a JSON-RPC "method not found".
+func isMethodNotFound(err error) bool {
+	var rpc *rpcError
+	return errors.As(err, &rpc) && rpc.Code == -32601
+}
 
 // Decision is the HTTP-facing shape of a permission decision. It maps
 // 1:1 onto the ACP session/request_permission result.
@@ -254,17 +263,50 @@ func (r *Registry) SetMode(ctx context.Context, id, mode string) error {
 	return err
 }
 
-// Stack proxies the agent's session/stack snapshot without decoding it.
-func (r *Registry) Stack(ctx context.Context, id string) (json.RawMessage, error) {
+// call sends one session-scoped request to the agent and returns the raw
+// result. A method-not-found reply becomes ErrUnsupported{feature}.
+func (r *Registry) call(ctx context.Context, id, method, feature string, params map[string]any) (json.RawMessage, error) {
 	if _, ok := r.lookup(id); !ok {
 		return nil, ErrUnknownSession
 	}
-	result, err := r.child.Request(ctx, "session/stack", map[string]string{"sessionId": id})
-	var rpc *rpcError
-	if errors.As(err, &rpc) && rpc.Code == -32601 {
-		return nil, ErrStackUnsupported
+	if params == nil {
+		params = map[string]any{}
+	}
+	params["sessionId"] = id
+	result, err := r.child.Request(ctx, method, params)
+	if isMethodNotFound(err) {
+		return nil, ErrUnsupported{Feature: feature}
 	}
 	return result, err
+}
+
+// Stack proxies the agent's session/stack snapshot without decoding it. A
+// non-zero subagentID selects that subagent's own transcript.
+func (r *Registry) Stack(ctx context.Context, id string, subagentID int64) (json.RawMessage, error) {
+	params := map[string]any{}
+	if subagentID != 0 {
+		params["subagentId"] = subagentID
+	}
+	return r.call(ctx, id, "session/stack", "stack", params)
+}
+
+// StackNode proxies session/stack_node: one node's wire form and full detail.
+func (r *Registry) StackNode(ctx context.Context, id, nodeID string, subagentID int64) (json.RawMessage, error) {
+	params := map[string]any{"nodeId": nodeID}
+	if subagentID != 0 {
+		params["subagentId"] = subagentID
+	}
+	return r.call(ctx, id, "session/stack_node", "stack_node", params)
+}
+
+// LastRequest proxies session/last_request.
+func (r *Registry) LastRequest(ctx context.Context, id string) (json.RawMessage, error) {
+	return r.call(ctx, id, "session/last_request", "last_request", nil)
+}
+
+// StepDiffs proxies session/step_diffs.
+func (r *Registry) StepDiffs(ctx context.Context, id string) (json.RawMessage, error) {
+	return r.call(ctx, id, "session/step_diffs", "step_diffs", nil)
 }
 
 // Sessions returns a snapshot of tracked sessions for the event bus and

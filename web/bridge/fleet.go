@@ -101,6 +101,11 @@ type Fleet struct {
 	fleetLog   *EventLog
 	live       *liveState
 
+	// gates holds each agent's latest verify result, in memory only: after a
+	// bridge restart the gate reads "not run".
+	gatesMu sync.Mutex
+	gates   map[string]gateRecord
+
 	// buildVersion is the release version of the webbridge binary, stamped
 	// at build time via -ldflags -X. Empty when built from source; the
 	// --version banner reports "dev" in that case.

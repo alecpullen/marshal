@@ -110,11 +110,7 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 	}
 
 	head, rest, inferred := stepHeadline(si, rows)
-	// A headline too long for even the bare header is cut with an ellipsis;
-	// keep the whole sentence reachable in the continuation.
-	if !inferred && ansi.StringWidth(head) > width-gutterWidth {
-		rest = strings.TrimSpace(head + " " + rest)
-	}
+
 	failed := stepFailed(rows)
 
 	// Header.
@@ -132,10 +128,43 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 	if sd == densityOutline {
 		meta.tools = countToolCalls(rows)
 	}
-	write(stepHeaderLine(g, gc, head, inferred, meta, width) + "\n")
+	if !inferred {
+		// Render narration as a single Markdown document so formatting and
+		// code fences survive sentence boundaries. Density never hides it.
+		var texts []string
+		for _, m := range si.Narration {
+			if text := strings.TrimSpace(m.Content); text != "" {
+				texts = append(texts, text)
+			}
+		}
+		text := strings.Join(texts, "\n\n")
+		cw := nestedContentWidth(width)
+		body, ok := renderMarkdown(text, cw)
+		if !ok {
+			body = renderPlainProse(text, cw)
+		}
+		wrapped := strings.Split(strings.Trim(body, "\n"), "\n")
+		first := strings.TrimSpace(wrapped[0])
+		first = ansi.Cut(first, 0, ansi.StringWidth(strings.TrimRight(ansi.Strip(first), " ")))
+		metaText, metaW := rightMeta(meta, ansi.StringWidth(first), width)
+		line := gutterPrefix(g, gc) + first
+		metaFits := metaW > 0 && ansi.StringWidth(first)+metaW+2 <= width-gutterWidth
+		if metaFits {
+			line += strings.Repeat(" ", width-gutterWidth-ansi.StringWidth(first)-metaW) + metaText
+		}
+		write(line + "\n")
+		for _, line := range wrapped[1:] {
+			write(strings.Repeat(" ", nestedBodyIndent) + strings.TrimRight(line, " ") + "\n")
+		}
+		if metaW > 0 && !metaFits {
+			write(strings.Repeat(" ", max(width-metaW, gutterWidth)) + metaText + "\n")
+		}
+		rest = "" // The full narration has already been rendered once.
+	} else {
+		write(stepHeaderLine(g, gc, head, inferred, meta, width) + "\n")
+	}
 	if sd == densityOutline {
-		// One row per step: narration, reasoning and tool rows are all
-		// behind a density change.
+		// Outline hides reasoning and tool rows, never narration.
 		return b.String(), subs
 	}
 
@@ -524,17 +553,11 @@ func stripEmphasis(s string) string {
 	return strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "~~", "").Replace(s)
 }
 
-// renderStepContinuation renders the muted continuation under the header: one
-// truncated line with a disclosure marker while collapsed, the markdown in
-// full when expanded.
-func renderStepContinuation(rest string, expanded bool, width int) string {
+// renderStepContinuation always renders the complete narration continuation.
+// Density controls tool and thinking details, not narration visibility.
+func renderStepContinuation(rest string, _ bool, width int) string {
 	cw := nestedContentWidth(width)
 	pad := strings.Repeat(" ", nestedBodyIndent)
-	if !expanded {
-		oneLine := strings.Join(strings.Fields(rest), " ")
-		line := ansi.Truncate(oneLine, max(cw-2, 1), "…") + " " + glyph.DisclosureCollapsed
-		return pad + mutedStyle().Render(line) + "\n"
-	}
 	body, ok := renderMarkdown(rest, cw)
 	if !ok {
 		body = renderPlainProse(rest, cw)

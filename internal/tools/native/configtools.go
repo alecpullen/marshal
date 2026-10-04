@@ -1268,18 +1268,19 @@ func (t *toolSet) configProvidersSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.providers.set",
 		Description: "Set or add a provider entry in the [providers] section of the user-global config (providers are user-global only; the write always requires approval). Use api_key_env to reference an environment variable; literal api_key is blocked for security. Omitted fields are preserved. Existing api_key on disk is carried forward if not overwritten.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Provider name key"},"base_url":{"type":"string"},"type":{"type":"string","description":"Provider type: \"openai_compatible\" (default) or \"ollama\""},"tool_calling":{"type":"boolean"},"api_key":{"type":"string","description":"BLOCKED — literal secrets cannot be set via this tool"},"api_key_env":{"type":"string","description":"Environment variable name to resolve at runtime"}},"required":["name"],"additionalProperties":false}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Provider name key"},"base_url":{"type":"string"},"type":{"type":"string","description":"Provider type: \"openai_compatible\" (default) or \"ollama\""},"tool_calling":{"type":"boolean"},"reasoning_summary":{"type":"boolean","description":"Request readable reasoning summaries for Codex / Responses API thinking display"},"api_key":{"type":"string","description":"BLOCKED — literal secrets cannot be set via this tool"},"api_key_env":{"type":"string","description":"Environment variable name to resolve at runtime"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		var args struct {
 			configWriteEnvelope
-			Name        string  `json:"name"`
-			BaseURL     *string `json:"base_url"`
-			Type        *string `json:"type"`
-			ToolCalling *bool   `json:"tool_calling"`
-			APIKey      string  `json:"api_key"`
-			APIKeyEnv   *string `json:"api_key_env"`
+			Name             string  `json:"name"`
+			BaseURL          *string `json:"base_url"`
+			Type             *string `json:"type"`
+			ToolCalling      *bool   `json:"tool_calling"`
+			ReasoningSummary *bool   `json:"reasoning_summary"`
+			APIKey           string  `json:"api_key"`
+			APIKeyEnv        *string `json:"api_key_env"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.providers.set args: %w", err)
@@ -1306,6 +1307,9 @@ func (t *toolSet) configProvidersSetTool() registry.Tool {
 			}
 			if args.ToolCalling != nil {
 				pc.ToolCalling = *args.ToolCalling
+			}
+			if args.ReasoningSummary != nil {
+				pc.ReasoningSummary = *args.ReasoningSummary
 			}
 			if args.APIKeyEnv != nil {
 				pc.APIKeyEnv = *args.APIKeyEnv

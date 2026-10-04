@@ -88,14 +88,12 @@ func TestNarratedStepRendersHeadlineAndNestedToolRows(t *testing.T) {
 			t.Errorf("tool row not at nested indent (%d): %q", indent, r)
 		}
 	}
-	// The rest of the narration is a muted continuation, collapsed to one line.
+	// The complete narration is visible without expanding the step.
 	var cont bool
 	for _, l := range lines {
 		if strings.Contains(l, "somewhere in the lexer") {
 			cont = true
-			if !strings.HasPrefix(l, strings.Repeat(" ", nestedBodyIndent)) {
-				t.Errorf("continuation not at nestedBodyIndent: %q", l)
-			}
+
 		}
 	}
 	if !cont {
@@ -205,17 +203,45 @@ func TestStepRowsStayWithinTheFrameAtEveryWidth(t *testing.T) {
 	}
 }
 
-func TestExpandedStepShowsFullContinuation(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 40)
-	id := stepFixture(t, &m, session.Actor{}, "Checking the guard first. "+strings.Repeat("Second sentence filler. ", 8)+"\n\nThird paragraph with detail.", readEvent("guard.go"))
-	collapsed := strings.Join(transcriptLines(&m), "\n")
-	if strings.Contains(collapsed, "Third paragraph") {
-		t.Fatal("collapsed continuation must be one truncated line")
+func TestNarrationWrapsCompletelyWithoutDuplication(t *testing.T) {
+	for _, d := range []density{densityOutline, densitySteps, densityFull} {
+		for _, width := range []int{40, 80, 120} {
+			t.Run(fmt.Sprintf("density=%d/width=%d", d, width), func(t *testing.T) {
+				narration := "The baseline tests are running; I’ll delegate the document import while I prepare the task-by-task execution plan. Second sentence with important details.\n\nThird paragraph with detail."
+				// Exercise the production renderer directly at narrow widths too.
+				si := &stack.StepInfo{Narration: []*session.Message{{Content: narration}}}
+				n := &stack.Node{Kind: stack.KindStep, Step: si}
+				out, _ := renderStep(n, &stepRenderCtx{}, width, d)
+				plain := stripANSI(out)
+				if strings.Contains(plain, "…") {
+					t.Fatalf("narration truncated:\n%s", plain)
+				}
+				for _, word := range strings.Fields(narration) {
+					if strings.Count(plain, word) != strings.Count(narration, word) {
+						t.Fatalf("word %q missing or repeated:\n%s", word, plain)
+					}
+				}
+				for _, line := range strings.Split(plain, "\n") {
+					if ansi.StringWidth(line) > width {
+						t.Fatalf("line exceeds width %d: %q", width, line)
+					}
+				}
+			})
+		}
 	}
-	m.toggleExpanded(stack.NodeID{Kind: stack.KindStep, Key: fmt.Sprintf("step:%d", id)})
-	if expanded := strings.Join(transcriptLines(&m), "\n"); !strings.Contains(expanded, "Third paragraph with detail.") {
-		t.Fatalf("expanded step should show the whole narration:\n%s", expanded)
+}
+
+func TestNarrationMarkdownRemainsWhole(t *testing.T) {
+	for _, text := range []string{"**Checking the parser. Then checking the lexer.**", "```go\nfunc example() {}\n```"} {
+		si := &stack.StepInfo{Narration: []*session.Message{{Content: text}}}
+		out, _ := renderStep(&stack.Node{Kind: stack.KindStep, Step: si}, &stepRenderCtx{}, 80, densitySteps)
+		plain := stripANSI(out)
+		if strings.Contains(plain, "**") || strings.Contains(plain, "```") {
+			t.Fatalf("markdown split or unrendered:\n%s", plain)
+		}
+		if strings.Contains(text, "example") && !strings.Contains(plain, "example") {
+			t.Fatalf("code missing:\n%s", plain)
+		}
 	}
 }
 

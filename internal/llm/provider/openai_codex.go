@@ -118,6 +118,9 @@ func NewOpenAICodex(opts CodexOptions) (*OpenAICodex, error) {
 	if opts.Capabilities != nil {
 		caps = *opts.Capabilities
 	}
+	// The Codex endpoint rejects temperature overrides regardless of model.
+	// Advertise the restriction even when constructed without config.
+	caps.TemperatureLocked = true
 	models := make([]schema.ModelInfo, 0, len(opts.StaticModels))
 	for _, id := range opts.StaticModels {
 		models = append(models, schema.ModelInfo{ID: id, OwnedBy: opts.Name})
@@ -202,6 +205,9 @@ func (p *OpenAICodex) post(ctx context.Context, req schema.ChatRequest, token st
 	// letting the wire disagree with the transport.
 	req.Stream = true
 
+	// Enforce the endpoint restriction for direct provider callers as well
+	// as the agent loop, which gates temperature using our capabilities.
+	req.Temperature = nil
 	// Codex rejects system-role input items. Keep the leading harness prompt
 	// in instructions and send later runtime guidance as developer messages.
 	body, err := buildResponsesRequestBodyWithSystemRole(req, p.reasoningSummary, []string{codexIncludeReasoning}, "developer")

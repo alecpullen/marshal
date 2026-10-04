@@ -129,10 +129,11 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 		// structured output, and reasoning all PASS. Streaming is implied
 		// — the endpoint only accepts stream=true.
 		caps := schema.ProviderCapabilities{
-			ToolCalling:      true,
-			JSONMode:         false,
-			StructuredOutput: true,
-			Reasoning:        true,
+			ToolCalling:       true,
+			JSONMode:          false,
+			StructuredOutput:  true,
+			Reasoning:         true,
+			TemperatureLocked: pc.TemperatureLocked,
 		}
 		return NewOpenAICodex(CodexOptions{
 			Name:             name,

@@ -155,6 +155,22 @@ func (f *Fleet) workspaceNetworkEnv(ctx context.Context, a Agent, doc WSDoc) (ma
 	return nil, nil, nil
 }
 
+// AgentWorkspaceDoc resolves the workspace an agent runs in: its store
+// name (the CA and policy key) and merged doc. ok is false for an agent
+// with no workspace. The egress proxy (B7) maps the doc's Network and
+// Inject onto its own spec and installs that as Fleet.workspaceEgress, so
+// this package does not depend on the proxy's types.
+func (f *Fleet) AgentWorkspaceDoc(ctx context.Context, a Agent) (name string, doc WSDoc, ok bool, err error) {
+	if a.Workspace == nil {
+		return "", WSDoc{}, false, nil
+	}
+	res, err := f.ResolveWorkspace(ctx, wsRefOf(a.Workspace), a.Project)
+	if err != nil {
+		return "", WSDoc{}, false, err
+	}
+	return res.Name, res.Doc, true, nil
+}
+
 // buildWorkspaceExtras renders everything a workspace adds to a container.
 func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, storeName, runtimeName string) (wsExtras, error) {
 	mounts, err := f.workspaceMounts(ctx, doc, storeName, runtimeName)

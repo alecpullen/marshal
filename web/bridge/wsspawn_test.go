@@ -355,3 +355,22 @@ func httpCode(t *testing.T, _ *Fleet, err error) int {
 	writeErr(rec, err)
 	return rec.Code
 }
+
+func TestAgentWorkspaceDocResolvesTheSpawnedWorkspace(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	doc := sampleDoc("svc")
+	doc.Network = WSNetwork{Mode: "allowlist", Egress: []string{"api.example.com"}}
+	e.builtTemplate(t, "svc", doc)
+	id, err := e.spawn(t, SpawnOptions{Workspace: "svc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.f.ws.Agent(id)
+	name, got, ok, err := e.f.AgentWorkspaceDoc(ctlContext(t), a)
+	if err != nil || !ok || name != "svc" || got.Network.Mode != "allowlist" {
+		t.Fatalf("got %q %+v ok=%v err=%v", name, got.Network, ok, err)
+	}
+	if _, _, ok, _ := e.f.AgentWorkspaceDoc(ctlContext(t), Agent{}); ok {
+		t.Fatal("an agent without a workspace resolved one")
+	}
+}

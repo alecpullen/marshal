@@ -8,6 +8,6 @@
   }: { class?: string; children?: import('svelte').Snippet; [key: string]: unknown } = $props()
 </script>
 
-<div class={cn('rounded-lg border border-border bg-surface p-4', klass)} {...rest}>
+<div class={cn('rounded-lg border border-border bg-surface p-4 shadow-sm', klass)} {...rest}>
   {@render children?.()}
 </div>

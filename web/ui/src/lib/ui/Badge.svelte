@@ -12,7 +12,7 @@
   } = $props()
 
   const tones = {
-    muted: 'bg-border text-muted',
+    muted: 'bg-line text-muted',
     running: 'bg-running/20 text-running',
     attention: 'bg-attention/20 text-attention',
     danger: 'bg-danger/20 text-danger',

@@ -374,3 +374,78 @@ func TestAgentWorkspaceDocResolvesTheSpawnedWorkspace(t *testing.T) {
 		t.Fatal("an agent without a workspace resolved one")
 	}
 }
+
+func TestSpawnWorkspaceRefusesTheBridgeStateVolume(t *testing.T) {
+	for _, vol := range []string{"marshal-state", "marshal-anything"} {
+		e := newWSSpawnEnv(t)
+		e.f.stateVolume = "marshal-state"
+		doc := sampleDoc("svc")
+		doc.Mounts = []WSMount{{Volume: vol, Target: "/stolen"}}
+		e.builtTemplate(t, "svc", doc)
+		if _, err := e.spawn(t, SpawnOptions{Workspace: "svc"}); !errors.Is(err, ErrWorkspaceMountTarget) {
+			t.Fatalf("volume %q err = %v", vol, err)
+		}
+	}
+}
+
+// gitRepoWithTemplate is a bare repo whose checkout carries a repo
+// template that extends svc.
+func gitRepoWithTemplate(t *testing.T) string {
+	t.Helper()
+	bare := newBareRepoFixture(t)
+	work := filepath.Join(t.TempDir(), "w")
+	mustGit(t, "", "clone", bare, work)
+	mustGit(t, work, "config", "user.email", "test@example.com")
+	mustGit(t, work, "config", "user.name", "Test")
+	ov := WSDoc{Workspace: WSWorkspace{Name: "ov", Extends: "svc"}, Packages: WSPackages{}}
+	ov.Setup = WSSetup{Run: "make deps"}
+	if err := os.MkdirAll(filepath.Join(work, ".marshal", "workspaces"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".marshal", "workspaces", "ov.toml"), wsSrc(t, ov), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, work, "add", ".")
+	mustGit(t, work, "commit", "-m", "template")
+	mustGit(t, work, "push", "origin", "main")
+	return bare
+}
+
+func TestSpawnRepoTemplateOnAGitAgentTakesTrustFromTheRegisteredProject(t *testing.T) {
+	for _, trusted := range []bool{true, false} {
+		e := newWSSpawnEnv(t)
+		home := fakeHome(t)
+		e.f.git = testGitRunner(t)
+		e.builtTemplate(t, "svc", sampleDoc("svc"))
+		if err := e.f.ws.PutRepo(Repo{ID: "r1", URL: gitRepoWithTemplate(t), Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
+			t.Fatal(err)
+		}
+		project := projectWithConfig(t)
+		if err := e.f.ws.AddProject(project); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.f.ws.PutProjectSettings(project, ProjectSettings{Intake: ProjectIntake{RepoID: "r1"}}); err != nil {
+			t.Fatal(err)
+		}
+		if trusted {
+			writeTrustStore(t, home, `{"`+project+`":{"trusted":true}}`)
+		}
+		id, err := e.f.Spawn(context.Background(), "", SpawnOptions{RepoID: "r1", Workspace: "repo:ov", Prompt: "x"})
+		if !trusted {
+			if !errors.Is(err, ErrUntrustedRepoTemplate) {
+				t.Fatalf("untrusted project: err = %v", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("trusted project: %v", err)
+		}
+		a, _ := e.f.ws.Agent(id)
+		if a.Workspace == nil || a.Workspace.Source != "repo" || a.Workspace.Name != "ov" {
+			t.Fatalf("agent workspace = %+v", a.Workspace)
+		}
+		if got := e.imgs.count("run", "--rm", "--name"); got != 1 {
+			t.Fatalf("setup containers = %d, want the repo template's setup to run once", got)
+		}
+	}
+}

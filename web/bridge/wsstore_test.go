@@ -135,3 +135,27 @@ func TestStartersParse(t *testing.T) {
 		}
 	}
 }
+
+func TestFailInterruptedResetsBuildingVersions(t *testing.T) {
+	s := NewTemplateStore(t.TempDir())
+	for _, name := range []string{"a", "b"} {
+		if _, err := s.Create(name, []byte("x"), "u"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Publish(name, "u"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.SetBuild("a", 1, "building", "", 0, 0)
+	_ = s.SetBuild("b", 1, "ok", "tag", 1, 1)
+	got, err := s.FailInterrupted()
+	if err != nil || len(got) != 1 || len(got["a"]) != 1 || got["a"][0] != 1 {
+		t.Fatalf("got %v err %v", got, err)
+	}
+	if m, _ := s.Meta("a"); m.Versions[0].BuildStatus != "failed" {
+		t.Fatalf("a = %+v", m.Versions[0])
+	}
+	if m, _ := s.Meta("b"); m.Versions[0].BuildStatus != "ok" {
+		t.Fatalf("b = %+v", m.Versions[0])
+	}
+}

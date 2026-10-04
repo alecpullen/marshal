@@ -978,8 +978,8 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	var wsRef WSRef
 	var wsRes *Resolved
 	var wsImage string
-	resolveWorkspace := func(projectRoot string) error {
-		res, err := f.ResolveWorkspace(ctx, wsRef, projectRoot)
+	resolveWorkspace := func(templateRoot, trustRoot string) error {
+		res, err := f.ResolveWorkspaceIn(ctx, wsRef, templateRoot, trustRoot)
 		if err != nil {
 			return err
 		}
@@ -999,7 +999,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			return "", err
 		}
 		if wsRef.Source == "studio" {
-			if err := resolveWorkspace(""); err != nil {
+			if err := resolveWorkspace("", ""); err != nil {
 				return "", err
 			}
 		}
@@ -1096,7 +1096,11 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		}
 	}
 	if wsRefText != "" && wsRes == nil {
-		if err := resolveWorkspace(workDir); err != nil {
+		trustRoot := workDir
+		if src.kind == "git" {
+			trustRoot = f.ws.ProjectRootByRepo(src.ref)
+		}
+		if err := resolveWorkspace(workDir, trustRoot); err != nil {
 			cleanTree()
 			return "", err
 		}
@@ -1672,6 +1676,7 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 			errs = append(errs, err)
 		}
 	}
+	f.failInterruptedBuilds()
 	f.pools.adopt()
 	return errs
 }

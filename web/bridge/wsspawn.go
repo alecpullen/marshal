@@ -132,6 +132,11 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 			if !volumeNameRe.MatchString(m.Volume) {
 				return nil, fmt.Errorf("%w: invalid volume name %q", ErrWorkspaceMountTarget, m.Volume)
 			}
+			// The marshal- namespace belongs to the bridge: its state
+			// volume holds fleet.json, credentials and every agent's work.
+			if m.Volume == f.stateVolume || strings.HasPrefix(m.Volume, "marshal-") {
+				return nil, fmt.Errorf("%w: volume %q is reserved for the bridge", ErrWorkspaceMountTarget, m.Volume)
+			}
 			args = append(args, plainVolumeMount(m.Volume, m.Target, m.Readonly)...)
 		default:
 			return nil, fmt.Errorf("%w: a mount names exactly one of repo or volume", ErrWorkspaceMountTarget)
@@ -164,7 +169,8 @@ func (f *Fleet) AgentWorkspaceDoc(ctx context.Context, a Agent) (name string, do
 	if a.Workspace == nil {
 		return "", WSDoc{}, false, nil
 	}
-	res, err := f.ResolveWorkspace(ctx, wsRefOf(a.Workspace), a.Project)
+	tr, tt := f.workspaceRoots(a)
+	res, err := f.ResolveWorkspaceIn(ctx, wsRefOf(a.Workspace), tr, tt)
 	if err != nil {
 		return "", WSDoc{}, false, err
 	}
@@ -196,7 +202,8 @@ func (f *Fleet) workspaceRuntimeExtras(a Agent, runtimeName string) ([]string, m
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	res, err := f.ResolveWorkspace(ctx, wsRefOf(a.Workspace), a.Project)
+	tr, tt := f.workspaceRoots(a)
+	res, err := f.ResolveWorkspaceIn(ctx, wsRefOf(a.Workspace), tr, tt)
 	if err != nil {
 		return nil, nil, err
 	}

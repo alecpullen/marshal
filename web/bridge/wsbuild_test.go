@@ -49,6 +49,10 @@ func TestLayerDockerfiles(t *testing.T) {
 	if _, err := layerDockerfiles(doc); err == nil {
 		t.Error("a shell metacharacter in a package name was accepted")
 	}
+	doc.Packages = WSPackages{Apt: []string{"--allow-unauthenticated"}}
+	if _, err := layerDockerfiles(doc); err == nil {
+		t.Error("a package that looks like an option was accepted")
+	}
 	doc = sampleDoc("svc")
 	doc.Workspace.Base = "debian\nRUN evil"
 	if _, err := layerDockerfiles(doc); err == nil {

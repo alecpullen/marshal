@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -108,7 +109,7 @@ func layerDockerfiles(doc WSDoc) ([]layerSpec, error) {
 	quoteAll := func(kind string, items []string) (string, error) {
 		q := make([]string, len(items))
 		for i, it := range items {
-			if !shSafeRe.MatchString(it) {
+			if strings.HasPrefix(it, "-") || !shSafeRe.MatchString(it) {
 				return "", fmt.Errorf("bridge: invalid %s package %q", kind, it)
 			}
 			q[i] = shQuote(it)
@@ -260,8 +261,9 @@ func (f *Fleet) buildLogf(name string, n int, format string, args ...any) {
 	f.buildLog.Append(buildKey(name, n), map[string]any{"line": fmt.Sprintf(format, args...), "at": time.Now().UTC()})
 }
 
-// lifeContext is cancelled when the fleet closes.
-func (f *Fleet) lifeContext() context.Context {
+// lifeContext is cancelled when the fleet closes. Callers must call the
+// cancel func when done so the watcher goroutine does not outlive them.
+func (f *Fleet) lifeContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		select {
@@ -270,7 +272,24 @@ func (f *Fleet) lifeContext() context.Context {
 		case <-ctx.Done():
 		}
 	}()
-	return ctx
+	return ctx, cancel
+}
+
+// failInterruptedBuilds resets builds a restart left in `building`. Run
+// from ReattachAll, before any new build can start.
+func (f *Fleet) failInterruptedBuilds() {
+	if f.templates == nil {
+		return
+	}
+	got, err := f.templates.FailInterrupted()
+	if err != nil {
+		slog.Default().Warn("webbridge: reset interrupted builds", "err", err)
+	}
+	for name, vs := range got {
+		for _, n := range vs {
+			f.buildLogf(name, n, "build interrupted by a bridge restart")
+		}
+	}
 }
 
 // BuildWorkspace builds template name's version n and waits for it.
@@ -290,7 +309,9 @@ func (f *Fleet) StartBuild(name string, n int) error {
 	}
 	go func() {
 		defer f.builds.release(name)
-		_ = f.runBuild(f.lifeContext(), name, n)
+		ctx, cancel := f.lifeContext()
+		defer cancel()
+		_ = f.runBuild(ctx, name, n)
 	}()
 	return nil
 }

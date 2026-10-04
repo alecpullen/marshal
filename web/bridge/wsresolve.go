@@ -289,17 +289,27 @@ func (f *Fleet) studioDoc(ctx context.Context, name string, version int) (WSDoc,
 }
 
 // ResolveWorkspace resolves ref against the Studio store and, for repo
-// references, projectRoot's .marshal/workspaces directory.
+// references, projectRoot's .marshal/workspaces directory. Repo templates
+// are trusted by path only: projectRoot must be a trusted project, and the
+// config hash that covers workspace files in the engine is not recomputed.
 func (f *Fleet) ResolveWorkspace(ctx context.Context, ref WSRef, projectRoot string) (Resolved, error) {
+	return f.ResolveWorkspaceIn(ctx, ref, projectRoot, projectRoot)
+}
+
+// ResolveWorkspaceIn is ResolveWorkspace with the repo template read from
+// templateRoot and trust taken from trustRoot. A git-sourced agent reads
+// the prepared checkout but takes trust from the registered project that
+// names its repo.
+func (f *Fleet) ResolveWorkspaceIn(ctx context.Context, ref WSRef, templateRoot, trustRoot string) (Resolved, error) {
 	var doc WSDoc
 	version := ref.Version
 	imageName, imageVersion := "", 0
 	switch ref.Source {
 	case "repo":
-		if projectTrust(projectRoot) != "trusted" {
+		if trustRoot == "" || projectTrust(trustRoot) != "trusted" {
 			return Resolved{}, ErrUntrustedRepoTemplate
 		}
-		src, err := os.ReadFile(filepath.Join(projectRoot, ".marshal", "workspaces", ref.Name+".toml"))
+		src, err := os.ReadFile(filepath.Join(templateRoot, ".marshal", "workspaces", ref.Name+".toml"))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return Resolved{}, fmt.Errorf("%w: repo:%s", ErrTemplateNotFound, ref.Name)

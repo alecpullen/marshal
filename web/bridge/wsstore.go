@@ -311,6 +311,45 @@ func (s *TemplateStore) SetBuild(name string, n int, status, tag string, size, m
 	return s.writeMeta(m)
 }
 
+// FailInterrupted marks every version still `building` as failed. A build
+// only stays in that state when the bridge stopped mid-build. It returns
+// the interrupted versions as name -> version numbers.
+func (s *TemplateStore) FailInterrupted() (map[string][]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ents, err := os.ReadDir(s.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := map[string][]int{}
+	for _, e := range ents {
+		if !e.IsDir() || validTemplateName(e.Name()) != nil {
+			continue
+		}
+		m, err := s.readMeta(e.Name())
+		if err != nil {
+			continue
+		}
+		changed := false
+		for i := range m.Versions {
+			if m.Versions[i].BuildStatus == "building" {
+				m.Versions[i].BuildStatus = "failed"
+				out[m.Name] = append(out[m.Name], m.Versions[i].N)
+				changed = true
+			}
+		}
+		if changed {
+			if err := s.writeMeta(m); err != nil {
+				return out, err
+			}
+		}
+	}
+	return out, nil
+}
+
 // SetPool sets the warm-pool size, 0 to 4.
 func (s *TemplateStore) SetPool(name string, n int) error {
 	if err := validTemplateName(name); err != nil {

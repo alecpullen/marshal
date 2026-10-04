@@ -66,7 +66,7 @@ allow = ["uv run *", "pytest *"]
 	"rust-crate": `[workspace]
 name = "rust-crate"
 base = "debian:bookworm-slim"
-toolchains = ["rust@stable"]
+toolchains = ["rust@1.82"]
 
 [packages]
 apt = ["git", "build-essential", "curl", "ca-certificates"]

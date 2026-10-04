@@ -54,6 +54,38 @@ func (w *Workspace) ProjectSettingsByRepo(repoID string) (ProjectSettings, bool)
 	return ProjectSettings{}, false
 }
 
+// ProjectRootByRepo returns the root of the first project (by root) whose
+// intake names repoID, or "".
+func (w *Workspace) ProjectRootByRepo(repoID string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	roots := make([]string, 0, len(w.projectSettings))
+	for root := range w.projectSettings {
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+	for _, root := range roots {
+		if w.projectSettings[root].Intake.RepoID == repoID {
+			return root
+		}
+	}
+	return ""
+}
+
+// workspaceRoots is where an agent's repo template is read and whose
+// trust governs it: a local agent's project for both, a git agent's
+// prepared checkout and the registered project that names its repo.
+func (f *Fleet) workspaceRoots(a Agent) (templateRoot, trustRoot string) {
+	if a.SourceKind != "git" {
+		return a.Project, a.Project
+	}
+	sub := a.WorkSubpath
+	if sub == "" {
+		sub = "work/" + a.ID
+	}
+	return filepath.Join(f.stateDir, filepath.FromSlash(sub)), f.ws.ProjectRootByRepo(a.SourceRef)
+}
+
 // settingsForAgent finds the project settings that govern an agent: its
 // own project for a local checkout, the project whose intake names its
 // repo for a git one.

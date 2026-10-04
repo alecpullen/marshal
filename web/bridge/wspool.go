@@ -159,7 +159,9 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 	if !ok {
 		return poolEntry{}, ErrWorkspaceNeedsRuntime
 	}
-	doc, _, err := f.studioDoc(f.lifeContext(), name, n)
+	lctx, cancel := f.lifeContext()
+	defer cancel()
+	doc, _, err := f.studioDoc(lctx, name, n)
 	if err != nil {
 		return poolEntry{}, err
 	}
@@ -170,7 +172,7 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 		socketSubpath: poolSubpath(name, k) + "/sock",
 	}
 	pseudo := Agent{
-		ID: "pool-" + name, SourceKind: "git", Profile: DefaultRuntimeProfile(),
+		ID: fmt.Sprintf("pool-%s-v%d-%d", name, n, k), SourceKind: "git", Profile: DefaultRuntimeProfile(),
 		ContainerName: entry.container, WorkSubpath: entry.workSubpath, SocketSubpath: entry.socketSubpath,
 	}
 	pseudo.Profile.Image = image
@@ -179,7 +181,7 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 	if err != nil {
 		return poolEntry{}, err
 	}
-	ex, err := f.buildWorkspaceExtras(f.lifeContext(), pseudo, doc, name, rtName)
+	ex, err := f.buildWorkspaceExtras(lctx, pseudo, doc, name, rtName)
 	if err != nil {
 		return poolEntry{}, err
 	}

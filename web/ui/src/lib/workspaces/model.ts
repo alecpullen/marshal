@@ -58,3 +58,8 @@ export function gateRunnable(toolchains: string[], gateCommand: string | undefin
   if (!lang) return 'unknown'
   return toolchains.some((t) => t.split('@')[0] === lang) ? 'runnable' : 'may-skip'
 }
+
+/** `▦ name@v3`, the tag the session header and Live wall show for an agent's workspace. */
+export function workspaceTag(w: { name: string; version: number }): string {
+  return `▦ ${w.name}@v${w.version}`
+}

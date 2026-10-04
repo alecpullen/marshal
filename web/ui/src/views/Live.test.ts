@@ -149,4 +149,11 @@ describe('Live wall', () => {
     await waitFor(() => expect(destroy).toHaveBeenCalledTimes(2))
     expect(stack.createStackStore).toHaveBeenCalledTimes(5)
   })
+
+  it('shows the workspace tag on a tile only for agents that run in one', () => {
+    mount([agent({ id: 'w1', workspace: { name: 'go-service', version: 3, source: 'studio' } }), agent({ id: 'w2' })])
+    const tags = screen.getAllByTestId('tile-workspace')
+    expect(tags).toHaveLength(1)
+    expect(tags[0].textContent).toContain('▦ go-service@v3')
+  })
 })

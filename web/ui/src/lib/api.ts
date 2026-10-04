@@ -499,3 +499,42 @@ export interface DiskStatus { repos: number; work: number; total: number; measur
 export interface PruneResult { reclaimed: number; total: number; warning?: string }
 export async function getDiskUsage(): Promise<DiskStatus> { return request('GET', '/api/disk') }
 export async function pruneDisk(): Promise<PruneResult> { return request('POST', '/api/prune') }
+export interface ReviewComment {
+  id: string
+  agentId: string
+  path: string
+  line: number
+  side: 'old' | 'new'
+  quote: string
+  body: string
+  createdAt: string
+  sentAt: string
+  resolvedAt?: string
+}
+
+/** The agent's drafted commit message, or 'unsupported' for an agent that cannot draft one. */
+export async function getCommitDraft(agentId: string): Promise<string | 'unsupported'> {
+  const r = await orUnsupported(() => request<{ message?: string }>('GET', `/api/agents/${encodeURIComponent(agentId)}/commit-draft`))
+  return r === 'unsupported' ? r : (r?.message ?? '')
+}
+
+export async function listReviewComments(agentId: string): Promise<ReviewComment[]> {
+  const r = await request<{ comments?: ReviewComment[] }>('GET', `/api/agents/${encodeURIComponent(agentId)}/review/comments`)
+  return r?.comments ?? []
+}
+
+export async function postReviewComment(
+  agentId: string,
+  c: { path: string; line: number; side: 'old' | 'new'; quote: string; body: string },
+): Promise<ReviewComment> {
+  return request('POST', `/api/agents/${encodeURIComponent(agentId)}/review/comments`, c)
+}
+
+export async function resolveReviewComment(agentId: string, id: string): Promise<void> {
+  return request('POST', `/api/agents/${encodeURIComponent(agentId)}/review/comments/${encodeURIComponent(id)}/resolve`)
+}
+
+export async function recentPrompts(project: string, limit = 20): Promise<string[]> {
+  const r = await request<{ prompts?: string[] }>('GET', `/api/prompts/recent?project=${encodeURIComponent(project)}&limit=${limit}`)
+  return r?.prompts ?? []
+}

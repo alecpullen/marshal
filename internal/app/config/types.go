@@ -39,6 +39,18 @@ type Config struct {
 	Skills        SkillsConfig                          `toml:"skills"`
 	LSP           LSPConfig                             `toml:"lsp"`
 	Scratchpad    ScratchpadConfig                      `toml:"scratchpad"`
+	Budgets       BudgetsConfig                         `toml:"budgets"`
+}
+
+// BudgetsConfig holds spend caps. It is user-global only (project configs
+// never set it); the engine stores it and the web bridge enforces it, because
+// spend spans agents. Zero caps mean no cap.
+type BudgetsConfig struct {
+	DailyUSD    float64 `toml:"daily_usd"`
+	PerAgentUSD float64 `toml:"per_agent_usd"`
+	// OnDailyCap is "warn" or "block"; OnAgentCap is "warn" or "pause".
+	OnDailyCap string `toml:"on_daily_cap"`
+	OnAgentCap string `toml:"on_agent_cap"`
 }
 
 // ScratchpadConfig limits the agent's working-memory scratchpad so it

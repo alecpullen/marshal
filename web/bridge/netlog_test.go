@@ -299,3 +299,37 @@ func TestBlockedDeltasAreDeduplicated(t *testing.T) {
 		t.Fatalf("expired entry did not notify again: %d", len(networkDeltas(f)))
 	}
 }
+
+func TestNetworkPendingListsUndecidedBlocks(t *testing.T) {
+	ctx := t.Context()
+	f, _ := testEgressFleet(t, false)
+	f.audit = NewAuditLog(t.TempDir())
+	if err := f.StartEgress(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(f, "")
+	f.ws.PutAgent(Agent{ID: "a1", Project: "/p", OwnerID: DefaultOwnerID})
+	f.egress.register(ctx, "a1", "dev", EgressSpec{Mode: EgressModeAllowlist})
+	f.noteBlocked("a1", "evil.com")
+	f.noteBlocked("a1", "other.com")
+	f.noteBlocked("ghost", "x.com") // agent no longer exists
+	list := func(q string) []networkBlockDelta {
+		var out struct {
+			Pending []networkBlockDelta `json:"pending"`
+		}
+		rec := doReq(t, s, http.MethodGet, "/api/network/pending"+q, nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("pending = %d", rec.Code)
+		}
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		return out.Pending
+	}
+	if got := list(""); len(got) != 2 {
+		t.Fatalf("pending = %+v", got)
+	}
+	doReq(t, s, http.MethodPost, "/api/network/decisions", map[string]string{"agentId": "a1", "host": "evil.com", "decision": "allow-agent"}, nil)
+	got := list("?agent=a1")
+	if len(got) != 1 || got[0].Host != "other.com" {
+		t.Fatalf("after decision = %+v", got)
+	}
+}

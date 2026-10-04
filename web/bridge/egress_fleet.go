@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -375,9 +376,43 @@ func (f *Fleet) noteBlocked(agentID, host string) {
 		}
 		h.mu.Unlock()
 	}
-	_, _ = f.fleetLog.Append(fleetStreamKey, networkBlockDelta{
+	d := networkBlockDelta{
 		Kind: "network_block", SessionID: agentID, AgentID: agentID, Host: host, Workspace: ws, At: now.UnixMilli(),
-	})
+	}
+	f.blockedMu.Lock()
+	f.blockedPending[key] = d
+	f.blockedMu.Unlock()
+	_, _ = f.fleetLog.Append(fleetStreamKey, d)
+}
+
+// resolveBlocked drops a pending block once a decision answered it.
+func (f *Fleet) resolveBlocked(agentID, host string) {
+	f.blockedMu.Lock()
+	delete(f.blockedPending, agentID+"|"+normalizeHost(host))
+	f.blockedMu.Unlock()
+}
+
+// pendingBlocks lists undecided blocks for agents that still exist,
+// oldest first; agent filters to one agent when non-empty.
+func (f *Fleet) pendingBlocks(agent string) []networkBlockDelta {
+	f.blockedMu.Lock()
+	out := make([]networkBlockDelta, 0, len(f.blockedPending))
+	var stale []string
+	for k, d := range f.blockedPending {
+		if _, ok := f.ws.Agent(d.AgentID); !ok {
+			stale = append(stale, k)
+			continue
+		}
+		if agent == "" || d.AgentID == agent {
+			out = append(out, d)
+		}
+	}
+	for _, k := range stale {
+		delete(f.blockedPending, k)
+	}
+	f.blockedMu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].At < out[j].At })
+	return out
 }
 
 // networkBlockDelta is the fleet delta for a refused request.

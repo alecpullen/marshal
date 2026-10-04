@@ -121,6 +121,16 @@ type AddToWorkspaceFunc func(r *http.Request, a Agent, host string) (any, error)
 
 var errAddToWorkspaceUnsupported = errors.New("add_to_workspace_unsupported")
 
+// networkPending serves GET /api/network/pending?agent=: blocked requests
+// still awaiting a decision, in the network_block delta shape, so a page
+// that reloads can rebuild its prompts.
+func (s *Server) networkPending(w http.ResponseWriter, r *http.Request) {
+	if !s.requireFleet(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pending": s.fleet.pendingBlocks(r.URL.Query().Get("agent"))})
+}
+
 // networkDecision serves POST /api/network/decisions.
 func (s *Server) networkDecision(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFleet(w) {
@@ -152,6 +162,7 @@ func (s *Server) networkDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	switch body.Decision {
 	case "block":
+		f.resolveBlocked(a.ID, host)
 		audit()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "allow-agent":
@@ -159,6 +170,7 @@ func (s *Server) networkDecision(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent is not behind the egress proxy"})
 			return
 		}
+		f.resolveBlocked(a.ID, host)
 		audit()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "add-to-workspace":
@@ -171,6 +183,7 @@ func (s *Server) networkDecision(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, fmt.Errorf("add to workspace: %w", err))
 			return
 		}
+		f.resolveBlocked(a.ID, host)
 		audit()
 		writeJSON(w, http.StatusOK, res)
 	default:

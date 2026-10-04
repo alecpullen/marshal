@@ -162,6 +162,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/repos", s.registerRepo)
 	s.mux.HandleFunc("DELETE /api/repos/{id}", s.removeRepo)
 	s.mux.HandleFunc("GET /api/network", s.networkView)
+	s.mux.HandleFunc("GET /api/network/pending", s.networkPending)
 	s.mux.HandleFunc("POST /api/network/decisions", s.networkDecision)
 	s.mux.HandleFunc("GET /api/secrets/status", s.secretsStatus)
 	s.mux.HandleFunc("GET /api/secrets", s.listSecrets)

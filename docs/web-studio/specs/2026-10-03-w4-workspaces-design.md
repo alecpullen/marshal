@@ -498,6 +498,13 @@ decisions:
 | `allow-agent` | Add a per-agent grant, held in memory for the agent's lifetime, and push a new policy |
 | `add-to-workspace` | Use `workspace/patch` on the template's draft to append the host to `[network].egress`, then report the draft as changed. A Studio template gets a draft change. A repo template gets a downloadable patch instead, since the bridge doesn't write to repos. |
 
+`GET /api/network/pending[?agent=<id>]` returns
+`{pending: [{kind:"network_block", sessionId, agentId, host, workspace?, at}]}`:
+blocks (the `network_block` delta shape, `at` in Unix ms) that no decision
+has answered yet, oldest first, for agents that still exist. A page that
+reloads rebuilds its prompts from it. Any decision on an (agent, host)
+removes it.
+
 Each decision is audited as `network_decision`.
 
 ### 6.5 Workspace CA

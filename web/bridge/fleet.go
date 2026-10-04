@@ -158,6 +158,8 @@ type Fleet struct {
 	// blockedSeen de-duplicates network_block deltas per (agent, host).
 	blockedMu   sync.Mutex
 	blockedSeen map[string]time.Time
+	// blockedPending holds blocks no decision has answered yet.
+	blockedPending map[string]networkBlockDelta
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
 	// stateVolume is the name of the shared state volume mounted at
@@ -295,6 +297,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	}
 	f.netlog = NewNetLog(stateDir)
 	f.blockedSeen = make(map[string]time.Time)
+	f.blockedPending = make(map[string]networkBlockDelta)
 	f.creds = NewCredentialStore(ws.Credentials())
 	f.secrets = NewEnvProvider()
 	f.creds.SetProvider(f.secrets)

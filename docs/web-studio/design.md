@@ -83,7 +83,7 @@ Two rules shape the design:
 | New features in scope | Watch monitors, network inspector, PR review bot, CI fixer, shared memory across projects, status page | design §7–12 |
 | Theme | Warm Sunset (the TUI's palette), dark-first. The status page is light | all |
 | Multiple users | Designed for, built later | design §13 |
-| TUI logic in the web | Send the view model over ACP (`_marshal/stack`) | §5.2 |
+| TUI logic in the web | Send the view model over ACP (`session/stack` + `stack_patch`) | §5.2 |
 | Terminal and the agent | Typing in the terminal **pauses the agent automatically**; handing control back resumes it | §8.5 |
 | Plan dependencies | Add **`Depends on:` lines** to the `/sdd` plan format; the task graph reads them | §8.7 |
 | Secrets | **Keep secrets out of agent containers wherever possible.** A pluggable secret provider, with an external manager recommended and a small built-in encrypted store for local single-machine use | §8.15 |
@@ -107,7 +107,7 @@ handled today. The full inventory is in the proposal mockup, §2.
 | Containerized agents with runtime profiles, resource caps, the env allowlist, credentials, bare mirrors, mount translation | `web/bridge/container.go`, `profile.go`, `env.go`, `credential.go`, `mirror.go`, `mounts.go` |
 | Issue poller, fleet limits and queue, `/mcp` endpoint | `poller.go`, `queue.go`, `mcp*.go` |
 | ACP methods with no web screen yet: skills, plugins, memory, `sdd_*`, `swarm_*`, roster, commands, verify, commit, resume | `internal/acp` |
-| Engine features with no ACP exposure: the step/task view model, settings and routing editing, turn metrics, watches, history and rewind, the last-request record (`/context request`) | `internal/app/tui/stack`, `internal/app/config`, `internal/db`, `internal/watch` |
+| Step/task view model (now exposed over ACP); engine features with no ACP exposure: settings and routing editing, turn metrics, watches, history and rewind, the last-request record (`/context request`) | `internal/viewmodel`, `internal/app/config`, `internal/db`, `internal/watch` |
 
 ## 5. Architecture
 
@@ -133,36 +133,23 @@ model.
 
 The browser must not re-implement grouping, so the logic travels as data.
 
-1. **Move the package.** `internal/app/tui/stack` moves to
-   `internal/viewmodel` (structure only, no styling, which it already is).
-   The TUI imports it from there, and so does `internal/acp`.
-2. **New ACP notification `_marshal/stack`:**
-   - On attach (`session/load` and `session/new`), a **snapshot**: the full
-     node tree.
-   - Afterwards, **patches**: `upsert` and `remove` operations keyed by
-     the existing node IDs (`turn:<id>`, `task:<turn>:<todo>:<seg>`,
-     `step:<seq>`, `tool:s<step>:<callId>`, …), each with the node's
-     version hash, so unchanged nodes are never resent.
-3. **Bridge** passes the notification through the per-session SSE stream
-   unchanged. It may cache the latest snapshot so a reconnecting browser
-   resyncs without asking the agent.
-4. **Browser** keeps a node map and renders it. Density, folding overrides,
-   the browse cursor and the dock selection are client state. They aren't
-   sent back, just as in the TUI.
+`internal/viewmodel` holds the transcript tree, plain-text helpers and JSON
+wire projection, shared by the TUI and `internal/acp`, with no styling.
+The [W1 spec §5](specs/2026-10-03-w1-foundation-design.md#5-stack-stream-acp)
+defines the contract: a client requests a snapshot with `session/stack`,
+activating the session's projector, then receives `session/update`
+notifications of kind `stack_patch`. Patches carry `rev`, `baseRev`,
+`roots`, full-node `upsert`s and removed IDs. Changes are found by comparing
+encoded nodes, not version hashes. Dirty sessions flush every 200 ms during
+a turn, with a final flush at turn end; snapshot requests flush before
+answering. No snapshot is pushed on attach.
 
-Contract sketch (the field names follow `viewmodel` types):
-
-```json
-{ "method": "_marshal/stack", "params": {
-  "sessionId": "…", "kind": "patch", "rev": 812,
-  "ops": [
-    { "op": "upsert", "id": "step:14", "parent": "task:turn:31:t3:1", "version": "9f2c…",
-      "node": { "kind": "step", "live": true, "actor": { "role": "implementer", "label": "implementer", "model": "qwen3-coder", "provider": "ollama" },
-                "headline": "The guard returns the wrong error; switching it to ErrEmpty.", "inferred": false,
-                "startedAt": "…", "endedAt": null, "state": "running" } },
-    { "op": "remove", "id": "think:live" }
-  ] } }
-```
+The bridge proxies snapshots through `GET /api/sessions/{id}/stack` and
+broadcasts patches unchanged to live per-session SSE subscribers without
+storing them in the replay ring. The browser keeps a node map and refetches
+a snapshot on reconnect or a revision gap. Density, folding overrides,
+the browse cursor and the dock selection are client state, just as in the
+TUI.
 
 - **Rules computed in Go and sent as fields:** task fold eligibility
   (`unresolvedFailure`), receipt numbers, inferred headlines, and the
@@ -180,7 +167,7 @@ already ship.
 
 | Area | Routes (sketch) | Backed by |
 |---|---|---|
-| Sessions | `GET /api/sessions/{id}/stack` (snapshot), the per-session SSE stream carries the stack | ACP `_marshal/stack` |
+| Sessions | `GET /api/sessions/{id}/stack` (snapshot), the per-session SSE stream carries the stack | ACP `session/stack` + `stack_patch` |
 | Files | `GET /api/agents/{id}/files?path=` (tree), `GET …/file?path=` (read only, confined to the worktree) | `agentpath.go` confinement |
 | Terminal | `POST /api/agents/{id}/terminal` (open), SSE for output, `POST …/input` (stdin); pauses the agent while held | container exec; new |
 | Preview | `/preview/{agent}/{port}/…` reverse proxy to declared ports | `net/http/httputil`; new |
@@ -734,7 +721,7 @@ indexed in [`README.md`](README.md).
 
 | Phase | Ships |
 |---|---|
-| **W1 · Foundation** | Design system and shell; `viewmodel` move and the `_marshal/stack` stream; transcript rendering with browse keys; Home inbox; owner and origin fields in the data model |
+| **W1 · Foundation** | Design system and shell; `viewmodel` move and the stack stream; transcript rendering with browse keys; Home inbox; owner and origin fields in the data model |
 | **W2 · Session & ship** | Session dock (all four states) with Inspect, Changes and Files; Review & ship (PR style + by step); New agent (prompt first) |
 | **W3 · Runs & control** | Runs (lanes, graph, timeline); Library; Models & routing; Usage & budgets; Live wall; Watch monitors |
 | **W4 · Workspaces** | Gallery, layer builder + source, build pipeline, mounts, secrets vault, egress proxy, warm pools; Network inspector; Projects 2.0 |

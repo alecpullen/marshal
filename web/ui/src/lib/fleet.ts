@@ -1,8 +1,8 @@
 import { writable } from 'svelte/store'
-import { listAgents, listProjects, type AgentStatus, type GateRecord, type PendingRequest, type ProjectStatus } from './api'
+import { listAgents, listProjects, type AgentStatus, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
-export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord }
+export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord; run?: RunDetail; runAt?: number }
 export interface FleetDelta {
   kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate'
   sessionId: string
@@ -13,6 +13,14 @@ export interface FleetDelta {
   /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
   gate?: GateRecord
 }
+/** A run's latest detail (run_progress). `at` is when the bridge saw it, in ms. */
+export interface RunDelta { kind: 'run'; sessionId: string; run: RunDetail; at?: number }
+/** A daily or per-agent budget check; no session, so it never touches a row. */
+export interface BudgetDelta { kind: 'budget'; scope: 'daily' | 'agent'; agentId?: string; spentUsd: number; capUsd: number; action: string }
+/** A watch rerouted a role; the inbox offers Undo. */
+export interface RerouteDelta { kind: 'reroute'; id: string; watch: string; role: string; from: string; to: string }
+export type BudgetState = Omit<BudgetDelta, 'kind'>
+export type RerouteNotice = Omit<RerouteDelta, 'kind'>
 export interface ProjectRemovedDelta { kind: 'project_removed'; project: string }
 /**
  * An agent parked on an approval or question. Carries only the kind — the
@@ -20,7 +28,7 @@ export interface ProjectRemovedDelta { kind: 'project_removed'; project: string 
  * the snapshot is the authority on what is still outstanding.
  */
 export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
-export type FleetEvent = FleetDelta | ProjectRemovedDelta | PendingDelta
+export type FleetEvent = FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
@@ -49,7 +57,27 @@ export function groupAgents(agents: AgentRow[]): AgentGroups {
   return out
 }
 
-export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] { if (d.kind === 'project_removed') return rows.filter(r => r.project !== d.project); let changed = false; const out = rows.map(r => { if (r.id !== d.sessionId) return r; changed = true; if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }; if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }; if (d.kind === 'gate') return { ...r, gate: d.gate ?? r.gate }; if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }; if (d.kind === 'pending') { const status: AgentRow['status'] = d.pendingKind === 'approval' ? 'awaiting-approval' : 'awaiting-question'; return { ...r, status } } return r }); return changed ? out : rows }
+export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
+  if (d.kind === 'project_removed') return rows.filter((r) => r.project !== d.project)
+  // Budget and reroute deltas are fleet-wide; the store handles them.
+  if (d.kind === 'budget' || d.kind === 'reroute') return rows
+  let changed = false
+  const out = rows.map((r) => {
+    if (r.id !== d.sessionId) return r
+    changed = true
+    if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }
+    if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }
+    if (d.kind === 'gate') return { ...r, gate: d.gate ?? r.gate }
+    if (d.kind === 'run') return { ...r, run: d.run, runAt: d.at ?? Date.now() }
+    if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }
+    if (d.kind === 'pending') {
+      const status: AgentRow['status'] = d.pendingKind === 'approval' ? 'awaiting-approval' : 'awaiting-question'
+      return { ...r, status }
+    }
+    return r
+  })
+  return changed ? out : rows
+}
 
 /**
  * A one-line summary of what an agent is waiting on, for the attention
@@ -132,8 +160,50 @@ export function toPendingQuestion(sessionId: string, p: PendingRequest): Pending
 }
 
 export function createFleetStore() {
-  const state = writable({ agents: [] as AgentRow[], projects: [] as ProjectStatus[], loading: false, error: null as string | null })
-  async function refresh() { state.update(s => ({ ...s, loading: true, error: null })); try { const [a,p] = await Promise.all([listAgents(), listProjects()]); state.set({ agents: a.map(toRow), projects: p, loading: false, error: null }) } catch (e) { state.update(s => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) })) } }
-  function applyDelta(d: FleetEvent) { state.update(s => ({ ...s, agents: applyDeltaTo(s.agents, d), projects: d.kind === 'project_removed' ? s.projects.filter(p => p.root !== d.project) : s.projects })) }
-  return { state, actions: { refresh, applyDelta } }
+  const state = writable({
+    agents: [] as AgentRow[],
+    projects: [] as ProjectStatus[],
+    loading: false,
+    error: null as string | null,
+    budget: null as BudgetState | null,
+    notices: [] as RerouteNotice[],
+  })
+  async function refresh() {
+    state.update((s) => ({ ...s, loading: true, error: null }))
+    try {
+      const [a, p] = await Promise.all([listAgents(), listProjects()])
+      // The snapshot's rows have no run digest; keep the one deltas gave us.
+      state.update((s) => {
+        const prev = new Map(s.agents.map((r) => [r.id, r]))
+        const agents = a.map(toRow).map((r) => {
+          const old = prev.get(r.id)
+          return old?.run ? { ...r, run: old.run, runAt: old.runAt } : r
+        })
+        return { ...s, agents, projects: p, loading: false, error: null }
+      })
+    } catch (e) {
+      state.update((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+  function applyDelta(d: FleetEvent) {
+    state.update((s) => {
+      if (d.kind === 'budget') {
+        const { kind: _k, ...b } = d
+        return { ...s, budget: b }
+      }
+      if (d.kind === 'reroute') {
+        const { kind: _k, ...n } = d
+        return { ...s, notices: [...s.notices.filter((x) => x.id !== n.id), n] }
+      }
+      return {
+        ...s,
+        agents: applyDeltaTo(s.agents, d),
+        projects: d.kind === 'project_removed' ? s.projects.filter((p) => p.root !== d.project) : s.projects,
+      }
+    })
+  }
+  function dismissNotice(id: string) {
+    state.update((s) => ({ ...s, notices: s.notices.filter((n) => n.id !== id) }))
+  }
+  return { state, actions: { refresh, applyDelta, dismissNotice } }
 }

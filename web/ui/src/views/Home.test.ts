@@ -13,6 +13,7 @@ vi.mock('../lib/api.js', async (importActual) => {
     resolvePermission: vi.fn().mockResolvedValue(undefined),
     approvePending: vi.fn().mockResolvedValue({ agentId: 'x', status: 'ok' }),
     denyPending: vi.fn().mockResolvedValue(undefined),
+    undoReroute: vi.fn().mockResolvedValue(undefined),
     getDiskUsage: vi.fn().mockRejectedValue(new Error('no disk')),
     listAudit: vi.fn().mockResolvedValue([]),
   }
@@ -71,5 +72,24 @@ describe('Home', () => {
     mount()
     await userEvent.click(screen.getByRole('button', { name: 'Everyone' }))
     expect(localStorage.getItem('marshal.ui.inbox.scope')).toBe('everyone')
+  })
+
+  it('offers Undo on a reroute notice and dismisses it', async () => {
+    const onDismissNotice = vi.fn()
+    const notices = [{ id: 'r1', watch: 'w', role: 'reviewer', from: 'big', to: 'small' }]
+    render(Home, { agents, pending: [], notices, onDismissNotice, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    await userEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(api.undoReroute).toHaveBeenCalledWith('r1')
+    expect(onDismissNotice).toHaveBeenCalledWith('r1')
+  })
+
+  it('dismisses a reroute notice whose undo the bridge refuses with 409', async () => {
+    ;(api.undoReroute as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new api.APIError(409, { error: 'the reviewer binding changed since' }))
+    const onDismissNotice = vi.fn()
+    const notices = [{ id: 'r1', watch: 'w', role: 'reviewer', from: 'big', to: 'small' }]
+    render(Home, { agents, pending: [], notices, onDismissNotice, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    await userEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(await screen.findByText('the reviewer binding changed since')).toBeTruthy()
+    expect(onDismissNotice).toHaveBeenCalledWith('r1')
   })
 })

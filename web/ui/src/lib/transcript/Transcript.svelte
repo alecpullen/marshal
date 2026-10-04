@@ -4,6 +4,7 @@
   import type { Density } from './density'
   import TurnNode from './TurnNode.svelte'
   import type { TranscriptCtx } from './ctx'
+  import { restrict } from './restrict'
 
   let {
     store,
@@ -12,6 +13,7 @@
     foldTasks = true,
     unfolded = new Set<string>(),
     cursor = null,
+    onlyNodes = undefined,
     onToggleFold,
     onToggleDensity,
   }: {
@@ -21,12 +23,15 @@
     foldTasks?: boolean
     unfolded?: ReadonlySet<string>
     cursor?: string | null
+    /** Show only these nodes with their ancestors and descendants (the Run page's stage filter). */
+    onlyNodes?: ReadonlySet<string>
     onToggleFold?: (id: string) => void
     onToggleDensity?: (id: string) => void
   } = $props()
 
   let now = $state(Date.now())
-  const anyLive = $derived([...$store.nodes.values()].some((n) => n.live))
+  const view = $derived(onlyNodes ? restrict($store, onlyNodes) : $store)
+  const anyLive = $derived([...view.nodes.values()].some((n) => n.live))
 
   // Live steps and tool rows show elapsed time, so tick while anything runs.
   $effect(() => {
@@ -37,7 +42,7 @@
   })
 
   const ctx = $derived<TranscriptCtx>({
-    nodes: $store.nodes,
+    nodes: view.nodes,
     global: density,
     overrides,
     foldTasks,
@@ -50,7 +55,7 @@
 </script>
 
 <div class="flex flex-col" data-testid="transcript">
-  {#each $store.roots as id (id)}
+  {#each view.roots as id (id)}
     <TurnNode {id} {ctx} />
   {/each}
 </div>

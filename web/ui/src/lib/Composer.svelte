@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { BudgetError, budgetMessage } from './api'
+
   interface Props {
     busy: boolean
     onSend: (text: string) => void | Promise<void>
@@ -8,14 +10,20 @@
   let { busy, onSend, onCancel }: Props = $props()
   let text = $state('')
   let sending = $state(false)
+  let notice = $state('')
 
   async function submit() {
     const t = text.trim()
     if (!t || sending) return
     sending = true
+    notice = ''
     try {
       await onSend(t)
       text = ''
+    } catch (e) {
+      // A budget stop is a decision to show; the text stays so it can be resent.
+      if (e instanceof BudgetError) notice = budgetMessage(e)
+      else throw e
     } finally {
       sending = false
     }
@@ -29,6 +37,9 @@
   }
 </script>
 
+{#if notice}
+  <div class="px-4 py-1 text-xs text-warn" role="alert">{notice}</div>
+{/if}
 <div class="composer">
   <textarea bind:value={text} placeholder={busy ? 'Steer the turn…' : 'Ask Marshal…'} onkeydown={keydown} rows="2"></textarea>
   {#if busy}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { applyDeltaTo, groupAgents, describePending, sortAttentionFirst, toPendingPermission, toPendingQuestion, toRow, type AgentRow } from './fleet'
+import { get } from 'svelte/store'
+import { applyDeltaTo, createFleetStore, groupAgents, describePending, sortAttentionFirst, toPendingPermission, toPendingQuestion, toRow, type AgentRow } from './fleet'
 import type { AgentStatus } from './api'
 
 const row = (x: Partial<AgentRow>): AgentRow => ({
@@ -243,5 +244,33 @@ describe('groupAgents', () => {
       mk({ id: 'new', pending: { kind: 'approval', id: '3' }, updatedAt: '2024-05-04T12:00:00Z' }),
     ])
     expect(g.needsYou.map((a) => a.id)).toEqual(['new', 'old', 'q'])
+  })
+})
+
+describe('run, budget and reroute deltas', () => {
+  const run = { kind: 'sdd' as const, sdd: { totalTasks: 2, doneTasks: 1 } as never }
+
+  it('stores a run delta on the addressed row', () => {
+    const got = applyDeltaTo([row({ id: 'a' }), row({ id: 'b' })], { kind: 'run', sessionId: 'a', run, at: 42 })
+    expect(got[0].run).toEqual(run)
+    expect(got[0].runAt).toBe(42)
+    expect(got[1].run).toBeUndefined()
+  })
+
+  it('leaves rows alone for budget and reroute', () => {
+    const rows = [row({ id: 'a' })]
+    expect(applyDeltaTo(rows, { kind: 'budget', scope: 'daily', spentUsd: 1, capUsd: 2, action: 'warn' })).toBe(rows)
+    expect(applyDeltaTo(rows, { kind: 'reroute', id: 'r', watch: 'w', role: 'reviewer', from: 'a', to: 'b' })).toBe(rows)
+  })
+
+  it('keeps budget state and queues reroute notices in the store', () => {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta({ kind: 'budget', scope: 'daily', spentUsd: 3, capUsd: 5, action: 'block' })
+    expect(get(state).budget).toEqual({ scope: 'daily', spentUsd: 3, capUsd: 5, action: 'block' })
+    actions.applyDelta({ kind: 'reroute', id: 'r1', watch: 'w', role: 'reviewer', from: 'a', to: 'b' })
+    actions.applyDelta({ kind: 'reroute', id: 'r1', watch: 'w', role: 'reviewer', from: 'a', to: 'b' })
+    expect(get(state).notices).toHaveLength(1)
+    actions.dismissNotice('r1')
+    expect(get(state).notices).toHaveLength(0)
   })
 })

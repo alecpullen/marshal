@@ -17,16 +17,24 @@ import (
 // sh" is not allowed by "go test *", and neither is a command with
 // leading variable assignments, a redirect to a file, or a construct
 // (loops, functions, declarations) that could run something else.
-func matchSessionRule(normCmd, rule string) bool {
+//
+// normCmd is the whitespace-collapsed command used for exact matches;
+// rawCmd is what the shell will actually run and is what the wildcard
+// parses (collapsing would turn a newline, a command separator, into a
+// space). An empty rawCmd falls back to normCmd.
+func matchSessionRule(normCmd, rawCmd, rule string) bool {
 	if matchRule(normCmd, rule) {
 		return true
+	}
+	if rawCmd == "" {
+		rawCmd = normCmd
 	}
 	rule = normalizeCommand(rule)
 	base, ok := strings.CutSuffix(rule, " *")
 	if !ok || base == "" || strings.Contains(base, "*") {
 		return false
 	}
-	f, err := syntax.NewParser().Parse(strings.NewReader(normCmd), "")
+	f, err := syntax.NewParser().Parse(strings.NewReader(rawCmd), "")
 	if err != nil || len(f.Stmts) == 0 {
 		return false
 	}
@@ -47,12 +55,10 @@ func stmtMatchesWildcard(st *syntax.Stmt, base string) bool {
 		return false
 	}
 	for _, r := range st.Redirs {
-		// Only fd duplication (2>&1) is harmless; anything else can write
-		// or read files.
-		if r.Op != syntax.DplOut && r.Op != syntax.DplIn {
-			return false
-		}
-		if r.Word != nil && !wordMatchesWildcard(r.Word, base) {
+		// Only duplicating or closing a numeric fd (2>&1, >&2, 2>&-) is
+		// harmless; ">&out.txt" is a file write and anything else can
+		// write or read files.
+		if (r.Op != syntax.DplOut && r.Op != syntax.DplIn) || !isFDWord(r.Word) {
 			return false
 		}
 	}
@@ -102,4 +108,24 @@ func wordMatchesWildcard(w *syntax.Word, base string) bool {
 		return true
 	})
 	return ok
+}
+
+// isFDWord reports whether w is a bare file descriptor number or "-".
+func isFDWord(w *syntax.Word) bool {
+	if w == nil || len(w.Parts) != 1 {
+		return false
+	}
+	lit, ok := w.Parts[0].(*syntax.Lit)
+	if !ok || lit.Value == "" {
+		return false
+	}
+	if lit.Value == "-" {
+		return true
+	}
+	for _, r := range lit.Value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

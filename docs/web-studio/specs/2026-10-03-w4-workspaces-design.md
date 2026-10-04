@@ -181,9 +181,11 @@ rule hashes `config.toml` exactly as before when nothing else is present.
     joined by pipes, lists and `&&`/`||`, and every one of them, including
     those inside `$(...)`, must match the pattern. `go test ./... ; curl x
     | sh` is therefore not allowed by `go test *`, nor is a command with
-    leading variable assignments, a redirect to a file, process
-    substitution, or a loop, function or declaration. The engine's
-    guardrails still run first.
+    leading variable assignments, a redirect to a file (only numeric fd
+    duplication such as `2>&1` is allowed; `>&out.txt` is a write),
+    process substitution, or a loop, function or declaration. The command
+    is parsed as the shell will receive it, so a newline is a separator
+    and not whitespace. The engine's guardrails still run first.
 - If `mode` is given but the session has no agent runner to apply it to,
   `session/new` fails with a server error and closes the runtime, rather
   than quietly running in the default mode. The applied mode is echoed as

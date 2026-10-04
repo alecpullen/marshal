@@ -141,6 +141,8 @@ type Fleet struct {
 
 	// ctl is the lazily started control agent (see control.go).
 	ctl *controlRuntime
+	// lib remembers which control session staged each library install.
+	lib libraryState
 	// newControl builds the control agent's Child. Nil means production
 	// behaviour; tests inject a fake transport here.
 	newControl func() (*Child, error)

@@ -132,6 +132,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/nodes/{nodeId}", s.sessionNode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/last-request", s.sessionLastRequest)
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
+	s.libraryRoutes()
 	s.mux.HandleFunc("GET /api/runs", s.listRuns)
 	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
 	s.mux.HandleFunc("POST /api/runs", s.startRun)
@@ -187,7 +188,9 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownReviewComment):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-	case errors.Is(err, errInvalidRun):
+	case errors.Is(err, errScopeMismatch):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, errInvalidRun), errors.Is(err, errInvalidLibrary):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errInvalidReview):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

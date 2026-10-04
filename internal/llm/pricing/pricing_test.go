@@ -123,3 +123,20 @@ func TestEstimateCostCentsUnit(t *testing.T) {
 		t.Fatalf("dollars = %v, want 2.5", usd)
 	}
 }
+
+func TestEstimateCostMicroUSD(t *testing.T) {
+	p := ModelPricing{InputPerMTokCents: 15, OutputPerMTokCents: 60} // $0.15/M in, $0.60/M out
+	u := schema.TokenUsage{PromptTokens: 20_000, CompletionTokens: 1_000}
+	// 20k * $0.15/M = $0.003 = 3000 micro-dollars; 1k * $0.60/M = 600.
+	if got := EstimateCostMicroUSD(u, p); got != 3600 {
+		t.Fatalf("EstimateCostMicroUSD = %d, want 3600", got)
+	}
+	// The whole-cent estimate truncates the same turn to 0.
+	if got := EstimateCostCents(u, p); got != 0 {
+		t.Fatalf("EstimateCostCents = %d, want 0", got)
+	}
+	// 1M tokens at 250 cents/M = $2.50 = 2,500,000 micro-dollars.
+	if got := EstimateCostMicroUSD(schema.TokenUsage{PromptTokens: 1_000_000}, ModelPricing{InputPerMTokCents: 250}); got != 2_500_000 {
+		t.Fatalf("1M tokens = %d", got)
+	}
+}

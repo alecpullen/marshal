@@ -40,6 +40,88 @@ func TestAttachDoesNotDrainOnUnsubscribe(t *testing.T) {
 	}
 }
 
+func TestBroadcastDeliversWithoutStoring(t *testing.T) {
+	l := NewEventLog()
+	ch, unsub := l.Subscribe("s1")
+	defer unsub()
+	other, otherUnsub := l.Subscribe("s2")
+	defer otherUnsub()
+	payload := json.RawMessage(`{"kind":"stack_patch"}`)
+	if err := l.Broadcast("s1", payload); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	select {
+	case ev := <-ch:
+		if ev.ID != 0 || ev.SessionID != "s1" || string(ev.Data) != string(payload) {
+			t.Fatalf("broadcast event = %+v", ev)
+		}
+	default:
+		t.Fatal("subscriber did not receive broadcast")
+	}
+	select {
+	case ev := <-other:
+		t.Fatalf("s2 subscriber received s1 broadcast %+v", ev)
+	default:
+	}
+	if tail := l.Tail("s1"); len(tail) != 0 {
+		t.Fatalf("tail = %+v, want empty", tail)
+	}
+	if replay, _ := l.Replay("s1", 1); len(replay) != 0 {
+		t.Fatalf("replay = %+v, want empty", replay)
+	}
+}
+
+func TestAttachRoutesStackPatchToBroadcast(t *testing.T) {
+	l := NewEventLog()
+	child := &Child{}
+	reg := NewRegistry(child)
+	var chained []string
+	prevNotify := child.OnNotification
+	child.OnNotification = func(method string, params json.RawMessage) {
+		chained = append(chained, method)
+		if prevNotify != nil {
+			prevNotify(method, params)
+		}
+	}
+	Attach(l, child, reg)
+	ch, unsub := l.Subscribe("s1")
+	defer unsub()
+	patch := json.RawMessage(`{"sessionId":"s1","update":{"kind":"stack_patch","rev":2,"baseRev":1}}`)
+	chunk := json.RawMessage(`{"sessionId":"s1","update":{"kind":"agent_message_chunk"}}`)
+	child.OnNotification("session/update", patch)
+	child.OnNotification("session/update", chunk)
+	for i, params := range []json.RawMessage{patch, chunk} {
+		select {
+		case ev := <-ch:
+			var envelope struct {
+				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal(ev.Data, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if ev.ID != int64(i) || ev.SessionID != "s1" || envelope.Method != "session/update" || string(envelope.Params) != string(params) {
+				t.Fatalf("event %d = %+v, envelope = %+v", i, ev, envelope)
+			}
+		default:
+			t.Fatalf("subscriber did not receive event %d", i)
+		}
+	}
+	tail := l.Tail("s1")
+	if len(tail) != 1 || tail[0].ID != 1 {
+		t.Fatalf("tail = %+v, want only message chunk with ID 1", tail)
+	}
+	var envelope struct {
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(tail[0].Data, &envelope); err != nil || string(envelope.Params) != string(chunk) {
+		t.Fatalf("retained params = %s, err = %v", envelope.Params, err)
+	}
+	if len(chained) != 2 || chained[0] != "session/update" || chained[1] != "session/update" {
+		t.Fatalf("chained notifications = %v", chained)
+	}
+}
+
 func TestEventLogAppendAndReplay(t *testing.T) {
 	l := NewEventLog()
 	for i := 1; i <= 3; i++ {

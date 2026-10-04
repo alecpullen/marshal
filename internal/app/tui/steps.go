@@ -96,12 +96,20 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 		b.WriteString(s)
 		lines += strings.Count(s, "\n")
 	}
+	prevMulti := false
 	row := func(id stack.NodeID, s string, sub subRegion) {
 		if s == "" {
 			return
 		}
-		// Separate logical rows without including the gap in their hit regions.
-		write("\n")
+		// Single-line rows sit tight under their narration and each other, so
+		// a step and its calls read as one paragraph. A row that spans lines
+		// (expanded, a failure tail, a card) is set off by a blank line on
+		// both sides. The gap stays out of hit regions.
+		multi := strings.Count(s, "\n") > 1
+		if multi || prevMulti {
+			write("\n")
+		}
+		prevMulti = multi
 		sub.id = id
 		sub.start = lines
 		write(s)
@@ -315,7 +323,7 @@ func indentLines(s string, n int) string {
 // ---- header ------------------------------------------------------------
 
 // stepGlyph picks the state glyph: ✗ if any row failed, the spinner while
-// live, ✓ once settled with tool rows, · for a step with none.
+// live, and a quiet · once settled.
 func stepGlyph(n *stack.Node, rows []*stack.Node, failed bool, c *stepRenderCtx) (string, color.Color) {
 	th := theme.Current()
 	switch {
@@ -327,9 +335,10 @@ func stepGlyph(n *stack.Node, rows []*stack.Node, failed bool, c *stepRenderCtx)
 			g = glyph.Running
 		}
 		return g, accentColor
-	case hasToolRows(rows):
-		return glyph.OK, th.StatusSuccess
 	}
+	// A settled step wears a quiet dot, not a check: a ✓ on every narration
+	// turns the transcript into a column of badges. Only the states that need
+	// attention (running, failed) get a marker with colour.
 	return glyph.Ambient, th.FGMuted
 }
 
@@ -405,8 +414,17 @@ func stepDuration(n *stack.Node, now time.Time) string {
 		}
 		end = now
 	}
-	return formatElapsed(max(end.Sub(st.StartedAt), 0))
+	d := max(end.Sub(st.StartedAt), 0)
+	if d < notableStepDuration {
+		return ""
+	}
+	return formatElapsed(d)
 }
+
+// notableStepDuration is how long a step has to run before its header says
+// so. Most steps take a few seconds, and a "3s" on each only adds noise (and
+// a live counter that ticks while the reader is looking at the text).
+const notableStepDuration = 15 * time.Second
 
 // metaParts are the pieces of a step header's right-aligned meta.
 type metaParts struct {

@@ -36,6 +36,7 @@ const (
 	KindPassthrough
 	KindTask
 	KindReceipt
+	KindQueue
 )
 
 // NodeID is a node's identity across rebuilds. The tree is rebuilt from the
@@ -62,6 +63,7 @@ type Node struct {
 	Active  *session.ActiveToolCall
 	Task    *TaskInfo
 	Receipt *ReceiptInfo
+	Queue   *QueueInfo
 }
 
 // StepInfo is a step node's payload.
@@ -455,6 +457,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
+	todoActivity := false
 	finish := func(a *stepAcc, isLive bool, active []session.ActiveToolCall) *Node {
 		node := &Node{Kind: KindStep, Step: a.info, Live: isLive}
 		if a.info.Heuristic {
@@ -468,6 +471,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		for _, ev := range a.audits {
 			if ev.ToolName == todoWriteTool {
 				a.info.TodoWrites = append(a.info.TodoWrites, ev)
+				todoActivity = true
 				continue
 			}
 			audits = append(audits, ev)
@@ -536,6 +540,9 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		out = append(out, b.node)
 	}
 	out = groupTasks(out, turnKey, s, lastTurn)
+	if lastTurn {
+		out = addQueue(out, turnKey, s, todoActivity)
+	}
 	if !(s.Busy && lastTurn) {
 		if rc := receipt(turnKey, out, userMsg, s); rc != nil {
 			out = append(out, rc)

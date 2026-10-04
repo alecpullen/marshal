@@ -93,13 +93,19 @@ func renderTask(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 	var subs []subRegion
 	b.WriteString(renderTaskHeader(n, c, width) + "\n")
 	lines := 1
+	first := true
 	for _, ch := range n.Children {
 		out, ssubs := renderStep(ch, c, width, td)
 		if out == "" {
 			continue
 		}
-		b.WriteString("\n")
-		lines++
+		// The header sits right on its first step; later steps are set off
+		// by a blank line, as at the top level.
+		if !first {
+			b.WriteString("\n")
+			lines++
+		}
+		first = false
 		n := strings.Count(out, "\n")
 		subs = append(subs, subRegion{id: ch.ID, start: lines, end: lines + n})
 		for _, s := range ssubs {
@@ -133,6 +139,8 @@ func renderTaskHeader(n *stack.Node, c *stepRenderCtx, width int) string {
 		}
 	case t.UnresolvedFailure:
 		g, gc = glyph.Error, th.StatusError
+	case t.Status == "in_progress":
+		g, gc = glyph.Running, accentColor
 	case t.Status != "completed":
 		g, gc = glyph.Ambient, th.FGMuted
 	}
@@ -180,7 +188,7 @@ func renderFoldedTask(n *stack.Node, c *stepRenderCtx, width int) string {
 	title := ansi.Truncate(taskTitle(t), headRoom, "…")
 	left := mutedStyle().Render(pos) + " " + lipgloss.NewStyle().Foreground(th.FGEmphasis).Render(title)
 	pad := max(avail-ansi.StringWidth(pos)-1-ansi.StringWidth(title)-metaW, 1)
-	return gutterPrefix(glyph.OK, th.StatusSuccess) + left + strings.Repeat(" ", pad) + mutedStyle().Render(meta)
+	return gutterPrefix(glyph.OK, th.StatusSuccess) + left + strings.Repeat(" ", pad) + mutedStyle().Render(meta) + "\n"
 }
 
 // taskDiffStat sums the diff stats of the task's edit rows, "+a −r", or ""
@@ -201,6 +209,35 @@ func taskDiffStat(n *stack.Node) string {
 		return ""
 	}
 	return fmt.Sprintf("+%d −%d", a, r)
+}
+
+// maxQueueRows caps the waiting list; the rest collapse into a count.
+const maxQueueRows = 8
+
+// renderQueue is the todos not yet started, listed below the work in
+// progress: "· 4/6 Add tests". A todo the agent has marked in progress before
+// any step ran under it leads with the running glyph instead.
+func renderQueue(q *stack.QueueInfo, width int) string {
+	th := theme.Current()
+	var b strings.Builder
+	shown := q.Items
+	if len(shown) > maxQueueRows {
+		shown = shown[:maxQueueRows]
+	}
+	room := max(width-gutterWidth, 1)
+	for _, it := range shown {
+		g, gc := glyph.Ambient, th.FGMuted
+		if it.Active {
+			g, gc = glyph.Running, accentColor
+		}
+		pos := fmt.Sprintf("%d/%d", it.Index, it.Total)
+		title := ansi.Truncate(it.Content, max(room-ansi.StringWidth(pos)-1, 1), "…")
+		b.WriteString(gutterPrefix(g, gc) + mutedStyle().Render(pos+" "+title) + "\n")
+	}
+	if more := len(q.Items) - len(shown); more > 0 {
+		b.WriteString(gutterPrefix(glyph.Ambient, th.FGMuted) + mutedStyle().Render(fmt.Sprintf("+%d more", more)) + "\n")
+	}
+	return b.String()
 }
 
 // renderReceipt is the turn's closing line:

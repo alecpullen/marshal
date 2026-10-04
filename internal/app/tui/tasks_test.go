@@ -234,12 +234,12 @@ func TestTaskChromeGolden(t *testing.T) {
 		m := newTestModel(t)
 		m.resize(width, 60)
 		m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "in_progress", StartedAt: start}})
+		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "in_progress", StartedAt: start}, {ID: "t2", Content: "Test it", Status: "pending"}})
 		id := m.state.BeginStep(session.Actor{})
 		m.state.AddNarration(id, "Reading the parser. It is small.")
 		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"p.go"}`), ResultSummary: "ok"})
 		m.state.EndStep(id)
-		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}})
+		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}, {ID: "t2", Content: "Test it", Status: "pending"}})
 		lines := transcriptLines(&m)
 
 		var folded string
@@ -248,7 +248,7 @@ func TestTaskChromeGolden(t *testing.T) {
 				folded = strings.TrimRight(l, " ")
 			}
 		}
-		want := " ✓ 1/1 Wire the parser"
+		want := " ✓ 1/2 Wire the parser"
 		// The clock is the steps' working time, which a test cannot pin, so it
 		// is matched rather than compared.
 		tail := regexp.MustCompile(`1 step · 1 tool( · \d+s)? ▹$`)
@@ -263,11 +263,11 @@ func TestTaskChromeGolden(t *testing.T) {
 		m.foldTasks = false
 		var header string
 		for _, l := range transcriptLines(&m) {
-			if strings.Contains(l, "1/1 Wire the parser") {
+			if strings.Contains(l, "1/2 Wire the parser") {
 				header = strings.TrimRight(l, " ")
 			}
 		}
-		if !strings.HasPrefix(header, " ✓ 1/1 Wire the parser ─") {
+		if !strings.HasPrefix(header, " ✓ 1/2 Wire the parser ─") {
 			t.Errorf("w=%d open header = %q", width, header)
 		}
 		if got := len([]rune(header)); got != width {
@@ -383,5 +383,133 @@ func TestRebindPrefersTheTodoStartedNearestTheWrite(t *testing.T) {
 	m.refreshViewport()
 	if m.taskStats["t1"].steps != 1 || m.taskStats["t2"].steps != 0 {
 		t.Fatalf("taskStats = %v: the old step must stay with t1, not move under the later twin", m.taskStats)
+	}
+}
+
+func stepUnder(m *Model, narration, call string) {
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, narration)
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: call,
+		Args: []byte(`{"path":"x.go"}`), ResultSummary: "ok"})
+	m.state.EndStep(id)
+}
+
+func TestTodoStackShowsFoldedDoneOpenCurrentAndWaitingRows(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	todos := []db.TodoItem{
+		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
+		{ID: "t2", Content: "Write", Status: "pending"},
+		{ID: "t3", Content: "Test", Status: "pending"},
+		{ID: "t4", Content: "Ship", Status: "pending"},
+	}
+	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	stepUnder(&m, "Reading it. Slowly.", "a")
+	todos[0].Status, todos[0].CompletedAt = "completed", time.Now()
+	todos[1].Status, todos[1].StartedAt = "in_progress", time.Now()
+	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	stepUnder(&m, "Writing it. Quickly.", "b")
+
+	lines := transcriptLines(&m)
+	text := strings.Join(lines, "\n")
+	at := func(sub string) int {
+		for i, l := range lines {
+			if strings.Contains(l, sub) {
+				return i
+			}
+		}
+		t.Fatalf("missing %q:\n%s", sub, text)
+		return -1
+	}
+	done, open, step, w3, w4 := at("1/4 Read"), at("2/4 Write"), at("Writing it."), at("3/4 Test"), at("4/4 Ship")
+	if !(done < open && open < step && step < w3 && w3 < w4) {
+		t.Fatalf("order must be folded, open header, its work, then the waiting todos:\n%s", text)
+	}
+	if strings.Contains(text, "Reading it.") {
+		t.Errorf("the finished todo's work is folded away:\n%s", text)
+	}
+	if open != done+1 {
+		t.Errorf("folded and open rows read as one stack, no blank line between:\n%s", text)
+	}
+	if step != open+1 {
+		t.Errorf("the open header sits on its first step:\n%s", text)
+	}
+	if w4 != w3+1 {
+		t.Errorf("waiting todos are one tight list:\n%s", text)
+	}
+	if !strings.HasPrefix(lines[w3], " · ") {
+		t.Errorf("waiting todos lead with the quiet dot: %q", lines[w3])
+	}
+}
+
+func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stepUnder(&m, "First look. At the lexer.", "a")
+	stepUnder(&m, "Second look. At the parser.", "b")
+	text := viewText(&m)
+	if regexp.MustCompile(`\d/\d`).MatchString(text) || strings.Contains(text, "─────") {
+		t.Fatalf("no todo list means no task chrome:\n%s", text)
+	}
+	lines := transcriptLines(&m)
+	for i, l := range lines {
+		if strings.Contains(l, "First look.") {
+			if !strings.Contains(lines[i+1], "Read file") {
+				t.Errorf("a narration's calls sit directly under it:\n%s", text)
+			}
+			if !strings.HasPrefix(l, " · ") || regexp.MustCompile(`\d+s$`).MatchString(strings.TrimRight(l, " ")) {
+				t.Errorf("settled steps are a quiet dot with no clock: %q", l)
+			}
+		}
+	}
+}
+
+func TestBackToBackNarrationReadsAsOneText(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	for _, n := range []string{"One thought. Here.", "Another thought. There."} {
+		id := m.state.BeginStep(session.Actor{})
+		m.state.AddNarration(id, n)
+		m.state.EndStep(id)
+	}
+	lines := transcriptLines(&m)
+	a, b := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, "One thought.") {
+			a = i
+		}
+		if strings.Contains(l, "Another thought.") {
+			b = i
+		}
+	}
+	if a < 0 || b != a+1 {
+		t.Fatalf("narration-only steps run on without a blank line:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+func TestMergedToolRunStaysOneRowAsItGrows(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Reading a few files. All small.")
+	count := func() int {
+		n := 0
+		for _, l := range transcriptLines(&m) {
+			if strings.Contains(l, "Read file") {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 4; i++ {
+		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now().Add(time.Duration(i) * time.Millisecond), ToolName: "file.read", StepID: id, ToolCallID: fmt.Sprintf("r%d", i),
+			Args: []byte(fmt.Sprintf(`{"path":"f%d.go"}`, i)), ResultSummary: "ok"})
+		if i > 0 && count() != 1 {
+			t.Fatalf("after %d calls the run is %d rows, want 1", i+1, count())
+		}
 	}
 }

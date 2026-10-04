@@ -42,6 +42,39 @@ type TaskInfo struct {
 	FirstNarration string
 }
 
+// QueueInfo is the todos a turn has not started working on, listed below the
+// work in progress like the old todo list.
+type QueueInfo struct {
+	Items []QueueItem
+}
+
+// QueueItem is one waiting todo: position in the list, and whether the agent
+// has already marked it in progress without a step having run under it yet.
+type QueueItem struct {
+	TodoID  string
+	Content string
+	Index   int // 1-based position in the current list
+	Total   int
+	Active  bool
+}
+
+// MinTaskTodos is how long a todo list has to be before it drives the
+// transcript. A one-item list is no plan to follow: its work reads better as
+// plain narrated steps, so tasks, queue and task counts only appear for
+// lists of two or more.
+const MinTaskTodos = 2
+
+func todoListed(todos []db.TodoItem, id string) bool {
+	for _, t := range todos {
+		if t.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func taskMode(todos []db.TodoItem) bool { return len(todos) >= MinTaskTodos }
+
 // ReceiptInfo is the one-line summary closing a finished turn.
 type ReceiptInfo struct {
 	Duration time.Duration
@@ -136,6 +169,11 @@ func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn bool) []*Nod
 		id := ""
 		if n.Kind == KindStep && n.Step != nil && !n.Step.Heuristic {
 			id = n.Step.TodoID
+			// A short list does not drive the transcript, but work under a
+			// todo that has since left the list still gets its dropped header.
+			if !taskMode(s.Todos) && todoListed(s.Todos, id) {
+				id = ""
+			}
 		}
 		if id == "" {
 			out = append(out, n)
@@ -165,6 +203,52 @@ func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn bool) []*Nod
 		}
 	}
 	return out
+}
+
+// addQueue appends the waiting-todos list to a turn that is working from a
+// todo list: below the live work while the turn runs, above the final answer
+// once it ends (a turn can stop with todos still pending, and the reader
+// should see them rather than assume they were done). Todos that already have
+// a task in this turn are not listed twice; finished ones are done.
+func addQueue(nodes []*Node, turnKey string, s Snapshot, todoWritten bool) []*Node {
+	if !taskMode(s.Todos) {
+		return nodes
+	}
+	started := map[string]bool{}
+	for _, n := range nodes {
+		if n.Kind == KindTask && n.Task != nil {
+			started[n.Task.TodoID] = true
+		}
+	}
+	if len(started) == 0 && !todoWritten {
+		return nodes
+	}
+	q := &QueueInfo{}
+	for i, td := range s.Todos {
+		if td.Status == "completed" || started[td.ID] {
+			continue
+		}
+		q.Items = append(q.Items, QueueItem{TodoID: td.ID, Content: td.Content, Index: i + 1, Total: len(s.Todos), Active: td.Status == "in_progress"})
+	}
+	if len(q.Items) == 0 {
+		return nodes
+	}
+	node := &Node{ID: NodeID{KindQueue, "queue:" + turnKey}, Kind: KindQueue, Queue: q}
+	b := newHash()
+	for _, it := range q.Items {
+		b.f("q|%s|%s|%d|%d|%v|", it.TodoID, it.Content, it.Index, it.Total, it.Active)
+	}
+	node.Version = b.sum()
+	if !s.Busy {
+		for i := len(nodes) - 1; i >= 0; i-- {
+			if nodes[i].Kind == KindFinal {
+				out := append([]*Node(nil), nodes[:i]...)
+				out = append(out, node)
+				return append(out, nodes[i:]...)
+			}
+		}
+	}
+	return append(nodes, node)
 }
 
 func fillTask(n *Node, todos []db.TodoItem, now time.Time, running bool) {
@@ -281,7 +365,7 @@ func receipt(turnKey string, nodes []*Node, userMsg *session.Message, s Snapshot
 	}
 	r.Files = len(files)
 	for _, td := range s.Todos {
-		if !taskIDs[td.ID] || td.CompletedAt.IsZero() {
+		if !taskMode(s.Todos) || !taskIDs[td.ID] || td.CompletedAt.IsZero() {
 			continue
 		}
 		if userMsg != nil && td.CompletedAt.Before(userMsg.CreatedAt) {

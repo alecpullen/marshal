@@ -570,6 +570,12 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !runOpts.sessionRouting.Empty() {
+		if err := cfg.ValidateSessionRouting(runOpts.sessionRouting); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidSessionRouting, err)
+		}
+		cfg.SessionRouting = runOpts.sessionRouting
+	}
 
 	if err := os.MkdirAll(filepath.Join(workingDir, ".marshal"), 0755); err != nil {
 		return nil, fmt.Errorf("create .marshal directory: %w", err)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"marshal/internal/llm/routing"
 	"marshal/internal/trust"
 	"os"
 	"strings"
@@ -99,5 +100,45 @@ func TestBudgetsSaveRoundTrip(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if strings.Contains(string(data), "[budgets]") {
 		t.Fatalf("budgets section kept after reset:\n%s", data)
+	}
+}
+
+func TestSessionRoutingAppliesToRoutingConfig(t *testing.T) {
+	cfg := Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"p/a": {Name: "p/a", Provider: "p", Model: "a", LocalOnly: true},
+		"p/b": {Name: "p/b", Provider: "p", Model: "b", LocalOnly: true},
+	}
+	cfg.Providers = map[string]ProviderConfig{"p": {BaseURL: "http://localhost:1"}}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"base":   {Name: "base", Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "p/a"}}},
+		"strong": {Name: "strong", Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "p/b"}}},
+	}
+	cfg.Profile.Default = "base"
+	cfg.Profile.ActivePreset = "p/a"
+
+	resolve := func(c Config) string {
+		r, err := routing.NewStaticRouter(c.RoutingConfig()).ResolveRole(routing.RoleImplementer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Preset.Name
+	}
+	if got := resolve(cfg); got != "p/a" {
+		t.Fatalf("baseline = %s", got)
+	}
+	cfg.SessionRouting = SessionRouting{Profile: "strong"}
+	if got := resolve(cfg); got != "p/b" {
+		t.Fatalf("session profile = %s", got)
+	}
+	cfg.SessionRouting = SessionRouting{Overrides: map[routing.AgentRole]string{routing.RoleImplementer: "p/b"}}
+	if got := resolve(cfg); got != "p/b" {
+		t.Fatalf("session override = %s", got)
+	}
+	if err := cfg.ValidateSessionRouting(SessionRouting{Profile: "nope"}); err == nil {
+		t.Fatal("unknown profile accepted")
+	}
+	if err := cfg.ValidateSessionRouting(SessionRouting{Overrides: map[routing.AgentRole]string{"bogus": "p/a"}}); err == nil {
+		t.Fatal("unknown role accepted")
 	}
 }

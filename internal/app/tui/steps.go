@@ -94,12 +94,20 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		b.WriteString(s)
 		lines += strings.Count(s, "\n")
 	}
+	prevMulti := false
 	row := func(id viewmodel.NodeID, s string, sub subRegion) {
 		if s == "" {
 			return
 		}
-		// Separate logical rows without including the gap in their hit regions.
-		write("\n")
+		// Single-line rows sit tight under their narration and each other, so
+		// a step and its calls read as one paragraph. A row that spans lines
+		// (expanded, a failure tail, a card) is set off by a blank line on
+		// both sides. The gap stays out of hit regions.
+		multi := strings.Count(s, "\n") > 1
+		if multi || prevMulti {
+			write("\n")
+		}
+		prevMulti = multi
 		sub.id = id
 		sub.start = lines
 		write(s)
@@ -112,7 +120,7 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 	failed := stepFailed(rows)
 
 	// Header.
-	g, gc := stepGlyph(n, rows, failed, c)
+	g, gc := stepGlyph(n, failed, c)
 	meta := metaParts{
 		owner:      stepOwner(si.Step),
 		role:       stepRoleWord(si.Step),
@@ -313,8 +321,8 @@ func indentLines(s string, n int) string {
 // ---- header ------------------------------------------------------------
 
 // stepGlyph picks the state glyph: ✗ if any row failed, the spinner while
-// live, ✓ once settled with tool rows, · for a step with none.
-func stepGlyph(n *viewmodel.Node, rows []*viewmodel.Node, failed bool, c *stepRenderCtx) (string, color.Color) {
+// live, and a quiet · once settled.
+func stepGlyph(n *viewmodel.Node, failed bool, c *stepRenderCtx) (string, color.Color) {
 	th := theme.Current()
 	switch {
 	case failed:
@@ -325,19 +333,11 @@ func stepGlyph(n *viewmodel.Node, rows []*viewmodel.Node, failed bool, c *stepRe
 			g = glyph.Running
 		}
 		return g, accentColor
-	case hasToolRows(rows):
-		return glyph.OK, th.StatusSuccess
 	}
+	// A settled step wears a quiet dot, not a check: a ✓ on every narration
+	// turns the transcript into a column of badges. Only the states that need
+	// attention (running, failed) get a marker with colour.
 	return glyph.Ambient, th.FGMuted
-}
-
-func hasToolRows(rows []*viewmodel.Node) bool {
-	for _, r := range rows {
-		if r.Kind == viewmodel.KindTool {
-			return true
-		}
-	}
-	return false
 }
 
 // stepFailed reports whether any tool row in the step failed: an error, a
@@ -386,8 +386,17 @@ func stepDuration(n *viewmodel.Node, now time.Time) string {
 		}
 		end = now
 	}
-	return formatElapsed(max(end.Sub(st.StartedAt), 0))
+	d := max(end.Sub(st.StartedAt), 0)
+	if d < notableStepDuration {
+		return ""
+	}
+	return formatElapsed(d)
 }
+
+// notableStepDuration is how long a step has to run before its header says
+// so. Most steps take a few seconds, and a "3s" on each only adds noise (and
+// a live counter that ticks while the reader is looking at the text).
+const notableStepDuration = 15 * time.Second
 
 // metaParts are the pieces of a step header's right-aligned meta.
 type metaParts struct {

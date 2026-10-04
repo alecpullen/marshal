@@ -81,21 +81,18 @@ func groupEvents() []registry.AuditEvent {
 	}
 }
 
-func TestRenderToolGroupCollapsedBulletList(t *testing.T) {
+func TestRenderToolGroupCollapsedIsOneLine(t *testing.T) {
 	out := stripANSI(renderToolGroup(groupEvents(), false, 80))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("collapsed run should render heading + 3 bullet lines, got %d:\n%s", len(lines), out)
+	if len(lines) != 1 {
+		t.Fatalf("collapsed run should render one line, got %d:\n%s", len(lines), out)
 	}
 	if !strings.Contains(lines[0], "Read files:") || !strings.Contains(lines[0], "×3") {
-		t.Fatalf("heading line missing plural name or count:\n%s", lines[0])
+		t.Fatalf("line missing plural name or count:\n%s", lines[0])
 	}
-	for i, want := range []string{"budget.go", "runner.go", "execute.go"} {
-		if !strings.Contains(lines[i+1], want) {
-			t.Fatalf("bullet line %d missing %q:\n%s", i+1, want, lines[i+1])
-		}
-		if !strings.Contains(lines[i+1], "–") {
-			t.Fatalf("bullet line %d missing en-dash bullet:\n%s", i+1, lines[i+1])
+	for _, want := range []string{"budget.go", "runner.go", "execute.go"} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("line missing target %q:\n%s", want, lines[0])
 		}
 	}
 }
@@ -198,7 +195,7 @@ func TestRenderToolGroupContinuationLinesIndented(t *testing.T) {
 		{ToolName: "file.read", ResultSummary: "ok",
 			Args: json.RawMessage(`{"path":"internal/app/tui/another_rather_long_runner_implementation_file.go"}`)},
 	}
-	out := stripANSI(renderToolGroup(events, false, 40))
+	out := stripANSI(renderToolGroup(events, true, 40))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) < 2 {
 		t.Fatalf("expected a wrapped multi-line group, got %d line(s):\n%s", len(lines), out)
@@ -212,6 +209,29 @@ func TestRenderToolGroupContinuationLinesIndented(t *testing.T) {
 		}
 		if w := ansi.StringWidth(line); w > 40 {
 			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}
+
+func TestCollapsedToolGroupTruncatesOverflowingTargetsOnOneLine(t *testing.T) {
+	var events []registry.AuditEvent
+	for _, p := range []string{"internal/app/tui/steps.go", "internal/app/tui/tasks_render.go", "internal/app/tui/viewport_render.go", "internal/app/tui/model.go"} {
+		events = append(events, registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"` + p + `"}`)})
+	}
+	for _, width := range []int{30, 60} {
+		out := stripANSI(renderToolGroup(events, false, width))
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("w=%d: collapsed run is one line, got %d:\n%s", width, len(lines), out)
+		}
+		if w := ansi.StringWidth(lines[0]); w > width {
+			t.Fatalf("w=%d: line is %d cells wide: %q", width, w, lines[0])
+		}
+		if !strings.HasSuffix(lines[0], "…") {
+			t.Fatalf("w=%d: an overflowing run ends with an ellipsis: %q", width, lines[0])
+		}
+		if !strings.Contains(lines[0], "×4") {
+			t.Fatalf("w=%d: the count survives truncation: %q", width, lines[0])
 		}
 	}
 }

@@ -93,13 +93,19 @@ func renderTask(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 	var subs []subRegion
 	b.WriteString(renderTaskHeader(n, c, width) + "\n")
 	lines := 1
+	first := true
 	for _, ch := range n.Children {
 		out, ssubs := renderStep(ch, c, width, td)
 		if out == "" {
 			continue
 		}
-		b.WriteString("\n")
-		lines++
+		// The header sits right on its first step; later steps are set off
+		// by a blank line, as at the top level.
+		if !first {
+			b.WriteString("\n")
+			lines++
+		}
+		first = false
 		n := strings.Count(out, "\n")
 		subs = append(subs, subRegion{id: ch.ID, start: lines, end: lines + n})
 		for _, s := range ssubs {
@@ -133,6 +139,8 @@ func renderTaskHeader(n *viewmodel.Node, c *stepRenderCtx, width int) string {
 		}
 	case t.UnresolvedFailure:
 		g, gc = glyph.Error, th.StatusError
+	case t.Status == "in_progress":
+		g, gc = glyph.Running, accentColor
 	case t.Status != "completed":
 		g, gc = glyph.Ambient, th.FGMuted
 	}
@@ -180,7 +188,7 @@ func renderFoldedTask(n *viewmodel.Node, c *stepRenderCtx, width int) string {
 	title := ansi.Truncate(taskTitle(t), headRoom, "…")
 	left := mutedStyle().Render(pos) + " " + lipgloss.NewStyle().Foreground(th.FGEmphasis).Render(title)
 	pad := max(avail-ansi.StringWidth(pos)-1-ansi.StringWidth(title)-metaW, 1)
-	return gutterPrefix(glyph.OK, th.StatusSuccess) + left + strings.Repeat(" ", pad) + mutedStyle().Render(meta)
+	return gutterPrefix(glyph.OK, th.StatusSuccess) + left + strings.Repeat(" ", pad) + mutedStyle().Render(meta) + "\n"
 }
 
 // taskDiffStat sums the diff stats of the task's edit rows, "+a −r", or ""

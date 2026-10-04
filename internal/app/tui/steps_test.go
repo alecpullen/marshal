@@ -71,14 +71,14 @@ func TestNarratedStepRendersHeadlineAndNestedToolRows(t *testing.T) {
 	if header == "" {
 		t.Fatalf("headline missing:\n%s", strings.Join(lines, "\n"))
 	}
-	if !strings.HasPrefix(header, " "+"✓"+" ") {
-		t.Errorf("settled step with tools should lead with ✓, got %q", header)
+	if !strings.HasPrefix(header, " · ") {
+		t.Errorf("a settled step leads with a quiet dot, got %q", header)
 	}
 	if strings.Contains(header, "inferred") {
 		t.Errorf("narrated step must not be tagged inferred: %q", header)
 	}
-	if !regexp.MustCompile(`\d+s$`).MatchString(strings.TrimRight(header, " ")) {
-		t.Errorf("header should end with the step duration, got %q", header)
+	if regexp.MustCompile(`\d+s$`).MatchString(strings.TrimRight(header, " ")) {
+		t.Errorf("a quick step does not carry a duration, got %q", header)
 	}
 	if len(toolRows) == 0 {
 		t.Fatalf("no tool row:\n%s", strings.Join(lines, "\n"))

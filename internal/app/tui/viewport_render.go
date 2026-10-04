@@ -71,6 +71,11 @@ func (m *Model) refreshViewport() {
 		Now:             m.now(),
 	}
 	turns := viewmodel.Build(snap)
+	m.todoStrip = nil
+	if len(turns) > 0 && viewmodel.DrivenByTodos(turns[len(turns)-1]) {
+		m.todoStrip = snap.Todos
+	}
+	m.updateViewportHeight()
 
 	width := m.viewport.Width()
 	themeSig := themeFingerprint()
@@ -111,6 +116,11 @@ func (m *Model) refreshViewport() {
 	}
 
 	blocks := make([]string, 0, len(items)+4)
+	// tight[i] joins block i to the one before it with no blank line: the
+	// folded rows of a todo stack read as one list, and back-to-back
+	// narration reads as one text.
+	var tight []bool
+	nextTight := false
 	var regions []nodeRegion
 	lineCursor := 0
 	// addBlock appends s to blocks (if non-empty) and records the
@@ -123,6 +133,8 @@ func (m *Model) refreshViewport() {
 			return
 		}
 		blocks = append(blocks, s)
+		tight = append(tight, nextTight)
+		nextTight = false
 		n := strings.Count(s, "\n")
 		if target != nil {
 			regions = append(regions, nodeRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
@@ -134,7 +146,7 @@ func (m *Model) refreshViewport() {
 				target:    clickTarget{node: sr.id, subagent: sr.subagent, isLiveRegion: sr.live},
 			})
 		}
-		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
+		lineCursor += n + 1 // +1 for the blank separator between blocks
 	}
 
 	if !hasConversationTurns(items) {
@@ -154,15 +166,25 @@ func (m *Model) refreshViewport() {
 			firstTurn = false
 		}
 		turnFirst := true
+		prevFolded, prevNarrationOnly := false, false
 		for _, node := range turn.Children {
 			collectSeen(node, seen)
 			indexTree(node, tree)
 			out, subs := m.renderNode(node, rctx, width, themeSig)
 			if out != "" {
+				folded := node.Kind == viewmodel.KindTask && rctx.taskFolded(node)
+				isTight := (prevFolded && (node.Kind == viewmodel.KindTask || node.Kind == viewmodel.KindQueue)) ||
+					(prevNarrationOnly && node.Kind == viewmodel.KindStep)
+				if isTight && len(blocks) > 0 {
+					lineCursor-- // no blank line before a tight block
+					nextTight = true
+				}
+				prevFolded, prevNarrationOnly = folded, narrationOnly(node)
 				bitems = collectBrowse(bitems, node, out, subs, lineCursor, turnFirst)
 				turnFirst = false
 			}
 			addBlock(out, m.blockTarget(node), subs)
+			nextTight = false // never leaks onto a later block, even if this one was empty
 		}
 	}
 	if reconnect != "" {
@@ -181,7 +203,14 @@ func (m *Model) refreshViewport() {
 	m.taskStats = countTaskStats(turns)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
-	content := strings.Join(blocks, "\n")
+	var sb strings.Builder
+	for i, blk := range blocks {
+		if i > 0 && !tight[i] {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(blk)
+	}
+	content := sb.String()
 	if m.browsing {
 		content = m.paintCursor(content)
 	}
@@ -189,6 +218,13 @@ func (m *Model) refreshViewport() {
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 	}
+}
+
+// narrationOnly is a step that said something and ran nothing: the next step
+// continues it instead of starting a new paragraph.
+func narrationOnly(n *viewmodel.Node) bool {
+	return n.Kind == viewmodel.KindStep && n.Step != nil && !n.Live && len(n.Step.Narration) > 0 &&
+		len(n.Children) == 0 && len(n.Step.Thinking) == 0 && n.Step.LiveThinking == ""
 }
 
 // renderNode renders one top-level block, from the cache when it is still
@@ -222,6 +258,9 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		return renderTask(n, c, width, m.density)
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return renderReceipt(n.Receipt, width), nil
+	case n.Kind == viewmodel.KindQueue:
+		// The waiting todos live in the pinned strip above the transcript.
+		return "", nil
 	case n.Kind == viewmodel.KindStep && n.Step != nil:
 		return renderStep(n, c, width, m.density)
 	case n.Kind == viewmodel.KindThinking && n.Step != nil:

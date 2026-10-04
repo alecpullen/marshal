@@ -11,6 +11,7 @@ draft PR.
 | [`p1-layout-and-keys.md`](p1-layout-and-keys.md) | P1: remove the rail; add the now bar, session sheet, Tasks panel and Esc/Ctrl+C changes |
 | `p2-steps-and-ownership.md` | P2: step identity, persistence, owner labels, narration prompt, step renderer (added on the P2 branch) |
 | `p3-tasks-and-navigation.md` | P3: task headers and folding, density ladder, browse mode, inspector (added on the P3 branch) |
+| [`p4-todo-stack-and-flow.md`](p4-todo-stack-and-flow.md) | P4: todo-driven task stack with a waiting list, and a calmer step/tool flow (follow-up to P3) |
 | [`reference/p1-execution-plan-draft.md`](reference/p1-execution-plan-draft.md) | An early P1 execution plan, kept for reference only |
 
 The phases are stacked in dependency order:

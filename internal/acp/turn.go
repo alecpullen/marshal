@@ -444,6 +444,8 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 				"output":     capToolText(output),
 			}, true
 		}
+	case session.EventHoldChanged:
+		return map[string]any{"kind": "hold", "held": ev.Payload.Held}, true
 	case session.EventPendingSkillGateChanged:
 		// The gate reaches the client through the permission request
 		// bridge, not as a transcript update.

@@ -1062,6 +1062,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// context rather than getting compacted away. steeringArrived also
 		// guards the doom-loop stall finalize below — if the user just
 		// intervened, the loop is no longer auto-iterating.
+		if err := r.State.WaitUnheld(ctx); err != nil {
+			return task, r.failTurn(task, err)
+		}
 		steeringArrived := false
 		var steeringPins []contextpack.FileSnippet
 		for _, msg := range r.State.DrainSteering() {

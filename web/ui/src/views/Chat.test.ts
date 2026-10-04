@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
-import { render, cleanup, screen } from '@testing-library/svelte'
+import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import Chat from './Chat.svelte'
 import * as api from '../lib/api.js'
 
@@ -18,6 +18,8 @@ vi.mock('../lib/api.js', async (importActual) => {
     ...actual,
     listAgents: vi.fn(),
     loadSession: vi.fn(),
+    getStack: vi.fn(),
+    cancelSession: vi.fn(),
   }
 })
 
@@ -29,6 +31,7 @@ vi.mock('../lib/api.js', async (importActual) => {
 vi.mock('../lib/sse.js', () => ({
   connectSSE: vi.fn(() => () => {}),
 }))
+import { connectSSE } from '../lib/sse.js'
 
 /*
   Shiki's grammars are a heavyweight async load with nothing to do with
@@ -45,6 +48,10 @@ describe('Chat', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(api.listAgents as Mock).mockResolvedValue([])
+    ;(api.loadSession as Mock).mockResolvedValue({ events: [] })
+    // Unless a test says otherwise the stack is unavailable, so the legacy
+    // list renders, which is what the tests above exercise.
+    ;(api.getStack as Mock).mockRejectedValue(new Error('no stack'))
   })
 
   it('replaces the transcript with a could-not-be-resumed note when the load 404s', async () => {
@@ -76,5 +83,103 @@ describe('Chat', () => {
         'This session could not be resumed — its agent is no longer tracked by the bridge.',
       ),
     ).toBeNull()
+  })
+
+  describe('stack transcript', () => {
+    const turn = (live: boolean, extra: object[] = []) => ({
+      rev: 1,
+      roots: ['turn:1'],
+      nodes: [
+        { id: 'turn:1', kind: 'turn', children: ['msg:1', 'step:1', ...extra.map((n) => (n as { id: string }).id)] },
+        { id: 'msg:1', kind: 'message', parent: 'turn:1', message: { role: 'user', content: 'do the thing' } },
+        { id: 'step:1', kind: 'step', parent: 'turn:1', live, step: { headline: 'Reading the code', owner: 'implementer', role: 'implementer', startedAt: 1 } },
+        ...extra,
+      ],
+    })
+
+    function sse() {
+      const call = (connectSSE as Mock).mock.calls.at(-1)![0] as { onEvent: (e: unknown) => void }
+      return (payload: unknown) => call.onEvent({ type: 'message', message: { data: JSON.stringify(payload) } })
+    }
+
+    it('renders the stack transcript when the snapshot loads', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(false))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      expect(await screen.findByText('Reading the code')).toBeTruthy()
+      expect(screen.getByText('do the thing')).toBeTruthy()
+      expect(screen.getByRole('group', { name: 'Detail' })).toBeTruthy()
+    })
+
+    it('falls back to the legacy list when the agent has no stack', async () => {
+      ;(api.getStack as Mock).mockResolvedValue('unsupported')
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      expect(await screen.findByText('No messages yet.')).toBeTruthy()
+      expect(screen.queryByTestId('transcript')).toBeNull()
+    })
+
+    it('updates the DOM from a stack_patch event', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(false))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByText('Reading the code')
+      sse()({
+        method: 'session/update',
+        params: {
+          sessionId: 's1',
+          update: {
+            kind: 'stack_patch',
+            rev: 2,
+            baseRev: 1,
+            roots: ['turn:1'],
+            upsert: [
+              { id: 'turn:1', kind: 'turn', children: ['msg:1', 'step:1', 'step:2'] },
+              { id: 'step:2', kind: 'step', parent: 'turn:1', step: { headline: 'Running the tests' } },
+            ],
+          },
+        },
+      })
+      expect(await screen.findByText('Running the tests')).toBeTruthy()
+    })
+
+    it('stops the turn on a second Ctrl+C within a second, and only then', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(true))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('now-bar')
+      await fireEvent.keyDown(document, { key: 'c', ctrlKey: true })
+      expect(api.cancelSession).not.toHaveBeenCalled()
+      expect(await screen.findByText('Press Ctrl+C again to stop')).toBeTruthy()
+      await fireEvent.keyDown(document, { key: 'c', ctrlKey: true })
+      await waitFor(() => expect(api.cancelSession).toHaveBeenCalledTimes(1))
+    })
+
+    it('leaves Ctrl+C alone when text is selected in the composer', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(true))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('now-bar')
+      const box = screen.getByPlaceholderText('Ask Marshal…') as HTMLTextAreaElement
+      box.value = 'some text'
+      box.setSelectionRange(0, 4)
+      const notPrevented = await fireEvent.keyDown(box, { key: 'c', ctrlKey: true })
+      expect(notPrevented).toBe(true)
+      expect(screen.queryByText('Press Ctrl+C again to stop')).toBeNull()
+    })
+
+    it('keeps j at the last row in browse mode', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(true))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('now-bar')
+      await fireEvent.keyDown(screen.getByPlaceholderText('Ask Marshal…'), { key: 'Escape' })
+      await screen.findByText(/browse · j\/k move/)
+      await fireEvent.keyDown(document.body, { key: 'j' })
+      expect(screen.getByText(/browse · j\/k move/)).toBeTruthy()
+    })
+
+    it('enters browse mode on Esc in the composer and never cancels', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(true))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('now-bar')
+      await fireEvent.keyDown(screen.getByPlaceholderText('Ask Marshal…'), { key: 'Escape' })
+      expect(await screen.findByText(/browse · j\/k move/)).toBeTruthy()
+      expect(api.cancelSession).not.toHaveBeenCalled()
+    })
   })
 })

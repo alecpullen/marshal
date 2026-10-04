@@ -9,6 +9,13 @@
   import ExitPanel from '../lib/ExitPanel.svelte'
   import { renderMarkdown, initHighlighter } from '../lib/markdown'
   import { listAgents, APIError } from '../lib/api'
+  import { createStackStore } from '../lib/stack'
+  import Transcript from '../lib/transcript/Transcript.svelte'
+  import NowBar from '../lib/transcript/NowBar.svelte'
+  import Segmented from '../lib/ui/Segmented.svelte'
+  import { browseKey, flattenVisible, nodeText } from '../lib/transcript/browse'
+  import { nextOverride, parseDensity, effective, type Density } from '../lib/transcript/density'
+  import type { TranscriptCtx } from '../lib/transcript/ctx'
 
   interface Props {
     sessionId: string
@@ -20,7 +27,164 @@
   // Chat instances are keyed by session route, so this store intentionally
   // captures the session ID once for the lifetime of the component.
   // svelte-ignore state_referenced_locally
-  const { state: session, actions } = createSessionStore(sessionId, '/')
+  const stack = createStackStore(sessionId)
+  // svelte-ignore state_referenced_locally
+  const { state: session, actions } = createSessionStore(sessionId, '/', stack.onEvent)
+
+  /*
+    The stack transcript is the view; the legacy message list renders only
+    for agents that predate session/stack (501) or when the snapshot cannot
+    be fetched at all.
+  */
+  const useStack = $derived($stack.status === 'ready')
+  const legacy = $derived($stack.status === 'unsupported' || $stack.status === 'error')
+
+  const DENSITY_KEY = 'marshal.ui.density'
+  function readDensity(): Density {
+    try {
+      return parseDensity(localStorage.getItem(DENSITY_KEY))
+    } catch {
+      return 'steps'
+    }
+  }
+  let density = $state<Density>(readDensity())
+  function setDensity(v: string) {
+    density = parseDensity(v)
+    try {
+      localStorage.setItem(DENSITY_KEY, density)
+    } catch {
+      // The choice just does not persist.
+    }
+  }
+  let overrides = $state(new Map<string, Density>())
+  let unfolded = $state(new Set<string>())
+
+  // Browse mode: the TUI's Esc mode, a cursor over transcript rows.
+  let browsing = $state(false)
+  let cursor = $state<string | null>(null)
+  let follow = $state(true)
+  let toast = $state('')
+  let toastTimer: ReturnType<typeof setTimeout> | undefined
+
+  function flash(text: string) {
+    toast = text
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => (toast = ''), 2000)
+  }
+
+  let now = $state(Date.now())
+  const anyLive = $derived(useStack && [...$stack.nodes.values()].some((n) => n.live))
+  $effect(() => {
+    if (!anyLive) return
+    now = Date.now()
+    const t = setInterval(() => (now = Date.now()), 1000)
+    return () => clearInterval(t)
+  })
+
+  const tctx = $derived<TranscriptCtx>({
+    nodes: $stack.nodes,
+    global: density,
+    overrides,
+    foldTasks: true,
+    unfolded,
+    cursor,
+    now,
+  })
+  const flat = $derived(flattenVisible(tctx, $stack.roots))
+
+  function toggleFold(id: string) {
+    const next = new Set(unfolded)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    unfolded = next
+  }
+  function toggleDensity(id: string) {
+    const next = new Map(overrides)
+    const cur = effective(id, overrides, (n) => $stack.nodes.get(n)?.parent, density)
+    next.set(id, nextOverride(cur))
+    overrides = next
+  }
+
+  function enterBrowse() {
+    if (!useStack || flat.ids.length === 0) return
+    browsing = true
+    follow = false
+    cursor = cursor && flat.ids.includes(cursor) ? cursor : flat.ids[flat.ids.length - 1]
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    scrollCursorIntoView()
+  }
+
+  function scrollCursorIntoView() {
+    requestAnimationFrame(() => {
+      if (!cursor) return
+      const el = transcriptEl?.querySelector(`[data-node-id="${CSS.escape(cursor)}"]`)
+      el?.scrollIntoView?.({ block: 'nearest' })
+    })
+  }
+
+  function typingTarget(t: EventTarget | null) {
+    const el = t as HTMLElement | null
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+  }
+
+  function onDocKey(e: KeyboardEvent) {
+    // Ctrl+C twice within a second stops the turn; one press only warns.
+    if (e.ctrlKey && e.key.toLowerCase() === 'c' && ($session.busy || anyLive)) {
+      // A selection in the page or inside the composer is a copy, not a stop;
+      // getSelection() is empty for text selected within a textarea or input.
+      if (window.getSelection()?.toString()) return
+      const el = e.target as HTMLInputElement | HTMLTextAreaElement | null
+      if (typingTarget(el) && el && el.selectionStart !== el.selectionEnd) return
+      e.preventDefault()
+      const t = Date.now()
+      if (t - lastCtrlC < 1000) {
+        lastCtrlC = 0
+        stopHint = ''
+        void actions.cancel()
+      } else {
+        lastCtrlC = t
+        stopHint = 'Press Ctrl+C again to stop'
+        clearTimeout(hintTimer)
+        hintTimer = setTimeout(() => (stopHint = ''), 1000)
+      }
+      return
+    }
+    if (!browsing || typingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+    const out = browseKey({ cursor, follow }, e.key, flat)
+    // An unbound printable key leaves browse mode and is typed.
+    if (!out.bound && e.key.length === 1) {
+      browsing = false
+      return
+    }
+    e.preventDefault()
+    cursor = out.state.cursor
+    follow = out.state.follow
+    if (follow) scrollToLatest()
+    else scrollCursorIntoView()
+    const fx = out.effect
+    if (!fx) return
+    if ('exitBrowse' in fx) browsing = false
+    else if ('toggleDensity' in fx) toggleDensity(fx.toggleDensity)
+    else if ('toggleFold' in fx) toggleFold(fx.toggleFold)
+    else if ('toast' in fx) flash(fx.toast)
+    else if ('copy' in fx) {
+      const n = $stack.nodes.get(fx.copy)
+      const text = n ? nodeText(n) : ''
+      navigator.clipboard?.writeText(text).then(() => flash('Copied'), () => flash('Copy failed'))
+    }
+  }
+
+  // Esc in the composer is the way into browse mode; it never cancels a turn.
+  function onComposerKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      enterBrowse()
+    }
+  }
+
+  let lastCtrlC = 0
+  let stopHint = $state('')
+  let hintTimer: ReturnType<typeof setTimeout> | undefined
 
   // Shiki loads its grammars asynchronously. Messages render unhighlighted
   // until it is ready, then `ready` flips and the transcript re-renders —
@@ -54,7 +218,9 @@
     signature changes on both a new entry and a growing one.
   */
   const tailSignature = $derived(
-    entries.length + ':' + ($session.messages.at(-1)?.text.length ?? 0) + ':' + ($session.busy ? 1 : 0),
+    useStack
+      ? 'stack:' + $stack.rev
+      : entries.length + ':' + ($session.messages.at(-1)?.text.length ?? 0) + ':' + ($session.busy ? 1 : 0),
   )
 
   const PIN_THRESHOLD_PX = 48
@@ -76,7 +242,7 @@
   $effect(() => {
     // Referenced so the effect re-runs as the tail grows.
     tailSignature
-    if (!pinned || !transcriptEl) return
+    if (!pinned || (browsing && !follow) || !transcriptEl) return
     // After the DOM has taken the new content, not before.
     requestAnimationFrame(() => {
       if (transcriptEl && pinned) transcriptEl.scrollTop = transcriptEl.scrollHeight
@@ -84,6 +250,8 @@
   })
 
   onMount(() => {
+    void stack.load()
+    document.addEventListener('keydown', onDocKey)
     listAgents()
       .then((agents) => {
         const a = agents.find((x) => x.id === sessionId)
@@ -111,6 +279,10 @@
   })
 
   onDestroy(() => {
+    document.removeEventListener('keydown', onDocKey)
+    stack.destroy()
+    clearTimeout(toastTimer)
+    clearTimeout(hintTimer)
     actions.disconnect()
   })
 
@@ -134,6 +306,18 @@
       <span class="name">{agentName ?? sessionId}</span>
       {#if projectName}<span class="project">{projectName}</span>{/if}
     </div>
+    {#if useStack}
+      <Segmented
+        label="Detail"
+        value={density}
+        onchange={setDensity}
+        options={[
+          { value: 'outline', label: 'Outline' },
+          { value: 'steps', label: 'Steps' },
+          { value: 'full', label: 'Full' },
+        ]}
+      />
+    {/if}
     <ModeSwitcher mode={$session.mode} onChange={changeMode} />
     <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'}>
       {$session.connected ? '●' : '○'}
@@ -145,7 +329,30 @@
       <div class="empty">
         <p>This session could not be resumed — its agent is no longer tracked by the bridge.</p>
       </div>
-    {:else}
+    {:else if useStack}
+      <Transcript
+        store={stack}
+        {density}
+        {overrides}
+        {unfolded}
+        {cursor}
+        onToggleFold={toggleFold}
+        onToggleDensity={toggleDensity}
+      />
+      {#if $stack.roots.length === 0 && !$session.busy}
+        <div class="empty">
+          <p>No messages yet.</p>
+          <p class="hint">Describe a task below to start this agent working.</p>
+        </div>
+      {/if}
+      {#if toast}<div class="typing" role="status">{toast}</div>{/if}
+      {#if $session.error}
+        <div class="error-banner">
+          {$session.error}
+          <button onclick={() => actions.dismissError()}>Dismiss</button>
+        </div>
+      {/if}
+    {:else if legacy}
     {#each entries as entry (entry.key)}
       {#if entry.kind === 'message'}
         {@const message = entry.value}
@@ -199,7 +406,17 @@
     </div>
   {/if}
 
-  <Composer busy={$session.busy} onSend={send} onCancel={actions.cancel} />
+  {#if useStack}
+    <NowBar stack={$stack} {now} hint={stopHint} onStop={() => actions.cancel()} />
+    {#if browsing}
+      <div class="browse-hint" role="status">browse · j/k move · J/K jump · Enter detail · z fold · y copy · Esc exit</div>
+    {/if}
+  {/if}
+
+  <!-- Capture phase would swallow typing; bubbling is enough for Esc. -->
+  <div onkeydown={onComposerKey} role="presentation">
+    <Composer busy={$session.busy} onSend={send} onCancel={actions.cancel} />
+  </div>
 
   <ExitPanel agentId={sessionId} onDone={onBack} />
 </div>
@@ -320,6 +537,12 @@
     margin: 0.25rem 0 0;
     white-space: pre-wrap;
     font-family: inherit;
+  }
+  .browse-hint {
+    padding: 0.25rem 1rem;
+    font-size: 0.75rem;
+    color: var(--color-violet);
+    border-top: 1px solid var(--color-border);
   }
   .typing {
     color: var(--color-muted);

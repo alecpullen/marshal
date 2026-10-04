@@ -3,6 +3,9 @@
   import Button from './ui/Button.svelte'
   import { getDiskUsage, pruneDisk, APIError, errMessage, type DiskStatus, type PruneResult } from './api'
 
+  /** Compact drops the measured-at line and the prune controls, for side panels. */
+  let { compact = false }: { compact?: boolean } = $props()
+
   let disk = $state<DiskStatus | null>(null)
   let loading = $state(false)
   let error = $state<string | null>(null)
@@ -138,10 +141,11 @@
       <span>work <span class="tabular-nums">{formatBytes(disk.work)}</span></span>
     </div>
 
-    {#if disk.measuredAt}
+    {#if disk.measuredAt && !compact}
       <p class="mb-4 text-xs text-muted">measured {formatMeasured(disk.measuredAt)}</p>
     {/if}
 
+    {#if !compact}
     <div class="flex items-center gap-2 border-t border-border pt-3">
       {#if confirming}
         <Button variant="danger" onclick={prune} disabled={pruning}>Confirm prune</Button>
@@ -150,5 +154,6 @@
         <Button variant="ghost" onclick={armPrune} disabled={loading || pruning}>Prune</Button>
       {/if}
     </div>
+    {/if}
   {/if}
 </Card>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyDeltaTo, describePending, sortAttentionFirst, toPendingPermission, toPendingQuestion, toRow, type AgentRow } from './fleet'
+import { applyDeltaTo, groupAgents, describePending, sortAttentionFirst, toPendingPermission, toPendingQuestion, toRow, type AgentRow } from './fleet'
 import type { AgentStatus } from './api'
 
 const row = (x: Partial<AgentRow>): AgentRow => ({
@@ -200,5 +200,41 @@ describe('toPendingQuestion', () => {
 
   it('yields an empty question list when params are unusable', () => {
     expect(toPendingQuestion('s1', { kind: 'question', id: 'q1', params: { questions: 'nope' } }).questions).toEqual([])
+  })
+})
+
+
+describe('groupAgents', () => {
+  const mk = (o: Partial<AgentStatus> & { id: string }): AgentRow =>
+    toRow({ project: '/p', status: 'idle', updatedAt: '2024-05-04T12:00:00Z', ...o })
+
+  it('buckets agents by what they need', () => {
+    const g = groupAgents([
+      mk({ id: 'asks', status: 'awaiting-approval', pending: { kind: 'approval', id: 't' } }),
+      mk({ id: 'busy', status: 'running' }),
+      mk({ id: 'done', changedFiles: 3 }),
+      mk({ id: 'shipped', changedFiles: 3, prUrl: 'https://x/pr/1' }),
+      mk({ id: 'quiet' }),
+      mk({ id: 'broken', status: 'error' }),
+    ])
+    expect(g.needsYou.map((a) => a.id)).toEqual(['asks'])
+    expect(g.running.map((a) => a.id)).toEqual(['busy'])
+    expect(g.ready.map((a) => a.id)).toEqual(['done'])
+    expect(g.earlier.map((a) => a.id).sort()).toEqual(['broken', 'quiet', 'shipped'])
+  })
+
+  it('never lists a running agent that is waiting on you under Running', () => {
+    const g = groupAgents([mk({ id: 'a', status: 'running', pending: { kind: 'question', id: 'q' } })])
+    expect(g.running).toHaveLength(0)
+    expect(g.needsYou).toHaveLength(1)
+  })
+
+  it('sorts by pending kind, then recency', () => {
+    const g = groupAgents([
+      mk({ id: 'q', pending: { kind: 'question', id: '1' }, updatedAt: '2024-05-04T13:00:00Z' }),
+      mk({ id: 'old', pending: { kind: 'approval', id: '2' }, updatedAt: '2024-05-04T10:00:00Z' }),
+      mk({ id: 'new', pending: { kind: 'approval', id: '3' }, updatedAt: '2024-05-04T12:00:00Z' }),
+    ])
+    expect(g.needsYou.map((a) => a.id)).toEqual(['new', 'old', 'q'])
   })
 })

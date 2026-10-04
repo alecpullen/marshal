@@ -4,6 +4,9 @@
   import NewAgent from './views/NewAgent.svelte'
   import Chat from './views/Chat.svelte'
   import Sidebar from './lib/Sidebar.svelte'
+  import Rail from './lib/Rail.svelte'
+  import Palette from './lib/Palette.svelte'
+  import Home from './views/Home.svelte'
   import PendingList from './lib/PendingList.svelte'
   import ClientsPanel from './lib/ClientsPanel.svelte'
   import ActivityFeed from './lib/ActivityFeed.svelte'
@@ -12,7 +15,7 @@
   import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -25,7 +28,9 @@
   */
   let navOpen = $state(true)
 
-  const NAV_KEY = 'marshal:navOpen'
+  const NAV_KEY = 'marshal.ui.sidebar'
+
+  let paletteOpen = $state(false)
 
   function toggleNav() {
     navOpen = !navOpen
@@ -85,6 +90,13 @@
       if (hash === '#projects' || isScopedSessions(hash) || hash === '#sessions') actions.refresh()
     }
     window.addEventListener('hashchange', update)
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        paletteOpen = !paletteOpen
+      }
+    }
+    window.addEventListener('keydown', onKey)
     update()
 
     actions.refresh()
@@ -110,6 +122,7 @@
     })
     return () => {
       window.removeEventListener('hashchange', update)
+      window.removeEventListener('keydown', onKey)
       ctl.abort()
       disconnect()
     }
@@ -137,6 +150,7 @@
 </script>
 
 <div class="flex h-screen overflow-hidden">
+  <Rail route={hash} onNavigate={navigate} />
   <Sidebar
     open={navOpen}
     onToggle={toggleNav}
@@ -193,6 +207,16 @@
           {/if}
         </div>
       </div>
+    {:else if pageFromHash(hash) === 'home'}
+      <div class="h-full overflow-y-auto">
+        <Home
+          agents={$fleet.agents}
+          {pending}
+          onRefreshPending={refreshPending}
+          onOpenAgent={(id) => navigate(`#chat/${id}`)}
+          onNavigate={navigate}
+        />
+      </div>
     {:else}
       <div class="h-full overflow-y-auto">
         <Dashboard
@@ -205,6 +229,8 @@
     {/if}
   </main>
 </div>
+
+<Palette open={paletteOpen} agents={$fleet.agents} onClose={() => (paletteOpen = false)} onNavigate={navigate} />
 
 <style>
   /*

@@ -99,6 +99,23 @@ describe('createSessionStore', () => {
     expect(s.messages[0].text).toBe('Hi there')
   })
 
+  it('renders agent_message_chunk from a real session/update envelope', () => {
+    const { state, actions } = createSessionStore('s1', '/tmp')
+    actions.connect()
+    const values = collect(state)
+    emit({
+      method: 'session/update',
+      params: { sessionId: 's1', update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } },
+    })
+    emit({
+      method: 'session/update',
+      params: { sessionId: 's1', update: { kind: 'tool_call', toolCallId: 't1', toolName: 'file.read', status: 'running' } },
+    })
+    const s = latest(values)
+    expect(s.messages[s.messages.length - 1].text).toBe('hi')
+    expect(s.toolCalls[0].name).toBe('file.read')
+  })
+
   it('tracks reasoning separately from message text', () => {
     const { state, actions } = createSessionStore('s1', '/tmp')
     actions.connect()

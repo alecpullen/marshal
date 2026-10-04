@@ -139,7 +139,12 @@ function normalizeMode(mode: string): Mode {
   return 'default'
 }
 
-export function createSessionStore(id: string, cwd: string) {
+/**
+ * `tap` sees every live SSE payload (and the connection's own events) as-is,
+ * so another store, such as the stack, can follow the same stream without a
+ * second connection. Replayed history from load() is not tapped.
+ */
+export function createSessionStore(id: string, cwd: string, tap?: (event: unknown) => void) {
   const state = writable<SessionState>(createSessionState(id, cwd))
   let unsubscribeSSE: (() => void) | null = null
 
@@ -216,6 +221,7 @@ export function createSessionStore(id: string, cwd: string) {
 
   const handleSSE = (e: SSEEvent) => {
     if (e.type === 'connected') {
+      tap?.({ type: 'connected' })
       state.update((s) => ({ ...s, connected: true }))
     } else if (e.type === 'disconnected') {
       state.update((s) => ({ ...s, connected: false }))
@@ -226,6 +232,7 @@ export function createSessionStore(id: string, cwd: string) {
     } else if (e.type === 'message') {
       try {
         const payload = JSON.parse(e.message.data)
+        tap?.(payload)
         applyEvent(payload)
       } catch {
         // ignore malformed event
@@ -290,6 +297,20 @@ export function createSessionStore(id: string, cwd: string) {
 }
 
 function applyACP(state: ReturnType<typeof writable<SessionState>>, method: string, params: Record<string, unknown>) {
+  // The agent wraps every update as session/update with the payload under
+  // params.update and its type in update.kind (internal/acp/turn.go).
+  if (method === 'session/update') {
+    const update = params.update as Record<string, unknown> | undefined
+    if (update && typeof update === 'object' && typeof update.kind === 'string') {
+      method = update.kind
+      params = {
+        ...update,
+        sessionId: params.sessionId,
+        chunk: update.chunk ?? update.content,
+        name: update.name ?? update.toolName,
+      }
+    }
+  }
   switch (method) {
     case 'agent_message_chunk': {
       const chunk = params.chunk as Record<string, unknown> | undefined

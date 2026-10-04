@@ -1,7 +1,6 @@
 <script lang="ts">
-  import type { AgentRow } from './fleet'
+  import { groupAgents, type AgentRow, type AgentGroupKey } from './fleet'
   import type { ProjectStatus } from './api'
-  import { sortAttentionFirst } from './fleet'
   import { shortName } from './utils'
   import { isScopedSessions } from './routes'
 
@@ -19,8 +18,15 @@
 
   let { open, onToggle, agents, projects, pendingCount, clientCount, route, activeAgentId, onNavigate }: Props = $props()
 
-  const needsHuman = (a: AgentRow) => a.status === 'awaiting-approval' || a.status === 'awaiting-question'
-  const attention = $derived(agents.filter(needsHuman))
+  const groups = $derived(groupAgents(agents))
+  const needsCount = $derived(groups.needsYou.length)
+
+  const sections: { key: AgentGroupKey; label: string; tone: string }[] = [
+    { key: 'needsYou', label: 'Needs you', tone: 'text-attention' },
+    { key: 'running', label: 'Running', tone: 'text-running' },
+    { key: 'ready', label: 'Ready to ship', tone: 'text-accent' },
+    { key: 'earlier', label: 'Earlier', tone: 'text-muted' },
+  ]
 
   const dot: Record<AgentRow['status'], string> = {
     'awaiting-approval': 'bg-attention',
@@ -30,28 +36,9 @@
     idle: 'bg-muted/50',
   }
 
-  /*
-    Projects come from /api/projects, agents from /api/agents. Grouping by
-    the project list rather than by the agents' own project field keeps a
-    registered project visible while it has no agents — otherwise an empty
-    project silently disappears from the index.
-  */
-  const groups = $derived(
-    projects.map((p) => ({
-      root: p.root,
-      label: shortName(p.root),
-      unavailable: !p.available,
-      agents: sortAttentionFirst(agents.filter((a) => a.project === p.root)),
-    })),
-  )
-
-  // An agent whose project is not registered still has to appear.
-  const orphaned = $derived(
-    sortAttentionFirst(agents.filter((a) => !projects.some((p) => p.root === a.project))),
-  )
-
-  let collapsed = $state<Record<string, boolean>>({})
-  const toggle = (root: string) => (collapsed = { ...collapsed, [root]: !collapsed[root] })
+  // Earlier is long-lived; the others are short and stay open.
+  let collapsed = $state<Record<string, boolean>>({ earlier: true })
+  const toggle = (k: string) => (collapsed = { ...collapsed, [k]: !collapsed[k] })
 
   /*
     The Sessions item stays highlighted on its scoped route
@@ -63,7 +50,7 @@
 </script>
 
 {#if !open}
-  <nav class="flex h-full w-12 shrink-0 flex-col items-center gap-3 border-r border-border bg-surface py-3">
+  <nav aria-label="Agents" class="flex h-full w-12 shrink-0 flex-col items-center gap-3 border-r border-border bg-surface py-3">
     <button
       class="cursor-pointer rounded-md px-2 py-1 text-sm hover:bg-bg"
       onclick={onToggle}
@@ -80,24 +67,21 @@
     >
       +
     </button>
-    {#if attention.length > 0}
+    {#if needsCount > 0}
       <button
         class="relative cursor-pointer rounded-md px-2 py-1 hover:bg-bg"
-        onclick={() => onNavigate(`#chat/${attention[0].id}`)}
-        title="{attention.length} agent(s) need you"
-        aria-label="{attention.length} agents need you"
+        onclick={() => onNavigate(`#chat/${groups.needsYou[0].id}`)}
+        title="{needsCount} agent(s) need you"
+        aria-label="{needsCount} agents need you"
       >
         <span class="block size-2 rounded-full bg-attention"></span>
       </button>
     {/if}
   </nav>
 {:else}
-<nav class="flex h-full w-64 shrink-0 flex-col overflow-y-auto border-r border-border bg-surface">
+<nav aria-label="Agents" class="flex h-full w-64 shrink-0 flex-col overflow-y-auto border-r border-border bg-surface">
   <div class="flex items-center justify-between gap-2 px-3 py-3">
-    <button
-      class="cursor-pointer text-sm font-semibold tracking-wide"
-      onclick={() => onNavigate('#')}
-    >
+    <button class="cursor-pointer text-sm font-semibold tracking-wide" onclick={() => onNavigate('#')}>
       Marshal
     </button>
     <div class="flex items-center gap-1">
@@ -118,82 +102,39 @@
     </div>
   </div>
 
-  {#if attention.length > 0}
-    <div class="px-2 pb-2">
-      <div class="mb-1 px-1 text-[0.6875rem] tracking-wide text-attention uppercase">
-        Needs you · {attention.length}
-      </div>
-      {#each attention as a (a.id)}
-        <button
-          class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-bg
-                 {activeAgentId === a.id ? 'bg-bg' : ''}"
-          onclick={() => onNavigate(`#chat/${a.id}`)}
-        >
-          <span class="size-1.5 shrink-0 rounded-full bg-attention"></span>
-          <span class="truncate">{a.name || a.id}</span>
-        </button>
-      {/each}
-    </div>
-  {/if}
-
   <div class="flex-1 px-2">
-    {#each groups as g (g.root)}
-      <div class="mb-1">
-        <div class="flex w-full items-center">
+    {#each sections as sec (sec.key)}
+      {@const list = groups[sec.key]}
+      {#if list.length > 0}
+        <div class="mb-2">
           <button
-            class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-left text-[0.6875rem] tracking-wide text-muted uppercase hover:bg-bg"
-            onclick={() => toggle(g.root)}
-            title={g.root}
+            class="flex w-full cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-left text-[0.6875rem] tracking-wide uppercase hover:bg-bg {sec.tone}"
+            onclick={() => toggle(sec.key)}
+            aria-expanded={!collapsed[sec.key]}
           >
-            <span class="w-3 shrink-0">{collapsed[g.root] ? '▸' : '▾'}</span>
-            <span class="truncate">{g.label}</span>
-            {#if g.unavailable}<span class="text-danger">!</span>{/if}
-            <span class="ml-auto shrink-0 tabular-nums">{g.agents.length}</span>
+            <span class="w-3 shrink-0">{collapsed[sec.key] ? '▸' : '▾'}</span>
+            <span>{sec.label}</span>
+            <span class="ml-auto shrink-0 tabular-nums">{list.length}</span>
           </button>
-          <button
-            class="shrink-0 cursor-pointer rounded-md px-1.5 py-1 text-[0.6875rem] text-muted uppercase hover:bg-bg hover:text-accent"
-            onclick={() => onNavigate(`#sessions/${encodeURIComponent(g.root)}`)}
-            title="Sessions for {g.root}"
-            aria-label="Sessions for {g.root}"
-          >
-            ≣
-          </button>
+          {#if !collapsed[sec.key]}
+            {#each list as a (a.id)}
+              <button
+                class="flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 pl-5 text-left text-sm hover:bg-bg
+                       {activeAgentId === a.id ? 'bg-bg font-medium' : ''}"
+                onclick={() => onNavigate(`#chat/${a.id}`)}
+                title={a.activity || a.status}
+              >
+                <span class="size-1.5 shrink-0 rounded-full {dot[a.status]}"></span>
+                <span class="truncate">{a.name || a.id}</span>
+                <span class="ml-auto shrink-0 truncate text-[0.625rem] text-muted">{shortName(a.project)}</span>
+              </button>
+            {/each}
+          {/if}
         </div>
-
-        {#if !collapsed[g.root]}
-          {#each g.agents as a (a.id)}
-            <button
-              class="flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 pl-5 text-left text-sm hover:bg-bg
-                     {activeAgentId === a.id ? 'bg-bg font-medium' : ''}"
-              onclick={() => onNavigate(`#chat/${a.id}`)}
-              title={a.activity || a.status}
-            >
-              <span class="size-1.5 shrink-0 rounded-full {dot[a.status]}"></span>
-              <span class="truncate">{a.name || a.id}</span>
-              {#if a.isolated}<span class="ml-auto shrink-0 text-[0.625rem] text-muted">iso</span>{/if}
-            </button>
-          {:else}
-            <div class="px-5 py-1 text-xs text-muted">No agents</div>
-          {/each}
-        {/if}
-      </div>
+      {/if}
+    {:else}
+      <div class="px-3 py-2 text-xs text-muted">No agents yet</div>
     {/each}
-
-    {#if orphaned.length > 0}
-      <div class="mb-1">
-        <div class="px-2 py-1 text-[0.6875rem] tracking-wide text-muted uppercase">Other</div>
-        {#each orphaned as a (a.id)}
-          <button
-            class="flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 pl-5 text-left text-sm hover:bg-bg
-                   {activeAgentId === a.id ? 'bg-bg font-medium' : ''}"
-            onclick={() => onNavigate(`#chat/${a.id}`)}
-          >
-            <span class="size-1.5 shrink-0 rounded-full {dot[a.status]}"></span>
-            <span class="truncate">{a.name || a.id}</span>
-          </button>
-        {/each}
-      </div>
-    {/if}
   </div>
 
   <div class="border-t border-border p-2">

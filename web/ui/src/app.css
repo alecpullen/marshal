@@ -10,15 +10,52 @@
   ended up putting near-white text on a light grey page.
 */
 @theme {
-  --color-bg: oklch(0.18 0.01 260);
-  --color-surface: oklch(0.23 0.012 260);
-  --color-border: oklch(0.32 0.014 260);
-  --color-fg: oklch(0.93 0.005 260);
-  --color-muted: oklch(0.68 0.01 260);
-  --color-accent: oklch(0.72 0.14 230);
-  --color-running: oklch(0.78 0.14 150);
-  --color-attention: oklch(0.80 0.15 75);
-  --color-danger: oklch(0.68 0.18 20);
+  /* Warm Sunset (design §6). Neutrals first, then the signal colours. */
+  --color-bg: #121113;
+  --color-surface: #18171a;
+  --color-raise: #201f23;
+  --color-hover: #27252b;
+  --color-line: #2c2a30;
+  --color-dim: #67635e;
+  --color-muted: #96918a;
+  --color-sub: #c9c4bd;
+  --color-fg: #ece9e4;
+
+  --color-accent: #ff875f;
+  --color-violet: #d787ff;
+  --color-gold: #ffaf00;
+  --color-ok: #3fd4b4;
+  --color-err: #ff87af;
+  --color-warn: #ffaf5f;
+  --color-info: #5fd7ff;
+
+  /* Names the existing views use, mapped onto the palette above. */
+  --color-border: var(--color-line);
+  --color-running: var(--color-ok);
+  --color-attention: var(--color-warn);
+  --color-danger: var(--color-err);
+
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+}
+
+/* Light variant: only the neutrals change. Dark is the default. */
+[data-theme='light'] {
+  --color-bg: #faf8f5;
+  --color-surface: #f2efea;
+  --color-raise: #ffffff;
+  --color-hover: #ebe7e0;
+  --color-line: #ddd8cf;
+  --color-dim: #a39e95;
+  --color-muted: #6f6a62;
+  --color-sub: #4a463f;
+  --color-fg: #1d1b18;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse {
+    animation: none;
+  }
 }
 
 html,
@@ -26,7 +63,7 @@ body {
   margin: 0;
   background: var(--color-bg);
   color: var(--color-fg);
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
 }
 
 /*

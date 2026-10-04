@@ -3,6 +3,9 @@
   import { describeAuditEvent, type AuditEvent } from './audit'
   import { listAudit } from './api'
 
+  /** Show only the most recent `limit` events; 0 shows all. */
+  let { limit = 0 }: { limit?: number } = $props()
+
   let events = $state<AuditEvent[]>([])
   let loading = $state(true)
 
@@ -32,7 +35,7 @@
   {:else if events.length === 0}
     <p class="text-sm text-muted">No recent activity.</p>
   {:else}
-    {#each [...events].reverse() as e (e.ts + e.event + (e.agentId ?? ''))}
+    {#each (limit > 0 ? [...events].reverse().slice(0, limit) : [...events].reverse()) as e (e.ts + e.event + (e.agentId ?? ''))}
       <div class="truncate text-sm text-muted">
         <span class="text-fg">{new Date(e.ts).toLocaleTimeString()}</span>
         {describeAuditEvent(e)}

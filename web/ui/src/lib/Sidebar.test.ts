@@ -27,14 +27,12 @@ function agent(id: string, project: string): AgentRow {
   }
 }
 
-const agents: AgentRow[] = [agent('a-1', '/home/u/alpha'), agent('b-1', '/home/u/beta')]
-
 function mount(route = '#') {
   const onNavigate = vi.fn()
   render(Sidebar, {
     open: true,
     onToggle: () => {},
-    agents,
+    agents: [],
     projects,
     pendingCount: 0,
     clientCount: 0,
@@ -45,22 +43,33 @@ function mount(route = '#') {
   return { onNavigate }
 }
 
-describe('Sidebar sessions scoping', () => {
-  it('renders a sessions affordance per project group that navigates to the scoped route', async () => {
-    const { onNavigate } = mount()
-    const buttons = screen.getAllByRole('button', { name: /^Sessions for / })
-    expect(buttons).toHaveLength(2)
-    await userEvent.click(screen.getByRole('button', { name: 'Sessions for /home/u/alpha' }))
-    expect(onNavigate).toHaveBeenCalledWith('#sessions/' + encodeURIComponent('/home/u/alpha'))
+describe('Sidebar groups', () => {
+  it('groups agents by what they need, with Earlier collapsed by default', async () => {
+    const rows = [
+      { ...agent('ask', '/home/u/alpha'), pending: { kind: 'approval' as const, id: 't' } },
+      { ...agent('busy', '/home/u/alpha'), status: 'running' as const },
+      { ...agent('done', '/home/u/beta'), changedFiles: 2 },
+      agent('old', '/home/u/beta'),
+    ]
+    render(Sidebar, { open: true, onToggle: () => {}, agents: rows, projects, pendingCount: 0, clientCount: 0, route: '#', activeAgentId: null, onNavigate: () => {} })
+    for (const label of ['Needs you', 'Running', 'Ready to ship', 'Earlier']) expect(screen.getByText(label)).toBeTruthy()
+    expect(screen.getByText('ask')).toBeTruthy()
+    expect(screen.getByText('busy')).toBeTruthy()
+    expect(screen.getByText('done')).toBeTruthy()
+    expect(screen.queryByText('old')).toBeNull()
+    await userEvent.click(screen.getByText('Earlier'))
+    expect(screen.getByText('old')).toBeTruthy()
   })
 
-  it('collapsing still works alongside the sessions affordance', async () => {
-    mount()
-    expect(screen.getByText('a-1')).toBeTruthy()
-    await userEvent.click(screen.getByTitle('/home/u/alpha'))
-    expect(screen.queryByText('a-1')).toBeNull()
+  it('navigates to the agent chat', async () => {
+    const onNavigate = vi.fn()
+    render(Sidebar, { open: true, onToggle: () => {}, agents: [{ ...agent('busy', '/home/u/alpha'), status: 'running' }], projects, pendingCount: 0, clientCount: 0, route: '#', activeAgentId: null, onNavigate })
+    await userEvent.click(screen.getByText('busy'))
+    expect(onNavigate).toHaveBeenCalledWith('#chat/busy')
   })
+})
 
+describe('Sidebar sessions nav', () => {
   it('highlights the Sessions nav item on the scoped route', () => {
     mount('#sessions/%2Fhome%2Fu%2Falpha')
     const sessions = screen.getByRole('button', { name: /^Sessions$/ })

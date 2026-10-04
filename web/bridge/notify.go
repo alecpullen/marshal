@@ -412,7 +412,10 @@ func (n *notifier) post(target string, body []byte, sig string) error {
 	}
 	client := n.client
 	if client == nil {
-		client = &http.Client{Timeout: notifyPostTimeout}
+		// Redirects are not followed: a receiver must not be able to bounce
+		// the bridge's POST to an address it was never configured with.
+		client = &http.Client{Timeout: notifyPostTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

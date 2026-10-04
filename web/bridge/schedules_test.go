@@ -212,3 +212,37 @@ func TestScheduleRoutesAndValidation(t *testing.T) {
 		t.Errorf("second delete = %d", rec.Code)
 	}
 }
+
+func TestScheduleHistoryWritesDoNotUndoAConcurrentEdit(t *testing.T) {
+	f, _ := recipeFleet(t, nil)
+	scheduleRecipe(t, f)
+	root := t.TempDir()
+	putSchedule(t, f, Schedule{ID: "s1", Project: root, Cron: "@daily", Enabled: true})
+	s := NewServer(f, "")
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				f.updateSchedule("s1", func(sc *Schedule) { sc.LastResult = "tick" })
+			}
+		}
+	}()
+	body := map[string]any{"name": "n", "recipe": "nightly", "project": root, "cron": "@hourly",
+		"inputs": map[string]string{"since": "x"}, "enabled": false}
+	for i := 0; i < 30; i++ {
+		if rec := doReq(t, s, http.MethodPut, "/api/schedules/s1", body, nil); rec.Code != http.StatusOK {
+			t.Fatalf("put = %d %s", rec.Code, rec.Body.String())
+		}
+		if got, _ := f.ws.Schedule("s1"); got.Enabled || got.Cron != "@hourly" {
+			t.Fatalf("a history write undid the edit on round %d: %+v", i, got)
+		}
+	}
+	close(stop)
+	<-done
+}

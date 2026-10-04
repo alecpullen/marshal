@@ -335,3 +335,22 @@ func TestNotifyEmptyConfigIsAnEmptyList(t *testing.T) {
 		t.Errorf("body = %s", rec.Body.String())
 	}
 }
+
+func TestNotifyDoesNotFollowRedirects(t *testing.T) {
+	var internalHits atomic.Int32
+	internal := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { internalHits.Add(1) }))
+	t.Cleanup(internal.Close)
+	var hooks atomic.Int32
+	bouncer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hooks.Add(1)
+		http.Redirect(w, r, internal.URL, http.StatusTemporaryRedirect) // 307 keeps the POST
+	}))
+	t.Cleanup(bouncer.Close)
+	f := notifyFleet(t, Webhook{ID: "w1", URL: bouncer.URL, Events: allEvents()})
+	f.emit(budgetDelta{Kind: "budget", Scope: "daily", Action: "warn"})
+	waitFor(t, 5*time.Second, "delivery attempts", func() bool { return hooks.Load() >= 4 })
+	time.Sleep(100 * time.Millisecond)
+	if n := internalHits.Load(); n != 0 {
+		t.Fatalf("the redirect target was contacted %d times", n)
+	}
+}

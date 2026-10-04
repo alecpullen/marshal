@@ -70,6 +70,22 @@ func (w *Workspace) PutSchedule(s Schedule) error {
 	return w.save()
 }
 
+// UpdateSchedule applies mutate to the stored schedule under the workspace
+// lock, so a read-modify-write cannot overwrite a concurrent edit. It
+// returns the stored result, or ErrUnknownSchedule.
+func (w *Workspace) UpdateSchedule(id string, mutate func(*Schedule)) (Schedule, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	cur, ok := w.schedules[id]
+	if !ok {
+		return Schedule{}, ErrUnknownSchedule
+	}
+	mutate(&cur)
+	cur.ID = id
+	w.schedules[id] = cur
+	return cur, w.save()
+}
+
 // RemoveSchedule deletes a schedule.
 func (w *Workspace) RemoveSchedule(id string) error {
 	w.mu.Lock()
@@ -169,12 +185,8 @@ func (f *Fleet) schedulerTick(now time.Time) {
 }
 
 func (f *Fleet) updateSchedule(id string, mutate func(*Schedule)) {
-	cur, ok := f.ws.Schedule(id)
-	if !ok {
-		return // deleted while it ran
-	}
-	mutate(&cur)
-	if err := f.ws.PutSchedule(cur); err != nil {
+	// A schedule deleted while it ran is simply gone.
+	if _, err := f.ws.UpdateSchedule(id, mutate); err != nil && !errors.Is(err, ErrUnknownSchedule) {
 		slog.Default().Warn("webbridge: record schedule result failed", "schedule", id, "err", err)
 	}
 }
@@ -246,26 +258,39 @@ func (s *Server) scheduleSave(create bool) http.HandlerFunc {
 		if !decodeJSON(w, r, &body) {
 			return
 		}
+		body.OwnerID = DefaultOwnerID
 		if create {
 			body.ID = newAgentID()
+			if err := s.fleet.validateSchedule(body); err != nil {
+				writeErr(w, err)
+				return
+			}
+			if err := s.fleet.ws.PutSchedule(body); err != nil {
+				writeErr(w, err)
+				return
+			}
 		} else {
 			id := r.PathValue("id")
-			prev, ok := s.fleet.ws.Schedule(id)
-			if !ok {
+			body.ID = id
+			if _, ok := s.fleet.ws.Schedule(id); !ok {
 				writeErr(w, fmt.Errorf("%w: %s", ErrUnknownSchedule, id))
 				return
 			}
-			// Run history belongs to the server, not the client.
-			body.ID, body.LastRun, body.LastRunAgent, body.LastResult = id, prev.LastRun, prev.LastRunAgent, prev.LastResult
-		}
-		body.OwnerID = DefaultOwnerID
-		if err := s.fleet.validateSchedule(body); err != nil {
-			writeErr(w, err)
-			return
-		}
-		if err := s.fleet.ws.PutSchedule(body); err != nil {
-			writeErr(w, err)
-			return
+			if err := s.fleet.validateSchedule(body); err != nil {
+				writeErr(w, err)
+				return
+			}
+			// Atomic with the scheduler's history writes: run history
+			// belongs to the server, so it is kept from the stored copy.
+			saved, err := s.fleet.ws.UpdateSchedule(id, func(cur *Schedule) {
+				body.LastRun, body.LastRunAgent, body.LastResult = cur.LastRun, cur.LastRunAgent, cur.LastResult
+				*cur = body
+			})
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			body = saved
 		}
 		s.fleet.auditf(AuditEvent{Event: AuditScheduleSaved, OwnerID: DefaultOwnerID, Detail: body.ID + " " + body.Recipe})
 		status := http.StatusOK

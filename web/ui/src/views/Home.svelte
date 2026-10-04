@@ -57,7 +57,7 @@
 
   const inbox = $derived(buildInbox(agents, pending, scope === 'mine'))
   // Oldest first, so the request that has waited longest is on top.
-  const netDecisions = $derived([...decisions].sort((a, b) => a.at - b.at))
+  const netDecisions = $derived([...decisions].filter((d) => agents.some((a) => a.id === d.agentId)).sort((a, b) => a.at - b.at))
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name || id
 
   const originLetter = (origin?: string) =>

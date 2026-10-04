@@ -96,7 +96,7 @@
         // The value goes to the vault; the provider stops reading a key from the environment.
         await putSecret(`providers/${name}`, keyValue)
         await setProviders({ [name]: { apiKeyEnv: '' } })
-        onToast(`Stored the key for ${name} in the vault. The proxy injects it; agents never see it`)
+        onToast(`Stored the key for ${name} in the vault. The proxy injects it into requests to the provider`)
       } else {
         await setProviderKey(name, keyValue)
         onToast(`Saved the key for ${name}. Applies to agents started from now`)

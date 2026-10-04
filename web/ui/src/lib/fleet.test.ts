@@ -325,9 +325,22 @@ describe('telemetry deltas', () => {
     const { state, actions } = createFleetStore()
     state.update((s) => ({ ...s, agents: [row({ id: 'a1' })] }))
     actions.applyDelta({ kind: 'telemetry', sessionId: 'a1', contextPct: 42, changedFiles: 3 })
-    actions.applyDelta({ kind: 'telemetry', sessionId: 'a1', contextPct: 55, changedFiles: 4, rules: ['no-network'] })
+    actions.applyDelta({ kind: 'telemetry', sessionId: 'a1', contextPct: 55, changedFiles: 4, toolStats: [{ name: 'x', calls: 1, errors: 1, slowestMs: 5 }], rules: ['no-network'] })
     const s = get(state)
     expect(s.telemetry.a1).toMatchObject({ contextPct: 55, changedFiles: 4, rules: ['no-network'] })
     expect(s.agents[0].contextPct).toBe(55)
+  })
+})
+
+describe('stale decisions', () => {
+  it('refresh drops decisions of agents that are gone', async () => {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta({ kind: 'network_block', sessionId: 'gone', agentId: 'gone', host: 'a.com', at: 1 })
+    actions.applyDelta({ kind: 'network_block', sessionId: 'a1', agentId: 'a1', host: 'b.com', at: 2 })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (u: string) => ({ ok: true, status: 200, text: async () => (u === '/api/agents' ? JSON.stringify([{ id: 'a1', project: '/p', status: 'idle', updatedAt: '' }]) : '[]') })))
+    setToken('t')
+    await actions.refresh()
+    expect(get(state).decisions.map((d) => d.agentId)).toEqual(['a1'])
+    vi.unstubAllGlobals()
   })
 })

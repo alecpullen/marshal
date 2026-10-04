@@ -16,7 +16,8 @@ export interface FleetDelta {
   toolStats?: ToolStat[]
   rules?: string[]
 }
-export interface ToolStat { name: string; calls: number; failures?: number }
+/** The engine's `session_telemetry` tool row. */
+export interface ToolStat { name: string; calls: number; errors?: number; slowestMs?: number }
 /** The last `telemetry` delta of an agent, for the project page's session-sheet tab. */
 export interface AgentTelemetry { contextPct: number; changedFiles: number; toolStats?: ToolStat[]; rules?: string[]; at: number }
 /** A request the egress proxy blocked, awaiting Block, Allow for this agent, or Add to workspace. */
@@ -198,7 +199,9 @@ export function createFleetStore() {
           const old = prev.get(r.id)
           return old?.run ? { ...r, run: old.run, runAt: old.runAt } : r
         })
-        return { ...s, agents, projects: p, loading: false, error: null }
+        // A request for an agent that is gone has nobody left to decide for.
+        const live = new Set(agents.map((r) => r.id))
+        return { ...s, agents, projects: p, loading: false, error: null, decisions: s.decisions.filter((d) => live.has(d.agentId)) }
       })
     } catch (e) {
       state.update((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }))

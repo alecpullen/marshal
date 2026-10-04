@@ -103,3 +103,16 @@ describe('Network inspector', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('bridge down')
   })
 })
+
+describe('Network load ordering', () => {
+  it('drops a slow response that was superseded by a view switch', async () => {
+    let release!: (v: { processMode: boolean; rows: api.NetHostRow[] }) => void
+    ;(api.getNetworkHosts as Mock).mockReturnValueOnce(new Promise((r) => (release = r)))
+    render(Network, { onNavigate: vi.fn() })
+    await fireEvent.click(screen.getByRole('button', { name: 'Requests' }))
+    await screen.findAllByTestId('request-row')
+    release({ processMode: true, rows: [hostRow({ host: 'stale.example' })] })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(screen.queryByTestId('process-banner')).toBeNull()
+  })
+})

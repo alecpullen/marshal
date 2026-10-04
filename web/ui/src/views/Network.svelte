@@ -23,25 +23,36 @@
   let filter = $state('')
   let now = $state(Date.now())
 
+  // Only the latest request may write state: a slower, older one is dropped.
+  let seq = 0
   async function load() {
+    const mine = ++seq
     // svelte-ignore state_referenced_locally
     const scope = { workspace, agent }
     try {
       if (view === 'hosts') {
         const r = await getNetworkHosts(scope)
+        if (mine !== seq) return
         hosts = r.rows
         processMode = r.processMode
       } else if (view === 'requests') {
-        requests = await getNetworkRequests(scope)
+        const r = await getNetworkRequests(scope)
+        if (mine !== seq) return
+        requests = r
       } else {
-        agents = await getNetworkAgents({ workspace })
+        const r = await getNetworkAgents({ workspace })
+        if (mine !== seq) return
+        agents = r
       }
       error = ''
     } catch (e) {
+      if (mine !== seq) return
       error = errMessage(e)
     } finally {
-      loaded = true
-      now = Date.now()
+      if (mine === seq) {
+        loaded = true
+        now = Date.now()
+      }
     }
   }
 

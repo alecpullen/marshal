@@ -149,3 +149,15 @@ describe('Home network decisions', () => {
     expect(outcomeFor(item, 'add-to-workspace', { patch: '+egress = ["h.example"]' })).toEqual({ kind: 'patch', workspace: 'go-dev', host: 'h.example', patch: '+egress = ["h.example"]' })
   })
 })
+
+describe('Home stale decisions', () => {
+  it('hides a blocked request whose agent is no longer there', () => {
+    const decisions = [
+      { agentId: 'run', host: 'live.example', at: 1 },
+      { agentId: 'removed', host: 'ghost.example', at: 2 },
+    ]
+    render(Home, { agents, pending: [], decisions, onDecide: async () => {}, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    expect(screen.getAllByTestId('network-decision')).toHaveLength(1)
+    expect(screen.queryByText(/ghost\.example/)).toBeNull()
+  })
+})

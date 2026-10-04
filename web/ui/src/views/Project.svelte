@@ -116,7 +116,8 @@
 
   function addLabel() {
     const l = newLabel.trim()
-    if (l && !labels.includes(l)) labels = [...labels, l]
+    // The bridge's issue poller watches one label per repo, so the card keeps one.
+    if (l) labels = [l]
     newLabel = ''
   }
   const toggleClient = (id: string, on: boolean) => (clientIds = on ? [...new Set([...clientIds, id])] : clientIds.filter((c) => c !== id))
@@ -249,7 +250,7 @@
               <Button type="submit" variant="ghost" class="min-h-8 px-2 py-1 text-xs" disabled={!repoId || !newLabel.trim()}>Add</Button>
             </form>
           </div>
-          {#if !repoId}<span class="text-muted">Labels apply to a repo; pick one first.</span>{/if}
+          {#if !repoId}<span class="text-muted">Labels apply to a repo; pick one first.</span>{:else}<span class="text-muted">The watcher follows one label per repo; adding a label replaces the current one.</span>{/if}
         </div>
         <fieldset class="flex flex-col gap-1 text-xs">
           <legend class="mb-1">Allowed MCP clients</legend>
@@ -327,7 +328,7 @@
           {#if tele.toolStats?.length}
             <ul class="text-sm">
               {#each tele.toolStats as t (t.name)}
-                <li class="flex justify-between font-mono"><span>{t.name}</span><span>{t.calls}{#if t.failures} <span class="text-err">({t.failures} failed)</span>{/if}</span></li>
+                <li class="flex justify-between font-mono"><span>{t.name}</span><span>{t.calls}{#if t.errors} <span class="text-err">({t.errors} failed)</span>{/if}{#if t.slowestMs} <span class="text-muted">slowest {t.slowestMs} ms</span>{/if}</span></li>
               {/each}
             </ul>
           {:else}

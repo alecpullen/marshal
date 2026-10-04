@@ -92,7 +92,8 @@ describe('Project overview', () => {
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Zed' })).toBeTruthy())
     await fireEvent.input(screen.getByLabelText('New label'), { target: { value: 'bug' } })
     await fireEvent.click(screen.getByRole('button', { name: 'Add' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Remove label agent' }))
+    // One label per repo: adding replaces the saved one.
+    expect(screen.queryByText('agent')).toBeNull()
     await fireEvent.click(screen.getByRole('checkbox', { name: 'Zed' }))
     await fireEvent.click(screen.getByRole('checkbox', { name: 'Cursor' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Save intake' }))
@@ -155,7 +156,7 @@ describe('Project session sheet tab', () => {
   ]
 
   it("shows the project's most recent agent's telemetry, read-only", async () => {
-    const telemetry = { new: { contextPct: 64, changedFiles: 3, toolStats: [{ name: 'shell.run', calls: 7, failures: 1 }], rules: ['no-network'], at: 1 } }
+    const telemetry = { new: { contextPct: 64, changedFiles: 3, toolStats: [{ name: 'shell.run', calls: 7, errors: 1, slowestMs: 950 }], rules: ['no-network'], at: 1 } }
     mount({ agents: rows, telemetry })
     await fireEvent.click(screen.getByRole('tab', { name: 'Session sheet' }))
     const sheet = screen.getByTestId('session-sheet')
@@ -164,6 +165,7 @@ describe('Project session sheet tab', () => {
     expect(screen.getByTestId('changed-files').textContent).toBe('3 files')
     expect(sheet.textContent).toContain('shell.run')
     expect(sheet.textContent).toContain('(1 failed)')
+    expect(sheet.textContent).toContain('slowest 950 ms')
     expect(sheet.textContent).toContain('no-network')
     expect(within(sheet).queryByRole('button')).toBeNull()
   })

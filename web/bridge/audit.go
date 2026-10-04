@@ -40,6 +40,7 @@ const (
 	AuditSecretSet       = "secret_set"
 	AuditSecretDeleted   = "secret_deleted"
 	AuditCARotated       = "ca_rotated"
+	AuditNetworkDecision = "network_decision"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

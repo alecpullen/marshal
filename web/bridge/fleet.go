@@ -132,6 +132,26 @@ type Fleet struct {
 	// caMu guards cas, the per-workspace certificate authorities.
 	caMu sync.Mutex
 	cas  map[string]*caCache
+	// egress is the proxy host; nil until StartEgress succeeds, in which
+	// case agents spawn exactly as before.
+	egress *egressHost
+	// netlog holds connection records and their aggregates.
+	netlog *NetLog
+	// workspaceEgress, when set, supplies a workspace name and its egress
+	// spec for an agent. Nil means every agent gets the default: open,
+	// nothing injected.
+	workspaceEgress func(ctx context.Context, a Agent) (string, EgressSpec, error)
+	// egressRuntime overrides runtime detection for the egress proxy
+	// (tests): it returns the runtime name, or false for process mode.
+	egressRuntime func() (string, bool)
+	// addToWorkspace applies the add-to-workspace decision; set when the
+	// workspace template store exists. Nil answers 501.
+	addToWorkspace AddToWorkspaceFunc
+	// providerHosts overrides how provider hosts are found (tests).
+	providerHosts func(ctx context.Context) map[string]string
+	// blockedSeen de-duplicates network_block deltas per (agent, host).
+	blockedMu   sync.Mutex
+	blockedSeen map[string]time.Time
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
 	// stateVolume is the name of the shared state volume mounted at
@@ -267,15 +287,32 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	if g, err := newGitRunner(); err == nil {
 		f.git = g
 	}
+	f.netlog = NewNetLog(stateDir)
+	f.blockedSeen = make(map[string]time.Time)
 	f.creds = NewCredentialStore(ws.Credentials())
 	f.secrets = NewEnvProvider()
 	f.creds.SetProvider(f.secrets)
 	f.newRuntime = func(a Agent) (*Child, error) {
+		// The proxy wiring is prepared up front: a refusal (credential
+		// injection that cannot work) must stop the spawn.
+		pctx, pcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer pcancel()
+		wiring, proxied, err := f.egressPrepare(pctx, a)
+		if err != nil {
+			return nil, err
+		}
 		runtime, name, ok := detectedRuntime()
 		if !ok {
 			// No container runtime: fall back to a host process so a
 			// laptop without docker still works.
-			return &Child{MarshalBin: marshalBin}, nil
+			child := &Child{MarshalBin: marshalBin}
+			if proxied {
+				child.Env = os.Environ()
+				for k, v := range wiring.Env {
+					child.Env = append(child.Env, k+"="+v)
+				}
+			}
+			return child, nil
 		}
 		cfg := ContainerConfig{
 			Runtime:       runtime,
@@ -289,7 +326,9 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			SocketSubpath: "sockets/" + a.ID,
 			CPUs:          a.Profile.CPUs,
 			MemoryMB:      a.Profile.MemoryMB,
-			Env:           f.agentEnv,
+			Env:           withEnv(f.agentEnv, wiring.Env),
+			Network:       wiring.Network,
+			ExtraVolumes:  wiring.Volumes,
 			// Every agent shares one config home (read-only) and one data
 			// home, so memories and usage outlive any single container.
 			HomeConfigSubpath: homeConfigSubpath,
@@ -309,6 +348,21 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
 	}
 	return f
+}
+
+// withEnv returns base overlaid with extra, without modifying base.
+func withEnv(base, extra map[string]string) map[string]string {
+	if len(extra) == 0 {
+		return base
+	}
+	out := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
 }
 
 // Subpaths of the state volume that hold the shared homes.
@@ -588,7 +642,13 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	if err := child.Start(); err != nil {
 		rt.spawnErr = fmt.Errorf("start agent %s for %s: %w (stderr: %s)",
 			a.ID, a.Project, err, child.StderrLog())
+		if f.egress != nil {
+			f.egress.remove(a.ID)
+		}
 	} else {
+		if child.Containerized {
+			f.egressAttached(a)
+		}
 		// Handshake: learn the agent's own version so a stale derived or
 		// custom image can be flagged. A mismatch is a warning, never a
 		// refusal — refusing would turn a nuisance into an outage.
@@ -1342,6 +1402,9 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 		f.slots.release()
 		return
 	}
+	if f.egress != nil {
+		f.egress.remove(id)
+	}
 	// Stop the child first so it is no longer writing to the
 	// bind-mounted workspace, then remove the git-sourced tree.
 	rt.child.Stop()
@@ -1466,6 +1529,7 @@ func (f *Fleet) StopProject(root string) {
 func (f *Fleet) Close() {
 	f.closeOnce.Do(func() { close(f.done) })
 	f.stopControl()
+	f.stopEgress()
 	f.mu.Lock()
 	rts := make([]*agentRuntime, 0, len(f.runtimes))
 	for _, rt := range f.runtimes {

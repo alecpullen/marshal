@@ -72,6 +72,7 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fleet.auditf(AuditEvent{Event: AuditSecretSet, OwnerID: DefaultOwnerID, Detail: secretRefPrefix + path})
+	go s.fleet.egressRefresh() // injected values follow the stored secret
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -89,6 +90,7 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fleet.auditf(AuditEvent{Event: AuditSecretDeleted, OwnerID: DefaultOwnerID, Detail: secretRefPrefix + path})
+	go s.fleet.egressRefresh()
 	w.WriteHeader(http.StatusNoContent)
 }
 

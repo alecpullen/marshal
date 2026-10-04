@@ -83,6 +83,8 @@ type config struct {
 	baoRoleIDFile   string
 	baoSecretIDFile string
 	baoCAFile       string
+	// egress turns the egress proxy on (default) or off.
+	egress string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -116,6 +118,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	baoMount := fs.String("bao-mount", envOr("WEBBRIDGE_BAO_MOUNT", "secret"), "OpenBao KV v2 mount")
 	baoRoleIDFile := fs.String("bao-role-id-file", envOr("WEBBRIDGE_BAO_ROLE_ID_FILE", ""), "file holding the AppRole role id")
 	baoSecretIDFile := fs.String("bao-secret-id-file", envOr("WEBBRIDGE_BAO_SECRET_ID_FILE", ""), "file holding the AppRole secret id")
+	egress := fs.String("egress", envOr("WEBBRIDGE_EGRESS", "on"), "egress proxy for agents: on or off")
 	baoCAFile := fs.String("bao-ca-file", envOr("WEBBRIDGE_BAO_CA_FILE", ""), "extra CA certificate to trust for OpenBao")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -125,7 +128,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	}
 	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
-		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile}
+		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -135,6 +138,9 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	// flag name was mistyped is the failure nobody notices.
 	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
 		return config{}, fmt.Errorf("--tls-cert and --tls-key must be given together")
+	}
+	if cfg.egress != "on" && cfg.egress != "off" {
+		return config{}, fmt.Errorf("--egress %q: expected on or off", cfg.egress)
 	}
 	switch cfg.secrets {
 	case "env":
@@ -180,7 +186,21 @@ func buildSecretProvider(cfg config) (bridge.SecretProvider, error) {
 
 // runSubcommand handles "webbridge secrets init-key FILE". It reports
 // whether args named a subcommand.
-func runSubcommand(args []string, stdout io.Writer) (bool, error) {
+func runSubcommand(ctx context.Context, args []string, stdout io.Writer) (bool, error) {
+	if len(args) >= 1 && args[0] == "egress" {
+		fs := flag.NewFlagSet("webbridge egress", flag.ContinueOnError)
+		listen := fs.String("listen", ":3128", "proxy listen address")
+		control := fs.String("control", "", "bridge control address (unix:///path)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return true, err
+		}
+		if *control == "" || fs.NArg() > 0 {
+			return true, fmt.Errorf("usage: webbridge egress --listen ADDR --control unix:///PATH")
+		}
+		sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return true, bridge.ServeEgress(sigCtx, *listen, *control)
+	}
 	if len(args) >= 1 && args[0] == "secrets" {
 		if len(args) != 3 || args[1] != "init-key" {
 			return true, fmt.Errorf("usage: webbridge secrets init-key FILE")
@@ -279,7 +299,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	if handled, err := runSubcommand(args, stdout); handled {
+	if handled, err := runSubcommand(ctx, args, stdout); handled {
 		return err
 	}
 
@@ -343,6 +363,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("secrets backend: %w", err)
 	}
 	fleet.SetSecrets(secrets)
+	if cfg.egress == "on" {
+		// A failure leaves egress off: agents then spawn as they did
+		// before the proxy existed, rather than not at all.
+		if err := fleet.StartEgress(ctx); err != nil {
+			slog.Default().Warn("webbridge: egress proxy unavailable; agents will not be proxied", "err", err)
+		}
+	}
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

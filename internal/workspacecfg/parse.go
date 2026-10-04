@@ -15,7 +15,7 @@ import (
 var (
 	toolchainRe = regexp.MustCompile(`^(go|node|python|rust)@[0-9][0-9A-Za-z.\-]*$`)
 	sizeRe      = regexp.MustCompile(`^\d+[kmg]$`)
-	headerRe    = regexp.MustCompile(`^\s*\[\[?\s*([A-Za-z0-9_."-]+)\s*\]\]?\s*(#.*)?$`)
+	headerRe    = regexp.MustCompile(`^\s*\[\[?\s*([^\[\]]+?)\s*\]\]?\s*(#.*)?$`)
 
 	networkModes = map[string]bool{"open": true, "allowlist": true, "off": true}
 	policyModes  = map[string]bool{"plan": true, "default": true, "edit": true, "copilot": true, "auto": true}
@@ -242,9 +242,10 @@ func scanSections(src []byte) ([]Section, map[string]int) {
 		if m == nil {
 			continue
 		}
-		hdrs = append(hdrs, hdr{m[1], i + 1})
-		if _, ok := first[m[1]]; !ok {
-			first[m[1]] = i + 1
+		key := canonicalKey(m[1])
+		hdrs = append(hdrs, hdr{key, i + 1})
+		if _, ok := first[key]; !ok {
+			first[key] = i + 1
 		}
 	}
 	// Unknown headers still end the preceding section.
@@ -256,7 +257,9 @@ func scanSections(src []byte) ([]Section, map[string]int) {
 		if i+1 < len(hdrs) {
 			end = hdrs[i+1].line - 1
 		}
-		for end > h.line && strings.TrimSpace(lines[end-1]) == "" {
+		// Blank lines and comments just above the next header belong to
+		// that header, not to this section.
+		for end > h.line && isBlankOrComment(lines[end-1]) {
 			end--
 		}
 		if _, ok := layerKeys[h.key]; !ok {
@@ -278,4 +281,21 @@ func scanSections(src []byte) ([]Section, map[string]int) {
 	}
 	sort.SliceStable(secs, func(i, j int) bool { return secs[i].StartLine < secs[j].StartLine })
 	return secs, first
+}
+
+// canonicalKey folds a table header onto the section that owns it:
+// [files."a/b"] belongs to files and [secrets.inject."h"] to
+// secrets.inject. Unknown headers are returned unchanged.
+func canonicalKey(k string) string {
+	for _, owner := range []string{"secrets.inject", "secrets", "files", "workspace", "packages", "mounts", "network", "resources", "policy", "setup"} {
+		if k == owner || strings.HasPrefix(k, owner+".") {
+			return owner
+		}
+	}
+	return k
+}
+
+func isBlankOrComment(ln string) bool {
+	t := strings.TrimSpace(ln)
+	return t == "" || strings.HasPrefix(t, "#")
 }

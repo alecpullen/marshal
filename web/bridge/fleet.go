@@ -327,6 +327,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	f.creds = NewCredentialStore(ws.Credentials())
 	f.secrets = NewEnvProvider()
 	f.creds.SetProvider(f.secrets)
+	f.workspaceEgress = f.agentWorkspaceEgress
 	f.newRuntime = func(a Agent) (*Child, error) {
 		// The proxy wiring is prepared up front: a refusal (credential
 		// injection that cannot work) must stop the spawn.

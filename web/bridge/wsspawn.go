@@ -154,8 +154,10 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 	return args, nil
 }
 
-// workspaceNetworkEnv is where the egress proxy and CA settings join a
-// workspace container (W4.3). It adds nothing yet.
+// workspaceNetworkEnv is a seam for network settings that join a workspace
+// container. It adds nothing: the egress proxy's env, network and CA mount
+// reach the container through egressPrepare (egress_fleet.go), driven by
+// Fleet.workspaceEgress (wsegress.go).
 func (f *Fleet) workspaceNetworkEnv(ctx context.Context, a Agent, doc WSDoc) (map[string]string, []string, error) {
 	return nil, nil, nil
 }

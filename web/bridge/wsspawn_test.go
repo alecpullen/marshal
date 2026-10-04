@@ -449,3 +449,26 @@ func TestSpawnRepoTemplateOnAGitAgentTakesTrustFromTheRegisteredProject(t *testi
 		}
 	}
 }
+
+func TestWorkspaceEgressMapsNetworkAndInject(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	doc := sampleDoc("svc")
+	doc.Network = WSNetwork{Mode: "allowlist", Egress: []string{"github.com"}}
+	doc.Inject = map[string]WSInject{"api.example.com": {Ref: "vault:keys/api", Header: "Authorization", Format: "Bearer {value}"}}
+	e.builtTemplate(t, "svc", doc)
+	id, err := e.spawn(t, SpawnOptions{Workspace: "svc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.f.ws.Agent(id)
+	name, spec, err := e.f.workspaceEgress(ctlContext(t), a)
+	if err != nil || name != "svc" || spec.Mode != "allowlist" || len(spec.Allow) != 1 || spec.Allow[0] != "github.com" {
+		t.Fatalf("got %q %+v %v", name, spec, err)
+	}
+	if len(spec.Inject) != 1 || spec.Inject[0] != (EgressInjectSpec{Host: "api.example.com", Header: "Authorization", Ref: "vault:keys/api", Format: "Bearer {value}"}) {
+		t.Fatalf("inject = %+v", spec.Inject)
+	}
+	if n, s, err := e.f.workspaceEgress(ctlContext(t), Agent{}); err != nil || n != "" || s.Mode != "" {
+		t.Fatalf("no workspace: %q %+v %v", n, s, err)
+	}
+}

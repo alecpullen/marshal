@@ -16,9 +16,12 @@ import (
 // stack — Registry, EventLog, Attach — before Start (Attach documents
 // the hooks must be installed before traffic), then builds the HTTP
 // server. An empty token means unauthenticated.
-func newTestServer(t *testing.T, token string) (*Server, *Registry, *EventLog, *Child) {
+func newTestServer(t *testing.T, token string, transport ...agentTransport) (*Server, *Registry, *EventLog, *Child) {
 	t.Helper()
 	c := newTestChild(t, "registry")
+	if len(transport) > 0 {
+		c.Transport = transport[0]
+	}
 	r := NewRegistry(c)
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -76,6 +79,32 @@ func TestHTTPFleetSessionRouting(t *testing.T) {
 	}
 	if rec := doReq(t, s, http.MethodPost, "/api/sessions/"+id+"/mode", map[string]string{"mode": "auto"}, nil); rec.Code != http.StatusOK {
 		t.Fatalf("fleet set mode: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSessionStackRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		id     string
+		rpcErr *rpcError
+		status int
+		body   string
+	}{
+		{"snapshot", "s-1", nil, http.StatusOK, testStackResult},
+		{"unknown", "nope", nil, http.StatusNotFound, `{"error":"bridge: unknown session"}`},
+		{"unsupported", "s-1", &rpcError{Code: -32601, Message: "method not found"}, http.StatusNotImplemented, `{"error":"stack_unsupported"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, reg, _, _ := newTestServer(t, "", &captureTransport{stackResult: json.RawMessage(testStackResult), stackError: tc.rpcErr})
+			reg.track("s-1", AgentPath("/tmp/work"))
+			rec := doReq(t, s, http.MethodGet, "/api/sessions/"+tc.id+"/stack", nil, nil)
+			if rec.Code != tc.status || strings.TrimSpace(rec.Body.String()) != tc.body {
+				t.Fatalf("response = %d %s, want %d %s", rec.Code, rec.Body.String(), tc.status, tc.body)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Fatalf("Content-Type = %q", ct)
+			}
+		})
 	}
 }
 

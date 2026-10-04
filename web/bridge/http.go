@@ -119,6 +119,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sessions/{id}/cancel", s.cancel)
 	s.mux.HandleFunc("POST /api/sessions/{id}/steer", s.steer)
 	s.mux.HandleFunc("POST /api/sessions/{id}/mode", s.setMode)
+	s.mux.HandleFunc("GET /api/sessions/{id}/stack", s.sessionStack)
 	s.mux.HandleFunc("POST /api/permissions/{toolCallId}", s.resolvePermission)
 	s.mux.HandleFunc("POST /api/questions/{questionId}", s.resolveQuestion)
 	s.mux.HandleFunc("GET /api/clients", s.listClients)
@@ -157,8 +158,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // writeErr maps bridge errors onto status codes: unknown session →
-// 404, stale permission/question resolve → 410, anything from the
-// child → 502.
+// 404, stale permission/question resolve → 410, unsupported stack →
+// 501, anything else from the child → 502.
 func writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrUnknownSession):
@@ -169,6 +170,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrOutsideWorkspace):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrStackUnsupported):
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "stack_unsupported"})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 	}
@@ -680,6 +683,23 @@ func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// sessionStack proxies the session's current stack snapshot.
+func (s *Server) sessionStack(w http.ResponseWriter, r *http.Request) {
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := reg.Stack(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result)
 }
 
 // resolvePermission delivers the SPA's decision to a pending

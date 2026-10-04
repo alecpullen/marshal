@@ -18,6 +18,10 @@ var ErrGone = errors.New("bridge: pending request already resolved or expired")
 // Registry does not track. The HTTP layer maps it to 404.
 var ErrUnknownSession = errors.New("bridge: unknown session")
 
+// ErrStackUnsupported indicates the agent has no session/stack method.
+// The HTTP layer maps it to 501 Not Implemented.
+var ErrStackUnsupported = errors.New("stack_unsupported")
+
 // Decision is the HTTP-facing shape of a permission decision. It maps
 // 1:1 onto the ACP session/request_permission result.
 type Decision struct {
@@ -248,6 +252,19 @@ func (r *Registry) SetMode(ctx context.Context, id, mode string) error {
 	}
 	_, err := r.child.Request(ctx, "session/set_mode", map[string]string{"sessionId": id, "mode": mode})
 	return err
+}
+
+// Stack proxies the agent's session/stack snapshot without decoding it.
+func (r *Registry) Stack(ctx context.Context, id string) (json.RawMessage, error) {
+	if _, ok := r.lookup(id); !ok {
+		return nil, ErrUnknownSession
+	}
+	result, err := r.child.Request(ctx, "session/stack", map[string]string{"sessionId": id})
+	var rpc *rpcError
+	if errors.As(err, &rpc) && rpc.Code == -32601 {
+		return nil, ErrStackUnsupported
+	}
+	return result, err
 }
 
 // Sessions returns a snapshot of tracked sessions for the event bus and

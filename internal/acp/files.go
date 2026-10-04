@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/native"
@@ -50,6 +52,11 @@ func (m *FilesManager) resolve(params json.RawMessage, method string) (root, rel
 	root = st.Workspace().ActiveRoot
 	if p.Path == "" {
 		return root, "", root, nil
+	}
+	for _, seg := range strings.FieldsFunc(filepath.ToSlash(p.Path), func(r rune) bool { return r == '/' }) {
+		if seg == ".git" {
+			return "", "", "", invalidParamsError("path is inside .git")
+		}
 	}
 	target, err = native.SafeResolve(root, p.Path)
 	if err != nil {

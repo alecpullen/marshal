@@ -179,3 +179,37 @@ func TestRecentPromptsDedupAndOrder(t *testing.T) {
 		t.Fatalf("route = %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestReviewCommentStoredEvenWhenDeliveryFails(t *testing.T) {
+	tr := &scriptedTransport{errs: map[string]*rpcError{"session/prompt": {Code: -32000, Message: "boom"}}}
+	f := testFleetScripted(t, tr)
+	id := spawnGitAgent(t, f)
+	srv := NewServer(f, "")
+	if rec := postBody(srv, "/api/agents/"+id+"/review/comments", goodComment); rec.Code != http.StatusBadGateway {
+		t.Fatalf("create = %d %s, want 502", rec.Code, rec.Body)
+	}
+	cs := f.ws.ReviewComments(id)
+	if len(cs) != 1 || !cs[0].SentAt.IsZero() {
+		t.Fatalf("comments = %+v, want one stored comment with no SentAt", cs)
+	}
+}
+
+func TestReviewCommentSteerFailureFallsBackToPrompt(t *testing.T) {
+	tr := &scriptedTransport{errs: map[string]*rpcError{"session/steer": {Code: -32000, Message: "no active turn"}}}
+	f := testFleetScripted(t, tr)
+	id := spawnGitAgent(t, f)
+	rt, _ := f.RuntimeForSession(id)
+	rt.reg.mu.Lock()
+	rt.reg.sessions[rt.sessionID].Busy = true
+	rt.reg.mu.Unlock()
+	srv := NewServer(f, "")
+	if rec := postBody(srv, "/api/agents/"+id+"/review/comments", goodComment); rec.Code != http.StatusOK {
+		t.Fatalf("create = %d %s", rec.Code, rec.Body)
+	}
+	if count(tr.methods(), "session/prompt") != 1 {
+		t.Fatalf("methods = %v, want a prompt after the failed steer", tr.methods())
+	}
+	if cs := f.ws.ReviewComments(id); len(cs) != 1 || cs[0].SentAt.IsZero() {
+		t.Fatalf("comments = %+v", cs)
+	}
+}

@@ -22,7 +22,15 @@ func (f *Fleet) storeGate(agentID string, res *gateResult) gateRecord {
 	f.gates[agentID] = rec
 	f.gatesMu.Unlock()
 	if f.fleetLog != nil {
-		_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{Kind: "gate", SessionID: agentID, Gate: &rec})
+		// The delta omits the verify output: it can be 64 KiB per failing run
+		// and every client would receive it. Clients fetch it from GET …/gate.
+		slim := rec
+		if res != nil {
+			r := *res
+			r.Output = ""
+			slim.Result = &r
+		}
+		_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{Kind: "gate", SessionID: agentID, Gate: &slim})
 	}
 	return rec
 }
@@ -79,4 +87,11 @@ func (f *Fleet) File(ctx context.Context, id, path string) (json.RawMessage, err
 // CommitDraft asks the agent to draft a commit message without committing.
 func (f *Fleet) CommitDraft(ctx context.Context, id string) (json.RawMessage, error) {
 	return f.agentCall(ctx, id, "session/commit_draft", "commit_draft", nil)
+}
+
+// dropGate forgets an agent's stored verify result.
+func (f *Fleet) dropGate(agentID string) {
+	f.gatesMu.Lock()
+	delete(f.gates, agentID)
+	f.gatesMu.Unlock()
 }

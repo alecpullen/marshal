@@ -76,26 +76,66 @@ func (f *Fleet) AddReviewComment(ctx context.Context, agentID string, in ReviewC
 		ID: newAgentID(), AgentID: agentID, Path: in.Path, Line: in.Line, Side: in.Side,
 		Quote: in.Quote, Body: in.Body, CreatedAt: time.Now().UTC(), OwnerID: DefaultOwnerID,
 	}
-	text := reviewMessage(c)
-	sid := rt.sessionID
-	if rt.reg.Sessions()[sid].Busy {
-		if err := rt.reg.Steer(ctx, sid, text); err != nil {
-			return ReviewComment{}, err
-		}
-	} else {
-		go func() {
-			if err := rt.reg.Prompt(context.Background(), sid, text); err != nil {
-				slog.Default().Warn("webbridge: review comment prompt failed", "agent", agentID, "err", err)
-			}
-		}()
-	}
-	c.SentAt = time.Now().UTC()
+	// Store first (SentAt zero) so the UI lists every comment the agent may
+	// act on, then deliver, then record when it was sent.
 	if err := f.ws.PutReviewComment(c); err != nil {
 		return ReviewComment{}, err
 	}
 	f.auditf(AuditEvent{Event: AuditReviewComment, OwnerID: c.OwnerID, AgentID: agentID,
 		Detail: c.Path + ":" + strconv.Itoa(c.Line)})
+	if err := f.deliverReview(ctx, rt, reviewMessage(c)); err != nil {
+		return c, err
+	}
+	c.SentAt = time.Now().UTC()
+	if err := f.ws.PutReviewComment(c); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+// deliverReview steers a running turn, or starts one. The busy check races
+// with the turn ending, so a failed steer falls back to a prompt. A prompt
+// blocks until its turn ends, so delivery counts as made once the turn is
+// observed running, the call returns, or a short grace period passes; an
+// immediate error is returned.
+func (f *Fleet) deliverReview(ctx context.Context, rt *agentRuntime, text string) error {
+	sid := rt.sessionID
+	if rt.reg.Sessions()[sid].Busy {
+		err := rt.reg.Steer(ctx, sid, text)
+		if err == nil {
+			return nil
+		}
+		slog.Default().Info("webbridge: steer failed; falling back to a prompt", "session", sid, "err", err)
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- rt.reg.Prompt(context.Background(), sid, text) }()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	grace := time.After(3 * time.Second)
+	for {
+		select {
+		case err := <-errc:
+			return err
+		case <-tick.C:
+			if rt.reg.Sessions()[sid].Busy {
+				go func() {
+					if err := <-errc; err != nil {
+						slog.Default().Warn("webbridge: review comment prompt failed", "session", sid, "err", err)
+					}
+				}()
+				return nil
+			}
+		case <-grace:
+			go func() {
+				if err := <-errc; err != nil {
+					slog.Default().Warn("webbridge: review comment prompt failed", "session", sid, "err", err)
+				}
+			}()
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // RecentPrompts lists distinct prompts, newest first. An empty project

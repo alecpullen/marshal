@@ -88,3 +88,20 @@ func TestAgentFilesUnsupported(t *testing.T) {
 		}
 	}
 }
+
+func TestGateDeltaOmitsOutputAndDropGateForgets(t *testing.T) {
+	f := testFleet(t)
+	f.storeGate("a1", &gateResult{OK: false, Output: "BIGOUTPUT"})
+	for _, ev := range f.FleetLog().Tail(fleetStreamKey) {
+		if strings.Contains(string(ev.Data), "BIGOUTPUT") {
+			t.Fatal("gate delta carries the verify output")
+		}
+	}
+	if rec, _ := f.Gate("a1"); rec.Result.Output != "BIGOUTPUT" {
+		t.Fatal("stored gate lost its output")
+	}
+	f.dropGate("a1")
+	if _, ok := f.Gate("a1"); ok {
+		t.Fatal("gate survived dropGate")
+	}
+}

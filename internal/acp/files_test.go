@@ -77,3 +77,18 @@ func TestFileBinaryAndTruncation(t *testing.T) {
 		t.Fatalf("big truncated=%v len=%d", r["truncated"], len(r["content"].(string)))
 	}
 }
+
+func TestFilesRejectsDotGit(t *testing.T) {
+	m, root := newFilesTest(t)
+	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	os.WriteFile(filepath.Join(root, ".git", "config"), []byte("url = https://tok@x"), 0o644)
+	os.MkdirAll(filepath.Join(root, "sub", ".git"), 0o755)
+	for _, p := range []string{".git", ".git/config", "sub/.git", "sub/.git/config", "./.git/config"} {
+		if _, err := m.File(context.Background(), filesReq(p)); err == nil {
+			t.Errorf("File(%q) succeeded, want rejection", p)
+		}
+		if _, err := m.Files(context.Background(), filesReq(p)); err == nil {
+			t.Errorf("Files(%q) succeeded, want rejection", p)
+		}
+	}
+}

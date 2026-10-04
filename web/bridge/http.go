@@ -255,6 +255,11 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fleet.StopProject(body.Root)
+	for _, a := range s.fleet.ws.Agents() {
+		if a.Project == body.Root {
+			s.fleet.dropGate(a.ID)
+		}
+	}
 	if err := s.fleet.ws.RemoveProject(body.Root); err != nil {
 		writeErr(w, err)
 		return

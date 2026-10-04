@@ -53,6 +53,9 @@ type stackProjector struct {
 	sentOrder []string
 	// idleCancel stops the idle flusher; set on a session's parent projector.
 	idleCancel context.CancelFunc
+	// final marks a subagent projector flushed after its subagent stopped
+	// running; nothing more changes, so later ticks skip it.
+	final bool
 }
 
 // stackIdleInterval bounds how stale an idle session's stack can be.
@@ -217,7 +220,20 @@ func (m *TurnManager) flushChildStacks(sessionID string, st *session.State) {
 			m.stacksMu.Unlock()
 			continue
 		}
-		m.flushProjector(sessionID, id, v.Child, v.Status == session.SubagentRunning, true, false)
+		cp := m.stackFor(k)
+		cp.mu.Lock()
+		skip := cp.final
+		cp.mu.Unlock()
+		if skip {
+			continue
+		}
+		running := v.Status == session.SubagentRunning
+		m.flushProjector(sessionID, id, v.Child, running, true, false)
+		if !running {
+			cp.mu.Lock()
+			cp.final = true
+			cp.mu.Unlock()
+		}
 	}
 }
 
@@ -256,6 +272,17 @@ func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, e
 			busy = v.Status == session.SubagentRunning
 		}
 	}
+	snapshot, activated := m.stackSnapshot(request, rt, src, drilled, busy)
+	if activated {
+		// The idle loop belongs to the session's main projector but serves
+		// every projector, so any activation makes sure it is running.
+		m.ensureStackIdle(request.SessionID, rt)
+	}
+	return snapshot, nil
+}
+
+// stackSnapshot builds the snapshot, activating the projector on first use.
+func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *session.State, drilled, busy bool) (StackSnapshot, bool) {
 	p := m.stackFor(stackKey(request.SessionID, request.SubagentID))
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -264,6 +291,7 @@ func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, e
 	if !p.active {
 		activated = true
 		p.active = true
+		p.final = false
 		p.sent = make(map[string][]byte, len(tree.Nodes))
 		p.sentOrder = make([]string, 0, len(tree.Nodes))
 		p.rev = 1
@@ -276,13 +304,10 @@ func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, e
 		m.notifyStackPatch(request.SessionID, patch)
 	}
 	p.dirty = false
-	if activated && request.SubagentID == 0 {
-		m.startStackIdle(request.SessionID, rt, p)
-	}
 	snapshot := StackSnapshot{SessionID: request.SessionID, SubagentID: request.SubagentID, Rev: p.rev, Roots: make([]string, 0, len(tree.Roots)), Nodes: make([]viewmodel.WireNode, 0, len(tree.Nodes))}
 	snapshot.Roots = append(snapshot.Roots, tree.Roots...)
 	snapshot.Nodes = append(snapshot.Nodes, tree.Nodes...)
-	return snapshot, nil
+	return snapshot, activated
 }
 
 // dropStacks stops the idle flusher and forgets every projector of a session.
@@ -302,11 +327,17 @@ func (m *TurnManager) dropStacks(sessionID string) {
 	}
 }
 
-// startStackIdle keeps an activated session's stack current while no turn
-// runs: session events mark it dirty and a ticker flushes it. p.mu is held by
-// the caller.
-func (m *TurnManager) startStackIdle(sessionID string, rt *TurnRuntime, p *stackProjector) {
+// ensureStackIdle starts the session's idle flusher unless one is running:
+// session events mark the main stack dirty and a ticker flushes it and every
+// subagent stack while no turn runs.
+func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 	if rt.Events == nil {
+		return
+	}
+	p := m.stackFor(sessionID)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.idleCancel != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())

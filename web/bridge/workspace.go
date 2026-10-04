@@ -376,6 +376,7 @@ func (w *Workspace) RemoveProject(root string) error {
 	for id, a := range w.agents {
 		if a.Project == root {
 			delete(w.agents, id)
+			delete(w.reviews, id)
 		}
 	}
 	return w.save()

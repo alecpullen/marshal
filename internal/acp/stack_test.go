@@ -491,3 +491,20 @@ func TestStackIdleStopsWhenSessionGone(t *testing.T) {
 		return len(s.stacks) == 0
 	})
 }
+
+func TestStackIdleStartsFromSubagentActivation(t *testing.T) {
+	s := newSyncStack(t)
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	child.AddMessage(session.RoleUser, "one", session.ContentTypePlain)
+	v := s.st.RegisterSubagent("worker", child)
+	params, _ := json.Marshal(StackParams{SessionID: "s1", SubagentID: v.ID})
+	if _, err := s.Stack(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.dropStacks("s1") })
+	child.AddMessage(session.RoleUser, "two", session.ContentTypePlain)
+	waitFor(t, "idle child patch", func() bool { return len(s.notices()) > 0 })
+	if p := stackPatchFromNotice(t, s.notices()[0]); p.SubagentID != v.ID {
+		t.Fatalf("patch = %+v", p)
+	}
+}

@@ -297,6 +297,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 					"swarmDispatch":         map[string]any{},
 					"sddDispatch":           map[string]any{},
 					"sessionTelemetry":      map[string]any{},
+					"stackView":             map[string]any{},
 					"memoryAccess":          map[string]any{},
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
@@ -327,6 +328,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/prompt", turns.PromptTurn)
 	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/steer", turns.Steer)
+	srv.Handle("session/stack", turns.Stack)
 	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	srv.Handle("session/swarm_start", turns.SwarmStart)

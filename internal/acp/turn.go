@@ -218,6 +218,10 @@ type TurnManager struct {
 	baseRefsMu sync.Mutex
 	baseRefs   map[string]string
 
+	// stacksMu guards per-session stack projectors (foundation spec §5).
+	stacksMu sync.Mutex
+	stacks   map[string]*stackProjector
+
 	// cancelTimeout overrides cancelWait for testing; zero means use the
 	// default const. Access is safe without a mutex because it is set
 	// only during construction and read only in CancelAndWait.
@@ -245,6 +249,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		childForwarders: map[string]*childForwarder{},
 		pipelineRunners: map[string]*sddRun{},
 		baseRefs:        map[string]string{},
+		stacks:          map[string]*stackProjector{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)

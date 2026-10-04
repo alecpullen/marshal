@@ -134,6 +134,9 @@ type Fleet struct {
 	// previewForward replaces the real forwarder; tests set it.
 	previewForward func(w http.ResponseWriter, r *http.Request, agentID string, port int, rest string)
 
+	// holdCall replaces the session/hold request; tests set it.
+	holdCall func(ctx context.Context, agentID string, on bool) error
+
 	termOnce sync.Once
 	term     *terminalState
 

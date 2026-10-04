@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +38,9 @@ type Server struct {
 	// absolute links (e.g. the operator-approval URL an MCP spawn
 	// returns). Empty falls back to the listen address.
 	publicURLBase string
+	// previewPort is the port of the separate preview listener, 0 until
+	// the host has started one (see SetPreviewPort).
+	previewPort atomic.Int32
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -92,8 +96,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// /mcp joins /api/ on the mux side. It is not under /api/ because it
 	// authenticates per client rather than with the shared bearer token,
 	// but it must still reach the mux rather than the SPA fallback.
+	// Previews are served from their own origin (PreviewHandler), never
+	// from this one: an app the agent runs must not share storage with the
+	// UI that holds the bearer token.
 	if strings.HasPrefix(r.URL.Path, previewPrefix) {
-		s.preview(w, r)
+		http.NotFound(w, r)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {

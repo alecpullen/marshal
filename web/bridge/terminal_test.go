@@ -1,13 +1,16 @@
 package bridge
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -74,6 +77,29 @@ func (e *termEnv) input(t *testing.T, tid, text string) *httptest.ResponseRecord
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"data": base64.StdEncoding.EncodeToString([]byte(text))})
 	return e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/input", string(body))
+}
+
+// settled waits for background hold calls to finish.
+func (e *termEnv) settled(t *testing.T) {
+	t.Helper()
+	time.Sleep(50 * time.Millisecond)
+	st := e.f.terminals()
+	st.mu.Lock()
+	var ts []*terminal
+	for _, l := range st.byID {
+		ts = append(ts, l...)
+	}
+	st.mu.Unlock()
+	for _, tm := range ts {
+		tm.holdMu.Lock()
+		tm.holdMu.Unlock() //nolint:staticcheck // waiting for an in-flight call
+	}
+}
+
+// waitHolds waits until the agent has seen n hold calls with that state.
+func (e *termEnv) waitHolds(t *testing.T, on bool, n int) {
+	t.Helper()
+	waitFor(t, 5*time.Second, "hold calls", func() bool { return e.holds(on) == n })
 }
 
 func (e *termEnv) holds(on bool) int {
@@ -182,6 +208,8 @@ func TestTerminalFirstInputHoldsAndReleaseUnholds(t *testing.T) {
 		t.Fatalf("input = %d %s", rec.Code, rec.Body)
 	}
 	e.input(t, tid, "pwd\n")
+	e.waitHolds(t, true, 1)
+	e.settled(t)
 	if e.holds(true) != 1 {
 		t.Fatalf("hold on count = %d, want 1", e.holds(true))
 	}
@@ -195,23 +223,20 @@ func TestTerminalFirstInputHoldsAndReleaseUnholds(t *testing.T) {
 	if rec := e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/release", ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("release = %d", rec.Code)
 	}
-	if e.holds(false) != 1 {
-		t.Fatalf("hold off count = %d, want 1", e.holds(false))
-	}
+	e.waitHolds(t, false, 1)
 	if d := e.holdDeltas(); len(d) != 2 || !strings.Contains(d[1], `"held":false`) {
 		t.Fatalf("deltas = %v", d)
 	}
 	// Typing again after a hand back holds again.
 	e.input(t, tid, "x")
-	if e.holds(true) != 2 {
-		t.Fatalf("hold on count = %d, want 2", e.holds(true))
-	}
+	e.waitHolds(t, true, 2)
 }
 
 func TestTerminalIdleTimerReleasesAfterTwoMinutes(t *testing.T) {
 	e := newTermEnv(t, false)
 	tid := e.open(t)
 	e.input(t, tid, "a")
+	e.waitHolds(t, true, 1)
 	e.now = e.now.Add(terminalIdleRelease - time.Second)
 	e.f.releaseIdleTerminals(e.f.now())
 	if e.holds(false) != 0 {
@@ -219,9 +244,7 @@ func TestTerminalIdleTimerReleasesAfterTwoMinutes(t *testing.T) {
 	}
 	e.now = e.now.Add(2 * time.Second)
 	e.f.releaseIdleTerminals(e.f.now())
-	if e.holds(false) != 1 {
-		t.Fatalf("hold off count = %d, want 1", e.holds(false))
-	}
+	e.waitHolds(t, false, 1)
 	// Already released: another tick does nothing.
 	e.f.releaseIdleTerminals(e.f.now())
 	if e.holds(false) != 1 {
@@ -304,10 +327,9 @@ func TestTerminalCloseReleasesAHeldAgent(t *testing.T) {
 	e := newTermEnv(t, false)
 	tid := e.open(t)
 	e.input(t, tid, "a")
+	e.waitHolds(t, true, 1)
 	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
-	if e.holds(false) != 1 {
-		t.Fatalf("hold off count = %d, want 1", e.holds(false))
-	}
+	e.waitHolds(t, false, 1)
 }
 
 func TestTerminalInputValidation(t *testing.T) {
@@ -328,19 +350,174 @@ func TestTerminalInputValidation(t *testing.T) {
 	}
 }
 
-func TestTerminalResizeWritesStty(t *testing.T) {
+func TestTerminalResizeSetsThePTYWithoutTypingIntoTheShell(t *testing.T) {
 	e := newTermEnv(t, false)
 	tid := e.open(t)
+	_, open := e.fs.last()
+	if !strings.Contains(strings.Join(open.args, " "), "tty > /tmp/.marshal-tty-"+tid) {
+		t.Fatalf("wrapper does not record its tty: %v", open.args)
+	}
 	rec := e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/resize", `{"cols":120,"rows":40}`)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("resize = %d %s", rec.Code, rec.Body)
 	}
 	proc, _ := e.fs.last()
-	if got := proc.written(); got != "stty rows 40 cols 120\n" {
-		t.Fatalf("stdin = %q", got)
+	if got := proc.written(); got != "" {
+		t.Fatalf("resize typed into the shell: %q", got)
+	}
+	if len(e.fs.shorts) != 1 {
+		t.Fatalf("shorts = %+v", e.fs.shorts)
+	}
+	c := e.fs.shorts[0]
+	want := `stty -F "$(cat /tmp/.marshal-tty-` + tid + `)" rows 40 cols 120`
+	if c.name != "sh" || c.dir != e.root || c.args[0] != "-c" || c.args[1] != want {
+		t.Fatalf("resize call = %+v, want sh -c %s in %s", c, want, e.root)
 	}
 	if rec := e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/resize", `{"cols":0,"rows":40}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad resize = %d", rec.Code)
+	}
+}
+
+func TestTerminalResizeInContainerModeExecsStty(t *testing.T) {
+	e := newTermEnv(t, true)
+	tid := e.open(t)
+	e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/resize", `{"cols":80,"rows":24}`)
+	if len(e.fs.shorts) != 1 {
+		t.Fatalf("shorts = %+v", e.fs.shorts)
+	}
+	c := e.fs.shorts[0]
+	got := strings.Join(c.args, " ")
+	if c.name != "docker" || !strings.HasPrefix(got, "exec "+containerNameFor(e.id)+" sh -c stty -F") {
+		t.Fatalf("resize call = %s %s", c.name, got)
+	}
+}
+
+func TestTerminalUnsupportedHoldIsTriedOnceAndNeverBlocksInput(t *testing.T) {
+	e := newTermEnv(t, false)
+	e.tr.errs = map[string]*rpcError{"session/hold": {Code: -32601, Message: "method not found"}}
+	tid := e.open(t)
+	for i := 0; i < 5; i++ {
+		if rec := e.input(t, tid, "k"); rec.Code != http.StatusNoContent {
+			t.Fatalf("input %d = %d", i, rec.Code)
+		}
+		e.settled(t)
+	}
+	if n := len(e.tr.paramsOf("session/hold")); n != 1 {
+		t.Fatalf("hold was tried %d times, want 1", n)
+	}
+	proc, _ := e.fs.last()
+	if proc.written() != "kkkkk" {
+		t.Fatalf("stdin = %q", proc.written())
+	}
+	if len(e.holdDeltas()) != 0 {
+		t.Fatal("a hold that never happened was broadcast")
+	}
+}
+
+func TestTerminalFailedHoldBacksOffThenRetries(t *testing.T) {
+	e := newTermEnv(t, false)
+	calls := 0
+	var mu sync.Mutex
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls == 1 {
+			return errors.New("agent hiccup")
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.input(t, tid, "b") // inside the backoff: no new call
+	e.settled(t)
+	mu.Lock()
+	n := calls
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("calls inside the backoff = %d, want 1", n)
+	}
+	e.now = e.now.Add(terminalHoldBackoff + time.Second)
+	e.input(t, tid, "c")
+	waitFor(t, 5*time.Second, "retry", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls == 2
+	})
+}
+
+func TestTerminalHungHoldDoesNotDelayTheKeystroke(t *testing.T) {
+	e := newTermEnv(t, false)
+	release := make(chan struct{})
+	e.f.holdCall = func(ctx context.Context, _ string, on bool) error {
+		<-release
+		return nil
+	}
+	tid := e.open(t)
+	done := make(chan struct{})
+	go func() {
+		e.input(t, tid, "x")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("input waited on the hold call")
+	}
+	proc, _ := e.fs.last()
+	if proc.written() != "x" {
+		t.Fatalf("stdin = %q", proc.written())
+	}
+	close(release)
+	e.settled(t)
+}
+
+func TestTerminalHoldCallsAreOrdered(t *testing.T) {
+	e := newTermEnv(t, false)
+	var mu sync.Mutex
+	var seq []bool
+	firstIn := make(chan struct{})
+	release := make(chan struct{})
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		mu.Lock()
+		first := len(seq) == 0
+		seq = append(seq, on)
+		mu.Unlock()
+		if first {
+			close(firstIn)
+			<-release
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "x")
+	<-firstIn // hold(true) is in flight
+	// A hand back arrives while it is: it must run after, not alongside.
+	released := make(chan struct{})
+	go func() {
+		_ = e.f.ReleaseTerminal(e.id, tid)
+		close(released)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	if len(seq) != 1 {
+		mu.Unlock()
+		t.Fatalf("release overtook the hold: %v", seq)
+	}
+	mu.Unlock()
+	close(release)
+	<-released
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seq) != 2 || seq[0] != true || seq[1] != false {
+		t.Fatalf("hold calls = %v, want [true false]", seq)
+	}
+	tm, _ := e.f.terminalFor(e.id, tid)
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.held || tm.want {
+		t.Fatalf("terminal still holds: held=%v want=%v", tm.held, tm.want)
 	}
 }
 
@@ -396,7 +573,8 @@ func TestTestShellRunsTheBuiltImageWithMountsAndEnv(t *testing.T) {
 		"--mount type=volume,source=gocache,target=/go/pkg",
 		"-e MARSHAL_WORKSPACE=svc",
 		"-e TERM=xterm-256color",
-		"marshal-derived-svc script -qfc stty rows 20 cols 90; exec sh /dev/null",
+		"marshal-derived-svc script -qfc tty > /tmp/.marshal-tty-",
+		"; stty rows 20 cols 90; exec sh /dev/null",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("run args lack %q:\n%s", want, got)

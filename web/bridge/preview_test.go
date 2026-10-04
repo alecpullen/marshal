@@ -33,18 +33,27 @@ func newPreviewEnv(t *testing.T, port int) *previewEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pe := &previewEnv{wsSpawnEnv: e, srv: NewServer(e.f, ""), id: id, port: port, now: time.Unix(1_800_000_000, 0)}
+	srv := NewServer(e.f, "")
+	srv.SetPreviewPort(9911)
+	pe := &previewEnv{wsSpawnEnv: e, srv: srv, id: id, port: port, now: time.Unix(1_800_000_000, 0)}
 	e.f.clock = func() time.Time { return pe.now }
 	return pe
 }
 
 func (p *previewEnv) do(method, target string, mod func(*http.Request)) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, nil)
+	req.Host = "example.com:7700"
 	if mod != nil {
 		mod(req)
 	}
 	rec := httptest.NewRecorder()
-	p.srv.ServeHTTP(rec, req)
+	// Previews are served by their own handler (their own origin); the
+	// API by the main one.
+	if strings.HasPrefix(req.URL.Path, previewPrefix) {
+		p.srv.PreviewHandler().ServeHTTP(rec, req)
+	} else {
+		p.srv.ServeHTTP(rec, req)
+	}
 	return rec
 }
 
@@ -66,7 +75,10 @@ func (p *previewEnv) issue(t *testing.T, port int) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return u.Query().Get("t"), raw
+	if u.Host != "example.com:9911" {
+		t.Fatalf("preview URL %q is not on the preview origin", raw)
+	}
+	return u.Query().Get("t"), u.RequestURI()
 }
 
 func TestPreviewAuthUndeclaredPortIs403(t *testing.T) {
@@ -89,7 +101,9 @@ func TestPreviewAuthAgentWithoutAWorkspaceIs403(t *testing.T) {
 		t.Skipf("plain spawn unavailable: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	NewServer(e.f, "").ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/preview/3000", nil))
+	srv := NewServer(e.f, "")
+	srv.SetPreviewPort(9911)
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/preview/3000", nil))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("no workspace = %d %s", rec.Code, rec.Body)
 	}
@@ -215,18 +229,63 @@ func TestPreviewTokensDieWithTheAgent(t *testing.T) {
 	}
 }
 
-func TestPreviewRouteIsOutsideBearerAuth(t *testing.T) {
-	e := newWSSpawnEnv(t)
-	srv := NewServer(e.f, "secret-token")
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/preview/a/3000/", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("preview without bearer = %d, want 404 (not 401)", rec.Code)
+func TestPreviewIsServedFromItsOwnOrigin(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	_, raw := p.issue(t, 3000)
+	called := false
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, _ string, _ int, _ string) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
 	}
-	rec = httptest.NewRecorder()
+	tok, _ := p.issue(t, 3000)
+	cookie := &http.Cookie{Name: "mp_" + p.id + "_3000", Value: tok}
+	_ = raw
+
+	// The API origin never serves /preview, even with a valid cookie: a
+	// page the agent serves there would share the UI's sessionStorage.
+	req := httptest.NewRequest("GET", "/preview/"+p.id+"/3000/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	p.srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || called {
+		t.Fatalf("API origin served a preview: %d", rec.Code)
+	}
+
+	// The preview origin serves nothing but previews: no /api, no UI.
+	for _, path := range []string{"/api/agents", "/api/config", "/", "/index.html"} {
+		rec := httptest.NewRecorder()
+		p.srv.PreviewHandler().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("preview origin served %s: %d", path, rec.Code)
+		}
+	}
+}
+
+func TestPreviewIssueNeedsAPreviewListener(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	srv := NewServer(e.f, "")
+	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/a/preview/3000", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("issuing without bearer = %d, want 401", rec.Code)
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "preview_unconfigured") {
+		t.Fatalf("no listener = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPreviewOriginUsesTheCallersHostAndScheme(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "bridge.lan:7700"
+	if got := s.previewOrigin(req, 9000); got != "http://bridge.lan:9000" {
+		t.Fatalf("origin = %q", got)
+	}
+	req.TLS = &tls.ConnectionState{}
+	req.Host = "[::1]:7700"
+	if got := s.previewOrigin(req, 9000); got != "https://[::1]:9000" {
+		t.Fatalf("v6 origin = %q", got)
+	}
+	s.publicURLBase = "https://studio.example.com"
+	if got := s.previewOrigin(req, 9000); got != "https://studio.example.com:9000" {
+		t.Fatalf("public origin = %q", got)
 	}
 }
 
@@ -355,7 +414,7 @@ func TestPreviewForwardWebSocketUpgradePassesThrough(t *testing.T) {
 	p := newPreviewEnv(t, port)
 	tok, _ := p.issue(t, port)
 
-	bridge := httptest.NewServer(p.srv)
+	bridge := httptest.NewServer(p.srv.PreviewHandler())
 	defer bridge.Close()
 	cookie := "mp_" + p.id + "_" + strconv.Itoa(port) + "=" + tok
 	handshakeAndEcho(t, strings.TrimPrefix(bridge.URL, "http://"), "/preview/"+p.id+"/"+strconv.Itoa(port)+"/ws", cookie)
@@ -526,5 +585,48 @@ func TestReadPreviewPortStoresTheHostPort(t *testing.T) {
 	h2 := newEgressHost(e.f)
 	if e.f.readPreviewPort(h2, "docker") {
 		t.Fatal("an empty mapping counted as published")
+	}
+}
+
+func TestPreviewStopsWhenThePortIsNoLongerDeclared(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	hits := 0
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, _ string, _ int, _ string) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}
+	tok, _ := p.issue(t, 3000)
+	get := func() int {
+		return p.do("GET", "/preview/"+p.id+"/3000/", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: "mp_" + p.id + "_3000", Value: tok})
+		}).Code
+	}
+	if get() != http.StatusNoContent {
+		t.Fatal("declared port was refused")
+	}
+	// The workspace drops the port.
+	st := p.f.previewTokens()
+	st.mu.Lock()
+	st.ports[p.id] = previewPortsEntry{at: p.now}
+	st.mu.Unlock()
+	if get() != http.StatusNotFound || hits != 1 {
+		t.Fatal("a port that is no longer declared was still served")
+	}
+	// Once the cache expires the declaration is read again.
+	p.now = p.now.Add(previewPortsTTL + time.Second)
+	if get() != http.StatusNoContent {
+		t.Fatal("cache never refreshed")
+	}
+}
+
+func TestPreviewRefusesOddAgentIDs(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	for _, id := range []string{"a;b", "a%3Bb", "a b", ".."} {
+		if _, _, _, ok := parsePreviewPath("/preview/" + id + "/3000/"); ok {
+			t.Errorf("accepted agent id %q", id)
+		}
+	}
+	if _, err := p.f.IssuePreview(ctlContext(t), "a;b", 3000); err == nil {
+		t.Fatal("issued a token for an odd agent id")
 	}
 }

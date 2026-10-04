@@ -91,9 +91,12 @@ type streamCall struct {
 type fakeStreamer struct {
 	mu    sync.Mutex
 	calls []streamCall
-	procs []*fakeStream
-	echo  bool
-	err   error
+	// shorts are run-to-completion commands (a resize's `sh -c`), which exit
+	// at once and are kept apart from the terminals' own processes.
+	shorts []streamCall
+	procs  []*fakeStream
+	echo   bool
+	err    error
 }
 
 func (fs *fakeStreamer) start(dir, name string, args ...string) (streamProc, error) {
@@ -101,6 +104,12 @@ func (fs *fakeStreamer) start(dir, name string, args ...string) (streamProc, err
 	defer fs.mu.Unlock()
 	if fs.err != nil {
 		return nil, fs.err
+	}
+	if isShortCommand(name, args) {
+		p := newFakeStream(false)
+		p.exit()
+		fs.shorts = append(fs.shorts, streamCall{dir, name, append([]string(nil), args...)})
+		return p, nil
 	}
 	p := newFakeStream(fs.echo)
 	fs.calls = append(fs.calls, streamCall{dir, name, append([]string(nil), args...)})
@@ -175,4 +184,18 @@ func TestExecStreamStartErrorIsReturned(t *testing.T) {
 	if _, err := f.startStream("", "/nonexistent/binary-for-marshal"); err == nil || strings.Contains(err.Error(), "<nil>") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// isShortCommand recognises the `sh -c` commands the bridge runs beside a
+// terminal, as opposed to the terminal's own `script`.
+func isShortCommand(name string, args []string) bool {
+	if name == "sh" {
+		return true
+	}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "sh" && args[i+1] == "-c" {
+			return true
+		}
+	}
+	return false
 }

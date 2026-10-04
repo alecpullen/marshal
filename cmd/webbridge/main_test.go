@@ -398,3 +398,18 @@ func TestBuildSecretProvider(t *testing.T) {
 		t.Fatalf("env: %v", err)
 	}
 }
+
+func TestListenPreviewNeedsADifferentOriginFromTheAPI(t *testing.T) {
+	ln, err := listenPreview("127.0.0.1:7700", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if port := ln.Addr().(*net.TCPAddr).Port; port == 0 || port == 7700 {
+		t.Fatalf("preview port = %d", port)
+	}
+	if ln, err := listenPreview("127.0.0.1:7700", "127.0.0.1:7700"); err == nil {
+		ln.Close()
+		t.Fatal("preview shared the API's port")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,6 +35,9 @@ const (
 	terminalIdleTick = 15 * time.Second
 	// terminalHoldTimeout bounds one hold call to the agent.
 	terminalHoldTimeout = 10 * time.Second
+	// terminalHoldBackoff is how long typing waits before trying a failed
+	// hold again.
+	terminalHoldBackoff = 30 * time.Second
 )
 
 // ErrTooManyTerminals is returned when an owner already has the maximum
@@ -62,13 +66,26 @@ type terminal struct {
 	proc    streamProc
 	done    chan struct{}
 
-	mu        sync.Mutex
-	log       *os.File
-	held      bool
-	lastInput time.Time
-	bytesIn   int64
-	bytesOut  int64
-	once      sync.Once
+	// resize applies a size to the shell's PTY from outside the stream.
+	resize func(rows, cols int) error
+
+	// holdMu serializes session/hold calls for this terminal so on and off
+	// reach the agent in the order they were wanted.
+	holdMu sync.Mutex
+
+	mu  sync.Mutex
+	log *os.File
+	// want is the hold state the terminal is after; held is what the agent
+	// last acknowledged. syncHold drives held toward want.
+	want, held bool
+	// holdUnsupported is set once the agent answers hold with 501; holdRetryAt
+	// backs off after any other failure.
+	holdUnsupported bool
+	holdRetryAt     time.Time
+	lastInput       time.Time
+	bytesIn         int64
+	bytesOut        int64
+	once            sync.Once
 	// cleanup runs once after the process ends, for a test shell's
 	// container and egress registration.
 	cleanup func()
@@ -117,7 +134,7 @@ func (f *Fleet) releaseIdleTerminals(now time.Time) {
 	for _, ts := range st.byID {
 		for _, t := range ts {
 			t.mu.Lock()
-			if t.held && now.Sub(t.lastInput) >= terminalIdleRelease {
+			if (t.held || t.want) && now.Sub(t.lastInput) >= terminalIdleRelease {
 				idle = append(idle, t)
 			}
 			t.mu.Unlock()
@@ -147,8 +164,40 @@ func clampTerm(v, def int) int {
 
 // terminalScript is the shell command `script` runs inside the PTY it
 // allocates. cols and rows are integers, so nothing here is injectable.
-func terminalScript(cols, rows int, shell string) string {
-	return fmt.Sprintf("stty rows %d cols %d; exec %s", rows, cols, shell)
+func terminalScript(cols, rows int, shell, tid string) string {
+	return fmt.Sprintf("tty > %s; stty rows %d cols %d; exec %s", ttyFile(tid), rows, cols, shell)
+}
+
+// ttyFile is where the shell's wrapper records its PTY device, so a resize
+// can address the PTY from a separate process.
+func ttyFile(tid string) string { return "/tmp/.marshal-tty-" + tid }
+
+// resizeCommand is the shell command that sets the PTY's size. stty on the
+// device changes the kernel's window size, which signals the foreground
+// process group (SIGWINCH) instead of typing into it.
+func resizeCommand(tid string, rows, cols int) string {
+	return fmt.Sprintf(`stty -F "$(cat %s)" rows %d cols %d`, ttyFile(tid), rows, cols)
+}
+
+// runStream runs a short command to completion through the streamer.
+func (f *Fleet) runStream(dir, bin string, args ...string) error {
+	p, err := f.startStream(dir, bin, args...)
+	if err != nil {
+		return err
+	}
+	_ = p.Stdin().Close()
+	done := make(chan error, 1)
+	go func() {
+		_, _ = io.Copy(io.Discard, p.Stdout())
+		done <- p.Wait()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		p.Kill()
+		return errors.New("bridge: terminal resize timed out")
+	}
 }
 
 // reserve claims a terminal slot for owner and registers t. It fails with
@@ -223,7 +272,9 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 		return "", err
 	}
 	cols, rows = clampTerm(cols, 80), clampTerm(rows, 24)
-	script := terminalScript(cols, rows, "${SHELL:-sh}")
+	t := &terminal{id: newTerminalID(), owner: agentID, agentID: agentID, done: make(chan struct{})}
+	t.key = terminalKeyPrefix + t.id
+	script := terminalScript(cols, rows, "${SHELL:-sh}", t.id)
 
 	var dir, bin string
 	var args []string
@@ -238,6 +289,9 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 		}
 		bin = path
 		args = []string{"exec", "-i", "-w", "/work", "-e", "TERM=xterm-256color", name, "script", "-qfc", script, "/dev/null"}
+		t.resize = func(rows, cols int) error {
+			return f.runStream("", path, "exec", name, "sh", "-c", resizeCommand(t.id, rows, cols))
+		}
 	} else {
 		root, err := f.agentActiveRoot(ctx, agentID)
 		if err != nil {
@@ -245,10 +299,10 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 		}
 		bin, dir = "script", root
 		args = []string{"-qfc", script, "/dev/null"}
+		t.resize = func(rows, cols int) error {
+			return f.runStream(root, "sh", "-c", resizeCommand(t.id, rows, cols))
+		}
 	}
-
-	t := &terminal{id: newTerminalID(), owner: agentID, agentID: agentID, done: make(chan struct{})}
-	t.key = terminalKeyPrefix + t.id
 	st := f.terminals()
 	if err := st.reserve(agentID, t); err != nil {
 		return "", err
@@ -408,33 +462,77 @@ func (f *Fleet) killTerminal(t *terminal) {
 	}
 }
 
-// holdTerminal calls session/hold for the terminal's agent and broadcasts
-// the change. It reports whether the agent acknowledged.
-func (f *Fleet) holdTerminal(t *terminal, on bool) bool {
-	if t.agentID == "" {
-		return false
-	}
+// callHold sends one session/hold and broadcasts the change. unsupported
+// is true when the agent has no such method.
+func (f *Fleet) callHold(t *terminal, on bool) (ok, unsupported bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), terminalHoldTimeout)
 	defer cancel()
-	if _, err := f.agentCall(ctx, t.agentID, "session/hold", "hold", map[string]any{"on": on}); err != nil {
-		slog.Default().Warn("webbridge: terminal hold failed", "agent", t.agentID, "on", on, "err", err)
-		return false
+	var err error
+	if f.holdCall != nil {
+		err = f.holdCall(ctx, t.agentID, on)
+	} else {
+		_, err = f.agentCall(ctx, t.agentID, "session/hold", "hold", map[string]any{"on": on})
+	}
+	if err != nil {
+		var un ErrUnsupported
+		unsupported = errors.As(err, &un)
+		if !unsupported {
+			slog.Default().Warn("webbridge: terminal hold failed", "agent", t.agentID, "on", on, "err", err)
+		}
+		return false, unsupported
 	}
 	_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{
 		Kind: "hold", SessionID: t.agentID, AgentID: t.agentID, Held: &on, By: "terminal",
 	})
-	return true
+	return true, false
 }
 
-// releaseTerminalHold hands the agent back if the terminal holds it.
+// syncHold drives the agent's hold toward the terminal's wanted state, one
+// call at a time. A call that was wanted while another was in flight is
+// made after it, and a stale one is skipped because want is re-read each
+// round. A failure gives up for this attempt; unsupported is remembered for
+// good and other failures back off, so typing never retries per keystroke.
+func (f *Fleet) syncHold(t *terminal) {
+	if t.agentID == "" {
+		return
+	}
+	t.holdMu.Lock()
+	defer t.holdMu.Unlock()
+	for {
+		t.mu.Lock()
+		want, held, unsupported := t.want, t.held, t.holdUnsupported
+		t.mu.Unlock()
+		if want == held || (want && unsupported) {
+			return
+		}
+		ok, unsup := f.callHold(t, want)
+		t.mu.Lock()
+		switch {
+		case ok:
+			t.held = want
+		default:
+			if unsup {
+				t.holdUnsupported = true
+			}
+			t.holdRetryAt = f.now().Add(terminalHoldBackoff)
+			if want {
+				t.want = false // not held; the next try waits out the backoff
+			}
+		}
+		t.mu.Unlock()
+		if !ok {
+			return
+		}
+	}
+}
+
+// releaseTerminalHold hands the agent back if the terminal wants or holds
+// it, and waits for that to be acknowledged.
 func (f *Fleet) releaseTerminalHold(t *terminal) {
 	t.mu.Lock()
-	held := t.held
-	t.held = false
+	t.want = false
 	t.mu.Unlock()
-	if held {
-		f.holdTerminal(t, false)
-	}
+	f.syncHold(t)
 }
 
 func (f *Fleet) terminalFor(owner, tid string) (*terminal, error) {
@@ -454,16 +552,16 @@ func (f *Fleet) TerminalInput(owner, tid string, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
+	// The first byte after a hand back holds the agent, in the background:
+	// a slow or hung agent must not delay the keystroke.
 	t.mu.Lock()
-	needHold := t.agentID != "" && !t.held
-	if needHold {
-		t.held = true
+	startHold := t.agentID != "" && !t.want && !t.holdUnsupported && !f.now().Before(t.holdRetryAt)
+	if startHold {
+		t.want = true
 	}
 	t.mu.Unlock()
-	if needHold && !f.holdTerminal(t, true) {
-		t.mu.Lock()
-		t.held = false
-		t.mu.Unlock()
+	if startHold {
+		go f.syncHold(t)
 	}
 	if _, err := t.proc.Stdin().Write(data); err != nil {
 		return err
@@ -478,8 +576,9 @@ func (f *Fleet) TerminalInput(owner, tid string, data []byte) error {
 	return nil
 }
 
-// ResizeTerminal writes `stty rows R cols C` to the shell. This is best
-// effort: the shell echoes the command, unlike a real PTY resize.
+// ResizeTerminal sets the PTY's size with stty run against the PTY device
+// from a separate process, so the foreground program gets SIGWINCH and
+// nothing is typed into it.
 func (f *Fleet) ResizeTerminal(owner, tid string, cols, rows int) error {
 	if cols < 1 || cols > 500 || rows < 1 || rows > 500 {
 		return fmt.Errorf("%w: size out of range", errTerminalInput)
@@ -488,8 +587,10 @@ func (f *Fleet) ResizeTerminal(owner, tid string, cols, rows int) error {
 	if err != nil {
 		return err
 	}
-	_, err = t.proc.Stdin().Write([]byte(fmt.Sprintf("stty rows %d cols %d\n", rows, cols)))
-	return err
+	if t.resize == nil {
+		return errors.New("bridge: this terminal cannot be resized")
+	}
+	return t.resize(rows, cols)
 }
 
 // ReleaseTerminal hands the agent back without closing the shell.
@@ -654,6 +755,8 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 		return "", ErrWorkspaceNeedsRuntime
 	}
 	cols, rows = clampTerm(cols, 80), clampTerm(rows, 24)
+	t := &terminal{id: newTerminalID(), owner: workspaceOwner(res.Name), done: make(chan struct{})}
+	t.key = terminalKeyPrefix + t.id
 
 	rnd := newTerminalID()
 	shellID := "shell-" + rnd
@@ -699,11 +802,12 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	for _, k := range keys {
 		args = append(args, "-e", k+"="+env[k])
 	}
-	args = append(args, image, "script", "-qfc", terminalScript(cols, rows, "sh"), "/dev/null")
+	args = append(args, image, "script", "-qfc", terminalScript(cols, rows, "sh", t.id), "/dev/null")
 
-	owner := workspaceOwner(res.Name)
-	t := &terminal{id: newTerminalID(), owner: owner, done: make(chan struct{})}
-	t.key = terminalKeyPrefix + t.id
+	owner := t.owner
+	t.resize = func(rows, cols int) error {
+		return f.runStream("", rtPath, "exec", container, "sh", "-c", resizeCommand(t.id, rows, cols))
+	}
 	t.cleanup = func() {
 		unregister()
 		// Closing stdin ends the shell and --rm removes the container; this

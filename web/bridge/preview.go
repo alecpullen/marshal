@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,10 +47,28 @@ type previewToken struct {
 type previewStore struct {
 	mu     sync.Mutex
 	tokens map[string]previewToken
+	// ports caches each agent's declared ports for previewPortsTTL, so a
+	// page's many requests do not each resolve the workspace.
+	ports map[string]previewPortsEntry
 }
 
+type previewPortsEntry struct {
+	ports []int
+	at    time.Time
+}
+
+// previewPortsTTL bounds how long a workspace that drops a port keeps
+// serving it to tokens issued earlier.
+const previewPortsTTL = 10 * time.Second
+
+// agentIDRe is the characters an agent id may have to appear in a cookie
+// name and a URL path unescaped.
+var agentIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 func (f *Fleet) previewTokens() *previewStore {
-	f.previewOnce.Do(func() { f.previews = &previewStore{tokens: make(map[string]previewToken)} })
+	f.previewOnce.Do(func() {
+		f.previews = &previewStore{tokens: make(map[string]previewToken), ports: make(map[string]previewPortsEntry)}
+	})
 	return f.previews
 }
 
@@ -60,6 +80,9 @@ func newPreviewToken() string {
 
 // IssuePreview returns a preview URL for a declared port.
 func (f *Fleet) IssuePreview(ctx context.Context, agentID string, port int) (string, error) {
+	if !agentIDRe.MatchString(agentID) {
+		return "", fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)
+	}
 	a, ok := f.ws.Agent(agentID)
 	if !ok {
 		return "", fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)
@@ -113,6 +136,35 @@ func (f *Fleet) previewTokenValid(tok, agentID string, port int) bool {
 		subtle.ConstantTimeCompare([]byte(v.agentID), []byte(agentID)) == 1
 }
 
+// previewPortDeclared reports whether the agent's workspace still declares
+// the port, from a short-lived cache. Tokens are checked against the
+// declaration when issued; this catches a declaration removed since.
+func (f *Fleet) previewPortDeclared(agentID string, port int) bool {
+	st := f.previewTokens()
+	now := f.now()
+	st.mu.Lock()
+	e, ok := st.ports[agentID]
+	st.mu.Unlock()
+	if !ok || now.Sub(e.at) > previewPortsTTL {
+		a, found := f.ws.Agent(agentID)
+		if !found {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		e = previewPortsEntry{ports: f.previewPortsFor(ctx, a), at: now}
+		st.mu.Lock()
+		st.ports[agentID] = e
+		st.mu.Unlock()
+	}
+	for _, p := range e.ports {
+		if p == port {
+			return true
+		}
+	}
+	return false
+}
+
 // dropPreviewTokens revokes every token of an agent that is going away.
 func (f *Fleet) dropPreviewTokens(agentID string) {
 	st := f.previewTokens()
@@ -123,6 +175,7 @@ func (f *Fleet) dropPreviewTokens(agentID string) {
 			delete(st.tokens, k)
 		}
 	}
+	delete(st.ports, agentID)
 }
 
 // previewPortsFor is the agent's declared preview ports, empty when it has
@@ -147,7 +200,7 @@ func parsePreviewPath(p string) (agentID string, port int, rest string, ok bool)
 		return "", 0, "", false
 	}
 	id, after, found := strings.Cut(s, "/")
-	if !found || id == "" {
+	if !found || !agentIDRe.MatchString(id) {
 		return "", 0, "", false
 	}
 	portStr, rest, _ := strings.Cut(after, "/")
@@ -164,12 +217,57 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid port"})
 		return
 	}
+	pp := int(s.previewPort.Load())
+	if pp == 0 {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "preview_unconfigured"})
+		return
+	}
 	u, err := s.fleet.IssuePreview(r.Context(), r.PathValue("id"), port)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": u})
+	writeJSON(w, http.StatusOK, map[string]string{"url": s.previewOrigin(r, pp) + u})
+}
+
+// SetPreviewPort records the port of the preview listener, so issued
+// URLs point at that origin rather than the API's.
+func (s *Server) SetPreviewPort(port int) { s.previewPort.Store(int32(port)) }
+
+// PreviewHandler serves only /preview/…, for a listener of its own. The
+// browser treats that port as a different origin from the API and UI, so a
+// page an agent serves cannot read the UI's sessionStorage (which holds the
+// bearer token) or call /api with it. Nothing but previews is reachable
+// here.
+func (s *Server) PreviewHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, previewPrefix) {
+			http.NotFound(w, r)
+			return
+		}
+		s.preview(w, r)
+	})
+}
+
+// previewOrigin is scheme://host:previewPort for the host the caller used
+// to reach the bridge (or the configured public URL's).
+func (s *Server) previewOrigin(r *http.Request, port int) string {
+	scheme, host := "http", r.Host
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if s.publicURLBase != "" {
+		if u, err := url.Parse(s.publicURLBase); err == nil && u.Host != "" {
+			scheme, host = u.Scheme, u.Host
+		}
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]" // bare IPv6
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
 }
 
 // preview authenticates a /preview/… request by token or cookie and then
@@ -221,6 +319,10 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 	if rest == "/" && !strings.HasSuffix(r.URL.Path, "/") {
 		// /preview/<id>/<port> without the trailing slash.
 		http.Redirect(w, r, prefix, http.StatusFound)
+		return
+	}
+	if !s.fleet.previewPortDeclared(id, port) {
+		notFound()
 		return
 	}
 	if s.fleet.previewForward != nil {

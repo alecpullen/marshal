@@ -147,17 +147,21 @@ streaming sibling:
 - **Process mode:** the same `script` command runs locally, with its
   working directory set to the agent's active root (resolved through
   `session/files` with an empty path, W2.1).
-- **Resize** writes `stty rows R cols C` through the input stream. This
-  is a documented limitation versus a real PTY resize.
+- **Resize** runs `stty -F <pty> rows R cols C` in a separate process (the
+  wrapper records its `tty` in `/tmp/.marshal-tty-<id>`), so the kernel
+  signals the foreground program with SIGWINCH and nothing is typed into it.
 
 **Hold and hand-back:**
-- The first input byte calls `session/hold {on:true}` and broadcasts
-  `{kind:"hold", held:true, by:"terminal"}`.
+- The first input byte calls `session/hold {on:true}` in the background and
+  broadcasts `{kind:"hold", held:true, by:"terminal"}`. Hold calls are
+  serialized per terminal. An agent without `hold` (501) is asked once; any
+  other failure backs off for 30s. Typing never waits on the call.
 - **Hand back** (a button, or closing the terminal) calls `hold {on:false}`.
 - The hold also auto-releases after 2 minutes without input.
 
 **Recording and audit.** Output and input are recorded to
-`<state>/terminal/<agentId>/<unix>.log`. Opening and closing are audited
+`<state>/terminal/<agentId>/<unix>.log` (mode 0600). A recording holds
+everything typed or printed, secrets included. Opening and closing are audited
 as `terminal_opened` and `terminal_closed`, with byte counts.
 
 **Limits:** two concurrent terminals per agent.
@@ -169,14 +173,26 @@ bridge exposes a port only when it is declared.
 
 **Opening a preview.** `POST /api/agents/{id}/preview/{port}` returns
 `{url}`.
-- The URL is `/preview/<agentId>/<port>/?t=<token>`. The token is random,
-  valid for 12h, and bound to the agent and the port.
+- The URL is absolute and on the **preview origin**:
+  `<scheme>://<host>:<previewPort>/preview/<agentId>/<port>/?t=<token>`. The
+  token is random, valid for 12h, and bound to the agent and the port.
+- **Separate origin.** A previewed app is whatever the agent runs, so it must
+  not share an origin with the Studio: the UI keeps the bridge bearer token
+  in `sessionStorage`, and a same-origin page could read it and call `/api`
+  (terminals, credentials). The bridge serves previews from a second
+  listener (`--preview-addr`, default the `--addr` host on a free port, `off`
+  to disable). Another port is another origin. That listener serves only
+  `/preview/…`; the API listener answers `/preview/…` with 404. The host and
+  scheme of the URL come from the request that issued it (or the public
+  URL). With no preview listener, issuing answers 501 `preview_unconfigured`.
 - The first request with `t` sets the cookie `mp_<agentId>_<port>`. The
   cookie is HttpOnly and SameSite=Strict, with `Path` set to the preview
   prefix.
 - `/preview/…` is outside `/api`, so `bearerAuth` doesn't apply. The
-  preview handler checks the cookie or token instead, and it is routed
-  before `staticHandler` in `ServeHTTP` (`http.go:91`).
+  preview handler checks the cookie or token instead. A request is also
+  refused if the workspace no longer declares the port (rechecked every 10s).
+- The cookie stays `SameSite=Strict`: the Studio and the preview are the same
+  site (cookies ignore ports), so the iframe still sends it.
 
 **Forwarding:**
 

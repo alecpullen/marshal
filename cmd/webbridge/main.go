@@ -50,7 +50,10 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // config holds the resolved flag/env settings.
 type config struct {
-	addr        string
+	addr string
+	// previewAddr is where previews are served, on an origin of their own.
+	// Empty means the --addr host on an automatic port; "off" disables.
+	previewAddr string
 	token       string
 	marshalBin  string
 	cwdRoot     string
@@ -94,6 +97,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	fs := flag.NewFlagSet("webbridge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", envOr("WEBBRIDGE_ADDR", "127.0.0.1:7700"), "listen address")
+	previewAddr := fs.String("preview-addr", envOr("WEBBRIDGE_PREVIEW_ADDR", ""), "listen address for previews, served from a separate origin (default: the --addr host on a free port; \"off\" disables)")
 	token := fs.String("token", envOr("WEBBRIDGE_TOKEN", ""), "bearer token for /api routes (generated when empty)")
 	marshalBin := fs.String("marshal-bin", envOr("WEBBRIDGE_MARSHAL_BIN", "marshal"), "marshal binary to supervise")
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
@@ -126,7 +130,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+	cfg := config{addr: *addr, previewAddr: *previewAddr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress}
 	pm, err := parseProjectMounts(projectMounts)
@@ -383,9 +387,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// repos with Watch set are polled.
 	fleet.StartPoller(0)
 
+	api := bridge.NewServer(fleet, cfg.token)
 	srv := &http.Server{
 		Addr:              cfg.addr,
-		Handler:           bridge.NewServer(fleet, cfg.token),
+		Handler:           api,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	scheme := "http"
@@ -401,6 +406,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("listen %s: %w", cfg.addr, err)
 	}
 	fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, ln.Addr(), len(ws.Projects()))
+
+	// Previews get a listener, and so an origin, of their own: a page the
+	// agent serves must not share storage with the UI that holds the token.
+	var previewSrv *http.Server
+	if cfg.previewAddr != "off" {
+		pln, perr := listenPreview(cfg.addr, cfg.previewAddr)
+		if perr != nil {
+			slog.Default().Warn("webbridge: previews unavailable", "err", perr)
+		} else {
+			api.SetPreviewPort(pln.Addr().(*net.TCPAddr).Port)
+			previewSrv = &http.Server{Handler: api.PreviewHandler(), ReadHeaderTimeout: 10 * time.Second}
+			go func() { _ = serveHTTP(previewSrv, pln, cfg.tlsCert, cfg.tlsKey) }()
+			fmt.Fprintf(stderr, "webbridge: previews on %s://%s\n", scheme, pln.Addr())
+		}
+	}
 
 	// Reconcile orphaned worktrees after the server is listening, so a slow
 	// prune cannot delay accepting requests.
@@ -435,6 +455,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	slog.Default().Info("webbridge: shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if previewSrv != nil {
+		_ = previewSrv.Shutdown(shutdownCtx)
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
 	}
@@ -453,4 +476,23 @@ func serveHTTP(srv *http.Server, ln net.Listener, certFile, keyFile string) erro
 		return srv.Serve(ln)
 	}
 	return srv.ServeTLS(ln, certFile, keyFile)
+}
+
+// listenPreview opens the preview listener: previewAddr when given, else
+// the API address's host on a free port. A port different from the API's
+// is what makes it a different origin.
+func listenPreview(apiAddr, previewAddr string) (net.Listener, error) {
+	if previewAddr == "" {
+		host, _, err := net.SplitHostPort(apiAddr)
+		if err != nil {
+			return nil, err
+		}
+		previewAddr = net.JoinHostPort(host, "0")
+	}
+	if _, port, err := net.SplitHostPort(previewAddr); err == nil {
+		if _, aport, aerr := net.SplitHostPort(apiAddr); aerr == nil && port == aport && port != "0" {
+			return nil, fmt.Errorf("--preview-addr %s must differ from --addr: previews need their own origin", previewAddr)
+		}
+	}
+	return net.Listen("tcp", previewAddr)
 }

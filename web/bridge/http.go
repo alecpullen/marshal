@@ -138,6 +138,7 @@ func (s *Server) routes() {
 	s.budgetRoutes()
 	s.watchRoutes()
 	s.workspaceRoutes()
+	s.projectSettingsRoutes()
 	s.mux.HandleFunc("GET /api/runs", s.listRuns)
 	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
 	s.mux.HandleFunc("POST /api/runs", s.startRun)
@@ -233,7 +234,7 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, errScopeMismatch):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, errInvalidRun), errors.Is(err, errInvalidLibrary):
+	case errors.Is(err, errInvalidRun), errors.Is(err, errInvalidLibrary), errors.Is(err, errInvalidProjectSettings):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errInvalidReview):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -367,11 +368,13 @@ func ValidateProjectRoot(root string) error {
 
 func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Project  string `json:"project"`
-		Name     string `json:"name"`
-		Mode     string `json:"mode"`
-		Prompt   string `json:"prompt"`
-		Isolated bool   `json:"isolated"`
+		Project string `json:"project"`
+		Name    string `json:"name"`
+		Mode    string `json:"mode"`
+		Prompt  string `json:"prompt"`
+		// Isolated is a pointer so a request that leaves it out takes the
+		// project's default.
+		Isolated *bool  `json:"isolated"`
 		Branch   string `json:"branch"`
 		BaseRef  string `json:"baseRef"`
 		// Routing picks this agent's models; see SpawnOptions.Routing.
@@ -386,8 +389,23 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// A request that leaves a field out takes the project's default.
+	defaults := s.fleet.ws.ProjectSettingsFor(body.Project)
+	isolated := defaults.Isolated != nil && *defaults.Isolated
+	if body.Isolated != nil {
+		isolated = *body.Isolated
+	}
+	if body.Mode == "" {
+		body.Mode = defaults.Mode
+	}
+	if len(body.Routing) == 0 || string(body.Routing) == "null" {
+		body.Routing = defaults.Routing
+	}
+	if body.Workspace == "" {
+		body.Workspace = defaults.Workspace
+	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
-		Name: body.Name, Mode: body.Mode, Isolated: body.Isolated, Branch: body.Branch, BaseRef: body.BaseRef,
+		Name: body.Name, Mode: body.Mode, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
 		Routing: body.Routing, Workspace: body.Workspace,
 	})
 	if id == "" {

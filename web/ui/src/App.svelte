@@ -33,6 +33,14 @@
 
   let paletteOpen = $state(false)
 
+  let toast = $state('')
+  let toastTimer: ReturnType<typeof setTimeout> | undefined
+  function flashToast(text: string) {
+    toast = text
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => (toast = ''), 8000)
+  }
+
   function toggleNav() {
     navOpen = !navOpen
     try {
@@ -182,7 +190,12 @@
       {/key}
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">
-        <NewAgent onDone={(id) => navigate(id ? `#chat/${id}` : '#')} />
+        <NewAgent
+          onDone={(id, warning) => {
+            if (warning) flashToast(warning)
+            navigate(id ? `#chat/${id}` : '#')
+          }}
+        />
       </div>
     {:else if titles[hash] || sessionsProject !== null}
       <div class="h-full overflow-y-auto">
@@ -234,6 +247,10 @@
     {/if}
   </main>
 </div>
+
+{#if toast}
+  <div class="fixed right-4 bottom-4 z-50 max-w-sm rounded-md border border-attention bg-raise p-3 text-sm shadow-lg" role="status">{toast}</div>
+{/if}
 
 <Palette open={paletteOpen} agents={$fleet.agents} onClose={() => (paletteOpen = false)} onNavigate={navigate} />
 

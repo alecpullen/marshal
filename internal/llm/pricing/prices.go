@@ -1,10 +1,9 @@
 package pricing
 
-// ModelPricing holds per-token-category rates in cents per million tokens
+// ModelPricing holds per-token-category rates in US cents per million tokens
 // (integer math, no floats). Used by EstimateCostCents to compute the
 // estimated cost of a turn. Zero values mean free (local models default to
-// all-zero). Rates are in hundredths-of-a-cent per million tokens, so
-// InputPerMTokCents=250 means $2.50 per million input tokens.
+// all-zero). InputPerMTokCents=250 means $2.50 per million input tokens.
 type ModelPricing struct {
 	InputPerMTokCents      int64
 	OutputPerMTokCents     int64

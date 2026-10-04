@@ -18,6 +18,12 @@ import (
 // exists) to that sole preset. This keeps the config file pair-only — no
 // [agent_profiles] section is needed for the common single-model case.
 func (c Config) RoutingConfig() routing.Config {
+	if c.SessionRouting.Profile != "" {
+		// A session profile is used as configured: the active-preset
+		// synthesis below would replace its bindings.
+		c.Profile.Default = c.SessionRouting.Profile
+		c.Profile.ActivePreset = ""
+	}
 	contextBudgets := make(map[routing.AgentRole]routing.ContextBudget, len(c.Agents))
 	for role, agentCfg := range c.Agents {
 		contextBudgets[role] = agentCfg.Context
@@ -55,7 +61,7 @@ func (c Config) RoutingConfig() routing.Config {
 			profiles[c.Profile.Default] = *p
 		}
 	}
-	return routing.Config{
+	rc := routing.Config{
 		DefaultProfile:   c.Profile.Default,
 		RemoteAllowed:    c.Privacy.RemoteProvidersAllowed,
 		Presets:          c.Models.Presets,
@@ -65,6 +71,10 @@ func (c Config) RoutingConfig() routing.Config {
 		ProviderBaseURLs: providerBaseURLs,
 		EmbeddingPreset:  c.Indexing.EmbeddingPreset,
 	}
+	for role, preset := range c.SessionRouting.Overrides {
+		rc = rc.WithRoleOverride(role, preset)
+	}
+	return rc
 }
 
 // synthesizeSingleModelProfile builds a single-model profile binding every

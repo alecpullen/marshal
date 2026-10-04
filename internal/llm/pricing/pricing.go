@@ -35,9 +35,10 @@ func Lookup(preset routing.ModelPreset, logger *slog.Logger) ModelPricing {
 }
 
 // EstimateCostCents computes the estimated cost of a turn's token usage
-// in hundredths-of-a-cent (1/10000 of a dollar). Each category is
-// (tokens * rate) / 1_000_000, summed. Sub-cent amounts truncate via
-// integer division, which is correct for an estimate.
+// in whole US cents (100 = $1). Each category is (tokens * rate) / 1_000_000,
+// summed, where the rates are cents per million tokens. Sub-cent amounts
+// truncate via integer division, which is correct for an estimate. Convert
+// to dollars by dividing by 100.
 func EstimateCostCents(u schema.TokenUsage, p ModelPricing) int64 {
 	// Cache tokens are already included in PromptTokens by all providers;
 	// subtract them before applying the input rate to avoid double-charging.

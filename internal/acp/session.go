@@ -17,6 +17,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/worktree"
 )
 
@@ -129,6 +130,16 @@ type sessionParams struct {
 	// Name is an optional display name used to derive a branch when
 	// isolation.branch is omitted.
 	Name string `json:"name,omitempty"`
+	// Routing gives the new session its own profile and per-role preset
+	// overrides. Honored by session/new only.
+	Routing *RoutingParams `json:"routing,omitempty"`
+}
+
+// RoutingParams is the session/new routing parameter. Overrides maps role
+// names to preset names.
+type RoutingParams struct {
+	Profile   string            `json:"profile,omitempty"`
+	Overrides map[string]string `json:"overrides,omitempty"`
 }
 
 // NewSessionManager constructs a SessionManager.
@@ -354,8 +365,19 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
-	rt, err := m.startRuntime(ctx, p)
+	var extra []app.Option
+	if p.Routing != nil && (p.Routing.Profile != "" || len(p.Routing.Overrides) > 0) {
+		overrides := make(map[routing.AgentRole]string, len(p.Routing.Overrides))
+		for role, preset := range p.Routing.Overrides {
+			overrides[routing.AgentRole(role)] = preset
+		}
+		extra = append(extra, app.WithSessionRouting(p.Routing.Profile, overrides))
+	}
+	rt, err := m.startRuntime(ctx, p, extra...)
 	if err != nil {
+		if errors.Is(err, app.ErrInvalidSessionRouting) {
+			return nil, invalidParamsError("%v", err)
+		}
 		return nil, err
 	}
 	resp := SessionResponse{SessionID: rt.SessionID}

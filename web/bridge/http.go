@@ -107,6 +107,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)
 	s.mux.HandleFunc("POST /api/agents", s.spawnAgent)
 	s.mux.HandleFunc("GET /api/agents/{id}/diff", s.agentDiff)
+	s.mux.HandleFunc("GET /api/agents/{id}/files", s.agentFiles)
+	s.mux.HandleFunc("GET /api/agents/{id}/file", s.agentFile)
+	s.mux.HandleFunc("GET /api/agents/{id}/commit-draft", s.agentCommitDraft)
+	s.mux.HandleFunc("POST /api/agents/{id}/verify", s.agentVerify)
+	s.mux.HandleFunc("GET /api/agents/{id}/gate", s.agentGate)
+	s.mux.HandleFunc("GET /api/agents/{id}/review/comments", s.listReviewComments)
+	s.mux.HandleFunc("POST /api/agents/{id}/review/comments", s.addReviewComment)
+	s.mux.HandleFunc("POST /api/agents/{id}/review/comments/{cid}/resolve", s.resolveReviewComment)
+	s.mux.HandleFunc("GET /api/prompts/recent", s.recentPrompts)
 	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
 	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
@@ -120,6 +129,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sessions/{id}/steer", s.steer)
 	s.mux.HandleFunc("POST /api/sessions/{id}/mode", s.setMode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/stack", s.sessionStack)
+	s.mux.HandleFunc("GET /api/sessions/{id}/nodes/{nodeId}", s.sessionNode)
+	s.mux.HandleFunc("GET /api/sessions/{id}/last-request", s.sessionLastRequest)
+	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
 	s.mux.HandleFunc("POST /api/permissions/{toolCallId}", s.resolvePermission)
 	s.mux.HandleFunc("POST /api/questions/{questionId}", s.resolveQuestion)
 	s.mux.HandleFunc("GET /api/clients", s.listClients)
@@ -161,6 +173,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // 404, stale permission/question resolve → 410, unsupported stack →
 // 501, anything else from the child → 502.
 func writeErr(w http.ResponseWriter, err error) {
+	var unsupported ErrUnsupported
 	switch {
 	case errors.Is(err, ErrUnknownSession):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -168,10 +181,14 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownAgent):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownReviewComment):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errInvalidReview):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrOutsideWorkspace):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrStackUnsupported):
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "stack_unsupported"})
+	case errors.As(err, &unsupported):
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": unsupported.Error()})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 	}
@@ -238,6 +255,11 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fleet.StopProject(body.Root)
+	for _, a := range s.fleet.ws.Agents() {
+		if a.Project == body.Root {
+			s.fleet.dropGate(a.ID)
+		}
+	}
 	if err := s.fleet.ws.RemoveProject(body.Root); err != nil {
 		writeErr(w, err)
 		return
@@ -336,6 +358,53 @@ func (s *Server) agentDiff(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+}
+
+func (s *Server) agentFiles(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.fleet.Files(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, raw)
+}
+
+func (s *Server) agentFile(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.fleet.File(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, raw)
+}
+
+func (s *Server) agentCommitDraft(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.fleet.CommitDraft(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, raw)
+}
+
+// agentVerify runs the verify gate now and returns the stored record.
+func (s *Server) agentVerify(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.fleet.RunGate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// agentGate returns the stored verify record, or 204 when none has run.
+func (s *Server) agentGate(w http.ResponseWriter, r *http.Request) {
+	rec, ok := s.fleet.Gate(r.PathValue("id"))
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
 }
 
 func (s *Server) agentMerge(w http.ResponseWriter, r *http.Request) {
@@ -685,21 +754,94 @@ func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// writeRaw writes an agent result as-is.
+func writeRaw(w http.ResponseWriter, result json.RawMessage) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result)
+}
+
+// subagentParam reads the optional ?subagent= query value. A bad value
+// writes 400 and returns ok=false.
+func subagentParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	raw := r.URL.Query().Get("subagent")
+	if raw == "" {
+		return 0, true
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid subagent"})
+		return 0, false
+	}
+	return id, true
+}
+
 // sessionStack proxies the session's current stack snapshot.
 func (s *Server) sessionStack(w http.ResponseWriter, r *http.Request) {
+	sub, ok := subagentParam(w, r)
+	if !ok {
+		return
+	}
 	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	result, err := reg.Stack(r.Context(), sessionID)
+	result, err := reg.Stack(r.Context(), sessionID, sub)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(result)
+	writeRaw(w, result)
+}
+
+// sessionNode proxies one node's full detail.
+func (s *Server) sessionNode(w http.ResponseWriter, r *http.Request) {
+	sub, ok := subagentParam(w, r)
+	if !ok {
+		return
+	}
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := reg.StackNode(r.Context(), sessionID, r.PathValue("nodeId"), sub)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, result)
+}
+
+// sessionLastRequest proxies the newest model request.
+func (s *Server) sessionLastRequest(w http.ResponseWriter, r *http.Request) {
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := reg.LastRequest(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, result)
+}
+
+// sessionStepDiffs proxies the per-step diffs.
+func (s *Server) sessionStepDiffs(w http.ResponseWriter, r *http.Request) {
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := reg.StepDiffs(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, result)
 }
 
 // resolvePermission delivers the SPA's decision to a pending

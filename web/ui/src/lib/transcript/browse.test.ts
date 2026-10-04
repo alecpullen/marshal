@@ -54,8 +54,10 @@ describe('browseKey', () => {
     expect(browseKey(at('b'), 'y', ctx).effect).toEqual({ copy: 'b' })
   })
 
-  it('i, o and f say they are coming in W2', () => {
-    for (const k of ['i', 'o', 'f']) expect(browseKey(at('b'), k, ctx).effect).toEqual({ toast: 'Coming in W2' })
+  it('i, o and f act on the cursor row', () => {
+    expect(browseKey(at('b'), 'i', ctx).effect).toEqual({ inspect: 'b' })
+    expect(browseKey(at('b'), 'o', ctx).effect).toEqual({ openFile: 'b' })
+    expect(browseKey(at('b'), 'f', ctx).effect).toEqual({ drill: 'b' })
   })
 
   it('Escape exits browse mode', () => {

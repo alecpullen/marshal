@@ -63,6 +63,13 @@ describe('applyDeltaTo', () => {
     expect(got[0].mode).toBe('auto')
   })
 
+  it('stores a gate record on the row', () => {
+    const gate = { result: { ok: false, skipped: false, failedCommand: 'go test' }, at: '2026-10-04T00:00:00Z' }
+    const got = applyDeltaTo([row({ id: 'a' }), row({ id: 'b' })], { kind: 'gate', sessionId: 'a', gate })
+    expect(got[0].gate).toEqual(gate)
+    expect(got[1].gate).toBeUndefined()
+  })
+
   it('returns the original array when no agent matches', () => {
     const rows = [row({ id: 'a' })]
     expect(applyDeltaTo(rows, { kind: 'activity', sessionId: 'zzz', activity: 'x' })).toBe(rows)

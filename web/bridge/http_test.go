@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -634,5 +635,58 @@ func TestAuditEndpointBoundsTheLimit(t *testing.T) {
 	}
 	if len(out) > maxAuditTail {
 		t.Fatalf("returned %d records, want at most %d", len(out), maxAuditTail)
+	}
+}
+
+func TestSessionProxyRoutes(t *testing.T) {
+	routes := []struct {
+		path    string
+		method  string
+		feature string
+	}{
+		{"/api/sessions/%s/stack?subagent=3", "session/stack", "stack"},
+		{"/api/sessions/%s/nodes/tool%%3A40%%3Acall_1", "session/stack_node", "stack_node"},
+		{"/api/sessions/%s/last-request", "session/last_request", "last_request"},
+		{"/api/sessions/%s/step-diffs", "session/step_diffs", "step_diffs"},
+	}
+	for _, rt := range routes {
+		t.Run(rt.feature, func(t *testing.T) {
+			const body = `{"ok":true}`
+			s, reg, _, _ := newTestServer(t, "", &captureTransport{results: map[string]json.RawMessage{rt.method: json.RawMessage(body)}})
+			reg.track("s-1", AgentPath("/tmp/work"))
+			if rec := doReq(t, s, http.MethodGet, fmt.Sprintf(rt.path, "s-1"), nil, nil); rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != body {
+				t.Fatalf("ok: %d %s", rec.Code, rec.Body.String())
+			}
+			if rec := doReq(t, s, http.MethodGet, fmt.Sprintf(rt.path, "nope"), nil, nil); rec.Code != http.StatusNotFound {
+				t.Fatalf("unknown: %d", rec.Code)
+			}
+			s, reg, _, _ = newTestServer(t, "", &captureTransport{errs: map[string]*rpcError{rt.method: {Code: -32601, Message: "method not found"}}})
+			reg.track("s-1", AgentPath("/tmp/work"))
+			rec := doReq(t, s, http.MethodGet, fmt.Sprintf(rt.path, "s-1"), nil, nil)
+			if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), rt.feature+"_unsupported") {
+				t.Fatalf("unsupported: %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestSessionNodeIDSurvivesRoundTrip(t *testing.T) {
+	tr := &captureTransport{results: map[string]json.RawMessage{"session/stack_node": json.RawMessage(`{}`)}}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+	doReq(t, s, http.MethodGet, "/api/sessions/s-1/nodes/tool%3A40%3Acall_1", nil, nil)
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	last := tr.seen[len(tr.seen)-1]
+	if !strings.Contains(last.params, `"nodeId":"tool:40:call_1"`) {
+		t.Fatalf("params = %s", last.params)
+	}
+}
+
+func TestSessionStackBadSubagent(t *testing.T) {
+	s, reg, _, _ := newTestServer(t, "", &captureTransport{})
+	reg.track("s-1", AgentPath("/tmp/work"))
+	if rec := doReq(t, s, http.MethodGet, "/api/sessions/s-1/stack?subagent=abc", nil, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
 	}
 }

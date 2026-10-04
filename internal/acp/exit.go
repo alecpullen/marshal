@@ -134,6 +134,26 @@ func (m *ExitManager) Commit(ctx context.Context, params json.RawMessage) (any, 
 	return CommitResult{Commit: sha, Message: message}, nil
 }
 
+// CommitDraft handles session/commit_draft: the agent drafts a commit message
+// without touching git, so the review page can show it before shipping.
+func (m *ExitManager) CommitDraft(ctx context.Context, params json.RawMessage) (any, error) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := decodeParams(params, &p, "session/commit_draft"); err != nil {
+		return nil, err
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok || rt == nil {
+		return nil, serverErrorf("unknown session %s", p.SessionID)
+	}
+	msg, err := m.draftMessage(ctx, rt)
+	if err != nil {
+		return nil, serverErrorf("draft commit message: %v", err)
+	}
+	return map[string]any{"message": msg}, nil
+}
+
 // maxVerifyOutput bounds the verify output returned over the wire. A
 // failing suite can emit megabytes, and the operator needs the tail to
 // act on, not the whole thing.

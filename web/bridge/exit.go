@@ -79,6 +79,7 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 	if err != nil {
 		return ExitResult{}, err
 	}
+	f.storeGate(rt.id, verify)
 
 	// 3. Gate. Skipped blocks as firmly as a failure.
 	passed := verify.OK && !verify.Skipped

@@ -7,6 +7,7 @@
   import Runs from './views/Runs.svelte'
   import Run from './views/Run.svelte'
   import Live from './views/Live.svelte'
+  import Library from './views/Library.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -19,7 +20,7 @@
   import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -98,6 +99,12 @@
     // so returning from these routes is the moment to bring it back in
     // sync, ahead of the next SSE delta.
     const update = () => {
+      // Old standalone pages moved; replace the entry so Back does not bounce.
+      const moved = redirectLegacy(window.location.hash)
+      if (moved) {
+        window.location.replace(moved)
+        return
+      }
       hash = window.location.hash || '#'
       if (hash === '#projects' || isScopedSessions(hash) || hash === '#sessions') actions.refresh()
     }
@@ -144,6 +151,7 @@
   const chatSessionId = $derived(chatRoute?.id ?? null)
   const runRoute = $derived(parseRunRoute(hash))
   const liveRoute = $derived(parseLiveRoute(hash))
+  const libraryRoute = $derived(parseLibraryRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -215,6 +223,10 @@
           onRefreshPending={refreshPending}
           onNavigate={navigate}
         />
+      </div>
+    {:else if libraryRoute}
+      <div class="h-full overflow-y-auto">
+        <Library route={libraryRoute} onNavigate={navigate} />
       </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

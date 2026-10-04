@@ -4,6 +4,9 @@
   import ClientsPanel from '../lib/ClientsPanel.svelte'
   import Models from './settings/Models.svelte'
   import Providers from './settings/Providers.svelte'
+  import Secrets from './settings/Secrets.svelte'
+  import Credentials from './settings/Credentials.svelte'
+  import Repos from './settings/Repos.svelte'
   import type { SettingsTab } from '../lib/routes'
 
   let { tab, budgetTick = 0, onNavigate }: { tab: SettingsTab; budgetTick?: number; onNavigate: (hash: string) => void } = $props()
@@ -12,6 +15,9 @@
   const TABS = [
     { value: 'models', label: 'Models' },
     { value: 'providers', label: 'Providers' },
+    { value: 'secrets', label: 'Secrets' },
+    { value: 'credentials', label: 'Credentials' },
+    { value: 'repos', label: 'Repos' },
     { value: 'tokens', label: 'Tokens' },
   ]
 </script>
@@ -23,6 +29,12 @@
     <Models {budgetTick} onToast={(t) => (toast = t)} />
   {:else if tab === 'providers'}
     <Providers onToast={(t) => (toast = t)} />
+  {:else if tab === 'secrets'}
+    <Secrets onToast={(t) => (toast = t)} />
+  {:else if tab === 'credentials'}
+    <Credentials onToast={(t) => (toast = t)} />
+  {:else if tab === 'repos'}
+    <Repos onToast={(t) => (toast = t)} />
   {:else}
     <ClientsPanel />
   {/if}

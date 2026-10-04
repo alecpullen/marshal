@@ -5,7 +5,7 @@ import * as api from '../../lib/api.js'
 
 vi.mock('../../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../../lib/api.js')>()
-  return { ...actual, getModels: vi.fn(), setProviders: vi.fn(), setProviderKey: vi.fn(), probeProvider: vi.fn() }
+  return { ...actual, getModels: vi.fn(), setProviders: vi.fn(), setProviderKey: vi.fn(), probeProvider: vi.fn(), getSecretsStatus: vi.fn(), listSecrets: vi.fn(), putSecret: vi.fn() }
 })
 
 afterEach(cleanup)
@@ -22,6 +22,9 @@ beforeEach(() => {
   ;(api.getModels as Mock).mockResolvedValue(models())
   ;(api.setProviders as Mock).mockResolvedValue(undefined)
   ;(api.setProviderKey as Mock).mockResolvedValue(undefined)
+  ;(api.getSecretsStatus as Mock).mockResolvedValue({ backend: 'env', healthy: true })
+  ;(api.listSecrets as Mock).mockResolvedValue([])
+  ;(api.putSecret as Mock).mockResolvedValue(undefined)
 })
 
 describe('Providers', () => {
@@ -88,5 +91,62 @@ describe('Providers', () => {
     expect(api.setProviders).not.toHaveBeenCalled()
     await fireEvent.click(within(cards[0]).getByText('Confirm remove'))
     await waitFor(() => expect(api.setProviders).toHaveBeenCalledWith({ groq: null }))
+  })
+})
+
+describe('Providers vault-backed keys', () => {
+  const openKeyDialog = async () => {
+    const cards = await screen.findAllByTestId('provider-card')
+    await fireEvent.click(within(cards[0]).getByText('Set key'))
+    return cards[0]
+  }
+
+  it('offers "Store in vault", checked by default, when the backend is not env', async () => {
+    ;(api.getSecretsStatus as Mock).mockResolvedValue({ backend: 'local', healthy: true })
+    render(Providers, { onToast: vi.fn() })
+    await openKeyDialog()
+    expect((screen.getByLabelText('Store in vault') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText('Store in vault') as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('leaves it unchecked and disabled on the env backend', async () => {
+    render(Providers, { onToast: vi.fn() })
+    await openKeyDialog()
+    const box = screen.getByLabelText('Store in vault') as HTMLInputElement
+    expect(box.checked).toBe(false)
+    expect(box.disabled).toBe(true)
+  })
+
+  it('stores the key in the vault and clears api_key_env, not through the key route', async () => {
+    ;(api.getSecretsStatus as Mock).mockResolvedValue({ backend: 'openbao', healthy: true })
+    const onToast = vi.fn()
+    const { container } = render(Providers, { onToast })
+    const card = await openKeyDialog()
+    await fireEvent.input(within(card).getByLabelText('API key for groq'), { target: { value: 'gsk-very-secret' } })
+    await fireEvent.click(within(card).getByText('Save key'))
+    await waitFor(() => expect(api.putSecret).toHaveBeenCalledWith('providers/groq', 'gsk-very-secret'))
+    expect(api.setProviders).toHaveBeenCalledWith({ groq: { apiKeyEnv: '' } })
+    expect(api.setProviderKey).not.toHaveBeenCalled()
+    expect(container.innerHTML).not.toContain('gsk-very-secret')
+    expect(onToast).toHaveBeenCalled()
+  })
+
+  it('unchecking it takes the plain key route', async () => {
+    ;(api.getSecretsStatus as Mock).mockResolvedValue({ backend: 'local', healthy: true })
+    render(Providers, { onToast: vi.fn() })
+    const card = await openKeyDialog()
+    await fireEvent.click(screen.getByLabelText('Store in vault'))
+    await fireEvent.input(within(card).getByLabelText('API key for groq'), { target: { value: 'k' } })
+    await fireEvent.click(within(card).getByText('Save key'))
+    await waitFor(() => expect(api.setProviderKey).toHaveBeenCalledWith('groq', 'k'))
+    expect(api.putSecret).not.toHaveBeenCalled()
+  })
+
+  it('labels a vault-backed key', async () => {
+    ;(api.getSecretsStatus as Mock).mockResolvedValue({ backend: 'local', healthy: true })
+    ;(api.listSecrets as Mock).mockResolvedValue(['vault:providers/groq'])
+    render(Providers, { onToast: vi.fn() })
+    const cards = await screen.findAllByTestId('provider-card')
+    expect(await within(cards[0]).findByText('key: vault (injected by proxy)')).toBeTruthy()
   })
 })

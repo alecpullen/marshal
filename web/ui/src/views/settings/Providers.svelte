@@ -3,7 +3,7 @@
   import Card from '../../lib/ui/Card.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Tag from '../../lib/ui/Tag.svelte'
-  import { getModels, setProviders, setProviderKey, probeProvider, errMessage, type ProbeResult, type ProviderView } from '../../lib/api'
+  import { getModels, setProviders, setProviderKey, probeProvider, putSecret, getSecretsStatus, listSecrets, errMessage, type ProbeResult, type ProviderView } from '../../lib/api'
   import { PROVIDER_TEMPLATES, templateById, uniqueName } from '../../lib/models/providerTemplates'
 
   let { onToast }: { onToast: (t: string) => void } = $props()
@@ -16,6 +16,14 @@
   let keyValue = $state('')
   let removing = $state<string | null>(null)
   let busy = $state(false)
+  // Vault-backed keys: the backend decides whether "Store in vault" is on offer.
+  let backend = $state('')
+  let vaultKeys = $state<Set<string>>(new Set())
+  // null follows the default (on whenever a real backend is configured); a click makes it explicit.
+  let vaultChoice = $state<boolean | null>(null)
+  const vaultOk = $derived(backend !== '' && backend !== 'env')
+  const useVault = $derived(vaultOk && (vaultChoice ?? true))
+  const vaultRef = (name: string) => `vault:providers/${name}`
 
   // Add provider form.
   let adding = $state(false)
@@ -27,8 +35,12 @@
 
   async function load() {
     try {
-      providers = (await getModels()).providers
+      // The secrets calls are optional context: an older bridge has none, and the card then shows the plain key state.
+      const [m, st, refs] = await Promise.all([getModels(), getSecretsStatus().catch(() => null), listSecrets('providers/').catch(() => [] as string[])])
+      providers = m.providers
       error = ''
+      backend = st?.backend ?? ''
+      vaultKeys = new Set(refs)
     } catch (e) {
       error = errMessage(e)
     } finally {
@@ -80,8 +92,15 @@
     busy = true
     error = ''
     try {
-      await setProviderKey(name, keyValue)
-      onToast(`Saved the key for ${name}. Applies to agents started from now`)
+      if (useVault) {
+        // The value goes to the vault; the provider stops reading a key from the environment.
+        await putSecret(`providers/${name}`, keyValue)
+        await setProviders({ [name]: { apiKeyEnv: '' } })
+        onToast(`Stored the key for ${name} in the vault. The proxy injects it; agents never see it`)
+      } else {
+        await setProviderKey(name, keyValue)
+        onToast(`Saved the key for ${name}. Applies to agents started from now`)
+      }
       keyFor = null
       await load()
     } catch (e) {
@@ -105,8 +124,8 @@
     }
   }
 
-  const keyLabel = (p: ProviderView) =>
-    p.auth === 'oauth' ? 'browser sign-in' : p.keySource === 'config' ? 'key in config' : p.keySource === 'env' ? `key from ${p.apiKeyEnv || 'env'}` : 'no key'
+  const keyLabel = (p: ProviderView, name: string) =>
+    vaultKeys.has(vaultRef(name)) ? 'key: vault (injected by proxy)' : p.auth === 'oauth' ? 'browser sign-in' : p.keySource === 'config' ? 'key in config' : p.keySource === 'env' ? `key from ${p.apiKeyEnv || 'env'}` : 'no key'
   const dot = (p: ProbeResult | 'pending' | undefined) =>
     p === 'pending' ? 'bg-warn' : !p ? 'bg-dim' : p.error ? 'bg-err' : 'bg-ok'
   const dotLabel = (p: ProbeResult | 'pending' | undefined) =>
@@ -154,14 +173,18 @@
         </div>
         <p class="truncate font-mono text-xs text-muted">{p.baseUrl || 'no base URL'}</p>
         <div class="flex items-center gap-2 text-xs">
-          <Tag tone={p.hasKey || p.auth === 'oauth' ? 'ok' : 'warn'}>{keyLabel(p)}</Tag>
+          <Tag tone={p.hasKey || p.auth === 'oauth' || vaultKeys.has(vaultRef(name)) ? 'ok' : 'warn'}>{keyLabel(p, name)}</Tag>
           {#if pr && pr !== 'pending'}
             {#if pr.error}<span class="text-err">{pr.error}</span>{:else}<span class="text-muted">{pr.models.length} models</span>{/if}
           {/if}
         </div>
 
         {#if keyFor === name}
-          <form class="flex gap-2" onsubmit={(e) => { e.preventDefault(); void saveKey(name) }}>
+          <form class="flex flex-wrap gap-2" onsubmit={(e) => { e.preventDefault(); void saveKey(name) }}>
+            <label class="flex w-full items-center gap-2 text-xs">
+              <input type="checkbox" aria-label="Store in vault" checked={useVault} onchange={(e) => (vaultChoice = e.currentTarget.checked)} disabled={!vaultOk} />
+              Store in vault (recommended){#if !vaultOk}<span class="text-muted"> — needs the local or OpenBao secrets backend</span>{/if}
+            </label>
             <input
               type="password"
               autocomplete="off"
@@ -177,7 +200,7 @@
         <div class="flex flex-wrap items-center gap-2">
           <Button variant="ghost" class="min-h-8 px-2 py-1 text-xs" onclick={() => probe(name)} disabled={pr === 'pending'}>Probe</Button>
           {#if p.auth !== 'oauth'}
-            <Button variant="ghost" class="min-h-8 px-2 py-1 text-xs" onclick={() => { keyFor = name; keyValue = '' }}>Set key</Button>
+            <Button variant="ghost" class="min-h-8 px-2 py-1 text-xs" onclick={() => { keyFor = name; keyValue = ''; vaultChoice = null }}>Set key</Button>
           {/if}
           {#if removing === name}
             <Button variant="danger" class="min-h-8 px-2 py-1 text-xs" onclick={() => remove(name)}>Confirm remove</Button>

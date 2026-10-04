@@ -28,7 +28,7 @@ export function isScopedSessions(hash: string): boolean {
 }
 
 /** The old Dashboard now lives at #fleet; the empty hash is Home. */
-export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'other'
+export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'other'
 
 export function pageFromHash(hash: string): Page {
   if (hash === '' || hash === '#') return 'home'
@@ -39,6 +39,10 @@ export function pageFromHash(hash: string): Page {
   if (parseRunRoute(hash)) return 'run'
   if (hash === '#runs') return 'runs'
   if (parseLiveRoute(hash)) return 'live'
+  if (parseLibraryRoute(hash)) return 'library'
+  if (parseSettingsRoute(hash)) return 'settings'
+  if (parseUsageRoute(hash)) return 'usage'
+  if (hash === '#watches') return 'watches'
   return 'other'
 }
 
@@ -146,4 +150,59 @@ export function formatLiveRoute(r: LiveRoute): string {
   if (r.page > 1) q.set('page', String(r.page))
   const qs = q.toString()
   return `#live${qs ? `?${qs}` : ''}`
+}
+
+export type LibraryTab = 'skills' | 'plugins' | 'mcp' | 'memory'
+const LIBRARY_TABS: readonly string[] = ['skills', 'plugins', 'mcp', 'memory']
+
+/** The Library URL: `#library[/<tab>][?project=<root>]`; a bare `#library` is Skills. */
+export interface LibraryRoute { tab: LibraryTab; project?: string }
+
+export function parseLibraryRoute(hash: string): LibraryRoute | null {
+  const m = /^#library(?:\/([^/?]+))?(?:\?(.*))?$/.exec(hash)
+  if (!m) return null
+  const tab = m[1] ?? 'skills'
+  if (!LIBRARY_TABS.includes(tab)) return null
+  const project = new URLSearchParams(m[2] ?? '').get('project') || undefined
+  return { tab: tab as LibraryTab, project }
+}
+
+export function formatLibraryRoute(r: LibraryRoute): string {
+  return `#library/${r.tab}${r.project ? `?project=${encodeURIComponent(r.project)}` : ''}`
+}
+
+export type SettingsTab = 'models' | 'providers' | 'tokens'
+const SETTINGS_TABS: readonly string[] = ['models', 'providers', 'tokens']
+
+/** `#settings[/<tab>]`; a bare `#settings` is Models. */
+export function parseSettingsRoute(hash: string): { tab: SettingsTab } | null {
+  const m = /^#settings(?:\/([^/?]+))?$/.exec(hash)
+  if (!m) return null
+  const tab = m[1] ?? 'models'
+  return SETTINGS_TABS.includes(tab) ? { tab: tab as SettingsTab } : null
+}
+
+export type UsageTab = 'cost' | 'audit' | 'disk'
+const USAGE_TABS: readonly string[] = ['cost', 'audit', 'disk']
+
+/** `#usage[?tab=cost|audit|disk]`; an unknown tab falls back to cost. */
+export function parseUsageRoute(hash: string): { tab: UsageTab } | null {
+  const m = /^#usage(?:\?(.*))?$/.exec(hash)
+  if (!m) return null
+  const tab = new URLSearchParams(m[1] ?? '').get('tab') ?? 'cost'
+  return { tab: USAGE_TABS.includes(tab) ? (tab as UsageTab) : 'cost' }
+}
+
+/** Where an old standalone page moved to, or null when the hash is current. */
+export function redirectLegacy(hash: string): string | null {
+  switch (hash) {
+    case '#clients':
+      return '#library/mcp'
+    case '#disk':
+      return '#usage?tab=disk'
+    case '#activity':
+      return '#usage?tab=audit'
+    default:
+      return null
+  }
 }

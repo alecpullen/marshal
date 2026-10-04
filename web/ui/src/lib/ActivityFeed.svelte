@@ -3,11 +3,12 @@
   import { describeAuditEvent, type AuditEvent } from './audit'
   import { listAudit } from './api'
 
-  /** Show only the most recent `limit` events; 0 shows all. */
-  let { limit = 0 }: { limit?: number } = $props()
+  /** Show only the most recent `limit` events; 0 shows all. `filter` keeps one event type. */
+  let { limit = 0, filter = '' }: { limit?: number; filter?: string } = $props()
 
   let events = $state<AuditEvent[]>([])
   let loading = $state(true)
+  const shown = $derived(filter ? events.filter((e) => e.event === filter) : events)
 
   async function refresh() {
     try {
@@ -32,10 +33,10 @@
   <h2 class="text-xs tracking-wide text-muted uppercase">Activity</h2>
   {#if loading}
     <p class="text-sm text-muted">Loading…</p>
-  {:else if events.length === 0}
+  {:else if shown.length === 0}
     <p class="text-sm text-muted">No recent activity.</p>
   {:else}
-    {#each (limit > 0 ? [...events].reverse().slice(0, limit) : [...events].reverse()) as e (e.ts + e.event + (e.agentId ?? ''))}
+    {#each (limit > 0 ? [...shown].reverse().slice(0, limit) : [...shown].reverse()) as e (e.ts + e.event + (e.agentId ?? ''))}
       <div class="truncate text-sm text-muted">
         <span class="text-fg">{new Date(e.ts).toLocaleTimeString()}</span>
         {describeAuditEvent(e)}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -106,6 +107,9 @@ type scriptedTransport struct {
 	// results and errs answer other methods by name.
 	results map[string]any
 	errs    map[string]*rpcError
+
+	mu   sync.Mutex
+	seen []string
 }
 
 func (t *scriptedTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
@@ -127,6 +131,9 @@ func (t *scriptedTransport) serve(r io.Reader, w io.WriteCloser) {
 		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
 			continue
 		}
+		t.mu.Lock()
+		t.seen = append(t.seen, req.Method)
+		t.mu.Unlock()
 		var result any
 		if e := t.errs[req.Method]; e != nil {
 			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": e})

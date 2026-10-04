@@ -25,6 +25,7 @@ const (
 	AuditRepoRegistered  = "repo_registered"
 	AuditRepoRemoved     = "repo_removed"
 	AuditPrune           = "prune"
+	AuditReviewComment   = "review_comment"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

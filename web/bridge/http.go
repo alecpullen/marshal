@@ -112,6 +112,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agents/{id}/commit-draft", s.agentCommitDraft)
 	s.mux.HandleFunc("POST /api/agents/{id}/verify", s.agentVerify)
 	s.mux.HandleFunc("GET /api/agents/{id}/gate", s.agentGate)
+	s.mux.HandleFunc("GET /api/agents/{id}/review/comments", s.listReviewComments)
+	s.mux.HandleFunc("POST /api/agents/{id}/review/comments", s.addReviewComment)
+	s.mux.HandleFunc("POST /api/agents/{id}/review/comments/{cid}/resolve", s.resolveReviewComment)
+	s.mux.HandleFunc("GET /api/prompts/recent", s.recentPrompts)
 	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
 	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
@@ -177,6 +181,10 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownAgent):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownReviewComment):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errInvalidReview):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrOutsideWorkspace):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.As(err, &unsupported):

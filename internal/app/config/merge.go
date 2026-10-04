@@ -95,6 +95,12 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Indexing.WatchDebounceMs, file.Indexing.WatchDebounceMs)
 		set(&cfg.Indexing.EmbeddingPreset, file.Indexing.EmbeddingPreset)
 	}
+	if file.Budgets != nil {
+		set(&cfg.Budgets.DailyUSD, file.Budgets.DailyUSD)
+		set(&cfg.Budgets.PerAgentUSD, file.Budgets.PerAgentUSD)
+		set(&cfg.Budgets.OnDailyCap, file.Budgets.OnDailyCap)
+		set(&cfg.Budgets.OnAgentCap, file.Budgets.OnAgentCap)
+	}
 	if file.Providers != nil {
 		if cfg.Providers == nil {
 			cfg.Providers = make(map[string]ProviderConfig, len(file.Providers))

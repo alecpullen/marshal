@@ -338,4 +338,12 @@ type configFile struct {
 	Agents       map[routing.AgentRole]fileAgentEntry `toml:"agents"`
 	LSP          *fileLSP                             `toml:"lsp"`
 	Scratchpad   *fileScratchpad                      `toml:"scratchpad"`
+	Budgets      *fileBudgets                         `toml:"budgets"`
+}
+
+type fileBudgets struct {
+	DailyUSD    *float64 `toml:"daily_usd"`
+	PerAgentUSD *float64 `toml:"per_agent_usd"`
+	OnDailyCap  *string  `toml:"on_daily_cap"`
+	OnAgentCap  *string  `toml:"on_agent_cap"`
 }

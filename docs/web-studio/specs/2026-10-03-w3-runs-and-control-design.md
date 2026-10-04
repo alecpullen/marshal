@@ -81,7 +81,7 @@ Three engine and bridge foundations make those pages possible:
 `DependsOn []int`. `ParsePlan` (`plan.go:44`) reads lines matching
 `^Depends on:\s*(.+)$` inside a task's body:
 
-- The list is comma-separated task numbers.
+- The list is comma-separated task numbers; `none` or `-` is an explicit empty list (a root task). Lines inside fenced code blocks are ignored.
 - Unknown numbers and cycles return an error naming the task, as a plan
   diagnostic.
 - A task without the line depends on the previous task. Task 1 depends on
@@ -235,6 +235,8 @@ It is wired through the runtime's `Deps.OnEvent` (`watch.go:141`), chained
 after the existing handler.
 
 **Capability:** `watchAccess`.
+
+**Trust.** ACP clients are trusted: `watch_start` registers a command watch without the approval policy the agent's own watch tool goes through. The command still runs through the manager's `RunSample` sandbox.
 
 ## 5. Bridge
 

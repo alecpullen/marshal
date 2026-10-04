@@ -254,3 +254,38 @@ func toFloat(v any) (float64, bool) {
 		return 0, false
 	}
 }
+
+// sampleValue is the numeric reading charted for a sample: the exit code for
+// an exit_code condition, the extracted number for a json condition with a
+// numeric operand (0 when the field is missing or not a number), and
+// otherwise 1 when the condition tripped, else 0.
+func sampleValue(cond string, s Sample, tripped bool) float64 {
+	fields := strings.Fields(strings.TrimSpace(cond))
+	if len(fields) > 0 {
+		switch fields[0] {
+		case "exit_code":
+			return float64(s.ExitCode)
+		case "json":
+			if len(fields) == 4 {
+				if _, numeric := toFloat(fields[3]); numeric {
+					var doc any
+					if err := json.Unmarshal([]byte(s.Stdout), &doc); err != nil {
+						return 0
+					}
+					got, ok := walkPath(doc, fields[1])
+					if !ok {
+						return 0
+					}
+					if f, ok := toFloat(got); ok {
+						return f
+					}
+					return 0
+				}
+			}
+		}
+	}
+	if tripped {
+		return 1
+	}
+	return 0
+}

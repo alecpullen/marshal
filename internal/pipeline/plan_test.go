@@ -146,3 +146,78 @@ func TestWriteBrief(t *testing.T) {
 		t.Errorf("brief = %q, want the task body verbatim %q", data, spec.Body)
 	}
 }
+
+func parseInline(t *testing.T, content string) (*Plan, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "deps-plan.md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	return ParsePlan(path)
+}
+
+func TestParsePlanDependsOn(t *testing.T) {
+	p, err := parseInline(t, "## Task 1: A\n\nbody a\n\n"+
+		"## Task 2: B\n\nbody b\n\n"+
+		"## Task 3: C\n\nDepends on: 1, 2\n\nbody c\n\n"+
+		"## Task 4: D\n\nbody d\n")
+	if err != nil {
+		t.Fatalf("ParsePlan: %v", err)
+	}
+	want := [][]int{nil, {1}, {1, 2}, {3}}
+	for i, w := range want {
+		got := p.Tasks[i].DependsOn
+		if len(got) != len(w) {
+			t.Fatalf("task %d DependsOn = %v, want %v", i+1, got, w)
+		}
+		for j := range w {
+			if got[j] != w[j] {
+				t.Fatalf("task %d DependsOn = %v, want %v", i+1, got, w)
+			}
+		}
+	}
+	if strings.Contains(p.Tasks[2].Body, "Depends on") {
+		t.Errorf("Depends on line left in body:\n%s", p.Tasks[2].Body)
+	}
+	if !strings.Contains(p.Tasks[2].Body, "body c") {
+		t.Errorf("body lost content:\n%s", p.Tasks[2].Body)
+	}
+}
+
+func TestParsePlanDependsOnUnknownAndSelf(t *testing.T) {
+	_, err := parseInline(t, "## Task 1: A\n\nx\n\n## Task 2: B\n\nDepends on: 9\n")
+	if err == nil || !strings.Contains(err.Error(), "task 2: depends on unknown task 9") {
+		t.Errorf("unknown dependency error = %v", err)
+	}
+	_, err = parseInline(t, "## Task 1: A\n\nx\n\n## Task 2: B\n\nDepends on: 2\n")
+	if err == nil || !strings.Contains(err.Error(), "task 2: depends on unknown task 2") {
+		t.Errorf("self dependency error = %v", err)
+	}
+}
+
+func TestParsePlanDependencyCycle(t *testing.T) {
+	_, err := parseInline(t, "## Task 1: A\n\nDepends on: 3\n\n"+
+		"## Task 2: B\n\nDepends on: 1\n\n"+
+		"## Task 3: C\n\nDepends on: 2\n")
+	if err == nil || !strings.Contains(err.Error(), "dependency cycle: 1 → 3 → 2 → 1") {
+		t.Errorf("cycle error = %v", err)
+	}
+}
+
+func TestParsePlanDependsOnNoneAndFences(t *testing.T) {
+	p, err := parseInline(t, "## Task 1: A\n\nx\n\n"+
+		"## Task 2: B\n\nDepends on: none\n\nbody\n\n"+
+		"## Task 3: C\n\n```\nDepends on: 1\n```\n\nDepends on: 2, -\n")
+	if err != nil {
+		t.Fatalf("ParsePlan: %v", err)
+	}
+	if got := p.Tasks[1].DependsOn; len(got) != 0 {
+		t.Fatalf("task 2 DependsOn = %v, want none", got)
+	}
+	if got := p.Tasks[2].DependsOn; len(got) != 1 || got[0] != 2 {
+		t.Fatalf("task 3 DependsOn = %v, want [2]", got)
+	}
+	if !strings.Contains(p.Tasks[2].Body, "Depends on: 1") {
+		t.Errorf("fenced example was stripped:\n%s", p.Tasks[2].Body)
+	}
+}

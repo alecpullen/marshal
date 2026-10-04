@@ -15,6 +15,31 @@ export type FleetEvent = FleetDelta | ProjectRemovedDelta | PendingDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
+export type AgentGroupKey = 'needsYou' | 'running' | 'ready' | 'earlier'
+export type AgentGroups = Record<AgentGroupKey, AgentRow[]>
+
+const pendingRank = (a: AgentRow) => (a.pending?.kind === 'approval' ? 0 : a.pending ? 1 : 2)
+const byUrgency = (a: AgentRow, b: AgentRow) =>
+  pendingRank(a) - pendingRank(b) || rank[a.status] - rank[b.status] || b.updatedAt.localeCompare(a.updatedAt)
+
+/**
+ * Bucket agents for the sidebar and inbox. An agent lands in the first group
+ * it qualifies for: Needs you (pending), Running, Ready to ship (idle with
+ * changes and no PR), else Earlier. Each group is sorted by urgency, then by
+ * most recently updated.
+ */
+export function groupAgents(agents: AgentRow[]): AgentGroups {
+  const out: AgentGroups = { needsYou: [], running: [], ready: [], earlier: [] }
+  for (const a of agents) {
+    if (a.pending) out.needsYou.push(a)
+    else if (a.status === 'running') out.running.push(a)
+    else if (a.status === 'idle' && a.changedFiles > 0 && !a.prUrl) out.ready.push(a)
+    else out.earlier.push(a)
+  }
+  for (const k of Object.keys(out) as AgentGroupKey[]) out[k].sort(byUrgency)
+  return out
+}
+
 export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] { if (d.kind === 'project_removed') return rows.filter(r => r.project !== d.project); let changed = false; const out = rows.map(r => { if (r.id !== d.sessionId) return r; changed = true; if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }; if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }; if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }; if (d.kind === 'pending') { const status: AgentRow['status'] = d.pendingKind === 'approval' ? 'awaiting-approval' : 'awaiting-question'; return { ...r, status } } return r }); return changed ? out : rows }
 
 /**

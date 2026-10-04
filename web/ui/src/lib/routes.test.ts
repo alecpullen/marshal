@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash } from './routes'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -46,5 +46,20 @@ describe('isScopedSessions', () => {
     expect(isScopedSessions('#sessions/')).toBe(false)
     expect(isScopedSessions('#chat/x')).toBe(false)
     expect(isScopedSessions('#')).toBe(false)
+  })
+})
+
+describe('pageFromHash', () => {
+  it('resolves the empty hash to Home and #fleet to the old Dashboard', () => {
+    expect(pageFromHash('')).toBe('home')
+    expect(pageFromHash('#')).toBe('home')
+    expect(pageFromHash('#fleet')).toBe('fleet')
+  })
+  it('still resolves every existing route', () => {
+    expect(pageFromHash('#new')).toBe('new')
+    expect(pageFromHash('#chat/abc')).toBe('chat')
+    expect(pageFromHash('#sessions')).toBe('sessions')
+    expect(pageFromHash('#sessions/%2Fp')).toBe('sessions')
+    for (const h of ['#pending', '#clients', '#projects', '#disk', '#activity']) expect(pageFromHash(h)).toBe('other')
   })
 })

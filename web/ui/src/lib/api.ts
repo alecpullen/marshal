@@ -129,6 +129,11 @@ export interface AgentStatus {
   gateOverride?: { reason: string; at: string; by: string; failedCommand?: string; skipped?: boolean }
   updatedAt: string
   pending?: PendingRequest
+  /** Who owns the agent; unset or 'local' on a single-user bridge. */
+  ownerId?: string
+  /** Where the agent was started: ui, cli, mcp or issue. */
+  origin?: string
+  clientId?: string
 }
 
 export interface ProjectStatus {

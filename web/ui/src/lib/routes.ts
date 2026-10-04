@@ -26,3 +26,15 @@ export function sessionsProjectFromHash(hash: string): string | null {
 export function isScopedSessions(hash: string): boolean {
   return sessionsProjectFromHash(hash) !== null
 }
+
+/** The old Dashboard now lives at #fleet; the empty hash is Home. */
+export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'other'
+
+export function pageFromHash(hash: string): Page {
+  if (hash === '' || hash === '#') return 'home'
+  if (hash === '#fleet') return 'fleet'
+  if (hash === '#new') return 'new'
+  if (/^#chat\/.+/.test(hash)) return 'chat'
+  if (hash === '#sessions' || isScopedSessions(hash)) return 'sessions'
+  return 'other'
+}

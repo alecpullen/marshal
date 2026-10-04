@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/viewmodel"
 )
 
 // compactDuration is "42s" or "6m40s": the form task headers and the turn
@@ -32,7 +32,7 @@ func compactDuration(d time.Duration) string {
 // folding is on, its todo is completed (a dropped task: its last step has
 // ended), nothing about it is unresolved or live, and the user has not
 // overridden it with Enter or a click.
-func (c *stepRenderCtx) taskFolded(n *stack.Node) bool {
+func (c *stepRenderCtx) taskFolded(n *viewmodel.Node) bool {
 	t := n.Task
 	if t == nil || !c.foldTasks || t.UnresolvedFailure || n.AnyLive() {
 		return false
@@ -52,7 +52,7 @@ func (c *stepRenderCtx) taskFolded(n *stack.Node) bool {
 
 // taskTitle is the todo's text, or for a dropped todo the first sentence of
 // its first step's narration.
-func taskTitle(t *stack.TaskInfo) string {
+func taskTitle(t *viewmodel.TaskInfo) string {
 	if !t.Dropped {
 		return t.Content
 	}
@@ -64,7 +64,7 @@ func taskTitle(t *stack.TaskInfo) string {
 	return "task " + t.TodoID
 }
 
-func taskPosition(t *stack.TaskInfo) string {
+func taskPosition(t *viewmodel.TaskInfo) string {
 	if t.Dropped {
 		return "dropped"
 	}
@@ -74,7 +74,7 @@ func taskPosition(t *stack.TaskInfo) string {
 // taskElapsed is the time the task has been worked on, from its steps. Time
 // between turns is not counted: a task carried over from yesterday reads as
 // the minutes it ran, not as a day.
-func taskElapsed(t *stack.TaskInfo) string {
+func taskElapsed(t *viewmodel.TaskInfo) string {
 	if t.Work <= 0 {
 		return ""
 	}
@@ -84,7 +84,7 @@ func taskElapsed(t *stack.TaskInfo) string {
 // renderTask draws a task: either one folded row, or a rule header followed by
 // its steps. Steps keep their own regions so a click lands on the step, not on
 // the whole task.
-func renderTask(n *stack.Node, c *stepRenderCtx, width int, inherited density) (string, []subRegion) {
+func renderTask(n *viewmodel.Node, c *stepRenderCtx, width int, inherited density) (string, []subRegion) {
 	td := c.level(n.ID, inherited)
 	if c.taskFolded(n) {
 		return renderFoldedTask(n, c, width), nil
@@ -120,7 +120,7 @@ func renderTask(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 }
 
 // renderTaskHeader is the open task's rule: "─ 2/4 Wire the parser ──── 3m10s".
-func renderTaskHeader(n *stack.Node, c *stepRenderCtx, width int) string {
+func renderTaskHeader(n *viewmodel.Node, c *stepRenderCtx, width int) string {
 	t := n.Task
 	th := theme.Current()
 	rule := lipgloss.NewStyle().Foreground(th.BorderMuted)
@@ -161,7 +161,7 @@ func renderTaskHeader(n *stack.Node, c *stepRenderCtx, width int) string {
 
 // renderFoldedTask is a finished task as one row:
 // "✓ 2/4 Wire the parser            5 steps · ✎ +40 −3 · 3m10s ▹".
-func renderFoldedTask(n *stack.Node, c *stepRenderCtx, width int) string {
+func renderFoldedTask(n *viewmodel.Node, c *stepRenderCtx, width int) string {
 	t := n.Task
 	th := theme.Current()
 	parts := []string{fmt.Sprintf("%d steps", t.Steps)}
@@ -193,7 +193,7 @@ func renderFoldedTask(n *stack.Node, c *stepRenderCtx, width int) string {
 
 // taskDiffStat sums the diff stats of the task's edit rows, "+a −r", or ""
 // when no edit row carries a countable diff.
-func taskDiffStat(n *stack.Node) string {
+func taskDiffStat(n *viewmodel.Node) string {
 	a, r := 0, 0
 	for _, st := range n.Children {
 		for _, row := range st.Children {
@@ -213,7 +213,7 @@ func taskDiffStat(n *stack.Node) string {
 
 // renderReceipt is the turn's closing line:
 // "✓ done · 6m40s · 4 tasks · 11 steps · 19 tools · ±3 files · 212k tok".
-func renderReceipt(r *stack.ReceiptInfo, width int) string {
+func renderReceipt(r *viewmodel.ReceiptInfo, width int) string {
 	th := theme.Current()
 	g, gc, word := glyph.OK, th.StatusSuccess, "done"
 	if r.Salvaged {

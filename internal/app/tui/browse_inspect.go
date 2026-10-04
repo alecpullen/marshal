@@ -11,9 +11,9 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/inspector"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/commands"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // openInspector opens the inspector on the cursor node. Only steps and tool
@@ -30,14 +30,14 @@ func (m *Model) openInspector() (tea.Model, tea.Cmd, bool) {
 }
 
 // inspectorDetail builds the inspector's view model for a step or tool row.
-func (m *Model) inspectorDetail(n *stack.Node) (inspector.Detail, bool) {
+func (m *Model) inspectorDetail(n *viewmodel.Node) (inspector.Detail, bool) {
 	if n == nil {
 		return inspector.Detail{}, false
 	}
 	switch {
-	case n.Kind == stack.KindTool && len(n.Tools) > 0:
+	case n.Kind == viewmodel.KindTool && len(n.Tools) > 0:
 		return m.toolDetail(n), true
-	case n.Kind == stack.KindStep && n.Step != nil:
+	case n.Kind == viewmodel.KindStep && n.Step != nil:
 		return m.stepDetail(n), true
 	}
 	return inspector.Detail{}, false
@@ -88,7 +88,7 @@ func prettyJSON(raw []byte) string {
 	return string(raw)
 }
 
-func (m *Model) toolDetail(n *stack.Node) inspector.Detail {
+func (m *Model) toolDetail(n *viewmodel.Node) inspector.Detail {
 	ev := n.Tools[0]
 	d := inspector.Detail{Subject: toolSubject(ev)}
 	pos := ""
@@ -192,7 +192,7 @@ func (m *Model) toolDetail(n *stack.Node) inspector.Detail {
 	return d
 }
 
-func (m *Model) stepDetail(n *stack.Node) inspector.Detail {
+func (m *Model) stepDetail(n *viewmodel.Node) inspector.Detail {
 	si := n.Step
 	head, _, _ := stepHeadline(si, n.Children)
 	d := inspector.Detail{Subject: head}
@@ -255,9 +255,9 @@ func toolSubject(ev registry.AuditEvent) string {
 }
 
 // parentStep finds the step node a tool row sits under.
-func (m *Model) parentStep(id stack.NodeID) *stack.Node {
+func (m *Model) parentStep(id viewmodel.NodeID) *viewmodel.Node {
 	for _, n := range m.browseTree {
-		if n.Kind != stack.KindStep {
+		if n.Kind != viewmodel.KindStep {
 			continue
 		}
 		for _, c := range n.Children {
@@ -300,7 +300,7 @@ func (m *Model) stepInspector(delta int) {
 	i := m.cursorIndex()
 	for j := i + delta; j >= 0 && j < len(m.browseItems); j += delta {
 		k := m.browseItems[j].kind
-		if k != stack.KindStep && k != stack.KindTool {
+		if k != viewmodel.KindStep && k != viewmodel.KindTool {
 			continue
 		}
 		m.moveCursorNoScroll(j)

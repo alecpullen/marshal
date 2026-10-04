@@ -1,13 +1,13 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // bulletIndent is the width of the "  – " prefix that precedes each bullet's
@@ -19,27 +19,7 @@ const bulletIndent = 4
 
 // toolTarget returns the short human-facing subject of a tool call — the
 // path it read, the command it ran, the query it searched for.
-func toolTarget(event registry.AuditEvent) string {
-	if s := symbolSubject(event); s != "" {
-		return s
-	}
-	if len(event.FilesChanged) > 0 {
-		return event.FilesChanged[0]
-	}
-	if len(event.Args) == 0 {
-		return ""
-	}
-	var args map[string]any
-	if err := json.Unmarshal(event.Args, &args); err != nil {
-		return ""
-	}
-	for _, key := range []string{"path", "command", "query", "name"} {
-		if s, ok := args[key].(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
-}
+func toolTarget(event registry.AuditEvent) string { return viewmodel.ToolTarget(event) }
 
 // renderToolGroup renders a run of same-tool audit events. Collapsed it is
 // one line, the plural tool name, the count and as many targets as fit: a run

@@ -177,9 +177,14 @@ func (s *liveState) get(id string) agentLive {
 }
 
 type AgentStatus struct {
-	ID           string    `json:"id"`
-	Project      string    `json:"project"`
-	Name         string    `json:"name,omitempty"`
+	ID      string `json:"id"`
+	Project string `json:"project"`
+	Name    string `json:"name,omitempty"`
+	// OwnerID, Origin and ClientID mirror Agent.OwnerID, Agent.Origin and
+	// Agent.ClientID in workspace.go.
+	OwnerID      string    `json:"ownerId,omitempty"`
+	Origin       string    `json:"origin,omitempty"`
+	ClientID     string    `json:"clientId,omitempty"`
 	Mode         string    `json:"mode,omitempty"`
 	Status       string    `json:"status"`
 	Activity     string    `json:"activity,omitempty"`

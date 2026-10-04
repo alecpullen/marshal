@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // scriptedTasks seeds a turn with n todos, each worked in stepsPer steps, and
@@ -294,7 +294,7 @@ func TestReceiptGolden(t *testing.T) {
 }
 
 func TestSalvagedTurnReceiptSaysSo(t *testing.T) {
-	r := &stack.ReceiptInfo{Duration: time.Minute, Steps: 3, Tools: 4, Salvaged: true}
+	r := &viewmodel.ReceiptInfo{Duration: time.Minute, Steps: 3, Tools: 4, Salvaged: true}
 	if got := stripANSI(renderReceipt(r, 100)); !strings.Contains(got, "salvaged") || !strings.Contains(got, "!") && !strings.Contains(got, "⚠") {
 		t.Fatalf("salvaged receipt = %q", got)
 	}
@@ -618,9 +618,9 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 	}
 
 	lines := transcriptLines(&m)
-	wants := map[stack.Kind][]string{
-		stack.KindTask: {"1/3 Read", "2/3 Write"},
-		stack.KindStep: {"Writing the first half", "Writing the second half", "One thought", "Another thought"},
+	wants := map[viewmodel.Kind][]string{
+		viewmodel.KindTask: {"1/3 Read", "2/3 Write"},
+		viewmodel.KindStep: {"Writing the first half", "Writing the second half", "One thought", "Another thought"},
 	}
 	seen := 0
 	for _, r := range m.nodeRegions {
@@ -643,7 +643,7 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 		t.Fatalf("expected regions for two tasks and four steps, saw %d:\n%s", seen, strings.Join(lines, "\n"))
 	}
 	for _, it := range m.browseItems {
-		if it.kind != stack.KindTask && it.kind != stack.KindStep {
+		if it.kind != viewmodel.KindTask && it.kind != viewmodel.KindStep {
 			continue
 		}
 		if it.start >= len(lines) || strings.TrimSpace(lines[it.start]) == "" {

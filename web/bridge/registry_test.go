@@ -73,6 +73,59 @@ func TestRegistryNew(t *testing.T) {
 	}
 }
 
+const testStackResult = `{"sessionId":"s-1","rev":7,"roots":["turn:1"],"nodes":[{"id":"turn:1","kind":"turn"}]}`
+
+func newStackTestRegistry(t *testing.T, tr *captureTransport) *Registry {
+	t.Helper()
+	c := &Child{Transport: tr}
+	r := NewRegistry(c)
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(c.Stop)
+	r.track("s-1", AgentPath("/tmp/work"))
+	return r
+}
+
+func TestRegistryStackProxiesResult(t *testing.T) {
+	tr := &captureTransport{stackResult: json.RawMessage(testStackResult)}
+	r := newStackTestRegistry(t, tr)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	got, err := r.Stack(ctx, "s-1")
+	if err != nil || string(got) != testStackResult {
+		t.Fatalf("Stack = %s, %v; want %s", got, err, testStackResult)
+	}
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if len(tr.seen) != 1 || tr.seen[0].method != "session/stack" || tr.seen[0].params != `{"sessionId":"s-1"}` {
+		t.Fatalf("requests = %+v", tr.seen)
+	}
+}
+
+func TestRegistryStackUnsupported(t *testing.T) {
+	r := newStackTestRegistry(t, &captureTransport{stackError: &rpcError{Code: -32601, Message: "method not found"}})
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := r.Stack(ctx, "s-1"); !errors.Is(err, ErrStackUnsupported) {
+		t.Fatalf("Stack error = %v, want ErrStackUnsupported", err)
+	}
+}
+
+func TestRegistryStackOtherErrors(t *testing.T) {
+	r := newStackTestRegistry(t, &captureTransport{stackError: &rpcError{Code: -32000, Message: "failure"}})
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := r.Stack(ctx, "nope"); !errors.Is(err, ErrUnknownSession) {
+		t.Fatalf("unknown Stack error = %v", err)
+	}
+	_, err := r.Stack(ctx, "s-1")
+	var rpc *rpcError
+	if !errors.As(err, &rpc) || rpc.Code != -32000 {
+		t.Fatalf("Stack error = %v, want original RPC error", err)
+	}
+}
+
 func TestRegistryWrappers(t *testing.T) {
 	r, c := newTestRegistry(t, "registry")
 	ctx, cancel := testContext(t)
@@ -988,8 +1041,10 @@ func TestSessionParamsSerialiseAsPlainStrings(t *testing.T) {
 // raw JSON params of every lifecycle request it receives, so tests can
 // assert on the exact wire payload the bridge sends to the agent.
 type captureTransport struct {
-	mu   sync.Mutex
-	seen []capturedFrame
+	mu          sync.Mutex
+	seen        []capturedFrame
+	stackResult json.RawMessage
+	stackError  *rpcError
 }
 
 type capturedFrame struct {
@@ -1024,6 +1079,12 @@ func (t *captureTransport) serve(r io.Reader, w io.WriteCloser) {
 		switch req.Method {
 		case "session/new":
 			result = map[string]any{"sessionId": "s-1"}
+		case "session/stack":
+			if t.stackError != nil {
+				_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": t.stackError})
+				continue
+			}
+			result = t.stackResult
 		default:
 			result = map[string]any{}
 		}

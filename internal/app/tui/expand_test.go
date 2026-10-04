@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
+	"marshal/internal/viewmodel"
 )
 
 func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
@@ -61,8 +61,8 @@ func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 
 func TestCtrlGClearsActiveToolOverrides(t *testing.T) {
 	m := newTestModel(t)
-	keyA := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
-	keyB := stack.NodeID{Kind: stack.KindTool, Key: "tool:b"}
+	keyA := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:a"}
+	keyB := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:b"}
 	m.toggleExpanded(keyA)
 	m.toggleExpanded(keyB)
 	if !m.isToolExpanded(keyA, true) || !m.isToolExpanded(keyB, true) {

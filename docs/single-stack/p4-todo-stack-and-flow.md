@@ -16,7 +16,7 @@ Two things read badly in practice:
 
 ## Todo stack
 
-A todo list of two or more items drives the transcript (`stack.MinTaskTodos`).
+A todo list of two or more items drives the transcript (`viewmodel.MinTaskTodos`).
 Whether a turn is driven is settled per turn, by the longest list any
 `todo.write` in it wrote or by the current list, so rewriting the list to one
 item later does not flatten a finished turn. Shorter lists, and turns that
@@ -37,7 +37,7 @@ For a turn working from a list:
 - **Transcript.** Finished todos are folded rows (P3 folding rule
   unchanged, so they still expand to their steps), stacked tight. The todo
   in progress is open: a rule header sitting directly on its steps. The
-  waiting todos are not repeated here (`stack.KindQueue` is the data the
+  waiting todos are not repeated here (`viewmodel.KindQueue` is the data the
   strip reads, and it renders no rows).
 
 Work under a todo that later left the list still renders under its `dropped`

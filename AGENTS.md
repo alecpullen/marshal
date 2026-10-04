@@ -49,6 +49,7 @@ internal/pipeline/                    — plan execution: implementer/reviewer/b
 internal/worker/                      — lifecycle contract for supervised background workers
 internal/pubsub/                      — in-process typed event broker
 internal/acp/                         — ACP v1 headless transport (initialize, session lifecycle, prompt/cancel, permissions)
+internal/viewmodel/                    — transcript view model (turn → task → step → row, receipts), text helpers, and its JSON wire projection; shared by the TUI and ACP
 
 App shell
 internal/app/app.go                   — Run(), dependency wiring, signal handling
@@ -62,7 +63,6 @@ TUI
 internal/app/tui/                     — Bubble Tea model (View/Update/Init); model.go is the hub
 internal/app/tui/dock/                — hosts a single interactive panel above the input area
 internal/app/tui/sessionsheet/        — session sheet (Ctrl+B): read-only sections in a docked panel
-internal/app/tui/stack/               — transcript view model: turn → task → step → row, plus turn receipts (structure only, no styling)
 internal/app/tui/inspector/           — full-screen inspector for one step or tool call (browse mode `i`)
 internal/app/tui/settings/            — /settings browser: field list, pane stack, config frames
 internal/app/tui/connect/             — provider connect flow (template → base URL → key → probe → model)

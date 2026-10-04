@@ -9,25 +9,25 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/viewmodel"
 )
 
 // browseItem is one navigable node and the content lines it occupies. The
 // list is rebuilt on every full refresh from the rendered tree, so it always
 // matches what is on screen.
 type browseItem struct {
-	id         stack.NodeID
-	kind       stack.Kind
+	id         viewmodel.NodeID
+	kind       viewmodel.Kind
 	start, end int  // content lines, end exclusive
 	jump       bool // a stop for J/K: a task header or a turn's first node
 }
 
 // navigable reports whether browse mode can put the cursor on a node.
-func navigable(k stack.Kind) bool {
+func navigable(k viewmodel.Kind) bool {
 	switch k {
-	case stack.KindTask, stack.KindStep, stack.KindTool, stack.KindSubagent, stack.KindMessage,
-		stack.KindFinal, stack.KindRunEvent, stack.KindJobExit, stack.KindPassthrough, stack.KindReceipt:
+	case viewmodel.KindTask, viewmodel.KindStep, viewmodel.KindTool, viewmodel.KindSubagent, viewmodel.KindMessage,
+		viewmodel.KindFinal, viewmodel.KindRunEvent, viewmodel.KindJobExit, viewmodel.KindPassthrough, viewmodel.KindReceipt:
 		return true
 	}
 	return false
@@ -36,14 +36,14 @@ func navigable(k stack.Kind) bool {
 // collectBrowse appends the navigable nodes of one rendered top-level block.
 // A task contributes its header line only; its steps and their rows come from
 // the sub-regions the renderer recorded.
-func collectBrowse(items []browseItem, n *stack.Node, out string, subs []subRegion, base int, turnFirst bool) []browseItem {
+func collectBrowse(items []browseItem, n *viewmodel.Node, out string, subs []subRegion, base int, turnFirst bool) []browseItem {
 	lines := strings.Count(out, "\n")
 	if navigable(n.Kind) {
 		end := base + lines
-		if n.Kind == stack.KindTask {
+		if n.Kind == viewmodel.KindTask {
 			end = base + 1
 		}
-		items = append(items, browseItem{id: n.ID, kind: n.Kind, start: base, end: end, jump: n.Kind == stack.KindTask || turnFirst})
+		items = append(items, browseItem{id: n.ID, kind: n.Kind, start: base, end: end, jump: n.Kind == viewmodel.KindTask || turnFirst})
 	}
 	for _, sr := range subs {
 		if !navigable(sr.id.Kind) {
@@ -55,14 +55,14 @@ func collectBrowse(items []browseItem, n *stack.Node, out string, subs []subRegi
 }
 
 // indexTree records every node of a block by ID, for copy/open/inspect.
-func indexTree(n *stack.Node, into map[stack.NodeID]*stack.Node) {
+func indexTree(n *viewmodel.Node, into map[viewmodel.NodeID]*viewmodel.Node) {
 	into[n.ID] = n
 	for _, c := range n.Children {
 		indexTree(c, into)
 	}
 }
 
-func (m *Model) setBrowseItems(items []browseItem, tree map[stack.NodeID]*stack.Node) {
+func (m *Model) setBrowseItems(items []browseItem, tree map[viewmodel.NodeID]*viewmodel.Node) {
 	prev := m.cursorIndex()
 	m.browseItems, m.browseTree = items, tree
 	if !m.browsing {
@@ -103,7 +103,7 @@ func (m *Model) enterBrowse() bool {
 	}
 	pick := m.browseItems[len(m.browseItems)-1].id
 	for i := len(m.browseItems) - 1; i >= 0; i-- {
-		if m.browseItems[i].kind == stack.KindStep {
+		if m.browseItems[i].kind == viewmodel.KindStep {
 			pick = m.browseItems[i].id
 			break
 		}
@@ -296,7 +296,7 @@ func isPrintable(msg tea.KeyPressMsg) bool {
 	return msg.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper) == 0
 }
 
-func (m *Model) currentNode() *stack.Node { return m.browseTree[m.cursor] }
+func (m *Model) currentNode() *viewmodel.Node { return m.browseTree[m.cursor] }
 
 // subagentAtCursor finds the subagent card under the cursor, or (when
 // owning is set, or the cursor is on a step) the first card of the cursor's
@@ -306,14 +306,14 @@ func (m *Model) subagentAtCursor(onlyCard bool) (session.SubagentView, bool) {
 	if n == nil {
 		return session.SubagentView{}, false
 	}
-	if n.Kind == stack.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil {
+	if n.Kind == viewmodel.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil {
 		return *n.Item.Subagent, true
 	}
 	if onlyCard {
 		return session.SubagentView{}, false
 	}
 	for _, c := range n.Children {
-		if c.Kind == stack.KindSubagent && c.Item != nil && c.Item.Subagent != nil && c.Item.Subagent.Child != nil {
+		if c.Kind == viewmodel.KindSubagent && c.Item != nil && c.Item.Subagent != nil && c.Item.Subagent.Child != nil {
 			return *c.Item.Subagent, true
 		}
 	}
@@ -339,9 +339,9 @@ func (m *Model) paintCursor(content string) string {
 
 	// A step's own rows get the lighter overlay.
 	lighter := map[int]bool{}
-	if cur.kind == stack.KindStep || cur.kind == stack.KindTask {
+	if cur.kind == viewmodel.KindStep || cur.kind == viewmodel.KindTask {
 		for _, it := range m.browseItems {
-			if (it.kind == stack.KindTool || it.kind == stack.KindSubagent) && it.start >= cur.start && it.end <= cur.end {
+			if (it.kind == viewmodel.KindTool || it.kind == viewmodel.KindSubagent) && it.start >= cur.start && it.end <= cur.end {
 				for l := it.start; l < it.end; l++ {
 					lighter[l] = true
 				}

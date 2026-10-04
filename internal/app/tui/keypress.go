@@ -11,8 +11,8 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // handleKeypress routes the global hotkeys and the Enter-submit flow.
@@ -208,7 +208,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return *m, nil, true
 	case "ctrl+g":
 		m.density = m.density.nextGlobal()
-		m.nodeDensity = map[stack.NodeID]density{}
+		m.nodeDensity = map[viewmodel.NodeID]density{}
 		cmd := m.setFlash("Detail: " + m.density.String())
 		m.invalidateTranscript()
 		m.refreshViewport()

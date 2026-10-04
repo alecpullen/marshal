@@ -1,4 +1,4 @@
-package stack
+package viewmodel
 
 import (
 	"encoding/json"

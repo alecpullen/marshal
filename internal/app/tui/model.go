@@ -47,7 +47,6 @@ import (
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
@@ -70,6 +69,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 	"marshal/internal/worktree"
 )
@@ -389,10 +389,10 @@ type Model struct {
 	// overrides set by Enter or a click, cleared whenever Ctrl+G moves the
 	// global level. A node without one inherits its parent's level.
 	density     density
-	nodeDensity map[stack.NodeID]density
+	nodeDensity map[viewmodel.NodeID]density
 	// effDensity records the level each node was last drawn at, so a click
 	// cycles from what the user sees rather than from the global default.
-	effDensity map[stack.NodeID]density
+	effDensity map[viewmodel.NodeID]density
 	// foldTasks is the session toggle for folding finished tasks (z).
 	foldTasks bool
 	// Browse mode (Esc): a cursor over the rendered nodes. browseItems is
@@ -408,33 +408,33 @@ type Model struct {
 	// taskStats counts steps and work time per todo as the transcript groups them (with the
 	// render-time re-binding), so the Tasks panel agrees with the headers.
 	taskStats   map[string]taskStat
-	cursor      stack.NodeID
+	cursor      viewmodel.NodeID
 	browseItems []browseItem
-	browseTree  map[stack.NodeID]*stack.Node
+	browseTree  map[viewmodel.NodeID]*viewmodel.Node
 	// flash is a transient status-line message (see flash.go).
 	flash      string
 	flashUntil time.Time
 	// regionOffset holds the per-region body scroll offset for bounded live
 	// regions (see internal/app/tui/liveregion). Pruned on every
 	// refreshViewport, so a finished region's entry does not leak.
-	regionOffset map[stack.NodeID]int
+	regionOffset map[viewmodel.NodeID]int
 	// regionRows is the high-water mark for each bounded live region: the
 	// tallest it has rendered so far. liveregion.Render is pure and cannot
 	// remember, and the body genuinely shrinks (SubagentActivityTail
 	// switches between streamed reasoning and audit summaries), so without
 	// this the card oscillates. Pruned with regionOffset.
-	regionRows map[stack.NodeID]int
+	regionRows map[viewmodel.NodeID]int
 	// refFinder resolves blast radius; nil when LSP is unavailable.
 	refFinder ReferenceFinder
 	// callers caches reference lookups per tool row. A present-but-empty
 	// entry is a negative result and must not be re-queried.
-	callers      map[stack.NodeID][]string
-	callersAsked map[stack.NodeID]bool
+	callers      map[viewmodel.NodeID][]string
+	callersAsked map[viewmodel.NodeID]bool
 	// renderCache holds each settled transcript block's rendered output,
 	// keyed by node identity and valid while its payload version, width and
 	// render inputs are unchanged. Only live nodes re-render on a spinner
 	// tick. Pruned to the nodes seen on the latest refresh.
-	renderCache map[stack.NodeID]cachedNode
+	renderCache map[viewmodel.NodeID]cachedNode
 	// nodeRegions maps content-line ranges in the transcript viewport to the
 	// node occupying them, rebuilt every time refreshViewport rebuilds
 	// blocks. Rows inside a step record their own narrower ranges. See

@@ -16,7 +16,7 @@ func (f *Fleet) SubmitIssue(ctx context.Context, repoID string, number int) (Sub
 	if !ok {
 		return SubmitResult{}, fmt.Errorf("%w: %s", ErrUnregisteredRepo, repoID)
 	}
-	forge, cred, err := f.forgeFor(repo)
+	forge, cred, err := f.forgeFor(ctx, repo)
 	if err != nil {
 		return SubmitResult{}, fmt.Errorf("issue intake for %s: %w", repoID, err)
 	}
@@ -41,7 +41,7 @@ func (f *Fleet) ListRepoIssues(ctx context.Context, repoID string) ([]Issue, err
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnregisteredRepo, repoID)
 	}
-	forge, cred, err := f.forgeFor(repo)
+	forge, cred, err := f.forgeFor(ctx, repo)
 	if err != nil {
 		return nil, fmt.Errorf("list issues for %s: %w", repoID, err)
 	}

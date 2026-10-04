@@ -154,6 +154,20 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/disk", s.diskStatus)
 	s.mux.HandleFunc("POST /api/prune", s.pruneDisk)
 	s.mux.HandleFunc("GET /api/audit", s.listAudit)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/ca/rotate", s.rotateWorkspaceCA)
+	s.mux.HandleFunc("GET /api/credentials", s.listCredentials)
+	s.mux.HandleFunc("POST /api/credentials", s.putCredential)
+	s.mux.HandleFunc("DELETE /api/credentials/{id}", s.deleteCredential)
+	s.mux.HandleFunc("GET /api/repos", s.listRepos)
+	s.mux.HandleFunc("POST /api/repos", s.registerRepo)
+	s.mux.HandleFunc("DELETE /api/repos/{id}", s.removeRepo)
+	s.mux.HandleFunc("GET /api/network", s.networkView)
+	s.mux.HandleFunc("GET /api/network/pending", s.networkPending)
+	s.mux.HandleFunc("POST /api/network/decisions", s.networkDecision)
+	s.mux.HandleFunc("GET /api/secrets/status", s.secretsStatus)
+	s.mux.HandleFunc("GET /api/secrets", s.listSecrets)
+	s.mux.HandleFunc("PUT /api/secrets/{ref...}", s.putSecret)
+	s.mux.HandleFunc("DELETE /api/secrets/{ref...}", s.deleteSecret)
 	// NOTE: with a token configured this stream requires an
 	// Authorization header, which the browser-native EventSource API
 	// cannot send. The SPA must consume SSE over fetch (Task 7 does);

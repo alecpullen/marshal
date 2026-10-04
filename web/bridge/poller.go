@@ -73,7 +73,7 @@ func (f *Fleet) pollOnce(ctx context.Context) {
 // alone: editing an issue bumps its updated time, so a cursor-only
 // design resubmits work the operator has already seen.
 func (f *Fleet) pollRepo(ctx context.Context, r Repo) error {
-	forge, cred, err := f.forgeFor(r)
+	forge, cred, err := f.forgeFor(ctx, r)
 	if err != nil {
 		return err
 	}

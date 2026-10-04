@@ -439,8 +439,10 @@ production store is empty. W4 adds:
 - **Agent env.** Agents get `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy`
   and `http_proxy`, all set to
   `http://<agentId>:<token>@marshal-egress:3128`. `NO_PROXY` is empty.
-  - The token is per agent, random 32 bytes, and kept in memory by the
-    bridge, which re-issues it on reattach.
+  - The token is per agent: an HMAC-SHA256 of the agent ID under a
+    bridge-held 32-byte key (`<state>/egress/token.key`, mode 0600). It is
+    a function of the agent ID, so a container that outlives a bridge
+    restart keeps working and reattach needs no re-issue.
   - The proxy checks the token and the source IP. The IP is the
     container's address on `marshal-agents`, read with `inspect` at
     spawn.
@@ -496,6 +498,13 @@ decisions:
 | `allow-agent` | Add a per-agent grant, held in memory for the agent's lifetime, and push a new policy |
 | `add-to-workspace` | Use `workspace/patch` on the template's draft to append the host to `[network].egress`, then report the draft as changed. A Studio template gets a draft change. A repo template gets a downloadable patch instead, since the bridge doesn't write to repos. |
 
+`GET /api/network/pending[?agent=<id>]` returns
+`{pending: [{kind:"network_block", sessionId, agentId, host, workspace?, at}]}`:
+blocks (the `network_block` delta shape, `at` in Unix ms) that no decision
+has answered yet, oldest first, for agents that still exist. A page that
+reloads rebuilds its prompts from it. Any decision on an (agent, host)
+removes it.
+
 Each decision is audited as `network_decision`.
 
 ### 6.5 Workspace CA
@@ -516,12 +525,28 @@ The CA is generated lazily per workspace with `crypto/x509` and
   - `/etc/ssl/cert.pem`
 
   It is followed by the CA certificate.
-- **In the container:** the bundle is mounted read-only at
-  `/marshal/ca-bundle.pem`. The env sets `SSL_CERT_FILE`,
-  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and `GIT_SSL_CAINFO` to it, and
-  `NODE_EXTRA_CA_CERTS` to the CA certificate alone.
-- **Rotation.** `POST /api/workspaces/{name}/ca/rotate` creates a new CA,
-  which takes effect for agents spawned afterwards. No rebuild is needed.
+- **In the container:** the `<state>/ca/` directory is mounted read-only
+  at `/marshal/ca` (a directory, not single files, so the files are seen
+  again after the bridge rewrites them). The env sets `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and `GIT_SSL_CAINFO` to
+  `/marshal/ca/<workspace>-bundle.pem`, and `NODE_EXTRA_CA_CERTS` to
+  `/marshal/ca/<workspace>.pem`.
+- **Generations and rotation.** `POST /api/workspaces/{name}/ca/rotate`
+  creates a new CA and retires the old one; it does not destroy it. Each
+  injecting agent is bound to the generation it started with, and the
+  proxy keeps signing that agent's leaves from it, so rotation never
+  breaks a running agent. The trust files hold the current CA followed by
+  every retired generation still in use. A retired generation is deleted
+  once no agent uses it. Agents spawned after the rotation use the new CA.
+  No rebuild is needed.
+- **Reserved paths.** `ca/` in the secret provider belongs to the bridge:
+  the secrets API refuses to write, delete or list it, and egress
+  injection refuses refs under it. Vault credentials may reference only
+  `git/` (or `env/` on the env backend).
+- **Failure.** If the proxy cannot start, workspaces whose network policy
+  is `allowlist` or `off`, or that inject credentials, refuse to start
+  agents (the error names the proxy). Open workspaces run unproxied.
+  `GET /api/network` carries `egressError` while the proxy is down.
 
 ## 7. Projects 2.0
 

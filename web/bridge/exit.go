@@ -89,7 +89,7 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 
 	// 4. Push — the only bridge-side git operation at exit.
 	branch := branchNameFor(a)
-	cred, err := f.credentialForAgent(a)
+	cred, err := f.credentialForAgent(ctx, a)
 	if err != nil {
 		return ExitResult{}, err
 	}
@@ -174,7 +174,7 @@ func branchNameFor(a Agent) string {
 
 // credentialForAgent resolves the credential for a git-sourced agent
 // through the credential store.
-func (f *Fleet) credentialForAgent(a Agent) (Credential, error) {
+func (f *Fleet) credentialForAgent(ctx context.Context, a Agent) (Credential, error) {
 	// For a registered repo, resolve via its CredRef.
 	// For a raw URL (read-only), no credential is needed.
 	if a.ReadOnly {
@@ -189,18 +189,18 @@ func (f *Fleet) credentialForAgent(a Agent) (Credential, error) {
 	if r.CredRef == "" {
 		return Credential{Kind: "none"}, nil
 	}
-	return f.creds.Resolve(a.OwnerID, r.CredRef)
+	return f.creds.Resolve(ctx, a.OwnerID, r.CredRef)
 }
 
 // forgeFor resolves the forge and HTTP-capable credential for a repo.
 // It returns errNoForge when the repo has no forge declared or its
 // credential cannot make HTTP API calls — the documented degradation
 // path, not an error worth logging.
-func (f *Fleet) forgeFor(repo Repo) (Forge, Credential, error) {
+func (f *Fleet) forgeFor(ctx context.Context, repo Repo) (Forge, Credential, error) {
 	if repo.Forge == "" {
 		return nil, Credential{}, errNoForge
 	}
-	cred, err := f.creds.Resolve(repo.OwnerID, repo.CredRef)
+	cred, err := f.creds.Resolve(ctx, repo.OwnerID, repo.CredRef)
 	if err != nil {
 		return nil, Credential{}, err
 	}
@@ -221,7 +221,7 @@ func (f *Fleet) createPR(ctx context.Context, a Agent, branch string, verify *ga
 	if !ok {
 		return PR{}, errNoForge
 	}
-	forge, cred, err := f.forgeFor(repo)
+	forge, cred, err := f.forgeFor(ctx, repo)
 	if err != nil {
 		return PR{}, err
 	}

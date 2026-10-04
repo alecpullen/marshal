@@ -74,6 +74,12 @@ type ContainerConfig struct {
 	// ExtraBinds are host paths bind-mounted at a container path. The
 	// control agent uses them to reach declared project roots.
 	ExtraBinds []ProjectMount
+	// Network is a user-defined network to join (the egress proxy's
+	// internal network). Empty uses the runtime default. "host" and
+	// "container:" modes are never honoured.
+	Network string
+	// ExtraVolumes are further state-volume subpath mounts.
+	ExtraVolumes []VolumeSubpath
 	// CPUs and MemoryMB cap the container. Zero means unlimited.
 	CPUs     float64
 	MemoryMB int
@@ -177,6 +183,12 @@ func (c *containerTransport) buildRunArgs() []string {
 	}
 	for _, m := range c.cfg.ExtraBinds {
 		args = append(args, "-v", m.Host+":"+m.Container)
+	}
+	for _, v := range c.cfg.ExtraVolumes {
+		args = append(args, volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, v.Target, v.Subpath, v.ReadOnly)...)
+	}
+	if n := c.cfg.Network; n != "" && n != "host" && n != "none" && !strings.HasPrefix(n, "container:") {
+		args = append(args, "--network", n)
 	}
 	if c.cfg.CPUs > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(c.cfg.CPUs, 'f', -1, 64))

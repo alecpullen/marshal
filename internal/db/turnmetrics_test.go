@@ -397,7 +397,7 @@ func TestAggregateTurnMetrics(t *testing.T) {
 			Outcome: "answered", SalvageReason: "",
 			PromptTokens: 10, CompletionTokens: 20,
 			ReasoningTokens: 0, CacheReadTokens: 5, CacheWriteTokens: 2,
-			EstimatedCostCents: 30,
+			EstimatedCostCents: 30, EstimatedCostMicroUSD: 300_000,
 		},
 		{
 			ProjectID: projectID, SessionID: "sess_agg",
@@ -409,7 +409,7 @@ func TestAggregateTurnMetrics(t *testing.T) {
 			Outcome: "answered", SalvageReason: "",
 			PromptTokens: 15, CompletionTokens: 25,
 			ReasoningTokens: 5, CacheReadTokens: 3, CacheWriteTokens: 1,
-			EstimatedCostCents: 50,
+			EstimatedCostCents: 50, EstimatedCostMicroUSD: 500_000,
 		},
 		{
 			ProjectID: projectID, SessionID: "sess_agg",
@@ -433,6 +433,10 @@ func TestAggregateTurnMetrics(t *testing.T) {
 	totals, breakdown, err := database.AggregateTurnMetrics(projectID)
 	if err != nil {
 		t.Fatalf("AggregateTurnMetrics: %v", err)
+	}
+
+	if totals.EstimatedCostMicroUSD != 800_000 {
+		t.Errorf("EstimatedCostMicroUSD = %d, want 800000", totals.EstimatedCostMicroUSD)
 	}
 
 	// Grand totals: (10+15+5)=30 prompt, (20+25+3)=48 completion,
@@ -533,6 +537,7 @@ func TestSessionUsageScopesToSession(t *testing.T) {
 
 	a := sampleRow(projectID, "session-a")
 	a.PromptTokens, a.CompletionTokens = 100, 10
+	a.EstimatedCostMicroUSD = 2_500
 	if _, err := database.InsertTurnMetrics(a); err != nil {
 		t.Fatalf("InsertTurnMetrics: %v", err)
 	}
@@ -558,6 +563,9 @@ func TestSessionUsageScopesToSession(t *testing.T) {
 	}
 	if got.CompletionTokens != 20 {
 		t.Errorf("CompletionTokens = %d, want 20", got.CompletionTokens)
+	}
+	if got.EstimatedCostMicroUSD != 5_000 {
+		t.Errorf("EstimatedCostMicroUSD = %d, want 5000", got.EstimatedCostMicroUSD)
 	}
 }
 

@@ -233,13 +233,6 @@ func (r *Runner) emitMetrics(task *Task) {
 	m.Class = string(task.Class)
 	m.Outcome = outcomeFor(task)
 	m.SalvageReason = task.SalvagedReason
-	m.EstimatedCostCents = pricing.EstimateCostCents(schema.TokenUsage{
-		PromptTokens:     m.PromptTokens,
-		CompletionTokens: m.CompletionTokens,
-		ReasoningTokens:  m.ReasoningTokens,
-		CacheReadTokens:  m.CacheReadTokens,
-		CacheWriteTokens: m.CacheWriteTokens,
-	}, r.Pricing)
 	m.EstimatedCostMicroUSD = pricing.EstimateCostMicroUSD(schema.TokenUsage{
 		PromptTokens:     m.PromptTokens,
 		CompletionTokens: m.CompletionTokens,
@@ -247,6 +240,8 @@ func (r *Runner) emitMetrics(task *Task) {
 		CacheReadTokens:  m.CacheReadTokens,
 		CacheWriteTokens: m.CacheWriteTokens,
 	}, r.Pricing)
+	// Cents are derived from micro-dollars so the two can never drift.
+	m.EstimatedCostCents = m.EstimatedCostMicroUSD / 10_000
 	m.ParseFailKind = sample.Kind
 	m.ParseFailSample = sample.Text
 	// The quota reading is per-turn state, not a counter: it is whatever

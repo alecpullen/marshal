@@ -29,7 +29,10 @@ type UsageTotals struct {
 	CacheReadTokens    int64
 	CacheWriteTokens   int64
 	EstimatedCostCents int64
-	Turns              int
+	// EstimatedCostMicroUSD is the cost in millionths of a US dollar; turns
+	// stored before the column existed contribute 0.
+	EstimatedCostMicroUSD int64
+	Turns                 int
 }
 
 // ModelBreakdown is a UsageTotals scoped to a single (provider, model) pair.
@@ -300,11 +303,12 @@ func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdo
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
 			COALESCE(SUM(estimated_cost_cents), 0),
+			COALESCE(SUM(estimated_cost_micro_usd), 0),
 			COUNT(*)
 		 FROM turn_metrics
 		 WHERE project_id = ?
 		 GROUP BY provider, model
-		 ORDER BY SUM(estimated_cost_cents) DESC`,
+		 ORDER BY SUM(estimated_cost_micro_usd) DESC, SUM(estimated_cost_cents) DESC`,
 		projectID,
 	)
 	if err != nil {
@@ -320,7 +324,7 @@ func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdo
 			&b.Provider, &b.Model,
 			&b.PromptTokens, &b.CompletionTokens,
 			&b.ReasoningTokens, &b.CacheReadTokens, &b.CacheWriteTokens,
-			&b.EstimatedCostCents, &b.Turns,
+			&b.EstimatedCostCents, &b.EstimatedCostMicroUSD, &b.Turns,
 		); err != nil {
 			return UsageTotals{}, nil, fmt.Errorf("scan aggregate row: %w", err)
 		}
@@ -330,6 +334,7 @@ func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdo
 		totals.CacheReadTokens += b.CacheReadTokens
 		totals.CacheWriteTokens += b.CacheWriteTokens
 		totals.EstimatedCostCents += b.EstimatedCostCents
+		totals.EstimatedCostMicroUSD += b.EstimatedCostMicroUSD
 		totals.Turns += b.Turns
 		breakdown = append(breakdown, b)
 	}
@@ -359,14 +364,15 @@ func (db *DB) SessionUsage(projectID int64, sessionID string) (UsageTotals, erro
 			COALESCE(SUM(reasoning_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
-			COALESCE(SUM(estimated_cost_cents), 0)
+			COALESCE(SUM(estimated_cost_cents), 0),
+			COALESCE(SUM(estimated_cost_micro_usd), 0)
 		 FROM turn_metrics
 		 WHERE project_id = ? AND session_id = ?`,
 		projectID, sessionID,
 	).Scan(
 		&t.Turns, &t.PromptTokens, &t.CompletionTokens,
 		&t.ReasoningTokens, &t.CacheReadTokens, &t.CacheWriteTokens,
-		&t.EstimatedCostCents,
+		&t.EstimatedCostCents, &t.EstimatedCostMicroUSD,
 	)
 	if err != nil {
 		return UsageTotals{}, fmt.Errorf("session usage: %w", err)

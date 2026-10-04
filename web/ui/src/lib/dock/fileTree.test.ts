@@ -13,7 +13,7 @@ describe('file tree', () => {
     await t.toggle('')
     expect(lister).toHaveBeenCalledTimes(1)
     expect(t.expanded().has('')).toBe(true)
-    expect(get(t).get('')).toEqual(entries('a.go', 'src').entries)
+    expect(get(t).dirs.get('')).toEqual(entries('a.go', 'src').entries)
   })
 
   it('reveal expands every ancestor, root first', async () => {
@@ -31,9 +31,9 @@ describe('file tree', () => {
   it('records a failure and an unsupported agent', async () => {
     const t = createFileTree('a1', vi.fn().mockRejectedValue(new Error('boom')))
     await t.toggle('')
-    expect(get(t).get('')).toBeInstanceOf(Error)
+    expect(get(t).dirs.get('')).toBeInstanceOf(Error)
     const u = createFileTree('a1', vi.fn().mockResolvedValue('unsupported'))
     await u.toggle('')
-    expect(get(u).get('')).toBe('unsupported')
+    expect(get(u).dirs.get('')).toBe('unsupported')
   })
 })

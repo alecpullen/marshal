@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { get } from 'svelte/store'
+import { APIError } from './api'
 import { createStackStore, type StackPatch, type StackSnapshot, type WireNode } from './stack'
 
 const node = (id: string, o: Partial<WireNode> = {}): WireNode => ({ id, kind: 'step', ...o })
@@ -218,5 +219,21 @@ describe('stack store subagent scoping', () => {
     await store.load()
     store.onEvent(patch({ upsert: [node('turn:1', { kind: 'turn', children: ['step:1', 'step:9'] }), node('step:9', { parent: 'turn:1' })] }))
     expect(get(store).nodes.has('step:9')).toBe(false)
+  })
+})
+
+describe('stack store refusals', () => {
+  it('reports a 400 as an error without retrying', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetcher = vi.fn().mockRejectedValue(new APIError(400, { error: 'no separate transcript' }))
+      const store = createStackStore('s1', { subagentId: 3, fetcher })
+      await store.load()
+      expect(get(store).status).toBe('error')
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

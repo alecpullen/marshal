@@ -7,7 +7,13 @@ export type DirState = DirEntry[] | 'loading' | Error | 'unsupported'
 
 type Lister = (agentId: string, path: string) => Promise<FileList | 'unsupported'>
 
-export interface FileTree extends Readable<Map<string, DirState>> {
+export interface TreeState {
+  dirs: Map<string, DirState>
+  /** The directories shown open. A new Set on every change, so views re-render. */
+  open: Set<string>
+}
+
+export interface FileTree extends Readable<TreeState> {
   /** Expands or collapses a directory; the first expansion loads it. */
   toggle(path: string): Promise<void>
   /** Expands every ancestor of `path`, root first, so the file shows in the tree. */
@@ -24,12 +30,18 @@ const parentsOf = (path: string): string[] => {
 
 /** The worktree's directories, loaded lazily. The root is the empty path. */
 export function createFileTree(agentId: string, lister: Lister = listFiles): FileTree {
-  const dirs = writable(new Map<string, DirState>())
-  const open = new Set<string>()
-  const set = (path: string, st: DirState) => dirs.update((m) => new Map(m).set(path, st))
+  const tree = writable<TreeState>({ dirs: new Map(), open: new Set() })
+  const set = (path: string, st: DirState) => tree.update((t) => ({ ...t, dirs: new Map(t.dirs).set(path, st) }))
+  const setOpen = (path: string, on: boolean) =>
+    tree.update((t) => {
+      const open = new Set(t.open)
+      if (on) open.add(path)
+      else open.delete(path)
+      return { ...t, open }
+    })
 
   async function load(path: string) {
-    const cur = get(dirs).get(path)
+    const cur = get(tree).dirs.get(path)
     if (Array.isArray(cur) || cur === 'loading') return
     set(path, 'loading')
     try {
@@ -41,22 +53,20 @@ export function createFileTree(agentId: string, lister: Lister = listFiles): Fil
   }
 
   async function toggle(path: string) {
-    if (open.has(path)) {
-      open.delete(path)
-      dirs.update((m) => new Map(m))
+    if (get(tree).open.has(path)) {
+      setOpen(path, false)
       return
     }
-    open.add(path)
+    setOpen(path, true)
     await load(path)
   }
 
   async function reveal(path: string) {
     for (const dir of parentsOf(path)) {
-      open.add(dir)
+      setOpen(dir, true)
       await load(dir)
     }
-    dirs.update((m) => new Map(m))
   }
 
-  return { subscribe: dirs.subscribe, toggle, reveal, expanded: () => new Set(open) }
+  return { subscribe: tree.subscribe, toggle, reveal, expanded: () => new Set(get(tree).open) }
 }

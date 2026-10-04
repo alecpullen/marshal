@@ -67,7 +67,7 @@
   })
 
   $effect(() => {
-    void tree.toggle('') // the root, once
+    void tree.reveal('') // the root, opened once
   })
 
   const lines = $derived(view && view !== 'unsupported' && !view.binary ? view.content.split('\n') : [])
@@ -75,7 +75,7 @@
 </script>
 
 {#snippet dir(path: string, depth: number)}
-  {@const st = $tree.get(path)}
+  {@const st = $tree.dirs.get(path)}
   {#if st === 'loading'}
     <div class="px-2 py-0.5 text-muted" style="padding-left: {depth * 12 + 8}px">…</div>
   {:else if st instanceof Error}
@@ -91,10 +91,10 @@
         style="padding-left: {depth * 12 + 8}px"
         onclick={() => (e.dir ? tree.toggle(p) : open(p))}
       >
-        <span class="w-3 shrink-0 text-muted">{e.dir ? (tree.expanded().has(p) ? '▿' : '▹') : ''}</span>
+        <span class="w-3 shrink-0 text-muted">{e.dir ? ($tree.open.has(p) ? '▿' : '▹') : ''}</span>
         <span class="truncate font-mono">{e.name}</span>
       </button>
-      {#if e.dir && tree.expanded().has(p)}{@render dir(p, depth + 1)}{/if}
+      {#if e.dir && $tree.open.has(p)}{@render dir(p, depth + 1)}{/if}
     {/each}
   {/if}
 {/snippet}

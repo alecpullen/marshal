@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
-import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/svelte'
+import { render, cleanup, screen, fireEvent, waitFor, within } from '@testing-library/svelte'
 import Chat from './Chat.svelte'
 import * as api from '../lib/api.js'
 
@@ -20,6 +20,13 @@ vi.mock('../lib/api.js', async (importActual) => {
     loadSession: vi.fn(),
     getStack: vi.fn(),
     cancelSession: vi.fn(),
+    getNode: vi.fn(),
+    getLastRequest: vi.fn(),
+    getDiff: vi.fn(),
+    getGate: vi.fn(),
+    getStepDiffs: vi.fn(),
+    listFiles: vi.fn(),
+    readFile: vi.fn(),
   }
 })
 
@@ -52,6 +59,17 @@ describe('Chat', () => {
     // Unless a test says otherwise the stack is unavailable, so the legacy
     // list renders, which is what the tests above exercise.
     ;(api.getStack as Mock).mockRejectedValue(new Error('no stack'))
+    ;(api.getNode as Mock).mockResolvedValue({ node: {}, detail: {} })
+    ;(api.getLastRequest as Mock).mockResolvedValue('unsupported')
+    ;(api.getDiff as Mock).mockResolvedValue({ files: [] })
+    ;(api.getGate as Mock).mockResolvedValue(null)
+    ;(api.getStepDiffs as Mock).mockResolvedValue([])
+    ;(api.listFiles as Mock).mockResolvedValue({ entries: [] })
+    try {
+      localStorage.clear()
+    } catch {
+      // not available
+    }
   })
 
   it('replaces the transcript with a could-not-be-resumed note when the load 404s', async () => {
@@ -105,8 +123,9 @@ describe('Chat', () => {
     it('renders the stack transcript when the snapshot loads', async () => {
       ;(api.getStack as Mock).mockResolvedValue(turn(false))
       render(Chat, { sessionId: 's1', onBack: () => {} })
-      expect(await screen.findByText('Reading the code')).toBeTruthy()
-      expect(screen.getByText('do the thing')).toBeTruthy()
+      const transcript = await screen.findByTestId('transcript')
+      expect(await within(transcript).findByText('Reading the code')).toBeTruthy()
+      expect(within(transcript).getByText('do the thing')).toBeTruthy()
       expect(screen.getByRole('group', { name: 'Detail' })).toBeTruthy()
     })
 
@@ -120,7 +139,7 @@ describe('Chat', () => {
     it('updates the DOM from a stack_patch event', async () => {
       ;(api.getStack as Mock).mockResolvedValue(turn(false))
       render(Chat, { sessionId: 's1', onBack: () => {} })
-      await screen.findByText('Reading the code')
+      await within(await screen.findByTestId('transcript')).findByText('Reading the code')
       sse()({
         method: 'session/update',
         params: {
@@ -137,7 +156,7 @@ describe('Chat', () => {
           },
         },
       })
-      expect(await screen.findByText('Running the tests')).toBeTruthy()
+      expect(await within(screen.getByTestId('transcript')).findByText('Running the tests')).toBeTruthy()
     })
 
     it('stops the turn on a second Ctrl+C within a second, and only then', async () => {
@@ -180,6 +199,116 @@ describe('Chat', () => {
       await fireEvent.keyDown(screen.getByPlaceholderText('Ask Marshal…'), { key: 'Escape' })
       expect(await screen.findByText(/browse · j\/k move/)).toBeTruthy()
       expect(api.cancelSession).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('session dock', () => {
+    const tree = (extra: object[] = [], stepChildren: string[] = []) => ({
+      rev: 1,
+      roots: ['turn:1'],
+      nodes: [
+        { id: 'turn:1', kind: 'turn', children: ['msg:1', 'step:1'] },
+        { id: 'msg:1', kind: 'message', parent: 'turn:1', message: { role: 'user', content: 'go' } },
+        { id: 'step:1', kind: 'step', parent: 'turn:1', live: true, children: stepChildren, step: { headline: 'Working on it', startedAt: 1 } },
+        ...extra,
+      ],
+    })
+    const withSub = () =>
+      tree([{ id: 'sub:3', kind: 'subagent', parent: 'step:1', subagent: { label: 'reviewer', status: 'running' } }], ['sub:3'])
+    const childTree = {
+      rev: 1,
+      roots: ['turn:9'],
+      nodes: [
+        { id: 'turn:9', kind: 'turn', children: ['step:9'] },
+        { id: 'step:9', kind: 'step', parent: 'turn:9', step: { headline: 'Inside the subagent' } },
+      ],
+    }
+    const browse = async () => {
+      await screen.findByTestId('now-bar')
+      await fireEvent.keyDown(screen.getByPlaceholderText('Ask Marshal…'), { key: 'Escape' })
+      await screen.findByText(/browse · j\/k move/)
+    }
+
+    it('renders the dock docked by default, with Terminal disabled', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(tree())
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      expect((await screen.findByTestId('dock')).getAttribute('data-size')).toBe('docked')
+      expect((screen.getByRole('tab', { name: 'Terminal' }) as HTMLButtonElement).disabled).toBe(true)
+      expect((screen.getByRole('tab', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('renders the strip when the stored size is collapsed', async () => {
+      localStorage.setItem('marshal.ui.dock', JSON.stringify({ size: 'collapsed', width: 440 }))
+      ;(api.getStack as Mock).mockResolvedValue(tree())
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      expect(await screen.findByTestId('dock-strip')).toBeTruthy()
+      expect(screen.queryByTestId('dock')).toBeNull()
+    })
+
+    it('i selects the cursor row and opens Inspect; Back to live clears it', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(tree())
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await browse()
+      await fireEvent.keyDown(document.body, { key: 'i' })
+      expect(await screen.findByRole('button', { name: 'Back to live' })).toBeTruthy()
+      expect(screen.getByRole('tab', { name: 'Inspect' }).getAttribute('aria-selected')).toBe('true')
+      expect(screen.getByTestId('mirror-row').textContent).toContain('Working on it')
+      await fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Back to live' })).toBeNull())
+      expect(screen.getByText('following agent')).toBeTruthy()
+    })
+
+    it('⌘J cycles the dock size', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(tree())
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('dock')
+      await fireEvent.keyDown(document.body, { key: 'j', metaKey: true })
+      await waitFor(() => expect(screen.getByTestId('dock').getAttribute('data-size')).toBe('expanded'))
+      await fireEvent.keyDown(document.body, { key: 'j', ctrlKey: true })
+      expect(await screen.findByTestId('dock-strip')).toBeTruthy()
+    })
+
+    it('⌘P pins without opening the print dialog', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(tree())
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('dock')
+      const notPrevented = await fireEvent.keyDown(document.body, { key: 'p', metaKey: true })
+      expect(notPrevented).toBe(false)
+      expect(screen.getByRole('button', { name: 'Pinned' })).toBeTruthy()
+    })
+
+    it('f drills into a subagent, shows the breadcrumb, and Backspace returns', async () => {
+      ;(api.getStack as Mock).mockImplementation(async (_id: string, sub?: number) => (sub === 3 ? childTree : withSub()))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await browse()
+      await fireEvent.keyDown(document.body, { key: 'f' })
+      const crumbs = await screen.findByRole('navigation', { name: 'Transcript path' })
+      expect(within(crumbs).getByText('reviewer')).toBeTruthy()
+      expect(api.getStack).toHaveBeenCalledWith('s1', 3)
+      expect(await within(screen.getByTestId('transcript')).findByText('Inside the subagent')).toBeTruthy()
+      await fireEvent.keyDown(document.body, { key: 'Backspace' })
+      await waitFor(() => expect(screen.queryByRole('navigation', { name: 'Transcript path' })).toBeNull())
+      expect(within(screen.getByTestId('transcript')).getByText('Working on it')).toBeTruthy()
+    })
+
+    it('stays on the card when a subagent has no transcript of its own', async () => {
+      ;(api.getStack as Mock).mockImplementation(async (_id: string, sub?: number) => {
+        if (sub === 3) throw new api.APIError(400, { error: 'no separate transcript' })
+        return withSub()
+      })
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await browse()
+      await fireEvent.keyDown(document.body, { key: 'f' })
+      expect(await screen.findByText('This subagent has no separate transcript')).toBeTruthy()
+      expect(screen.queryByRole('navigation', { name: 'Transcript path' })).toBeNull()
+    })
+
+    it('restores the dock state from the route', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(tree())
+      render(Chat, { sessionId: 's1', onBack: () => {}, route: { id: 's1', view: 'session', node: 'step:1', dock: 'expanded', tab: 'files' } })
+      expect((await screen.findByTestId('dock')).getAttribute('data-size')).toBe('expanded')
+      expect(screen.getByRole('tab', { name: 'Files' }).getAttribute('aria-selected')).toBe('true')
+      expect(screen.getByRole('button', { name: 'Back to live' })).toBeTruthy()
     })
   })
 })

@@ -173,7 +173,7 @@
         the first one's store, header and transcript.
       -->
       {#key chatSessionId}
-        <Chat sessionId={chatSessionId} route={chatRoute} onBack={() => navigate('#')} />
+        <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
       {/key}
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

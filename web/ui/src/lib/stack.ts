@@ -1,5 +1,5 @@
 import { writable, get, type Readable } from 'svelte/store'
-import { getStack } from './api'
+import { APIError, getStack } from './api'
 
 // Wire shapes, mirroring internal/viewmodel/wire.go. Times are Unix
 // milliseconds; absent means unset.
@@ -213,8 +213,11 @@ export function createStackStore(sessionId: string, opts: StackOptions = {}): St
       for (const n of snap.nodes ?? []) nodes.set(n.id, n)
       store.set({ status: 'ready', rev: snap.rev, roots: snap.roots ?? [], nodes })
       failures = 0
-    } catch {
-      scheduleRetry()
+    } catch (e) {
+      // A refusal (say, a subagent with no transcript of its own) will not
+      // change by asking again; only a transient failure is worth a retry.
+      const refused = e instanceof APIError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429
+      if (!refused) scheduleRetry()
       // Keep a snapshot we already hold; with none, report the failure so the
       // page can fall back. The next event or reload tries again.
       store.update((s) => (s.status === 'ready' ? s : { ...s, status: 'error' }))

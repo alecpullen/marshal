@@ -165,7 +165,9 @@ export interface ProjectStatus {
   orphanWorktrees?: string[]
 }
 
-export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string }
+/** A spawn's model choice: a routing profile, per-role preset overrides, or both (session/new `routing`). */
+export interface RoutingChoice { profile?: string; overrides?: Record<string, string> }
+export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string; routing?: RoutingChoice }
 export async function listAgents(): Promise<AgentStatus[]> { return request('GET', '/api/agents') }
 export async function listProjects(): Promise<ProjectStatus[]> { return request('GET', '/api/projects') }
 export async function addProject(root: string): Promise<ProjectStatus[]> { return request('POST', '/api/projects', { root }) }
@@ -625,4 +627,192 @@ export interface RosterRole { role: string; profile: string; provider?: string; 
 export interface Roster { roles: RosterRole[]; swarmBudget: { maxFixRounds: number; maxTotalTokens: number }; sddBudget: { maxFixRounds: number; maxTotalTokens: number } }
 export async function getRoster(sessionId: string): Promise<Roster | 'unsupported'> {
   return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/roster`))
+}
+
+// Library, models, usage, budgets and watches (W3.2 bridge routes over the W3.1 ACP methods).
+
+const q = encodeURIComponent
+/** `?a=1&b=2` from the defined entries, or ''. */
+function query(params: Record<string, string | undefined>): string {
+  const p = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) if (v) p.set(k, v)
+  const s = p.toString()
+  return s ? `?${s}` : ''
+}
+
+export type LibraryScope = 'global' | 'project'
+export interface SkillEntry { name: string; description: string; risk: string; scope: LibraryScope }
+export interface SkillPreview { stagingToken: string; name: string; description: string; risk: string; source: string }
+export interface PluginEntry { name: string; source: string; ref?: string; commit: string; contentHash: string; installedAt: string; scope: LibraryScope }
+export interface PluginContents { hasManifest: boolean; skillCount: number; commandCount: number; hookCount: number; mcpServerCount: number; mcpPolicyCount: number }
+export interface PluginScan { scanToken: string; name: string; source: string; ref?: string; commit: string; contents: PluginContents }
+export type MemoryConfidence = 'tentative' | 'confirmed' | 'stale'
+export interface MemoryEntry { id: number; kind: string; content: string; confidence: MemoryConfidence | string; sourceSessionId?: string; createdAt: string; updatedAt: string }
+
+export async function listSkills(scope: LibraryScope, project?: string): Promise<SkillEntry[] | 'unsupported'> {
+  const r = await orUnsupported(() => request<{ skills?: SkillEntry[] }>('GET', `/api/library/skills${query({ scope, project })}`))
+  return r === 'unsupported' ? r : (r?.skills ?? [])
+}
+export async function previewSkill(source: string): Promise<SkillPreview | 'unsupported'> {
+  return orUnsupported(() => request('POST', '/api/library/skills/preview', { source }))
+}
+export async function confirmSkill(stagingToken: string, scope: LibraryScope, project?: string): Promise<void> {
+  await request('POST', '/api/library/skills/confirm', { stagingToken, scope, ...(project ? { project } : {}) })
+}
+export async function discardSkill(stagingToken: string): Promise<void> {
+  await request('POST', '/api/library/skills/discard', { stagingToken })
+}
+export async function removeSkill(name: string, scope: LibraryScope, project?: string): Promise<void> {
+  await request('DELETE', `/api/library/skills/${q(name)}${query({ scope, project })}`)
+}
+
+export async function listPlugins(scope: LibraryScope, project?: string): Promise<PluginEntry[] | 'unsupported'> {
+  const r = await orUnsupported(() => request<{ plugins?: PluginEntry[] }>('GET', `/api/library/plugins${query({ scope, project })}`))
+  return r === 'unsupported' ? r : (r?.plugins ?? [])
+}
+export async function scanPlugin(source: string, ref?: string): Promise<PluginScan | 'unsupported'> {
+  return orUnsupported(() => request('POST', '/api/library/plugins/scan', { source, ...(ref ? { ref } : {}) }))
+}
+export async function confirmPlugin(scanToken: string, scope: LibraryScope, project?: string): Promise<void> {
+  await request('POST', '/api/library/plugins/confirm', { scanToken, scope, ...(project ? { project } : {}) })
+}
+export async function discardPlugin(scanToken: string): Promise<void> {
+  await request('POST', '/api/library/plugins/discard', { scanToken })
+}
+export async function removePlugin(name: string, scope: LibraryScope, project?: string): Promise<void> {
+  await request('DELETE', `/api/library/plugins/${q(name)}${query({ scope, project })}`)
+}
+
+export async function listMemory(project: string): Promise<MemoryEntry[] | 'unsupported'> {
+  const r = await orUnsupported(() => request<{ entries?: MemoryEntry[] }>('GET', `/api/library/memory${query({ project })}`))
+  return r === 'unsupported' ? r : (r?.entries ?? [])
+}
+export async function deleteMemory(id: number, project: string): Promise<void> {
+  await request('DELETE', `/api/library/memory/${id}${query({ project })}`)
+}
+export async function setMemoryConfidence(id: number, project: string, confidence: string): Promise<void> {
+  await request('POST', `/api/library/memory/${id}/confidence${query({ project })}`, { confidence })
+}
+
+export type KeySource = 'config' | 'env' | 'none'
+export interface ProviderWire {
+  type: string
+  baseUrl: string
+  apiKeyEnv?: string
+  toolCalling?: boolean
+  template?: string
+  auth?: string
+}
+export interface ProviderView extends ProviderWire { hasKey: boolean; keySource: KeySource }
+export interface PresetWire {
+  provider: string
+  model: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  toolCalling?: string
+  localOnly?: boolean
+  thinking?: string
+}
+export interface Binding { preset?: string; customAgent?: string }
+export type CapAction = 'warn' | 'block' | 'pause'
+export interface Budgets { dailyUsd: number; perAgentUsd: number; onDailyCap: string; onAgentCap: string }
+export interface ModelsConfig {
+  providers: Record<string, ProviderView>
+  presets: Record<string, PresetWire>
+  profiles: Record<string, Record<string, Binding>>
+  customAgents: string[]
+  defaultProfile: string
+  activePreset: string
+  roles: string[]
+  budgets: Budgets
+}
+export interface ProbeResult { models: { id: string; contextWindow?: number }[]; error?: string }
+/** `GET /api/budgets`: the caps plus what has been spent against them. */
+export interface BudgetStatus {
+  budgets: Budgets
+  spentTodayUsd: number
+  agents?: Record<string, number>
+  paused?: string[]
+  blocked?: boolean
+}
+
+export async function getModels(): Promise<ModelsConfig> { return request('GET', '/api/models') }
+/** Sends only the named providers; `null` removes one. */
+export async function setProviders(providers: Record<string, Partial<ProviderWire> | null>): Promise<void> {
+  await request('PUT', '/api/models/providers', { providers })
+}
+export async function setProviderKey(name: string, key: string): Promise<void> {
+  await request('PUT', `/api/models/providers/${q(name)}/key`, { key })
+}
+export async function setPresets(presets: Record<string, PresetWire | null>): Promise<void> {
+  await request('PUT', '/api/models/presets', { presets })
+}
+export async function setRouting(r: { profiles?: Record<string, Record<string, Binding>>; defaultProfile?: string; activePreset?: string }): Promise<void> {
+  await request('PUT', '/api/models/routing', r)
+}
+export async function probeProvider(name: string): Promise<ProbeResult> {
+  return request('POST', '/api/models/probe', { name })
+}
+export async function getBudgets(): Promise<BudgetStatus> { return request('GET', '/api/budgets') }
+export async function setBudgets(budgets: Budgets): Promise<void> {
+  await request('PUT', '/api/budgets', { budgets })
+}
+export async function overrideBudget(agentId: string): Promise<void> {
+  await request('POST', `/api/agents/${q(agentId)}/budget/override`)
+}
+
+export type UsageBy = 'day' | 'project' | 'role' | 'model'
+export interface UsageSeries { key: string; costUsd: number; tokens: number }
+export interface UsageReport {
+  range: string
+  totals: { costUsd: number; promptTokens: number; completionTokens: number; agentHours: number; prsShipped: number }
+  series: UsageSeries[]
+}
+export async function getUsage(range: '7d' | '30d', by: UsageBy): Promise<UsageReport> {
+  const r = await request<UsageReport>('GET', `/api/usage${query({ range, by })}`)
+  return { ...r, series: r?.series ?? [] }
+}
+
+export interface WatchSample { at: number; value: number; tripped: boolean }
+export interface RerouteRule { role: string; preset: string }
+export interface OnTrip { reroute?: RerouteRule }
+export interface WatchInfo {
+  /** The agent id, or `studio` for a Studio-owned watch. */
+  agentId: string
+  id: string
+  name: string
+  kind: 'command' | 'job' | 'file' | string
+  state: 'watching' | 'fired' | 'stopped' | 'error' | string
+  condition?: string
+  mode: string
+  intervalMs: number
+  owner?: string
+  fireCount: number
+  lastSample?: string
+  lastError?: string
+  createdAt: number
+  lastFiredAt?: number
+  samples: WatchSample[]
+  onTrip?: OnTrip
+}
+export interface WatchSpec {
+  name: string
+  kind: 'command' | 'job' | 'file'
+  command?: string
+  jobId?: string
+  path?: string
+  condition?: string
+  mode: string
+  intervalMs: number
+  notify?: boolean
+  resume?: boolean
+}
+export async function listWatches(): Promise<WatchInfo[]> {
+  return (await request<WatchInfo[] | null>('GET', '/api/watches')) ?? []
+}
+export async function createWatch(req: { agentId?: string; spec: WatchSpec; onTrip?: OnTrip }): Promise<{ id: string }> {
+  return request('POST', '/api/watches', req)
+}
+export async function stopWatch(owner: string, id: string): Promise<void> {
+  await request('DELETE', `/api/watches/${q(owner)}/${q(id)}`)
 }

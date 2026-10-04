@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,10 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/agent"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/tools/policy"
 	"marshal/internal/trust"
 )
 
@@ -1386,4 +1389,104 @@ func countRows(t *testing.T, tmp string) (int, int, int) {
 		t.Fatalf("count messages: %v", err)
 	}
 	return p, s, m
+}
+
+func policyTestManager(t *testing.T, rt *app.Runtime) *SessionManager {
+	t.Helper()
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeStartFixed(rt),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+	})
+	m.SetTurnCanceller(noopCancel())
+	return m
+}
+
+func policyTestRuntime() *app.Runtime {
+	state := session.New(config.Default(), "", time.Now(), session.Persistence{})
+	pol := policy.NewEngine(&state.Config, nil)
+	return &app.Runtime{
+		SessionID: "sess_policy",
+		State:     state,
+		Runner:    agent.NewRunner(nil, nil, pol, state, ""),
+	}
+}
+
+func policyNewParams(t *testing.T, policyJSON string) json.RawMessage {
+	t.Helper()
+	cwd, _ := filepath.Abs(t.TempDir())
+	body := `{"cwd":"` + cwd + `","mcpServers":[]`
+	if policyJSON != "" {
+		body += `,"policy":` + policyJSON
+	}
+	return json.RawMessage(body + `}`)
+}
+
+func TestSessionNewAppliesPolicy(t *testing.T) {
+	rt := policyTestRuntime()
+	m := policyTestManager(t, rt)
+
+	if _, err := m.Create(context.Background(), policyNewParams(t, `{"mode":"Copilot","allow":["go test *"," make lint ","git status"]}`)); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := rt.Runner.Policy.ApprovalMode(); got != policy.ModeCopilot {
+		t.Fatalf("approval mode = %q, want copilot", got)
+	}
+	want := []string{"go test", "make lint", "git status"}
+	if got := rt.State.SessionRules(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("session rules = %v, want %v", got, want)
+	}
+}
+
+func TestSessionNewPolicyAllowOnlyKeepsMode(t *testing.T) {
+	rt := policyTestRuntime()
+	before := rt.Runner.Policy.ApprovalMode()
+	m := policyTestManager(t, rt)
+
+	if _, err := m.Create(context.Background(), policyNewParams(t, `{"allow":["go vet *"]}`)); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := rt.Runner.Policy.ApprovalMode(); got != before {
+		t.Fatalf("approval mode changed to %q, want %q", got, before)
+	}
+	if got := rt.State.SessionRules(); !reflect.DeepEqual(got, []string{"go vet"}) {
+		t.Fatalf("session rules = %v", got)
+	}
+}
+
+func TestSessionNewRejectsInvalidPolicy(t *testing.T) {
+	for name, pol := range map[string]string{
+		"bad mode":      `{"mode":"yolo"}`,
+		"empty pattern": `{"allow":["go test *","   "]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var started atomic.Int64
+			m := policyTestManager(t, policyTestRuntime())
+			m.start = func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+				started.Add(1)
+				return policyTestRuntime(), nil
+			}
+			_, err := m.Create(context.Background(), policyNewParams(t, pol))
+			var rpcErr *jsonRPCError
+			if !errors.As(err, &rpcErr) || rpcErr.Code != invalidParams {
+				t.Fatalf("err = %v, want invalid params", err)
+			}
+			if started.Load() != 0 {
+				t.Fatal("runtime must not start for an invalid policy")
+			}
+		})
+	}
+}
+
+func TestSessionNewWithoutPolicyChangesNothing(t *testing.T) {
+	rt := policyTestRuntime()
+	before := rt.Runner.Policy.ApprovalMode()
+	m := policyTestManager(t, rt)
+
+	if _, err := m.Create(context.Background(), policyNewParams(t, "")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if rt.Runner.Policy.ApprovalMode() != before || len(rt.State.SessionRules()) != 0 {
+		t.Fatalf("mode = %q rules = %v, want untouched", rt.Runner.Policy.ApprovalMode(), rt.State.SessionRules())
+	}
 }

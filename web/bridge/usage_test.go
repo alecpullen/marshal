@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -222,4 +223,44 @@ func TestTelemetryUsageReachesTheLedger(t *testing.T) {
 			t.Fatalf("usage leaked into the fleet stream: %s", e.Data)
 		}
 	}
+}
+
+// The full engine telemetry payload (changedFiles as objects, a sub-cent
+// usage row with costMicroUsd) must reach the ledger and the budget, and
+// the delta that reaches the fleet stream must carry the telemetry digest.
+func TestRealTelemetryPayloadReachesLedgerAndBudget(t *testing.T) {
+	h := newBudgetHarness(t, Budgets{DailyUSD: 0.001, OnDailyCap: "block", OnAgentCap: "warn"})
+	id := h.spawn(t)
+	at := h.now.UnixMilli()
+	h.agentOf(id).notify("session/update", map[string]any{"sessionId": "s-1", "update": map[string]any{
+		"kind":          "session_telemetry",
+		"context":       map[string]any{"packTokens": 500, "packMaxTokens": 1000},
+		"changedFiles":  []map[string]any{{"path": "a.go", "added": 2, "removed": 0}},
+		"toolStats":     []map[string]any{{"name": "file.read", "calls": 1, "errors": 0, "slowestMs": 5}},
+		"rules":         []string{},
+		"sessionFooter": map[string]any{"turns": 1},
+		"usage": []map[string]any{{
+			"id": 1, "startedAt": at, "durationMs": 1000, "role": "implementer", "provider": "p", "model": "m",
+			"promptTokens": 10, "completionTokens": 5, "costUsd": 0, "costMicroUsd": 1500,
+		}},
+	}})
+	waitFor(t, 5*time.Second, "sub-cent spend counted", func() bool {
+		return h.f.budgetReport().Daily.SpentUSD == 0.0015
+	})
+	rows, _ := h.f.usage.Range(h.now.Add(-time.Hour), h.now.Add(time.Hour))
+	if len(rows) != 1 || rows[0].CostMicroUSD != 1500 || rows[0].AgentID != id {
+		t.Fatalf("ledger rows = %+v", rows)
+	}
+	if code, _ := h.spawnStatus(t); code != http.StatusTooManyRequests {
+		t.Fatalf("spawn = %d, want 429 once the sub-cent spend crossed the cap", code)
+	}
+	waitFor(t, 5*time.Second, "telemetry delta streamed", func() bool {
+		for _, e := range h.f.fleetLog.Tail(fleetStreamKey) {
+			var m map[string]any
+			if json.Unmarshal(e.Data, &m) == nil && m["kind"] == "telemetry" {
+				return m["changedFiles"] == float64(1) && m["contextPct"] == float64(50) && m["usage"] == nil
+			}
+		}
+		return false
+	})
 }

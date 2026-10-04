@@ -316,7 +316,6 @@ func TestInsertAndRecentTurnMetricsWithNewFields(t *testing.T) {
 	want.CacheReadTokens = 10
 	want.CacheWriteTokens = 5
 	want.EstimatedCostCents = 99
-	want.EstimatedCostMicroUSD = 123456
 
 	id, err := database.InsertTurnMetrics(want)
 	if err != nil {
@@ -397,7 +396,7 @@ func TestAggregateTurnMetrics(t *testing.T) {
 			Outcome: "answered", SalvageReason: "",
 			PromptTokens: 10, CompletionTokens: 20,
 			ReasoningTokens: 0, CacheReadTokens: 5, CacheWriteTokens: 2,
-			EstimatedCostCents: 30, EstimatedCostMicroUSD: 300_000,
+			EstimatedCostCents: 30,
 		},
 		{
 			ProjectID: projectID, SessionID: "sess_agg",
@@ -409,7 +408,7 @@ func TestAggregateTurnMetrics(t *testing.T) {
 			Outcome: "answered", SalvageReason: "",
 			PromptTokens: 15, CompletionTokens: 25,
 			ReasoningTokens: 5, CacheReadTokens: 3, CacheWriteTokens: 1,
-			EstimatedCostCents: 50, EstimatedCostMicroUSD: 500_000,
+			EstimatedCostCents: 50,
 		},
 		{
 			ProjectID: projectID, SessionID: "sess_agg",
@@ -433,10 +432,6 @@ func TestAggregateTurnMetrics(t *testing.T) {
 	totals, breakdown, err := database.AggregateTurnMetrics(projectID)
 	if err != nil {
 		t.Fatalf("AggregateTurnMetrics: %v", err)
-	}
-
-	if totals.EstimatedCostMicroUSD != 800_000 {
-		t.Errorf("EstimatedCostMicroUSD = %d, want 800000", totals.EstimatedCostMicroUSD)
 	}
 
 	// Grand totals: (10+15+5)=30 prompt, (20+25+3)=48 completion,
@@ -537,7 +532,6 @@ func TestSessionUsageScopesToSession(t *testing.T) {
 
 	a := sampleRow(projectID, "session-a")
 	a.PromptTokens, a.CompletionTokens = 100, 10
-	a.EstimatedCostMicroUSD = 2_500
 	if _, err := database.InsertTurnMetrics(a); err != nil {
 		t.Fatalf("InsertTurnMetrics: %v", err)
 	}
@@ -564,9 +558,6 @@ func TestSessionUsageScopesToSession(t *testing.T) {
 	if got.CompletionTokens != 20 {
 		t.Errorf("CompletionTokens = %d, want 20", got.CompletionTokens)
 	}
-	if got.EstimatedCostMicroUSD != 5_000 {
-		t.Errorf("EstimatedCostMicroUSD = %d, want 5000", got.EstimatedCostMicroUSD)
-	}
 }
 
 // A session with no rows must yield zeroes, not a NULL-scan error. This is
@@ -579,21 +570,5 @@ func TestSessionUsageEmptySessionIsZero(t *testing.T) {
 	}
 	if got.Turns != 0 || got.PromptTokens != 0 || got.CompletionTokens != 0 {
 		t.Errorf("got %+v, want zero totals", got)
-	}
-}
-
-func TestRecentTurnMetricsForSessionReadsMicroUSD(t *testing.T) {
-	database, projectID := openMetricsTestDB(t)
-	if err := database.CreateSession("sess_micro", projectID, "", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	row := sampleRow(projectID, "sess_micro")
-	row.EstimatedCostMicroUSD = 3600
-	if _, err := database.InsertTurnMetrics(row); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := database.RecentTurnMetricsForSession(projectID, "sess_micro", 10)
-	if err != nil || len(rows) != 1 || rows[0].EstimatedCostMicroUSD != 3600 {
-		t.Fatalf("rows = %+v, err = %v", rows, err)
 	}
 }

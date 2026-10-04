@@ -29,10 +29,7 @@ type UsageTotals struct {
 	CacheReadTokens    int64
 	CacheWriteTokens   int64
 	EstimatedCostCents int64
-	// EstimatedCostMicroUSD is the cost in millionths of a US dollar; turns
-	// stored before the column existed contribute 0.
-	EstimatedCostMicroUSD int64
-	Turns                 int
+	Turns              int
 }
 
 // ModelBreakdown is a UsageTotals scoped to a single (provider, model) pair.
@@ -68,11 +65,9 @@ type TurnMetricsRow struct {
 	CacheReadTokens    int
 	CacheWriteTokens   int
 	EstimatedCostCents int64
-	// EstimatedCostMicroUSD is the cost estimate in millionths of a dollar.
-	EstimatedCostMicroUSD int64
-	ParseFailKind         string
-	ParseFailSample       string
-	ParseRepairs          int
+	ParseFailKind      string
+	ParseFailSample    string
+	ParseRepairs       int
 	// FailedRepeatStreak and HighestFailedRepeatTier record the failure-path
 	// repeat ladder: the longest run of identical failed calls in the turn and
 	// how far escalation got (0 none, 2 nudge, 3 injected correction, 4 hard
@@ -104,12 +99,12 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 			provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, soft_stalls, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents, estimated_cost_micro_usd,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
 			parse_fail_kind, parse_fail_sample, parse_repairs,
 			failed_repeat_streak, highest_failed_repeat_tier,
 			quota_used_percent, quota_reset_after_secs, quota_plan_type,
 			intent_nudges
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -134,7 +129,6 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.CacheReadTokens,
 		row.CacheWriteTokens,
 		row.EstimatedCostCents,
-		row.EstimatedCostMicroUSD,
 		row.ParseFailKind,
 		row.ParseFailSample,
 		row.ParseRepairs,
@@ -183,7 +177,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			role, provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents, estimated_cost_micro_usd,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
 			parse_fail_kind, parse_fail_sample, parse_repairs,
 			quota_used_percent, quota_reset_after_secs, quota_plan_type
 		 FROM turn_metrics
@@ -208,7 +202,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			&r.ToolErrors, &r.CacheHits, &r.ParseFailures,
 			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
 			&r.CompletionTokens,
-			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents, &r.EstimatedCostMicroUSD,
+			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
 			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
 			&r.QuotaUsedPercent, &r.QuotaResetAfterSecs, &r.QuotaPlanType,
 		); err != nil {
@@ -246,7 +240,7 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			role, provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents, estimated_cost_micro_usd,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
 			parse_fail_kind, parse_fail_sample, parse_repairs,
 			quota_used_percent, quota_reset_after_secs, quota_plan_type
 		 FROM turn_metrics
@@ -271,7 +265,7 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			&r.ToolErrors, &r.CacheHits, &r.ParseFailures,
 			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
 			&r.CompletionTokens,
-			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents, &r.EstimatedCostMicroUSD,
+			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
 			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
 			&r.QuotaUsedPercent, &r.QuotaResetAfterSecs, &r.QuotaPlanType,
 		); err != nil {
@@ -303,12 +297,11 @@ func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdo
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
 			COALESCE(SUM(estimated_cost_cents), 0),
-			COALESCE(SUM(estimated_cost_micro_usd), 0),
 			COUNT(*)
 		 FROM turn_metrics
 		 WHERE project_id = ?
 		 GROUP BY provider, model
-		 ORDER BY SUM(estimated_cost_micro_usd) DESC, SUM(estimated_cost_cents) DESC`,
+		 ORDER BY SUM(estimated_cost_cents) DESC`,
 		projectID,
 	)
 	if err != nil {
@@ -324,7 +317,7 @@ func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdo
 			&b.Provider, &b.Model,
 			&b.PromptTokens, &b.CompletionTokens,
 			&b.ReasoningTokens, &b.CacheReadTokens, &b.CacheWriteTokens,
-			&b.EstimatedCostCents, &b.EstimatedCostMicroUSD, &b.Turns,
+			&b.EstimatedCostCents, &b.Turns,
 		); err != nil {
 			return UsageTotals{}, nil, fmt.Errorf("scan aggregate row: %w", err)
 		}
@@ -334,7 +327,6 @@ func (db *DB) AggregateTurnMetrics(projectID int64) (UsageTotals, []ModelBreakdo
 		totals.CacheReadTokens += b.CacheReadTokens
 		totals.CacheWriteTokens += b.CacheWriteTokens
 		totals.EstimatedCostCents += b.EstimatedCostCents
-		totals.EstimatedCostMicroUSD += b.EstimatedCostMicroUSD
 		totals.Turns += b.Turns
 		breakdown = append(breakdown, b)
 	}
@@ -364,15 +356,14 @@ func (db *DB) SessionUsage(projectID int64, sessionID string) (UsageTotals, erro
 			COALESCE(SUM(reasoning_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
-			COALESCE(SUM(estimated_cost_cents), 0),
-			COALESCE(SUM(estimated_cost_micro_usd), 0)
+			COALESCE(SUM(estimated_cost_cents), 0)
 		 FROM turn_metrics
 		 WHERE project_id = ? AND session_id = ?`,
 		projectID, sessionID,
 	).Scan(
 		&t.Turns, &t.PromptTokens, &t.CompletionTokens,
 		&t.ReasoningTokens, &t.CacheReadTokens, &t.CacheWriteTokens,
-		&t.EstimatedCostCents, &t.EstimatedCostMicroUSD,
+		&t.EstimatedCostCents,
 	)
 	if err != nil {
 		return UsageTotals{}, fmt.Errorf("session usage: %w", err)

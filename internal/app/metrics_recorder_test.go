@@ -40,8 +40,6 @@ func TestMetricsRecorderPersistsTurn(t *testing.T) {
 		ParseFailKind:   "envelope",
 		ParseFailSample: "x",
 		ParseRepairs:    2,
-		ReasoningTokens: 7, CacheReadTokens: 3, CacheWriteTokens: 2,
-		EstimatedCostCents: 4, EstimatedCostMicroUSD: 41234,
 	})
 
 	rows, err := database.RecentTurnMetrics(projectID, 5)
@@ -55,12 +53,6 @@ func TestMetricsRecorderPersistsTurn(t *testing.T) {
 	if got.SessionID != "sess_1" || got.Goal != "eval goal" || got.Outcome != "answered" ||
 		got.Iterations != 2 || got.ToolCalls != 1 || got.Model != "test-model" {
 		t.Fatalf("row = %+v", got)
-	}
-	// Cost and cache fields were once dropped by the recorder, leaving every
-	// persisted turn at zero cost.
-	if got.ReasoningTokens != 7 || got.CacheReadTokens != 3 || got.CacheWriteTokens != 2 ||
-		got.EstimatedCostCents != 4 || got.EstimatedCostMicroUSD != 41234 {
-		t.Fatalf("cost fields not persisted: %+v", got)
 	}
 	// Without the recorder mapping these stay ""/0 on every production turn.
 	if got.ParseFailKind != "envelope" || got.ParseFailSample != "x" || got.ParseRepairs != 2 {

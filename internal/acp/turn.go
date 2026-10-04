@@ -1230,22 +1230,18 @@ func (m *TurnManager) buildTelemetry(sessionID string, state *session.State, usa
 // TelemetryUsageRow mirrors one turn_metrics row in the "usage" section.
 // CostUSD is EstimatedCostCents / 100: the estimate is in whole US cents.
 type TelemetryUsageRow struct {
-	ID               int64  `json:"id"`
-	StartedAt        int64  `json:"startedAt"` // Unix milliseconds
-	DurationMs       int64  `json:"durationMs"`
-	Role             string `json:"role"`
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	PromptTokens     int    `json:"promptTokens"`
-	CompletionTokens int    `json:"completionTokens"`
-	ReasoningTokens  int    `json:"reasoningTokens"`
-	CacheReadTokens  int    `json:"cacheReadTokens"`
-	CacheWriteTokens int    `json:"cacheWriteTokens"`
-	// CostUSD is the whole-cent estimate; it truncates cheap turns to zero.
-	CostUSD float64 `json:"costUsd"`
-	// CostMicroUSD is the same estimate in millionths of a dollar. Sum this,
-	// not CostUSD, for usage and budget totals.
-	CostMicroUSD int64 `json:"costMicroUsd"`
+	ID               int64   `json:"id"`
+	StartedAt        int64   `json:"startedAt"` // Unix milliseconds
+	DurationMs       int64   `json:"durationMs"`
+	Role             string  `json:"role"`
+	Provider         string  `json:"provider"`
+	Model            string  `json:"model"`
+	PromptTokens     int     `json:"promptTokens"`
+	CompletionTokens int     `json:"completionTokens"`
+	ReasoningTokens  int     `json:"reasoningTokens"`
+	CacheReadTokens  int     `json:"cacheReadTokens"`
+	CacheWriteTokens int     `json:"cacheWriteTokens"`
+	CostUSD          float64 `json:"costUsd"`
 }
 
 // usageRowLimit bounds how many recent metrics rows one telemetry reads.
@@ -1280,7 +1276,6 @@ func (m *TurnManager) newUsageRows(sessionID string, usageDB *db.DB, projectID i
 			ReasoningTokens: r.ReasoningTokens, CacheReadTokens: r.CacheReadTokens,
 			CacheWriteTokens: r.CacheWriteTokens,
 			CostUSD:          float64(r.EstimatedCostCents) / 100,
-			CostMicroUSD:     r.EstimatedCostMicroUSD,
 		})
 	}
 	m.usageHW[sessionID] = hw

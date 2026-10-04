@@ -36,7 +36,6 @@ func (a *UsageAggregator) Observe(m TurnMetrics) {
 	a.totals.CacheReadTokens += int64(m.CacheReadTokens)
 	a.totals.CacheWriteTokens += int64(m.CacheWriteTokens)
 	a.totals.EstimatedCostCents += m.EstimatedCostCents
-	a.totals.EstimatedCostMicroUSD += m.EstimatedCostMicroUSD
 	a.totals.Turns++
 
 	key := m.Provider + "/" + m.Model
@@ -55,7 +54,6 @@ func (a *UsageAggregator) Observe(m TurnMetrics) {
 	b.CacheReadTokens += int64(m.CacheReadTokens)
 	b.CacheWriteTokens += int64(m.CacheWriteTokens)
 	b.EstimatedCostCents += m.EstimatedCostCents
-	b.EstimatedCostMicroUSD += m.EstimatedCostMicroUSD
 	b.Turns++
 
 	// Always set prompt and completion.
@@ -74,7 +72,7 @@ func (a *UsageAggregator) Observe(m TurnMetrics) {
 }
 
 // Snapshot returns a copy of the grand totals and a sorted slice of per-model
-// breakdowns. Breakdowns are sorted by EstimatedCostMicroUSD descending, with
+// breakdowns. Breakdowns are sorted by EstimatedCostCents descending, with
 // (Provider, Model) as a stable tie-breaker.
 func (a *UsageAggregator) Snapshot() (db.UsageTotals, []db.ModelBreakdown) {
 	a.mu.Lock()
@@ -89,8 +87,8 @@ func (a *UsageAggregator) Snapshot() (db.UsageTotals, []db.ModelBreakdown) {
 
 	sort.SliceStable(breakdowns, func(i, j int) bool {
 		// Primary: cost descending.
-		if breakdowns[i].EstimatedCostMicroUSD != breakdowns[j].EstimatedCostMicroUSD {
-			return breakdowns[i].EstimatedCostMicroUSD > breakdowns[j].EstimatedCostMicroUSD
+		if breakdowns[i].EstimatedCostCents != breakdowns[j].EstimatedCostCents {
+			return breakdowns[i].EstimatedCostCents > breakdowns[j].EstimatedCostCents
 		}
 		// Tie-breaker: provider+model ascending.
 		ki := breakdowns[i].Provider + "/" + breakdowns[i].Model

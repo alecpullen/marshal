@@ -11,37 +11,34 @@ func TestUsageAggregatorAccumulates(t *testing.T) {
 
 	// Two gpt-4o turns, one ollama local turn
 	a.Observe(TurnMetrics{
-		Provider:              "openai",
-		Model:                 "gpt-4o",
-		PromptTokens:          100,
-		CompletionTokens:      50,
-		ReasoningTokens:       0,
-		CacheReadTokens:       10,
-		CacheWriteTokens:      5,
-		EstimatedCostCents:    200,
-		EstimatedCostMicroUSD: 2000000,
+		Provider:           "openai",
+		Model:              "gpt-4o",
+		PromptTokens:       100,
+		CompletionTokens:   50,
+		ReasoningTokens:    0,
+		CacheReadTokens:    10,
+		CacheWriteTokens:   5,
+		EstimatedCostCents: 200,
 	})
 	a.Observe(TurnMetrics{
-		Provider:              "openai",
-		Model:                 "gpt-4o",
-		PromptTokens:          200,
-		CompletionTokens:      100,
-		ReasoningTokens:       0,
-		CacheReadTokens:       0,
-		CacheWriteTokens:      0,
-		EstimatedCostCents:    400,
-		EstimatedCostMicroUSD: 4000000,
+		Provider:           "openai",
+		Model:              "gpt-4o",
+		PromptTokens:       200,
+		CompletionTokens:   100,
+		ReasoningTokens:    0,
+		CacheReadTokens:    0,
+		CacheWriteTokens:   0,
+		EstimatedCostCents: 400,
 	})
 	a.Observe(TurnMetrics{
-		Provider:              "ollama",
-		Model:                 "llama3",
-		PromptTokens:          50,
-		CompletionTokens:      30,
-		ReasoningTokens:       0,
-		CacheReadTokens:       0,
-		CacheWriteTokens:      0,
-		EstimatedCostCents:    0,
-		EstimatedCostMicroUSD: 0,
+		Provider:           "ollama",
+		Model:              "llama3",
+		PromptTokens:       50,
+		CompletionTokens:   30,
+		ReasoningTokens:    0,
+		CacheReadTokens:    0,
+		CacheWriteTokens:   0,
+		EstimatedCostCents: 0,
 	})
 
 	totals, breakdowns := a.Snapshot()
@@ -64,9 +61,6 @@ func TestUsageAggregatorAccumulates(t *testing.T) {
 	}
 	if totals.CacheWriteTokens != 5 {
 		t.Fatalf("totals.CacheWriteTokens = %d, want 5", totals.CacheWriteTokens)
-	}
-	if totals.EstimatedCostMicroUSD != 6_000_000 {
-		t.Fatalf("totals.EstimatedCostMicroUSD = %d, want 6000000", totals.EstimatedCostMicroUSD)
 	}
 	if totals.EstimatedCostCents != 600 {
 		t.Fatalf("totals.EstimatedCostCents = %d, want 600", totals.EstimatedCostCents)
@@ -143,15 +137,14 @@ func TestUsageAggregatorCapabilityTracking(t *testing.T) {
 
 	// A turn with reasoning + cache read, but no cache write
 	a.Observe(TurnMetrics{
-		Provider:              "openai",
-		Model:                 "o1",
-		PromptTokens:          50,
-		CompletionTokens:      30,
-		ReasoningTokens:       20,
-		CacheReadTokens:       5,
-		CacheWriteTokens:      0,
-		EstimatedCostCents:    100,
-		EstimatedCostMicroUSD: 1000000,
+		Provider:           "openai",
+		Model:              "o1",
+		PromptTokens:       50,
+		CompletionTokens:   30,
+		ReasoningTokens:    20,
+		CacheReadTokens:    5,
+		CacheWriteTokens:   0,
+		EstimatedCostCents: 100,
 	})
 
 	_, breakdowns := a.Snapshot()
@@ -182,15 +175,14 @@ func TestUsageAggregatorLocalModelNoCapabilities(t *testing.T) {
 
 	// A local model turn with no reasoning or cache
 	a.Observe(TurnMetrics{
-		Provider:              "ollama",
-		Model:                 "llama3.2",
-		PromptTokens:          10,
-		CompletionTokens:      20,
-		ReasoningTokens:       0,
-		CacheReadTokens:       0,
-		CacheWriteTokens:      0,
-		EstimatedCostCents:    0,
-		EstimatedCostMicroUSD: 0,
+		Provider:           "ollama",
+		Model:              "llama3.2",
+		PromptTokens:       10,
+		CompletionTokens:   20,
+		ReasoningTokens:    0,
+		CacheReadTokens:    0,
+		CacheWriteTokens:   0,
+		EstimatedCostCents: 0,
 	})
 
 	_, breakdowns := a.Snapshot()
@@ -234,19 +226,5 @@ func TestTurnUsageLineFormatsProviderUsage(t *testing.T) {
 	r.stats = &turnStats{m: TurnMetrics{PromptTokens: 12345, CompletionTokens: 340}}
 	if got := r.turnUsageLine(); got != "12k prompt + 340 completion tokens" {
 		t.Fatalf("turnUsageLine() = %q, want %q", got, "12k prompt + 340 completion tokens")
-	}
-}
-
-func TestUsageAggregatorSortsBySubCentCost(t *testing.T) {
-	a := NewUsageAggregator()
-	// Both round to 0 cents; only micro-dollars separate them.
-	a.Observe(TurnMetrics{Provider: "a", Model: "cheap", EstimatedCostMicroUSD: 1_000})
-	a.Observe(TurnMetrics{Provider: "b", Model: "dearer", EstimatedCostMicroUSD: 9_000})
-	totals, bd := a.Snapshot()
-	if totals.EstimatedCostMicroUSD != 10_000 {
-		t.Fatalf("micro total = %d, want 10000", totals.EstimatedCostMicroUSD)
-	}
-	if bd[0].Model != "dearer" {
-		t.Fatalf("breakdowns[0] = %s, want dearer", bd[0].Model)
 	}
 }

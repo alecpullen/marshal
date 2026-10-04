@@ -106,11 +106,36 @@ func TestMemoryPromoteOverACP(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := f.d.GetMemory(mine[0].ID)
-	if got.Scope != "workspace" || got.ScopeKey != "ws1" || !reflect.DeepEqual(got.ConfirmedBy, []string{"bob"}) {
+	if got.Scope != "workspace" || got.ScopeKey != "ws1" {
 		t.Fatalf("promoted = %+v", got)
 	}
-	if rows, _ := f.d.GetMemories(f.other); len(rows) != 0 {
-		t.Fatalf("duplicate survived: %+v", rows)
+	// The other project may not be in ws1, so its copy must survive.
+	if rows, _ := f.d.GetMemories(f.other); len(rows) != 1 {
+		t.Fatalf("other project's copy lost: %+v", rows)
+	}
+}
+
+func TestMemoryPromoteConfirmRequireVisibleRow(t *testing.T) {
+	f := newScopeFixture(t)
+	// otherID is a project-scoped row of another project: not visible here.
+	if _, err := call(t, f.mgr.MemoryPromote, map[string]any{"sessionId": "s", "id": f.otherID, "scope": "global"}); err == nil {
+		t.Fatal("promote of another project's row must fail")
+	}
+	if _, err := call(t, f.mgr.MemoryConfirm, map[string]any{"sessionId": "s", "id": f.otherID, "agent": "x"}); err == nil {
+		t.Fatal("confirm of another project's row must fail")
+	}
+	if got, _ := f.d.GetMemory(f.otherID); got.Scope != "project" || len(got.ConfirmedBy) != 0 {
+		t.Fatalf("row changed: %+v", got)
+	}
+	// Once global, it is visible to everyone.
+	if err := f.d.PromoteMemory(f.otherID, "global", "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, f.mgr.MemoryConfirm, map[string]any{"sessionId": "s", "id": f.otherID, "agent": "x"}); err != nil {
+		t.Fatalf("confirm of global row: %v", err)
+	}
+	if _, err := call(t, f.mgr.MemoryPromote, map[string]any{"sessionId": "s", "id": 99999, "scope": "global"}); err == nil {
+		t.Fatal("unknown id must fail")
 	}
 }
 

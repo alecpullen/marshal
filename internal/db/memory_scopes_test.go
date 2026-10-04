@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -221,5 +222,151 @@ func TestProjectRoot(t *testing.T) {
 	a, _ := twoProjects(t, d)
 	if root, err := d.ProjectRoot(a); err != nil || root != "/a" {
 		t.Fatalf("root = %q, err %v", root, err)
+	}
+}
+
+func memoryByContent(t *testing.T, d *DB, project int64, content string) Memory {
+	t.Helper()
+	ms, err := d.GetMemories(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ms {
+		if m.Content == content {
+			return m
+		}
+	}
+	t.Fatalf("no memory %q in project %d", content, project)
+	return Memory{}
+}
+
+func TestPromoteToWorkspaceKeepsOtherProjectsCopies(t *testing.T) {
+	d := openMemDB(t)
+	a, b := twoProjects(t, d)
+	now := time.Unix(10, 0).UTC()
+	d.SaveMemoryWith(a, MemoryInput{Kind: "fact", Content: "shared", LearnedAgent: "alice", Now: now})
+	d.SaveMemoryWith(b, MemoryInput{Kind: "fact", Content: "shared", LearnedAgent: "bob", Now: now})
+	if err := d.PromoteMemory(memoryByContent(t, d, a, "shared").ID, "workspace", "ws1", now); err != nil {
+		t.Fatal(err)
+	}
+	// b may not be in ws1: its project-scoped copy must survive.
+	if got := memoryByContent(t, d, b, "shared"); got.Scope != "project" {
+		t.Fatalf("b's copy = %+v", got)
+	}
+}
+
+func TestPromoteToWorkspaceMergesSameWorkspaceTwin(t *testing.T) {
+	d := openMemDB(t)
+	a, b := twoProjects(t, d)
+	now := time.Unix(10, 0).UTC()
+	d.SaveMemoryWith(a, MemoryInput{Kind: "fact", Content: "shared", LearnedAgent: "alice", Now: now})
+	d.SaveMemoryWith(b, MemoryInput{Kind: "fact", Content: "shared", LearnedAgent: "bob", Now: now})
+	bID := memoryByContent(t, d, b, "shared").ID
+	if err := d.PromoteMemory(bID, "workspace", "ws1", now); err != nil {
+		t.Fatal(err)
+	}
+	// Same hash, different workspace: untouched when a's copy moves to ws2.
+	aID := memoryByContent(t, d, a, "shared").ID
+	if err := d.PromoteMemory(aID, "workspace", "ws2", now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetMemory(bID); got.ScopeKey != "ws1" {
+		t.Fatalf("ws1 twin damaged: %+v", got)
+	}
+	// Re-promote a's copy into ws1: the ws1 twin is covered and merged.
+	if err := d.PromoteMemory(aID, "workspace", "ws1", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GetMemory(bID); err == nil {
+		t.Fatal("same-workspace twin should have merged away")
+	}
+	if got, _ := d.GetMemory(aID); !reflect.DeepEqual(got.ConfirmedBy, []string{"bob"}) {
+		t.Fatalf("ConfirmedBy = %v", got.ConfirmedBy)
+	}
+}
+
+func TestPromoteToProjectDeletesNothing(t *testing.T) {
+	d := openMemDB(t)
+	a, b := twoProjects(t, d)
+	now := time.Unix(10, 0).UTC()
+	d.SaveMemoryWith(a, MemoryInput{Kind: "fact", Content: "shared", Now: now})
+	d.SaveMemoryWith(b, MemoryInput{Kind: "fact", Content: "shared", Now: now})
+	aID := memoryByContent(t, d, a, "shared").ID
+	bID := memoryByContent(t, d, b, "shared").ID
+	if err := d.PromoteMemory(bID, "global", "", now); err != nil {
+		t.Fatal(err)
+	}
+	// Demote the global row back to its project: a's copy is gone (merged
+	// into the global), but demotion itself must delete nothing further.
+	d.SaveMemoryWith(a, MemoryInput{Kind: "fact", Content: "shared", Now: now})
+	aID = memoryByContent(t, d, a, "shared").ID
+	if err := d.PromoteMemory(bID, "project", "", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GetMemory(aID); err != nil {
+		t.Fatalf("demotion deleted a's copy: %v", err)
+	}
+	if got, _ := d.GetMemory(bID); got.Scope != "project" {
+		t.Fatalf("demoted row = %+v", got)
+	}
+}
+
+func TestPromoteToGlobalLeavesUnrelatedScopesAlone(t *testing.T) {
+	d := openMemDB(t)
+	a, b := twoProjects(t, d)
+	now := time.Unix(10, 0).UTC()
+	d.SaveMemoryWith(a, MemoryInput{Kind: "fact", Content: "keep", Now: now})
+	d.SaveMemoryWith(b, MemoryInput{Kind: "fact", Content: "keep", Now: now})
+	d.SaveMemoryWith(b, MemoryInput{Kind: "fact", Content: "other", Now: now})
+	if err := d.PromoteMemory(memoryByContent(t, d, b, "other").ID, "global", "", now); err != nil {
+		t.Fatal(err)
+	}
+	// A differently-hashed memory must never be touched.
+	if got := memoryByContent(t, d, a, "keep"); got.Scope != "project" {
+		t.Fatalf("a keep = %+v", got)
+	}
+	if got := memoryByContent(t, d, b, "keep"); got.Scope != "project" {
+		t.Fatalf("b keep = %+v", got)
+	}
+}
+
+func TestPruneKeepsPromotedRows(t *testing.T) {
+	d := openMemDB(t)
+	p, _ := d.GetOrCreateProject("/a", "a")
+	now := time.Unix(10, 0).UTC()
+	d.SaveMemory(p, "fact", "promoted oldest", "", now)
+	pid := memoryByContent(t, d, p, "promoted oldest").ID
+	if err := d.PromoteMemory(pid, "global", "", now); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxMemoryRows+5; i++ {
+		if err := d.SaveMemory(p, "fact", fmt.Sprintf("note %d", i), "", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := d.GetMemory(pid); err != nil || got.Scope != "global" {
+		t.Fatalf("promoted row evicted: %+v, %v", got, err)
+	}
+	var n int
+	d.sqlDB.QueryRow(`SELECT COUNT(*) FROM memories WHERE project_id = ? AND scope = 'project'`, p).Scan(&n)
+	if n != maxMemoryRows {
+		t.Fatalf("project rows = %d, want %d", n, maxMemoryRows)
+	}
+}
+
+func TestSuggestionsCountGlobalTwin(t *testing.T) {
+	d := openMemDB(t)
+	a, b := twoProjects(t, d)
+	now := time.Unix(10, 0).UTC()
+	d.SaveMemoryWith(a, MemoryInput{Kind: "fact", Content: "shared", Now: now})
+	d.SaveMemoryWith(b, MemoryInput{Kind: "fact", Content: "shared", Now: now})
+	if err := d.PromoteMemory(memoryByContent(t, d, b, "shared").ID, "global", "", now); err != nil {
+		t.Fatal(err)
+	}
+	// Promotion merged a's copy away, so recreate it as a fresh duplicate.
+	d.SaveMemoryWith(a, MemoryInput{Kind: "fact", Content: "shared", Now: now})
+	got, _ := d.MemorySuggestions(a)
+	if len(got) != 1 || got[0].MatchProjectID != b {
+		t.Fatalf("suggestions = %+v", got)
 	}
 }

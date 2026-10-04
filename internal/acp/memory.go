@@ -178,6 +178,29 @@ func (m *MemoryManager) memoryRuntime(sessionID, method string) (*MemoryRuntime,
 	return rt, nil
 }
 
+// requireVisible rejects a memory id the session could not see in
+// memory_list: another project's project-scoped row, or a workspace row of
+// another workspace.
+func (m *MemoryManager) requireVisible(rt *MemoryRuntime, id int64, method string) error {
+	mem, err := rt.DB.GetMemory(id)
+	if err != nil {
+		return invalidParamsError("%s: unknown memory %d", method, id)
+	}
+	switch mem.Scope {
+	case db.MemoryScopeGlobal:
+		return nil
+	case db.MemoryScopeWorkspace:
+		if ws := os.Getenv("MARSHAL_WORKSPACE"); ws != "" && mem.ScopeKey == ws {
+			return nil
+		}
+	default:
+		if mem.ProjectID == rt.ProjectID {
+			return nil
+		}
+	}
+	return invalidParamsError("%s: memory %d is not visible to this session", method, id)
+}
+
 // MemorySuggestionEntry is one promotion suggestion.
 type MemorySuggestionEntry struct {
 	MemoryID         int64  `json:"memoryId"`
@@ -235,6 +258,9 @@ func (m *MemoryManager) MemoryPromote(ctx context.Context, params json.RawMessag
 	if err != nil {
 		return nil, err
 	}
+	if err := m.requireVisible(rt, p.ID, "session/memory_promote"); err != nil {
+		return nil, err
+	}
 	if err := rt.DB.PromoteMemory(p.ID, p.Scope, p.ScopeKey, time.Now()); err != nil {
 		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("promote memory: %v", err)}
 	}
@@ -263,6 +289,9 @@ func (m *MemoryManager) MemoryConfirm(ctx context.Context, params json.RawMessag
 	}
 	rt, err := m.memoryRuntime(p.SessionID, "session/memory_confirm")
 	if err != nil {
+		return nil, err
+	}
+	if err := m.requireVisible(rt, p.ID, "session/memory_confirm"); err != nil {
 		return nil, err
 	}
 	if err := rt.DB.ConfirmMemory(p.ID, p.Agent); err != nil {

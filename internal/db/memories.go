@@ -114,10 +114,13 @@ func (db *DB) SaveMemoryWith(projectID int64, in MemoryInput) error {
 	return nil
 }
 
+// pruneMemories caps a project's own project-scoped rows. Promoted rows
+// (workspace, global) are exempt: they are shared and must not be evicted
+// because their origin project grew past the cap.
 func (db *DB) pruneMemories(projectID int64) error {
 	_, err := db.sqlDB.Exec(
 		`DELETE FROM memories WHERE id IN (
-			SELECT id FROM memories WHERE project_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?
+			SELECT id FROM memories WHERE project_id = ? AND scope = 'project' ORDER BY id DESC LIMIT -1 OFFSET ?
 		)`,
 		projectID, maxMemoryRows,
 	)
@@ -227,14 +230,18 @@ type Suggestion struct {
 
 // MemorySuggestions returns one suggestion per project-scoped memory of
 // projectID that another project also holds (same content_hash). The match
-// reported is the lowest-id project. Suggested scope is always global.
+// reported is the lowest-id project. Twins that are already global count, so
+// the redundant project copy can be merged into them. Suggested scope is
+// always global: a project-scoped row records no workspace, so the spec's
+// second case (a match on the same workspace suggests workspace) cannot be
+// computed.
 func (db *DB) MemorySuggestions(projectID int64) ([]Suggestion, error) {
 	rows, err := db.sqlDB.Query(`
 		SELECT m.id, o.project_id, p.root_path
 		FROM memories m
 		JOIN memories o ON o.content_hash = m.content_hash AND o.project_id <> m.project_id
 		JOIN projects p ON p.id = o.project_id
-		WHERE m.project_id = ? AND m.scope = 'project' AND o.scope = 'project'
+		WHERE m.project_id = ? AND m.scope = 'project' AND o.scope IN ('project', 'global')
 		ORDER BY m.id, o.project_id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("query memory suggestions: %w", err)
@@ -258,9 +265,11 @@ func (db *DB) MemorySuggestions(projectID int64) ([]Suggestion, error) {
 }
 
 // PromoteMemory moves a memory to scope (scopeKey names the workspace for
-// the workspace scope) and merges duplicates in one transaction: rows with
-// the same content_hash in other projects are deleted and their learned_agent
-// labels are appended to confirmed_by.
+// the workspace scope) and merges the duplicates it now covers in one
+// transaction: those rows are deleted and their learned_agent labels appended
+// to confirmed_by. Promoting to global merges other projects' copies of any
+// scope; to workspace, other projects' rows of the same workspace; to project
+// (a demotion), nothing.
 func (db *DB) PromoteMemory(id int64, scope, scopeKey string, now time.Time) error {
 	switch scope {
 	case MemoryScopeProject, MemoryScopeGlobal:
@@ -286,26 +295,43 @@ func (db *DB) PromoteMemory(id int64, scope, scopeKey string, now time.Time) err
 		return fmt.Errorf("promote memory: %w", err)
 	}
 	confirmed := m.ConfirmedBy
-	rows, err := tx.Query(`SELECT id, learned_agent FROM memories WHERE content_hash = ? AND project_id <> ? AND id <> ? ORDER BY id`, hash, m.ProjectID, id)
-	if err != nil {
-		return fmt.Errorf("promote memory: %w", err)
+	// Merge only the copies the promoted row now covers, so no other project
+	// loses a memory it still sees: a global row covers every other
+	// project's copy of any scope; a workspace row covers other projects'
+	// rows in the same workspace (project rows record no workspace, so those
+	// stay); a project row covers nothing.
+	var dupQuery string
+	var dupArgs []any
+	switch scope {
+	case MemoryScopeGlobal:
+		dupQuery = `SELECT id, learned_agent FROM memories WHERE content_hash = ? AND project_id <> ? AND id <> ? ORDER BY id`
+		dupArgs = []any{hash, m.ProjectID, id}
+	case MemoryScopeWorkspace:
+		dupQuery = `SELECT id, learned_agent FROM memories WHERE content_hash = ? AND project_id <> ? AND id <> ? AND scope = 'workspace' AND scope_key = ? ORDER BY id`
+		dupArgs = []any{hash, m.ProjectID, id, scopeKey}
 	}
 	var dupIDs []int64
-	for rows.Next() {
-		var dupID int64
-		var agent string
-		if err := rows.Scan(&dupID, &agent); err != nil {
+	if dupQuery != "" {
+		rows, err := tx.Query(dupQuery, dupArgs...)
+		if err != nil {
+			return fmt.Errorf("promote memory: %w", err)
+		}
+		for rows.Next() {
+			var dupID int64
+			var agent string
+			if err := rows.Scan(&dupID, &agent); err != nil {
+				rows.Close()
+				return fmt.Errorf("promote memory: %w", err)
+			}
+			dupIDs = append(dupIDs, dupID)
+			confirmed = appendUnique(confirmed, agent)
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
 			return fmt.Errorf("promote memory: %w", err)
 		}
-		dupIDs = append(dupIDs, dupID)
-		confirmed = appendUnique(confirmed, agent)
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("promote memory: %w", err)
 	}
-	rows.Close()
 	for _, dupID := range dupIDs {
 		if _, err := tx.Exec(`DELETE FROM memories WHERE id = ?`, dupID); err != nil {
 			return fmt.Errorf("promote memory: %w", err)

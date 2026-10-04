@@ -255,6 +255,12 @@ type Resolved struct {
 	Version int
 	Source  string
 	Hash    string
+	// ImageName and ImageVersion name the built Studio template whose
+	// image the workspace runs on: itself for a Studio reference, the
+	// template it extends for a repo reference (empty when it extends
+	// none, so there is no image to run).
+	ImageName    string
+	ImageVersion int
 }
 
 func (f *Fleet) studioDoc(ctx context.Context, name string, version int) (WSDoc, int, error) {
@@ -287,6 +293,7 @@ func (f *Fleet) studioDoc(ctx context.Context, name string, version int) (WSDoc,
 func (f *Fleet) ResolveWorkspace(ctx context.Context, ref WSRef, projectRoot string) (Resolved, error) {
 	var doc WSDoc
 	version := ref.Version
+	imageName, imageVersion := "", 0
 	switch ref.Source {
 	case "repo":
 		if projectTrust(projectRoot) != "trusted" {
@@ -315,10 +322,11 @@ func (f *Fleet) ResolveWorkspace(ctx context.Context, ref WSRef, projectRoot str
 			if base.Source != "studio" {
 				return Resolved{}, ErrWorkspaceMerge{Field: "extends", Reason: "must name a Studio template"}
 			}
-			bdoc, _, err := f.studioDoc(ctx, base.Name, base.Version)
+			bdoc, bver, err := f.studioDoc(ctx, base.Name, base.Version)
 			if err != nil {
 				return Resolved{}, err
 			}
+			imageName, imageVersion = base.Name, bver
 			if doc, err = mergeWS(bdoc, overlay); err != nil {
 				return Resolved{}, err
 			}
@@ -330,13 +338,15 @@ func (f *Fleet) ResolveWorkspace(ctx context.Context, ref WSRef, projectRoot str
 		if err != nil {
 			return Resolved{}, err
 		}
+		imageName, imageVersion = ref.Name, version
 	}
 	canon, err := json.Marshal(doc)
 	if err != nil {
 		return Resolved{}, err
 	}
 	sum := sha256.Sum256(canon)
-	return Resolved{Doc: doc, Name: ref.Name, Version: version, Source: ref.Source, Hash: hex.EncodeToString(sum[:])}, nil
+	return Resolved{Doc: doc, Name: ref.Name, Version: version, Source: ref.Source, Hash: hex.EncodeToString(sum[:]),
+		ImageName: imageName, ImageVersion: imageVersion}, nil
 }
 
 var wsSizeRe = regexp.MustCompile(`^(\d+)([kmg])$`)

@@ -199,7 +199,23 @@ func writeErr(w http.ResponseWriter, err error) {
 	var unsupported ErrUnsupported
 	var rpc *rpcError
 	var budget ErrBudget
+	var setup ErrSetupFailed
+	var merge ErrWorkspaceMerge
 	switch {
+	case errors.Is(err, ErrTemplateNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrTemplateName), errors.Is(err, ErrTemplatePool), errors.Is(err, ErrWorkspaceMountTarget):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrTemplateExists), errors.Is(err, ErrTemplateInUse), errors.Is(err, ErrBuildBusy), errors.Is(err, ErrTemplateNoDraft):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrWorkspaceNotBuilt):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": "workspace_not_built"})
+	case errors.Is(err, ErrUntrustedRepoTemplate):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrWorkspaceInvalid), errors.As(err, &merge):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+	case errors.As(err, &setup):
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "code": "setup_failed", "output": setup.Output})
 	case errors.Is(err, ErrUnknownReroute):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, errRerouteConflict):
@@ -359,6 +375,8 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		BaseRef  string `json:"baseRef"`
 		// Routing picks this agent's models; see SpawnOptions.Routing.
 		Routing json.RawMessage `json:"routing"`
+		// Workspace is a workspace reference: name, name@3 or repo:name.
+		Workspace string `json:"workspace"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -369,7 +387,7 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
 		Name: body.Name, Mode: body.Mode, Isolated: body.Isolated, Branch: body.Branch, BaseRef: body.BaseRef,
-		Routing: body.Routing,
+		Routing: body.Routing, Workspace: body.Workspace,
 	})
 	if id == "" {
 		writeErr(w, err)

@@ -65,7 +65,9 @@ type fakeImages struct {
 	out      map[string]string // overrides output by args[0]
 }
 
-func newFakeImages() *fakeImages { return &fakeImages{have: map[string]bool{}, out: map[string]string{}} }
+func newFakeImages() *fakeImages {
+	return &fakeImages{have: map[string]bool{}, out: map[string]string{}}
+}
 
 func (r *fakeImages) run(name string, args ...string) ([]byte, error) {
 	r.mu.Lock()

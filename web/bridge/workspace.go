@@ -79,6 +79,48 @@ type Agent struct {
 	// an issue, so the exit path can link the pull request back to it.
 	IssueNumber int    `json:"issueNumber,omitempty"`
 	IssueURL    string `json:"issueUrl,omitempty"`
+	// Workspace is the workspace this agent runs in, when it was spawned
+	// with one (v9).
+	Workspace *AgentWorkspace `json:"workspace,omitempty"`
+	// ContainerName, WorkSubpath and SocketSubpath override the names
+	// derived from the agent id. A pooled container keeps the names it was
+	// started under. Empty means derived (v9).
+	ContainerName string `json:"containerName,omitempty"`
+	WorkSubpath   string `json:"workSubpath,omitempty"`
+	SocketSubpath string `json:"socketSubpath,omitempty"`
+}
+
+// AgentWorkspace records which workspace template an agent runs in.
+type AgentWorkspace struct {
+	Name    string `json:"name"`
+	Version int    `json:"version,omitempty"`
+	// Source is "studio" or "repo".
+	Source string `json:"source"`
+	// Timeout is the agent deadline from [resources], armed on the first
+	// prompt, so a restarted runtime can arm it again.
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// ProjectSettings are a project's defaults for new agents and runs, and
+// its intake wiring (v9).
+type ProjectSettings struct {
+	// Workspace is the default workspace reference.
+	Workspace string `json:"workspace,omitempty"`
+	// Routing is a W3 routing object.
+	Routing json.RawMessage `json:"routing,omitempty"`
+	Mode    string          `json:"mode,omitempty"`
+	// Isolated is the default isolation; nil leaves the caller's default.
+	Isolated *bool `json:"isolated,omitempty"`
+	// ShipTarget is merge, push or patch.
+	ShipTarget string        `json:"shipTarget,omitempty"`
+	Intake     ProjectIntake `json:"intake"`
+}
+
+// ProjectIntake mirrors Repo.Watch/WatchLabel and the client allowedRepos.
+type ProjectIntake struct {
+	RepoID  string   `json:"repoId,omitempty"`
+	Labels  []string `json:"labels,omitempty"`
+	Clients []string `json:"clients,omitempty"`
 }
 
 // GateOverride records an operator's decision to push despite a failed
@@ -168,6 +210,8 @@ type workspaceFile struct {
 	// Credentials are git credential descriptions (v10). They hold refs
 	// and variable names, never values.
 	Credentials []Credential `json:"credentials,omitempty"`
+	// ProjectSettings maps a project root to its settings (v9).
+	ProjectSettings map[string]ProjectSettings `json:"projectSettings,omitempty"`
 }
 
 // WatchRule is what the bridge does when a Studio watch fires.
@@ -200,6 +244,7 @@ type Workspace struct {
 	reviews         map[string][]ReviewComment
 	watchRules      map[string]WatchRule
 	credentials     map[string]Credential
+	projectSettings map[string]ProjectSettings
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -213,6 +258,7 @@ func NewWorkspace(path string) *Workspace {
 		reviews:         make(map[string][]ReviewComment),
 		watchRules:      make(map[string]WatchRule),
 		credentials:     make(map[string]Credential),
+		projectSettings: make(map[string]ProjectSettings),
 	}
 }
 
@@ -277,6 +323,10 @@ func (w *Workspace) Load() (string, error) {
 	w.credentials = make(map[string]Credential, len(f.Credentials))
 	for _, c := range f.Credentials {
 		w.credentials[c.ID] = c
+	}
+	w.projectSettings = make(map[string]ProjectSettings, len(f.ProjectSettings))
+	for root, ps := range f.ProjectSettings {
+		w.projectSettings[root] = ps
 	}
 	return "", nil
 }
@@ -353,6 +403,12 @@ func (w *Workspace) save() error {
 		f.Credentials = append(f.Credentials, c)
 	}
 	sort.Slice(f.Credentials, func(i, j int) bool { return f.Credentials[i].ID < f.Credentials[j].ID })
+	if len(w.projectSettings) > 0 {
+		f.ProjectSettings = make(map[string]ProjectSettings, len(w.projectSettings))
+		for root, ps := range w.projectSettings {
+			f.ProjectSettings[root] = ps
+		}
+	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace: %w", err)
@@ -428,7 +484,23 @@ func (w *Workspace) RemoveProject(root string) error {
 			delete(w.reviews, id)
 		}
 	}
+	delete(w.projectSettings, root)
 	return w.save()
+}
+
+// PutProjectSettings stores a project's settings.
+func (w *Workspace) PutProjectSettings(root string, ps ProjectSettings) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.projectSettings[root] = ps
+	return w.save()
+}
+
+// ProjectSettingsFor returns a project's settings, zero when none are set.
+func (w *Workspace) ProjectSettingsFor(root string) ProjectSettings {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.projectSettings[root]
 }
 
 func (w *Workspace) PutAgent(a Agent) error {

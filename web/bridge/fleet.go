@@ -63,6 +63,10 @@ type agentRuntime struct {
 	// agent itself once session/new returns. Empty until then.
 	sessionID string
 
+	// timeoutStop cancels the workspace deadline, when one is armed.
+	timeoutMu   sync.Mutex
+	timeoutStop func()
+
 	// sourceKind is "local" or "git"; stopAgent uses it to decide whether
 	// the agent's prepared working tree must be removed.
 	sourceKind string
@@ -253,6 +257,13 @@ type Fleet struct {
 	buildLog *EventLog
 	builds   *buildLimiter
 	pools    *poolManager
+	// wsExtras holds the mounts and environment computed for an agent
+	// that is spawning, so its container config reuses the resolution the
+	// spawn already did. Keyed by agent id; cleared once the runtime starts.
+	wsMu     sync.Mutex
+	wsExtras map[string]wsExtras
+	// afterFunc schedules a deadline; tests replace it. Nil is time.AfterFunc.
+	afterFunc func(d time.Duration, fn func()) (stop func())
 
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
@@ -300,6 +311,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		wsParses:      newWSParseCache(),
 		buildLog:      NewEventLog(),
 		builds:        newBuildLimiter(),
+		wsExtras:      make(map[string]wsExtras),
 	}
 	f.pools = newPoolManager(f)
 	f.budgets = newBudgetState(f)
@@ -337,36 +349,9 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			}
 			return child, nil
 		}
-		cfg := ContainerConfig{
-			Runtime:       runtime,
-			RuntimeName:   name,
-			Image:         a.Profile.Image,
-			Name:          containerNameFor(a.ID),
-			WorkspaceDir:  a.Project,
-			SocketDir:     socketDirFor(f.stateDir, a.ID),
-			StateVolume:   f.stateVolume,
-			WorkSubpath:   "work/" + a.ID,
-			SocketSubpath: "sockets/" + a.ID,
-			CPUs:          a.Profile.CPUs,
-			MemoryMB:      a.Profile.MemoryMB,
-			Env:           withEnv(f.agentEnv, wiring.Env),
-			Network:       wiring.Network,
-			ExtraVolumes:  wiring.Volumes,
-			// Every agent shares one config home (read-only) and one data
-			// home, so memories and usage outlive any single container.
-			HomeConfigSubpath: homeConfigSubpath,
-			HomeDataSubpath:   homeDataSubpath,
-		}
-		f.ensureHomes()
-		// A LocalPath agent works on the host checkout itself, so its
-		// workspace is a bind mount of the daemon's view of that path.
-		// Git-sourced agents use a volume subpath instead.
-		if a.SourceKind == "local" {
-			hostPath, err := f.localMountFor(a)
-			if err != nil {
-				return nil, fmt.Errorf("bridge: refuse local agent mount for %s: %w (declare the root with --project-mount)", a.ID, err)
-			}
-			cfg.LocalMount = hostPath
+		cfg, err := f.containerConfigWith(a, runtime, name, wiring)
+		if err != nil {
+			return nil, err
 		}
 		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
 	}
@@ -386,6 +371,67 @@ func withEnv(base, extra map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// containerConfigFor is the container shape for an agent: derived names
+// unless the agent carries overrides (a pooled container), the profile's
+// image and caps, and a workspace's extra mounts and environment.
+func (f *Fleet) containerConfigFor(a Agent, runtime, runtimeName string) (ContainerConfig, error) {
+	return f.containerConfigWith(a, runtime, runtimeName, egressWiring{})
+}
+
+// containerConfigWith is containerConfigFor plus the egress proxy's
+// environment, network and volumes for the agent.
+func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring egressWiring) (ContainerConfig, error) {
+	cfg := ContainerConfig{
+		Runtime:       runtime,
+		RuntimeName:   runtimeName,
+		Image:         a.Profile.Image,
+		Name:          containerNameFor(a.ID),
+		WorkspaceDir:  a.Project,
+		SocketDir:     socketDirFor(f.stateDir, a.ID),
+		StateVolume:   f.stateVolume,
+		WorkSubpath:   "work/" + a.ID,
+		SocketSubpath: "sockets/" + a.ID,
+		CPUs:          a.Profile.CPUs,
+		MemoryMB:      a.Profile.MemoryMB,
+		Env:           withEnv(f.agentEnv, wiring.Env),
+		Network:       wiring.Network,
+		ExtraVolumes:  wiring.Volumes,
+		// Every agent shares one config home (read-only) and one data
+		// home, so memories and usage outlive any single container.
+		HomeConfigSubpath: homeConfigSubpath,
+		HomeDataSubpath:   homeDataSubpath,
+	}
+	if a.ContainerName != "" {
+		cfg.Name = a.ContainerName
+	}
+	if a.WorkSubpath != "" {
+		cfg.WorkSubpath = a.WorkSubpath
+	}
+	if a.SocketSubpath != "" {
+		cfg.SocketSubpath = a.SocketSubpath
+		cfg.SocketDir = filepath.Join(f.stateDir, a.SocketSubpath)
+	}
+	f.ensureHomes()
+	// A LocalPath agent works on the host checkout itself, so its
+	// workspace is a bind mount of the daemon's view of that path.
+	// Git-sourced agents use a volume subpath instead.
+	if a.SourceKind == "local" {
+		hostPath, err := f.localMountFor(a)
+		if err != nil {
+			return cfg, fmt.Errorf("bridge: refuse local agent mount for %s: %w (declare the root with --project-mount)", a.ID, err)
+		}
+		cfg.LocalMount = hostPath
+	}
+	if a.Workspace != nil {
+		mounts, env, err := f.workspaceRuntimeExtras(a, runtimeName)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.ExtraMounts, cfg.ExtraEnv = mounts, env
+	}
+	return cfg, nil
 }
 
 // Subpaths of the state volume that hold the shared homes.
@@ -660,6 +706,7 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
 		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
 		containerized: child.Containerized}
+	f.armWorkspaceTimeout(rt, a)
 	f.attachClassifier(rt)
 
 	if err := child.Start(); err != nil {
@@ -841,6 +888,9 @@ type SpawnOptions struct {
 	// Routing selects per-session model routing, forwarded verbatim as
 	// session/new's routing parameter.
 	Routing json.RawMessage
+	// Workspace is a workspace reference (see ParseWSRef). Empty falls back
+	// to the project's default, then to the profile and devcontainer.
+	Workspace string
 }
 
 // gitSource is the resolved remote source for a spawn, or a local path.
@@ -975,18 +1025,61 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	}
 	a.Project = workDir
 
+	cleanTree := func() {
+		if src.kind == "git" && f.git != nil {
+			_ = f.git.RemoveTree(f.stateDir, a.ID)
+		}
+	}
+
+	// A workspace (explicit, or the project's default) replaces the
+	// profile's image and caps, and adds mounts, policy and a setup step.
+	// It must be built: running an agent on a stale or missing image is
+	// worse than refusing.
+	wsRef := opts.Workspace
+	if wsRef == "" {
+		wsRef = f.ws.ProjectSettingsFor(root).Workspace
+	}
+	var wsRes *Resolved
+	var wsImage string
+	if wsRef != "" {
+		ref, err := ParseWSRef(wsRef)
+		if err != nil {
+			cleanTree()
+			return "", err
+		}
+		res, err := f.ResolveWorkspace(ctx, ref, workDir)
+		if err != nil {
+			cleanTree()
+			return "", err
+		}
+		img, err := f.builtImage(res)
+		if err == nil && f.repoOverlayAddsImageLayers(ctx, res) {
+			err = fmt.Errorf("%w: repo:%s adds toolchains or packages, which are image layers; add them to %s and rebuild", ErrWorkspaceNotBuilt, res.Name, res.ImageName)
+		}
+		if err != nil {
+			cleanTree()
+			return "", err
+		}
+		wsRes, wsImage = &res, img
+	}
+
 	// Resolve the runtime profile now that workDir is known, so a
 	// git-sourced repo with a .devcontainer/devcontainer.json is
 	// honoured. For local spawns workDir == root.
 	profile, _ := ResolveProfile(workDir, opts.Profile, f.buildVersion)
 	a.Profile = profile
+	if wsRes != nil {
+		a.Workspace = &AgentWorkspace{Name: wsRes.Name, Version: wsRes.Version, Source: wsRes.Source, Timeout: wsRes.Doc.Resources.Timeout}
+		a.Profile.Image = wsImage
+		applyResources(&a.Profile, wsRes.Doc.Resources)
+	}
 
 	// A declared base (e.g. node:20) carries no marshal. Derive an image
 	// that adds marshal on top, and run the agent against that. A marshal
 	// image is used as-is. A build failure refuses the spawn — running an
 	// agent in an environment the repo did not ask for is worse than
 	// refusing to run it.
-	if !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
+	if wsRes == nil && !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
 		derived, err := f.ensureDerivedImage(ctx, a.Profile.Image)
 		if err != nil {
 			if src.kind == "git" && f.git != nil {
@@ -1004,6 +1097,40 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			_ = f.git.RemoveTree(f.stateDir, a.ID)
 		}
 		return "", err
+	}
+
+	// A workspace's mounts and environment are rendered once here, held
+	// for the container config, and used for the one-shot setup step.
+	if wsRes != nil {
+		_, rtName, ok := f.runtimeInfo()
+		if !ok {
+			cleanTree()
+			return "", ErrWorkspaceNeedsRuntime
+		}
+		ex, err := f.buildWorkspaceExtras(ctx, a, wsRes.Doc, wsRes.ImageName, rtName)
+		if err != nil {
+			cleanTree()
+			return "", err
+		}
+		f.wsMu.Lock()
+		f.wsExtras[a.ID] = ex
+		f.wsMu.Unlock()
+		defer func() {
+			f.wsMu.Lock()
+			delete(f.wsExtras, a.ID)
+			f.wsMu.Unlock()
+		}()
+		if run := wsRes.Doc.Setup.Run; run != "" {
+			rtPath, _, _ := f.runtimeInfo()
+			cfg, err := f.containerConfigFor(a, rtPath, rtName)
+			if err == nil {
+				err = f.runWorkspaceSetup(ctx, cfg, run)
+			}
+			if err != nil {
+				cleanTree()
+				return "", err
+			}
+		}
 	}
 
 	if err := f.slots.acquire(ctx); err != nil {
@@ -1055,6 +1182,16 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	}
 	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
 		params["routing"] = opts.Routing
+	}
+	if wsRes != nil && (wsRes.Doc.Policy.Mode != "" || len(wsRes.Doc.Policy.Allow) > 0) {
+		policy := map[string]any{}
+		if wsRes.Doc.Policy.Mode != "" {
+			policy["mode"] = wsRes.Doc.Policy.Mode
+		}
+		if len(wsRes.Doc.Policy.Allow) > 0 {
+			policy["allow"] = wsRes.Doc.Policy.Allow
+		}
+		params["policy"] = policy
 	}
 	raw, err := rt.child.Request(ctx, "session/new", params)
 	if err != nil {
@@ -1364,7 +1501,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			Isolated: a.Isolated, Branch: a.Branch, UpdatedAt: live.updatedAt,
 			SourceKind: a.SourceKind, ReadOnly: a.ReadOnly,
 			TargetBranch: a.TargetBranch, PRUrl: a.PRUrl,
-			GateOverride: a.GateOverride,
+			GateOverride: a.GateOverride, Workspace: a.Workspace,
 		}
 		if !a.PushedAt.IsZero() {
 			st.PushedAt = &a.PushedAt
@@ -1420,6 +1557,7 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 	if rt == nil {
 		return
 	}
+	rt.stopTimeout()
 	if !destroy {
 		rt.child.Detach()
 		f.slots.release()

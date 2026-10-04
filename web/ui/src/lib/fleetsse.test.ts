@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { parseFleetEvent } from './sse'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { connectBuildLog, connectSSE, parseBuildLogEvent, parseFleetEvent } from './sse'
+import { setToken } from './api'
 
 describe('parseFleetEvent', () => {
   it('parses an activity delta', () => {
@@ -98,5 +99,51 @@ describe('parseFleetEvent', () => {
 
   it('accepts a watch delta with no session', () => {
     expect(parseFleetEvent('{"kind":"watch","sessionId":"studio","event":{"State":"fired"}}')).toEqual({ kind: 'watch', sessionId: 'studio', event: { State: 'fired' } })
+  })
+})
+
+describe('build log stream', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const sse = (chunks: string[]) => {
+    const enc = new TextEncoder()
+    let i = 0
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: { getReader: () => ({ read: async () => (i < chunks.length ? { done: false, value: enc.encode(chunks[i++]) } : { done: true, value: undefined }) }) },
+    })
+  }
+
+  it('parseBuildLogEvent reads lines and done, and skips junk', () => {
+    expect(parseBuildLogEvent('{"line":"cached l1","at":5}')).toEqual({ line: 'cached l1', at: 5 })
+    expect(parseBuildLogEvent('{"done":true,"status":"ok"}')).toEqual({ done: true, status: 'ok' })
+    expect(parseBuildLogEvent('{"x":1}')).toBeNull()
+    expect(parseBuildLogEvent('nope')).toBeNull()
+  })
+
+  it('connectSSE with a url fetches that url, not /api/events', async () => {
+    setToken('t')
+    sessionStorage.clear()
+    const f = sse([])
+    vi.stubGlobal('fetch', f)
+    const ctl = new AbortController()
+    connectSSE({ url: '/api/workspaces/x/builds/2/events', onEvent: () => {}, signal: ctl.signal })
+    await vi.waitFor(() => expect(f).toHaveBeenCalled())
+    ctl.abort()
+    expect(f.mock.calls[0][0]).toBe('/api/workspaces/x/builds/2/events?lastEventId=0')
+  })
+
+  it('connectBuildLog delivers lines, then done once, and stops', async () => {
+    setToken('t')
+    sessionStorage.clear()
+    const f = sse(['id: 1\ndata: {"line":"step 1"}\n\n', 'id: 2\ndata: {"line":"step 2"}\n\nid: 3\ndata: {"done":true,"status":"failed"}\n\n'])
+    vi.stubGlobal('fetch', f)
+    const lines: string[] = []
+    const done: string[] = []
+    connectBuildLog('go service', 3, { onLine: (l) => lines.push(l), onDone: (s) => done.push(s) })
+    await vi.waitFor(() => expect(done).toEqual(['failed']))
+    expect(lines).toEqual(['step 1', 'step 2'])
+    expect(f.mock.calls[0][0]).toBe('/api/workspaces/go%20service/builds/3/events?lastEventId=0')
   })
 })

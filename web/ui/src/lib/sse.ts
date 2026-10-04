@@ -71,12 +71,14 @@ function parseSSEEvents(chunk: string): SSEMessage[] {
 export interface SSEOptions {
   sessionId?: string
   query?: string
+  /** A complete stream URL (no query); `lastEventId` is appended. Overrides sessionId and query. */
+  url?: string
   onEvent: (event: SSEEvent) => void
   signal?: AbortSignal
 }
 
-export function connectSSE({ sessionId, query, onEvent, signal }: SSEOptions): () => void {
-	const streamKey = sessionId ?? query ?? 'fleet'
+export function connectSSE({ sessionId, query, url, onEvent, signal }: SSEOptions): () => void {
+	const streamKey = url ?? sessionId ?? query ?? 'fleet'
   let abortController = new AbortController()
   let cancelled = false
   let reconnectDelay = 1000
@@ -94,8 +96,10 @@ export function connectSSE({ sessionId, query, onEvent, signal }: SSEOptions): (
       const token = getToken() ?? ensureToken()
       const lastId = getLastEventId(streamKey)
       try {
-        const qs = query ? `${query}&lastEventId=${lastId}` : `sessionId=${encodeURIComponent(sessionId!)}&lastEventId=${lastId}`
-        const res = await fetch(`/api/events?${qs}`, {
+        const target = url
+          ? `${url}?lastEventId=${lastId}`
+          : `/api/events?${query ? `${query}&lastEventId=${lastId}` : `sessionId=${encodeURIComponent(sessionId!)}&lastEventId=${lastId}`}`
+        const res = await fetch(target, {
           headers: {
             Accept: 'text/event-stream',
             Authorization: `Bearer ${token}`,
@@ -148,6 +152,52 @@ export function connectSSE({ sessionId, query, onEvent, signal }: SSEOptions): (
   return () => {
     cancelled = true
     abortController.abort()
+  }
+}
+
+export type BuildLogEvent = { line: string; at?: number } | { done: true; status: string }
+
+/** One build-log SSE payload: `{line, at}` or the final `{done, status}`; anything else is null. */
+export function parseBuildLogEvent(data: string): BuildLogEvent | null {
+  try {
+    const v = JSON.parse(data) as Record<string, unknown>
+    if (v.done) return { done: true, status: typeof v.status === 'string' ? v.status : '' }
+    if (typeof v.line === 'string') return { line: v.line, ...(typeof v.at === 'number' ? { at: v.at } : {}) }
+  } catch {
+    // A malformed event is skipped; the next line still renders.
+  }
+  return null
+}
+
+/**
+ * Streams a workspace build's log. The bridge replays the whole log from its
+ * ring, so a finished build reads the same way as a running one. The stream
+ * is closed after `onDone` so connectSSE does not reconnect to a finished log.
+ */
+export function connectBuildLog(
+  name: string,
+  n: number,
+  { onLine, onDone, signal }: { onLine: (line: string, at?: number) => void; onDone: (status: string) => void; signal?: AbortSignal },
+): () => void {
+  let stop = () => {}
+  let finished = false
+  stop = connectSSE({
+    url: `/api/workspaces/${encodeURIComponent(name)}/builds/${n}/events`,
+    signal,
+    onEvent: (e) => {
+      if (e.type !== 'message' || finished) return
+      const ev = parseBuildLogEvent(e.message.data)
+      if (!ev) return
+      if ('done' in ev) {
+        finished = true
+        onDone(ev.status)
+        stop()
+      } else onLine(ev.line, ev.at)
+    },
+  })
+  return () => {
+    finished = true
+    stop()
   }
 }
 

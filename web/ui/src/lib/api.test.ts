@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch } from './api'
-
+import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getNetworkHosts, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getSecretsStatus } from './api'
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
@@ -282,5 +281,50 @@ describe('control API (library, models, usage, budgets, watches)', () => {
   it('turns a budget 429 into a BudgetError', async () => {
     vi.stubGlobal('fetch', reply(429, { error: 'budget_exceeded', scope: 'daily' }))
     await expect(spawnAgent({ project: '/w' })).rejects.toBeInstanceOf(BudgetError)
+  })
+})
+
+describe('workspaces API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  const call = async (fn: () => Promise<unknown>, body: unknown = {}) => {
+    const f = reply(200, body)
+    vi.stubGlobal('fetch', f)
+    await fn()
+    const [url, init] = f.mock.calls[0]
+    return { url, method: init.method, body: init.body ? JSON.parse(init.body) : undefined }
+  }
+
+  it('maps each function to its route and body', async () => {
+    expect(await call(() => listWorkspaces(), [])).toMatchObject({ url: '/api/workspaces', method: 'GET' })
+    expect(await call(() => createWorkspace('svc', 'starter:go-service'))).toMatchObject({ url: '/api/workspaces', method: 'POST', body: { name: 'svc', from: 'starter:go-service' } })
+    expect(await call(() => getWorkspace('svc'))).toMatchObject({ url: '/api/workspaces/svc', method: 'GET' })
+    expect(await call(() => getWorkspace('svc', 3))).toMatchObject({ url: '/api/workspaces/svc?version=3' })
+    expect(await call(() => saveWorkspaceDraft('svc', 'x'))).toMatchObject({ url: '/api/workspaces/svc/draft', method: 'PUT', body: { source: 'x' } })
+    expect(await call(() => patchWorkspace('svc', 3, { apt: ['git'] }))).toMatchObject({ url: '/api/workspaces/svc/patch', method: 'POST', body: { layer: 3, value: { apt: ['git'] } } })
+    expect(await call(() => publishWorkspace('svc'))).toMatchObject({ url: '/api/workspaces/svc/publish', method: 'POST' })
+    expect(await call(() => deleteWorkspace('svc'))).toMatchObject({ url: '/api/workspaces/svc', method: 'DELETE' })
+    expect(await call(() => setWorkspacePool('svc', 2))).toMatchObject({ url: '/api/workspaces/svc/pool', method: 'PUT', body: { size: 2 } })
+    expect(await call(() => rotateWorkspaceCA('svc'))).toMatchObject({ url: '/api/workspaces/svc/ca/rotate', method: 'POST' })
+    expect(await call(() => listBuilds('svc'), { versions: [] })).toMatchObject({ url: '/api/workspaces/svc/builds', method: 'GET' })
+    expect(await call(() => startBuild('svc'))).toMatchObject({ url: '/api/workspaces/svc/builds', method: 'POST' })
+    expect(await call(() => startBuild('svc', 2))).toMatchObject({ body: { version: 2 } })
+    expect(await call(() => getSecretsStatus())).toMatchObject({ url: '/api/secrets/status' })
+    expect(await call(() => getNetworkHosts('svc'), { rows: [] })).toMatchObject({ url: '/api/network?workspace=svc&view=hosts' })
+  })
+
+  it('diffWorkspace accepts plain text or {diff}', async () => {
+    vi.stubGlobal('fetch', reply(200, { diff: '@@ -1 +1 @@' }))
+    expect(await diffWorkspace('svc', 1, 2)).toBe('@@ -1 +1 @@')
+    const f = reply(200, '@@ text')
+    vi.stubGlobal('fetch', f)
+    await diffWorkspace('svc', 1, 2)
+    expect(f.mock.calls[0][0]).toBe('/api/workspaces/svc/diff?a=1&b=2')
+  })
+
+  it('spawnAgent sends the workspace reference', async () => {
+    const r = await call(() => spawnAgent({ project: '/p', workspace: 'svc@2' }), { agentId: 'a' })
+    expect(r.body).toMatchObject({ workspace: 'svc@2' })
   })
 })

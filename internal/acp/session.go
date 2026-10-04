@@ -114,6 +114,10 @@ type SessionManager struct {
 type SessionResponse struct {
 	SessionID string         `json:"sessionId"`
 	Workspace *WorkspaceInfo `json:"workspace,omitempty"`
+	// Mode echoes the approval mode applied from the request's policy, so
+	// a client can verify it. No mode_changed notification is sent for it:
+	// the session is not published yet, so nobody is attached to hear one.
+	Mode string `json:"mode,omitempty"`
 }
 
 // sessionParams is the subset of ACP session/new and session/load params
@@ -133,6 +137,9 @@ type sessionParams struct {
 	// Routing gives the new session its own profile and per-role preset
 	// overrides. Honored by session/new only.
 	Routing *RoutingParams `json:"routing,omitempty"`
+	// Policy, when present, sets the new session's approval mode and
+	// pre-approved commands. Honored by session/new only.
+	Policy *PolicyParams `json:"policy,omitempty"`
 }
 
 // RoutingParams is the session/new routing parameter. Overrides maps role
@@ -365,6 +372,12 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
+	var policyMode string
+	if p.Policy != nil {
+		if policyMode, err = p.Policy.validate(); err != nil {
+			return nil, err
+		}
+	}
 	var extra []app.Option
 	if p.Routing != nil && (p.Routing.Profile != "" || len(p.Routing.Overrides) > 0) {
 		overrides := make(map[routing.AgentRole]string, len(p.Routing.Overrides))
@@ -380,7 +393,15 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 		}
 		return nil, err
 	}
-	resp := SessionResponse{SessionID: rt.SessionID}
+	if p.Policy != nil {
+		if perr := applyPolicy(rt, p.Policy, policyMode); perr != nil {
+			sCtx, sCancel := shutdownCtx()
+			defer sCancel()
+			_ = m.closeRuntimeOnce(sCtx, rt)
+			return nil, perr
+		}
+	}
+	resp := SessionResponse{SessionID: rt.SessionID, Mode: policyMode}
 	if p.Isolation != nil {
 		// Worktree setup is resolved per session from the session's loaded
 		// config: the ACP host never holds a config.Config (config is per-cwd,

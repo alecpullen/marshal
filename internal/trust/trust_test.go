@@ -2,6 +2,8 @@ package trust
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -502,5 +504,99 @@ func TestTerminalResolverRePromptsOnConfigChange(t *testing.T) {
 	}
 	if decision != DecisionDontTrust {
 		t.Fatalf("decision = %s, want DontTrust after config change (re-prompt fell through to empty stdin)", decision)
+	}
+}
+
+func writeProjectFile(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	path := filepath.Join(dir, ".marshal", rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigHashForConfigOnlyIsPinned(t *testing.T) {
+	dir := t.TempDir()
+	content := "[project]\nname = \"a\"\n"
+	writeProjectFile(t, dir, "config.toml", content)
+	got, err := ConfigHashFor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pre-workspace rule: sha256 of config.toml alone.
+	sum := sha256.Sum256([]byte(content))
+	if want := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("hash = %s, want %s", got, want)
+	}
+}
+
+func TestConfigHashForWorkspaceFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectFile(t, dir, "config.toml", "[project]\nname = \"a\"\n")
+	base, _ := ConfigHashFor(dir)
+
+	writeProjectFile(t, dir, "workspaces/api.toml", "[workspace]\nname = \"api\"\n")
+	withOne, err := ConfigHashFor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withOne == base {
+		t.Fatal("adding a workspace file did not change the hash")
+	}
+
+	writeProjectFile(t, dir, "workspaces/api.toml", "[workspace]\nname = \"api2\"\n")
+	edited, _ := ConfigHashFor(dir)
+	if edited == withOne {
+		t.Fatal("editing a workspace file did not change the hash")
+	}
+
+	writeProjectFile(t, dir, "workspaces/web.toml", "[workspace]\nname = \"web\"\n")
+	two, _ := ConfigHashFor(dir)
+	again, _ := ConfigHashFor(dir)
+	if two == edited || two != again {
+		t.Fatal("hash with two workspace files must differ from one and be stable")
+	}
+
+	// Non-toml files and subdirectories are not covered.
+	writeProjectFile(t, dir, "workspaces/notes.txt", "x")
+	if h, _ := ConfigHashFor(dir); h != two {
+		t.Fatal("non-toml file changed the hash")
+	}
+}
+
+func TestWorkspaceFileCountsAsProjectConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectFile(t, dir, "workspaces/api.toml", "[workspace]\nname = \"api\"\n")
+	if !HasProjectConfig(dir) {
+		t.Fatal("workspace file without config.toml should count as project config")
+	}
+	h, err := ConfigHashFor(dir)
+	if err != nil || h == "" {
+		t.Fatalf("hash = %q err = %v, want a hash for a workspace-only project", h, err)
+	}
+}
+
+func TestWorkspaceFilesUnreadableDirFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectFile(t, dir, "config.toml", "[project]\n")
+	// A file where the workspaces directory should be: ReadDir fails with
+	// something other than not-exist.
+	writeProjectFile(t, dir, "workspaces", "not a directory")
+	if _, err := ConfigHashFor(dir); err == nil {
+		t.Fatal("ConfigHashFor should return the listing error, not the config-only hash")
+	}
+	if !HasProjectConfig(dir) {
+		t.Fatal("HasProjectConfig should be true when workspace files can't be listed")
+	}
+}
+
+func TestWorkspaceFilesInGlobMetacharDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "proj[1]*")
+	writeProjectFile(t, dir, "workspaces/api.toml", "[workspace]\nname = \"api\"\n")
+	if !HasProjectConfig(dir) {
+		t.Fatal("workspace file in a directory with glob characters was missed")
 	}
 }

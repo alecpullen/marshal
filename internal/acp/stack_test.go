@@ -324,6 +324,72 @@ func TestFinishTurnFlushSettlesLiveRows(t *testing.T) {
 	}
 }
 
+func TestStackAfterTelemetryBeforeSlotReleaseStaysSettled(t *testing.T) {
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	broker := pubsub.NewBroker[session.Event]()
+	st.SetEventBroker(broker)
+	telemetry := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	defer func() {
+		close(release)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("prompt did not finish")
+		}
+	}()
+	rt := &TurnRuntime{State: st, Events: broker, BeginWork: identityBeginWork}
+	rt.Run = RunnerFunc(func(context.Context, string) error {
+		st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+		step := st.BeginStep(session.Actor{})
+		st.AddMessage(session.RoleAssistant, "working", session.ContentTypeNarration)
+		st.EndStep(step)
+		st.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+		return nil
+	})
+	m := NewTurnManager(TurnManagerConfig{
+		Lookup: func(id string) (*TurnRuntime, bool) { return rt, id == "s1" },
+		Notify: func(_ string, params any) error {
+			if params.(SessionUpdateParams).Update["kind"] == "session_telemetry" {
+				close(telemetry)
+				<-release
+			}
+			return nil
+		},
+	})
+	takeStack(t, m)
+	go func() {
+		_, err := m.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"s1","prompt":[{"type":"text","text":"hello"}]}`))
+		done <- err
+	}()
+	select {
+	case <-telemetry:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no telemetry")
+	}
+	if !m.HasActiveTurn("s1") {
+		t.Fatal("slot released before telemetry returned")
+	}
+	if _, err := m.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"s1","prompt":[{"type":"text","text":"duplicate"}]}`)); err == nil {
+		t.Fatal("duplicate prompt accepted while slot reserved")
+	}
+	snap := takeStack(t, m)
+	var receipt bool
+	for _, n := range snap.Nodes {
+		if n.Live {
+			t.Errorf("settled snapshot revived live node %s", n.ID)
+		}
+		receipt = receipt || n.Receipt != nil
+	}
+	if !receipt {
+		t.Error("settled snapshot lost receipt")
+	}
+}
+
 func TestStackRequiresSessionID(t *testing.T) {
 	m, _, _ := newStackTestManager(t)
 	_, err := m.Stack(context.Background(), json.RawMessage(`{}`))

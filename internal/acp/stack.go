@@ -156,6 +156,15 @@ func (m *TurnManager) flushDirtyStack(sessionID string, st *session.State) {
 	}
 }
 
+// stackTurnBusy distinguishes an unfinished runner from the reserved slot.
+// HasActiveTurn deliberately keeps excluding duplicate prompts until cleanup.
+func (m *TurnManager) stackTurnBusy(sessionID string) bool {
+	m.activeTurnsMu.Lock()
+	defer m.activeTurnsMu.Unlock()
+	slot := m.activeTurns[sessionID]
+	return slot != nil && !slot.settled.Load()
+}
+
 // Stack handles session/stack, flushing changes before answering an active view.
 func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, error) {
 	var request StackParams
@@ -177,7 +186,7 @@ func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, e
 	p := m.stackFor(request.SessionID)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	tree := viewmodel.Project(viewmodel.Build(stackSnapshotOf(rt.State, m.HasActiveTurn(request.SessionID), time.Now())))
+	tree := viewmodel.Project(viewmodel.Build(stackSnapshotOf(rt.State, m.stackTurnBusy(request.SessionID), time.Now())))
 	if !p.active {
 		p.active = true
 		p.sent = make(map[string][]byte, len(tree.Nodes))

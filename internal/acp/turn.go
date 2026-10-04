@@ -174,6 +174,7 @@ type activeTurn struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	clientCancelled atomic.Bool
+	settled         atomic.Bool // runner finished; slot remains reserved through cleanup
 }
 
 // TurnManager dispatches session/prompt and session/cancel. At most one
@@ -1215,6 +1216,7 @@ func (m *TurnManager) finishTurn(
 	resultOf func(runErr error, slot *activeTurn) (any, error),
 ) (any, error) {
 	result, err := resultOf(runErrVal, slot)
+	slot.settled.Store(true)
 	if rt.State != nil {
 		m.flushStack(sessionID, rt.State, false)
 		if notifyErr := m.notify("session/update", SessionUpdateParams{

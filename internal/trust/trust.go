@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -144,23 +145,59 @@ func Canonicalize(workingDir string) string {
 	return abs
 }
 
-// ConfigHashFor returns the SHA-256 hex digest of the project config
-// file at workingDir/.marshal/config.toml. Returns an empty string
-// (not an error) when the file does not exist, since the absence of a
-// project config means no trust-gated sections are loaded. A read
-// error returns an error so callers can distinguish "no config" from
-// "couldn't read config".
+// workspaceFiles lists the repo workspace templates under
+// workingDir/.marshal/workspaces/*.toml, sorted by base name.
+func workspaceFiles(workingDir string) []string {
+	matches, err := filepath.Glob(filepath.Join(workingDir, ".marshal", "workspaces", "*.toml"))
+	if err != nil {
+		return nil
+	}
+	sort.Slice(matches, func(i, j int) bool { return filepath.Base(matches[i]) < filepath.Base(matches[j]) })
+	return matches
+}
+
+// ConfigHashFor returns the SHA-256 hex digest of the project config at
+// workingDir/.marshal/config.toml together with every repo workspace file
+// under .marshal/workspaces/*.toml. With no workspace files the digest is
+// that of config.toml alone, so trust records made before workspace files
+// existed stay valid. Returns an empty string (not an error) when neither
+// config.toml nor a workspace file exists, since the absence of project
+// config means no trust-gated sections are loaded. A read error returns an
+// error so callers can distinguish "no config" from "couldn't read config".
 func ConfigHashFor(workingDir string) (string, error) {
 	path := filepath.Join(workingDir, ".marshal", "config.toml")
 	data, err := os.ReadFile(path)
+	missing := false
 	if err != nil {
-		if os.IsNotExist(err) {
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("hash project config: %w", err)
+		}
+		missing = true
+		data = nil
+	}
+	files := workspaceFiles(workingDir)
+	if len(files) == 0 {
+		if missing {
 			return "", nil
 		}
-		return "", fmt.Errorf("hash project config: %w", err)
+		sum := sha256.Sum256(data)
+		return hex.EncodeToString(sum[:]), nil
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	h := sha256.New()
+	h.Write([]byte("config.toml\x00"))
+	h.Write(data)
+	h.Write([]byte{0})
+	for _, f := range files {
+		content, err := os.ReadFile(f)
+		if err != nil {
+			return "", fmt.Errorf("hash workspace file %s: %w", filepath.Base(f), err)
+		}
+		h.Write([]byte(filepath.Base(f)))
+		h.Write([]byte{0})
+		h.Write(content)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // StoredConfigHash returns the config_hash that was persisted when
@@ -253,7 +290,11 @@ func Evaluate(store *Store, workingDir string) (decision Decision, needsPrompt b
 	return DecisionDontTrust, true, nil
 }
 
+// HasProjectConfig reports whether workingDir has trust-gated project
+// config: .marshal/config.toml or any .marshal/workspaces/*.toml.
 func HasProjectConfig(workingDir string) bool {
-	_, err := os.Stat(filepath.Join(workingDir, ".marshal", "config.toml"))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(workingDir, ".marshal", "config.toml")); err == nil {
+		return true
+	}
+	return len(workspaceFiles(workingDir)) > 0
 }

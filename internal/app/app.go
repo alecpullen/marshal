@@ -280,6 +280,13 @@ type routedProviderResolver struct {
 // injection, excluding memories that have been marked stale.
 type dbMemoryProvider struct {
 	db *db.DB
+	// workspace is $MARSHAL_WORKSPACE, read once at construction, so
+	// workspace-scoped memories reach agents the bridge spawned into one.
+	workspace string
+}
+
+func newDBMemoryProvider(database *db.DB) *dbMemoryProvider {
+	return &dbMemoryProvider{db: database, workspace: os.Getenv("MARSHAL_WORKSPACE")}
 }
 
 func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProviderResolver {
@@ -404,8 +411,10 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	return p, nil
 }
 
+// Memories returns the project's notes, then workspace notes, then global
+// notes (see db.GetScopedMemories), skipping stale ones.
 func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, error) {
-	memories, err := p.db.GetMemories(projectID)
+	memories, err := p.db.GetScopedMemories(projectID, p.workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -894,12 +903,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	runner.SystemPromptAddendum = composeAddendum(repoInstructions, "")
 	runner.SkillIndex = skillIndex
 	runner.RouteResolver = resolver
-	runner.MemoryProvider = &dbMemoryProvider{db: database}
+	runner.MemoryProvider = newDBMemoryProvider(database)
 	runner.ProjectID = projectID
 	recorder := metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	scheduler := &knowledgeScheduler{
 		run: func(ctx context.Context, in knowledge.ExtractInput) { knowledge.Extract(ctx, in) },
 		input: func() knowledge.ExtractInput {
+			agentLabel, stepID := knowledge.Provenance(state)
 			return knowledge.ExtractInput{
 				DB:                  database,
 				ProjectID:           projectID,
@@ -909,6 +919,8 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 				MaxTouchedFileBytes: state.Config.Agent.MaxTouchedFileBytes,
 				Messages:            state.Messages(),
 				AuditLog:            state.AuditLog(),
+				AgentLabel:          agentLabel,
+				StepID:              stepID,
 				Logger:              state.Logger(),
 			}
 		},
@@ -1122,7 +1134,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			readOnlyReg:      registry.ReadOnlyView(reg),
 			testerReg:        registry.TesterView(reg),
 			skillIndex:       skillIndex,
-			memory:           &dbMemoryProvider{db: database},
+			memory:           newDBMemoryProvider(database),
 			projectID:        projectID,
 			limitsTable:      limitsTable,
 			database:         database,
@@ -1389,7 +1401,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 		readOnlyReg: registry.ReadOnlyView(reg),
 		testerReg:   registry.TesterView(reg),
 		skillIndex:  skillIndex,
-		memory:      &dbMemoryProvider{db: database},
+		memory:      newDBMemoryProvider(database),
 		projectID:   projectID,
 		limitsTable: lt,
 		database:    database,
@@ -1420,7 +1432,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		reg:         reg,
 		readOnlyReg: registry.ReadOnlyView(reg),
 		skillIndex:  skillIndex,
-		memory:      &dbMemoryProvider{db: database},
+		memory:      newDBMemoryProvider(database),
 		projectID:   projectID,
 		limitsTable: lt,
 		database:    database,
@@ -1536,7 +1548,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		childRunner.NarrationPrompt = cfg.Agent.NarrationPrompt
 		childRunner.IntentNudge = cfg.Agent.IntentNudge
 		childRunner.SkillIndex = skillIndex
-		childRunner.MemoryProvider = &dbMemoryProvider{db: database}
+		childRunner.MemoryProvider = newDBMemoryProvider(database)
 		childRunner.ProjectID = projectID
 		if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 			childRunner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second

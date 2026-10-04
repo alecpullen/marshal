@@ -180,6 +180,9 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 // model. Loop-detection/stall handling is done by the caller (RunTask), not
 // here — this only records the call into the progress tracker.
 func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, error) {
+	if err := r.State.WaitUnheld(ctx); err != nil {
+		return nil, err
+	}
 	toolName := action.Tool
 	if action.Type == ActionPatch {
 		toolName = "file.write_patch"

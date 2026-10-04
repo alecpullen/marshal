@@ -42,6 +42,15 @@ func (db *DB) GetProject(id int64) (Project, error) {
 	return scanProject(row, fmt.Sprintf("project not found: %d", id))
 }
 
+// ProjectRoot returns the root path of the project with the given ID.
+func (db *DB) ProjectRoot(id int64) (string, error) {
+	p, err := db.GetProject(id)
+	if err != nil {
+		return "", err
+	}
+	return p.RootPath, nil
+}
+
 // GetProjectByRoot returns the project row for the given root path.
 // Returns a "project not found" error if no row exists. Never creates a row.
 func (db *DB) GetProjectByRoot(rootPath string) (Project, error) {

@@ -44,6 +44,7 @@ const (
 	EventPendingSkillGateChanged = "pending_skill_gate_changed"
 	EventBrowserChanged          = "browser_changed"
 	EventStepChanged             = "step_changed"
+	EventHoldChanged             = "hold_changed"
 )
 
 // Event is the union payload published on the session event broker
@@ -70,6 +71,8 @@ type Event struct {
 	Browser              *BrowserInfo
 	// Step carries a step that began or ended (EventStepChanged).
 	Step *Step
+	// Held carries the new hold state (EventHoldChanged).
+	Held bool
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -215,6 +218,8 @@ type State struct {
 	cancel context.CancelFunc
 
 	mu              sync.Mutex
+	hold            bool          // guarded by mu; see hold.go
+	holdCh          chan struct{} // closed and cleared on release; guarded by mu
 	messages        []Message
 	inProgress      InProgressMessage
 	notice          Notice

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"marshal/internal/app/session"
@@ -50,6 +51,21 @@ type MemoryEntry struct {
 	SourceSessionID string    `json:"sourceSessionId,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
+	Scope           string    `json:"scope"`
+	ScopeKey        string    `json:"scopeKey"`
+	OwnerID         string    `json:"ownerId"`
+	// LearnedProjectRoot is the root of the project the memory was learned in.
+	LearnedProjectRoot string   `json:"learnedProjectRoot,omitempty"`
+	LearnedAgent       string   `json:"learnedAgent,omitempty"`
+	LearnedStep        int64    `json:"learnedStep,omitempty"`
+	ConfirmedBy        []string `json:"confirmedBy"`
+}
+
+// MemoryListParams is the JSON-RPC body for session/memory_list.
+type MemoryListParams struct {
+	SessionID string `json:"sessionId"`
+	// Scope optionally filters to one of project, workspace or global.
+	Scope string `json:"scope,omitempty"`
 }
 
 // MemoryListResult is the JSON-RPC result for session/memory_list.
@@ -59,11 +75,14 @@ type MemoryListResult struct {
 
 // MemoryList handles session/memory_list.
 func (m *MemoryManager) MemoryList(ctx context.Context, params json.RawMessage) (any, error) {
-	var p sessionIDParams
+	var p MemoryListParams
 	if len(params) > 0 {
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, invalidParamsError("parse session/memory_list params: %v", err)
 		}
+	}
+	if p.Scope != "" && !validMemoryScope[p.Scope] {
+		return nil, invalidParamsError("invalid scope %q: want one of project, workspace, global", p.Scope)
 	}
 	if p.SessionID == "" {
 		return nil, fmt.Errorf("acp: session/memory_list requires sessionId")
@@ -75,16 +94,32 @@ func (m *MemoryManager) MemoryList(ctx context.Context, params json.RawMessage) 
 	if rt.DB == nil {
 		return nil, &jsonRPCError{Code: internalError, Message: "session has no database handle"}
 	}
-	records, err := rt.DB.GetMemories(rt.ProjectID)
+	records, err := rt.DB.GetScopedMemories(rt.ProjectID, os.Getenv("MARSHAL_WORKSPACE"))
 	if err != nil {
 		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("list memories: %v", err)}
 	}
-	entries := make([]MemoryEntry, len(records))
-	for i, r := range records {
-		entries[i] = MemoryEntry{
+	entries := make([]MemoryEntry, 0, len(records))
+	roots := map[int64]string{}
+	for _, r := range records {
+		if p.Scope != "" && r.Scope != p.Scope {
+			continue
+		}
+		root, seen := roots[r.ProjectID]
+		if !seen {
+			root, _ = rt.DB.ProjectRoot(r.ProjectID)
+			roots[r.ProjectID] = root
+		}
+		confirmed := r.ConfirmedBy
+		if confirmed == nil {
+			confirmed = []string{}
+		}
+		entries = append(entries, MemoryEntry{
 			ID: r.ID, Kind: r.Kind, Content: r.Content, Confidence: r.Confidence,
 			SourceSessionID: r.SourceSessionID, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
-		}
+			Scope: r.Scope, ScopeKey: r.ScopeKey, OwnerID: r.OwnerID,
+			LearnedProjectRoot: root, LearnedAgent: r.LearnedAgent, LearnedStep: r.LearnedStep,
+			ConfirmedBy: confirmed,
+		})
 	}
 	return MemoryListResult{Entries: entries}, nil
 }
@@ -119,6 +154,148 @@ func (m *MemoryManager) MemoryDelete(ctx context.Context, params json.RawMessage
 	}
 	if err := rt.DB.DeleteMemory(p.ID); err != nil {
 		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("delete memory: %v", err)}
+	}
+	return map[string]any{}, nil
+}
+
+var validMemoryScope = map[string]bool{
+	db.MemoryScopeProject: true, db.MemoryScopeWorkspace: true, db.MemoryScopeGlobal: true,
+}
+
+// memoryRuntime resolves a session for the scope methods, with the same
+// errors as the other memory handlers.
+func (m *MemoryManager) memoryRuntime(sessionID, method string) (*MemoryRuntime, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("acp: %s requires sessionId", method)
+	}
+	rt, ok := m.lookup(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", sessionID)
+	}
+	if rt.DB == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no database handle"}
+	}
+	return rt, nil
+}
+
+// requireVisible rejects a memory id the session could not see in
+// memory_list: another project's project-scoped row, or a workspace row of
+// another workspace.
+func (m *MemoryManager) requireVisible(rt *MemoryRuntime, id int64, method string) error {
+	mem, err := rt.DB.GetMemory(id)
+	if err != nil {
+		return invalidParamsError("%s: unknown memory %d", method, id)
+	}
+	switch mem.Scope {
+	case db.MemoryScopeGlobal:
+		return nil
+	case db.MemoryScopeWorkspace:
+		if ws := os.Getenv("MARSHAL_WORKSPACE"); ws != "" && mem.ScopeKey == ws {
+			return nil
+		}
+	default:
+		if mem.ProjectID == rt.ProjectID {
+			return nil
+		}
+	}
+	return invalidParamsError("%s: memory %d is not visible to this session", method, id)
+}
+
+// MemorySuggestionEntry is one promotion suggestion.
+type MemorySuggestionEntry struct {
+	MemoryID         int64  `json:"memoryId"`
+	MatchProjectRoot string `json:"matchProjectRoot"`
+	SuggestedScope   string `json:"suggestedScope"`
+}
+
+// MemorySuggestions handles session/memory_suggestions: project memories
+// that another project holds too, with the scope they could be promoted to.
+func (m *MemoryManager) MemorySuggestions(ctx context.Context, params json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if err := decodeParams(params, &p, "session/memory_suggestions"); err != nil {
+		return nil, err
+	}
+	rt, err := m.memoryRuntime(p.SessionID, "session/memory_suggestions")
+	if err != nil {
+		return nil, err
+	}
+	found, err := rt.DB.MemorySuggestions(rt.ProjectID)
+	if err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("memory suggestions: %v", err)}
+	}
+	out := make([]MemorySuggestionEntry, len(found))
+	for i, s := range found {
+		out[i] = MemorySuggestionEntry{MemoryID: s.MemoryID, MatchProjectRoot: s.MatchRoot, SuggestedScope: s.SuggestedScope}
+	}
+	return map[string]any{"suggestions": out}, nil
+}
+
+// MemoryPromoteParams is the JSON-RPC body for session/memory_promote.
+type MemoryPromoteParams struct {
+	SessionID string `json:"sessionId"`
+	ID        int64  `json:"id"`
+	Scope     string `json:"scope"`
+	ScopeKey  string `json:"scopeKey,omitempty"`
+}
+
+// MemoryPromote handles session/memory_promote: it moves a memory to the
+// given scope and merges same-content duplicates from other projects.
+func (m *MemoryManager) MemoryPromote(ctx context.Context, params json.RawMessage) (any, error) {
+	var p MemoryPromoteParams
+	if err := decodeParams(params, &p, "session/memory_promote"); err != nil {
+		return nil, err
+	}
+	if p.ID == 0 {
+		return nil, invalidParamsError("session/memory_promote requires a non-zero id")
+	}
+	if !validMemoryScope[p.Scope] {
+		return nil, invalidParamsError("invalid scope %q: want one of project, workspace, global", p.Scope)
+	}
+	if p.Scope == db.MemoryScopeWorkspace && p.ScopeKey == "" {
+		return nil, invalidParamsError("session/memory_promote requires scopeKey for the workspace scope")
+	}
+	rt, err := m.memoryRuntime(p.SessionID, "session/memory_promote")
+	if err != nil {
+		return nil, err
+	}
+	if err := m.requireVisible(rt, p.ID, "session/memory_promote"); err != nil {
+		return nil, err
+	}
+	if err := rt.DB.PromoteMemory(p.ID, p.Scope, p.ScopeKey, time.Now()); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("promote memory: %v", err)}
+	}
+	return map[string]any{}, nil
+}
+
+// MemoryConfirmParams is the JSON-RPC body for session/memory_confirm.
+type MemoryConfirmParams struct {
+	SessionID string `json:"sessionId"`
+	ID        int64  `json:"id"`
+	Agent     string `json:"agent"`
+}
+
+// MemoryConfirm handles session/memory_confirm: it records that agent also
+// holds the memory (appended to confirmedBy, once).
+func (m *MemoryManager) MemoryConfirm(ctx context.Context, params json.RawMessage) (any, error) {
+	var p MemoryConfirmParams
+	if err := decodeParams(params, &p, "session/memory_confirm"); err != nil {
+		return nil, err
+	}
+	if p.ID == 0 {
+		return nil, invalidParamsError("session/memory_confirm requires a non-zero id")
+	}
+	if p.Agent == "" {
+		return nil, invalidParamsError("session/memory_confirm requires agent")
+	}
+	rt, err := m.memoryRuntime(p.SessionID, "session/memory_confirm")
+	if err != nil {
+		return nil, err
+	}
+	if err := m.requireVisible(rt, p.ID, "session/memory_confirm"); err != nil {
+		return nil, err
+	}
+	if err := rt.DB.ConfirmMemory(p.ID, p.Agent); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("confirm memory: %v", err)}
 	}
 	return map[string]any{}, nil
 }

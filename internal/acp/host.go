@@ -315,6 +315,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 					"runDetail":             map[string]any{},
 					"watchAccess":           map[string]any{},
 					"memoryAccess":          map[string]any{},
+					"holdControl":           map[string]any{},
+					"memoryScopes":          map[string]any{},
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
 					"pluginsAccess":         map[string]any{},
@@ -399,6 +401,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 		// /mcp auth authorization URL) survives a dropped connection.
 		Notify: h.sink.Notify,
 	})
+	srv.Handle("session/hold", turns.Hold)
 	srv.Handle("session/command", cmds.Command)
 	srv.Handle("session/command_list", cmds.CommandList)
 
@@ -413,6 +416,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 		},
 	})
 	srv.Handle("session/memory_list", mem.MemoryList)
+	srv.Handle("session/memory_suggestions", mem.MemorySuggestions)
+	srv.Handle("session/memory_promote", mem.MemoryPromote)
+	srv.Handle("session/memory_confirm", mem.MemoryConfirm)
 	srv.Handle("session/memory_delete", mem.MemoryDelete)
 	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
 	srv.Handle("session/agents_roster", mem.AgentsRoster)

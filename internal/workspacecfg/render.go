@@ -9,7 +9,7 @@ import (
 )
 
 // canonicalOrder is the section order Format writes and Patch inserts in.
-var canonicalOrder = []string{"workspace", "packages", "mounts", "files", "secrets", "network", "resources", "policy", "setup"}
+var canonicalOrder = []string{"workspace", "packages", "mounts", "files", "secrets", "network", "resources", "policy", "preview", "setup"}
 
 // renderSection renders one section key of d as TOML, trimmed. It returns
 // nil when the section is empty. Wrapper types keep the field order stable.
@@ -62,6 +62,10 @@ func renderSection(key string, d Doc) []byte {
 		v = struct {
 			Policy Policy `toml:"policy"`
 		}{d.Policy}
+	case "preview":
+		v = struct {
+			Preview Preview `toml:"preview"`
+		}{d.Preview}
 	case "setup":
 		v = struct {
 			Setup Setup `toml:"setup"`
@@ -110,7 +114,7 @@ func Format(d Doc) []byte {
 func layerSectionKeys(layer int) []string {
 	switch layer {
 	case 0:
-		return []string{"policy"}
+		return []string{"policy", "preview"}
 	case 1, 2:
 		return []string{"workspace"}
 	case 3:
@@ -136,7 +140,7 @@ func applyLayer(d *Doc, layer int, value json.RawMessage) error {
 	var target any
 	switch layer {
 	case 0:
-		target = &d.Policy
+		return applyPanel(d, value)
 	case 1, 2:
 		target = &d.Workspace
 	case 3:
@@ -189,6 +193,34 @@ func applyLayer(d *Doc, layer int, value json.RawMessage) error {
 	return nil
 }
 
+// applyPanel decodes a layer-0 value: Policy's fields plus an optional
+// "preview" object. The policy is replaced wholesale unless the value
+// carries only "preview", and the preview is replaced only when the value
+// carries it, so patching one half of the panel leaves the other alone.
+func applyPanel(d *Doc, value json.RawMessage) error {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(value, &keys); err != nil {
+		return fmt.Errorf("decode layer 0 value: %w", err)
+	}
+	if raw, ok := keys["preview"]; ok {
+		var pv Preview
+		if err := json.Unmarshal(raw, &pv); err != nil {
+			return fmt.Errorf("decode layer 0 preview: %w", err)
+		}
+		d.Preview = pv
+		delete(keys, "preview")
+		if len(keys) == 0 {
+			return nil
+		}
+		value, _ = json.Marshal(keys)
+	}
+	d.Policy = Policy{}
+	if err := json.Unmarshal(value, &d.Policy); err != nil {
+		return fmt.Errorf("decode layer 0 policy: %w", err)
+	}
+	return nil
+}
+
 // Patch re-renders the section(s) of one layer from value (JSON) and
 // splices them into src at the section's line range, leaving everything
 // else byte for byte. A missing section is inserted in canonical order.
@@ -204,14 +236,31 @@ func Patch(src []byte, layer int, value json.RawMessage) ([]byte, error) {
 	if err := applyLayer(&d, layer, value); err != nil {
 		return nil, err
 	}
-	key := keys[0]
-	rendered := renderSection(key, d)
+	res := append([]byte(nil), src...)
+	for i, key := range keys {
+		// Later keys re-read the sections: an earlier splice moved the lines.
+		secs := secs
+		if i > 0 {
+			_, secs, _ = Parse(res)
+		}
+		res = spliceSection(res, secs, layer, key, renderSection(key, d))
+	}
+	if _, _, ds := Parse(res); len(errorsOf(ds)) > 0 {
+		return nil, fmt.Errorf("patched source no longer parses: line %d: %s", ds[0].Line, ds[0].Message)
+	}
+	return res, nil
+}
 
+// spliceSection replaces the source lines of key's section with rendered
+// (removing them when rendered is nil), or inserts rendered in canonical
+// order when the section is missing.
+func spliceSection(src []byte, secs []Section, layer int, key string, rendered []byte) []byte {
 	// Layers 1 and 2 share [workspace]. Layer 6 spans [secrets] and
-	// [secrets.inject], so its range covers every layer-6 section.
+	// [secrets.inject], so its range covers every layer-6 section. Layer 0
+	// holds two independent tables, so it matches by key.
 	var cur *Section
 	for _, s := range secs {
-		if s.Layer != layer {
+		if s.Layer != layer || (layer == 0 && s.Key != key) {
 			continue
 		}
 		if cur == nil {
@@ -233,7 +282,7 @@ func Patch(src []byte, layer int, value json.RawMessage) ([]byte, error) {
 		out = append(out, strings.Split(string(rendered), "\n")...)
 		out = append(out, lines[cur.EndLine:]...)
 	case rendered == nil:
-		return append([]byte(nil), src...), nil
+		return append([]byte(nil), src...)
 	default:
 		at := insertionLine(key, secs, len(lines))
 		block := strings.Split(string(rendered), "\n")
@@ -251,10 +300,7 @@ func Patch(src []byte, layer int, value json.RawMessage) ([]byte, error) {
 	if len(res) > 0 && res[len(res)-1] != '\n' {
 		res = append(res, '\n')
 	}
-	if _, _, ds := Parse(res); len(errorsOf(ds)) > 0 {
-		return nil, fmt.Errorf("patched source no longer parses: line %d: %s", ds[0].Line, ds[0].Message)
-	}
-	return res, nil
+	return res
 }
 
 // insertionLine returns the index in lines (0-based, i.e. "after this many

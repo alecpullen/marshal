@@ -34,6 +34,7 @@ var layerKeys = map[string][]int{
 	"resources":      {8},
 	"setup":          {9},
 	"policy":         {0},
+	"preview":        {0},
 }
 
 // rawDoc mirrors Doc for decoding, with [secrets] kept as a raw map so
@@ -47,6 +48,7 @@ type rawDoc struct {
 	Network   Network              `toml:"network"`
 	Resources Resources            `toml:"resources"`
 	Policy    Policy               `toml:"policy"`
+	Preview   Preview              `toml:"preview"`
 	Setup     Setup                `toml:"setup"`
 }
 
@@ -90,6 +92,7 @@ func Parse(src []byte) (Doc, []Section, []Diagnostic) {
 		Network:    raw.Network,
 		Resources:  raw.Resources,
 		Policy:     raw.Policy,
+		Preview:    raw.Preview,
 		Setup:      raw.Setup,
 	}
 	if d.Files == nil {
@@ -204,6 +207,17 @@ func validate(d Doc, hl map[string]int) []Diagnostic {
 	if d.Policy.Mode != "" && !policyModes[d.Policy.Mode] {
 		out = append(out, errAt(pl, "invalid policy mode %q", d.Policy.Mode))
 	}
+	vl := lineOr1(hl, "preview")
+	seenPort := map[int]bool{}
+	for _, port := range d.Preview.Ports {
+		switch {
+		case port < 1 || port > 65535:
+			out = append(out, errAt(vl, "preview port %d out of range: want 1-65535", port))
+		case seenPort[port]:
+			out = append(out, errAt(vl, "preview port %d listed twice", port))
+		}
+		seenPort[port] = true
+	}
 	rl := lineOr1(hl, "resources")
 	if d.Resources.Memory != "" && !sizeRe.MatchString(d.Resources.Memory) {
 		out = append(out, errAt(rl, "resources.memory %q must look like 512m or 4g", d.Resources.Memory))
@@ -307,7 +321,7 @@ func scanSections(src []byte) ([]Section, map[string]int) {
 // [files."a/b"] belongs to files and [secrets.inject."h"] to
 // secrets.inject. Unknown headers are returned unchanged.
 func canonicalKey(k string) string {
-	for _, owner := range []string{"secrets.inject", "secrets", "files", "workspace", "packages", "mounts", "network", "resources", "policy", "setup"} {
+	for _, owner := range []string{"secrets.inject", "secrets", "files", "workspace", "packages", "mounts", "network", "resources", "policy", "preview", "setup"} {
 		if k == owner || strings.HasPrefix(k, owner+".") {
 			return owner
 		}

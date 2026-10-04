@@ -307,6 +307,34 @@ var migrations []func(*sql.Tx) error
 func init() {
 	migrations = append(migrations, migrateScratchpadEntries)
 	migrations = append(migrations, migrateMemoryContentHash)
+	migrations = append(migrations, migrateMemoryScopes)
+}
+
+// migrateMemoryScopes (version 3) adds scope, owner and provenance columns
+// to memories. Existing rows become project-scoped with the defaults.
+func migrateMemoryScopes(tx *sql.Tx) error {
+	cols := []struct{ name, def string }{
+		{"scope", "TEXT NOT NULL DEFAULT 'project'"},
+		{"scope_key", "TEXT NOT NULL DEFAULT ''"},
+		{"owner_id", "TEXT NOT NULL DEFAULT 'local'"},
+		{"learned_agent", "TEXT NOT NULL DEFAULT ''"},
+		{"learned_step", "INTEGER NOT NULL DEFAULT 0"},
+		{"confirmed_by", "TEXT NOT NULL DEFAULT '[]'"},
+	}
+	for _, c := range cols {
+		var has int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?`, c.name).Scan(&has); err != nil {
+			return err
+		}
+		if has > 0 {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE memories ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, scope_key)`)
+	return err
 }
 
 // migrateMemoryContentHash (version 2) adds memories.content_hash, backfills

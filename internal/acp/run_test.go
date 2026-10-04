@@ -124,6 +124,10 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			}
 		}
 
+		if c, ok := caps["configAccess"].(map[string]any); !ok || len(c) != 0 {
+			t.Fatalf("agentCapabilities.configAccess = %v, want empty object", caps["configAccess"])
+		}
+
 		stackCap, ok := sessionCaps["stackView"]
 		if !ok {
 			t.Fatal("sessionCapabilities.stackView missing")

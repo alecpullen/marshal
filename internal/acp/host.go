@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -287,6 +288,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 			"protocolVersion": 1,
 			"agentCapabilities": map[string]any{
 				"loadSession": true,
+				// Not per session: config/* act on the user-global config.
+				"configAccess": map[string]any{},
 				"sessionCapabilities": map[string]any{
 					"close":                 map[string]any{},
 					"list":                  map[string]any{},
@@ -341,6 +344,16 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.Handle("session/run", turns.Run)
 	srv.HandleNotification("session/cancel", turns.Cancel)
+
+	home, _ := os.UserHomeDir()
+	cfgMgr := NewConfigManager(home, nil, nil)
+	srv.Handle("config/get", cfgMgr.Get)
+	srv.Handle("config/set_providers", cfgMgr.SetProviders)
+	srv.Handle("config/set_provider_key", cfgMgr.SetProviderKey)
+	srv.Handle("config/set_presets", cfgMgr.SetPresets)
+	srv.Handle("config/set_routing", cfgMgr.SetRouting)
+	srv.Handle("config/set_budgets", cfgMgr.SetBudgets)
+	srv.Handle("config/probe_provider", cfgMgr.ProbeProvider)
 
 	srv.Handle("session/swarm_start", turns.SwarmStart)
 	srv.Handle("session/swarm_status", turns.SwarmStatus)

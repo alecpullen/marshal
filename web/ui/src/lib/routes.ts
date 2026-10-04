@@ -28,7 +28,7 @@ export function isScopedSessions(hash: string): boolean {
 }
 
 /** The old Dashboard now lives at #fleet; the empty hash is Home. */
-export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'other'
+export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'other'
 
 export function pageFromHash(hash: string): Page {
   if (hash === '' || hash === '#') return 'home'
@@ -36,6 +36,9 @@ export function pageFromHash(hash: string): Page {
   if (hash === '#new') return 'new'
   if (parseChatRoute(hash)) return 'chat'
   if (hash === '#sessions' || isScopedSessions(hash)) return 'sessions'
+  if (parseRunRoute(hash)) return 'run'
+  if (hash === '#runs') return 'runs'
+  if (parseLiveRoute(hash)) return 'live'
   return 'other'
 }
 
@@ -85,4 +88,62 @@ export function formatChatRoute(r: ChatRoute): string {
   if (r.tab) q.set('tab', r.tab)
   const qs = q.toString()
   return `#chat/${r.id}${r.view === 'review' ? '/review' : ''}${qs ? `?${qs}` : ''}`
+}
+
+export type RunView = 'lanes' | 'graph' | 'timeline'
+const RUN_VIEWS: readonly string[] = ['lanes', 'graph', 'timeline']
+
+/** A run page URL: `#runs/<agentId>[?view=…&node=<task>:<stage>&dock=…]`. */
+export interface RunRoute {
+  id: string
+  view: RunView
+  /** The selected cell, as `<task number>:<stage>`. */
+  node?: string
+  dock?: DockSizeParam
+}
+
+export function parseRunRoute(hash: string): RunRoute | null {
+  const m = /^#runs\/([^/?]+)(?:\?(.*))?$/.exec(hash)
+  if (!m) return null
+  const q = new URLSearchParams(m[2] ?? '')
+  const view = q.get('view')
+  const route: RunRoute = { id: decodeSafe(m[1]), view: view && RUN_VIEWS.includes(view) ? (view as RunView) : 'lanes' }
+  const node = q.get('node')
+  if (node) route.node = node
+  const dock = q.get('dock')
+  if (dock && DOCK_SIZES.includes(dock)) route.dock = dock as DockSizeParam
+  return route
+}
+
+export function formatRunRoute(r: RunRoute): string {
+  const q = new URLSearchParams()
+  if (r.view !== 'lanes') q.set('view', r.view)
+  if (r.node) q.set('node', r.node)
+  if (r.dock) q.set('dock', r.dock)
+  const qs = q.toString()
+  return `#runs/${encodeURIComponent(r.id)}${qs ? `?${qs}` : ''}`
+}
+
+/** The Live wall URL: `#live[?project=<root>&runs=1&page=N]`; page is 1-based. */
+export interface LiveRoute {
+  project?: string
+  runsOnly: boolean
+  page: number
+}
+
+export function parseLiveRoute(hash: string): LiveRoute | null {
+  const m = /^#live(?:\?(.*))?$/.exec(hash)
+  if (!m) return null
+  const q = new URLSearchParams(m[1] ?? '')
+  const page = Number.parseInt(q.get('page') ?? '', 10)
+  return { project: q.get('project') || undefined, runsOnly: q.get('runs') === '1', page: Number.isFinite(page) && page > 0 ? page : 1 }
+}
+
+export function formatLiveRoute(r: LiveRoute): string {
+  const q = new URLSearchParams()
+  if (r.project) q.set('project', r.project)
+  if (r.runsOnly) q.set('runs', '1')
+  if (r.page > 1) q.set('page', String(r.page))
+  const qs = q.toString()
+  return `#live${qs ? `?${qs}` : ''}`
 }

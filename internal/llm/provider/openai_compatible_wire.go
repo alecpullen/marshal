@@ -129,7 +129,8 @@ type chatCompletionResponse struct {
 
 type modelsResponseBody struct {
 	Data []struct {
-		ID      string `json:"id"`
-		OwnedBy string `json:"owned_by"`
+		ID       string                  `json:"id"`
+		OwnedBy  string                  `json:"owned_by"`
+		Thinking *schema.ThinkingOptions `json:"thinking_options"`
 	} `json:"data"`
 }

@@ -57,10 +57,11 @@ type chatResult struct {
 // wire request". Populated by RunTask after resolveRoute and reset before the
 // turn returns; never shared across turns.
 type turnRequestOptions struct {
-	maxTokens     *int
-	contextWindow *int
-	thinking      string
-	temperature   *float64
+	maxTokens       *int
+	contextWindow   *int
+	thinking        string
+	thinkingOptions *schema.ThinkingOptions
+	temperature     *float64
 }
 
 func intPtr(v int) *int { return &v }
@@ -384,15 +385,16 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	// The request is built as a value so the inspection snapshot describes
 	// what was actually sent, after every capability gate above.
 	req := schema.ChatRequest{
-		Model:          model,
-		Messages:       messages,
-		Stream:         true,
-		MaxTokens:      r.turnRequestOptions.maxTokens,
-		ContextWindow:  r.turnRequestOptions.contextWindow,
-		ResponseFormat: responseFormat,
-		Tools:          tools,
-		Thinking:       thinking,
-		Temperature:    requestTemperature,
+		Model:           model,
+		Messages:        messages,
+		Stream:          true,
+		MaxTokens:       r.turnRequestOptions.maxTokens,
+		ContextWindow:   r.turnRequestOptions.contextWindow,
+		ResponseFormat:  responseFormat,
+		Tools:           tools,
+		Thinking:        thinking,
+		ThinkingOptions: r.turnRequestOptions.thinkingOptions,
+		Temperature:     requestTemperature,
 	}
 	attemptID := r.captureRequestInspection(p, model, req)
 

@@ -3,6 +3,8 @@ package routing
 import (
 	"sort"
 
+	"marshal/internal/llm/schema"
+
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -122,10 +124,12 @@ type ModelPreset struct {
 	// Thinking controls reasoning effort: "" = provider default (nothing is
 	// sent on the wire), "off" disables thinking where the provider allows
 	// it, and any other value (low/medium/high, minimal, etc.) is passed
-	// through verbatim as reasoning_effort on OpenAI-compatible endpoints
-	// and as budget_tokens on Anthropic. Ignored when the provider reports
+	// through using the model's control encoding (effort, toggle, or budget).
+	// Ignored when the provider reports
 	// no reasoning capability.
 	Thinking string `toml:"thinking,omitempty"`
+	// ThinkingOptions overrides discovered controls for this provider/model pair.
+	ThinkingOptions *schema.ThinkingOptions `toml:"thinking_options,omitempty"`
 	// Temperature optionally overrides the provider's default sampling
 	// temperature for this preset. Nil sends nothing on the wire — the
 	// provider default applies.

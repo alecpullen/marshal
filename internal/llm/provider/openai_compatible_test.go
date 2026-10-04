@@ -676,14 +676,17 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 			t.Fatalf("effort %q not passed through: %s", effort, body)
 		}
 	}
-	// off/default/empty omit the field entirely: chat-completions reasoning
-	// models have no wire-level off.
+	// Explicit off requests none; default and empty omit the control.
 	for _, effort := range []string{"off", "default", ""} {
 		body, err := buildChatRequestBody(newReq(effort), false)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
-		if strings.Contains(string(body), "reasoning_effort") {
+		if effort == "off" {
+			if !strings.Contains(string(body), `"reasoning_effort":"none"`) {
+				t.Fatalf("off must request none: %s", body)
+			}
+		} else if strings.Contains(string(body), "reasoning_effort") {
 			t.Fatalf("effort %q must be omitted: %s", effort, body)
 		}
 	}
@@ -1873,8 +1876,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 		t.Errorf("reasoning = %+v, want summary auto when the flag is on", parsed["reasoning"])
 	}
 
-	// "off"/"default"/"" omit the reasoning object entirely, matching
-	// the chat path's reasoning_effort convention.
+	// Explicit off requests none; default and empty omit the reasoning object.
 	for _, effort := range []string{"off", "default", ""} {
 		req.Thinking = effort
 		body, err = buildResponsesRequestBody(req, false)
@@ -1885,7 +1887,12 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			t.Fatalf("parse body: %v", err)
 		}
-		if _, has := parsed["reasoning"]; has {
+		if effort == "off" {
+			reasoning, _ := parsed["reasoning"].(map[string]any)
+			if reasoning == nil || reasoning["effort"] != "none" {
+				t.Errorf("off must request none: %s", body)
+			}
+		} else if _, has := parsed["reasoning"]; has {
 			t.Errorf("thinking %q: reasoning object present, want omitted", effort)
 		}
 	}

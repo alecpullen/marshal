@@ -53,6 +53,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/jsonextract"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -2112,8 +2113,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case probe.ResultMsg:
 		if pm.Err == nil && pm.Provider != "" {
+			pm.Models = provider.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
 			m.discovered[pm.Provider] = pm.Models
 			m.persistDiscovered(pm.Provider, pm.Models)
+			if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
+				preset := m.state.Config.Models.Presets[panel.PresetName()]
+				if preset.Provider == pm.Provider {
+					panel.SetThinkingOptions(m.modelThinkingOptions(panel.PresetName()))
+				}
+			}
 		}
 		if _, ok := m.dock.Panel().(connect.Panel); ok {
 			return m, m.dock.Update(pm)
@@ -2148,9 +2156,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case cmdName == "model-options":
 			// Open the model-options editor for the picked model pair.
-			m.dock.Open(modeloptions.New(m.state.Config, pm.Value, m.resolveReasoningSupport(pm.Value)))
+			m.dock.Open(modeloptions.New(m.state.Config, pm.Value, m.resolveReasoningSupport(pm.Value), m.modelThinkingOptions(pm.Value)))
 			m.refreshViewport()
-			return m, nil
+			return m, m.probeThinkingOptions(pm.Value)
 		case cmdName == "mode" && pm.Value == "sdd":
 			m.openSDDPlanPicker()
 			m.refreshViewport()

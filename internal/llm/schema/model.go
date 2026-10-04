@@ -13,4 +13,15 @@ type ModelInfo struct {
 	// ToolCalling reports whether the model supports tool/function calling,
 	// when some source reports it. nil means no source reported it.
 	ToolCalling *bool
+	// Thinking is nil when the provider does not describe its controls.
+	Thinking *ThinkingOptions
+}
+
+// ThinkingOptions describes model-specific controls. Levels are wire values,
+// except on/off for boolean controls. An empty list means no selectable control.
+type ThinkingOptions struct {
+	Levels  []string `toml:"levels" json:"levels"`
+	Default string   `toml:"default,omitempty" json:"default,omitempty"`
+	// Mode is effort, toggle, budget, or adaptive.
+	Mode string `toml:"mode,omitempty" json:"mode,omitempty"`
 }

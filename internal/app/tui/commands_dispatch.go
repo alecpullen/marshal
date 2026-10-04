@@ -374,9 +374,9 @@ func init() {
 			return m, cmd
 		},
 		"options": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.openModelOptions()
+			cmd := m.openModelOptions()
 			m.refreshViewport()
-			return m, nil
+			return m, cmd
 		},
 		"profiles": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openSettingsBrowser("profiles")

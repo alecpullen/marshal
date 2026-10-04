@@ -275,14 +275,9 @@ func buildResponsesRequestBodyWithSystemRole(req schema.ChatRequest, reasoningSu
 		})
 	}
 
-	// reasoning.effort mirrors the chat path's reasoning_effort
-	// convention: pass non-empty values through verbatim; "off"/"default"
-	// mean "leave the wire untouched" and omit the field. The Responses
-	// API has no wire-level off either.
-	effort := req.Thinking
-	if effort == "off" || effort == "default" {
-		effort = ""
-	}
+	// Explicit off encodes none; default omits the override. Models that
+	// cannot disable reasoning do not offer off in discovered options.
+	effort := openAIThinkingEffort(req)
 	var reasoning *responsesReasoning
 	if effort != "" || reasoningSummary {
 		reasoning = &responsesReasoning{Effort: effort}

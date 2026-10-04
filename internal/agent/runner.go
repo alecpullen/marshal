@@ -840,6 +840,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		r.turnRequestOptions.contextWindow = nil
 	}
 	r.turnRequestOptions.thinking = route.Preset.Thinking
+	r.turnRequestOptions.thinkingOptions = route.Preset.ThinkingOptions
 	if r.ThinkingOverride != "" {
 		r.turnRequestOptions.thinking = r.ThinkingOverride
 	}

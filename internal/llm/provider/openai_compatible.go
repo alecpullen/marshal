@@ -18,10 +18,12 @@ import (
 )
 
 type Options struct {
-	Name       string
-	BaseURL    string
-	APIKey     string // already resolved — see factory.go (Task 5)
-	HTTPClient *http.Client
+	ModelThinking  map[string]*schema.ThinkingOptions
+	ThinkingLookup func(string) *schema.ThinkingOptions
+	Name           string
+	BaseURL        string
+	APIKey         string // already resolved — see factory.go (Task 5)
+	HTTPClient     *http.Client
 	// Capabilities overrides the default capability set. Leave nil to use
 	// defaultCapabilities().
 	Capabilities *schema.ProviderCapabilities
@@ -50,6 +52,7 @@ type Options struct {
 }
 
 type OpenAICompatible struct {
+	thinkingLookup   func(string) *schema.ThinkingOptions
 	name             string
 	baseURL          string
 	apiKey           string
@@ -83,6 +86,7 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 		capabilities:     caps,
 		limitsTable:      opts.LimitsTable,
 		reasoningSummary: opts.ReasoningSummary,
+		thinkingLookup:   opts.ThinkingLookup,
 		sessionID:        opts.SessionID,
 	}, nil
 }
@@ -168,7 +172,7 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 	}
 	models := make([]schema.ModelInfo, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
-		info := schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy}
+		info := schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy, Thinking: m.Thinking}
 		if p.limitsTable != nil {
 			if lim, kind := p.limitsTable.Lookup(p.name, m.ID); kind != limits.MatchNone {
 				info.ContextWindow = lim.ContextWindow
@@ -177,6 +181,9 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 			}
 		}
 		models = append(models, info)
+	}
+	if isOllamaEndpoint(p.baseURL) {
+		enrichThinkingOptions(ctx, models, p.ollamaThinkingOptions)
 	}
 	return models, nil
 }
@@ -203,6 +210,9 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 // habit — an embedded error event inside an HTTP-200 stream, which is why
 // the first stream event is peeked at before the channel is handed back.
 func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	if req.ThinkingOptions == nil && p.thinkingLookup != nil {
+		req.ThinkingOptions = p.thinkingLookup(req.Model)
+	}
 	// OpenCode Go routes model families across three wire protocols; the
 	// chat-completions path below remains the default for every other
 	// provider and model. The strict-template demote/retry never applies
@@ -355,16 +365,9 @@ func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte
 	if req.Stream {
 		streamOpts = &streamOptions{IncludeUsage: true}
 	}
-	// reasoning_effort: pass through any non-empty effort value verbatim —
-	// the valid set varies by backend (low/medium/high, minimal, …) and the
-	// model-options panel gates visibility on resolved support, so the wire
-	// layer does not second-guess values. "off"/"default" mean "leave the
-	// wire untouched": chat-completions reasoning models have no wire-level
-	// off, so the field is simply not sent.
-	reasoningEffort := req.Thinking
-	if reasoningEffort == "off" || reasoningEffort == "default" {
-		reasoningEffort = ""
-	}
+	// Explicit off encodes none; default omits the override. Models that
+	// cannot disable reasoning do not offer off in discovered options.
+	reasoningEffort := openAIThinkingEffort(req)
 	// reasoning.summary: opt-in per provider config. The OpenAI Responses
 	// API documents summary:"auto"; chat-completions-compatible gateways
 	// that do not know the field ignore it, and the wire capture

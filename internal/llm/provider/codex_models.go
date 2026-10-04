@@ -35,8 +35,7 @@ type codexModelEntry struct {
 	Visibility       string `json:"visibility"`
 	SupportedInAPI   bool   `json:"supported_in_api"`
 	Priority         int    `json:"priority"`
-	// DefaultReasoningLevel and SupportedReasoningLevels are decoded for
-	// completeness; marshal's ModelInfo has no field for them yet.
+	// Reasoning controls are retained in ModelInfo and the model cache.
 	DefaultReasoningLevel   string `json:"default_reasoning_level"`
 	SupportedReasoningLevel []struct {
 		Effort      string `json:"effort"`
@@ -133,6 +132,15 @@ func filterCodexModels(entries []codexModelEntry) []schema.ModelInfo {
 			ID:            e.Slug,
 			OwnedBy:       "openai",
 			ContextWindow: e.ContextWindow,
+		}
+
+		if e.SupportedReasoningLevel != nil {
+			info.Thinking = &schema.ThinkingOptions{Default: e.DefaultReasoningLevel, Mode: "effort"}
+			for _, level := range e.SupportedReasoningLevel {
+				if level.Effort != "" {
+					info.Thinking.Levels = append(info.Thinking.Levels, level.Effort)
+				}
+			}
 		}
 		// The catalog reports a max context window larger than the default
 		// for the 5.6/6 family (872k vs 272k). ModelInfo has one field, so

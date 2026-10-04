@@ -346,6 +346,10 @@ func TestOllamaCapabilityProbeKeepsToolsWhenSupported(t *testing.T) {
 
 func TestOllamaModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path != "/api/tags" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -405,6 +409,10 @@ func TestOllamaCapabilityProbeFallbackOnOldServer(t *testing.T) {
 
 func TestOllamaModelsPropagatesToolCallingFromLimitsTable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path != "/api/tags" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}

@@ -154,6 +154,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/disk", s.diskStatus)
 	s.mux.HandleFunc("POST /api/prune", s.pruneDisk)
 	s.mux.HandleFunc("GET /api/audit", s.listAudit)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/ca/rotate", s.rotateWorkspaceCA)
 	s.mux.HandleFunc("GET /api/credentials", s.listCredentials)
 	s.mux.HandleFunc("POST /api/credentials", s.putCredential)
 	s.mux.HandleFunc("DELETE /api/credentials/{id}", s.deleteCredential)

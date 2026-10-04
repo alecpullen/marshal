@@ -129,6 +129,9 @@ type Fleet struct {
 	// secrets holds secret values. Never nil after NewFleet: the
 	// read-only env backend is the default until SetSecrets is called.
 	secrets SecretProvider
+	// caMu guards cas, the per-workspace certificate authorities.
+	caMu sync.Mutex
+	cas  map[string]*caCache
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
 	// stateVolume is the name of the shared state volume mounted at

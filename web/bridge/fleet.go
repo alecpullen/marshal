@@ -77,6 +77,10 @@ type agentRuntime struct {
 	// warning only — the spawn is never refused on skew.
 	versionWarning bool
 
+	// caps are the capability names the agent advertised in initialize.
+	// Set once during startRuntime, before the runtime is published.
+	caps map[string]bool
+
 	spawnErr error
 }
 
@@ -138,6 +142,26 @@ type Fleet struct {
 	// for translating LocalPath agent workspace mounts to the daemon's
 	// view. Empty when the bridge is a host process.
 	projectMounts []ProjectMount
+
+	// ctl is the lazily started control agent (see control.go).
+	ctl *controlRuntime
+	// usage is the monthly spend ledger; budgets enforce caps over it.
+	usage   *UsageLog
+	budgets *budgetState
+	// clock is the time source for budget days and usage windows. Nil
+	// means time.Now.
+	clock func() time.Time
+	// reroutes holds automatic rebindings so they can be undone.
+	reroutes rerouteLog
+	// routingMu serialises read-modify-write of the routing section: a
+	// reroute, an undo and the models routes all replace profiles wholesale,
+	// so interleaving them would drop an edit.
+	routingMu sync.Mutex
+	// lib remembers which control session staged each library install.
+	lib libraryState
+	// newControl builds the control agent's Child. Nil means production
+	// behaviour; tests inject a fake transport here.
+	newControl func() (*Child, error)
 
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
@@ -227,7 +251,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		done:          make(chan struct{}),
 		rateLimits:    make(map[string]time.Time),
 		provisioning:  make(map[string]string),
+		ctl:           newControlRuntime(),
+		usage:         NewUsageLog(stateDir),
 	}
+	f.budgets = newBudgetState(f)
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
 	// spawn reports a clear error via Spawn.
@@ -255,7 +282,12 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			CPUs:          a.Profile.CPUs,
 			MemoryMB:      a.Profile.MemoryMB,
 			Env:           f.agentEnv,
+			// Every agent shares one config home (read-only) and one data
+			// home, so memories and usage outlive any single container.
+			HomeConfigSubpath: homeConfigSubpath,
+			HomeDataSubpath:   homeDataSubpath,
 		}
+		f.ensureHomes()
 		// A LocalPath agent works on the host checkout itself, so its
 		// workspace is a bind mount of the daemon's view of that path.
 		// Git-sourced agents use a volume subpath instead.
@@ -269,6 +301,24 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
 	}
 	return f
+}
+
+// Subpaths of the state volume that hold the shared homes.
+const (
+	homeConfigSubpath = "home/config"
+	homeDataSubpath   = "home/data"
+)
+
+// ensureHomes creates the shared home directories under a local state
+// dir, so a bind of them never starts with a missing source. With a named
+// volume the runtime owns the layout and this is a harmless no-op on the
+// bridge's own view of stateDir.
+func (f *Fleet) ensureHomes() {
+	for _, sub := range []string{homeConfigSubpath, homeDataSubpath} {
+		if err := os.MkdirAll(filepath.Join(f.stateDir, sub), 0o700); err != nil {
+			slog.Default().Warn("webbridge: create shared home failed", "dir", sub, "err", err)
+		}
+	}
 }
 
 // localMountFor resolves the bind-mount source for a LocalPath agent.
@@ -287,6 +337,14 @@ func (f *Fleet) localMountFor(a Agent) (string, error) {
 }
 
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
+
+// now is the fleet's clock, injectable for day-boundary tests.
+func (f *Fleet) now() time.Time {
+	if f.clock != nil {
+		return f.clock().UTC()
+	}
+	return time.Now().UTC()
+}
 
 // auditf appends a record, and never propagates a failure to the caller.
 func (f *Fleet) auditf(e AuditEvent) {
@@ -540,11 +598,20 @@ func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
 		AgentInfo struct {
 			Version string `json:"version"`
 		} `json:"agentInfo"`
+		AgentCapabilities   map[string]json.RawMessage `json:"agentCapabilities"`
+		SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities"`
 	}
 	if uerr := json.Unmarshal(raw, &res); uerr != nil {
 		slog.Default().Warn("webbridge: decode initialize handshake failed",
 			"agent", rt.id, "err", uerr)
 		return
+	}
+	rt.caps = make(map[string]bool, len(res.AgentCapabilities)+len(res.SessionCapabilities))
+	for k := range res.AgentCapabilities {
+		rt.caps[k] = true
+	}
+	for k := range res.SessionCapabilities {
+		rt.caps[k] = true
 	}
 	agentVersion := res.AgentInfo.Version
 	// Both sides must carry a real version; an empty or "dev" value on
@@ -670,6 +737,9 @@ type SpawnOptions struct {
 	URL      string
 	Ref      string
 	Origin   string
+	// Routing selects per-session model routing, forwarded verbatim as
+	// session/new's routing parameter.
+	Routing json.RawMessage
 }
 
 // gitSource is the resolved remote source for a spawn, or a local path.
@@ -714,6 +784,12 @@ func (f *Fleet) resolveSource(opts SpawnOptions, origin string) (gitSource, erro
 }
 
 func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (string, error) {
+	// The daily cap gates every way an agent can start: the UI, an issue,
+	// an approved intake submission and MCP all come through here. There is
+	// no agent yet, so only the daily cap can apply.
+	if err := f.budgetGate(""); err != nil {
+		return "", err
+	}
 	origin := opts.Origin
 	if origin == "" {
 		origin = OriginUI
@@ -875,6 +951,9 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			iso["baseRef"] = opts.BaseRef
 		}
 		params["isolation"] = iso
+	}
+	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
+		params["routing"] = opts.Routing
 	}
 	raw, err := rt.child.Request(ctx, "session/new", params)
 	if err != nil {
@@ -1138,6 +1217,17 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 			// notifications carry the ACP session id. Each runtime owns
 			// exactly one session, so the agent id is rt.id.
 			d.SessionID = rt.id
+			if d.Kind == "run" || d.Kind == "watch" {
+				d.AgentID = rt.id
+			}
+			if d.Kind == "run" {
+				d.At = f.now().UnixMilli()
+			}
+			if d.Kind == "telemetry" && len(d.Usage) > 0 {
+				// Off the read goroutine: the budget check may need the
+				// control agent, and a notification callback must not block.
+				go f.recordUsage(rt.id, d.Usage)
+			}
 			f.live.apply(d)
 			_, _ = f.fleetLog.Append(fleetStreamKey, d)
 		}
@@ -1357,6 +1447,7 @@ func (f *Fleet) StopProject(root string) {
 
 func (f *Fleet) Close() {
 	f.closeOnce.Do(func() { close(f.done) })
+	f.stopControl()
 	f.mu.Lock()
 	rts := make([]*agentRuntime, 0, len(f.runtimes))
 	for _, rt := range f.runtimes {

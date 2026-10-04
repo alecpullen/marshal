@@ -26,6 +26,17 @@ const (
 	AuditRepoRemoved     = "repo_removed"
 	AuditPrune           = "prune"
 	AuditReviewComment   = "review_comment"
+	AuditSkillInstalled  = "skill_installed"
+	AuditSkillRemoved    = "skill_removed"
+	AuditPluginInstalled = "plugin_installed"
+	AuditPluginRemoved   = "plugin_removed"
+	AuditMemoryDeleted   = "memory_deleted"
+	AuditModelsChanged   = "models_changed"
+	AuditBudgetsChanged  = "budgets_changed"
+	AuditBudgetOverride  = "budget_override"
+	AuditWatchStarted    = "watch_started"
+	AuditWatchStopped    = "watch_stopped"
+	AuditRerouteFailed   = "reroute_failed"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

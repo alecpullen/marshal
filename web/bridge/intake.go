@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -191,42 +190,11 @@ func (f *Fleet) Deny(pendingID string) error {
 	return nil
 }
 
-// startPlan writes the submitted markdown into the agent's workspace and
-// asks the agent to execute it.
-//
-// The plan goes to a file rather than over the wire because the existing
-// execution path takes a planPath: session/sdd_start hands it to
-// pipeline.ParsePlan, which reads a markdown plan from disk. That also
-// keeps the bridge out of plan semantics entirely — it writes bytes.
+// startPlan writes a submitted plan into the agent's workspace and asks
+// the agent to execute it. It is StartRun for an intake submission: the
+// pending id names the plan file.
 func (f *Fleet) startPlan(ctx context.Context, agentID, pendingID, plan string) error {
-	a, ok := f.ws.Agent(agentID)
-	if !ok {
-		return fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)
-	}
-	path := planPathFor(a.Project, pendingID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create intake dir: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(plan), 0o600); err != nil {
-		return fmt.Errorf("write plan: %w", err)
-	}
-
-	rt, err := f.runtimeForAgent(agentID)
-	if err != nil {
-		return err
-	}
-	// path is the bridge-side location just written. Translating it —
-	// rather than rebuilding the agent's view by hand — keeps knowledge
-	// of what /work means in exactly one place.
-	inAgent, perr := rt.agentPath(path)
-	if perr != nil {
-		return fmt.Errorf("resolve plan path for agent %s: %w", agentID, perr)
-	}
-	_, err = rt.child.Request(ctx, "session/sdd_start", map[string]any{
-		"sessionId": rt.sessionID,
-		"planPath":  inAgent,
-	})
-	return err
+	return f.startRun(ctx, agentID, RunRequest{Kind: RunSDD, Plan: plan}, pendingID)
 }
 
 // checkCaps enforces the client's concurrency and daily budgets.

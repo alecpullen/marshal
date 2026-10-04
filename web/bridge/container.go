@@ -21,6 +21,10 @@ const (
 	containerSocketDir  = "/run/marshal"
 	containerSocketName = "agent.sock"
 	containerWorkDir    = "/work"
+	// containerConfigDir and containerDataDir are where the shared homes
+	// mount; XDG_CONFIG_HOME and MARSHAL_DATA_DIR point at them.
+	containerConfigDir = "/marshal/config"
+	containerDataDir   = "/marshal/data"
 )
 
 // defaultDialTimeout bounds how long we wait for a freshly started
@@ -59,6 +63,17 @@ type ContainerConfig struct {
 	// subpath. The source is the daemon's view of the path, so a
 	// containerized bridge must hand it the translated host path.
 	LocalMount string
+	// HomeConfigSubpath and HomeDataSubpath are state-volume subpaths
+	// mounted at containerConfigDir and containerDataDir, so every agent
+	// shares one config home and one data home. Empty disables both.
+	HomeConfigSubpath string
+	HomeDataSubpath   string
+	// HomeConfigWritable mounts the config home read-write. Only the
+	// control agent sets it.
+	HomeConfigWritable bool
+	// ExtraBinds are host paths bind-mounted at a container path. The
+	// control agent uses them to reach declared project roots.
+	ExtraBinds []ProjectMount
 	// CPUs and MemoryMB cap the container. Zero means unlimited.
 	CPUs     float64
 	MemoryMB int
@@ -148,24 +163,44 @@ func (c *containerTransport) buildRunArgs() []string {
 		args = append(args, "-v", c.cfg.LocalMount+":"+containerWorkDir)
 	} else {
 		args = append(args,
-			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerWorkDir, c.cfg.WorkSubpath)...)
+			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerWorkDir, c.cfg.WorkSubpath, false)...)
 	}
 	args = append(args,
-		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerSocketDir, c.cfg.SocketSubpath)...)
+		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerSocketDir, c.cfg.SocketSubpath, false)...)
+	if c.cfg.HomeConfigSubpath != "" {
+		// The shared homes: config is read-only for project agents and
+		// writable only for the control agent, which owns config edits.
+		args = append(args,
+			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerConfigDir, c.cfg.HomeConfigSubpath, !c.cfg.HomeConfigWritable)...)
+		args = append(args,
+			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerDataDir, c.cfg.HomeDataSubpath, false)...)
+	}
+	for _, m := range c.cfg.ExtraBinds {
+		args = append(args, "-v", m.Host+":"+m.Container)
+	}
 	if c.cfg.CPUs > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(c.cfg.CPUs, 'f', -1, 64))
 	}
 	if c.cfg.MemoryMB > 0 {
 		args = append(args, "--memory", strconv.Itoa(c.cfg.MemoryMB)+"m")
 	}
-	// Sorted so the argument vector is deterministic and testable.
-	keys := make([]string, 0, len(c.cfg.Env))
-	for k := range c.cfg.Env {
+	// Sorted so the argument vector is deterministic and testable. The
+	// home env vars join the map first so they sort with the rest.
+	env := make(map[string]string, len(c.cfg.Env)+2)
+	for k, v := range c.cfg.Env {
+		env[k] = v
+	}
+	if c.cfg.HomeConfigSubpath != "" {
+		env["XDG_CONFIG_HOME"] = containerConfigDir
+		env["MARSHAL_DATA_DIR"] = containerDataDir
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, "-e", k+"="+c.cfg.Env[k])
+		args = append(args, "-e", k+"="+env[k])
 	}
 	args = append(args,
 		c.cfg.Image,

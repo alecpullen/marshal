@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -135,7 +136,7 @@ func TestReviewMessageFormat(t *testing.T) {
 	}
 }
 
-func TestWorkspaceV6LoadsAsV7(t *testing.T) {
+func TestWorkspaceV6LoadsAndSavesAtCurrentVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fleet.json")
 	os.WriteFile(path, []byte(`{"version":6,"projects":[],"agents":[{"id":"a1","project":"/p"}]}`), 0o600)
 	ws := NewWorkspace(path)
@@ -149,7 +150,7 @@ func TestWorkspaceV6LoadsAsV7(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), `"version": 7`) || !strings.Contains(string(data), `"reviews"`) {
+	if !strings.Contains(string(data), fmt.Sprintf(`"version": %d`, workspaceVersion)) || !strings.Contains(string(data), `"reviews"`) {
 		t.Fatalf("saved file = %s", data)
 	}
 }

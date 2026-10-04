@@ -1,5 +1,5 @@
 import { writable, get, type Readable } from 'svelte/store'
-import { getStack } from './api'
+import { APIError, getStack } from './api'
 
 // Wire shapes, mirroring internal/viewmodel/wire.go. Times are Unix
 // milliseconds; absent means unset.
@@ -140,6 +140,8 @@ export interface StackSnapshot {
 
 export interface StackPatch {
   kind: 'stack_patch'
+  /** Which transcript this patch belongs to; absent for the parent. */
+  subagentId?: number
   rev: number
   baseRev: number
   roots: string[]
@@ -176,7 +178,13 @@ function collect(nodes: Map<string, WireNode>, roots: string[]): void {
   for (const id of nodes.keys()) if (!seen.has(id)) nodes.delete(id)
 }
 
-type Fetcher = (sessionId: string) => Promise<StackSnapshot | 'unsupported'>
+type Fetcher = (sessionId: string, subagentId?: number) => Promise<StackSnapshot | 'unsupported'>
+
+export interface StackOptions {
+  /** A child transcript to follow; the parent (0) when unset. */
+  subagentId?: number
+  fetcher?: Fetcher
+}
 
 /**
  * A client-side copy of a session's transcript tree. It is seeded from the
@@ -184,7 +192,9 @@ type Fetcher = (sessionId: string) => Promise<StackSnapshot | 'unsupported'>
  * might have missed one (a revision gap, an SSE overflow, a turn ending)
  * refetches the snapshot instead of trying to patch the hole.
  */
-export function createStackStore(sessionId: string, fetcher: Fetcher = getStack): StackStore {
+export function createStackStore(sessionId: string, opts: StackOptions = {}): StackStore {
+  const fetcher = opts.fetcher ?? getStack
+  const subagentId = opts.subagentId ?? 0
   const store = writable<StackState>(empty('loading'))
   let inflight: Promise<void> | null = null
   let again = false
@@ -194,7 +204,7 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
 
   async function fetchOnce() {
     try {
-      const snap = await fetcher(sessionId)
+      const snap = await fetcher(sessionId, subagentId || undefined)
       if (snap === 'unsupported') {
         store.set(empty('unsupported'))
         return
@@ -203,8 +213,11 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
       for (const n of snap.nodes ?? []) nodes.set(n.id, n)
       store.set({ status: 'ready', rev: snap.rev, roots: snap.roots ?? [], nodes })
       failures = 0
-    } catch {
-      scheduleRetry()
+    } catch (e) {
+      // A refusal (say, a subagent with no transcript of its own) will not
+      // change by asking again; only a transient failure is worth a retry.
+      const refused = e instanceof APIError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429
+      if (!refused) scheduleRetry()
       // Keep a snapshot we already hold; with none, report the failure so the
       // page can fall back. The next event or reload tries again.
       store.update((s) => (s.status === 'ready' ? s : { ...s, status: 'error' }))
@@ -278,7 +291,11 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
     }
     if (ev.method !== 'session/update') return
     const update = ev.params?.update
-    if (update?.kind === 'stack_patch') applyPatch(update as unknown as StackPatch)
+    if (update?.kind === 'stack_patch') {
+      // One stream carries every transcript's patches; each store takes its own.
+      const sub = (update as { subagentId?: number }).subagentId ?? 0
+      if (sub === subagentId) applyPatch(update as unknown as StackPatch)
+    }
     else if (update?.kind === 'session_telemetry') void load()
   }
 

@@ -1,9 +1,18 @@
 import { writable } from 'svelte/store'
-import { listAgents, listProjects, type AgentStatus, type PendingRequest, type ProjectStatus } from './api'
+import { listAgents, listProjects, type AgentStatus, type GateRecord, type PendingRequest, type ProjectStatus } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
-export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean }
-export interface FleetDelta { kind: 'activity' | 'telemetry' | 'mode' | 'turn'; sessionId: string; activity?: string; mode?: string; contextPct?: number; changedFiles?: number }
+export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord }
+export interface FleetDelta {
+  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate'
+  sessionId: string
+  activity?: string
+  mode?: string
+  contextPct?: number
+  changedFiles?: number
+  /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
+  gate?: GateRecord
+}
 export interface ProjectRemovedDelta { kind: 'project_removed'; project: string }
 /**
  * An agent parked on an approval or question. Carries only the kind — the
@@ -40,7 +49,7 @@ export function groupAgents(agents: AgentRow[]): AgentGroups {
   return out
 }
 
-export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] { if (d.kind === 'project_removed') return rows.filter(r => r.project !== d.project); let changed = false; const out = rows.map(r => { if (r.id !== d.sessionId) return r; changed = true; if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }; if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }; if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }; if (d.kind === 'pending') { const status: AgentRow['status'] = d.pendingKind === 'approval' ? 'awaiting-approval' : 'awaiting-question'; return { ...r, status } } return r }); return changed ? out : rows }
+export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] { if (d.kind === 'project_removed') return rows.filter(r => r.project !== d.project); let changed = false; const out = rows.map(r => { if (r.id !== d.sessionId) return r; changed = true; if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }; if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }; if (d.kind === 'gate') return { ...r, gate: d.gate ?? r.gate }; if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }; if (d.kind === 'pending') { const status: AgentRow['status'] = d.pendingKind === 'approval' ? 'awaiting-approval' : 'awaiting-question'; return { ...r, status } } return r }); return changed ? out : rows }
 
 /**
  * A one-line summary of what an agent is waiting on, for the attention

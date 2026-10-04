@@ -21,6 +21,9 @@ export type BrowseEffect =
   | { toggleFold: string }
   | { copy: string }
   | { toast: string }
+  | { inspect: string }
+  | { openFile: string }
+  | { drill: string }
   | { exitBrowse: true }
 
 const BOUND = new Set(['j', 'ArrowDown', 'k', 'ArrowUp', 'J', ']', 'K', '[', 'g', 'Home', 'G', 'End', 'Enter', 'z', 'y', 'i', 'o', 'f', 'Escape'])
@@ -120,9 +123,11 @@ export function browseKey(state: BrowseState, key: string, ctx: BrowseCtx): { st
     case 'y':
       return { state: { ...state, cursor: cur }, effect: { copy: cur }, bound: true }
     case 'i':
+      return { state: { ...state, cursor: cur }, effect: { inspect: cur }, bound: true }
     case 'o':
+      return { state: { ...state, cursor: cur }, effect: { openFile: cur }, bound: true }
     case 'f':
-      return { state, effect: { toast: 'Coming in W2' }, bound: true }
+      return { state: { ...state, cursor: cur }, effect: { drill: cur }, bound: true }
   }
   return { state, bound: false }
 }

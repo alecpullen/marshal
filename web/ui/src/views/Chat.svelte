@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, untrack } from 'svelte'
   import { createSessionStore, transcriptEntries, type Mode } from '../lib/store.js'
   import Composer from '../lib/Composer.svelte'
   import ModeSwitcher from '../lib/ModeSwitcher.svelte'
@@ -8,8 +8,19 @@
   import QuestionModal from '../lib/QuestionModal.svelte'
   import ExitPanel from '../lib/ExitPanel.svelte'
   import { renderMarkdown, initHighlighter } from '../lib/markdown'
-  import { listAgents, APIError } from '../lib/api'
-  import { createStackStore } from '../lib/stack'
+  import { listAgents, APIError, type AgentStatus } from '../lib/api'
+  import { createStackStore, type StackStore } from '../lib/stack'
+  import { get } from 'svelte/store'
+  import { formatChatRoute, type ChatRoute } from '../lib/routes'
+  import type { AgentRow } from '../lib/fleet'
+  import Dock from '../lib/dock/Dock.svelte'
+  import InspectTab from '../lib/dock/InspectTab.svelte'
+  import ChangesTab from '../lib/dock/ChangesTab.svelte'
+  import FilesTab, { type OpenRequest } from '../lib/dock/FilesTab.svelte'
+  import { createNodeCache } from '../lib/dock/nodeCache'
+  import { initialDock, load as loadDock, reduce, save as saveDock, type DockAction, type DockState } from '../lib/dock/dock'
+  import { gateState } from '../lib/dock/gate'
+  import { latestEdit, editCalls, liveStep, nodeFile, nodeLabel, subagentIdOf } from '../lib/dock/nodes'
   import Transcript from '../lib/transcript/Transcript.svelte'
   import NowBar from '../lib/transcript/NowBar.svelte'
   import Segmented from '../lib/ui/Segmented.svelte'
@@ -20,16 +31,41 @@
   interface Props {
     sessionId: string
     onBack: () => void
+    /** The parsed #chat route; read once, for the dock state it carries. */
+    route?: ChatRoute | null
+    /** This agent's live fleet row, for its gate and change count. */
+    agent?: AgentRow
   }
 
-  let { sessionId, onBack }: Props = $props()
+  let { sessionId, onBack, route = null, agent = undefined }: Props = $props()
 
   // Chat instances are keyed by session route, so this store intentionally
   // captures the session ID once for the lifetime of the component.
   // svelte-ignore state_referenced_locally
   const stack = createStackStore(sessionId)
+  /*
+    One stream carries every transcript's patches, so the session store hands
+    each event to the parent store and to every drilled-in child store; each
+    keeps only the patches that are its own.
+  */
+  function routeEvent(e: unknown) {
+    stack.onEvent(e)
+    for (const d of drill) d.store.onEvent(e)
+  }
   // svelte-ignore state_referenced_locally
-  const { state: session, actions } = createSessionStore(sessionId, '/', stack.onEvent)
+  const { state: session, actions } = createSessionStore(sessionId, '/', routeEvent)
+
+  // The transcript on screen: the parent's, or the subagent drilled into.
+  interface Drill {
+    subagentId: number
+    label: string
+    store: StackStore
+    /** The parent's browse cursor, restored on the way back. */
+    parentCursor: string | null
+  }
+  let drill = $state<Drill[]>([])
+  const shown = $derived<StackStore>(drill.at(-1)?.store ?? stack)
+  const subagentId = $derived(drill.at(-1)?.subagentId)
 
   /*
     The stack transcript is the view; the legacy message list renders only
@@ -59,6 +95,134 @@
   let overrides = $state(new Map<string, Density>())
   let unfolded = $state(new Set<string>())
 
+  /*
+    The dock. Its size and width persist per browser; the selection, tab and
+    size can also arrive on the URL, which wins over the stored size.
+  */
+  // svelte-ignore state_referenced_locally
+  let dock = $state<DockState>(
+    initialDock({
+      ...loadDock(),
+      ...(route?.dock ? { size: route.dock } : {}),
+      ...(route?.tab ? { tab: route.tab } : {}),
+      ...(route?.node ? { mode: 'select' as const, selected: route.node } : {}),
+    }),
+  )
+  function dispatch(a: DockAction) {
+    dock = reduce(dock, a)
+    saveDock(dock)
+  }
+  // The expanded dock turns the transcript into an outline without touching the saved choice.
+  const effGlobal = $derived<Density>(dock.size === 'expanded' ? 'outline' : density)
+  const cache = createNodeCache()
+  let fileRequest = $state<OpenRequest | undefined>(undefined)
+  let fileSeq = 0
+  function openFileInDock(path: string, line?: number) {
+    fileRequest = { path, line, seq: ++fileSeq }
+    dispatch({ type: 'openTab', tab: 'files' })
+  }
+  const kindOf = (id: string) => $shown.nodes.get(id)?.kind ?? ''
+  function selectNode(id: string, reveal = true) {
+    dispatch({ type: 'select', nodeId: id, kind: kindOf(id), reveal })
+  }
+
+  // Keep the URL in step with the dock without growing the history.
+  $effect(() => {
+    if (route?.view === 'review') return
+    const next = formatChatRoute({
+      id: sessionId,
+      view: 'session',
+      node: dock.mode === 'select' ? dock.selected : undefined,
+      dock: dock.size,
+      tab: dock.tab,
+    })
+    try {
+      if (location.hash !== next) history.replaceState(null, '', next)
+    } catch {
+      // A sandboxed frame may refuse; the URL just stops tracking.
+    }
+  })
+
+  // A new edit call switches a following dock to Changes, or marks it unseen.
+  // The first snapshot sets the baseline and is not an edit.
+  let editKey: string | undefined
+  $effect(() => {
+    if ($stack.status !== 'ready') return
+    const e = latestEdit($stack)
+    const key = e ? `${e.id}:${editCalls(e).length}` : ''
+    const prev = editKey
+    editKey = key
+    if (prev !== undefined && key && key !== prev) dispatch({ type: 'liveEdit' })
+  })
+
+  const gateFailed = $derived(gateState(agent?.gate) === 'failed')
+  const selectedLabel = $derived(dock.selected ? nodeLabel($shown.nodes.get(dock.selected), dock.selected) : '')
+
+  // Drilling into a subagent swaps the transcript for its own.
+  function popDrill() {
+    const top = drill.at(-1)
+    if (!top) return
+    top.store.destroy()
+    drill = drill.slice(0, -1)
+    cursor = top.parentCursor
+    scrollCursorIntoView()
+  }
+  function popTo(depth: number) {
+    while (drill.length > depth) popDrill()
+  }
+  async function drillInto(id: string) {
+    const nodes = $shown.nodes
+    const n = nodes.get(id)
+    const subNode =
+      n?.kind === 'subagent' ? n : (n?.children ?? []).map((c) => nodes.get(c)).find((c) => c?.kind === 'subagent')
+    const subId = subNode ? subagentIdOf(subNode.id) : undefined
+    if (!subNode || subId === undefined) {
+      flash('No subagent here')
+      return
+    }
+    const store = createStackStore(sessionId, { subagentId: subId })
+    await store.load()
+    if (get(store).status !== 'ready') {
+      // No transcript of its own: stay put and look at the card.
+      store.destroy()
+      flash('This subagent has no separate transcript')
+      selectNode(subNode.id)
+      return
+    }
+    drill = [...drill, { subagentId: subId, label: subNode.subagent?.label ?? `subagent ${subId}`, store, parentCursor: cursor }]
+    cursor = null
+    dispatch({ type: 'backToLive' })
+    scrollToLatest()
+  }
+
+  // The browse cursor is the selection.
+  $effect(() => {
+    const c = cursor
+    if (!browsing || !c) return
+    untrack(() => {
+      if (dock.mode === 'select' && dock.selected === c) return
+      selectNode(c, false)
+    })
+  })
+
+  function jumpToLive() {
+    const id = liveStep($shown)?.id
+    if (!id) return
+    transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({ block: 'center' })
+  }
+
+  // Clicking a row selects it.
+  function onTranscriptClick(e: MouseEvent) {
+    const target = e.target as HTMLElement
+    // Fold and density buttons, links and text selections are not selections.
+    if (target.closest?.('button, a') || window.getSelection()?.toString()) return
+    const el = target.closest?.('[data-node-id]') as HTMLElement | null
+    const id = el?.dataset.nodeId
+    if (!id || !$shown.nodes.has(id)) return
+    cursor = id
+    selectNode(id, false)
+  }
+
   // Browse mode: the TUI's Esc mode, a cursor over transcript rows.
   let browsing = $state(false)
   let cursor = $state<string | null>(null)
@@ -82,15 +246,15 @@
   })
 
   const tctx = $derived<TranscriptCtx>({
-    nodes: $stack.nodes,
-    global: density,
+    nodes: $shown.nodes,
+    global: effGlobal,
     overrides,
     foldTasks: true,
     unfolded,
     cursor,
     now,
   })
-  const flat = $derived(flattenVisible(tctx, $stack.roots))
+  const flat = $derived(flattenVisible(tctx, $shown.roots))
 
   function toggleFold(id: string) {
     const next = new Set(unfolded)
@@ -100,7 +264,7 @@
   }
   function toggleDensity(id: string) {
     const next = new Map(overrides)
-    const cur = effective(id, overrides, (n) => $stack.nodes.get(n)?.parent, density)
+    const cur = effective(id, overrides, (n) => $shown.nodes.get(n)?.parent, effGlobal)
     next.set(id, nextOverride(cur))
     overrides = next
   }
@@ -149,7 +313,24 @@
       }
       return
     }
+    // ⌘P pins the dock tab; the print dialog is never wanted here.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'p') {
+      e.preventDefault()
+      dispatch({ type: 'togglePin' })
+      return
+    }
+    if (!typingTarget(e.target) && !e.altKey && (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') || (e.key === '\\' && !e.metaKey && !e.ctrlKey))) {
+      e.preventDefault()
+      dispatch({ type: 'cycleSize' })
+      return
+    }
     if (!browsing || typingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+    // Backspace climbs out of a subagent's transcript.
+    if (e.key === 'Backspace' && drill.length) {
+      e.preventDefault()
+      popDrill()
+      return
+    }
     const out = browseKey({ cursor, follow }, e.key, flat)
     // An unbound printable key leaves browse mode and is typed.
     if (!out.bound && e.key.length === 1) {
@@ -163,12 +344,23 @@
     else scrollCursorIntoView()
     const fx = out.effect
     if (!fx) return
-    if ('exitBrowse' in fx) browsing = false
+    if ('exitBrowse' in fx) {
+      browsing = false
+      dispatch({ type: 'backToLive' })
+    } else if ('inspect' in fx) {
+      selectNode(fx.inspect)
+      dispatch({ type: 'openTab', tab: 'inspect' })
+    } else if ('openFile' in fx) {
+      const n = $shown.nodes.get(fx.openFile)
+      const f = n && nodeFile(n)
+      if (f) openFileInDock(f.path, f.line)
+      else flash('No file for this row')
+    } else if ('drill' in fx) void drillInto(fx.drill)
     else if ('toggleDensity' in fx) toggleDensity(fx.toggleDensity)
     else if ('toggleFold' in fx) toggleFold(fx.toggleFold)
     else if ('toast' in fx) flash(fx.toast)
     else if ('copy' in fx) {
-      const n = $stack.nodes.get(fx.copy)
+      const n = $shown.nodes.get(fx.copy)
       const text = n ? nodeText(n) : ''
       navigator.clipboard?.writeText(text).then(() => flash('Copied'), () => flash('Copy failed'))
     }
@@ -204,6 +396,8 @@
   */
   let agentName = $state<string | null>(null)
   let projectName = $state<string | null>(null)
+  let info = $state<AgentStatus | null>(null)
+  const row = $derived(agent ?? info)
 
   let transcriptEl = $state<HTMLDivElement | null>(null)
   // Whether the view is following the tail. Scrolling up to read
@@ -219,7 +413,7 @@
   */
   const tailSignature = $derived(
     useStack
-      ? 'stack:' + $stack.rev
+      ? 'stack:' + $shown.rev + ':' + drill.length
       : entries.length + ':' + ($session.messages.at(-1)?.text.length ?? 0) + ':' + ($session.busy ? 1 : 0),
   )
 
@@ -256,6 +450,7 @@
       .then((agents) => {
         const a = agents.find((x) => x.id === sessionId)
         if (!a) return
+        info = a
         agentName = a.name || null
         projectName = a.project.split('/').filter(Boolean).pop() ?? null
       })
@@ -281,6 +476,7 @@
   onDestroy(() => {
     document.removeEventListener('keydown', onDocKey)
     stack.destroy()
+    for (const d of drill) d.store.destroy()
     clearTimeout(toastTimer)
     clearTimeout(hintTimer)
     actions.disconnect()
@@ -303,8 +499,12 @@
   <header>
     <button class="back" onclick={onBack}>← Fleet</button>
     <div class="title">
+      {#if row?.origin}
+        <span class="origin" title="started from {row.origin}">{({ ui: 'U', cli: 'C', mcp: 'M', issue: '#' } as Record<string, string>)[row.origin] ?? row.origin[0].toUpperCase()}</span>
+      {/if}
       <span class="name">{agentName ?? sessionId}</span>
       {#if projectName}<span class="project">{projectName}</span>{/if}
+      {#if row?.branch}<span class="project" title="branch">⎇ {row.branch}</span>{/if}
     </div>
     {#if useStack}
       <Segmented
@@ -319,27 +519,41 @@
       />
     {/if}
     <ModeSwitcher mode={$session.mode} onChange={changeMode} />
+    <a class="review" href="#chat/{sessionId}/review">Review</a>
     <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'}>
       {$session.connected ? '●' : '○'}
     </span>
   </header>
 
-  <div class="transcript" bind:this={transcriptEl} onscroll={onScroll}>
+  <div class="body">
+  <div class="main">
+  {#if drill.length}
+    <nav class="crumbs" aria-label="Transcript path">
+      <button type="button" onclick={() => popTo(0)}>{agentName ?? sessionId}</button>
+      {#each drill as d, i (i)}
+        <span aria-hidden="true">›</span>
+        <button type="button" disabled={i === drill.length - 1} onclick={() => popTo(i + 1)}>{d.label}</button>
+      {/each}
+    </nav>
+  {/if}
+
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+  <div class="transcript" bind:this={transcriptEl} onscroll={onScroll} onclick={onTranscriptClick}>
     {#if missing}
       <div class="empty">
         <p>This session could not be resumed — its agent is no longer tracked by the bridge.</p>
       </div>
     {:else if useStack}
       <Transcript
-        store={stack}
-        {density}
+        store={shown}
+        density={effGlobal}
         {overrides}
         {unfolded}
         {cursor}
         onToggleFold={toggleFold}
         onToggleDensity={toggleDensity}
       />
-      {#if $stack.roots.length === 0 && !$session.busy}
+      {#if $shown.roots.length === 0 && !$session.busy}
         <div class="empty">
           <p>No messages yet.</p>
           <p class="hint">Describe a task below to start this agent working.</p>
@@ -407,15 +621,29 @@
   {/if}
 
   {#if useStack}
-    <NowBar stack={$stack} {now} hint={stopHint} onStop={() => actions.cancel()} />
+    <NowBar stack={$stack} {now} hint={stopHint} selecting={dock.mode === 'select'} onStop={() => actions.cancel()} onJumpLive={jumpToLive} />
     {#if browsing}
       <div class="browse-hint" role="status">browse · j/k move · J/K jump · Enter detail · z fold · y copy · Esc exit</div>
     {/if}
   {/if}
 
   <!-- Capture phase would swallow typing; bubbling is enough for Esc. -->
-  <div onkeydown={onComposerKey} role="presentation">
+  <div class="composer" onkeydown={onComposerKey} role="presentation">
     <Composer busy={$session.busy} onSend={send} onCancel={actions.cancel} />
+  </div>
+  </div>
+
+  {#if !missing}
+    <Dock {dock} {selectedLabel} {gateFailed} onAction={dispatch}>
+      {#if dock.tab === 'inspect'}
+        <InspectTab {sessionId} {subagentId} stack={$shown} {dock} {cache} onSelect={(id) => selectNode(id)} />
+      {:else if dock.tab === 'changes'}
+        <ChangesTab agentId={sessionId} {sessionId} stack={$stack} {dock} drilled={drill.length > 0} gate={agent?.gate} changedFiles={row?.changedFiles ?? 0} />
+      {:else}
+        <FilesTab agentId={sessionId} stack={$shown} {dock} request={fileRequest} />
+      {/if}
+    </Dock>
+  {/if}
   </div>
 
   <ExitPanel agentId={sessionId} onDone={onBack} />
@@ -439,9 +667,64 @@
       pane, so the composer is pushed below the fold.
     */
     height: 100%;
-    max-width: 960px;
-    margin: 0 auto;
     background: var(--color-surface);
+  }
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+  .main {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+  }
+  .composer {
+    width: 100%;
+    max-width: 780px;
+    margin: 0 auto;
+  }
+  .origin {
+    display: inline-flex;
+    width: 1.5rem;
+    height: 1.5rem;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--color-raise);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    align-self: center;
+  }
+  .review {
+    font-size: 0.8125rem;
+    color: var(--color-accent);
+    text-decoration: none;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 0.25rem 0.6rem;
+  }
+  .crumbs {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 1rem;
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .crumbs button {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    color: var(--color-accent);
+  }
+  .crumbs button:disabled {
+    color: var(--color-fg);
+    cursor: default;
   }
   header {
     display: flex;
@@ -500,6 +783,9 @@
   */
   .transcript > :global(*) {
     flex-shrink: 0;
+    width: 100%;
+    max-width: 780px;
+    margin-inline: auto;
   }
   .message {
     display: flex;

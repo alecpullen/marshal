@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions, pageFromHash } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, type ChatRoute } from './routes'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -61,5 +61,29 @@ describe('pageFromHash', () => {
     expect(pageFromHash('#sessions')).toBe('sessions')
     expect(pageFromHash('#sessions/%2Fp')).toBe('sessions')
     for (const h of ['#pending', '#clients', '#projects', '#disk', '#activity']) expect(pageFromHash(h)).toBe('other')
+  })
+})
+
+describe('chat route', () => {
+  it('still parses the plain #chat/<id>', () => {
+    expect(parseChatRoute('#chat/abc')).toEqual({ id: 'abc', view: 'session' })
+    expect(pageFromHash('#chat/abc?dock=docked')).toBe('chat')
+    expect(pageFromHash('#chat/abc/review')).toBe('chat')
+  })
+
+  it('round-trips every field', () => {
+    const cases: ChatRoute[] = [
+      { id: 'a1', view: 'session' },
+      { id: 'a1', view: 'review' },
+      { id: 'a1', view: 'session', node: 'step:7', dock: 'expanded', tab: 'files' },
+      { id: 'a1', view: 'review', node: 'sub:3/step:1', dock: 'collapsed', tab: 'changes' },
+    ]
+    for (const r of cases) expect(parseChatRoute(formatChatRoute(r))).toEqual(r)
+  })
+
+  it('drops bad dock and tab values and rejects non-chat hashes', () => {
+    expect(parseChatRoute('#chat/a?dock=huge&tab=nope&node=')).toEqual({ id: 'a', view: 'session' })
+    expect(parseChatRoute('#fleet')).toBeNull()
+    expect(parseChatRoute('#chat/')).toBeNull()
   })
 })

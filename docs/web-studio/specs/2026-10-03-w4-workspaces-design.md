@@ -234,6 +234,12 @@ A reference names a workspace:
   agents, they're read from the prepared checkout.
 - They're ignored, with a warning, when `projectTrust(root)`
   (`trustinfo.go:33`) isn't `trusted`.
+- The bridge trusts a repo template **by path only**: it checks that the
+  project is trusted, but does not recompute the config hash that §4.4
+  extends over `.marshal/workspaces/*.toml`. A template edited after the
+  project was trusted still resolves in the bridge, although the engine
+  would refuse the project. For a git-sourced agent, trust comes from the
+  registered project whose intake names the repo, not from the checkout.
 - `extends = "<studio ref>"` merges the parsed docs as JSON (§5.3).
 
 **Merge rules (repo over Studio):**

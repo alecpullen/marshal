@@ -139,7 +139,12 @@ function normalizeMode(mode: string): Mode {
   return 'default'
 }
 
-export function createSessionStore(id: string, cwd: string) {
+/**
+ * `tap` sees every live SSE payload (and the connection's own events) as-is,
+ * so another store, such as the stack, can follow the same stream without a
+ * second connection. Replayed history from load() is not tapped.
+ */
+export function createSessionStore(id: string, cwd: string, tap?: (event: unknown) => void) {
   const state = writable<SessionState>(createSessionState(id, cwd))
   let unsubscribeSSE: (() => void) | null = null
 
@@ -216,6 +221,7 @@ export function createSessionStore(id: string, cwd: string) {
 
   const handleSSE = (e: SSEEvent) => {
     if (e.type === 'connected') {
+      tap?.({ type: 'connected' })
       state.update((s) => ({ ...s, connected: true }))
     } else if (e.type === 'disconnected') {
       state.update((s) => ({ ...s, connected: false }))
@@ -226,6 +232,7 @@ export function createSessionStore(id: string, cwd: string) {
     } else if (e.type === 'message') {
       try {
         const payload = JSON.parse(e.message.data)
+        tap?.(payload)
         applyEvent(payload)
       } catch {
         // ignore malformed event

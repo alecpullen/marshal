@@ -148,7 +148,7 @@ export interface StackPatch {
 }
 
 export interface StackState {
-  status: 'loading' | 'ready' | 'unsupported'
+  status: 'loading' | 'ready' | 'unsupported' | 'error'
   rev: number
   roots: string[]
   nodes: Map<string, WireNode>
@@ -198,8 +198,9 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
       for (const n of snap.nodes ?? []) nodes.set(n.id, n)
       store.set({ status: 'ready', rev: snap.rev, roots: snap.roots ?? [], nodes })
     } catch {
-      // Keep whatever we had; the next event or reload tries again.
-      store.update((s) => (s.status === 'loading' ? { ...s, status: 'loading' } : s))
+      // Keep a snapshot we already hold; with none, report the failure so the
+      // page can fall back. The next event or reload tries again.
+      store.update((s) => (s.status === 'ready' ? s : { ...s, status: 'error' }))
     }
   }
 
@@ -226,7 +227,7 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
   function applyPatch(p: StackPatch) {
     const s = get(store)
     if (s.status === 'unsupported') return
-    if (inflight || s.status !== 'ready') {
+    if (inflight || s.status === 'loading' || s.status === 'error') {
       // The snapshot in flight may or may not include this patch. Whatever
       // it returns is the authority; ask for one more look afterwards.
       void load()
@@ -247,7 +248,8 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
   function onEvent(envelope: unknown) {
     const ev = envelope as { type?: string; method?: string; params?: { update?: { kind?: string } } } | null
     if (!ev) return
-    if (ev.type === 'replay_overflow') {
+    // A reconnect may have skipped patches; the snapshot is the authority.
+    if (ev.type === 'replay_overflow' || ev.type === 'connected') {
       void load()
       return
     }

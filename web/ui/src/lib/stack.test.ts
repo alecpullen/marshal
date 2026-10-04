@@ -93,6 +93,23 @@ describe('stack store', () => {
     expect(get(store).status).toBe('unsupported')
   })
 
+  it('reports an error when the first fetch fails, and recovers on the next load', async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValue(snapshot())
+    const store = createStackStore('s1', fetcher)
+    await store.load()
+    expect(get(store).status).toBe('error')
+    await store.load()
+    expect(get(store).status).toBe('ready')
+  })
+
+  it('keeps its snapshot when a later fetch fails', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(snapshot()).mockRejectedValue(new Error('down'))
+    const store = createStackStore('s1', fetcher)
+    await store.load()
+    await store.load()
+    expect(get(store).status).toBe('ready')
+  })
+
   it('refetches on telemetry and on replay overflow', async () => {
     const { store, fetcher } = await ready()
     store.onEvent({ method: 'session/update', params: { update: { kind: 'session_telemetry' } } })

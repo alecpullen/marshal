@@ -299,3 +299,13 @@ func isBlankOrComment(ln string) bool {
 	t := strings.TrimSpace(ln)
 	return t == "" || strings.HasPrefix(t, "#")
 }
+
+func errorsOf(d []Diagnostic) []Diagnostic {
+	var out []Diagnostic
+	for _, x := range d {
+		if x.Severity == SeverityError {
+			out = append(out, x)
+		}
+	}
+	return out
+}

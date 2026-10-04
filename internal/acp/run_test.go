@@ -88,6 +88,10 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			t.Fatalf("loadSession = %v, want true", caps["loadSession"])
 		}
 
+		if c, ok := caps["workspaceFiles"].(map[string]any); !ok || len(c) != 0 {
+			t.Fatalf("workspaceFiles = %v, want empty object", caps["workspaceFiles"])
+		}
+
 		// sessionCapabilities.close is an object (not null)
 		sessionCaps, ok := caps["sessionCapabilities"].(map[string]any)
 		if !ok {

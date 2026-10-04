@@ -51,16 +51,6 @@ allow = ["go test *"]
 run = "go mod download"
 `
 
-func errorsOf(d []Diagnostic) []Diagnostic {
-	var out []Diagnostic
-	for _, x := range d {
-		if x.Severity == SeverityError {
-			out = append(out, x)
-		}
-	}
-	return out
-}
-
 func TestParseFullExample(t *testing.T) {
 	d, secs, diags := Parse([]byte(fullExample))
 	if len(diags) != 0 {

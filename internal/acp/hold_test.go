@@ -49,4 +49,3 @@ func TestHoldEventProjectsToUpdate(t *testing.T) {
 		t.Fatalf("update = %v, %v", u, ok)
 	}
 }
-

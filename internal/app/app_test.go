@@ -2081,6 +2081,52 @@ func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 	}
 }
 
+func TestDBMemoryProviderReadsScopesForWorkspace(t *testing.T) {
+	t.Setenv("MARSHAL_WORKSPACE", "ws1")
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	mine, _ := database.GetOrCreateProject("/mine", "mine")
+	other, _ := database.GetOrCreateProject("/other", "other")
+	now := time.Unix(100, 0)
+	for _, c := range []struct {
+		project int64
+		text    string
+	}{{other, "global note"}, {other, "workspace note"}, {other, "other ws note"}, {mine, "project note"}} {
+		if err := database.SaveMemory(c.project, "fact", c.text, "", now); err != nil {
+			t.Fatalf("SaveMemory %q: %v", c.text, err)
+		}
+	}
+	rows, _ := database.GetMemories(other)
+	for i, scope := range [][2]string{{"global", ""}, {"workspace", "ws1"}, {"workspace", "ws2"}} {
+		if err := database.PromoteMemory(rows[i].ID, scope[0], scope[1], now); err != nil {
+			t.Fatalf("PromoteMemory: %v", err)
+		}
+	}
+	notes, err := newDBMemoryProvider(database).Memories(mine)
+	if err != nil {
+		t.Fatalf("Memories failed: %v", err)
+	}
+	var got []string
+	for _, n := range notes {
+		got = append(got, n.Content)
+	}
+	want := []string{"project note", "workspace note", "global note"}
+	if len(got) != len(want) {
+		t.Fatalf("notes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("notes = %v, want %v", got, want)
+		}
+	}
+}
+
 func knowledgeEnabledConfig(baseURL, providerName string) config.Config {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true

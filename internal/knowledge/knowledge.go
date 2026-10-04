@@ -52,8 +52,30 @@ type ExtractInput struct {
 	MaxTouchedFileBytes int
 	Messages            []session.Message
 	AuditLog            []registry.AuditEvent
-	Now                 func() time.Time
-	Logger              *slog.Logger
+	// AgentLabel and StepID record who learned each saved memory: the
+	// session actor's label ("marshal" when empty) and the last step's ID.
+	AgentLabel string
+	StepID     int64
+	Now        func() time.Time
+	Logger     *slog.Logger
+}
+
+// DefaultAgentLabel is the provenance label for memories learned by the
+// orchestrator when its actor carries no label.
+const DefaultAgentLabel = "marshal"
+
+// Provenance returns the label and step ID to stamp on memories extracted
+// from state: the last step's actor label (DefaultAgentLabel when empty) and
+// that step's ID, or 0 when the session has no steps.
+func Provenance(state *session.State) (label string, stepID int64) {
+	if steps := state.Steps(); len(steps) > 0 {
+		last := steps[len(steps)-1]
+		label, stepID = last.Actor.Label, int64(last.ID)
+	}
+	if label == "" {
+		label = DefaultAgentLabel
+	}
+	return label, stepID
 }
 
 // Extract runs one knowledge pass — durable memories plus per-file
@@ -94,8 +116,16 @@ func Extract(ctx context.Context, in ExtractInput) *Extraction {
 		in.Logger.Error("knowledge: parse extraction failed", "error", err, "session_id", in.SessionID)
 		return nil
 	}
+	agentLabel := in.AgentLabel
+	if agentLabel == "" {
+		agentLabel = DefaultAgentLabel
+	}
 	for _, memory := range extraction.Memories {
-		if err := in.DB.SaveMemory(in.ProjectID, memory.Kind, memory.Content, in.SessionID, now()); err != nil {
+		err := in.DB.SaveMemoryWith(in.ProjectID, db.MemoryInput{
+			Kind: memory.Kind, Content: memory.Content, SourceSessionID: in.SessionID,
+			LearnedAgent: agentLabel, LearnedStep: in.StepID, Now: now(),
+		})
+		if err != nil {
 			in.Logger.Error("knowledge: save memory failed", "error", err, "session_id", in.SessionID)
 		}
 	}
@@ -124,7 +154,10 @@ func EndSession(ctx context.Context, in EndSessionInput) {
 	if now == nil {
 		now = time.Now
 	}
+	agentLabel, stepID := Provenance(in.State)
 	extraction := Extract(ctx, ExtractInput{
+		AgentLabel:          agentLabel,
+		StepID:              stepID,
 		DB:                  in.DB,
 		ProjectID:           in.ProjectID,
 		SessionID:           in.SessionID,

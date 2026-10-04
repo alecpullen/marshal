@@ -14,6 +14,7 @@
   import Watches from './views/Watches.svelte'
   import Gallery from './views/workspaces/Gallery.svelte'
   import Designer from './views/workspaces/Designer.svelte'
+  import Builds from './views/workspaces/Builds.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -250,6 +251,10 @@
         {:else if workspacesRoute.view === 'edit' && workspacesRoute.name}
           {#key workspacesRoute.name}
             <Designer name={workspacesRoute.name} onNavigate={navigate} />
+          {/key}
+        {:else if workspacesRoute.view === 'builds' && workspacesRoute.name}
+          {#key workspacesRoute.name}
+            <Builds name={workspacesRoute.name} onNavigate={navigate} />
           {/key}
         {/if}
       </div>

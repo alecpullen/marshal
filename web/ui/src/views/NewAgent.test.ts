@@ -5,7 +5,7 @@ import * as api from '../lib/api.js'
 
 vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
-  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn(), listWorkspaces: vi.fn(), listRecipes: vi.fn(), runRecipe: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn() }
+  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn(), listWorkspaces: vi.fn(), listRecipes: vi.fn(), runRecipe: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn(), getModels: vi.fn() }
 })
 
 const projects = [
@@ -13,6 +13,13 @@ const projects = [
   { root: '/work/plain', available: true, isolation: 'not a git repository' },
   { root: '/work/gone', available: false },
 ]
+
+const models = {
+  roles: ['implementer', 'reviewer', 'router', 'title', 'summarizer', 'repo_scout'],
+  profiles: { balanced: {}, cheap: {} },
+  presets: { big: {}, small: {} },
+  defaultProfile: 'balanced',
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -24,6 +31,7 @@ beforeEach(() => {
   ;(api.listRecipes as Mock).mockResolvedValue([])
   ;(api.getProjectSettings as Mock).mockResolvedValue({})
   ;(api.getProjectHealth as Mock).mockResolvedValue({ verify: { build: '', test: '' } })
+  ;(api.getModels as Mock).mockResolvedValue(models)
 })
 afterEach(cleanup)
 
@@ -164,5 +172,63 @@ describe('NewAgent', () => {
     await waitFor(() => expect(api.runRecipe).toHaveBeenCalledWith('fix-ci', { project: '/work/alpha', inputs: { check: 'lint' } }))
     expect(api.spawnAgent).not.toHaveBeenCalled()
     await waitFor(() => expect(onDone).toHaveBeenCalledWith('r1'))
+  })
+
+  describe('Model chip', () => {
+    const create = async () => {
+      render(NewAgent, { onDone: vi.fn() })
+      await screen.findByText('alpha')
+      await screen.findByText('Default profile')
+    }
+    const sent = () => (api.spawnAgent as Mock).mock.calls[0][0]
+
+    it('sends no routing by default', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toBeUndefined()
+    })
+
+    it('sends routing.profile for a profile', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(await screen.findByText('cheap'))
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toEqual({ profile: 'cheap' })
+    })
+
+    it('overrides every role except the fast ones for a preset', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(await screen.findByText('small'))
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toEqual({ overrides: { implementer: 'small', reviewer: 'small' } })
+    })
+
+    it('remembers the choice, and drops one that no longer exists', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(await screen.findByText('big'))
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!).model).toEqual({ kind: 'preset', name: 'big' })
+      cleanup()
+      render(NewAgent, { onDone: vi.fn() })
+      expect(await screen.findByText('big preset')).toBeTruthy()
+      cleanup()
+      ;(api.getModels as Mock).mockResolvedValue({ ...models, presets: { small: {} } })
+      render(NewAgent, { onDone: vi.fn() })
+      expect(await screen.findByText('Default profile')).toBeTruthy()
+    })
+
+    it('stays on the default when the model list cannot load', async () => {
+      ;(api.getModels as Mock).mockRejectedValue(new Error('down'))
+      await create()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toBeUndefined()
+    })
   })
 })

@@ -249,3 +249,16 @@ func TestExitHonoursAValidShipTarget(t *testing.T) {
 		t.Fatalf("Exit = %+v, %v; want a patch destination without pushing", res, err)
 	}
 }
+
+func TestReadVerifyCommands(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, ".marshal"), 0o700)
+	cfg := "[models]\nbuild = \"nope\"\n\n[sdd.verify]\nbuild = \"go build ./...\"\ntest = 'go test ./...'\n\n[other]\ntest = \"nope\"\n"
+	os.WriteFile(filepath.Join(root, ".marshal", "config.toml"), []byte(cfg), 0o600)
+	if got := readVerifyCommands(root); got.Build != "go build ./..." || got.Test != "go test ./..." {
+		t.Fatalf("got %+v", got)
+	}
+	if got := readVerifyCommands(t.TempDir()); got != (VerifyCommands{}) {
+		t.Fatalf("no config: %+v", got)
+	}
+}

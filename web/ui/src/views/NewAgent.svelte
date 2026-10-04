@@ -1,15 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { listProjects, recentPrompts, spawnAgent, errMessage, type Issue, type ProjectStatus } from '../lib/api'
+  import { getModels, listProjects, recentPrompts, spawnAgent, errMessage, type Issue, type ModelsConfig, type ProjectStatus } from '../lib/api'
   import IssuePicker from '../lib/IssuePicker.svelte'
   import Chip from '../lib/newagent/Chip.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import { MODES, canIsolate, defaults, loadRemembered, remember, type Choice } from '../lib/newagent/newAgent'
+  import { DEFAULT_MODEL, MODES, canIsolate, defaults, loadRemembered, modelLabel, remember, routingFor, validModel, type Choice, type ModelChoice } from '../lib/newagent/newAgent'
 
   let { onDone }: { onDone: (id: string | null, warning?: string) => void } = $props()
 
   let projects = $state<ProjectStatus[]>([])
   let choice = $state<Choice>({ project: '', mode: 'edit', isolated: false, branch: '', baseRef: '' })
+  let models = $state<ModelsConfig | null>(null)
+  let model = $state<ModelChoice>(DEFAULT_MODEL)
   let prompt = $state('')
   let tab = $state<'issues' | 'recent'>('recent')
   let recent = $state<string[]>([])
@@ -23,11 +25,19 @@
 
   onMount(async () => {
     promptEl?.focus()
+    const remembered = loadRemembered()
     try {
       projects = await listProjects()
-      choice = defaults(projects, loadRemembered())
+      choice = defaults(projects, remembered)
     } catch (e) {
       error = errMessage(e)
+    }
+    // The model list is optional: without it the chip stays on the default.
+    try {
+      models = await getModels()
+      model = validModel(remembered.model, models)
+    } catch {
+      models = null
     }
   })
 
@@ -63,8 +73,9 @@
         isolated: choice.isolated || undefined,
         branch: choice.isolated && choice.branch.trim() ? choice.branch.trim() : undefined,
         baseRef: choice.isolated && choice.baseRef.trim() ? choice.baseRef.trim() : undefined,
+        routing: routingFor(model, models?.roles ?? []),
       })
-      remember(choice)
+      remember(choice, model)
       onDone(r.agentId, r.warning)
     } catch (e) {
       // The prompt stays put so nothing typed is lost.
@@ -133,6 +144,28 @@
         <div class="text-xs text-muted">
           {#if isolationOk}The agent works on its own branch, so it cannot collide with other agents.{:else}Unavailable: {selected?.isolation}.{/if}
         </div>
+      </Chip>
+
+      <Chip label="Model" value={modelLabel(model)}>
+        <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'default'} onclick={() => (model = DEFAULT_MODEL)}>
+          {model.kind === 'default' ? '● ' : ''}Default profile
+        </button>
+        {#if models && Object.keys(models.profiles).length > 0}
+          <div class="px-2 pt-1 text-xs text-muted">Profiles</div>
+          {#each Object.keys(models.profiles).sort() as name (name)}
+            <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'profile' && model.name === name} onclick={() => (model = { kind: 'profile', name })}>
+              {model.kind === 'profile' && model.name === name ? '● ' : ''}{name}{name === models.defaultProfile ? ' (default)' : ''}
+            </button>
+          {/each}
+        {/if}
+        {#if models && Object.keys(models.presets).length > 0}
+          <div class="px-2 pt-1 text-xs text-muted">Presets (all roles except the fast ones)</div>
+          {#each Object.keys(models.presets).sort() as name (name)}
+            <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'preset' && model.name === name} onclick={() => (model = { kind: 'preset', name })}>
+              {model.kind === 'preset' && model.name === name ? '● ' : ''}{name}
+            </button>
+          {/each}
+        {/if}
       </Chip>
 
       <Button class="ml-auto" disabled={busy || !choice.project} onclick={create}>Create agent <span class="text-xs opacity-70">⌘↵</span></Button>

@@ -15,7 +15,7 @@
   const g = $derived(sparkGeometry(samples, w, h, { now, threshold, pad: marks ? 6 : 2 }))
 </script>
 
-<svg viewBox="0 0 {w} {h}" width={marks ? undefined : w} {h} class={marks ? 'w-full' : ''} preserveAspectRatio="none" role="img" aria-label={label}>
+<svg viewBox="0 0 {w} {h}" width={marks ? undefined : w} height={h} class={marks ? 'w-full' : ''} preserveAspectRatio="none" role="img" aria-label={label}>
   {#if g.thresholdY !== null}
     <line data-testid="threshold-line" x1="0" x2={w} y1={g.thresholdY} y2={g.thresholdY} class="stroke-warn" stroke-width="1" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" />
   {/if}

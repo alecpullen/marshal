@@ -423,7 +423,7 @@ func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, 
 // resolves through F4 rules, the network-tool confirm, and the registry
 // risk fallback.
 func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Rule, reg *registry.Registry, sessionRules []string, toolName string, args map[string]interface{}, system bool) (Decision, string) {
-	var normCmd string
+	var normCmd, rawCmd string
 	if toolName == "shell.run" || toolName == "test.run" {
 		var cmd string
 		cmdRaw, ok := args["command"]
@@ -441,6 +441,7 @@ func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Ru
 			}
 		}
 
+		rawCmd = cmd
 		normCmd = normalizeCommand(cmd)
 		if normCmd == "" {
 			return DecisionConfirm, "empty command"
@@ -514,20 +515,24 @@ func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Ru
 	}
 
 	// 5. Shell commands fall through to the configured rule lists.
-	return evaluateShellRules(cfg, sessionRules, normCmd)
+	return evaluateShellRules(cfg, sessionRules, normCmd, rawCmd)
 }
 
 // evaluateShellRules applies, in order: config deny rules, session-approved
 // prefixes, config allow rules, config confirm rules, then the auto-approve
 // or secure-confirm fallback.
-func evaluateShellRules(cfg *config.Config, sessionRules []string, normCmd string) (Decision, string) {
+//
+// rawCmd is the command exactly as the shell will receive it. normCmd
+// collapses whitespace, including newlines, so wildcard session rules must
+// be checked against rawCmd.
+func evaluateShellRules(cfg *config.Config, sessionRules []string, normCmd, rawCmd string) (Decision, string) {
 	for _, pattern := range cfg.Tools.Shell.Deny.Patterns {
 		if matchPattern(pattern, normCmd) {
 			return DecisionDeny, "blocked by user deny rule: " + pattern
 		}
 	}
 	for _, prefix := range sessionRules {
-		if matchRule(normCmd, prefix) {
+		if matchSessionRule(normCmd, rawCmd, prefix) {
 			return DecisionAllow, "allowed by session-approved command: " + prefix
 		}
 	}

@@ -293,6 +293,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 				"loadSession": true,
 				// Not per session: config/* act on the user-global config.
 				"configAccess": map[string]any{},
+				// workspace/parse, /patch and /format (no session needed).
+				"workspaceFiles": map[string]any{},
 				"sessionCapabilities": map[string]any{
 					"close":                 map[string]any{},
 					"list":                  map[string]any{},
@@ -331,6 +333,13 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 			"authMethods": []any{},
 		}, nil
 	})
+
+	// workspace/* are stateless and need no session, like the control
+	// agent's other connection-level methods.
+	wsFiles := WorkspaceFiles{}
+	srv.Handle("workspace/parse", wsFiles.Parse)
+	srv.Handle("workspace/patch", wsFiles.Patch)
+	srv.Handle("workspace/format", wsFiles.Format)
 
 	srv.Handle("session/new", manager.Create)
 	srv.Handle("session/load", manager.Load)

@@ -131,7 +131,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/stack", s.sessionStack)
 	s.mux.HandleFunc("GET /api/sessions/{id}/nodes/{nodeId}", s.sessionNode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/last-request", s.sessionLastRequest)
+	s.mux.HandleFunc("GET /api/sessions/{id}/roster", s.sessionRoster)
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
+	s.libraryRoutes()
+	s.modelsRoutes()
+	s.budgetRoutes()
+	s.watchRoutes()
+	s.mux.HandleFunc("GET /api/runs", s.listRuns)
+	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
+	s.mux.HandleFunc("POST /api/runs", s.startRun)
+	s.mux.HandleFunc("POST /api/runs/{agentId}/answer", s.answerRun)
 	s.mux.HandleFunc("POST /api/permissions/{toolCallId}", s.resolvePermission)
 	s.mux.HandleFunc("POST /api/questions/{questionId}", s.resolveQuestion)
 	s.mux.HandleFunc("GET /api/clients", s.listClients)
@@ -174,7 +183,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // 501, anything else from the child → 502.
 func writeErr(w http.ResponseWriter, err error) {
 	var unsupported ErrUnsupported
+	var rpc *rpcError
+	var budget ErrBudget
 	switch {
+	case errors.Is(err, ErrUnknownReroute):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errRerouteConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.As(err, &budget):
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "budget_exceeded", "scope": budget.Scope})
 	case errors.Is(err, ErrUnknownSession):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrGone):
@@ -183,12 +200,20 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownReviewComment):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errScopeMismatch):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, errInvalidRun), errors.Is(err, errInvalidLibrary):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errInvalidReview):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrOutsideWorkspace):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.As(err, &unsupported):
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": unsupported.Error()})
+	case errors.As(err, &rpc) && rpc.Code == rpcInvalidParams:
+		// The agent refused the input itself (a bad scope, an unknown
+		// provider), which is the caller's mistake, not a gateway fault.
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": rpc.Message})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 	}
@@ -318,6 +343,8 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		Isolated bool   `json:"isolated"`
 		Branch   string `json:"branch"`
 		BaseRef  string `json:"baseRef"`
+		// Routing picks this agent's models; see SpawnOptions.Routing.
+		Routing json.RawMessage `json:"routing"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -328,9 +355,10 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
 		Name: body.Name, Mode: body.Mode, Isolated: body.Isolated, Branch: body.Branch, BaseRef: body.BaseRef,
+		Routing: body.Routing,
 	})
 	if id == "" {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeErr(w, err)
 		return
 	}
 	if body.Prompt != "" {
@@ -665,6 +693,12 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if s.fleet != nil {
+		if err := s.fleet.budgetGate(s.fleet.agentIDOf(id)); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
 	info, ok := reg.lookup(sessionID)
 	if !ok {
 		writeErr(w, ErrUnknownSession)
@@ -822,6 +856,22 @@ func (s *Server) sessionLastRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := reg.LastRequest(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, result)
+}
+
+// sessionRoster proxies the roster of live role bindings, for the Runs
+// page's roles legend.
+func (s *Server) sessionRoster(w http.ResponseWriter, r *http.Request) {
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := reg.Roster(r.Context(), sessionID)
 	if err != nil {
 		writeErr(w, err)
 		return

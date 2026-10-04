@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -274,5 +275,64 @@ func TestContainerSignalStillStopsTheContainer(t *testing.T) {
 	// stop, every retirement degrades to a force-remove after stopGrace.
 	if len(calls) != 1 || calls[0][0] != "stop" || calls[0][1] != "agent-a1" {
 		t.Fatalf("Signal ran %v, want one [stop agent-a1]", calls)
+	}
+}
+
+func TestBuildRunArgsMountsSharedHomes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		writable bool
+		wantCfg  string
+	}{
+		{"agent", false, "volume-subpath=home/config,readonly"},
+		{"control", true, "volume-subpath=home/config"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newContainerTransport(ContainerConfig{
+				Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+				StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+				HomeConfigSubpath: "home/config", HomeDataSubpath: "home/data",
+				HomeConfigWritable: tc.writable,
+				Env:                map[string]string{"A": "1"},
+			})
+			args := tr.buildRunArgs()
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, "target=/marshal/config,"+tc.wantCfg) {
+				t.Errorf("config mount wrong:\n%s", joined)
+			}
+			if tc.writable && strings.Contains(joined, "home/config,readonly") {
+				t.Errorf("control config mount must be writable:\n%s", joined)
+			}
+			if !strings.Contains(joined, "target=/marshal/data,volume-subpath=home/data") ||
+				strings.Contains(joined, "home/data,readonly") {
+				t.Errorf("data mount must be read-write:\n%s", joined)
+			}
+			for _, want := range []string{"XDG_CONFIG_HOME=/marshal/config", "MARSHAL_DATA_DIR=/marshal/data", "A=1"} {
+				if !strings.Contains(joined, "-e "+want) {
+					t.Errorf("missing env %q:\n%s", want, joined)
+				}
+			}
+			// The env vars must stay in sorted order with the rest.
+			var envs []string
+			for i, a := range args {
+				if a == "-e" {
+					envs = append(envs, args[i+1])
+				}
+			}
+			if !sort.StringsAreSorted(envs) {
+				t.Errorf("env args not sorted: %v", envs)
+			}
+		})
+	}
+}
+
+func TestBuildRunArgsWithoutHomesOmitsThem(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+	})
+	joined := strings.Join(tr.buildRunArgs(), " ")
+	if strings.Contains(joined, "/marshal/config") || strings.Contains(joined, "XDG_CONFIG_HOME") {
+		t.Errorf("homes leaked into a config that did not ask for them:\n%s", joined)
 	}
 }

@@ -9,19 +9,17 @@
   import Live from './views/Live.svelte'
   import Library from './views/Library.svelte'
   import Settings from './views/Settings.svelte'
+  import Usage from './views/Usage.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
   import Home from './views/Home.svelte'
   import PendingList from './lib/PendingList.svelte'
-  import ClientsPanel from './lib/ClientsPanel.svelte'
-  import ActivityFeed from './lib/ActivityFeed.svelte'
   import ProjectsPanel from './lib/ProjectsPanel.svelte'
   import SessionsPanel from './lib/SessionsPanel.svelte'
-  import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -154,6 +152,7 @@
   const liveRoute = $derived(parseLiveRoute(hash))
   const libraryRoute = $derived(parseLibraryRoute(hash))
   const settingsRoute = $derived(parseSettingsRoute(hash))
+  const usageRoute = $derived(parseUsageRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -165,11 +164,8 @@
 
   const titles: Record<string, string> = {
     '#pending': 'Pending',
-    '#clients': 'MCP Clients',
     '#projects': 'Projects',
     '#sessions': 'Sessions',
-    '#disk': 'Disk',
-    '#activity': 'Activity',
   }
 </script>
 
@@ -234,6 +230,10 @@
       <div class="h-full overflow-y-auto">
         <Settings tab={settingsRoute.tab} onNavigate={navigate} />
       </div>
+    {:else if usageRoute}
+      <div class="h-full overflow-y-auto">
+        <Usage tab={usageRoute.tab} agents={$fleet.agents} onNavigate={navigate} />
+      </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">
         <NewAgent
@@ -249,8 +249,6 @@
           <h1 class="text-lg font-semibold">{sessionsProject !== null ? 'Sessions' : titles[hash]}</h1>
           {#if hash === '#pending'}
             <PendingList {pending} onResolved={refreshPending} />
-          {:else if hash === '#clients'}
-            <ClientsPanel />
           {:else if hash === '#projects'}
             <ProjectsPanel />
           {:else if hash === '#sessions' || sessionsProject !== null}
@@ -264,10 +262,6 @@
             {#key sessionsProject ?? ''}
               <SessionsPanel project={sessionsProject ?? undefined} onUnscope={() => navigate('#sessions')} />
             {/key}
-          {:else if hash === '#disk'}
-            <DiskPanel />
-          {:else}
-            <ActivityFeed />
           {/if}
         </div>
       </div>

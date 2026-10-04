@@ -10,6 +10,7 @@
   import Library from './views/Library.svelte'
   import Settings from './views/Settings.svelte'
   import Usage from './views/Usage.svelte'
+  import Watches from './views/Watches.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -233,6 +234,10 @@
     {:else if usageRoute}
       <div class="h-full overflow-y-auto">
         <Usage tab={usageRoute.tab} agents={$fleet.agents} onNavigate={navigate} />
+      </div>
+    {:else if hash === '#watches'}
+      <div class="h-full overflow-y-auto">
+        <Watches agents={$fleet.agents} tick={$fleet.watchTick} onNavigate={navigate} />
       </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

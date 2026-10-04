@@ -808,7 +808,10 @@ export interface WatchInfo {
   createdAt: number
   lastFiredAt?: number
   samples: WatchSample[]
+  /** Held by the bridge, not the engine; present on Studio watches only. */
   onTrip?: OnTrip
+  notify?: boolean
+  resume?: boolean
 }
 export interface WatchSpec {
   name: string

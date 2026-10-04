@@ -19,6 +19,8 @@ export interface RunDelta { kind: 'run'; sessionId: string; run: RunDetail; at?:
 export interface BudgetDelta { kind: 'budget'; scope: 'daily' | 'agent'; agentId?: string; spentUsd: number; capUsd: number; action: string }
 /** A watch rerouted a role; the inbox offers Undo. */
 export interface RerouteDelta { kind: 'reroute'; id: string; watch: string; role: string; from: string; to: string }
+/** A watch changed state (or fired). `agentId` is the owner, or `studio`; the Watches page refetches on it. */
+export interface WatchDelta { kind: 'watch'; agentId?: string; event?: { id?: string; name?: string; state?: string } }
 export type BudgetState = Omit<BudgetDelta, 'kind'>
 export type RerouteNotice = Omit<RerouteDelta, 'kind'>
 export interface ProjectRemovedDelta { kind: 'project_removed'; project: string }
@@ -28,7 +30,7 @@ export interface ProjectRemovedDelta { kind: 'project_removed'; project: string 
  * the snapshot is the authority on what is still outstanding.
  */
 export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
-export type FleetEvent = FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta
+export type FleetEvent = FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
@@ -59,8 +61,8 @@ export function groupAgents(agents: AgentRow[]): AgentGroups {
 
 export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
   if (d.kind === 'project_removed') return rows.filter((r) => r.project !== d.project)
-  // Budget and reroute deltas are fleet-wide; the store handles them.
-  if (d.kind === 'budget' || d.kind === 'reroute') return rows
+  // Budget, reroute and watch deltas are fleet-wide; the store handles them.
+  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch') return rows
   let changed = false
   const out = rows.map((r) => {
     if (r.id !== d.sessionId) return r
@@ -167,6 +169,8 @@ export function createFleetStore() {
     error: null as string | null,
     budget: null as BudgetState | null,
     notices: [] as RerouteNotice[],
+    /** Bumped on every watch delta; views that list watches refetch when it moves. */
+    watchTick: 0,
   })
   async function refresh() {
     state.update((s) => ({ ...s, loading: true, error: null }))
@@ -191,6 +195,7 @@ export function createFleetStore() {
         const { kind: _k, ...b } = d
         return { ...s, budget: b }
       }
+      if (d.kind === 'watch') return { ...s, watchTick: s.watchTick + 1 }
       if (d.kind === 'reroute') {
         const { kind: _k, ...n } = d
         return { ...s, notices: [...s.notices.filter((x) => x.id !== n.id), n] }

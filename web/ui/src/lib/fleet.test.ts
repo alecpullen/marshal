@@ -263,6 +263,15 @@ describe('run, budget and reroute deltas', () => {
     expect(applyDeltaTo(rows, { kind: 'reroute', id: 'r', watch: 'w', role: 'reviewer', from: 'a', to: 'b' })).toBe(rows)
   })
 
+  it('counts watch deltas in the store and leaves rows alone', () => {
+    const rows = [row({ id: 'a' })]
+    expect(applyDeltaTo(rows, { kind: 'watch', agentId: 'studio', event: { state: 'fired' } })).toBe(rows)
+    const { state, actions } = createFleetStore()
+    actions.applyDelta({ kind: 'watch', agentId: 'studio' })
+    actions.applyDelta({ kind: 'watch', agentId: 'a1' })
+    expect(get(state).watchTick).toBe(2)
+  })
+
   it('keeps budget state and queues reroute notices in the store', () => {
     const { state, actions } = createFleetStore()
     actions.applyDelta({ kind: 'budget', scope: 'daily', spentUsd: 3, capUsd: 5, action: 'block' })

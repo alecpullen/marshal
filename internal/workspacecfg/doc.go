@@ -1,6 +1,6 @@
 // Package workspacecfg parses, validates, patches and formats workspace
 // files: the TOML documents that describe a sandbox workspace (toolchains,
-// packages, mounts, secrets, network, resources, policy and setup).
+// packages, mounts, secrets, network, resources, policy, preview and setup).
 //
 // The package is stateless. Parse turns source text into a typed Doc,
 // per-layer line ranges and diagnostics; Patch re-renders one layer's
@@ -26,6 +26,7 @@ type Doc struct {
 	Network    Network              `json:"network" toml:"network"`
 	Resources  Resources            `json:"resources" toml:"resources"`
 	Policy     Policy               `json:"policy" toml:"policy"`
+	Preview    Preview              `json:"preview" toml:"preview"`
 	Setup      Setup                `json:"setup" toml:"setup"`
 }
 
@@ -86,6 +87,12 @@ type Resources struct {
 type Policy struct {
 	Mode  string   `json:"mode" toml:"mode,omitempty"`
 	Allow []string `json:"allow" toml:"allow,omitempty"`
+}
+
+// Preview is the [preview] table (side panel, layer 0): ports the agent's
+// dev servers listen on, offered for preview.
+type Preview struct {
+	Ports []int `json:"ports" toml:"ports,omitempty"`
 }
 
 // Setup is the [setup] table (layer 9).

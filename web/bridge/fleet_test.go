@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -158,6 +159,36 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	f.slots = newSlots(limit)
 	t.Cleanup(f.Close)
 	return f
+}
+
+func TestSnapshotCarriesOwnerAndOrigin(t *testing.T) {
+	f := testFleet(t)
+	a := Agent{
+		ID: "mcp-agent", Project: "/home/u/a", Name: "MCP agent",
+		OwnerID: DefaultOwnerID, Origin: OriginMCP, ClientID: "client-1",
+	}
+	if err := f.ws.PutAgent(a); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := f.Snapshot()
+	if len(snapshot) != 1 || snapshot[0].ID != a.ID {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	st := snapshot[0]
+	if st.OwnerID != DefaultOwnerID || st.Origin != OriginMCP || st.ClientID != a.ClientID {
+		t.Fatalf("owner/origin/client = %q/%q/%q", st.OwnerID, st.Origin, st.ClientID)
+	}
+	data, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["ownerId"] != DefaultOwnerID || wire["origin"] != OriginMCP || wire["clientId"] != a.ClientID {
+		t.Fatalf("wire owner/origin/client = %s", data)
+	}
 }
 
 func TestFleetSpawnsChildLazilyPerProject(t *testing.T) {

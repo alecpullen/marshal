@@ -191,8 +191,8 @@ func fmtCtxTokens(n int) string {
 }
 
 // cheapThreshold is the combined input+output rate below which a preset is
-// annotated "cheap": ≤ $1.00 per million tokens (rates are hundredths of a
-// cent per MTok, from internal/llm/pricing/prices.go:4).
+// annotated "cheap": ≤ $1.00 per million tokens (rates are US cents per
+// MTok, see ModelPricing in internal/llm/pricing/prices.go).
 const cheapThreshold = 100
 
 // pricingNote classifies a preset's price from config + built-in table

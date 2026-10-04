@@ -216,7 +216,10 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 			// Auto-resume seams (spec §5): the gate read is live from the
 			// runtime's config; the SDD-gate check mirrors the TUI's
 			// never-wake-over-an-open-panel rule.
+			usageDB, _ := rt.DB.(*db.DB)
 			crt := &TurnRuntime{
+				DB:        usageDB,
+				ProjectID: rt.ProjectID,
 				SessionID: sessionID,
 				BeginWork: rt.BeginWork,
 				Run:       run,

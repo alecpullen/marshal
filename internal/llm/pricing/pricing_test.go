@@ -109,3 +109,17 @@ func TestEstimateCostCentsSubCentTruncates(t *testing.T) {
 		t.Errorf("sub-cent should truncate to 0: got %d", got)
 	}
 }
+
+// TestEstimateCostCentsUnit pins the unit: rates are US cents per million
+// tokens and the result is whole US cents, so 1M prompt tokens at
+// InputPerMTokCents=250 ($2.50/M) cost 250 cents, which is $2.50.
+func TestEstimateCostCentsUnit(t *testing.T) {
+	p := ModelPricing{InputPerMTokCents: 250}
+	got := EstimateCostCents(schema.TokenUsage{PromptTokens: 1_000_000}, p)
+	if got != 250 {
+		t.Fatalf("EstimateCostCents = %d, want 250 cents", got)
+	}
+	if usd := float64(got) / 100; usd != 2.5 {
+		t.Fatalf("dollars = %v, want 2.5", usd)
+	}
+}

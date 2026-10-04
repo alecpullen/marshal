@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/oauth"
 	"marshal/internal/pipeline"
@@ -109,6 +110,10 @@ type TurnRuntime struct {
 	// WatchResumeGatePending reports whether a human gate is pending
 	// (SDD). Nil means never gated.
 	WatchResumeGatePending func() bool
+	// DB and ProjectID locate the session's turn_metrics rows for the
+	// telemetry usage section. A nil DB omits it.
+	DB        *db.DB
+	ProjectID int64
 }
 
 // systemAccess reports the runtime session's live system-access flag.
@@ -226,6 +231,11 @@ type TurnManager struct {
 	// runMu guards the run-detail state behind session/run and run_progress:
 	// which sessions a client watches, the hash of the last detail sent, and
 	// the last non-empty swarm progress (the live copy is cleared at run end).
+	// usageMu guards usageHW, the per-session high-water mark of turn_metrics
+	// IDs already sent as telemetry usage rows.
+	usageMu sync.Mutex
+	usageHW map[string]int64
+
 	runMu     sync.Mutex
 	runActive map[string]bool
 	runHashes map[string]uint64
@@ -259,6 +269,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		pipelineRunners: map[string]*sddRun{},
 		baseRefs:        map[string]string{},
 		stacks:          map[string]*stackProjector{},
+		usageHW:         map[string]int64{},
 		runActive:       map[string]bool{},
 		runHashes:       map[string]uint64{},
 		lastSwarm:       map[string]session.SwarmProgress{},
@@ -1197,12 +1208,12 @@ func (m *TurnManager) buildChangedFiles(sessionID string, state *session.State) 
 // buildTelemetry assembles the full session_telemetry payload. Every
 // top-level field is always present (never a nil-marshaling-to-null
 // slice), so a client can treat this as a full-replace snapshot.
-func (m *TurnManager) buildTelemetry(sessionID string, state *session.State) map[string]any {
+func (m *TurnManager) buildTelemetry(sessionID string, state *session.State, usageDB *db.DB, projectID int64) map[string]any {
 	rules := state.SessionRules()
 	if rules == nil {
 		rules = []string{}
 	}
-	return map[string]any{
+	out := map[string]any{
 		"kind":          "session_telemetry",
 		"context":       buildTelemetryContext(state),
 		"changedFiles":  m.buildChangedFiles(sessionID, state),
@@ -1210,6 +1221,65 @@ func (m *TurnManager) buildTelemetry(sessionID string, state *session.State) map
 		"rules":         rules,
 		"sessionFooter": buildSessionFooter(state),
 	}
+	if usage := m.newUsageRows(sessionID, usageDB, projectID); usage != nil {
+		out["usage"] = usage
+	}
+	return out
+}
+
+// TelemetryUsageRow mirrors one turn_metrics row in the "usage" section.
+// CostUSD is EstimatedCostCents / 100: the estimate is in whole US cents.
+type TelemetryUsageRow struct {
+	ID               int64   `json:"id"`
+	StartedAt        int64   `json:"startedAt"` // Unix milliseconds
+	DurationMs       int64   `json:"durationMs"`
+	Role             string  `json:"role"`
+	Provider         string  `json:"provider"`
+	Model            string  `json:"model"`
+	PromptTokens     int     `json:"promptTokens"`
+	CompletionTokens int     `json:"completionTokens"`
+	ReasoningTokens  int     `json:"reasoningTokens"`
+	CacheReadTokens  int     `json:"cacheReadTokens"`
+	CacheWriteTokens int     `json:"cacheWriteTokens"`
+	CostUSD          float64 `json:"costUsd"`
+}
+
+// usageRowLimit bounds how many recent metrics rows one telemetry reads.
+const usageRowLimit = 200
+
+// newUsageRows returns the session's turn_metrics rows written since the
+// last call (oldest first) and advances the high-water mark. It returns nil
+// when there is no DB, nothing new, or the query fails.
+func (m *TurnManager) newUsageRows(sessionID string, usageDB *db.DB, projectID int64) []TelemetryUsageRow {
+	if usageDB == nil {
+		return nil
+	}
+	rows, err := usageDB.RecentTurnMetricsForSession(projectID, sessionID, usageRowLimit)
+	if err != nil {
+		slog.Default().Warn("acp: telemetry usage query failed", "session", sessionID, "err", err)
+		return nil
+	}
+	m.usageMu.Lock()
+	defer m.usageMu.Unlock()
+	hw := m.usageHW[sessionID]
+	var out []TelemetryUsageRow
+	for i := len(rows) - 1; i >= 0; i-- { // rows are newest first
+		r := rows[i]
+		if r.ID <= hw {
+			continue
+		}
+		hw = r.ID
+		out = append(out, TelemetryUsageRow{
+			ID: r.ID, StartedAt: r.StartedAt.UnixMilli(), DurationMs: r.DurationMs,
+			Role: r.Role, Provider: r.Provider, Model: r.Model,
+			PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens,
+			ReasoningTokens: r.ReasoningTokens, CacheReadTokens: r.CacheReadTokens,
+			CacheWriteTokens: r.CacheWriteTokens,
+			CostUSD:          float64(r.EstimatedCostCents) / 100,
+		})
+	}
+	m.usageHW[sessionID] = hw
+	return out
 }
 
 // finishTurn resolves a turn's result via resultOf, then fires a
@@ -1232,7 +1302,7 @@ func (m *TurnManager) finishTurn(
 		m.flushStack(sessionID, rt.State, false)
 		if notifyErr := m.notify("session/update", SessionUpdateParams{
 			SessionID: sessionID,
-			Update:    m.buildTelemetry(sessionID, rt.State),
+			Update:    m.buildTelemetry(sessionID, rt.State, rt.DB, rt.ProjectID),
 		}); notifyErr != nil {
 			slog.Default().Warn("acp: session_telemetry notify failed", "session", sessionID, "err", notifyErr)
 		}

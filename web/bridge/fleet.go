@@ -245,6 +245,15 @@ type Fleet struct {
 	// state nothing references.
 	provisioning map[string]string
 
+	// templates is the Studio workspace template store; wsParses caches
+	// control-agent parses of workspace sources.
+	templates *TemplateStore
+	wsParses  *wsParseCache
+	// buildLog carries workspace build output, keyed build:<name>:<n>.
+	buildLog *EventLog
+	builds   *buildLimiter
+	pools    *poolManager
+
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
 	// Prune, and a removeTree racing itself on an already-vanished
@@ -287,7 +296,12 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		provisioning:  make(map[string]string),
 		ctl:           newControlRuntime(),
 		usage:         NewUsageLog(stateDir),
+		templates:     NewTemplateStore(stateDir),
+		wsParses:      newWSParseCache(),
+		buildLog:      NewEventLog(),
+		builds:        newBuildLimiter(),
 	}
+	f.pools = newPoolManager(f)
 	f.budgets = newBudgetState(f)
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced

@@ -290,6 +290,20 @@ export function createSessionStore(id: string, cwd: string) {
 }
 
 function applyACP(state: ReturnType<typeof writable<SessionState>>, method: string, params: Record<string, unknown>) {
+  // The agent wraps every update as session/update with the payload under
+  // params.update and its type in update.kind (internal/acp/turn.go).
+  if (method === 'session/update') {
+    const update = params.update as Record<string, unknown> | undefined
+    if (update && typeof update === 'object' && typeof update.kind === 'string') {
+      method = update.kind
+      params = {
+        ...update,
+        sessionId: params.sessionId,
+        chunk: update.chunk ?? update.content,
+        name: update.name ?? update.toolName,
+      }
+    }
+  }
   switch (method) {
     case 'agent_message_chunk': {
       const chunk = params.chunk as Record<string, unknown> | undefined

@@ -625,16 +625,9 @@ func mergeMap[T any](disk, next map[string]T, baseline []map[string]T) map[strin
 func normalizedPresets(presets map[string]routing.ModelPreset) map[string]routing.ModelPreset {
 	out := make(map[string]routing.ModelPreset, len(presets))
 	for name, p := range presets {
-		preset := routing.ModelPreset{
-			ContextWindow:    p.ContextWindow,
-			MaxOutputTokens:  p.MaxOutputTokens,
-			ToolCalling:      p.ToolCalling,
-			LocalOnly:        p.LocalOnly,
-			Thinking:         p.Thinking,
-			Temperature:      p.Temperature,
-			Pricing:          p.Pricing,
-			VerificationGate: p.VerificationGate,
-		}
+		// Copy the entire preset so new configurable fields survive every save.
+		// Only identity fields are normalized below.
+		preset := p
 		preset.Name = name
 		preset.Provider, preset.Model, _ = strings.Cut(name, "/")
 		out[name] = preset

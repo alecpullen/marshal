@@ -245,13 +245,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		// editable, so forward unconditionally.
 	}
 
-	wasCommitted := p.fields.Committed()
-	// Capture the old preset before Update commits the edit, so the
-	// ChangedMsg reports the actual before→after transition.
-	var oldPreset routing.ModelPreset
-	if !wasCommitted {
-		oldPreset = p.cfg.Models.Presets[p.presetName]
-	}
+	// Committed describes one Update call, not a transition between calls.
+	// Consecutive enum cycles and toggles must each emit their own save.
+	oldPreset := p.cfg.Models.Presets[p.presetName]
 	cmd := p.fields.Update(msg)
 	defer func() {
 		if p.optionsRefreshPending && !p.fields.Editing() {
@@ -259,7 +255,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.optionsRefreshPending = false
 		}
 	}()
-	if !wasCommitted && p.fields.Committed() && p.changed {
+	if p.fields.Committed() && p.changed {
 		p.changed = false
 		row := p.fields.CursorRow()
 		if row != nil {

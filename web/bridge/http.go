@@ -107,6 +107,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)
 	s.mux.HandleFunc("POST /api/agents", s.spawnAgent)
 	s.mux.HandleFunc("GET /api/agents/{id}/diff", s.agentDiff)
+	s.mux.HandleFunc("GET /api/agents/{id}/files", s.agentFiles)
+	s.mux.HandleFunc("GET /api/agents/{id}/file", s.agentFile)
+	s.mux.HandleFunc("GET /api/agents/{id}/commit-draft", s.agentCommitDraft)
+	s.mux.HandleFunc("POST /api/agents/{id}/verify", s.agentVerify)
+	s.mux.HandleFunc("GET /api/agents/{id}/gate", s.agentGate)
 	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
 	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
@@ -340,6 +345,53 @@ func (s *Server) agentDiff(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+}
+
+func (s *Server) agentFiles(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.fleet.Files(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, raw)
+}
+
+func (s *Server) agentFile(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.fleet.File(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, raw)
+}
+
+func (s *Server) agentCommitDraft(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.fleet.CommitDraft(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, raw)
+}
+
+// agentVerify runs the verify gate now and returns the stored record.
+func (s *Server) agentVerify(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.fleet.RunGate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// agentGate returns the stored verify record, or 204 when none has run.
+func (s *Server) agentGate(w http.ResponseWriter, r *http.Request) {
+	rec, ok := s.fleet.Gate(r.PathValue("id"))
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
 }
 
 func (s *Server) agentMerge(w http.ResponseWriter, r *http.Request) {

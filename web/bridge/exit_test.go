@@ -103,6 +103,9 @@ func TestExitRejectsAnOverrideWithNoReason(t *testing.T) {
 // exercised without a real container.
 type scriptedTransport struct {
 	gate gateResult
+	// results and errs answer other methods by name.
+	results map[string]any
+	errs    map[string]*rpcError
 }
 
 func (t *scriptedTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
@@ -125,6 +128,14 @@ func (t *scriptedTransport) serve(r io.Reader, w io.WriteCloser) {
 			continue
 		}
 		var result any
+		if e := t.errs[req.Method]; e != nil {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": e})
+			continue
+		}
+		if r, ok := t.results[req.Method]; ok {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": r})
+			continue
+		}
 		switch req.Method {
 		case "session/new":
 			result = map[string]any{"sessionId": "s-1"}
@@ -147,12 +158,16 @@ func (t *scriptedTransport) Detach() error              { return nil }
 // testFleetWithGate builds a fleet whose agent child scripts the given
 // gate result for session/verify.
 func testFleetWithGate(t *testing.T, gate gateResult) *Fleet {
+	return testFleetScripted(t, &scriptedTransport{gate: gate})
+}
+
+// testFleetScripted builds a fleet whose agent child is the given transport.
+func testFleetScripted(t *testing.T, tr *scriptedTransport) *Fleet {
 	t.Helper()
 	f := newTestFleetWithLimit(t, 4)
 	if f.git == nil {
 		t.Skip("git not installed")
 	}
-	tr := &scriptedTransport{gate: gate}
 	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	return f
 }

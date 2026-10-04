@@ -35,7 +35,7 @@ func insertUsage(t *testing.T, d *db.DB, pid int64, cents int64) int64 {
 	id, err := d.InsertTurnMetrics(db.TurnMetricsRow{
 		ProjectID: pid, SessionID: "s1", StartedAt: time.Now(), DurationMs: 50,
 		Role: "implementer", Provider: "p", Model: "m", PromptTokens: 10,
-		CompletionTokens: 5, EstimatedCostCents: cents,
+		CompletionTokens: 5, EstimatedCostCents: cents, EstimatedCostMicroUSD: cents * 10000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestTelemetryUsageRowsAreIncremental(t *testing.T) {
 	if len(rows) != 2 || rows[0].ID != id1 || rows[1].ID != id2 {
 		t.Fatalf("rows = %+v", rows)
 	}
-	if rows[0].CostUSD != 2.5 || rows[0].Role != "implementer" || rows[0].PromptTokens != 10 || rows[0].StartedAt == 0 {
+	if rows[0].CostUSD != 2.5 || rows[0].CostMicroUSD != 2_500_000 || rows[0].Role != "implementer" || rows[0].PromptTokens != 10 || rows[0].StartedAt == 0 {
 		t.Fatalf("row = %+v", rows[0])
 	}
 	if rows := telemetryUsage(t, m, st, d, pid); rows != nil {

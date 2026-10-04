@@ -203,3 +203,21 @@ func TestParsePlanDependencyCycle(t *testing.T) {
 		t.Errorf("cycle error = %v", err)
 	}
 }
+
+func TestParsePlanDependsOnNoneAndFences(t *testing.T) {
+	p, err := parseInline(t, "## Task 1: A\n\nx\n\n"+
+		"## Task 2: B\n\nDepends on: none\n\nbody\n\n"+
+		"## Task 3: C\n\n```\nDepends on: 1\n```\n\nDepends on: 2, -\n")
+	if err != nil {
+		t.Fatalf("ParsePlan: %v", err)
+	}
+	if got := p.Tasks[1].DependsOn; len(got) != 0 {
+		t.Fatalf("task 2 DependsOn = %v, want none", got)
+	}
+	if got := p.Tasks[2].DependsOn; len(got) != 1 || got[0] != 2 {
+		t.Fatalf("task 3 DependsOn = %v, want [2]", got)
+	}
+	if !strings.Contains(p.Tasks[2].Body, "Depends on: 1") {
+		t.Errorf("fenced example was stripped:\n%s", p.Tasks[2].Body)
+	}
+}

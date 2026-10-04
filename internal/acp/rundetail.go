@@ -397,6 +397,9 @@ func (m *TurnManager) dropRun(sessionID string) {
 	delete(m.runHashes, sessionID)
 	delete(m.lastSwarm, sessionID)
 	m.runMu.Unlock()
+	m.usageMu.Lock()
+	delete(m.usageHW, sessionID)
+	m.usageMu.Unlock()
 }
 
 // watchRun marks a session's run as watched, recording the current detail as

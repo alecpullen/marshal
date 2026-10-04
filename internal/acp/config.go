@@ -101,7 +101,7 @@ func providerToWire(pc config.ProviderConfig) providerWire {
 	}
 }
 
-// applyWire overlays w onto pc, keeping pc's credentials and any field the
+// applyTo overlays w onto pc, keeping pc's credentials and any field the
 // wire does not model.
 func (w providerWire) applyTo(pc config.ProviderConfig) config.ProviderConfig {
 	pc.Type, pc.BaseURL, pc.APIKeyEnv = w.Type, w.BaseURL, w.APIKeyEnv

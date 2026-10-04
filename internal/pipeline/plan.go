@@ -28,7 +28,7 @@ type TaskSpec struct {
 	// DependsOn lists the task numbers this task needs finished first. It
 	// comes from a "Depends on: 1, 3" line in the body (removed from Body);
 	// a task without the line depends on the previous task, and the first
-	// task on nothing.
+	// task on nothing. "Depends on: none" is an explicit empty list.
 	DependsOn []int
 }
 
@@ -109,7 +109,15 @@ func (p *Plan) resolveDependencies() error {
 		t := &p.Tasks[i]
 		lines := strings.Split(t.Body, "\n")
 		explicit := false
+		inFence := false
 		for j, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inFence = !inFence
+				continue
+			}
+			if inFence {
+				continue
+			}
 			m := dependsOnRe.FindStringSubmatch(line)
 			if m == nil {
 				continue
@@ -117,7 +125,8 @@ func (p *Plan) resolveDependencies() error {
 			explicit = true
 			for _, part := range strings.Split(m[1], ",") {
 				part = strings.TrimSpace(part)
-				if part == "" {
+				// "none" and "-" are an explicit empty list: a root task.
+				if part == "" || strings.EqualFold(part, "none") || part == "-" {
 					continue
 				}
 				n, err := strconv.Atoi(part)

@@ -90,3 +90,21 @@ func TestTelemetryWithoutDBOmitsUsage(t *testing.T) {
 		t.Fatal("usage present without a DB")
 	}
 }
+
+func TestDropRunClearsUsageHighWater(t *testing.T) {
+	d, pid := openUsageTestDB(t)
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	m := NewTurnManager(TurnManagerConfig{
+		Lookup: func(string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(string, any) error { return nil },
+	})
+	insertUsage(t, d, pid, 1)
+	telemetryUsage(t, m, st, d, pid)
+	m.dropStacks("s1")
+	m.usageMu.Lock()
+	_, ok := m.usageHW["s1"]
+	m.usageMu.Unlock()
+	if ok {
+		t.Fatal("usageHW entry survived dropStacks")
+	}
+}

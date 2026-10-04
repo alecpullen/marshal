@@ -169,3 +169,57 @@ func TestSnapshotCarriesPendingQuestionPayload(t *testing.T) {
 		t.Errorf("Pending = %+v, want kind question id q-3", p)
 	}
 }
+
+// telemetryUpdate is session_telemetry as the engine sends it
+// (internal/acp/turn.go buildTelemetry): changed files are objects.
+const telemetryUpdate = `{"sessionId":"s1","update":{"kind":"session_telemetry",
+ "context":{"messages":4,"messageChars":900,"packTokens":2500,"packMaxTokens":10000,"packSections":3},
+ "changedFiles":[{"path":"a.go","added":3,"removed":1},{"path":"b.go","added":0,"removed":0}],
+ "toolStats":[{"name":"file.read","calls":5,"errors":1,"slowestMs":120}],
+ "rules":["no network"],
+ "sessionFooter":{"turns":2,"lastTurnTokensUsed":10,"lastTurnTokensWindow":100}}}`
+
+func TestClassifyTelemetryDecodesEngineShape(t *testing.T) {
+	d, ok := classifyNotification("session/update", json.RawMessage(telemetryUpdate))
+	if !ok || d.Kind != "telemetry" {
+		t.Fatalf("telemetry was dropped: %+v ok=%v", d, ok)
+	}
+	if d.ChangedFiles != 2 || d.ContextPct != 25 {
+		t.Fatalf("changedFiles=%d contextPct=%d, want 2 and 25", d.ChangedFiles, d.ContextPct)
+	}
+	out, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(out, &m)
+	stats, _ := m["toolStats"].([]any)
+	rules, _ := m["rules"].([]any)
+	if len(stats) != 1 || stats[0].(map[string]any)["errors"] != float64(1) || stats[0].(map[string]any)["slowestMs"] != float64(120) {
+		t.Fatalf("toolStats = %v", m["toolStats"])
+	}
+	if len(rules) != 1 || rules[0] != "no network" {
+		t.Fatalf("rules = %v", m["rules"])
+	}
+	if _, ok := m["usage"]; ok {
+		t.Fatal("usage must stay off the fleet stream")
+	}
+}
+
+func TestClassifyTelemetryWithNoChangesStillCounts(t *testing.T) {
+	d, ok := classifyNotification("session/update", json.RawMessage(
+		`{"sessionId":"s1","update":{"kind":"session_telemetry","changedFiles":[],"toolStats":[],"rules":[]}}`))
+	if !ok || d.ChangedFiles != 0 || string(d.Rules) != "[]" || string(d.ToolStats) != "[]" {
+		t.Fatalf("delta = %+v ok=%v", d, ok)
+	}
+}
+
+func TestContextPct(t *testing.T) {
+	for _, c := range []struct{ used, tokens, max, want int }{
+		{0, 2500, 10000, 25}, {0, 20000, 10000, 100}, {0, 5, 0, 0}, {40, 1, 100, 40},
+	} {
+		if got := contextPct(c.used, c.tokens, c.max); got != c.want {
+			t.Errorf("contextPct(%d,%d,%d) = %d, want %d", c.used, c.tokens, c.max, got, c.want)
+		}
+	}
+}

@@ -33,12 +33,12 @@
 
   let paletteOpen = $state(false)
 
-  let toast = $state('')
+  let toast = $state<{ text: string; href?: string } | null>(null)
   let toastTimer: ReturnType<typeof setTimeout> | undefined
-  function flashToast(text: string) {
-    toast = text
+  function flashToast(text: string, href?: string) {
+    toast = { text, href }
     clearTimeout(toastTimer)
-    toastTimer = setTimeout(() => (toast = ''), 8000)
+    toastTimer = setTimeout(() => (toast = null), 8000)
   }
 
   function toggleNav() {
@@ -183,7 +183,11 @@
       -->
       {#key chatSessionId}
         {#if chatRoute?.view === 'review'}
-          <Review agentId={chatSessionId} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onShipped={() => navigate(`#chat/${chatSessionId}`)} />
+          <Review agentId={chatSessionId} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onShipped={(o) => {
+              flashToast(o.message, o.href)
+              // Discarding or merging ends the session's work; only a push leaves the agent to look at.
+              navigate(o.kind === 'pushed' ? `#chat/${chatSessionId}` : '#')
+            }} />
         {:else}
           <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
         {/if}
@@ -249,7 +253,10 @@
 </div>
 
 {#if toast}
-  <div class="fixed right-4 bottom-4 z-50 max-w-sm rounded-md border border-attention bg-raise p-3 text-sm shadow-lg" role="status">{toast}</div>
+  <div class="fixed right-4 bottom-4 z-50 max-w-sm rounded-md border border-attention bg-raise p-3 text-sm shadow-lg" role="status">
+    {toast.text}
+    {#if toast.href}<a class="ml-1 text-info underline" href={toast.href} target="_blank" rel="noreferrer">Open</a>{/if}
+  </div>
 {/if}
 
 <Palette open={paletteOpen} agents={$fleet.agents} onClose={() => (paletteOpen = false)} onNavigate={navigate} />

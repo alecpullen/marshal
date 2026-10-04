@@ -1,21 +1,18 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
   import GateStrip from '../lib/dock/GateStrip.svelte'
-  import GateResultView from '../lib/GateResult.svelte'
-  import Segmented from '../lib/ui/Segmented.svelte'
-  import ShipPanel from '../lib/review/ShipPanel.svelte'
+    import Segmented from '../lib/ui/Segmented.svelte'
+  import ShipPanel, { type ShipOutcome } from '../lib/review/ShipPanel.svelte'
   import FileDiffView from '../lib/review/FileDiff.svelte'
   import ByStep from '../lib/review/ByStep.svelte'
   import { fileHash, isViewed, parseUnified, type FileDiff } from '../lib/review/unified'
   import { createStackStore, type StackState } from '../lib/stack'
   import { connectSSE, type SSEEvent } from '../lib/sse'
   import { getDiff, listReviewComments, postReviewComment, resolveReviewComment, errMessage, type DiffFile, type ReviewComment } from '../lib/api'
-  import { gateState, pickGate } from '../lib/dock/gate'
-  import { exitDestination } from '../lib/exit'
-  import { renderMarkdown } from '../lib/markdown'
+    import { renderMarkdown } from '../lib/markdown'
   import type { AgentRow } from '../lib/fleet'
 
-  let { agentId, agent = undefined, onBack = () => {}, onShipped = () => {} }: { agentId: string; agent?: AgentRow; onBack?: () => void; onShipped?: (outcome: string) => void } = $props()
+  let { agentId, agent = undefined, onBack = () => {}, onShipped = () => {} }: { agentId: string; agent?: AgentRow; onBack?: () => void; onShipped?: (outcome: ShipOutcome) => void } = $props()
 
   // Review instances are keyed by agent route in App, so the id is fixed for the component's life.
   // svelte-ignore state_referenced_locally
@@ -115,6 +112,8 @@
     await loadComments()
   }
 
+  // Baselines live in component state only: after a reload the baseline is the already-changed
+  // diff, so earlier edits are not flagged. The bridge keeps no per-comment commit record to do better.
   // A comment whose file now differs from when it was first shown has been acted on.
   $effect(() => {
     for (const c of comments) {
@@ -165,10 +164,6 @@
     clearTimeout(telemetryTimer)
   })
 
-  const record = $derived(agent ? pickGate(agent.gate, null) : null)
-  const gk = $derived(gateState(record))
-  const dest = $derived(agent ? exitDestination({ sourceKind: agent.sourceKind ?? '', readOnly: agent.readOnly ?? false }) : 'merge')
-  let ship: { pushWithOverride: (reason: string) => Promise<void> } | undefined = $state()
 
   // One final message per turn, newest first.
   const summary = $derived(
@@ -203,9 +198,6 @@
       <section class="flex flex-col gap-2">
         <h3 class="text-xs tracking-wide text-muted uppercase">Gate</h3>
         <GateStrip {agentId} gate={agent?.gate} />
-        {#if dest === 'push' && record && (gk === 'failed' || gk === 'skipped')}
-          <GateResultView result={record.result} onOverride={(reason) => ship?.pushWithOverride(reason)} />
-        {/if}
       </section>
 
       <section class="flex flex-col gap-1">
@@ -233,7 +225,7 @@
       </section>
 
       {#if agent}
-        <ShipPanel bind:this={ship} {agent} onDone={onShipped} />
+        <ShipPanel {agent} onDone={onShipped} />
       {/if}
     </aside>
 

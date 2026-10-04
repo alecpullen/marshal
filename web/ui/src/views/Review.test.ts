@@ -90,8 +90,10 @@ describe('Review left column', () => {
     await waitFor(() => expect(box.value).toBe('fix: set x to 2'))
     await fireEvent.input(box, { target: { value: 'feat: edited' } })
     await fireEvent.click(screen.getByText('Push & open PR'))
+    expect(api.exitAgent).not.toHaveBeenCalled()
+    await fireEvent.click(await screen.findByText('Push'))
     await waitFor(() => expect(api.exitAgent).toHaveBeenCalledWith('a1', { commitMessage: 'feat: edited' }))
-    await waitFor(() => expect(onShipped).toHaveBeenCalled())
+    await waitFor(() => expect(onShipped).toHaveBeenCalledWith({ kind: 'pushed', message: 'Pushed. Pull request opened.', href: 'https://x/pr/1' }))
   })
 
   it('shows the override when a push is blocked and re-calls with the reason', async () => {
@@ -99,8 +101,11 @@ describe('Review left column', () => {
       .mockResolvedValueOnce({ destination: 'push', blocked: true, verify: { ok: false, skipped: false, failedCommand: 'go test', output: 'FAIL' } })
       .mockResolvedValueOnce({ destination: 'push', prUrl: 'u' })
     render(Review, { agentId: 'a1', agent: agent() })
-    await fireEvent.click(await screen.findByText('Push & open PR'))
-    expect(await screen.findByText('Gate failed')).toBeTruthy()
+    const box = (await screen.findByLabelText('Commit message')) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe('fix: set x to 2'))
+    await fireEvent.click(screen.getByText('Push & open PR'))
+    await fireEvent.click(await screen.findByText('Push'))
+    expect(await screen.findAllByText('Gate failed')).toHaveLength(1)
     await fireEvent.input(screen.getByPlaceholderText(/flaky test/), { target: { value: 'unrelated' } })
     await fireEvent.click(screen.getByText('Override and push'))
     await waitFor(() => expect(api.exitAgent).toHaveBeenLastCalledWith('a1', { commitMessage: 'fix: set x to 2', override: { reason: 'unrelated' } }))
@@ -110,7 +115,16 @@ describe('Review left column', () => {
     ;(api.mergeAgent as Mock).mockResolvedValue({ merged: false, branch: 'b', target: 'main', reason: 'project_dirty' })
     render(Review, { agentId: 'a1', agent: agent({ sourceKind: 'local' }) })
     await fireEvent.click(await screen.findByText('Merge locally'))
+    expect(api.mergeAgent).not.toHaveBeenCalled()
+    await fireEvent.click(await screen.findByText('Merge'))
     expect(await screen.findByText(/uncommitted changes/)).toBeTruthy()
+  })
+
+  it('a push needs a commit message', async () => {
+    ;(api.getCommitDraft as Mock).mockResolvedValue('unsupported')
+    render(Review, { agentId: 'a1', agent: agent() })
+    const btn = (await screen.findByText('Push & open PR')).closest('button') as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
   })
 
   it('asks before discarding', async () => {

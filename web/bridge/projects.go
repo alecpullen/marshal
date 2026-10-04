@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -214,6 +212,8 @@ type ProjectHealth struct {
 	// Verify is the project's verify-gate commands from [sdd.verify] in
 	// .marshal/config.toml. Empty strings mean unset, in which case the
 	// gate is skipped (nothing to run) unless the engine detects a default.
+	// Only reported for a trusted project, since the engine ignores an
+	// untrusted project's config.
 	Verify VerifyCommands `json:"verify"`
 }
 
@@ -223,67 +223,13 @@ type VerifyCommands struct {
 	Test  string `json:"test"`
 }
 
-// readVerifyCommands scans root's .marshal/config.toml for the build and
-// test keys of its [sdd.verify] table. The bridge has no TOML parser, so
-// this reads only plain string values on their own lines; anything else
-// reads as unset.
-func readVerifyCommands(root string) VerifyCommands {
-	data, err := os.ReadFile(filepath.Join(root, ".marshal", "config.toml"))
-	if err != nil {
-		return VerifyCommands{}
-	}
-	var v VerifyCommands
-	in := false
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") {
-			in = strings.HasPrefix(line, "[sdd.verify]")
-			continue
-		}
-		if !in {
-			continue
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		val = strings.TrimSpace(val)
-		var s string
-		switch {
-		case len(val) >= 2 && val[0] == '"':
-			end := strings.LastIndex(val, `"`)
-			if end < 1 {
-				continue
-			}
-			if s, err = strconv.Unquote(val[:end+1]); err != nil {
-				continue
-			}
-		case len(val) >= 2 && val[0] == '\'':
-			end := strings.LastIndex(val, "'")
-			if end < 1 {
-				continue
-			}
-			s = val[1:end]
-		default:
-			continue
-		}
-		switch strings.TrimSpace(key) {
-		case "build":
-			v.Build = s
-		case "test":
-			v.Test = s
-		}
-	}
-	return v
-}
-
 // ProjectHealth reports a registered project's health.
 func (f *Fleet) ProjectHealth(ctx context.Context, root string) (ProjectHealth, error) {
 	if err := f.registeredProject(root); err != nil {
 		return ProjectHealth{}, err
 	}
 	ps := f.ws.ProjectSettingsFor(root)
-	h := ProjectHealth{GateRunnable: "unknown", MirrorFresh: []MirrorHealth{}, OrphanWorktrees: []string{}, Trust: projectTrust(root), Verify: readVerifyCommands(root)}
+	h := ProjectHealth{GateRunnable: "unknown", MirrorFresh: []MirrorHealth{}, OrphanWorktrees: []string{}, Trust: projectTrust(root)}
 
 	for _, st := range f.ProjectStatus() {
 		if st.Root == root {
@@ -292,6 +238,10 @@ func (f *Fleet) ProjectHealth(ctx context.Context, root string) (ProjectHealth, 
 				h.OrphanWorktrees = st.OrphanWorktrees
 			}
 		}
+	}
+
+	if h.Trust == "trusted" {
+		h.Verify = readVerifyCommands(root)
 	}
 
 	// The most recent stored gate among the project's agents.

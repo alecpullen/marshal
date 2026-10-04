@@ -156,6 +156,8 @@ export interface StackState {
 
 export interface StackStore extends Readable<StackState> {
   load(): Promise<void>
+  /** Stops any pending retry; call when the view goes away. */
+  destroy(): void
   onEvent(envelope: unknown): void
 }
 
@@ -186,6 +188,9 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
   const store = writable<StackState>(empty('loading'))
   let inflight: Promise<void> | null = null
   let again = false
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  let failures = 0
+  let destroyed = false
 
   async function fetchOnce() {
     try {
@@ -197,11 +202,25 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
       const nodes = new Map<string, WireNode>()
       for (const n of snap.nodes ?? []) nodes.set(n.id, n)
       store.set({ status: 'ready', rev: snap.rev, roots: snap.roots ?? [], nodes })
+      failures = 0
     } catch {
+      scheduleRetry()
       // Keep a snapshot we already hold; with none, report the failure so the
       // page can fall back. The next event or reload tries again.
       store.update((s) => (s.status === 'ready' ? s : { ...s, status: 'error' }))
     }
+  }
+
+  // A failed fetch leaves the view stale, and an idle agent sends nothing to
+  // trigger another, so retry on a growing delay until one succeeds.
+  function scheduleRetry() {
+    if (destroyed || retryTimer) return
+    const delay = Math.min(1000 * 2 ** failures, 15000)
+    failures++
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined
+      void load()
+    }, delay)
   }
 
   /**
@@ -209,6 +228,8 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
    * into a single follow-up, so a burst of triggers costs one refetch.
    */
   function load(): Promise<void> {
+    clearTimeout(retryTimer)
+    retryTimer = undefined
     if (inflight) {
       again = true
       return inflight
@@ -227,7 +248,9 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
   function applyPatch(p: StackPatch) {
     const s = get(store)
     if (s.status === 'unsupported') return
-    if (inflight || s.status === 'loading' || s.status === 'error') {
+    // A retry is already scheduled while in error, so patches do not each fetch.
+    if (s.status === 'error') return
+    if (inflight || s.status === 'loading') {
       // The snapshot in flight may or may not include this patch. Whatever
       // it returns is the authority; ask for one more look afterwards.
       void load()
@@ -259,5 +282,11 @@ export function createStackStore(sessionId: string, fetcher: Fetcher = getStack)
     else if (update?.kind === 'session_telemetry') void load()
   }
 
-  return { subscribe: store.subscribe, load, onEvent }
+  function destroy() {
+    destroyed = true
+    clearTimeout(retryTimer)
+    retryTimer = undefined
+  }
+
+  return { subscribe: store.subscribe, load, destroy, onEvent }
 }

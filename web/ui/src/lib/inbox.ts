@@ -11,6 +11,8 @@ export interface Inbox {
   running: AgentRow[]
 }
 
+// "Mine" is the single local owner for now; once agents carry real owner ids
+// this needs the viewer's id (design §5.4).
 const isMine = (ownerId?: string) => !ownerId || ownerId === 'local'
 
 /**
@@ -21,7 +23,7 @@ const isMine = (ownerId?: string) => !ownerId || ownerId === 'local'
 export function buildInbox(agents: AgentRow[], pending: PendingSubmission[], mine: boolean): Inbox {
   const scoped = mine ? agents.filter((a) => isMine(a.ownerId)) : agents
   const g = groupAgents(scoped)
-  const intake = (mine ? pending.filter((p) => isMine((p as { ownerId?: string }).ownerId)) : pending).map<NeedsYouItem>(
+  const intake = (mine ? pending.filter((p) => isMine(p.ownerId)) : pending).map<NeedsYouItem>(
     (p) => ({ kind: 'intake', submission: p, at: p.createdAt }),
   )
   const agentItems = g.needsYou.map<NeedsYouItem>((a) => ({ kind: 'agent', agent: a, at: a.updatedAt }))

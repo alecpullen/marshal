@@ -151,6 +151,28 @@ describe('Chat', () => {
       await waitFor(() => expect(api.cancelSession).toHaveBeenCalledTimes(1))
     })
 
+    it('leaves Ctrl+C alone when text is selected in the composer', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(true))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('now-bar')
+      const box = screen.getByPlaceholderText('Ask Marshal…') as HTMLTextAreaElement
+      box.value = 'some text'
+      box.setSelectionRange(0, 4)
+      const notPrevented = await fireEvent.keyDown(box, { key: 'c', ctrlKey: true })
+      expect(notPrevented).toBe(true)
+      expect(screen.queryByText('Press Ctrl+C again to stop')).toBeNull()
+    })
+
+    it('keeps j at the last row in browse mode', async () => {
+      ;(api.getStack as Mock).mockResolvedValue(turn(true))
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+      await screen.findByTestId('now-bar')
+      await fireEvent.keyDown(screen.getByPlaceholderText('Ask Marshal…'), { key: 'Escape' })
+      await screen.findByText(/browse · j\/k move/)
+      await fireEvent.keyDown(document.body, { key: 'j' })
+      expect(screen.getByText(/browse · j\/k move/)).toBeTruthy()
+    })
+
     it('enters browse mode on Esc in the composer and never cancels', async () => {
       ;(api.getStack as Mock).mockResolvedValue(turn(true))
       render(Chat, { sessionId: 's1', onBack: () => {} })

@@ -23,6 +23,7 @@ export type BrowseEffect =
   | { toast: string }
   | { exitBrowse: true }
 
+const BOUND = new Set(['j', 'ArrowDown', 'k', 'ArrowUp', 'J', ']', 'K', '[', 'g', 'Home', 'G', 'End', 'Enter', 'z', 'y', 'i', 'o', 'f', 'Escape'])
 const CONTAINERS = new Set(['turn', 'passthrough'])
 
 /**
@@ -75,16 +76,17 @@ export function nodeText(n: WireNode): string {
  * returns the next cursor and, for keys that act on a node, an effect for the
  * caller to carry out.
  */
-export function browseKey(state: BrowseState, key: string, ctx: BrowseCtx): { state: BrowseState; effect?: BrowseEffect } {
+export function browseKey(state: BrowseState, key: string, ctx: BrowseCtx): { state: BrowseState; effect?: BrowseEffect; bound: boolean } {
   const { ids, stops } = ctx
-  if (key === 'Escape') return { state, effect: { exitBrowse: true } }
-  if (ids.length === 0) return { state }
+  if (key === 'Escape') return { state, effect: { exitBrowse: true }, bound: true }
+  if (ids.length === 0) return { state, bound: BOUND.has(key) }
 
   const at = state.cursor === null ? -1 : ids.indexOf(state.cursor)
   // A cursor on a row that is gone (folded away) restarts from the end.
   const idx = at >= 0 ? at : ids.length - 1
-  const move = (i: number, follow = false): { state: BrowseState } => ({
+  const move = (i: number, follow = false) => ({
     state: { cursor: ids[Math.max(0, Math.min(ids.length - 1, i))], follow },
+    bound: true,
   })
   const cur = ids[idx]
 
@@ -112,15 +114,15 @@ export function browseKey(state: BrowseState, key: string, ctx: BrowseCtx): { st
     case 'End':
       return move(ids.length - 1, ctx.lastLive)
     case 'Enter':
-      return { state: { ...state, cursor: cur }, effect: { toggleDensity: cur } }
+      return { state: { ...state, cursor: cur }, effect: { toggleDensity: cur }, bound: true }
     case 'z':
-      return { state: { ...state, cursor: cur }, effect: { toggleFold: cur } }
+      return { state: { ...state, cursor: cur }, effect: { toggleFold: cur }, bound: true }
     case 'y':
-      return { state: { ...state, cursor: cur }, effect: { copy: cur } }
+      return { state: { ...state, cursor: cur }, effect: { copy: cur }, bound: true }
     case 'i':
     case 'o':
     case 'f':
-      return { state, effect: { toast: 'Coming in W2' } }
+      return { state, effect: { toast: 'Coming in W2' }, bound: true }
   }
-  return { state }
+  return { state, bound: false }
 }

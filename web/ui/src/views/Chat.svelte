@@ -130,7 +130,11 @@
   function onDocKey(e: KeyboardEvent) {
     // Ctrl+C twice within a second stops the turn; one press only warns.
     if (e.ctrlKey && e.key.toLowerCase() === 'c' && ($session.busy || anyLive)) {
-      if (window.getSelection()?.toString()) return // a copy, not a stop
+      // A selection in the page or inside the composer is a copy, not a stop;
+      // getSelection() is empty for text selected within a textarea or input.
+      if (window.getSelection()?.toString()) return
+      const el = e.target as HTMLInputElement | HTMLTextAreaElement | null
+      if (typingTarget(el) && el && el.selectionStart !== el.selectionEnd) return
       e.preventDefault()
       const t = Date.now()
       if (t - lastCtrlC < 1000) {
@@ -148,7 +152,7 @@
     if (!browsing || typingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
     const out = browseKey({ cursor, follow }, e.key, flat)
     // An unbound printable key leaves browse mode and is typed.
-    if (out.state.cursor === cursor && out.state.follow === follow && !out.effect && e.key.length === 1) {
+    if (!out.bound && e.key.length === 1) {
       browsing = false
       return
     }
@@ -276,6 +280,7 @@
 
   onDestroy(() => {
     document.removeEventListener('keydown', onDocKey)
+    stack.destroy()
     clearTimeout(toastTimer)
     clearTimeout(hintTimer)
     actions.disconnect()

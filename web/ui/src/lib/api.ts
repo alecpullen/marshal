@@ -318,6 +318,8 @@ export interface PendingSubmission {
   id: string
   origin: string
   clientId?: string
+  /** Not sent by the bridge yet; unset counts as local. */
+  ownerId?: string
   title: string
   repoId: string
   ref?: string

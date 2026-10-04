@@ -34,6 +34,12 @@ describe('buildInbox', () => {
     expect(inbox.running.map((a) => a.id)).toEqual(['busy'])
   })
 
+  it('filters intake requests by owner too', () => {
+    const theirs = { ...sub('t', '2024-05-04T10:00:00Z'), ownerId: 'bob' }
+    expect(buildInbox([], [theirs, sub('m', '2024-05-04T11:00:00Z')], true).needsYou).toHaveLength(1)
+    expect(buildInbox([], [theirs], false).needsYou).toHaveLength(1)
+  })
+
   it('counts ownerId "local" as mine', () => {
     const inbox = buildInbox([mk({ id: 'l', status: 'running', ownerId: 'local' })], [], true)
     expect(inbox.running).toHaveLength(1)

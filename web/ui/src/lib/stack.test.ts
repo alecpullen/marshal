@@ -23,6 +23,64 @@ async function ready(fetcher = vi.fn().mockResolvedValue(snapshot())) {
   return { store, fetcher }
 }
 
+describe('stack store retries', () => {
+  it('retries a failed refetch on a growing delay, even with no new events', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetcher = vi
+        .fn()
+        .mockResolvedValueOnce(snapshot())
+        .mockRejectedValueOnce(new Error('down'))
+        .mockRejectedValueOnce(new Error('down'))
+        .mockResolvedValue({ ...snapshot(), rev: 9 })
+      const store = createStackStore('s1', fetcher)
+      await store.load()
+      store.onEvent({ type: 'replay_overflow' })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetcher).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetcher).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(1999)
+      expect(fetcher).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(fetcher).toHaveBeenCalledTimes(4)
+      expect(get(store).rev).toBe(9)
+      store.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not fetch once per patch while the endpoint is down', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetcher = vi.fn().mockRejectedValue(new Error('down'))
+      const store = createStackStore('s1', fetcher)
+      await store.load()
+      for (let i = 0; i < 5; i++) store.onEvent(patch({ rev: 2 + i, baseRev: 1 + i }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetcher).toHaveBeenCalledTimes(1)
+      store.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops retrying after destroy', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetcher = vi.fn().mockRejectedValue(new Error('down'))
+      const store = createStackStore('s1', fetcher)
+      await store.load()
+      store.destroy()
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('stack store', () => {
   it('loads a snapshot', async () => {
     const { store, fetcher } = await ready()

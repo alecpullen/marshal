@@ -38,6 +38,12 @@ describe('browseKey', () => {
     expect(browseKey(at('c'), 'G', { ...ctx, lastLive: false }).state.follow).toBe(false)
   })
 
+  it('reports clamped navigation keys as bound, so they do not exit browse mode', () => {
+    expect(browseKey(at('e'), 'j', ctx).bound).toBe(true)
+    expect(browseKey(at('a'), 'k', ctx).bound).toBe(true)
+    expect(browseKey(at('a'), 'g', ctx).bound).toBe(true)
+  })
+
   it('leaves follow off when moving away', () => {
     expect(browseKey(at('e', true), 'k', ctx).state.follow).toBe(false)
   })
@@ -57,8 +63,9 @@ describe('browseKey', () => {
   })
 
   it('ignores unbound keys and empty transcripts', () => {
-    expect(browseKey(at('b'), 'q', ctx)).toEqual({ state: at('b') })
-    expect(browseKey(at(null), 'j', { ids: [], stops: [], lastLive: false }).effect).toBeUndefined()
+    expect(browseKey(at('b'), 'q', ctx)).toEqual({ state: at('b'), bound: false })
+    expect(browseKey(at(null), 'j', { ids: [], stops: [], lastLive: false })).toEqual({ state: at(null), bound: true })
+    expect(browseKey(at(null), 'q', { ids: [], stops: [], lastLive: false }).bound).toBe(false)
   })
 })
 

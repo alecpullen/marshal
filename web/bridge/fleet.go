@@ -963,6 +963,51 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	a.SourceRef = src.ref
 	a.ReadOnly = src.readOnly
 
+	t0 := time.Now()
+
+	// A workspace (explicit, or the project's default) replaces the
+	// profile's image and caps, and adds mounts, policy and a setup step.
+	// It must be built: running an agent on a stale or missing image is
+	// worse than refusing. A Studio reference resolves now, before any
+	// state exists; a repo reference needs the checkout and resolves once
+	// workDir is known.
+	wsRefText := opts.Workspace
+	if wsRefText == "" {
+		wsRefText = f.ws.ProjectSettingsFor(root).Workspace
+	}
+	var wsRef WSRef
+	var wsRes *Resolved
+	var wsImage string
+	resolveWorkspace := func(projectRoot string) error {
+		res, err := f.ResolveWorkspace(ctx, wsRef, projectRoot)
+		if err != nil {
+			return err
+		}
+		img, err := f.builtImage(res)
+		if err == nil && f.repoOverlayAddsImageLayers(ctx, res) {
+			err = fmt.Errorf("%w: repo:%s adds toolchains or packages, which are image layers; add them to %s and rebuild", ErrWorkspaceNotBuilt, res.Name, res.ImageName)
+		}
+		if err != nil {
+			return err
+		}
+		wsRes, wsImage = &res, img
+		return nil
+	}
+	if wsRefText != "" {
+		var err error
+		if wsRef, err = ParseWSRef(wsRefText); err != nil {
+			return "", err
+		}
+		if wsRef.Source == "studio" {
+			if err := resolveWorkspace(""); err != nil {
+				return "", err
+			}
+		}
+	}
+	// A git-sourced spawn on a Studio workspace takes a warm container
+	// when the template keeps a pool and one is idle.
+	var pooled *poolEntry
+
 	// The workspace directory is the local path for local spawns, or a
 	// freshly prepared git working tree for remote sources.
 	workDir := root
@@ -1014,9 +1059,25 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			src.gitRef = head
 		}
 		a.TargetBranch = src.gitRef
-		workDir, err = f.git.PrepareTree(f.stateDir, a.ID, mirror, src.url, src.gitRef)
-		if err != nil {
-			return "", err
+		if wsRes != nil && wsRes.Source == "studio" {
+			if e, ok := f.pools.take(wsRes.ImageName, wsRes.ImageVersion); ok {
+				pooled = &e
+			}
+		}
+		if pooled != nil {
+			workDir, err = f.git.PrepareTreeIn(filepath.Join(f.stateDir, pooled.workSubpath), mirror, src.url, src.gitRef)
+			if err != nil {
+				f.pools.discard(*pooled)
+				f.pools.fillAsync(pooled.name, pooled.version)
+				return "", err
+			}
+			a.ContainerName, a.WorkSubpath, a.SocketSubpath = pooled.container, pooled.workSubpath, pooled.socketSubpath
+			f.pools.fillAsync(pooled.name, pooled.version)
+		} else {
+			workDir, err = f.git.PrepareTree(f.stateDir, a.ID, mirror, src.url, src.gitRef)
+			if err != nil {
+				return "", err
+			}
 		}
 	} else {
 		if err := f.ws.AddProject(root); err != nil {
@@ -1026,41 +1087,19 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	a.Project = workDir
 
 	cleanTree := func() {
+		if pooled != nil {
+			f.pools.discard(*pooled)
+			return
+		}
 		if src.kind == "git" && f.git != nil {
 			_ = f.git.RemoveTree(f.stateDir, a.ID)
 		}
 	}
-
-	// A workspace (explicit, or the project's default) replaces the
-	// profile's image and caps, and adds mounts, policy and a setup step.
-	// It must be built: running an agent on a stale or missing image is
-	// worse than refusing.
-	wsRef := opts.Workspace
-	if wsRef == "" {
-		wsRef = f.ws.ProjectSettingsFor(root).Workspace
-	}
-	var wsRes *Resolved
-	var wsImage string
-	if wsRef != "" {
-		ref, err := ParseWSRef(wsRef)
-		if err != nil {
+	if wsRefText != "" && wsRes == nil {
+		if err := resolveWorkspace(workDir); err != nil {
 			cleanTree()
 			return "", err
 		}
-		res, err := f.ResolveWorkspace(ctx, ref, workDir)
-		if err != nil {
-			cleanTree()
-			return "", err
-		}
-		img, err := f.builtImage(res)
-		if err == nil && f.repoOverlayAddsImageLayers(ctx, res) {
-			err = fmt.Errorf("%w: repo:%s adds toolchains or packages, which are image layers; add them to %s and rebuild", ErrWorkspaceNotBuilt, res.Name, res.ImageName)
-		}
-		if err != nil {
-			cleanTree()
-			return "", err
-		}
-		wsRes, wsImage = &res, img
 	}
 
 	// Resolve the runtime profile now that workDir is known, so a
@@ -1093,9 +1132,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// Enforce the disk budget before acquiring a slot: refusing a new
 	// spawn is the control, not stopping an existing agent.
 	if err := f.enforceDisk(); err != nil {
-		if src.kind == "git" && f.git != nil {
-			_ = f.git.RemoveTree(f.stateDir, a.ID)
-		}
+		cleanTree()
 		return "", err
 	}
 
@@ -1134,9 +1171,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	}
 
 	if err := f.slots.acquire(ctx); err != nil {
-		if src.kind == "git" && f.git != nil {
-			_ = f.git.RemoveTree(f.stateDir, a.ID)
-		}
+		cleanTree()
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
 	}
 
@@ -1214,6 +1249,9 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	rt.sessionID = out.SessionID
 	f.sessionAgent[out.SessionID] = a.ID
 	f.mu.Unlock()
+	if wsRes != nil && wsRes.ImageName != "" {
+		f.pools.recordStart(wsRes.ImageName, pooled != nil, time.Since(t0))
+	}
 
 	// Persist the session id with the agent record so a later reattach
 	// can restore the mapping. Must be set before the copy below.
@@ -1569,6 +1607,10 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 	// Stop the child first so it is no longer writing to the
 	// bind-mounted workspace, then remove the git-sourced tree.
 	rt.child.Stop()
+	// A pooled agent's tree lives in its pool directory, not work/<id>.
+	if poolRoot := filepath.Join(f.stateDir, "pool") + string(filepath.Separator); strings.HasPrefix(rt.root, poolRoot) {
+		_ = os.RemoveAll(filepath.Dir(rt.root))
+	}
 	if rt.sourceKind == "git" && f.git != nil {
 		if err := f.git.RemoveTree(f.stateDir, id); err != nil {
 			slog.Default().Warn("webbridge: remove agent workspace failed",
@@ -1630,6 +1672,7 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 			errs = append(errs, err)
 		}
 	}
+	f.pools.adopt()
 	return errs
 }
 

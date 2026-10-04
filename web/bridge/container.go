@@ -481,13 +481,15 @@ func (c *containerTransport) Reattach() (io.WriteCloser, io.ReadCloser, io.ReadC
 }
 
 // listAgentContainers returns the names of running containers this
-// bridge owns, newest first.
+// bridge owns, newest first: agents, and warm-pool containers an agent
+// may have taken over.
 func (c *containerTransport) listAgentContainers() ([]string, error) {
 	// c.exec uses CombinedOutput, so stderr is mixed in. The HasPrefix
 	// post-filter below keeps only valid container names, so diagnostic
 	// lines from the runtime CLI are harmlessly dropped.
 	out, err := c.exec("ps",
 		"--filter", "name="+containerNamePrefix,
+		"--filter", "name="+poolContainerPrefix,
 		"--format", "{{.Names}}")
 	if err != nil {
 		return nil, fmt.Errorf("bridge: list agent containers: %w", err)
@@ -498,7 +500,7 @@ func (c *containerTransport) listAgentContainers() ([]string, error) {
 		// Docker's --filter name= does a substring match, not a prefix
 		// match, so a foreign container like "foo-marshal-agent-bar" would
 		// appear here. Post-filter with HasPrefix to keep only ours.
-		if name != "" && strings.HasPrefix(name, containerNamePrefix) {
+		if name != "" && (strings.HasPrefix(name, containerNamePrefix) || strings.HasPrefix(name, poolContainerPrefix)) {
 			names = append(names, name)
 		}
 	}

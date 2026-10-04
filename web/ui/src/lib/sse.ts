@@ -73,11 +73,14 @@ export interface SSEOptions {
   query?: string
   /** A complete stream URL (no query); `lastEventId` is appended. Overrides sessionId and query. */
   url?: string
+  /** False keeps the resume id in memory for this connection only, so a new connection replays from the start (build logs). Default true. */
+  resume?: boolean
   onEvent: (event: SSEEvent) => void
   signal?: AbortSignal
 }
 
-export function connectSSE({ sessionId, query, url, onEvent, signal }: SSEOptions): () => void {
+export function connectSSE({ sessionId, query, url, resume = true, onEvent, signal }: SSEOptions): () => void {
+  let memId = 0
 	const streamKey = url ?? sessionId ?? query ?? 'fleet'
   let abortController = new AbortController()
   let cancelled = false
@@ -94,7 +97,7 @@ export function connectSSE({ sessionId, query, url, onEvent, signal }: SSEOption
   const run = async () => {
     while (!cancelled) {
       const token = getToken() ?? ensureToken()
-      const lastId = getLastEventId(streamKey)
+      const lastId = resume ? getLastEventId(streamKey) : memId
       try {
         const target = url
           ? `${url}?lastEventId=${lastId}`
@@ -128,7 +131,8 @@ export function connectSSE({ sessionId, query, url, onEvent, signal }: SSEOption
             const messages = parseSSEEvents(part)
             for (const msg of messages) {
               if (msg.id > 0) {
-                setLastEventId(streamKey, msg.id)
+                if (resume) setLastEventId(streamKey, msg.id)
+                else memId = msg.id
               }
               onEvent({ type: 'message', message: msg })
             }
@@ -155,14 +159,14 @@ export function connectSSE({ sessionId, query, url, onEvent, signal }: SSEOption
   }
 }
 
-export type BuildLogEvent = { line: string; at?: number } | { done: true; status: string }
+export type BuildLogEvent = { line: string; at?: number | string } | { done: true; status: string }
 
 /** One build-log SSE payload: `{line, at}` or the final `{done, status}`; anything else is null. */
 export function parseBuildLogEvent(data: string): BuildLogEvent | null {
   try {
     const v = JSON.parse(data) as Record<string, unknown>
     if (v.done) return { done: true, status: typeof v.status === 'string' ? v.status : '' }
-    if (typeof v.line === 'string') return { line: v.line, ...(typeof v.at === 'number' ? { at: v.at } : {}) }
+    if (typeof v.line === 'string') return { line: v.line, ...(typeof v.at === 'number' || typeof v.at === 'string' ? { at: v.at } : {}) }
   } catch {
     // A malformed event is skipped; the next line still renders.
   }
@@ -177,12 +181,14 @@ export function parseBuildLogEvent(data: string): BuildLogEvent | null {
 export function connectBuildLog(
   name: string,
   n: number,
-  { onLine, onDone, signal }: { onLine: (line: string, at?: number) => void; onDone: (status: string) => void; signal?: AbortSignal },
+  { onLine, onDone, signal }: { onLine: (line: string, at?: number | string) => void; onDone: (status: string) => void; signal?: AbortSignal },
 ): () => void {
   let stop = () => {}
   let finished = false
   stop = connectSSE({
     url: `/api/workspaces/${encodeURIComponent(name)}/builds/${n}/events`,
+    // The bridge replays the whole log only from id 0, so a revisit or rebuild must not resume a stored id.
+    resume: false,
     signal,
     onEvent: (e) => {
       if (e.type !== 'message' || finished) return

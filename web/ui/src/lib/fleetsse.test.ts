@@ -134,6 +134,25 @@ describe('build log stream', () => {
     expect(f.mock.calls[0][0]).toBe('/api/workspaces/x/builds/2/events?lastEventId=0')
   })
 
+  it('connectBuildLog replays from the start on every new connection, ignoring stored ids', async () => {
+    setToken('t')
+    sessionStorage.clear()
+    const run = async () => {
+      const f = sse(['id: 7\ndata: {"line":"a"}\n\n', 'id: 8\ndata: {"done":true,"status":"ok"}\n\n'])
+      vi.stubGlobal('fetch', f)
+      const done: string[] = []
+      connectBuildLog('svc', 1, { onLine: () => {}, onDone: (s) => done.push(s) })
+      await vi.waitFor(() => expect(done).toEqual(['ok']))
+      return f.mock.calls[0][0]
+    }
+    expect(await run()).toBe('/api/workspaces/svc/builds/1/events?lastEventId=0')
+    expect(await run()).toBe('/api/workspaces/svc/builds/1/events?lastEventId=0')
+  })
+
+  it('accepts an RFC3339 at on a log line', () => {
+    expect(parseBuildLogEvent('{"line":"x","at":"2026-10-04T10:00:00Z"}')).toEqual({ line: 'x', at: '2026-10-04T10:00:00Z' })
+  })
+
   it('connectBuildLog delivers lines, then done once, and stops', async () => {
     setToken('t')
     sessionStorage.clear()

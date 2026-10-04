@@ -416,6 +416,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 		},
 	})
 	srv.Handle("session/memory_list", mem.MemoryList)
+	srv.Handle("session/memory_suggestions", mem.MemorySuggestions)
+	srv.Handle("session/memory_promote", mem.MemoryPromote)
+	srv.Handle("session/memory_confirm", mem.MemoryConfirm)
 	srv.Handle("session/memory_delete", mem.MemoryDelete)
 	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
 	srv.Handle("session/agents_roster", mem.AgentsRoster)

@@ -311,4 +311,26 @@ describe('Chat', () => {
       expect(screen.getByRole('button', { name: 'Back to live' })).toBeTruthy()
     })
   })
+
+  describe('workspace tag', () => {
+    it('links a Studio workspace to its designer in the header', async () => {
+      const agent = { id: 's1', project: '/p', status: 'idle', updatedAt: '', workspace: { name: 'go-service', version: 2, source: 'studio' } } as never
+      render(Chat, { sessionId: 's1', onBack: () => {}, agent })
+      const tag = await screen.findByText('▦ go-service@v2')
+      expect(tag.getAttribute('href')).toBe('#workspaces/go-service/edit')
+    })
+
+    it('shows a repo workspace as plain text, since only Studio templates have a designer', async () => {
+      const agent = { id: 's1', project: '/p', status: 'idle', updatedAt: '', workspace: { name: 'ci', version: 1, source: 'repo' } } as never
+      render(Chat, { sessionId: 's1', onBack: () => {}, agent })
+      const tag = await screen.findByText('▦ ci@v1')
+      expect(tag.getAttribute('href')).toBeNull()
+    })
+
+    it('shows nothing for an agent without a workspace', async () => {
+      render(Chat, { sessionId: 's1', onBack: () => {}, agent: { id: 's1', project: '/p', status: 'idle', updatedAt: '' } as never })
+      await screen.findByText('No messages yet.')
+      expect(screen.queryByText(/▦/)).toBeNull()
+    })
+  })
 })

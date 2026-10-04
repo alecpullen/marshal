@@ -11,6 +11,7 @@
   import { acquireSlot, onSlotFree, releaseSlot } from './wall'
   import { summarize } from '../runs/model'
   import { shortName } from '../utils'
+  import { workspaceTag } from '../workspaces/model'
 
   let {
     agent,
@@ -168,6 +169,7 @@
   </ul>
 
   <div class="mt-auto flex flex-wrap items-center gap-1.5">
+    {#if agent.workspace}<span data-testid="tile-workspace" class="max-w-40 truncate"><Tag tone="neutral">{workspaceTag(agent.workspace)}</Tag></span>{/if}
     {#if model}<Tag tone="neutral">{model}</Tag>{/if}
     {#if gate !== 'none'}<Tag tone={gate === 'failed' ? 'err' : gate === 'passed' ? 'ok' : 'warn'}>gate {gate}</Tag>{/if}
     {#if summary}<Tag tone="info">{summary.kind === 'sdd' ? `${summary.done}/${summary.total} tasks` : 'swarm'}</Tag>{/if}

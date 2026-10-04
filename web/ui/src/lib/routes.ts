@@ -28,7 +28,7 @@ export function isScopedSessions(hash: string): boolean {
 }
 
 /** The old Dashboard now lives at #fleet; the empty hash is Home. */
-export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'other'
+export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'workspaces' | 'other'
 
 export function pageFromHash(hash: string): Page {
   if (hash === '' || hash === '#') return 'home'
@@ -43,6 +43,7 @@ export function pageFromHash(hash: string): Page {
   if (parseSettingsRoute(hash)) return 'settings'
   if (parseUsageRoute(hash)) return 'usage'
   if (hash === '#watches') return 'watches'
+  if (parseWorkspacesRoute(hash)) return 'workspaces'
   return 'other'
 }
 
@@ -191,6 +192,21 @@ export function parseUsageRoute(hash: string): { tab: UsageTab } | null {
   if (!m) return null
   const tab = new URLSearchParams(m[1] ?? '').get('tab') ?? 'cost'
   return { tab: USAGE_TABS.includes(tab) ? (tab as UsageTab) : 'cost' }
+}
+
+export type WorkspacesView = 'gallery' | 'edit' | 'builds' | 'network'
+
+/** `#workspaces` (the gallery) or `#workspaces/<name>/edit|builds|network`; an unknown view is not a route. */
+export interface WorkspacesRoute { view: WorkspacesView; name?: string }
+
+export function parseWorkspacesRoute(hash: string): WorkspacesRoute | null {
+  if (hash === '#workspaces') return { view: 'gallery' }
+  const m = /^#workspaces\/([^/?]+)\/(edit|builds|network)$/.exec(hash)
+  return m ? { view: m[2] as WorkspacesView, name: decodeSafe(m[1]) } : null
+}
+
+export function formatWorkspacesRoute(r: WorkspacesRoute): string {
+  return r.name ? `#workspaces/${encodeURIComponent(r.name)}/${r.view === 'gallery' ? 'edit' : r.view}` : '#workspaces'
 }
 
 /** Where an old standalone page moved to, or null when the hash is current. */

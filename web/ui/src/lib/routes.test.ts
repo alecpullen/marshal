@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, redirectLegacy, type ChatRoute } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, redirectLegacy, parseWorkspacesRoute, formatWorkspacesRoute, type ChatRoute } from './routes'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -147,5 +147,25 @@ describe('control page routes', () => {
     expect(redirectLegacy('#disk')).toBe('#usage?tab=disk')
     expect(redirectLegacy('#activity')).toBe('#usage?tab=audit')
     expect(redirectLegacy('#runs')).toBeNull()
+  })
+})
+
+describe('workspaces routes', () => {
+  it('parses the gallery and the three named views', () => {
+    expect(parseWorkspacesRoute('#workspaces')).toEqual({ view: 'gallery' })
+    expect(parseWorkspacesRoute('#workspaces/go-service/edit')).toEqual({ view: 'edit', name: 'go-service' })
+    expect(parseWorkspacesRoute('#workspaces/go-service/builds')).toEqual({ view: 'builds', name: 'go-service' })
+    expect(parseWorkspacesRoute('#workspaces/go-service/network')).toEqual({ view: 'network', name: 'go-service' })
+  })
+  it('rejects unknown views and partial paths', () => {
+    expect(parseWorkspacesRoute('#workspaces/go-service')).toBeNull()
+    expect(parseWorkspacesRoute('#workspaces/go-service/nope')).toBeNull()
+    expect(parseWorkspacesRoute('#workspacesx')).toBeNull()
+  })
+  it('round-trips and routes to the workspaces page', () => {
+    expect(formatWorkspacesRoute({ view: 'builds', name: 'a b' })).toBe('#workspaces/a%20b/builds')
+    expect(parseWorkspacesRoute(formatWorkspacesRoute({ view: 'edit', name: 'a b' }))?.name).toBe('a b')
+    expect(pageFromHash('#workspaces/x/edit')).toBe('workspaces')
+    expect(pageFromHash('#workspaces')).toBe('workspaces')
   })
 })

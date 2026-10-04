@@ -11,7 +11,7 @@
     { glyph: '≡', label: 'Projects', hash: '#projects' },
     { glyph: '◉', label: 'Live', hash: '#live' },
     { glyph: '⋔', label: 'Runs', hash: '#runs' },
-    { glyph: '▦', label: 'Workspaces', phase: 'W4' },
+    { glyph: '▦', label: 'Workspaces', hash: '#workspaces' },
     { glyph: '○', label: 'Watches', hash: '#watches' },
     { glyph: '◈', label: 'Library', hash: '#library/skills' },
     { glyph: '∿', label: 'Usage', hash: '#usage' },

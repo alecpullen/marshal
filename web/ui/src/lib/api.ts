@@ -154,6 +154,8 @@ export interface AgentStatus {
   /** Where the agent was started: ui, cli, mcp or issue. */
   origin?: string
   clientId?: string
+  /** The workspace template the agent runs in (W4.2); unset for profile/devcontainer agents. */
+  workspace?: { name: string; version: number; source: 'studio' | 'repo' }
 }
 
 export interface ProjectStatus {
@@ -167,7 +169,7 @@ export interface ProjectStatus {
 
 /** A spawn's model choice: a routing profile, per-role preset overrides, or both (session/new `routing`). */
 export interface RoutingChoice { profile?: string; overrides?: Record<string, string> }
-export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string; routing?: RoutingChoice }
+export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string; routing?: RoutingChoice; workspace?: string }
 export async function listAgents(): Promise<AgentStatus[]> { return request('GET', '/api/agents') }
 export async function listProjects(): Promise<ProjectStatus[]> { return request('GET', '/api/projects') }
 export async function addProject(root: string): Promise<ProjectStatus[]> { return request('POST', '/api/projects', { root }) }
@@ -838,3 +840,88 @@ export async function createWatch(req: { agentId?: string; spec: WatchSpec; onTr
 export async function stopWatch(owner: string, id: string): Promise<void> {
   await request('DELETE', `/api/watches/${q(owner)}/${q(id)}`)
 }
+
+// ---- Workspaces (W4.2 templates and builds, W4.3 secrets and network) ----
+
+export interface WSWorkspace { name: string; base: string; toolchains: string[]; extends: string }
+export interface WSPackages { apt: string[]; go: string[]; npm: string[]; pip: string[] }
+export interface WSMount { repo: string; volume: string; target: string; readonly: boolean }
+export interface WSFileMount { target: string; readonly: boolean }
+export interface WSInject { ref: string; header: string; format: string }
+export type WSNetworkMode = 'open' | 'allowlist' | 'off'
+export interface WSNetwork { mode: WSNetworkMode | ''; egress: string[] }
+export interface WSResources { cpu: number; memory: string; disk: string; timeout: string }
+export interface WSPolicy { mode: string; allow: string[] }
+/** The typed workspace file, as `workspace/parse` returns it (spec §4.2). */
+export interface WSDoc {
+  workspace: WSWorkspace
+  packages: WSPackages
+  mounts: WSMount[]
+  files: Record<string, WSFileMount>
+  secretsEnv: Record<string, string>
+  inject: Record<string, WSInject>
+  network: WSNetwork
+  resources: WSResources
+  policy: WSPolicy
+  setup: { run: string }
+}
+/** One layer's 1-based inclusive source line range. Layers 1 and 2 share `[workspace]`. */
+export interface WSSection { layer: number; key: string; startLine: number; endLine: number }
+export interface WSDiag { line: number; message: string; severity: 'error' | 'warning' }
+export type BuildStatus = 'pending' | 'building' | 'ok' | 'failed'
+export interface TemplateVersion { n: number; at: string | number; by?: string; sha256?: string; imageTag?: string; buildStatus: BuildStatus; sizeBytes?: number; buildMs?: number }
+export interface TemplateMeta { name: string; ownerId?: string; createdAt?: string | number; published: number; pool: number; versions: TemplateVersion[] }
+export interface WorkspaceListItem {
+  source: 'studio' | 'repo'
+  name: string
+  /** Repo templates: the project root they live in. */
+  project?: string
+  published?: number
+  pool?: number
+  usage: number
+  /** True when a draft exists that differs from the published version. */
+  draftChanges?: boolean
+  versions?: TemplateVersion[]
+  /** The latest parsed doc, for the content chips; absent when it did not parse. */
+  doc?: WSDoc
+}
+export interface WSLoaded { source: string; doc: WSDoc; sections: WSSection[]; diagnostics: WSDiag[]; /** 0 when the draft was read, else the published version. */ version?: number; meta?: TemplateMeta }
+export interface PoolStatus { size: number; idle: number; starting: number }
+export interface BuildsInfo { versions: TemplateVersion[] | null; pool?: PoolStatus; starts?: { coldMs: number; warmMs: number } }
+export type WorkspaceFrom = 'blank' | `starter:${string}` | `devcontainer:${string}` | `snapshot:${string}`
+export interface SecretsStatus { backend: string; healthy: boolean; error?: string }
+export interface NetRow { host: string; requests: number; blocked: number; bytesUp: number; bytesDown: number; lastSeen: number; decision: string; injected?: boolean; rule?: string }
+export interface RepoInfo { id: string; url?: string; branch?: string; forge?: string }
+export interface ProjectSettings { workspace?: string; mode?: string; isolated?: boolean; shipTarget?: string }
+
+const wsPath = (name: string) => `/api/workspaces/${encodeURIComponent(name)}`
+
+export async function listWorkspaces(): Promise<WorkspaceListItem[]> { return request('GET', '/api/workspaces') }
+export async function createWorkspace(name: string, from: WorkspaceFrom): Promise<{ name: string }> { return request('POST', '/api/workspaces', { name, from }) }
+/** Without `version` the draft is read when it exists, otherwise the published version. */
+export async function getWorkspace(name: string, version?: number): Promise<WSLoaded> {
+  return request('GET', `${wsPath(name)}${version ? `?version=${version}` : ''}`)
+}
+export async function saveWorkspaceDraft(name: string, source: string): Promise<WSLoaded> { return request('PUT', `${wsPath(name)}/draft`, { source }) }
+export async function patchWorkspace(name: string, layer: number, value: unknown): Promise<WSLoaded> { return request('POST', `${wsPath(name)}/patch`, { layer, value }) }
+export async function publishWorkspace(name: string): Promise<TemplateVersion> { return request('POST', `${wsPath(name)}/publish`, {}) }
+export async function diffWorkspace(name: string, a: number, b: number): Promise<string> {
+  const r = await request<string | { diff: string }>('GET', `${wsPath(name)}/diff?a=${a}&b=${b}`)
+  return typeof r === 'string' ? r : r.diff
+}
+export async function deleteWorkspace(name: string): Promise<void> { await request('DELETE', wsPath(name)) }
+export async function setWorkspacePool(name: string, size: number): Promise<void> { await request('PUT', `${wsPath(name)}/pool`, { size }) }
+export async function rotateWorkspaceCA(name: string): Promise<void> { await request('POST', `${wsPath(name)}/ca/rotate`, {}) }
+export async function listBuilds(name: string): Promise<BuildsInfo> { return request('GET', `${wsPath(name)}/builds`) }
+export async function startBuild(name: string, version?: number): Promise<{ version: number }> {
+  return request('POST', `${wsPath(name)}/builds`, version ? { version } : {})
+}
+export async function getSecretsStatus(): Promise<SecretsStatus> { return request('GET', '/api/secrets/status') }
+export async function getNetworkHosts(workspace: string): Promise<{ processMode: boolean; rows: NetRow[] }> {
+  return request('GET', `/api/network?workspace=${encodeURIComponent(workspace)}&view=hosts`)
+}
+export async function listRepos(): Promise<RepoInfo[]> { return request('GET', '/api/repos') }
+/** The project's verify-gate commands (W4.2); both empty means the gate has nothing to run. */
+export interface ProjectHealth { verify?: { build: string; test: string } }
+export async function getProjectHealth(root: string): Promise<ProjectHealth> { return request('GET', `/api/projects/health?root=${encodeURIComponent(root)}`) }
+export async function getProjectSettings(root: string): Promise<ProjectSettings> { return request('GET', `/api/projects/settings?root=${encodeURIComponent(root)}`) }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { workspaceTag } from '../lib/workspaces/model'
   import { onMount, onDestroy, untrack } from 'svelte'
   import { createSessionStore, transcriptEntries, type Mode } from '../lib/store.js'
   import Composer from '../lib/Composer.svelte'
@@ -505,6 +506,14 @@
       <span class="name">{agentName ?? sessionId}</span>
       {#if projectName}<span class="project">{projectName}</span>{/if}
       {#if row?.branch}<span class="project" title="branch">⎇ {row.branch}</span>{/if}
+      {#if row?.workspace}
+        <!-- Repo templates have no designer page, so only Studio ones link. -->
+        {#if row.workspace.source === 'studio'}
+          <a class="project" href="#workspaces/{encodeURIComponent(row.workspace.name)}/edit" title="workspace">{workspaceTag(row.workspace)}</a>
+        {:else}
+          <span class="project" title="repo workspace">{workspaceTag(row.workspace)}</span>
+        {/if}
+      {/if}
     </div>
     {#if useStack}
       <Segmented

@@ -5,7 +5,7 @@ import * as api from '../lib/api.js'
 
 vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
-  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn() }
+  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn(), listWorkspaces: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn() }
 })
 
 const projects = [
@@ -20,6 +20,9 @@ beforeEach(() => {
   ;(api.listProjects as Mock).mockResolvedValue(projects)
   ;(api.recentPrompts as Mock).mockResolvedValue(['earlier prompt one', 'earlier prompt two'])
   ;(api.spawnAgent as Mock).mockResolvedValue({ agentId: 'a9' })
+  ;(api.listWorkspaces as Mock).mockResolvedValue([])
+  ;(api.getProjectSettings as Mock).mockResolvedValue({})
+  ;(api.getProjectHealth as Mock).mockResolvedValue({ verify: { build: '', test: '' } })
 })
 afterEach(cleanup)
 
@@ -96,5 +99,44 @@ describe('NewAgent', () => {
     await fireEvent.click(screen.getByText('List issues'))
     await fireEvent.click(await screen.findByText('Use'))
     expect((screen.getByLabelText('Prompt') as HTMLTextAreaElement).value).toBe('Crash on save\n\nsteps…')
+  })
+
+  describe('workspace chip', () => {
+    const built = [{ n: 1, at: 0, buildStatus: 'ok' }]
+    beforeEach(() => {
+      ;(api.listWorkspaces as Mock).mockResolvedValue([
+        { source: 'studio', name: 'go-service', published: 1, usage: 0, versions: built },
+        { source: 'studio', name: 'node-app', published: 1, usage: 0, versions: built },
+      ])
+      ;(api.getProjectSettings as Mock).mockResolvedValue({ workspace: 'go-service' })
+    })
+
+    it('preselects the project default and sends it as workspace', async () => {
+      render(NewAgent, { onDone: vi.fn() })
+      const select = (await screen.findByLabelText('Workspace')) as HTMLSelectElement
+      await waitFor(() => expect(select.value).toBe('go-service'))
+      await fireEvent.input(screen.getByLabelText('Prompt'), { target: { value: 'go' } })
+      await fireEvent.click(screen.getByRole('button', { name: /Create agent/ }))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({ project: '/work/alpha', workspace: 'go-service' })))
+    })
+
+    it('sends the chosen workspace and remembers it for the project', async () => {
+      render(NewAgent, { onDone: vi.fn() })
+      const select = (await screen.findByLabelText('Workspace')) as HTMLSelectElement
+      await waitFor(() => expect(select.value).toBe('go-service'))
+      await fireEvent.change(select, { target: { value: 'node-app' } })
+      await fireEvent.click(screen.getByRole('button', { name: /Create agent/ }))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'node-app' })))
+      expect(JSON.parse(localStorage.getItem('marshal.ui.newagent.workspace')!)).toEqual({ '/work/alpha': 'node-app' })
+    })
+
+    it('omits workspace when none is chosen', async () => {
+      ;(api.getProjectSettings as Mock).mockResolvedValue({})
+      render(NewAgent, { onDone: vi.fn() })
+      await screen.findByLabelText('Workspace')
+      await fireEvent.click(screen.getByRole('button', { name: /Create agent/ }))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect((api.spawnAgent as Mock).mock.calls[0][0].workspace).toBeUndefined()
+    })
   })
 })

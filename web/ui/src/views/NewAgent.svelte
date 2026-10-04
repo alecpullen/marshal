@@ -4,12 +4,14 @@
   import IssuePicker from '../lib/IssuePicker.svelte'
   import Chip from '../lib/newagent/Chip.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import { MODES, canIsolate, defaults, loadRemembered, remember, type Choice } from '../lib/newagent/newAgent'
+  import { MODES, canIsolate, defaults, loadRemembered, loadWorkspace, remember, rememberWorkspace, type Choice } from '../lib/newagent/newAgent'
+  import WorkspaceChip from '../lib/workspaces/WorkspaceChip.svelte'
 
   let { onDone }: { onDone: (id: string | null, warning?: string) => void } = $props()
 
   let projects = $state<ProjectStatus[]>([])
   let choice = $state<Choice>({ project: '', mode: 'edit', isolated: false, branch: '', baseRef: '' })
+  let workspace = $state('')
   let prompt = $state('')
   let tab = $state<'issues' | 'recent'>('recent')
   let recent = $state<string[]>([])
@@ -26,6 +28,7 @@
     try {
       projects = await listProjects()
       choice = defaults(projects, loadRemembered())
+      workspace = loadWorkspace(choice.project)
     } catch (e) {
       error = errMessage(e)
     }
@@ -41,6 +44,7 @@
   function pickProject(root: string) {
     const p = projects.find((x) => x.root === root)
     choice = { ...choice, project: root, isolated: canIsolate(p) ? choice.isolated : false }
+    workspace = loadWorkspace(root)
   }
 
   function pickIssue(i: Issue) {
@@ -60,11 +64,13 @@
         project: choice.project,
         prompt: prompt.trim() || undefined,
         mode: choice.mode,
+        workspace: workspace || undefined,
         isolated: choice.isolated || undefined,
         branch: choice.isolated && choice.branch.trim() ? choice.branch.trim() : undefined,
         baseRef: choice.isolated && choice.baseRef.trim() ? choice.baseRef.trim() : undefined,
       })
       remember(choice)
+      rememberWorkspace(choice.project, workspace)
       onDone(r.agentId, r.warning)
     } catch (e) {
       // The prompt stays put so nothing typed is lost.
@@ -134,6 +140,12 @@
           {#if isolationOk}The agent works on its own branch, so it cannot collide with other agents.{:else}Unavailable: {selected?.isolation}.{/if}
         </div>
       </Chip>
+
+      {#if choice.project}
+        {#key choice.project}
+          <WorkspaceChip project={choice.project} value={workspace} onChange={(ref) => (workspace = ref)} />
+        {/key}
+      {/if}
 
       <Button class="ml-auto" disabled={busy || !choice.project} onclick={create}>Create agent <span class="text-xs opacity-70">⌘↵</span></Button>
     </div>

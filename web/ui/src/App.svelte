@@ -6,6 +6,7 @@
   import Runs from './views/Runs.svelte'
   import Run from './views/Run.svelte'
   import Live from './views/Live.svelte'
+  import Review from './views/Review.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -34,6 +35,14 @@
   const NAV_KEY = 'marshal.ui.sidebar'
 
   let paletteOpen = $state(false)
+
+  let toast = $state<{ text: string; href?: string } | null>(null)
+  let toastTimer: ReturnType<typeof setTimeout> | undefined
+  function flashToast(text: string, href?: string) {
+    toast = { text, href }
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => (toast = null), 8000)
+  }
 
   function toggleNav() {
     navOpen = !navOpen
@@ -178,7 +187,15 @@
         the first one's store, header and transcript.
       -->
       {#key chatSessionId}
-        <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
+        {#if chatRoute?.view === 'review'}
+          <Review agentId={chatSessionId} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onShipped={(o) => {
+              flashToast(o.message, o.href)
+              // Discarding or merging ends the session's work; only a push leaves the agent to look at.
+              navigate(o.kind === 'pushed' ? `#chat/${chatSessionId}` : '#')
+            }} />
+        {:else}
+          <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
+        {/if}
       {/key}
     {:else if runRoute}
       {#key runRoute.id}
@@ -205,7 +222,12 @@
       </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">
-        <NewAgent onDone={(id) => navigate(id ? `#chat/${id}` : '#')} />
+        <NewAgent
+          onDone={(id, warning) => {
+            if (warning) flashToast(warning)
+            navigate(id ? `#chat/${id}` : '#')
+          }}
+        />
       </div>
     {:else if titles[hash] || sessionsProject !== null}
       <div class="h-full overflow-y-auto">
@@ -259,6 +281,13 @@
     {/if}
   </main>
 </div>
+
+{#if toast}
+  <div class="fixed right-4 bottom-4 z-50 max-w-sm rounded-md border border-attention bg-raise p-3 text-sm shadow-lg" role="status">
+    {toast.text}
+    {#if toast.href}<a class="ml-1 text-info underline" href={toast.href} target="_blank" rel="noreferrer">Open</a>{/if}
+  </div>
+{/if}
 
 <Palette open={paletteOpen} agents={$fleet.agents} onClose={() => (paletteOpen = false)} onNavigate={navigate} />
 

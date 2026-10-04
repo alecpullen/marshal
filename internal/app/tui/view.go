@@ -95,6 +95,12 @@ func (m *Model) viewString() string {
 		left = dockView
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
+		// The waiting todos stack under the transcript: the strip above it
+		// holds the work done and under way, and the band below holds what
+		// is still to come.
+		if band := m.renderTodoBand(); band != "" {
+			rows = append(rows, chrome.PaintBand(band, m.leftWidth, theme.Current().TranscriptBG()))
+		}
 		// The now bar carries every live-progress surface in one place just
 		// above the input: the run/todo progress row, the turn spinner, and
 		// the running agents, browser, jobs and watches.

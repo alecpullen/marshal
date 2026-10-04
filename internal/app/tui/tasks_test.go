@@ -433,19 +433,34 @@ func TestTodoStackPinsEveryTodoAboveTheTranscriptAndFoldsFinishedWork(t *testing
 		t.Errorf("folded row, open header and first step sit together:\n%s", text)
 	}
 	if strings.Contains(text, "3/4 Test") || strings.Contains(text, "4/4 Ship") {
-		t.Errorf("waiting todos live in the pinned strip, not the transcript:\n%s", text)
+		t.Errorf("waiting todos live in the pinned band, not the transcript:\n%s", text)
 	}
 
-	// The strip is the first thing in the frame and lists every todo.
+	// The strip is the first thing in the frame and holds the work done and
+	// under way; the waiting todos stack in the band below the transcript.
 	frame := strings.Split(stripANSI(m.viewString()), "\n")
-	want := []string{"✓ 1/4 Read", "▸ 2/4 Write", "· 3/4 Test", "· 4/4 Ship"}
-	for i, w := range want {
+	rowOf := func(sub string) int {
+		for i, l := range frame {
+			if strings.Contains(l, sub) {
+				return i
+			}
+		}
+		t.Fatalf("frame is missing %q:\n%s", sub, strings.Join(frame, "\n"))
+		return -1
+	}
+	for i, w := range []string{"✓ 1/4 Read", "▸ 2/4 Write"} {
 		if i >= len(frame) || !strings.Contains(frame[i], w) {
 			t.Fatalf("frame row %d should hold %q:\n%s", i, w, strings.Join(frame[:min(8, len(frame))], "\n"))
 		}
 	}
-	if m.todoStripRows() != 4 {
-		t.Errorf("strip rows = %d, want 4", m.todoStripRows())
+	if first, last := rowOf("3/4 Test"), rowOf("4/4 Ship"); !(first < last) {
+		t.Errorf("the band lists the waiting todos in order (rows %d, %d)", first, last)
+	}
+	if strip, band := rowOf("1/4 Read"), rowOf("3/4 Test"); !(strip < band) {
+		t.Errorf("the strip sits above the band (rows %d, %d)", strip, band)
+	}
+	if m.todoStripRows() != 2 {
+		t.Errorf("strip rows = %d, want 2", m.todoStripRows())
 	}
 }
 

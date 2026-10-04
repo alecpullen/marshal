@@ -2,7 +2,7 @@
   import { listIssues, spawnFromIssue, type Issue } from './api'
   import Button from './ui/Button.svelte'
 
-  let { repoId = '' }: { repoId?: string } = $props()
+  let { repoId = '', onPick }: { repoId?: string; /** When set, an issue is handed over instead of spawning an agent from it. */ onPick?: (issue: Issue) => void } = $props()
 
   let repoInput = $state(repoId)
   let issues = $state<Issue[]>([])
@@ -65,6 +65,7 @@
     <div class="rounded-md border border-danger bg-danger/10 p-2 text-sm">{error}</div>
   {/if}
 
+  {#if !onPick}
   <div class="flex gap-2">
     <input
       bind:value={urlInput}
@@ -74,6 +75,7 @@
     />
     <Button variant="ghost" onclick={spawnFromUrl} disabled={!repoInput.trim()}>Spawn</Button>
   </div>
+  {/if}
 
   {#if issues.length > 0}
     <ul class="flex flex-col gap-2">
@@ -89,7 +91,7 @@
               </div>
             {/if}
           </div>
-          <Button variant="ghost" onclick={() => spawn(issue.number)}>Spawn</Button>
+          <Button variant="ghost" onclick={() => (onPick ? onPick(issue) : spawn(issue.number))}>{onPick ? 'Use' : 'Spawn'}</Button>
         </li>
       {/each}
     </ul>

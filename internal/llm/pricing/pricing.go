@@ -34,6 +34,29 @@ func Lookup(preset routing.ModelPreset, logger *slog.Logger) ModelPricing {
 	return ModelPricing{}
 }
 
+// EstimateCostMicroUSD computes the same estimate as EstimateCostCents in
+// millionths of a US dollar. Cents rates are per million tokens, so
+// tokens * rate / 100 is micro-dollars; truncation happens at 1e-6 dollars
+// instead of a whole cent, so cheap turns do not round to zero and per-turn
+// values can be summed.
+func EstimateCostMicroUSD(u schema.TokenUsage, p ModelPricing) int64 {
+	nonCachedPrompt := int64(u.PromptTokens - u.CacheReadTokens - u.CacheWriteTokens)
+	if nonCachedPrompt < 0 {
+		nonCachedPrompt = 0
+	}
+	nonReasoningCompletion := int64(u.CompletionTokens - u.ReasoningTokens)
+	if nonReasoningCompletion < 0 {
+		nonReasoningCompletion = 0
+	}
+	micro := int64(0)
+	micro += (nonCachedPrompt * p.InputPerMTokCents) / 100
+	micro += (nonReasoningCompletion * p.OutputPerMTokCents) / 100
+	micro += (int64(u.ReasoningTokens) * p.ReasoningPerMTokCents) / 100
+	micro += (int64(u.CacheReadTokens) * p.CacheReadPerMTokCents) / 100
+	micro += (int64(u.CacheWriteTokens) * p.CacheWritePerMTokCents) / 100
+	return micro
+}
+
 // EstimateCostCents computes the estimated cost of a turn's token usage
 // in whole US cents (100 = $1). Each category is (tokens * rate) / 1_000_000,
 // summed, where the rates are cents per million tokens. Sub-cent amounts

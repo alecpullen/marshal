@@ -25,20 +25,31 @@ no task count on the receipt.
 
 For a turn working from a list:
 
-- **Pinned strip.** Above the transcript, one line per todo: `✓ 1/5 title`
-  done, `▸ 2/5 title` active, `· 3/5 title` waiting. It stays put while the
-  work scrolls, shows as soon as the list is written, and stays after the
-  turn ends. Past six rows (three on a short terminal) it becomes a window
-  around the active todo with `✓ N done` and `+N more` lines. It only
-  appears while the latest turn is working from the list, so leftovers from
-  an earlier turn do not linger. It is the same todo list the data model
-  already carries; the strip is `todo_strip.go` and its rows are part of the
-  viewport height budget.
+- **Pinned strip.** Above the transcript, the work done and under way: one
+  line per finished todo (`✓ 1/5 title`) and one for the todo in progress
+  (`▸ 2/5 title`). It stays put while the work scrolls, shows as soon as the
+  list is written, and stays after the turn ends. Past six rows (three on a
+  short terminal) it becomes a window around the active todo with `✓ N done`
+  and `+N more` lines. It only appears while the latest turn is working from
+  the list, so leftovers from an earlier turn do not linger.
+- **Pinned band.** Below the transcript, above the now bar, the todos the
+  agent has not started: `· 3/5 title`, `· 4/5 title`. They stack at the
+  bottom so the top of the screen is the work done and the bottom is what is
+  still to come. The band takes what is left of the strip's row budget, so
+  the two surfaces together never cost the transcript more than the strip
+  used to on its own; a plan longer than that is counted on one line
+  (`+N waiting`). Both surfaces number todos against the whole list, so a
+  todo reads `3/5` in whichever one it lands in, and an empty band takes no
+  rows at all.
 - **Transcript.** Finished todos are folded rows (P3 folding rule
   unchanged, so they still expand to their steps), stacked tight. The todo
   in progress is open: a rule header sitting directly on its steps. The
   waiting todos are not repeated here (`viewmodel.KindQueue` is the data the
-  strip reads, and it renders no rows).
+  band reads, and it renders no rows).
+
+Both surfaces are the same todo list the data model already carries; the
+strip and the band are `todo_strip.go`, and both are part of the viewport
+height budget.
 
 Work under a todo that later left the list still renders under its `dropped`
 header.

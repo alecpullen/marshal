@@ -230,7 +230,7 @@ func DrivenByTodos(turn *Node) bool {
 }
 
 // addQueue appends the waiting-todos list to the last turn when it is working
-// from a todo list. The TUI shows these todos in the strip pinned above the
+// from a todo list. The TUI shows these todos in the band pinned below the
 // transcript rather than as rows, so only the latest turn carries one: earlier
 // turns keep their folded task rows. Todos that already have a task in this
 // turn are not listed twice; finished ones are done.

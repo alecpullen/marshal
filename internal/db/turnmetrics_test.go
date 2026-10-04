@@ -316,6 +316,7 @@ func TestInsertAndRecentTurnMetricsWithNewFields(t *testing.T) {
 	want.CacheReadTokens = 10
 	want.CacheWriteTokens = 5
 	want.EstimatedCostCents = 99
+	want.EstimatedCostMicroUSD = 123456
 
 	id, err := database.InsertTurnMetrics(want)
 	if err != nil {
@@ -570,5 +571,21 @@ func TestSessionUsageEmptySessionIsZero(t *testing.T) {
 	}
 	if got.Turns != 0 || got.PromptTokens != 0 || got.CompletionTokens != 0 {
 		t.Errorf("got %+v, want zero totals", got)
+	}
+}
+
+func TestRecentTurnMetricsForSessionReadsMicroUSD(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	if err := database.CreateSession("sess_micro", projectID, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	row := sampleRow(projectID, "sess_micro")
+	row.EstimatedCostMicroUSD = 3600
+	if _, err := database.InsertTurnMetrics(row); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.RecentTurnMetricsForSession(projectID, "sess_micro", 10)
+	if err != nil || len(rows) != 1 || rows[0].EstimatedCostMicroUSD != 3600 {
+		t.Fatalf("rows = %+v, err = %v", rows, err)
 	}
 }

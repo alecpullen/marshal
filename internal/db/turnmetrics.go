@@ -65,9 +65,11 @@ type TurnMetricsRow struct {
 	CacheReadTokens    int
 	CacheWriteTokens   int
 	EstimatedCostCents int64
-	ParseFailKind      string
-	ParseFailSample    string
-	ParseRepairs       int
+	// EstimatedCostMicroUSD is the cost estimate in millionths of a dollar.
+	EstimatedCostMicroUSD int64
+	ParseFailKind         string
+	ParseFailSample       string
+	ParseRepairs          int
 	// FailedRepeatStreak and HighestFailedRepeatTier record the failure-path
 	// repeat ladder: the longest run of identical failed calls in the turn and
 	// how far escalation got (0 none, 2 nudge, 3 injected correction, 4 hard
@@ -99,12 +101,12 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 			provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, soft_stalls, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents, estimated_cost_micro_usd,
 			parse_fail_kind, parse_fail_sample, parse_repairs,
 			failed_repeat_streak, highest_failed_repeat_tier,
 			quota_used_percent, quota_reset_after_secs, quota_plan_type,
 			intent_nudges
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -129,6 +131,7 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.CacheReadTokens,
 		row.CacheWriteTokens,
 		row.EstimatedCostCents,
+		row.EstimatedCostMicroUSD,
 		row.ParseFailKind,
 		row.ParseFailSample,
 		row.ParseRepairs,
@@ -177,7 +180,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			role, provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents, estimated_cost_micro_usd,
 			parse_fail_kind, parse_fail_sample, parse_repairs,
 			quota_used_percent, quota_reset_after_secs, quota_plan_type
 		 FROM turn_metrics
@@ -202,7 +205,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 			&r.ToolErrors, &r.CacheHits, &r.ParseFailures,
 			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
 			&r.CompletionTokens,
-			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
+			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents, &r.EstimatedCostMicroUSD,
 			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
 			&r.QuotaUsedPercent, &r.QuotaResetAfterSecs, &r.QuotaPlanType,
 		); err != nil {
@@ -240,7 +243,7 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			role, provider, model, goal, iterations, tool_calls, tool_errors,
 			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens,
-			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_cents, estimated_cost_micro_usd,
 			parse_fail_kind, parse_fail_sample, parse_repairs,
 			quota_used_percent, quota_reset_after_secs, quota_plan_type
 		 FROM turn_metrics
@@ -265,7 +268,7 @@ func (db *DB) RecentTurnMetricsForSession(projectID int64, sessionID string, lim
 			&r.ToolErrors, &r.CacheHits, &r.ParseFailures,
 			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
 			&r.CompletionTokens,
-			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents,
+			&r.ReasoningTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.EstimatedCostCents, &r.EstimatedCostMicroUSD,
 			&r.ParseFailKind, &r.ParseFailSample, &r.ParseRepairs,
 			&r.QuotaUsedPercent, &r.QuotaResetAfterSecs, &r.QuotaPlanType,
 		); err != nil {

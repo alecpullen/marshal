@@ -212,6 +212,7 @@ var kindNames = [...]string{
 	KindPassthrough: "passthrough",
 	KindTask:        "task",
 	KindReceipt:     "receipt",
+	KindQueue:       "queue",
 }
 
 // String is the kind's wire name.

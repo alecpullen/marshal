@@ -21,18 +21,17 @@ const bulletIndent = 4
 // path it read, the command it ran, the query it searched for.
 func toolTarget(event registry.AuditEvent) string { return viewmodel.ToolTarget(event) }
 
-// renderToolGroup renders a collapsed run of same-tool audit events as a
-// heading line (plural tool name + count) followed by bullet points — one
-// per call — showing each target and result summary. When the terminal is
-// very narrow (width < 40) and the group is not expanded, it collapses to
-// a single line to avoid excessive wrapping.
+// renderToolGroup renders a run of same-tool audit events. Collapsed it is
+// one line, the plural tool name, the count and as many targets as fit: a run
+// that grows while a step is live then only ever changes one row, instead of
+// adding a bullet per call. Expanded it is a heading line followed by bullet
+// points, one per call, showing each target and result summary.
 func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) string {
 	head := fmt.Sprintf("%s: ×%d", pluralizeToolName(events[0].ToolName), len(events))
 	gutter := gutterPrefix(toolCategoryGlyph(events[0].ToolName), dimColor)
 	var b strings.Builder
 
-	// Narrow terminals: collapse to a single line unless expanded.
-	if width < 40 && !expanded {
+	if !expanded {
 		targets := make([]string, 0, len(events))
 		for _, ev := range events {
 			if t := toolTarget(ev); t != "" {
@@ -43,12 +42,12 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 			head += dimSeparator + strings.Join(targets, ", ")
 		}
 		b.WriteString(gutter)
-		b.WriteString(statusOkStyle().Render(ansi.Truncate(head, max(width-3, 1), "")))
+		b.WriteString(statusOkStyle().Render(ansi.Truncate(head, max(width-gutterWidth, 1), "…")))
 		b.WriteString("\n")
 		return b.String()
 	}
 
-	// Default: heading line + indented bullet list. Wrapped continuation
+	// Heading line + indented bullet list. Wrapped continuation
 	// lines are re-indented behind the continuation gutter so they never
 	// start in column 0.
 	b.WriteString(gutter)

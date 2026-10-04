@@ -94,7 +94,7 @@ func TestPassThroughSplitsATaskIntoSegments(t *testing.T) {
 			narration(3, 2, 6, "Two."), audit("file.read", 2, "b", 7),
 		},
 		Steps: []session.Step{stepFor(1, "t1", 1, 3), stepFor(2, "t1", 6, 8)},
-		Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "in_progress"}),
+		Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "in_progress"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"}),
 	})
 	got := shape(nodes)
 	if !strings.Contains(got, "task:turn:1:t1:1") || !strings.Contains(got, "task:turn:1:t1:2") {
@@ -148,7 +148,7 @@ func TestUnresolvedFailure(t *testing.T) {
 			nodes := Build(Snapshot{
 				Items: items,
 				Steps: []session.Step{stepFor(1, "t1", 1, 9), stepFor(2, "t1", 10, 11)},
-				Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"}),
+				Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"}),
 			})
 			if got := nodes[0].Children[1].Task.UnresolvedFailure; got != c.want {
 				t.Fatalf("UnresolvedFailure = %v, want %v", got, c.want)
@@ -214,4 +214,124 @@ func TestNoReceiptWhileRunningOrWithoutSteps(t *testing.T) {
 		t.Error("no receipt for a turn with no steps")
 	}
 	_ = registry.AuditEvent{}
+}
+
+func queueOf(nodes []*Node) *QueueInfo {
+	for _, n := range nodes[0].Children {
+		if n.Kind == KindQueue {
+			return n.Queue
+		}
+	}
+	return nil
+}
+
+func TestQueueListsTodosWithoutATaskYet(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2)},
+		Steps: []session.Step{stepFor(1, "t2", 1, 3)},
+		Busy:  true,
+		Todos: todos(
+			db.TodoItem{ID: "t1", Content: "A", Status: "completed"},
+			db.TodoItem{ID: "t2", Content: "B", Status: "in_progress"},
+			db.TodoItem{ID: "t3", Content: "C", Status: "pending"},
+			db.TodoItem{ID: "t4", Content: "D", Status: "pending"},
+		),
+	})
+	q := queueOf(nodes)
+	if q == nil || len(q.Items) != 2 || q.Items[0].TodoID != "t3" || q.Items[0].Index != 3 || q.Items[1].Total != 4 {
+		t.Fatalf("queue should hold the two pending todos, got %+v", q)
+	}
+	kids := nodes[0].Children
+	if kids[len(kids)-1].Kind != KindQueue {
+		t.Fatalf("a running turn lists the queue last:\n%s", shape(nodes))
+	}
+}
+
+func TestQueueSurvivesTheTurnEndingButOnlyOnTheLatestTurn(t *testing.T) {
+	snap := Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2), final(3, 5)},
+		Steps: []session.Step{stepFor(1, "t1", 1, 3)},
+		Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "in_progress"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"}),
+	}
+	if q := queueOf(Build(snap)); q == nil || len(q.Items) != 1 || q.Items[0].TodoID != "t2" {
+		t.Fatalf("a turn that ended with todos pending still lists them, got %+v", q)
+	}
+	// A later turn takes over as the latest: the earlier one keeps its task
+	// rows and loses the list.
+	snap.Items = append(snap.Items, userMsg(9, 20))
+	nodes := Build(snap)
+	for _, n := range nodes[0].Children {
+		if n.Kind == KindQueue {
+			t.Fatalf("only the latest turn carries the waiting list:\n%s", shape(nodes))
+		}
+	}
+}
+
+func TestTaskModeFollowsTheListsATurnWroteNotJustTheCurrentOne(t *testing.T) {
+	steps := []session.Step{stepFor(1, "t1", 1, 3)}
+	items := []session.TranscriptItem{
+		userMsg(1, 0),
+		narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2),
+		todoWrite(1, "w", 3, `{"todos":[{"id":"t1","content":"A","status":"completed"},{"id":"t2","content":"B","status":"pending"}]}`),
+	}
+	one := todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"})
+	two := todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"})
+
+	// 2 -> 1: the list shrank after the turn wrote two items. The turn keeps
+	// its task rows instead of flattening.
+	if !strings.Contains(shape(Build(Snapshot{Items: items, Steps: steps, Todos: one})), "task:") {
+		t.Fatal("rewriting the list to one item must not flatten a turn that worked from two")
+	}
+	// 1 -> 2: and it is the same with the longer list back.
+	if !strings.Contains(shape(Build(Snapshot{Items: items, Steps: steps, Todos: two})), "task:") {
+		t.Fatal("two items drive the turn")
+	}
+	// A turn that only ever saw one item stays flat whatever the list does later.
+	flat := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2)}
+	if strings.Contains(shape(Build(Snapshot{Items: flat, Steps: steps, Todos: one})), "task:") {
+		t.Fatal("one item is not a plan")
+	}
+}
+
+func TestQueueShowsOnceTheListIsWrittenEvenBeforeAnyStepRuns(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			todoWrite(1, "w", 1, `{"todos":[{"content":"A","status":"in_progress"}]}`),
+		},
+		Steps: []session.Step{stepFor(1, "", 1, 2)},
+		Busy:  true,
+		Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "in_progress"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"}),
+	})
+	q := queueOf(nodes)
+	if q == nil || len(q.Items) != 2 || !q.Items[0].Active || q.Items[1].Active {
+		t.Fatalf("the whole plan shows up front, the started todo marked active: %+v", q)
+	}
+}
+
+func TestNoQueueForATurnThatNeverTouchedTheList(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Unrelated."), audit("file.read", 1, "a", 2)},
+		Steps: []session.Step{stepFor(1, "", 1, 3)},
+		Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "pending"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"}),
+	})
+	if queueOf(nodes) != nil || strings.Contains(shape(nodes), "task:") {
+		t.Fatalf("leftover todos from an earlier turn must not decorate this one:\n%s", shape(nodes))
+	}
+}
+
+func TestSingleTodoListFlowsWithoutTasksOrQueue(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2), final(3, 5)},
+		Steps: []session.Step{stepFor(1, "t1", 1, 3)},
+		Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "in_progress"}),
+	})
+	if strings.Contains(shape(nodes), "task:") || queueOf(nodes) != nil {
+		t.Fatalf("one todo is not a plan to follow:\n%s", shape(nodes))
+	}
+	for _, n := range nodes[0].Children {
+		if n.Kind == KindReceipt && n.Receipt.Tasks != 0 {
+			t.Fatalf("receipt counts no tasks for a one-item list: %+v", n.Receipt)
+		}
+	}
 }

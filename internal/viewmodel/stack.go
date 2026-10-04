@@ -36,6 +36,7 @@ const (
 	KindPassthrough
 	KindTask
 	KindReceipt
+	KindQueue
 )
 
 // NodeID is a node's identity across rebuilds. The tree is rebuilt from the
@@ -62,6 +63,7 @@ type Node struct {
 	Active  *session.ActiveToolCall
 	Task    *TaskInfo
 	Receipt *ReceiptInfo
+	Queue   *QueueInfo
 }
 
 // StepInfo is a step node's payload.
@@ -455,6 +457,8 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
+	todoActivity := false
+	maxWritten := 0 // the longest list any todo.write in this turn wrote
 	finish := func(a *stepAcc, isLive bool, active []session.ActiveToolCall) *Node {
 		node := &Node{Kind: KindStep, Step: a.info, Live: isLive}
 		if a.info.Heuristic {
@@ -468,6 +472,8 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		for _, ev := range a.audits {
 			if ev.ToolName == todoWriteTool {
 				a.info.TodoWrites = append(a.info.TodoWrites, ev)
+				todoActivity = true
+				maxWritten = max(maxWritten, todoWriteLen(ev))
 				continue
 			}
 			audits = append(audits, ev)
@@ -535,7 +541,13 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, b := range blocks {
 		out = append(out, b.node)
 	}
-	out = groupTasks(out, turnKey, s, lastTurn)
+	// Whether the turn is task-driven is settled by the lists it wrote, not
+	// only by the list as it stands now: a later rewrite to one item must not
+	// flatten a finished turn after the fact.
+	out = groupTasks(out, turnKey, s, lastTurn, maxWritten >= MinTaskTodos)
+	if lastTurn {
+		out = addQueue(out, turnKey, s, todoActivity)
+	}
 	if !(s.Busy && lastTurn) {
 		if rc := receipt(turnKey, out, userMsg, s); rc != nil {
 			out = append(out, rc)

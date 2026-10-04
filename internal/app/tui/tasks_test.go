@@ -234,12 +234,12 @@ func TestTaskChromeGolden(t *testing.T) {
 		m := newTestModel(t)
 		m.resize(width, 60)
 		m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "in_progress", StartedAt: start}})
+		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "in_progress", StartedAt: start}, {ID: "t2", Content: "Test it", Status: "pending"}})
 		id := m.state.BeginStep(session.Actor{})
 		m.state.AddNarration(id, "Reading the parser. It is small.")
 		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"p.go"}`), ResultSummary: "ok"})
 		m.state.EndStep(id)
-		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}})
+		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}, {ID: "t2", Content: "Test it", Status: "pending"}})
 		lines := transcriptLines(&m)
 
 		var folded string
@@ -248,7 +248,7 @@ func TestTaskChromeGolden(t *testing.T) {
 				folded = strings.TrimRight(l, " ")
 			}
 		}
-		want := " ✓ 1/1 Wire the parser"
+		want := " ✓ 1/2 Wire the parser"
 		// The clock is the steps' working time, which a test cannot pin, so it
 		// is matched rather than compared.
 		tail := regexp.MustCompile(`1 step · 1 tool( · \d+s)? ▹$`)
@@ -263,11 +263,11 @@ func TestTaskChromeGolden(t *testing.T) {
 		m.foldTasks = false
 		var header string
 		for _, l := range transcriptLines(&m) {
-			if strings.Contains(l, "1/1 Wire the parser") {
+			if strings.Contains(l, "1/2 Wire the parser") {
 				header = strings.TrimRight(l, " ")
 			}
 		}
-		if !strings.HasPrefix(header, " ✓ 1/1 Wire the parser ─") {
+		if !strings.HasPrefix(header, " ✓ 1/2 Wire the parser ─") {
 			t.Errorf("w=%d open header = %q", width, header)
 		}
 		if got := len([]rune(header)); got != width {
@@ -383,5 +383,271 @@ func TestRebindPrefersTheTodoStartedNearestTheWrite(t *testing.T) {
 	m.refreshViewport()
 	if m.taskStats["t1"].steps != 1 || m.taskStats["t2"].steps != 0 {
 		t.Fatalf("taskStats = %v: the old step must stay with t1, not move under the later twin", m.taskStats)
+	}
+}
+
+func stepUnder(m *Model, narration, call string) {
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, narration)
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: call,
+		Args: []byte(`{"path":"x.go"}`), ResultSummary: "ok"})
+	m.state.EndStep(id)
+}
+
+func TestTodoStackPinsEveryTodoAboveTheTranscriptAndFoldsFinishedWork(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	todos := []db.TodoItem{
+		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
+		{ID: "t2", Content: "Write", Status: "pending"},
+		{ID: "t3", Content: "Test", Status: "pending"},
+		{ID: "t4", Content: "Ship", Status: "pending"},
+	}
+	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	stepUnder(&m, "Reading it. Slowly.", "a")
+	todos[0].Status, todos[0].CompletedAt = "completed", time.Now()
+	todos[1].Status, todos[1].StartedAt = "in_progress", time.Now()
+	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	stepUnder(&m, "Writing it. Quickly.", "b")
+
+	lines := transcriptLines(&m)
+	text := strings.Join(lines, "\n")
+	at := func(sub string) int {
+		for i, l := range lines {
+			if strings.Contains(l, sub) {
+				return i
+			}
+		}
+		t.Fatalf("missing %q:\n%s", sub, text)
+		return -1
+	}
+	done, open, step := at("1/4 Read"), at("2/4 Write"), at("Writing it.")
+	if !(done < open && open < step) {
+		t.Fatalf("order must be folded row, open header, then its work:\n%s", text)
+	}
+	if strings.Contains(text, "Reading it.") {
+		t.Errorf("the finished todo's work is folded away:\n%s", text)
+	}
+	if open != done+1 || step != open+1 {
+		t.Errorf("folded row, open header and first step sit together:\n%s", text)
+	}
+	if strings.Contains(text, "3/4 Test") || strings.Contains(text, "4/4 Ship") {
+		t.Errorf("waiting todos live in the pinned strip, not the transcript:\n%s", text)
+	}
+
+	// The strip is the first thing in the frame and lists every todo.
+	frame := strings.Split(stripANSI(m.viewString()), "\n")
+	want := []string{"✓ 1/4 Read", "▸ 2/4 Write", "· 3/4 Test", "· 4/4 Ship"}
+	for i, w := range want {
+		if i >= len(frame) || !strings.Contains(frame[i], w) {
+			t.Fatalf("frame row %d should hold %q:\n%s", i, w, strings.Join(frame[:min(8, len(frame))], "\n"))
+		}
+	}
+	if m.todoStripRows() != 4 {
+		t.Errorf("strip rows = %d, want 4", m.todoStripRows())
+	}
+}
+
+func TestTodoStripNotShownWhenTheTurnNeverTouchedTheList(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "A", Status: "pending"}, {ID: "t2", Content: "B", Status: "pending"}})
+	m.state.AddMessage(session.RoleUser, "unrelated", session.ContentTypePlain)
+	stepUnder(&m, "Just reading. Nothing else.", "a")
+	transcriptLines(&m)
+	if m.todoStripRows() != 0 {
+		t.Fatalf("leftover todos must not pin a strip on an unrelated turn, rows = %d", m.todoStripRows())
+	}
+}
+
+func TestStripWindowCentersOnTheActiveTodo(t *testing.T) {
+	var todos []db.TodoItem
+	for i := 1; i <= 10; i++ {
+		st := "pending"
+		switch {
+		case i <= 4:
+			st = "completed"
+		case i == 5:
+			st = "in_progress"
+		}
+		todos = append(todos, db.TodoItem{ID: fmt.Sprintf("t%d", i), Content: fmt.Sprintf("item %d", i), Status: st})
+	}
+	v := stripWindow(todos, 6)
+	if len(v.rows) != 6 {
+		t.Fatalf("rows = %d, want 6", len(v.rows))
+	}
+	if v.rows[0].text != "3 done" || v.rows[1].index != 4 || v.rows[2].index != 5 || v.rows[len(v.rows)-1].text != "+3 more" {
+		t.Fatalf("window = %+v", v.rows)
+	}
+	// On a short terminal (three rows) the active todo must still be shown,
+	// not the one before it.
+	short := stripWindow(todos, 3)
+	var shown bool
+	for _, r := range short.rows {
+		if r.todo != nil && r.todo.ID == "t5" {
+			shown = true
+		}
+	}
+	if !shown || len(short.rows) > 3 {
+		t.Fatalf("a 3-row window must include the active todo and stay in budget: %+v", short.rows)
+	}
+	for _, maxRows := range []int{3, 4, 5, 6} {
+		for active := 1; active <= 10; active++ {
+			var l []db.TodoItem
+			for i := 1; i <= 10; i++ {
+				st := "pending"
+				if i < active {
+					st = "completed"
+				} else if i == active {
+					st = "in_progress"
+				}
+				l = append(l, db.TodoItem{ID: fmt.Sprintf("t%d", i), Content: "x", Status: st})
+			}
+			w := stripWindow(l, maxRows)
+			found := false
+			for _, r := range w.rows {
+				if r.todo != nil && r.index == active {
+					found = true
+				}
+			}
+			if !found || len(w.rows) > maxRows {
+				t.Errorf("maxRows=%d active=%d: rows=%d found=%v", maxRows, active, len(w.rows), found)
+			}
+		}
+	}
+	if got := stripWindow(todos[:3], 6); len(got.rows) != 3 {
+		t.Fatalf("a short list shows whole, got %d rows", len(got.rows))
+	}
+}
+
+func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stepUnder(&m, "First look. At the lexer.", "a")
+	stepUnder(&m, "Second look. At the parser.", "b")
+	text := viewText(&m)
+	if regexp.MustCompile(`\d/\d`).MatchString(text) || strings.Contains(text, "─────") {
+		t.Fatalf("no todo list means no task chrome:\n%s", text)
+	}
+	lines := transcriptLines(&m)
+	for i, l := range lines {
+		if strings.Contains(l, "First look.") {
+			if !strings.Contains(lines[i+1], "Read file") {
+				t.Errorf("a narration's calls sit directly under it:\n%s", text)
+			}
+			if !strings.HasPrefix(l, " · ") || regexp.MustCompile(`\d+s$`).MatchString(strings.TrimRight(l, " ")) {
+				t.Errorf("settled steps are a quiet dot with no clock: %q", l)
+			}
+		}
+	}
+}
+
+func TestBackToBackNarrationReadsAsOneText(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	for _, n := range []string{"One thought. Here.", "Another thought. There."} {
+		id := m.state.BeginStep(session.Actor{})
+		m.state.AddNarration(id, n)
+		m.state.EndStep(id)
+	}
+	lines := transcriptLines(&m)
+	a, b := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, "One thought.") {
+			a = i
+		}
+		if strings.Contains(l, "Another thought.") {
+			b = i
+		}
+	}
+	if a < 0 || b != a+1 {
+		t.Fatalf("narration-only steps run on without a blank line:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+func TestMergedToolRunStaysOneRowAsItGrows(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Reading a few files. All small.")
+	count := func() int {
+		n := 0
+		for _, l := range transcriptLines(&m) {
+			if strings.Contains(l, "Read file") {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 4; i++ {
+		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now().Add(time.Duration(i) * time.Millisecond), ToolName: "file.read", StepID: id, ToolCallID: fmt.Sprintf("r%d", i),
+			Args: []byte(fmt.Sprintf(`{"path":"f%d.go"}`, i)), ResultSummary: "ok"})
+		if i > 0 && count() != 1 {
+			t.Fatalf("after %d calls the run is %d rows, want 1", i+1, count())
+		}
+	}
+}
+
+// Tight joins shift every block after them up a line; the click regions and
+// browse stops are computed alongside, and must still land on the rows they
+// name.
+func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	todos := []db.TodoItem{
+		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
+		{ID: "t2", Content: "Write", Status: "pending"},
+		{ID: "t3", Content: "Test", Status: "pending"},
+	}
+	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	stepUnder(&m, "Reading it. Slowly.", "a")
+	todos[0].Status, todos[0].CompletedAt = "completed", time.Now()
+	todos[1].Status, todos[1].StartedAt = "in_progress", time.Now()
+	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	stepUnder(&m, "Writing the first half. Carefully.", "b")
+	stepUnder(&m, "Writing the second half. Quickly.", "c")
+	for _, n := range []string{"One thought. Here.", "Another thought. There."} {
+		id := m.state.BeginStep(session.Actor{})
+		m.state.AddNarration(id, n)
+		m.state.EndStep(id)
+	}
+
+	lines := transcriptLines(&m)
+	wants := map[viewmodel.Kind][]string{
+		viewmodel.KindTask: {"1/3 Read", "2/3 Write"},
+		viewmodel.KindStep: {"Writing the first half", "Writing the second half", "One thought", "Another thought"},
+	}
+	seen := 0
+	for _, r := range m.nodeRegions {
+		kinds, ok := wants[r.target.node.Kind]
+		if !ok || r.startLine >= len(lines) {
+			continue
+		}
+		hit := false
+		for _, w := range kinds {
+			if strings.Contains(lines[r.startLine], w) {
+				hit = true
+			}
+		}
+		if !hit {
+			t.Errorf("region %v starts at line %d = %q, which is not one of %v", r.target.node, r.startLine, lines[r.startLine], kinds)
+		}
+		seen++
+	}
+	if seen < 6 {
+		t.Fatalf("expected regions for two tasks and four steps, saw %d:\n%s", seen, strings.Join(lines, "\n"))
+	}
+	for _, it := range m.browseItems {
+		if it.kind != viewmodel.KindTask && it.kind != viewmodel.KindStep {
+			continue
+		}
+		if it.start >= len(lines) || strings.TrimSpace(lines[it.start]) == "" {
+			t.Errorf("browse stop %v starts on a blank or missing line %d", it.id, it.start)
+		}
 	}
 }

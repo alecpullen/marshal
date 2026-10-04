@@ -147,6 +147,9 @@ func (m Model) renderTranscriptFrame() string {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
+	if strip := m.renderTodoStrip(); strip != "" {
+		content = lipgloss.JoinVertical(lipgloss.Left, strip, content)
+	}
 	if v, ok := m.drilledInto(); ok {
 		label := v.Label
 		if v.Role != "" {

@@ -39,7 +39,7 @@ func (m *Model) contentLineForClick(x, y int) (int, bool) {
 	if x < 0 || x >= m.leftWidth {
 		return 0, false
 	}
-	top := m.scrollHintRows() + m.breadcrumbRows()
+	top := m.scrollHintRows() + m.breadcrumbRows() + m.todoStripRows()
 	height := m.viewport.Height()
 	if y < top || y >= top+height {
 		return 0, false
@@ -78,7 +78,7 @@ func (m *Model) nowBarBand(plan nowBarPlan) (top, bottom int, ok bool) {
 	if len(plan.rows) == 0 || m.dock.FullFrameOpen() {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height()
+	top = m.scrollHintRows() + m.breadcrumbRows() + m.todoStripRows() + m.viewport.Height()
 	return top, top + len(plan.rows), true
 }
 

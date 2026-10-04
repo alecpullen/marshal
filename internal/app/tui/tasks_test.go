@@ -480,6 +480,42 @@ func TestStripWindowCentersOnTheActiveTodo(t *testing.T) {
 	if v.rows[0].text != "3 done" || v.rows[1].index != 4 || v.rows[2].index != 5 || v.rows[len(v.rows)-1].text != "+3 more" {
 		t.Fatalf("window = %+v", v.rows)
 	}
+	// On a short terminal (three rows) the active todo must still be shown,
+	// not the one before it.
+	short := stripWindow(todos, 3)
+	var shown bool
+	for _, r := range short.rows {
+		if r.todo != nil && r.todo.ID == "t5" {
+			shown = true
+		}
+	}
+	if !shown || len(short.rows) > 3 {
+		t.Fatalf("a 3-row window must include the active todo and stay in budget: %+v", short.rows)
+	}
+	for _, maxRows := range []int{3, 4, 5, 6} {
+		for active := 1; active <= 10; active++ {
+			var l []db.TodoItem
+			for i := 1; i <= 10; i++ {
+				st := "pending"
+				if i < active {
+					st = "completed"
+				} else if i == active {
+					st = "in_progress"
+				}
+				l = append(l, db.TodoItem{ID: fmt.Sprintf("t%d", i), Content: "x", Status: st})
+			}
+			w := stripWindow(l, maxRows)
+			found := false
+			for _, r := range w.rows {
+				if r.todo != nil && r.index == active {
+					found = true
+				}
+			}
+			if !found || len(w.rows) > maxRows {
+				t.Errorf("maxRows=%d active=%d: rows=%d found=%v", maxRows, active, len(w.rows), found)
+			}
+		}
+	}
 	if got := stripWindow(todos[:3], 6); len(got.rows) != 3 {
 		t.Fatalf("a short list shows whole, got %d rows", len(got.rows))
 	}

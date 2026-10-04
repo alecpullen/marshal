@@ -67,15 +67,24 @@ func stripWindow(todos []db.TodoItem, maxRows int) stripView {
 	}
 	start, end := 0, n
 	if n > maxRows {
-		start = max(active-1, 0)
-		visible := maxRows
-		if start > 0 {
-			visible--
+		// Each summary row ("N done", "+N more") costs a row of the budget.
+		// Try one todo of context before the active one; when that leaves no
+		// room for the active todo itself (a tiny budget), start at it.
+		window := func(from int) (int, int) {
+			visible := maxRows
+			if from > 0 {
+				visible--
+			}
+			to := min(from+visible, n)
+			if to < n {
+				visible--
+				to = from + max(visible, 1)
+			}
+			return from, to
 		}
-		end = min(start+visible, n)
-		if end < n {
-			visible--
-			end = start + visible
+		start, end = window(max(active-1, 0))
+		if active >= end {
+			start, end = window(active)
 		}
 	}
 	if start > 0 {

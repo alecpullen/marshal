@@ -1,5 +1,5 @@
 import { ensureToken, getToken } from './api.js'
-import type { FleetEvent, FleetDelta, ProjectRemovedDelta } from './fleet'
+import type { FleetEvent, ProjectRemovedDelta } from './fleet'
 
 export interface SSEMessage {
   id: number
@@ -156,8 +156,14 @@ export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
     const value = JSON.parse(data) as Record<string, unknown>
     if (value.type === 'replay_overflow') return 'overflow'
     if (value.kind === 'project_removed' && typeof value.project === 'string') return value as unknown as ProjectRemovedDelta
+    // Budget and reroute are fleet-wide, so they carry no session.
+    if (value.kind === 'budget' || value.kind === 'reroute') return value as unknown as FleetEvent
+    // The bridge may address a run delta as agentId; rows are keyed by sessionId.
+    if (value.kind === 'run' && typeof value.sessionId !== 'string' && typeof value.agentId === 'string') {
+      value.sessionId = value.agentId
+    }
     if (typeof value.kind !== 'string' || typeof value.sessionId !== 'string') return null
-    return value as unknown as FleetDelta
+    return value as unknown as FleetEvent
   } catch { return null }
 }
 

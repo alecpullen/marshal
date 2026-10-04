@@ -48,4 +48,13 @@ describe('parseFleetEvent', () => {
   it('returns null for a JSON scalar', () => {
     expect(parseFleetEvent('42')).toBeNull()
   })
+
+  it('parses fleet-wide budget and reroute deltas that carry no session', () => {
+    expect(parseFleetEvent('{"kind":"budget","scope":"daily","spentUsd":1,"capUsd":2,"action":"warn"}')).toMatchObject({ kind: 'budget' })
+    expect(parseFleetEvent('{"kind":"reroute","id":"r1","watch":"w","role":"x","from":"a","to":"b"}')).toMatchObject({ kind: 'reroute', id: 'r1' })
+  })
+
+  it('addresses a run delta by agentId when no sessionId is given', () => {
+    expect(parseFleetEvent('{"kind":"run","agentId":"a1","run":{"kind":"none"}}')).toMatchObject({ kind: 'run', sessionId: 'a1' })
+  })
 })

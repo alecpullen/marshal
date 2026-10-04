@@ -3,6 +3,7 @@
   import Dashboard from './views/Dashboard.svelte'
   import NewAgent from './views/NewAgent.svelte'
   import Chat from './views/Chat.svelte'
+  import Review from './views/Review.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -173,7 +174,11 @@
         the first one's store, header and transcript.
       -->
       {#key chatSessionId}
-        <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
+        {#if chatRoute?.view === 'review'}
+          <Review agentId={chatSessionId} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onShipped={() => navigate(`#chat/${chatSessionId}`)} />
+        {:else}
+          <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
+        {/if}
       {/key}
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

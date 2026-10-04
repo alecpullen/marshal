@@ -141,6 +141,12 @@ type Fleet struct {
 
 	// ctl is the lazily started control agent (see control.go).
 	ctl *controlRuntime
+	// usage is the monthly spend ledger; budgets enforce caps over it.
+	usage   *UsageLog
+	budgets *budgetState
+	// clock is the time source for budget days and usage windows. Nil
+	// means time.Now.
+	clock func() time.Time
 	// lib remembers which control session staged each library install.
 	lib libraryState
 	// newControl builds the control agent's Child. Nil means production
@@ -236,7 +242,9 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		rateLimits:    make(map[string]time.Time),
 		provisioning:  make(map[string]string),
 		ctl:           newControlRuntime(),
+		usage:         NewUsageLog(stateDir),
 	}
+	f.budgets = newBudgetState(f)
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
 	// spawn reports a clear error via Spawn.
@@ -319,6 +327,14 @@ func (f *Fleet) localMountFor(a Agent) (string, error) {
 }
 
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
+
+// now is the fleet's clock, injectable for day-boundary tests.
+func (f *Fleet) now() time.Time {
+	if f.clock != nil {
+		return f.clock().UTC()
+	}
+	return time.Now().UTC()
+}
 
 // auditf appends a record, and never propagates a failure to the caller.
 func (f *Fleet) auditf(e AuditEvent) {
@@ -1178,6 +1194,11 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 			d.SessionID = rt.id
 			if d.Kind == "run" {
 				d.AgentID = rt.id
+			}
+			if d.Kind == "telemetry" && len(d.Usage) > 0 {
+				// Off the read goroutine: the budget check may need the
+				// control agent, and a notification callback must not block.
+				go f.recordUsage(rt.id, d.Usage)
 			}
 			f.live.apply(d)
 			_, _ = f.fleetLog.Append(fleetStreamKey, d)

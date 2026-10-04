@@ -24,6 +24,11 @@ type fleetDelta struct {
 	AgentID string `json:"agentId,omitempty"`
 	// Run is the latest run detail on a "run" delta, verbatim.
 	Run json.RawMessage `json:"run,omitempty"`
+	// Budget is the payload of a "budget" delta.
+	Budget *budgetDelta `json:"budget,omitempty"`
+	// Usage carries a telemetry update's new usage rows to the ledger. It
+	// is not streamed: the fleet SSE only needs the telemetry digest.
+	Usage json.RawMessage `json:"-"`
 }
 
 func classifyNotification(method string, params json.RawMessage) (fleetDelta, bool) {
@@ -38,6 +43,7 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 			Mode         string          `json:"mode"`
 			ChangedFiles []string        `json:"changedFiles"`
 			Run          json.RawMessage `json:"run"`
+			Usage        json.RawMessage `json:"usage"`
 			Context      struct {
 				UsedPct int `json:"usedPct"`
 			} `json:"context"`
@@ -54,6 +60,7 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 		d.Kind, d.Mode = "mode", p.Update.Mode
 	case "session_telemetry":
 		d.Kind, d.ChangedFiles, d.ContextPct = "telemetry", len(p.Update.ChangedFiles), p.Update.Context.UsedPct
+		d.Usage = p.Update.Usage
 	case "run_progress":
 		if len(p.Update.Run) == 0 {
 			return fleetDelta{}, false

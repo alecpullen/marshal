@@ -134,6 +134,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
 	s.libraryRoutes()
 	s.modelsRoutes()
+	s.budgetRoutes()
 	s.mux.HandleFunc("GET /api/runs", s.listRuns)
 	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
 	s.mux.HandleFunc("POST /api/runs", s.startRun)
@@ -181,7 +182,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeErr(w http.ResponseWriter, err error) {
 	var unsupported ErrUnsupported
 	var rpc *rpcError
+	var budget ErrBudget
 	switch {
+	case errors.As(err, &budget):
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "budget_exceeded", "scope": budget.Scope})
 	case errors.Is(err, ErrUnknownSession):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrGone):
@@ -686,6 +690,12 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	if s.fleet != nil {
+		if err := s.fleet.budgetGate(s.fleet.agentIDOf(id)); err != nil {
+			writeErr(w, err)
+			return
+		}
 	}
 	info, ok := reg.lookup(sessionID)
 	if !ok {

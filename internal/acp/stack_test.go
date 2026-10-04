@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/pubsub"
+	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
 
@@ -210,6 +213,114 @@ func TestStackSnapshotFlushesThenAnswers(t *testing.T) {
 	takeStack(t, m)
 	if len(*notices) != 1 {
 		t.Fatal("unchanged snapshot notified")
+	}
+}
+
+// runStackTestTurn holds the runner open until a live patch arrives, so a
+// finish-only flush cannot satisfy the during-turn assertion.
+func runStackTestTurn(t *testing.T) ([]stackNotice, bool) {
+	t.Helper()
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	broker := pubsub.NewBroker[session.Event]()
+	st.SetEventBroker(broker)
+	livePatch := make(chan struct{})
+	var liveOnce sync.Once
+	var mu sync.Mutex
+	var notices []stackNotice
+	rt := &TurnRuntime{SessionID: "s1", State: st, Events: broker, BeginWork: identityBeginWork}
+	rt.Run = RunnerFunc(func(ctx context.Context, prompt string) error {
+		st.AddMessage(session.RoleUser, prompt, session.ContentTypePlain)
+		step := st.BeginStep(session.Actor{})
+		st.AddMessage(session.RoleAssistant, "Reading the config loader.", session.ContentTypeNarration)
+		st.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: step, ToolCallID: "c1", ResultContent: "config"})
+		select {
+		case <-livePatch:
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		st.EndStep(step)
+		st.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+		return nil
+	})
+	m := NewTurnManager(TurnManagerConfig{
+		Lookup: func(id string) (*TurnRuntime, bool) { return rt, id == "s1" },
+		Notify: func(method string, params any) error {
+			p := params.(SessionUpdateParams)
+			mu.Lock()
+			notices = append(notices, stackNotice{method, p})
+			mu.Unlock()
+			if p.Update["kind"] == "stack_patch" {
+				for _, n := range p.Update["upsert"].([]viewmodel.WireNode) {
+					if n.Live {
+						liveOnce.Do(func() { close(livePatch) })
+					}
+				}
+			}
+			return nil
+		},
+	})
+	takeStack(t, m)
+	if _, err := m.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"s1","prompt":[{"type":"text","text":"hello"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	select {
+	case <-livePatch:
+		return append([]stackNotice(nil), notices...), true
+	default:
+		return append([]stackNotice(nil), notices...), false
+	}
+}
+
+func TestTurnFlushesStackPatches(t *testing.T) {
+	notices, live := runStackTestTurn(t)
+	if !live {
+		t.Fatal("no stack patch arrived while the runner was live")
+	}
+	var patchSeen bool
+	for _, n := range notices {
+		switch n.params.Update["kind"] {
+		case "stack_patch":
+			stackPatchFromNotice(t, n)
+			patchSeen = true
+		case "session_telemetry":
+			if !patchSeen {
+				t.Fatal("telemetry arrived before a stack patch")
+			}
+			return
+		}
+	}
+	t.Fatal("no session telemetry update")
+}
+
+func TestFinishTurnFlushSettlesLiveRows(t *testing.T) {
+	notices, _ := runStackTestTurn(t)
+	var last *stackPatch
+	var telemetry bool
+	for _, n := range notices {
+		if n.params.Update["kind"] == "stack_patch" {
+			p := stackPatchFromNotice(t, n)
+			last = &p
+		}
+		if n.params.Update["kind"] == "session_telemetry" {
+			telemetry = true
+			break
+		}
+	}
+	if !telemetry || last == nil {
+		t.Fatal("no final stack patch before telemetry")
+	}
+	var receipt bool
+	for _, n := range last.Upsert {
+		if n.Live {
+			t.Fatalf("final patch upserts live node %s", n.ID)
+		}
+		receipt = receipt || strings.HasPrefix(n.ID, "receipt:")
+	}
+	if !receipt {
+		t.Fatalf("final patch has no receipt: %+v", last)
 	}
 }
 

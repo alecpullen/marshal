@@ -704,6 +704,7 @@ func (m *TurnManager) runTurn(
 	// forward dispatches one session event to the ACP client. Defined
 	// once and used in both the main loop and the post-run drain.
 	forward := func(ev pubsub.Event[session.Event]) {
+		m.markStackDirty(sessionID)
 		update, hasUpdate := eventToSessionUpdate(ev, proj)
 		if hasUpdate {
 			if notifyErr := m.notify("session/update", SessionUpdateParams{
@@ -860,10 +861,16 @@ func (m *TurnManager) runTurn(
 		}
 	}
 
+	flush := time.NewTicker(stackFlushInterval)
+	defer flush.Stop()
 	forwarding := true
 	var runErrVal error
 	for forwarding {
 		select {
+		case <-flush.C:
+			if rt.State != nil {
+				m.flushDirtyStack(sessionID, rt.State)
+			}
 		case <-turnCtx.Done():
 			// Turn cancelled (client cancel or parent shutdown).
 			subCancel()
@@ -1209,6 +1216,7 @@ func (m *TurnManager) finishTurn(
 ) (any, error) {
 	result, err := resultOf(runErrVal, slot)
 	if rt.State != nil {
+		m.flushStack(sessionID, rt.State, false)
 		if notifyErr := m.notify("session/update", SessionUpdateParams{
 			SessionID: sessionID,
 			Update:    m.buildTelemetry(sessionID, rt.State),

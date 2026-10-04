@@ -13,6 +13,9 @@ import (
 	"marshal/internal/viewmodel"
 )
 
+// stackFlushInterval bounds the patch rate to five a second.
+const stackFlushInterval = 200 * time.Millisecond
+
 // StackParams is the session/stack request body.
 type StackParams struct {
 	SessionID string `json:"sessionId"`
@@ -132,6 +135,21 @@ func (m *TurnManager) flushStack(sessionID string, st *session.State, busy bool)
 		return
 	}
 	patch, changed := p.diff(viewmodel.Project(viewmodel.Build(stackSnapshotOf(st, busy, time.Now()))))
+	p.dirty = false
+	if changed {
+		m.notifyStackPatch(sessionID, patch)
+	}
+}
+
+// flushDirtyStack avoids rebuilding the tree on idle ticks during a turn.
+func (m *TurnManager) flushDirtyStack(sessionID string, st *session.State) {
+	p := m.stackFor(sessionID)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.active || !p.dirty {
+		return
+	}
+	patch, changed := p.diff(viewmodel.Project(viewmodel.Build(stackSnapshotOf(st, true, time.Now()))))
 	p.dirty = false
 	if changed {
 		m.notifyStackPatch(sessionID, patch)

@@ -95,4 +95,8 @@ describe('parseFleetEvent', () => {
   it('addresses a run delta by agentId when no sessionId is given', () => {
     expect(parseFleetEvent('{"kind":"run","agentId":"a1","run":{"kind":"none"}}')).toMatchObject({ kind: 'run', sessionId: 'a1' })
   })
+
+  it('accepts a watch delta with no session', () => {
+    expect(parseFleetEvent('{"kind":"watch","sessionId":"studio","event":{"State":"fired"}}')).toEqual({ kind: 'watch', sessionId: 'studio', event: { State: 'fired' } })
+  })
 })

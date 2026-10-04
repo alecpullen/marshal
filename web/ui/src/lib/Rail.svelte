@@ -12,14 +12,18 @@
     { glyph: '◉', label: 'Live', hash: '#live' },
     { glyph: '⋔', label: 'Runs', hash: '#runs' },
     { glyph: '▦', label: 'Workspaces', phase: 'W4' },
-    { glyph: '○', label: 'Watches', phase: 'W3' },
-    { glyph: '◈', label: 'Library', phase: 'W3' },
-    { glyph: '∿', label: 'Usage', phase: 'W3' },
+    { glyph: '○', label: 'Watches', hash: '#watches' },
+    { glyph: '◈', label: 'Library', hash: '#library/skills' },
+    { glyph: '∿', label: 'Usage', hash: '#usage' },
   ]
 
   // A page owns its sub-routes: #runs/<id> and #live?page=2 keep their rail entry lit.
-  const active = (hash: string) =>
-    hash === '#' ? route === '#' || route === '' : route === hash || route.startsWith(hash + '/') || route.startsWith(hash + '?')
+  const active = (hash: string) => {
+    if (hash === '#') return route === '#' || route === ''
+    // #library/skills is the entry point; every #library/<tab> keeps it lit.
+    const base = hash.split('/')[0]
+    return route === base || route.startsWith(base + '/') || route.startsWith(base + '?')
+  }
 </script>
 
 <nav aria-label="Pages" class="flex h-full w-[52px] shrink-0 flex-col items-center gap-1 border-r border-border bg-bg py-3">
@@ -53,11 +57,11 @@
   <button
     class={cn(
       'flex size-9 cursor-pointer items-center justify-center rounded-md text-base hover:bg-hover',
-      route === '#clients' ? 'bg-raise text-accent' : 'text-muted',
+      route.startsWith('#settings') ? 'bg-raise text-accent' : 'text-muted',
     )}
     title="Settings"
     aria-label="Settings"
-    onclick={() => onNavigate('#clients')}
+    onclick={() => onNavigate('#settings/models')}
   >
     ⚙
   </button>

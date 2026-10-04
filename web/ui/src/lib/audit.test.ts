@@ -10,6 +10,10 @@ describe('describeAuditEvent', () => {
     expect(describeAuditEvent({ event: 'gate_override', ts: '', agentId: 'a1', reason: 'flaky suite' }))
       .toBe('overrode the gate on a1: flaky suite')
   })
+  it('describes the control-page events', () => {
+    expect(describeAuditEvent({ event: 'models_changed', ts: '', detail: 'routing', reason: 'watch:cost' })).toBe('changed model settings (routing): watch:cost')
+    expect(describeAuditEvent({ event: 'budget_override', ts: '', agentId: 'a2' })).toBe('overrode the budget pause on a2')
+  })
   it('falls back to the raw event name rather than dropping the record', () => {
     expect(describeAuditEvent({ event: 'something_new', ts: '', agentId: 'a1' })).toContain('something_new')
   })

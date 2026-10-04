@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, type ChatRoute } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, redirectLegacy, type ChatRoute } from './routes'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -114,5 +114,38 @@ describe('run and live routes', () => {
     expect(pageFromHash('#runs')).toBe('runs')
     expect(pageFromHash('#runs/a1?view=graph')).toBe('run')
     expect(pageFromHash('#live?runs=1')).toBe('live')
+  })
+})
+
+describe('control page routes', () => {
+  it('parses library tabs and the project scope', () => {
+    expect(parseLibraryRoute('#library')).toEqual({ tab: 'skills', project: undefined })
+    expect(parseLibraryRoute('#library/memory?project=%2Fw%2Fa')).toEqual({ tab: 'memory', project: '/w/a' })
+    expect(parseLibraryRoute('#library/nope')).toBeNull()
+    expect(formatLibraryRoute({ tab: 'memory', project: '/w/a' })).toBe('#library/memory?project=%2Fw%2Fa')
+    expect(formatLibraryRoute({ tab: 'mcp' })).toBe('#library/mcp')
+  })
+
+  it('parses settings and usage tabs', () => {
+    expect(parseSettingsRoute('#settings')).toEqual({ tab: 'models' })
+    expect(parseSettingsRoute('#settings/providers')).toEqual({ tab: 'providers' })
+    expect(parseSettingsRoute('#settings/x')).toBeNull()
+    expect(parseUsageRoute('#usage')).toEqual({ tab: 'cost' })
+    expect(parseUsageRoute('#usage?tab=audit')).toEqual({ tab: 'audit' })
+    expect(parseUsageRoute('#usage?tab=bogus')).toEqual({ tab: 'cost' })
+  })
+
+  it('maps the new pages', () => {
+    expect(pageFromHash('#library/skills')).toBe('library')
+    expect(pageFromHash('#settings/models')).toBe('settings')
+    expect(pageFromHash('#usage?tab=disk')).toBe('usage')
+    expect(pageFromHash('#watches')).toBe('watches')
+  })
+
+  it('redirects the old routes', () => {
+    expect(redirectLegacy('#clients')).toBe('#library/mcp')
+    expect(redirectLegacy('#disk')).toBe('#usage?tab=disk')
+    expect(redirectLegacy('#activity')).toBe('#usage?tab=audit')
+    expect(redirectLegacy('#runs')).toBeNull()
   })
 })

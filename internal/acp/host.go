@@ -311,6 +311,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 					"commitDraft":           map[string]any{},
 					"stepDiffs":             map[string]any{},
 					"runDetail":             map[string]any{},
+					"watchAccess":           map[string]any{},
 					"memoryAccess":          map[string]any{},
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
@@ -347,6 +348,18 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.Handle("session/run", turns.Run)
 	srv.HandleNotification("session/cancel", turns.Cancel)
+
+	watches := NewWatchManagerACP(func(sessionID string) (*watch.Manager, *pubsub.Broker[watch.Event], bool) {
+		rt, ok := manager.Get(sessionID)
+		if !ok || rt == nil {
+			return nil, nil, false
+		}
+		broker, _ := rt.WatchBroker.(*pubsub.Broker[watch.Event])
+		return rt.CurrentWatchManager(), broker, true
+	}, h.sink.Notify)
+	srv.Handle("session/watch_list", watches.List)
+	srv.Handle("session/watch_start", watches.Start)
+	srv.Handle("session/watch_stop", watches.Stop)
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)

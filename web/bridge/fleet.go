@@ -264,8 +264,9 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	if g, err := newGitRunner(); err == nil {
 		f.git = g
 	}
-	f.creds = NewCredentialStore(nil)
+	f.creds = NewCredentialStore(ws.Credentials())
 	f.secrets = NewEnvProvider()
+	f.creds.SetProvider(f.secrets)
 	f.newRuntime = func(a Agent) (*Child, error) {
 		runtime, name, ok := detectedRuntime()
 		if !ok {
@@ -358,6 +359,7 @@ func (f *Fleet) SetSecrets(p SecretProvider) {
 		p = NewEnvProvider()
 	}
 	f.secrets = p
+	f.creds.SetProvider(p)
 }
 
 func (f *Fleet) auditf(e AuditEvent) {
@@ -832,7 +834,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		if f.git == nil {
 			return "", fmt.Errorf("bridge: git is required for remote sources but was not found at startup")
 		}
-		cred, err := f.creds.Resolve(DefaultOwnerID, src.credRef)
+		cred, err := f.creds.Resolve(ctx, DefaultOwnerID, src.credRef)
 		if err != nil {
 			return "", fmt.Errorf("resolve credential for %s: %w", src.ref, err)
 		}
@@ -844,7 +846,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		if f.limits.MaxCloneMB > 0 {
 			if repo, ok := f.ws.Repo(src.ref); ok {
 				cap := f.limits.MaxCloneMB << 20
-				if forge, fcred, ferr := f.forgeFor(repo); ferr == nil {
+				if forge, fcred, ferr := f.forgeFor(ctx, repo); ferr == nil {
 					if size, serr := forge.RepoSize(ctx, repo, fcred); serr == nil && size > cap {
 						return "", fmt.Errorf("repo %s is %d MB, over the %d MB clone cap",
 							repo.ID, size>>20, f.limits.MaxCloneMB)

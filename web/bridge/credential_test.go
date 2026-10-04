@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -15,7 +16,7 @@ func TestResolveReadsSecretFromEnvAtUseTime(t *testing.T) {
 	store := NewCredentialStore([]Credential{
 		{ID: "gh", Kind: "pat", EnvVar: "GH_TOKEN", OwnerID: "local"},
 	})
-	cred, err := store.Resolve("local", "gh")
+	cred, err := store.Resolve(context.Background(), "local", "gh")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -31,7 +32,7 @@ func TestResolveRejectsAnotherOwnersCredential(t *testing.T) {
 	store := NewCredentialStore([]Credential{
 		{ID: "gh", Kind: "pat", EnvVar: "GH_TOKEN", OwnerID: "alice"},
 	})
-	if _, err := store.Resolve("bob", "gh"); err != ErrUnknownCredential {
+	if _, err := store.Resolve(context.Background(), "bob", "gh"); err != ErrUnknownCredential {
 		t.Fatalf("Resolve error = %v, want ErrUnknownCredential", err)
 	}
 }
@@ -41,14 +42,14 @@ func TestResolveMissingEnvIsAnError(t *testing.T) {
 	store := NewCredentialStore([]Credential{
 		{ID: "gh", Kind: "pat", EnvVar: "GH_TOKEN", OwnerID: "local"},
 	})
-	if _, err := store.Resolve("local", "gh"); err == nil {
+	if _, err := store.Resolve(context.Background(), "local", "gh"); err == nil {
 		t.Fatalf("Resolve with unset env = nil error, want error")
 	}
 }
 
 func TestEmptyCredRefResolvesToAnonymous(t *testing.T) {
 	store := NewCredentialStore(nil)
-	cred, err := store.Resolve("local", "")
+	cred, err := store.Resolve(context.Background(), "local", "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

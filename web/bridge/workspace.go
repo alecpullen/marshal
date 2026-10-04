@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const workspaceVersion = 8
+const workspaceVersion = 10
+
+// ErrUnknownRepo is returned when a repo id is not registered.
+var ErrUnknownRepo = errors.New("bridge: unknown repo")
 
 // DefaultOwnerID is the single implicit owner in a single-operator
 // deployment. Every agent carries an owner from the first commit so that
@@ -162,6 +165,9 @@ type workspaceFile struct {
 	// WatchRules maps a Studio watch id to the action the bridge takes when
 	// it fires (v8). The engine knows nothing of these rules.
 	WatchRules map[string]WatchRule `json:"watchRules,omitempty"`
+	// Credentials are git credential descriptions (v10). They hold refs
+	// and variable names, never values.
+	Credentials []Credential `json:"credentials,omitempty"`
 }
 
 // WatchRule is what the bridge does when a Studio watch fires.
@@ -193,6 +199,7 @@ type Workspace struct {
 	submittedIssues map[string][]int
 	reviews         map[string][]ReviewComment
 	watchRules      map[string]WatchRule
+	credentials     map[string]Credential
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -205,6 +212,7 @@ func NewWorkspace(path string) *Workspace {
 		submittedIssues: make(map[string][]int),
 		reviews:         make(map[string][]ReviewComment),
 		watchRules:      make(map[string]WatchRule),
+		credentials:     make(map[string]Credential),
 	}
 }
 
@@ -265,6 +273,10 @@ func (w *Workspace) Load() (string, error) {
 	w.watchRules = make(map[string]WatchRule, len(f.WatchRules))
 	for id, r := range f.WatchRules {
 		w.watchRules[id] = r
+	}
+	w.credentials = make(map[string]Credential, len(f.Credentials))
+	for _, c := range f.Credentials {
+		w.credentials[c.ID] = c
 	}
 	return "", nil
 }
@@ -337,6 +349,10 @@ func (w *Workspace) save() error {
 			f.WatchRules[id] = r
 		}
 	}
+	for _, c := range w.credentials {
+		f.Credentials = append(f.Credentials, c)
+	}
+	sort.Slice(f.Credentials, func(i, j int) bool { return f.Credentials[i].ID < f.Credentials[j].ID })
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace: %w", err)
@@ -479,6 +495,51 @@ func (w *Workspace) PutRepo(r Repo) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.repos[r.ID] = r
+	return w.save()
+}
+
+// RemoveRepo deletes a registered repo.
+func (w *Workspace) RemoveRepo(id string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.repos[id]; !ok {
+		return ErrUnknownRepo
+	}
+	delete(w.repos, id)
+	return w.save()
+}
+
+// Credentials returns the persisted credential descriptions.
+func (w *Workspace) Credentials() []Credential {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]Credential, 0, len(w.credentials))
+	for _, c := range w.credentials {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// PutCredential saves a credential description.
+func (w *Workspace) PutCredential(c Credential) error {
+	if c.ID == "" {
+		return errors.New("credential id is required")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.credentials[c.ID] = c
+	return w.save()
+}
+
+// RemoveCredential deletes a credential description.
+func (w *Workspace) RemoveCredential(id string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.credentials[id]; !ok {
+		return ErrUnknownCredential
+	}
+	delete(w.credentials, id)
 	return w.save()
 }
 

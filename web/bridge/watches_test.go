@@ -358,7 +358,7 @@ func TestStoppingAWatchDropsItsRule(t *testing.T) {
 	}
 }
 
-func TestWorkspaceV7MigratesToV8AndKeepsWatchRules(t *testing.T) {
+func TestWorkspaceV7MigratesAndKeepsWatchRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fleet.json")
 	v7 := `{"version":7,"projects":["/p"],"agents":[{"id":"a1","project":"/p","ownerId":"local","origin":"ui"}]}`
 	if err := os.WriteFile(path, []byte(v7), 0o600); err != nil {
@@ -380,7 +380,7 @@ func TestWorkspaceV7MigratesToV8AndKeepsWatchRules(t *testing.T) {
 		Version    int                  `json:"version"`
 		WatchRules map[string]WatchRule `json:"watchRules"`
 	}
-	if err := json.Unmarshal(data, &onDisk); err != nil || onDisk.Version != 8 {
+	if err := json.Unmarshal(data, &onDisk); err != nil || onDisk.Version != workspaceVersion {
 		t.Fatalf("on disk: version %d, %v", onDisk.Version, err)
 	}
 	reloaded := NewWorkspace(path)

@@ -975,6 +975,11 @@ export async function getNetworkRequests(scope: { workspace?: string; agent?: st
 export async function getNetworkAgents(scope: { workspace?: string } = {}): Promise<NetAgentRow[]> {
   return (await request<NetAgentRow[] | null>('GET', `/api/network${netQuery('agents', scope)}`)) ?? []
 }
+/** `GET /api/network/pending`: blocked requests still awaiting a decision, oldest first, shaped like the `network_block` delta. */
+export interface NetPending { kind: 'network_block'; sessionId: string; agentId: string; host: string; workspace?: string; at: number }
+export async function getNetworkPending(agent?: string): Promise<NetPending[]> {
+  return (await request<{ pending?: NetPending[] } | null>('GET', `/api/network/pending${query({ agent })}`))?.pending ?? []
+}
 export async function postNetworkDecision(agentId: string, host: string, decision: NetDecisionKind): Promise<NetDecisionResult> {
   return (await request<NetDecisionResult | undefined>('POST', '/api/network/decisions', { agentId, host, decision })) ?? {}
 }

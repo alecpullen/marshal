@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+<<<<<<< HEAD
 import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth } from './api'
+=======
+import { APIError, BudgetError, answerRun, errMessage, getRoster, getRun, listRuns, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending } from './api'
+
+>>>>>>> 124db91d (w4-5-ui-network-projects: restore pending blocked requests from the bridge on load)
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
@@ -351,6 +356,15 @@ describe('network, secrets, repos and project settings API', () => {
     expect(await getNetworkHosts()).toEqual({ processMode: true, rows: [{ host: 'a.com' }] })
     vi.stubGlobal('fetch', reply(200, null))
     expect(await getNetworkHosts()).toEqual({ processMode: false, rows: [] })
+  })
+
+  it('getNetworkPending unwraps the list and scopes by agent', async () => {
+    const f = reply(200, { pending: [{ kind: 'network_block', sessionId: 'a1', agentId: 'a1', host: 'h', at: 1 }] })
+    vi.stubGlobal('fetch', f)
+    expect(await getNetworkPending('a 1')).toHaveLength(1)
+    expect(f.mock.calls[0][0]).toBe('/api/network/pending?agent=a+1')
+    vi.stubGlobal('fetch', reply(200, null))
+    expect(await getNetworkPending()).toEqual([])
   })
 
   it('postNetworkDecision posts the body', async () => {

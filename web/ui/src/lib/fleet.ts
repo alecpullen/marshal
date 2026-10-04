@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store'
-import { listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
+import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
 export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord; run?: RunDetail; runAt?: number }
@@ -191,7 +191,8 @@ export function createFleetStore() {
   async function refresh() {
     state.update((s) => ({ ...s, loading: true, error: null }))
     try {
-      const [a, p] = await Promise.all([listAgents(), listProjects()])
+      // Pending prompts survive a reload through the bridge; a bridge without the route just has none to restore.
+      const [a, p, pend] = await Promise.all([listAgents(), listProjects(), getNetworkPending().catch(() => [])])
       // The snapshot's rows have no run digest; keep the one deltas gave us.
       state.update((s) => {
         const prev = new Map(s.agents.map((r) => [r.id, r]))
@@ -201,7 +202,11 @@ export function createFleetStore() {
         })
         // A request for an agent that is gone has nobody left to decide for.
         const live = new Set(agents.map((r) => r.id))
-        return { ...s, agents, projects: p, loading: false, error: null, decisions: s.decisions.filter((d) => live.has(d.agentId)) }
+        const byKey = new Map<string, NetworkDecisionItem>()
+        for (const d of s.decisions) byKey.set(`${d.agentId}|${d.host}`, d)
+        for (const d of pend) byKey.set(`${d.agentId}|${d.host}`, { agentId: d.agentId, host: d.host, workspace: d.workspace, at: d.at })
+        const decisions = [...byKey.values()].filter((d) => live.has(d.agentId)).sort((x, y) => x.at - y.at)
+        return { ...s, agents, projects: p, loading: false, error: null, decisions }
       })
     } catch (e) {
       state.update((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }))

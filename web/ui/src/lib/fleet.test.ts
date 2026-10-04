@@ -333,6 +333,32 @@ describe('telemetry deltas', () => {
 })
 
 describe('stale decisions', () => {
+  it('refresh restores pending prompts from the bridge, merged with live ones', async () => {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta({ kind: 'network_block', sessionId: 'a1', agentId: 'a1', host: 'live.com', at: 5 })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (u: string) => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        u === '/api/agents' ? JSON.stringify([{ id: 'a1', project: '/p', status: 'idle', updatedAt: '' }, { id: 'a2', project: '/p', status: 'idle', updatedAt: '' }])
+        : u === '/api/network/pending' ? JSON.stringify({ pending: [{ kind: 'network_block', sessionId: 'a2', agentId: 'a2', host: 'old.com', workspace: 'w', at: 1 }] })
+        : '[]',
+    })))
+    setToken('t')
+    await actions.refresh()
+    expect(get(state).decisions.map((d) => `${d.agentId}/${d.host}`)).toEqual(['a2/old.com', 'a1/live.com'])
+    vi.unstubAllGlobals()
+  })
+
+  it('refresh still works when the pending route is missing', async () => {
+    const { state, actions } = createFleetStore()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (u: string) => u === '/api/network/pending' ? { ok: false, status: 404, text: async () => '' } : { ok: true, status: 200, text: async () => '[]' }))
+    setToken('t')
+    await actions.refresh()
+    expect(get(state).error).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
   it('refresh drops decisions of agents that are gone', async () => {
     const { state, actions } = createFleetStore()
     actions.applyDelta({ kind: 'network_block', sessionId: 'gone', agentId: 'gone', host: 'a.com', at: 1 })

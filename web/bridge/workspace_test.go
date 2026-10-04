@@ -346,7 +346,7 @@ func TestV5MigratesToV6(t *testing.T) {
 	}
 }
 
-func TestWorkspaceV8LoadsAsV9(t *testing.T) {
+func TestWorkspaceV8LoadsAndSavesAtCurrentVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fleet.json")
 	v8 := `{"version":8,"projects":["/p"],"agents":[{"id":"a1","project":"/p","ownerId":"local","origin":"ui"}]}`
 	if err := os.WriteFile(path, []byte(v8), 0o600); err != nil {
@@ -364,8 +364,8 @@ func TestWorkspaceV8LoadsAsV9(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), `"version": 9`) {
-		t.Fatalf("saved file is not v9:\n%s", data)
+	if !strings.Contains(string(data), `"version": 10`) {
+		t.Fatalf("saved file is not v10:\n%s", data)
 	}
 }
 

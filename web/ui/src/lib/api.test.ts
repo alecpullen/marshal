@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken } from './api'
+import { getCommitDraft, listReviewComments, postReviewComment, recentPrompts, resolveReviewComment, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken } from './api'
 
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
@@ -63,5 +63,53 @@ describe('session and agent dock API', () => {
     await runGate('a1')
     expect(f.mock.calls[0][0]).toBe('/api/agents/a1/verify')
     expect(f.mock.calls[0][1].method).toBe('POST')
+  })
+})
+
+describe('review and new-agent API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('getCommitDraft returns the message and maps 501', async () => {
+    const f = reply(200, { message: 'fix: x' })
+    vi.stubGlobal('fetch', f)
+    expect(await getCommitDraft('a 1')).toBe('fix: x')
+    expect(f.mock.calls[0][0]).toBe('/api/agents/a%201/commit-draft')
+    vi.stubGlobal('fetch', reply(501, { error: 'commit_draft_unsupported' }))
+    expect(await getCommitDraft('a1')).toBe('unsupported')
+  })
+
+  it('listReviewComments unwraps the comments', async () => {
+    const f = reply(200, { comments: [{ id: 'c1' }] })
+    vi.stubGlobal('fetch', f)
+    expect(await listReviewComments('a1')).toEqual([{ id: 'c1' }])
+    expect(f.mock.calls[0][0]).toBe('/api/agents/a1/review/comments')
+    vi.stubGlobal('fetch', reply(200, {}))
+    expect(await listReviewComments('a1')).toEqual([])
+  })
+
+  it('postReviewComment sends the body', async () => {
+    const f = reply(200, { id: 'c1' })
+    vi.stubGlobal('fetch', f)
+    const c = { path: 'a.go', line: 3, side: 'new' as const, quote: 'x', body: 'why?' }
+    await postReviewComment('a1', c)
+    expect(f.mock.calls[0][0]).toBe('/api/agents/a1/review/comments')
+    expect(f.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(f.mock.calls[0][1].body)).toEqual(c)
+  })
+
+  it('resolveReviewComment posts to resolve', async () => {
+    const f = reply(200, { status: 'resolved' })
+    vi.stubGlobal('fetch', f)
+    await resolveReviewComment('a1', 'c 1')
+    expect(f.mock.calls[0][0]).toBe('/api/agents/a1/review/comments/c%201/resolve')
+    expect(f.mock.calls[0][1].method).toBe('POST')
+  })
+
+  it('recentPrompts passes project and limit', async () => {
+    const f = reply(200, { prompts: ['a', 'b'] })
+    vi.stubGlobal('fetch', f)
+    expect(await recentPrompts('/p q')).toEqual(['a', 'b'])
+    expect(f.mock.calls[0][0]).toBe('/api/prompts/recent?project=%2Fp%20q&limit=20')
   })
 })

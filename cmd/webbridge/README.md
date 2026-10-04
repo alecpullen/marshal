@@ -70,6 +70,27 @@ It refuses to overwrite an existing file. Values are written through
 are never logged: the audit log records `secret_set` and
 `secret_deleted` with the ref only.
 
+## Recipes, schedules, notifications and status links
+
+- **Recipes** are parameterised prompts (or plan or swarm runs) with
+  limits, stored as JSON under `<state-dir>/recipes/`. Four built-ins ship
+  (`review-pr`, `fix-ci`, `summarize-changes`, `update-deps`); copy one to
+  edit it. `POST /api/recipes/{name}/run` starts one. A recipe with an
+  `output` ends with a fenced `json` block the bridge parses.
+- **Schedules** run a recipe on a five-field UTC cron
+  (`/api/schedules`). A tick is skipped while the previous run is still
+  active; missed ticks are not made up.
+- **Notifications** POST fleet events (`needs_you`, `run_finished`,
+  `budget`, `automation`, `watch_fired`, `network_block`) to webhooks
+  (`/api/notifications`). With a `secretRef` the body is signed:
+  `X-Marshal-Signature: sha256=<hex hmac>`. Links in them use
+  `--public-url` (`WEBBRIDGE_PUBLIC_URL`); without it they are relative.
+- **Status links** (`/api/status-links`) give a revocable, read-only
+  public page at `/s/<token>`. It shows the agent name, project folder
+  name, status, progress, task list and the current step headline, and
+  nothing else. It needs no bearer token, is rate limited per IP, and
+  answers 404 for unknown, expired and revoked tokens alike.
+
 ## Egress proxy
 
 Agents reach the network through a proxy that enforces a per-agent

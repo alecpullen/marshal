@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{.Name}} · status</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: #f6f6f4; color: #1c1c1a; }
+  main { max-width: 36rem; margin: 0 auto; padding: 2rem 1rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
+  .meta { color: #5c5c58; font-size: .875rem; margin-bottom: 1.5rem; }
+  .pill { display: inline-block; padding: .1rem .6rem; border-radius: 999px; background: #e4e4df; font-size: .8125rem; }
+  .pill[data-status="working"] { background: #dbeafe; }
+  .pill[data-status="waiting"] { background: #fef3c7; }
+  .pill[data-status="finished"] { background: #dcfce7; }
+  .pill[data-status="failed"] { background: #fee2e2; }
+  .bar { height: .5rem; background: #e4e4df; border-radius: 999px; overflow: hidden; margin: 1rem 0 .25rem; }
+  .bar > span { display: block; height: 100%; background: #2f6f4f; width: 0; }
+  #headline { margin: 1rem 0; min-height: 1.5rem; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: .4rem 0; border-top: 1px solid #e4e4df; display: flex; gap: .6rem; }
+  li .s { flex: none; width: 4.5rem; color: #5c5c58; font-size: .8125rem; }
+  .err { color: #a11; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="name">{{.Name}}</h1>
+  <div class="meta"><span id="project"></span> · <span class="pill" id="status" data-status="">loading</span> · <span id="elapsed"></span></div>
+  <div class="bar"><span id="bar"></span></div>
+  <div class="meta" id="progress"></div>
+  <p id="headline"></p>
+  <ul id="tasks"></ul>
+  <p class="meta err" id="error" hidden>Could not refresh. Retrying.</p>
+</main>
+<script>
+(function () {
+  var base = location.pathname.replace(/\/+$/, '');
+  function $(id) { return document.getElementById(id); }
+  function fmt(ms) {
+    var m = Math.floor(ms / 60000), h = Math.floor(m / 60);
+    return h > 0 ? h + 'h ' + (m % 60) + 'm' : m + 'm';
+  }
+  function render(d) {
+    $('name').textContent = d.name;
+    $('project').textContent = d.project;
+    var st = $('status'); st.textContent = d.status; st.setAttribute('data-status', d.status);
+    $('elapsed').textContent = fmt(d.elapsedMs);
+    var p = d.progress || { done: 0, total: 0 };
+    $('bar').style.width = (p.total > 0 ? Math.round(100 * p.done / p.total) : 0) + '%';
+    $('progress').textContent = p.total > 0 ? p.done + ' of ' + p.total + ' tasks done' : '';
+    $('headline').textContent = d.headline || '';
+    var ul = $('tasks'); ul.textContent = '';
+    (d.tasks || []).forEach(function (t) {
+      var li = document.createElement('li'), s = document.createElement('span'), c = document.createElement('span');
+      s.className = 's'; s.textContent = t.status; c.textContent = t.content;
+      li.appendChild(s); li.appendChild(c); ul.appendChild(li);
+    });
+  }
+  function poll() {
+    fetch(base + '/data', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (d) { $('error').hidden = true; render(d); })
+      .catch(function () { $('error').hidden = false; });
+  }
+  poll(); setInterval(poll, 10000);
+})();
+</script>
+</body>
+</html>

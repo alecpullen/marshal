@@ -357,7 +357,13 @@ func (s *Server) memoryList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	raw, err := s.fleet.libraryCall(r.Context(), "project", project, "session/memory_list", nil)
+	// The scope filter (project, workspace, global) is validated by the
+	// agent, which answers an unknown one with invalid params.
+	var params map[string]any
+	if scope := r.URL.Query().Get("scope"); scope != "" {
+		params = map[string]any{"scope": scope}
+	}
+	raw, err := s.fleet.libraryCall(r.Context(), "project", project, "session/memory_list", params)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -411,6 +417,56 @@ func (s *Server) memorySetConfidence(w http.ResponseWriter, r *http.Request) {
 	writeRaw(w, raw)
 }
 
+// memorySuggestions lists project memories another project holds too, with
+// the scope each could be promoted to.
+func (s *Server) memorySuggestions(w http.ResponseWriter, r *http.Request) {
+	project, ok := memoryProject(w, r)
+	if !ok {
+		return
+	}
+	raw, err := s.fleet.libraryCall(r.Context(), "project", project, "session/memory_suggestions", nil)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeRaw(w, raw)
+}
+
+// memoryPromote moves a memory to a wider scope.
+func (s *Server) memoryPromote(w http.ResponseWriter, r *http.Request) {
+	project, ok := memoryProject(w, r)
+	if !ok {
+		return
+	}
+	id, ok := memoryID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Scope    string `json:"scope"`
+		ScopeKey string `json:"scopeKey"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Scope == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scope is required"})
+		return
+	}
+	params := map[string]any{"id": id, "scope": body.Scope}
+	if body.ScopeKey != "" {
+		params["scopeKey"] = body.ScopeKey
+	}
+	raw, err := s.fleet.libraryCall(r.Context(), "project", project, "session/memory_promote", params)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.fleet.auditf(AuditEvent{Event: AuditMemoryPromoted, OwnerID: DefaultOwnerID,
+		Detail: strconv.FormatInt(id, 10) + " -> " + body.Scope})
+	writeRaw(w, raw)
+}
+
 func (s *Server) libraryRoutes() {
 	for _, k := range []libraryKind{skillsKind, pluginsKind} {
 		base := "/api/library/" + k.name + "s"
@@ -425,6 +481,8 @@ func (s *Server) libraryRoutes() {
 		s.mux.HandleFunc("DELETE "+base+"/{name}", s.libraryRemove(k))
 	}
 	s.mux.HandleFunc("GET /api/library/memory", s.memoryList)
+	s.mux.HandleFunc("GET /api/library/memory/suggestions", s.memorySuggestions)
 	s.mux.HandleFunc("DELETE /api/library/memory/{id}", s.memoryDelete)
+	s.mux.HandleFunc("POST /api/library/memory/{id}/promote", s.memoryPromote)
 	s.mux.HandleFunc("POST /api/library/memory/{id}/confidence", s.memorySetConfidence)
 }

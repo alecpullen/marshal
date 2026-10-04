@@ -364,8 +364,8 @@ func TestWorkspaceV8LoadsAndSavesAtCurrentVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), `"version": 10`) {
-		t.Fatalf("saved file is not v10:\n%s", data)
+	if !strings.Contains(string(data), `"version": 11`) {
+		t.Fatalf("saved file is not v11:\n%s", data)
 	}
 }
 

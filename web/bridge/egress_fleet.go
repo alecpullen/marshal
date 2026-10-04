@@ -426,7 +426,7 @@ func (f *Fleet) noteBlocked(agentID, host string) {
 	f.blockedMu.Lock()
 	f.blockedPending[key] = d
 	f.blockedMu.Unlock()
-	_, _ = f.fleetLog.Append(fleetStreamKey, d)
+	f.emit(d)
 }
 
 // resolveBlocked drops a pending block once a decision answered it.

@@ -140,6 +140,8 @@ export interface StackSnapshot {
 
 export interface StackPatch {
   kind: 'stack_patch'
+  /** Which transcript this patch belongs to; absent for the parent. */
+  subagentId?: number
   rev: number
   baseRev: number
   roots: string[]

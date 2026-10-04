@@ -137,6 +137,7 @@ func (s *Server) routes() {
 	s.modelsRoutes()
 	s.budgetRoutes()
 	s.watchRoutes()
+	s.workspaceRoutes()
 	s.mux.HandleFunc("GET /api/runs", s.listRuns)
 	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
 	s.mux.HandleFunc("POST /api/runs", s.startRun)

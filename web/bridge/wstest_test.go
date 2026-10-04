@@ -24,7 +24,31 @@ func wsSrc(t testing.TB, doc WSDoc) []byte {
 func wsParseAgent() *fakeAgent {
 	agent := newFakeAgent()
 	agent.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
-		if method != "workspace/parse" {
+		switch method {
+		case "workspace/format":
+			var p struct {
+				Doc WSDoc `json:"doc"`
+			}
+			_ = json.Unmarshal(params, &p)
+			b, _ := json.Marshal(p.Doc)
+			return map[string]any{"source": string(b)}, nil, true
+		case "workspace/patch":
+			// Layer 3 replaces the packages; the value is a WSPackages.
+			var p struct {
+				Source string          `json:"source"`
+				Layer  int             `json:"layer"`
+				Value  json.RawMessage `json:"value"`
+			}
+			_ = json.Unmarshal(params, &p)
+			var doc WSDoc
+			_ = json.Unmarshal([]byte(p.Source), &doc)
+			if p.Layer == 3 {
+				_ = json.Unmarshal(p.Value, &doc.Packages)
+			}
+			b, _ := json.Marshal(doc)
+			return map[string]any{"source": string(b), "doc": doc, "sections": []WSSection{}, "diagnostics": []WSDiag{}}, nil, true
+		case "workspace/parse":
+		default:
 			return nil, nil, false
 		}
 		var p struct {

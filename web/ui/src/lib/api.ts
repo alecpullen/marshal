@@ -255,6 +255,16 @@ export async function steerSession(id: string, text: string): Promise<void> {
   await request('POST', `/api/sessions/${encodeURIComponent(id)}/steer`, { text })
 }
 
+/** The stack snapshot, or 'unsupported' for an agent that predates session/stack. */
+export async function getStack(sessionId: string): Promise<import('./stack').StackSnapshot | 'unsupported'> {
+  try {
+    return await request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/stack`)
+  } catch (e) {
+    if (e instanceof APIError && e.status === 501) return 'unsupported'
+    throw e
+  }
+}
+
 export async function cancelSession(id: string): Promise<void> {
   await request('POST', `/api/sessions/${encodeURIComponent(id)}/cancel`)
 }

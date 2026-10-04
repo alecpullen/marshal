@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,39 @@ func TestProjectHealthVerifyOnlyForATrustedProject(t *testing.T) {
 	h, err = e.f.ProjectHealth(context.Background(), root)
 	if err != nil || h.Verify.Test != "go test" {
 		t.Fatalf("trusted: %+v %v", h.Verify, err)
+	}
+}
+
+func TestScanTOMLStringsNeverPanics(t *testing.T) {
+	for _, cfg := range []string{
+		"[sdd.verify]\ntest = \"a\\",
+		"[sdd.verify]\ntest = \"a\\\nb\"\n",
+		"[sdd.verify]\ntest = \"\"\"a\\",
+		"[sdd.verify]\ntest = '''a",
+		"[sdd.verify]\ntest = \"",
+		"[sdd.verify]\ntest = [\"a\\",
+		"[sdd.verify]\ntest =",
+		"[",
+		"=",
+	} {
+		scanTOMLStrings(cfg)
+	}
+	// Every prefix of a document full of awkward tokens, and random
+	// splices of its pieces, must scan without panicking.
+	pieces := []string{"[sdd.verify]", "[[a]]", "test", "build", " = ", "\"", "'", "\"\"\"", "'''", "\\", "\n", "#", "[", "]", "{", "}", "x", " ", "."}
+	seed := uint32(1)
+	next := func(n int) int {
+		seed = seed*1664525 + 1013904223
+		return int(seed>>8) % n
+	}
+	for i := 0; i < 3000; i++ {
+		var b strings.Builder
+		for k := next(40); k >= 0; k-- {
+			b.WriteString(pieces[next(len(pieces))])
+		}
+		doc := b.String()
+		for cut := 0; cut <= len(doc); cut++ {
+			scanTOMLStrings(doc[:cut])
+		}
 	}
 }

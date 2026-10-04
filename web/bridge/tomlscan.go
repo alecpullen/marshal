@@ -161,7 +161,7 @@ func scanTOMLString(src string, i int) (val string, end int, ok bool) {
 		j := body
 		for j < len(src) {
 			if q == '"' && src[j] == '\\' {
-				j += 2
+				j = min(j+2, len(src))
 				continue
 			}
 			if strings.HasPrefix(src[j:], delim) {
@@ -192,7 +192,10 @@ func scanTOMLString(src string, i int) (val string, end int, ok bool) {
 	j := i + 1
 	for j < len(src) && src[j] != '\n' {
 		if q == '"' && src[j] == '\\' {
-			j += 2
+			if j+1 < len(src) && src[j+1] == '\n' {
+				return "", j + 1, false // an escape cannot cross a line
+			}
+			j = min(j+2, len(src))
 			continue
 		}
 		if src[j] == q {

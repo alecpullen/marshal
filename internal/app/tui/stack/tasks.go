@@ -73,6 +73,17 @@ func todoListed(todos []db.TodoItem, id string) bool {
 	return false
 }
 
+// todoWriteLen is how many items a todo.write call wrote.
+func todoWriteLen(ev registry.AuditEvent) int {
+	var args struct {
+		Todos []db.TodoItem `json:"todos"`
+	}
+	if json.Unmarshal(ev.Args, &args) != nil {
+		return 0
+	}
+	return len(args.Todos)
+}
+
 func taskMode(todos []db.TodoItem) bool { return len(todos) >= MinTaskTodos }
 
 // ReceiptInfo is the one-line summary closing a finished turn.
@@ -161,7 +172,7 @@ func todoSetInProgress(ev registry.AuditEvent, todos []db.TodoItem) string {
 // nodes. Anything else (steps with no task, final answers, notices) stays at
 // turn level, so a pass-through between two steps of one task splits it into
 // segments and the chronology stays honest.
-func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn bool) []*Node {
+func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn, wroteList bool) []*Node {
 	out := make([]*Node, 0, len(nodes))
 	var cur *Node
 	segments := map[string]int{}
@@ -171,7 +182,7 @@ func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn bool) []*Nod
 			id = n.Step.TodoID
 			// A short list does not drive the transcript, but work under a
 			// todo that has since left the list still gets its dropped header.
-			if !taskMode(s.Todos) && todoListed(s.Todos, id) {
+			if !wroteList && !taskMode(s.Todos) && todoListed(s.Todos, id) {
 				id = ""
 			}
 		}
@@ -205,11 +216,24 @@ func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn bool) []*Nod
 	return out
 }
 
-// addQueue appends the waiting-todos list to a turn that is working from a
-// todo list: below the live work while the turn runs, above the final answer
-// once it ends (a turn can stop with todos still pending, and the reader
-// should see them rather than assume they were done). Todos that already have
-// a task in this turn are not listed twice; finished ones are done.
+// DrivenByTodos reports whether a turn is working from the todo list: it has
+// task blocks or a waiting list. The TUI pins the list above the transcript
+// for such a turn; a turn that never touched the list does not get it, so
+// leftovers from an earlier turn do not linger.
+func DrivenByTodos(turn *Node) bool {
+	for _, n := range turn.Children {
+		if n.Kind == KindQueue || (n.Kind == KindTask && n.Task != nil && !n.Task.Dropped) {
+			return true
+		}
+	}
+	return false
+}
+
+// addQueue appends the waiting-todos list to the last turn when it is working
+// from a todo list. The TUI shows these todos in the strip pinned above the
+// transcript rather than as rows, so only the latest turn carries one: earlier
+// turns keep their folded task rows. Todos that already have a task in this
+// turn are not listed twice; finished ones are done.
 func addQueue(nodes []*Node, turnKey string, s Snapshot, todoWritten bool) []*Node {
 	if !taskMode(s.Todos) {
 		return nodes
@@ -239,15 +263,6 @@ func addQueue(nodes []*Node, turnKey string, s Snapshot, todoWritten bool) []*No
 		b.f("q|%s|%s|%d|%d|%v|", it.TodoID, it.Content, it.Index, it.Total, it.Active)
 	}
 	node.Version = b.sum()
-	if !s.Busy {
-		for i := len(nodes) - 1; i >= 0; i-- {
-			if nodes[i].Kind == KindFinal {
-				out := append([]*Node(nil), nodes[:i]...)
-				out = append(out, node)
-				return append(out, nodes[i:]...)
-			}
-		}
-	}
 	return append(nodes, node)
 }
 

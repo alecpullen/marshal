@@ -211,35 +211,6 @@ func taskDiffStat(n *stack.Node) string {
 	return fmt.Sprintf("+%d −%d", a, r)
 }
 
-// maxQueueRows caps the waiting list; the rest collapse into a count.
-const maxQueueRows = 8
-
-// renderQueue is the todos not yet started, listed below the work in
-// progress: "· 4/6 Add tests". A todo the agent has marked in progress before
-// any step ran under it leads with the running glyph instead.
-func renderQueue(q *stack.QueueInfo, width int) string {
-	th := theme.Current()
-	var b strings.Builder
-	shown := q.Items
-	if len(shown) > maxQueueRows {
-		shown = shown[:maxQueueRows]
-	}
-	room := max(width-gutterWidth, 1)
-	for _, it := range shown {
-		g, gc := glyph.Ambient, th.FGMuted
-		if it.Active {
-			g, gc = glyph.Running, accentColor
-		}
-		pos := fmt.Sprintf("%d/%d", it.Index, it.Total)
-		title := ansi.Truncate(it.Content, max(room-ansi.StringWidth(pos)-1, 1), "…")
-		b.WriteString(gutterPrefix(g, gc) + mutedStyle().Render(pos+" "+title) + "\n")
-	}
-	if more := len(q.Items) - len(shown); more > 0 {
-		b.WriteString(gutterPrefix(glyph.Ambient, th.FGMuted) + mutedStyle().Render(fmt.Sprintf("+%d more", more)) + "\n")
-	}
-	return b.String()
-}
-
 // renderReceipt is the turn's closing line:
 // "✓ done · 6m40s · 4 tasks · 11 steps · 19 tools · ±3 files · 212k tok".
 func renderReceipt(r *stack.ReceiptInfo, width int) string {

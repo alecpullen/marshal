@@ -247,25 +247,49 @@ func TestQueueListsTodosWithoutATaskYet(t *testing.T) {
 	}
 }
 
-func TestQueueSitsAboveTheFinalAnswerWhenTheTurnEnds(t *testing.T) {
-	nodes := Build(Snapshot{
+func TestQueueSurvivesTheTurnEndingButOnlyOnTheLatestTurn(t *testing.T) {
+	snap := Snapshot{
 		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2), final(3, 5)},
 		Steps: []session.Step{stepFor(1, "t1", 1, 3)},
 		Todos: todos(db.TodoItem{ID: "t1", Content: "A", Status: "in_progress"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"}),
-	})
-	kids := nodes[0].Children
-	var kinds []Kind
-	for _, k := range kids {
-		kinds = append(kinds, k.Kind)
 	}
-	want := []Kind{KindMessage, KindTask, KindQueue, KindFinal, KindReceipt}
-	if len(kinds) != len(want) {
-		t.Fatalf("kinds = %v, want %v", kinds, want)
+	if q := queueOf(Build(snap)); q == nil || len(q.Items) != 1 || q.Items[0].TodoID != "t2" {
+		t.Fatalf("a turn that ended with todos pending still lists them, got %+v", q)
 	}
-	for i := range want {
-		if kinds[i] != want[i] {
-			t.Fatalf("kinds = %v, want %v", kinds, want)
+	// A later turn takes over as the latest: the earlier one keeps its task
+	// rows and loses the list.
+	snap.Items = append(snap.Items, userMsg(9, 20))
+	nodes := Build(snap)
+	for _, n := range nodes[0].Children {
+		if n.Kind == KindQueue {
+			t.Fatalf("only the latest turn carries the waiting list:\n%s", shape(nodes))
 		}
+	}
+}
+
+func TestTaskModeFollowsTheListsATurnWroteNotJustTheCurrentOne(t *testing.T) {
+	steps := []session.Step{stepFor(1, "t1", 1, 3)}
+	items := []session.TranscriptItem{
+		userMsg(1, 0),
+		narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2),
+		todoWrite(1, "w", 3, `{"todos":[{"id":"t1","content":"A","status":"completed"},{"id":"t2","content":"B","status":"pending"}]}`),
+	}
+	one := todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"})
+	two := todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"})
+
+	// 2 -> 1: the list shrank after the turn wrote two items. The turn keeps
+	// its task rows instead of flattening.
+	if !strings.Contains(shape(Build(Snapshot{Items: items, Steps: steps, Todos: one})), "task:") {
+		t.Fatal("rewriting the list to one item must not flatten a turn that worked from two")
+	}
+	// 1 -> 2: and it is the same with the longer list back.
+	if !strings.Contains(shape(Build(Snapshot{Items: items, Steps: steps, Todos: two})), "task:") {
+		t.Fatal("two items drive the turn")
+	}
+	// A turn that only ever saw one item stays flat whatever the list does later.
+	flat := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2)}
+	if strings.Contains(shape(Build(Snapshot{Items: flat, Steps: steps, Todos: one})), "task:") {
+		t.Fatal("one item is not a plan")
 	}
 }
 

@@ -122,7 +122,7 @@ func renderStep(n *stack.Node, c *stepRenderCtx, width int, inherited density) (
 	failed := stepFailed(rows)
 
 	// Header.
-	g, gc := stepGlyph(n, rows, failed, c)
+	g, gc := stepGlyph(n, failed, c)
 	meta := metaParts{
 		owner:      stepOwner(si.Step),
 		role:       stepRoleWord(si.Step),
@@ -324,7 +324,7 @@ func indentLines(s string, n int) string {
 
 // stepGlyph picks the state glyph: ✗ if any row failed, the spinner while
 // live, and a quiet · once settled.
-func stepGlyph(n *stack.Node, rows []*stack.Node, failed bool, c *stepRenderCtx) (string, color.Color) {
+func stepGlyph(n *stack.Node, failed bool, c *stepRenderCtx) (string, color.Color) {
 	th := theme.Current()
 	switch {
 	case failed:
@@ -340,15 +340,6 @@ func stepGlyph(n *stack.Node, rows []*stack.Node, failed bool, c *stepRenderCtx)
 	// turns the transcript into a column of badges. Only the states that need
 	// attention (running, failed) get a marker with colour.
 	return glyph.Ambient, th.FGMuted
-}
-
-func hasToolRows(rows []*stack.Node) bool {
-	for _, r := range rows {
-		if r.Kind == stack.KindTool {
-			return true
-		}
-	}
-	return false
 }
 
 // stepFailed reports whether any tool row in the step failed: an error, a

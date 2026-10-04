@@ -212,3 +212,26 @@ func TestRenderToolGroupContinuationLinesIndented(t *testing.T) {
 		}
 	}
 }
+
+func TestCollapsedToolGroupTruncatesOverflowingTargetsOnOneLine(t *testing.T) {
+	var events []registry.AuditEvent
+	for _, p := range []string{"internal/app/tui/steps.go", "internal/app/tui/tasks_render.go", "internal/app/tui/viewport_render.go", "internal/app/tui/model.go"} {
+		events = append(events, registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"` + p + `"}`)})
+	}
+	for _, width := range []int{30, 60} {
+		out := stripANSI(renderToolGroup(events, false, width))
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("w=%d: collapsed run is one line, got %d:\n%s", width, len(lines), out)
+		}
+		if w := ansi.StringWidth(lines[0]); w > width {
+			t.Fatalf("w=%d: line is %d cells wide: %q", width, w, lines[0])
+		}
+		if !strings.HasSuffix(lines[0], "…") {
+			t.Fatalf("w=%d: an overflowing run ends with an ellipsis: %q", width, lines[0])
+		}
+		if !strings.Contains(lines[0], "×4") {
+			t.Fatalf("w=%d: the count survives truncation: %q", width, lines[0])
+		}
+	}
+}

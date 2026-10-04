@@ -17,22 +17,31 @@ Two things read badly in practice:
 ## Todo stack
 
 A todo list of two or more items drives the transcript (`stack.MinTaskTodos`).
-Shorter lists, and turns that never touch the list, render as plain narrated
-steps with no task chrome and no task count on the receipt.
+Whether a turn is driven is settled per turn, by the longest list any
+`todo.write` in it wrote or by the current list, so rewriting the list to one
+item later does not flatten a finished turn. Shorter lists, and turns that
+never touch the list, render as plain narrated steps with no task chrome and
+no task count on the receipt.
 
 For a turn working from a list:
 
-- finished todos are folded rows (P3 folding rule unchanged), stacked tight;
-- the todo in progress is open: a rule header sitting directly on its steps;
-- todos with no task yet (pending, or in progress before a step ran) are
-  listed below the live work as `· 3/5 title` rows, capped at eight with a
-  `+N more` row. This is `stack.KindQueue`, built by `addQueue`;
-- the list shows as soon as it has been written, before any step runs under it;
-- when the turn ends with todos left over, the list sits above the final
-  answer rather than disappearing.
+- **Pinned strip.** Above the transcript, one line per todo: `✓ 1/5 title`
+  done, `▸ 2/5 title` active, `· 3/5 title` waiting. It stays put while the
+  work scrolls, shows as soon as the list is written, and stays after the
+  turn ends. Past six rows (three on a short terminal) it becomes a window
+  around the active todo with `✓ N done` and `+N more` lines. It only
+  appears while the latest turn is working from the list, so leftovers from
+  an earlier turn do not linger. It is the same todo list the data model
+  already carries; the strip is `todo_strip.go` and its rows are part of the
+  viewport height budget.
+- **Transcript.** Finished todos are folded rows (P3 folding rule
+  unchanged, so they still expand to their steps), stacked tight. The todo
+  in progress is open: a rule header sitting directly on its steps. The
+  waiting todos are not repeated here (`stack.KindQueue` is the data the
+  strip reads, and it renders no rows).
 
 Work under a todo that later left the list still renders under its `dropped`
-header, whatever the list length.
+header.
 
 ## Flow
 
@@ -43,8 +52,10 @@ header, whatever the list length.
   failed one (`✗`) get colour.
 - A step header shows a duration only from 15 s up (`notableStepDuration`).
 - A collapsed same-tool run is a single line, `Read files: ×3 · a.go, b.go`,
-  so a growing run changes one row, not the layout. Expanded keeps the
-  bullet list.
+  ending in `…` when the targets overflow, so a growing run changes one row,
+  not the layout. Result summaries now appear only when the run is expanded
+  (errors, hooks and symbol results never join a run, so no failure is
+  hidden). Expanded keeps the bullet list.
 - Consecutive narration-only steps run on without a blank line.
-- Folded task rows, the open header after them and the waiting list are
-  joined without blank lines (`tight` in `refreshViewport`).
+- Folded task rows and the open header after them are joined without blank
+  lines (`tight` in `refreshViewport`).

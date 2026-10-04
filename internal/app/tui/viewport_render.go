@@ -71,6 +71,11 @@ func (m *Model) refreshViewport() {
 		Now:             m.now(),
 	}
 	turns := stack.Build(snap)
+	m.todoStrip = nil
+	if len(turns) > 0 && stack.DrivenByTodos(turns[len(turns)-1]) {
+		m.todoStrip = snap.Todos
+	}
+	m.updateViewportHeight()
 
 	width := m.viewport.Width()
 	themeSig := themeFingerprint()
@@ -179,6 +184,7 @@ func (m *Model) refreshViewport() {
 				turnFirst = false
 			}
 			addBlock(out, m.blockTarget(node), subs)
+			nextTight = false // never leaks onto a later block, even if this one was empty
 		}
 	}
 	if reconnect != "" {
@@ -252,8 +258,9 @@ func (m *Model) drawNode(n *stack.Node, c *stepRenderCtx, width int) (string, []
 		return renderTask(n, c, width, m.density)
 	case n.Kind == stack.KindReceipt && n.Receipt != nil:
 		return renderReceipt(n.Receipt, width), nil
-	case n.Kind == stack.KindQueue && n.Queue != nil:
-		return renderQueue(n.Queue, width), nil
+	case n.Kind == stack.KindQueue:
+		// The waiting todos live in the pinned strip above the transcript.
+		return "", nil
 	case n.Kind == stack.KindStep && n.Step != nil:
 		return renderStep(n, c, width, m.density)
 	case n.Kind == stack.KindThinking && n.Step != nil:

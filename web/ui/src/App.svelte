@@ -3,6 +3,9 @@
   import Dashboard from './views/Dashboard.svelte'
   import NewAgent from './views/NewAgent.svelte'
   import Chat from './views/Chat.svelte'
+  import Runs from './views/Runs.svelte'
+  import Run from './views/Run.svelte'
+  import Live from './views/Live.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -15,7 +18,7 @@
   import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -130,6 +133,8 @@
 
   const chatRoute = $derived(parseChatRoute(hash))
   const chatSessionId = $derived(chatRoute?.id ?? null)
+  const runRoute = $derived(parseRunRoute(hash))
+  const liveRoute = $derived(parseLiveRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -175,6 +180,29 @@
       {#key chatSessionId}
         <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
       {/key}
+    {:else if runRoute}
+      {#key runRoute.id}
+        <Run
+          agentId={runRoute.id}
+          route={runRoute}
+          agent={$fleet.agents.find((a) => a.id === runRoute.id)}
+          onNavigate={navigate}
+        />
+      {/key}
+    {:else if hash === '#runs'}
+      <div class="h-full overflow-y-auto">
+        <Runs agents={$fleet.agents} projects={$fleet.projects} onNavigate={navigate} onRefresh={actions.refresh} />
+      </div>
+    {:else if liveRoute}
+      <div class="h-full overflow-y-auto">
+        <Live
+          agents={$fleet.agents}
+          projects={$fleet.projects}
+          route={liveRoute}
+          onRefreshPending={refreshPending}
+          onNavigate={navigate}
+        />
+      </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">
         <NewAgent onDone={(id) => navigate(id ? `#chat/${id}` : '#')} />
@@ -212,6 +240,8 @@
         <Home
           agents={$fleet.agents}
           {pending}
+          notices={$fleet.notices}
+          onDismissNotice={actions.dismissNotice}
           onRefreshPending={refreshPending}
           onOpenAgent={(id) => navigate(`#chat/${id}`)}
           onNavigate={navigate}

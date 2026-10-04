@@ -1,5 +1,5 @@
 import { ensureToken, getToken } from './api.js'
-import type { FleetEvent, FleetDelta, ProjectRemovedDelta } from './fleet'
+import type { FleetEvent, ProjectRemovedDelta } from './fleet'
 
 export interface SSEMessage {
   id: number
@@ -151,13 +151,68 @@ export function connectSSE({ sessionId, query, onEvent, signal }: SSEOptions): (
   }
 }
 
+/** A role binding as the engine reports it: a preset name, a custom-agent table, or null for none. */
+function bindingLabel(v: unknown): string {
+  if (v === null) return 'no binding'
+  if (typeof v === 'string') return v === '' ? 'no binding' : v
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    for (const k of ['preset', 'Preset', 'customAgent', 'CustomAgent', 'custom_agent']) {
+      if (typeof o[k] === 'string' && o[k] !== '') return o[k] as string
+    }
+    return JSON.stringify(v)
+  }
+  return ''
+}
+
+const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
+
+/**
+ * A reroute delta carries its payload under `reroute` (`{id, watchId, watch,
+ * role, profile, from, to, at}`; from and to are bindings, null for none), and
+ * the flat spec shape is accepted too. Anything without a string id and role
+ * and both bindings is dropped, so a drifted shape cannot put an "undefined"
+ * notice (or an Undo that posts to /reroutes/undefined) on Home.
+ */
+function parseReroute(value: Record<string, unknown>): FleetEvent | null {
+  const src = (value.reroute && typeof value.reroute === 'object' ? value.reroute : value) as Record<string, unknown>
+  const id = str(src.id)
+  const role = str(src.role)
+  if (!id || !role || !('from' in src) || !('to' in src)) return null
+  const from = bindingLabel(src.from)
+  const to = bindingLabel(src.to)
+  if (!from || !to) return null
+  return { kind: 'reroute', id, watch: str(src.watch) ?? str(src.watchId) ?? '', role, from, to }
+}
+
+/** A budget delta is nested under `budget` on the wire; the flat spec shape is accepted too. */
+function parseBudget(value: Record<string, unknown>): FleetEvent | null {
+  const src = (value.budget && typeof value.budget === 'object' ? value.budget : value) as Record<string, unknown>
+  if ((src.scope !== 'daily' && src.scope !== 'agent') || typeof src.spentUsd !== 'number' || typeof src.capUsd !== 'number') return null
+  return {
+    kind: 'budget',
+    scope: src.scope,
+    ...(str(src.agentId) ? { agentId: str(src.agentId)! } : {}),
+    spentUsd: src.spentUsd,
+    capUsd: src.capUsd,
+    action: str(src.action) ?? '',
+  }
+}
+
 export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
   try {
     const value = JSON.parse(data) as Record<string, unknown>
     if (value.type === 'replay_overflow') return 'overflow'
     if (value.kind === 'project_removed' && typeof value.project === 'string') return value as unknown as ProjectRemovedDelta
+    // Budget and reroute are fleet-wide, so they carry no session.
+    if (value.kind === 'budget') return parseBudget(value)
+    if (value.kind === 'reroute') return parseReroute(value)
+    // The bridge may address a run delta as agentId; rows are keyed by sessionId.
+    if (value.kind === 'run' && typeof value.sessionId !== 'string' && typeof value.agentId === 'string') {
+      value.sessionId = value.agentId
+    }
     if (typeof value.kind !== 'string' || typeof value.sessionId !== 'string') return null
-    return value as unknown as FleetDelta
+    return value as unknown as FleetEvent
   } catch { return null }
 }
 

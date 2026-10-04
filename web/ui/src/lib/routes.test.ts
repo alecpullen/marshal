@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, type ChatRoute } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, type ChatRoute } from './routes'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -85,5 +85,34 @@ describe('chat route', () => {
     expect(parseChatRoute('#chat/a?dock=huge&tab=nope&node=')).toEqual({ id: 'a', view: 'session' })
     expect(parseChatRoute('#fleet')).toBeNull()
     expect(parseChatRoute('#chat/')).toBeNull()
+  })
+})
+
+describe('run and live routes', () => {
+  it('parses #runs/<id> with defaults and drops bad values', () => {
+    expect(parseRunRoute('#runs/a1')).toEqual({ id: 'a1', view: 'lanes' })
+    expect(parseRunRoute('#runs/a1?view=graph&node=2%3Averify&dock=expanded')).toEqual({ id: 'a1', view: 'graph', node: '2:verify', dock: 'expanded' })
+    expect(parseRunRoute('#runs/a1?view=bogus&dock=huge')).toEqual({ id: 'a1', view: 'lanes' })
+    expect(parseRunRoute('#runs')).toBeNull()
+  })
+
+  it('round-trips a run route', () => {
+    const r = { id: 'a 1', view: 'timeline' as const, node: '3:review', dock: 'collapsed' as const }
+    expect(parseRunRoute(formatRunRoute(r))).toEqual(r)
+    expect(formatRunRoute({ id: 'a1', view: 'lanes' })).toBe('#runs/a1')
+  })
+
+  it('parses and formats the live wall route', () => {
+    expect(parseLiveRoute('#live')).toEqual({ project: undefined, runsOnly: false, page: 1 })
+    expect(parseLiveRoute('#live?project=%2Fp&runs=1&page=3')).toEqual({ project: '/p', runsOnly: true, page: 3 })
+    expect(parseLiveRoute('#live?page=-2')?.page).toBe(1)
+    expect(formatLiveRoute({ project: '/p', runsOnly: true, page: 3 })).toBe('#live?project=%2Fp&runs=1&page=3')
+    expect(formatLiveRoute({ runsOnly: false, page: 1 })).toBe('#live')
+  })
+
+  it('maps them to pages', () => {
+    expect(pageFromHash('#runs')).toBe('runs')
+    expect(pageFromHash('#runs/a1?view=graph')).toBe('run')
+    expect(pageFromHash('#live?runs=1')).toBe('live')
   })
 })

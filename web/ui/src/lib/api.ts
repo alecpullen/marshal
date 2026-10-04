@@ -50,8 +50,25 @@ export class APIError extends Error {
   }
 }
 
+/**
+ * A 429 `{"error":"budget_exceeded","scope":…}`: a daily or per-agent cap
+ * stopped the request. Callers show `budgetMessage(e)` instead of a generic
+ * failure.
+ */
+export class BudgetError extends APIError {
+  scope: string
+  constructor(body: { scope?: string; agentId?: string }) {
+    super(429, body)
+    this.name = 'BudgetError'
+    this.scope = body.scope ?? 'daily'
+  }
+}
+
+export const budgetMessage = (e: BudgetError) => `Budget reached (${e.scope})`
+
 // The bridge returns its reasons as {"error": ...}; this unwraps them for display.
 export function errMessage(e: unknown): string {
+  if (e instanceof BudgetError) return budgetMessage(e)
   if (e instanceof APIError) {
     const b = e.body as { error?: string } | undefined
     if (b && typeof b.error === 'string' && b.error) return b.error
@@ -91,6 +108,9 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
     throw new AuthError('Unauthorized')
   }
   if (!res.ok) {
+    if (res.status === 429 && (data as { error?: string } | undefined)?.error === 'budget_exceeded') {
+      throw new BudgetError(data as { scope?: string; agentId?: string })
+    }
     throw new APIError(res.status, data)
   }
   return data as T
@@ -499,3 +519,76 @@ export interface DiskStatus { repos: number; work: number; total: number; measur
 export interface PruneResult { reclaimed: number; total: number; warning?: string }
 export async function getDiskUsage(): Promise<DiskStatus> { return request('GET', '/api/disk') }
 export async function pruneDisk(): Promise<PruneResult> { return request('POST', '/api/prune') }
+// Runs (W3.1 RunDetail, served by the bridge's /api/runs).
+
+export interface RunStage { name: string; state: 'pending' | 'active' | 'done' | 'failed' | 'skipped'; detail?: string }
+export interface RunTask {
+  n: number
+  title: string
+  dependsOn: number[]
+  status: 'pending' | 'active' | 'done' | 'failed'
+  startedAt?: number
+  endedAt?: number
+  execType?: string
+  commit?: { base: string; head: string }
+  fixRounds: number
+  stages: RunStage[]
+}
+export interface SDDRun {
+  active: boolean
+  planName?: string
+  planPath?: string
+  branch?: string
+  totalTasks: number
+  doneTasks: number
+  currentTask: number
+  phase?: string
+  detail?: string
+  fixRound: number
+  maxFixRounds: number
+  tokensUsed: number
+  tokensMax: number
+  finished: boolean
+  succeeded: boolean
+  baseRef?: string
+  startedAt?: number
+  endedAt?: number
+  phaseStartedAt?: number
+  error?: string
+  tasks: RunTask[]
+  gate?: { taskN: number; question: string }
+}
+export interface SwarmRole { name: string; status: string; detail?: string; tokens: number; startedAt?: string }
+export interface SwarmRun { goal?: string; active: boolean; roles: SwarmRole[]; tokensUsed: number; tokensMax: number }
+export interface RunDetail { kind: 'sdd' | 'swarm' | 'none'; sdd?: SDDRun; swarm?: SwarmRun }
+
+/** `at` is when the bridge last saw the run, in ms; `error` is a final run error the bridge recorded. */
+export interface RunRow { agentId: string; name?: string; project: string; run: RunDetail; at?: number; error?: string }
+export interface RunRequest { agentId?: string; project?: string; kind: 'sdd' | 'swarm'; plan?: string; planPath?: string; goal?: string }
+
+export async function listRuns(): Promise<RunRow[]> {
+  // The bridge stamps `at` as RFC3339; everything here compares milliseconds.
+  const rows = (await request<(Omit<RunRow, 'at'> & { at?: string | number })[] | null>('GET', '/api/runs')) ?? []
+  return rows.map((r) => {
+    const at = typeof r.at === 'string' ? Date.parse(r.at) : r.at
+    return { ...r, at: Number.isFinite(at) ? at : undefined }
+  })
+}
+export async function getRun(agentId: string): Promise<RunDetail | 'unsupported'> {
+  return orUnsupported(() => request('GET', `/api/runs/${encodeURIComponent(agentId)}`))
+}
+export async function startRun(req: RunRequest): Promise<{ agentId: string }> {
+  return request('POST', '/api/runs', req)
+}
+export async function answerRun(agentId: string, answer: string): Promise<void> {
+  await request('POST', `/api/runs/${encodeURIComponent(agentId)}/answer`, { answer })
+}
+export async function undoReroute(id: string): Promise<void> {
+  await request('POST', `/api/reroutes/${encodeURIComponent(id)}/undo`)
+}
+
+export interface RosterRole { role: string; profile: string; provider?: string; model?: string; presetName?: string; customAgent?: string; localOnly: boolean; error?: string }
+export interface Roster { roles: RosterRole[]; swarmBudget: { maxFixRounds: number; maxTotalTokens: number }; sddBudget: { maxFixRounds: number; maxTotalTokens: number } }
+export async function getRoster(sessionId: string): Promise<Roster | 'unsupported'> {
+  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/roster`))
+}

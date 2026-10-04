@@ -9,15 +9,17 @@
     { glyph: '⌂', label: 'Home', hash: '#' },
     { glyph: '⧉', label: 'Agents', hash: '#fleet' },
     { glyph: '≡', label: 'Projects', hash: '#projects' },
-    { glyph: '◉', label: 'Live', phase: 'W3' },
-    { glyph: '⋔', label: 'Runs', phase: 'W3' },
+    { glyph: '◉', label: 'Live', hash: '#live' },
+    { glyph: '⋔', label: 'Runs', hash: '#runs' },
     { glyph: '▦', label: 'Workspaces', phase: 'W4' },
     { glyph: '○', label: 'Watches', phase: 'W3' },
     { glyph: '◈', label: 'Library', phase: 'W3' },
     { glyph: '∿', label: 'Usage', phase: 'W3' },
   ]
 
-  const active = (hash: string) => (hash === '#' ? route === '#' || route === '' : route === hash)
+  // A page owns its sub-routes: #runs/<id> and #live?page=2 keep their rail entry lit.
+  const active = (hash: string) =>
+    hash === '#' ? route === '#' || route === '' : route === hash || route.startsWith(hash + '/') || route.startsWith(hash + '?')
 </script>
 
 <nav aria-label="Pages" class="flex h-full w-[52px] shrink-0 flex-col items-center gap-1 border-r border-border bg-bg py-3">

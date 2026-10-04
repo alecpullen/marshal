@@ -81,4 +81,13 @@ describe('Transcript', () => {
     const { container } = render(Transcript, { store: stackStore(), density: 'steps', foldTasks: false, cursor: 'step:1' })
     expect(container.querySelector('[data-node-id="step:1"]')?.className).toContain('border-violet')
   })
+
+  it('limits the tree to onlyNodes with their ancestors and descendants', () => {
+    render(Transcript, { store: stackStore(), density: 'steps', foldTasks: false, onlyNodes: new Set(['step:1']) })
+    expect(screen.getByText('Reading the handler')).toBeTruthy()
+    expect(screen.getByText('Read file')).toBeTruthy()
+    expect(screen.getByText('Find the bug')).toBeTruthy()
+    expect(screen.queryByText('Patching the handler')).toBeNull()
+    expect(screen.queryByText('fix the bug')).toBeNull()
+  })
 })

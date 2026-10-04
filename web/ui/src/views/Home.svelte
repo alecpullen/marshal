@@ -3,20 +3,12 @@
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
   import Segmented from '../lib/ui/Segmented.svelte'
-  import QuestionModal from '../lib/QuestionModal.svelte'
+  import PendingActions from '../lib/inbox/PendingActions.svelte'
   import DiskPanel from '../lib/DiskPanel.svelte'
   import ActivityFeed from '../lib/ActivityFeed.svelte'
   import { buildInbox } from '../lib/inbox'
-  import { describePending, toPendingQuestion, type AgentRow } from '../lib/fleet'
-  import {
-    APIError,
-    approvePending,
-    denyPending,
-    resolvePermission,
-    resolveQuestion,
-    type Answers,
-    type PendingSubmission,
-  } from '../lib/api'
+  import { describePending, type AgentRow, type RerouteNotice } from '../lib/fleet'
+  import { APIError, approvePending, denyPending, undoReroute, errMessage, type PendingSubmission } from '../lib/api'
   import { shortName } from '../lib/utils'
 
   let {
@@ -25,9 +17,14 @@
     onRefreshPending,
     onOpenAgent,
     onNavigate,
+    notices = [],
+    onDismissNotice = () => {},
   }: {
     agents: AgentRow[]
     pending: PendingSubmission[]
+    /** Watches that rerouted a role, each undoable until dismissed. */
+    notices?: RerouteNotice[]
+    onDismissNotice?: (id: string) => void
     onRefreshPending: () => void
     onOpenAgent: (id: string) => void
     onNavigate: (hash: string) => void
@@ -57,7 +54,6 @@
     ({ ui: 'U', cli: 'C', mcp: 'M', issue: '#' })[origin ?? ''] ?? (origin ? origin[0].toUpperCase() : '·')
 
   let notice = $state<string | null>(null)
-  let answering = $state<AgentRow | null>(null)
 
   async function run(action: () => Promise<unknown>) {
     notice = null
@@ -71,10 +67,16 @@
     }
   }
 
-  const approvePermission = (a: AgentRow) => a.pending && run(() => resolvePermission(a.pending!.id, { approved: true }))
-  const denyPermission = (a: AgentRow) => a.pending && run(() => resolvePermission(a.pending!.id, { approved: false }))
-
-  const answerPending = $derived(answering?.pending?.kind === 'question' ? toPendingQuestion(answering.id, answering.pending) : null)
+  async function undo(n: RerouteNotice) {
+    try {
+      await undoReroute(n.id)
+      onDismissNotice(n.id)
+    } catch (e) {
+      notice = errMessage(e)
+      // 409: the binding changed since (or it was undone); 404: the bridge restarted. Undo cannot work any more.
+      if (e instanceof APIError && (e.status === 409 || e.status === 404)) onDismissNotice(n.id)
+    }
+  }
 
   function elapsed(since: string): string {
     const ms = Date.now() - new Date(since).getTime()
@@ -104,6 +106,16 @@
     <Card class="border-attention text-sm">{notice}</Card>
   {/if}
 
+  {#each notices as n (n.id)}
+    <Card class="flex items-center gap-3 p-3 text-sm" data-testid="reroute-notice">
+      <span class="min-w-0 flex-1 truncate">
+        A watch moved <span class="font-mono">{n.role}</span> from <span class="font-mono">{n.from}</span> to <span class="font-mono">{n.to}</span>.
+      </span>
+      <Button variant="ghost" onclick={() => undo(n)}>Undo</Button>
+      <Button variant="ghost" aria-label="Dismiss" onclick={() => onDismissNotice(n.id)}>✕</Button>
+    </Card>
+  {/each}
+
   <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
     <div class="flex flex-col gap-6">
       <section aria-labelledby="inbox-needs">
@@ -118,13 +130,7 @@
                   <div class="truncate text-sm font-medium">{a.name || a.id} <span class="font-normal text-muted">· {shortName(a.project)}</span></div>
                   <div class="truncate text-xs text-muted">{a.pending ? describePending(a.pending) : ''}</div>
                 </div>
-                {#if a.pending?.kind === 'approval'}
-                  <Button onclick={() => approvePermission(a)}>Approve</Button>
-                  <Button variant="danger" onclick={() => denyPermission(a)}>Deny</Button>
-                {:else}
-                  <Button onclick={() => (answering = a)}>Answer</Button>
-                  <Button variant="ghost" onclick={() => onNavigate(`#chat/${a.id}`)}>Open</Button>
-                {/if}
+                <PendingActions agent={a} onResolved={onRefreshPending} onOpen={() => onNavigate(`#chat/${a.id}`)} />
               {:else}
                 {@const p = item.submission}
                 <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-raise font-mono text-xs" title={p.origin}>{originLetter(p.origin)}</span>
@@ -186,19 +192,3 @@
     </aside>
   </div>
 </div>
-
-{#if answering && answerPending}
-  <QuestionModal
-    question={answerPending}
-    onResolve={(ans: Answers) => {
-      const q = answerPending.questionId
-      answering = null
-      run(() => resolveQuestion(q, ans))
-    }}
-    onDecline={() => {
-      const q = answerPending.questionId
-      answering = null
-      run(() => resolveQuestion(q, { declined: true }))
-    }}
-  />
-{/if}

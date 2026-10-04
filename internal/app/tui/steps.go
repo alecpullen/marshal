@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
-	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -355,28 +353,11 @@ func stepFailed(rows []*viewmodel.Node) bool {
 	return false
 }
 
-func stepOwner(st session.Step) string {
-	if st.Actor.Role == "" && st.Actor.Label == "" {
-		return ""
-	}
-	if st.Actor.Label != "" {
-		return st.Actor.Label
-	}
-	return strings.ReplaceAll(strings.TrimPrefix(st.Actor.Role, "sdd_"), "_", " ")
-}
+func stepOwner(st session.Step) string { return viewmodel.StepOwner(st) }
 
 // stepRoleWord is the owner shortened to its role word ("reviewer #1" →
 // "reviewer"), the form that survives a narrow header.
-func stepRoleWord(st session.Step) string {
-	o := stepOwner(st)
-	if i := strings.IndexAny(o, " #"); i > 0 {
-		o = o[:i]
-	}
-	if st.Actor.Role != "" && strings.Contains(st.Actor.Role, "branch") {
-		return "branch reviewer"
-	}
-	return o
-}
+func stepRoleWord(st session.Step) string { return viewmodel.StepRoleWord(st) }
 
 // stepModel is "model @ provider" only when it differs from the active route:
 // a step on the session's own model adds nothing the status line lacks.
@@ -501,57 +482,17 @@ func stepHeaderLine(g string, gc color.Color, head string, inferred bool, meta m
 // continuation. Without narration the headline is inferred from the tool rows
 // and rendered as such.
 func stepHeadline(si *viewmodel.StepInfo, rows []*viewmodel.Node) (head, rest string, inferred bool) {
-	var texts []string
-	for _, m := range si.Narration {
-		if t := strings.TrimSpace(m.Content); t != "" {
-			texts = append(texts, t)
-		}
-	}
-	if len(texts) > 0 {
-		h, r := firstSentence(texts[0])
-		parts := []string{}
-		if r != "" {
-			parts = append(parts, r)
-		}
-		parts = append(parts, texts[1:]...)
-		return stripEmphasis(h), strings.Join(parts, "\n\n"), false
-	}
-	if h := inferHeadline(rows); h != "" {
-		return h, "", true
-	}
-	if len(si.Thinking) > 0 || si.LiveThinking != "" {
-		return "thinking", "", true
-	}
-	return "working", "", true
+	return viewmodel.StepHeadline(si, rows)
 }
 
 // firstSentence splits s at the first ". ", "! ", "? " or newline that comes
 // after at least 8 runes. A sentence-final mark at the very end of s stays
 // with the head.
-func firstSentence(s string) (head, rest string) {
-	s = strings.TrimSpace(s)
-	runes := []rune(s)
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		switch {
-		case r == '\n':
-			if i >= 8 {
-				return strings.TrimSpace(string(runes[:i])), strings.TrimSpace(string(runes[i+1:]))
-			}
-		case (r == '.' || r == '!' || r == '?') && i >= 7:
-			if i+1 < len(runes) && unicode.IsSpace(runes[i+1]) {
-				return string(runes[:i+1]), strings.TrimSpace(string(runes[i+1:]))
-			}
-		}
-	}
-	return s, ""
-}
+func firstSentence(s string) (head, rest string) { return viewmodel.FirstSentence(s) }
 
 // stripEmphasis removes markdown emphasis and code markers from a headline,
 // which is rendered as plain text.
-func stripEmphasis(s string) string {
-	return strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "~~", "").Replace(s)
-}
+func stripEmphasis(s string) string { return viewmodel.StripEmphasis(s) }
 
 // renderStepContinuation always renders the complete narration continuation.
 // Density controls tool and thinking details, not narration visibility.
@@ -607,111 +548,9 @@ func renderNestedThinking(t *session.ThinkingEntry, expanded bool, width int) st
 // did not narrate: up to two clauses joined by " · ", then "…" if more
 // follow. It is shown italic and tagged "inferred" because it is a guess at
 // intent, not the agent's own words.
-func inferHeadline(rows []*viewmodel.Node) string {
-	type clause struct {
-		kind  string
-		count int
-		text  string
-	}
-	var order []string
-	byKind := map[string]*clause{}
-	touch := func(kind string) *clause {
-		c, ok := byKind[kind]
-		if !ok {
-			c = &clause{kind: kind}
-			byKind[kind] = c
-			order = append(order, kind)
-		}
-		return c
-	}
-	visit := func(name, target string, n int) {
-		switch {
-		case name == "file.read":
-			touch("read").count += n
-		case isSearchTool(name):
-			c := touch("search")
-			c.count += n
-			if c.text == "" && target != "" {
-				c.text = target
-			}
-		case name == "shell.run" || name == "test.run":
-			c := touch("ran:" + name)
-			c.count += n
-			if c.text == "" {
-				if f := strings.Fields(target); len(f) > 0 {
-					c.text = f[0]
-				}
-			}
-		case name == "file.write_patch" || name == "patch.apply" || strings.HasPrefix(name, "file.write"):
-			c := touch("edit")
-			c.count += n
-			if c.text == "" && target != "" {
-				c.text = filepath.Base(target)
-			}
-		case name == "agent.run":
-			touch("agents").count += n
-		default:
-			c := touch("other:" + name)
-			c.count += n
-			c.text = DisplayToolName(name)
-		}
-	}
-	for _, r := range rows {
-		switch {
-		case r.Kind == viewmodel.KindSubagent:
-			visit("agent.run", "", 1)
-		case r.Active != nil:
-			visit(r.Active.Name, strings.TrimPrefix(r.Active.Args, "$ "), 1)
-		default:
-			for _, ev := range r.Tools {
-				visit(ev.ToolName, toolTarget(ev), 1)
-			}
-		}
-	}
-	var parts []string
-	for _, k := range order {
-		c := byKind[k]
-		switch {
-		case k == "read":
-			parts = append(parts, fmt.Sprintf("read %d %s", c.count, plural(c.count, "file", "files")))
-		case k == "search":
-			if c.text != "" {
-				parts = append(parts, fmt.Sprintf("searched %q", c.text))
-			} else {
-				parts = append(parts, "searched")
-			}
-		case strings.HasPrefix(k, "ran:"):
-			if c.text != "" {
-				parts = append(parts, "ran "+c.text+" …")
-			} else {
-				parts = append(parts, "ran a command")
-			}
-		case k == "edit":
-			if c.text != "" {
-				parts = append(parts, "edited "+c.text)
-			} else {
-				parts = append(parts, fmt.Sprintf("edited %d %s", c.count, plural(c.count, "file", "files")))
-			}
-		case k == "agents":
-			parts = append(parts, fmt.Sprintf("dispatched %d %s", c.count, plural(c.count, "agent", "agents")))
-		default:
-			parts = append(parts, c.text)
-		}
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	out := strings.Join(parts[:min(len(parts), 2)], " · ")
-	if len(parts) > 2 {
-		out += " …"
-	}
-	return out
-}
+func inferHeadline(rows []*viewmodel.Node) string { return viewmodel.InferHeadline(rows) }
 
-func isSearchTool(name string) bool {
-	return strings.HasPrefix(name, "repo.search") || strings.HasPrefix(name, "codebase.search") ||
-		strings.HasPrefix(name, "symbols.") || name == "web.search" || strings.HasPrefix(name, "search.")
-}
+func isSearchTool(name string) bool { return viewmodel.IsSearchTool(name) }
 
 func plural(n int, one, many string) string {
 	if n == 1 {

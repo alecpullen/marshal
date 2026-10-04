@@ -10,12 +10,7 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-// maxSubjectSymbols is how many symbol names a row names before collapsing
-// the rest into a "+N" count. Two is enough to see the shape of a change
-// without the row becoming a list.
-const maxSubjectSymbols = 2
-
-// subjectFirstTool reports whether a tool's row should lead with its
+// subjectFirstTool reports whether a tool's row should lead with its reports whether a tool's row should lead with its
 // subject rather than its name.
 //
 // It is deliberately a small allow-list. For a file or symbol tool the verb
@@ -121,43 +116,11 @@ func argString(args json.RawMessage, key string) string {
 // attribution, grouped by file in first-seen order. It returns "" when the
 // event carries no symbols, which is the common case on languages without
 // a tree-sitter grammar.
-func symbolSubject(event registry.AuditEvent) string {
-	if len(event.Symbols) == 0 {
-		return ""
-	}
-	byFile := map[string][]string{}
-	var order []string
-	for _, s := range event.Symbols {
-		if _, seen := byFile[s.File]; !seen {
-			order = append(order, s.File)
-		}
-		byFile[s.File] = append(byFile[s.File], symbolLabel(s))
-	}
-	parts := make([]string, 0, len(order))
-	for _, f := range order {
-		names := byFile[f]
-		extra := 0
-		if len(names) > maxSubjectSymbols {
-			extra = len(names) - maxSubjectSymbols
-			names = names[:maxSubjectSymbols]
-		}
-		p := f + " › " + strings.Join(names, ", ")
-		if extra > 0 {
-			p += fmt.Sprintf(" +%d", extra)
-		}
-		parts = append(parts, p)
-	}
-	return strings.Join(parts, dimSeparator)
-}
+func symbolSubject(event registry.AuditEvent) string { return viewmodel.SymbolSubject(event) }
 
 // symbolLabel renders one symbol: callables get "()" so a function reads
 // differently from a type at a glance.
-func symbolLabel(s registry.SymbolRef) string {
-	if s.Kind == "function" || s.Kind == "method" {
-		return s.Name + "()"
-	}
-	return s.Name
-}
+func symbolLabel(s registry.SymbolRef) string { return viewmodel.SymbolLabel(s) }
 
 // diffStat summarises a unified diff as "+N −M". Returns "" for a diff with
 // no changed lines, so a row never carries an empty "+0 −0".

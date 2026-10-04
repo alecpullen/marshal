@@ -72,6 +72,9 @@ type TurnMetrics struct {
 	// metrics-emission time; sub-cent amounts truncate. 0 for
 	// local/unpriced models.
 	EstimatedCostCents int64
+	// EstimatedCostMicroUSD is the same estimate in millionths of a dollar,
+	// fine enough that cheap turns do not truncate to zero.
+	EstimatedCostMicroUSD int64
 	// Quota is the subscription quota reading reported by an OAuth-backed
 	// provider during this turn. nil for every provider that reports none.
 	Quota *schema.QuotaInfo
@@ -230,13 +233,15 @@ func (r *Runner) emitMetrics(task *Task) {
 	m.Class = string(task.Class)
 	m.Outcome = outcomeFor(task)
 	m.SalvageReason = task.SalvagedReason
-	m.EstimatedCostCents = pricing.EstimateCostCents(schema.TokenUsage{
+	m.EstimatedCostMicroUSD = pricing.EstimateCostMicroUSD(schema.TokenUsage{
 		PromptTokens:     m.PromptTokens,
 		CompletionTokens: m.CompletionTokens,
 		ReasoningTokens:  m.ReasoningTokens,
 		CacheReadTokens:  m.CacheReadTokens,
 		CacheWriteTokens: m.CacheWriteTokens,
 	}, r.Pricing)
+	// Cents are derived from micro-dollars so the two can never drift.
+	m.EstimatedCostCents = m.EstimatedCostMicroUSD / 10_000
 	m.ParseFailKind = sample.Kind
 	m.ParseFailSample = sample.Text
 	// The quota reading is per-turn state, not a counter: it is whatever

@@ -50,7 +50,7 @@
 
   async function loadAux() {
     // Each of these is decoration: a bridge without the route leaves its panel empty rather than failing the page.
-    const [b, s, r, h] = await Promise.allSettled([listBuilds(name), getSecretsStatus(), listRepos(), getNetworkHosts(name)])
+    const [b, s, r, h] = await Promise.allSettled([listBuilds(name), getSecretsStatus(), listRepos(), getNetworkHosts({ workspace: name })])
     if (b.status === 'fulfilled') builds = b.value
     if (s.status === 'fulfilled') secrets = s.value
     if (r.status === 'fulfilled') repos = r.value

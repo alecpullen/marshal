@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,6 +129,11 @@ type Fleet struct {
 	streamer streamStarter
 
 	// term holds open terminals, created on first use.
+	previewOnce sync.Once
+	previews    *previewStore
+	// previewForward replaces the real forwarder; tests set it.
+	previewForward func(w http.ResponseWriter, r *http.Request, agentID string, port int, rest string)
+
 	termOnce sync.Once
 	term     *terminalState
 
@@ -1598,6 +1604,9 @@ func (f *Fleet) Snapshot() []AgentStatus {
 // so Resume can restart against it.
 func (f *Fleet) releaseAgent(id string, destroy bool) {
 	f.closeTerminals(id)
+	if destroy {
+		f.dropPreviewTokens(id)
+	}
 	f.mu.Lock()
 	rt := f.runtimes[id]
 	delete(f.runtimes, id)

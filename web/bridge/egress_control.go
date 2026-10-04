@@ -69,6 +69,9 @@ func NewEgressSidecar(control string) (*EgressSidecar, error) {
 	return s, nil
 }
 
+// PreviewHandler serves the preview listener from the sidecar's policy.
+func (s *EgressSidecar) PreviewHandler() http.Handler { return s.proxy.PreviewHandler() }
+
 // Proxy returns the sidecar's proxy, for serving.
 func (s *EgressSidecar) Proxy() *EgressProxy { return s.proxy }
 
@@ -237,7 +240,8 @@ func (s *EgressSidecar) shipRecords(ctx context.Context) {
 
 // ServeEgress runs the sidecar: listen on addr and proxy until ctx ends.
 // It backs the `webbridge egress` subcommand.
-func ServeEgress(ctx context.Context, listen, control string) error {
+// previewListen, when non-empty, also serves the preview listener there.
+func ServeEgress(ctx context.Context, listen, previewListen, control string) error {
 	sc, err := NewEgressSidecar(control)
 	if err != nil {
 		return err
@@ -247,6 +251,16 @@ func ServeEgress(ctx context.Context, listen, control string) error {
 		return err
 	}
 	srv := &http.Server{Handler: sc.Proxy(), ReadHeaderTimeout: 10 * time.Second}
+	var psrv *http.Server
+	if previewListen != "" {
+		pln, err := net.Listen("tcp", previewListen)
+		if err != nil {
+			ln.Close()
+			return err
+		}
+		psrv = &http.Server{Handler: sc.PreviewHandler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() { _ = psrv.Serve(pln) }()
+	}
 	go sc.Run(ctx)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -255,6 +269,9 @@ func ServeEgress(ctx context.Context, listen, control string) error {
 		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
+		if psrv != nil {
+			_ = psrv.Shutdown(shutdown)
+		}
 		return nil
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {

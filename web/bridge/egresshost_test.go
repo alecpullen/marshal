@@ -27,6 +27,7 @@ type fakeRuntime struct {
 	image   bool
 	running bool // sidecar running
 	agentIP string
+	noPort  bool // sidecar runs without a published preview port
 }
 
 func (r *fakeRuntime) run(_ string, args ...string) ([]byte, error) {
@@ -66,6 +67,11 @@ func (r *fakeRuntime) run(_ string, args ...string) ([]byte, error) {
 			return nil, errors.New("not attached")
 		}
 		return []byte(r.agentIP + "\n"), nil
+	case j == "port "+egressContainer+" 8081":
+		if r.running && !r.noPort {
+			return []byte("127.0.0.1:49153\n"), nil
+		}
+		return nil, errors.New("no port mapping")
 	case strings.HasPrefix(j, "run -d --rm --name "+egressContainer):
 		r.running = true
 		return nil, nil
@@ -150,7 +156,7 @@ func TestEgressContainerTopology(t *testing.T) {
 	joined := strings.Join(runs[0], " ")
 	for _, want := range []string{
 		"--name marshal-egress", "--network marshal-agents",
-		"target=/egress,volume-subpath=egress", "marshal-egress:v1 egress --listen :3128 --control unix:///egress/control.sock",
+		"target=/egress,volume-subpath=egress", "-p 127.0.0.1::8081", "marshal-egress:v1 egress --listen :3128 --preview-listen :8081 --control unix:///egress/control.sock",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("sidecar args missing %q:\n%s", want, joined)
@@ -657,5 +663,19 @@ func TestEgressRefreshPublishesOnlyOnChange(t *testing.T) {
 	}
 	if got := h.snapshot().Agents["ag1"].Inject["api.example.com"].Value; got != "two" {
 		t.Fatalf("injected value = %q", got)
+	}
+}
+
+func TestEgressSidecarWithoutAPreviewPortIsReplaced(t *testing.T) {
+	f, rt := testEgressFleet(t, false)
+	rt.network, rt.image, rt.running = true, true, true
+	f.buildVersion = "v1"
+	rt.noPort = true // an older sidecar, started before the preview listener
+	h := newEgressHost(f)
+	if err := f.ensureSidecar(context.Background(), h, "docker"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rt.commands("rm -f "+egressContainer)) != 1 || len(rt.commands("run -d")) != 1 {
+		t.Fatalf("an old sidecar was reused: %v", rt.calls)
 	}
 }

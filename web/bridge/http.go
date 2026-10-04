@@ -92,6 +92,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// /mcp joins /api/ on the mux side. It is not under /api/ because it
 	// authenticates per client rather than with the shared bearer token,
 	// but it must still reach the mux rather than the SPA fallback.
+	if strings.HasPrefix(r.URL.Path, previewPrefix) {
+		s.preview(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
 		staticHandler().ServeHTTP(w, r)
 		return
@@ -116,6 +120,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments", s.addReviewComment)
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments/{cid}/resolve", s.resolveReviewComment)
 	s.mux.HandleFunc("GET /api/prompts/recent", s.recentPrompts)
+	s.mux.HandleFunc("POST /api/agents/{id}/preview/{port}", s.issuePreview)
 	s.mux.HandleFunc("POST /api/agents/{id}/terminal", s.terminalOpen)
 	s.mux.HandleFunc("GET /api/agents/{id}/terminal/{tid}/events", s.terminalEvents)
 	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/input", s.terminalInput)
@@ -229,6 +234,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 	case errors.As(err, &setup):
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "code": "setup_failed", "output": setup.Output})
+	case errors.Is(err, ErrPreviewPortNotDeclared):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrTooManyTerminals):
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownTerminal):

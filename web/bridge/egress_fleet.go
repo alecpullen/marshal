@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -140,7 +141,11 @@ func (f *Fleet) ensureSidecar(ctx context.Context, h *egressHost, rt string) err
 	if err == nil {
 		fields := strings.Fields(string(out))
 		if len(fields) == 2 && fields[0] == "true" && strings.HasSuffix(fields[1], tag) {
-			return nil // reattach: already running the right image
+			// Reattach, but only to a sidecar that publishes the preview
+			// listener; an older one without it is replaced.
+			if f.readPreviewPort(h, rt) {
+				return nil
+			}
 		}
 		_, _ = f.runRuntime(rt, "rm", "-f", egressContainer)
 	}
@@ -155,7 +160,39 @@ func (f *Fleet) ensureSidecar(ctx context.Context, h *egressHost, rt string) err
 	if out, err := f.runRuntime(rt, "network", "connect", outside, egressContainer); err != nil {
 		return fmt.Errorf("connect %s to %s: %w (%s)", egressContainer, outside, err, out)
 	}
+	if !f.readPreviewPort(h, rt) {
+		slog.Default().Warn("webbridge: egress sidecar has no published preview port; previews of container agents are unavailable")
+	}
 	return nil
+}
+
+// readPreviewPort asks the runtime which host port the sidecar's preview
+// listener is published on and stores it. It reports whether one was found.
+func (f *Fleet) readPreviewPort(h *egressHost, rt string) bool {
+	out, err := f.runRuntime(rt, "port", egressContainer, fmt.Sprintf("%d", egressPreviewPort))
+	if err != nil {
+		return false
+	}
+	port := parsePublishedPort(string(out))
+	if port == 0 {
+		return false
+	}
+	h.previewPort.Store(int32(port))
+	return true
+}
+
+// parsePublishedPort reads the host port from `port` output such as
+// "127.0.0.1:49153" or "0.0.0.0:49153\n[::]:49153".
+func parsePublishedPort(out string) int {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if i := strings.LastIndex(line, ":"); i >= 0 {
+			if n, err := strconv.Atoi(strings.TrimSpace(line[i+1:])); err == nil && n > 0 && n < 65536 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 func egressImageTag(version string) string {
@@ -175,10 +212,14 @@ func egressImageTag(version string) string {
 // internal network only; ensureSidecar attaches the outside network
 // afterwards.
 func egressSidecarArgs(rtName, volume, image string) []string {
-	args := []string{"run", "-d", "--rm", "--name", egressContainer, "--network", egressNetwork}
+	args := []string{"run", "-d", "--rm", "--name", egressContainer, "--network", egressNetwork,
+		// The preview listener is published on loopback only; the bridge
+		// reads the chosen host port with `port`.
+		"-p", fmt.Sprintf("127.0.0.1::%d", egressPreviewPort)}
 	args = append(args, volumeMount(rtName, volume, egressMountDir, egressSubpath, false)...)
 	return append(args, image, "egress",
 		"--listen", fmt.Sprintf(":%d", egressPort),
+		"--preview-listen", fmt.Sprintf(":%d", egressPreviewPort),
 		"--control", "unix://"+egressMountDir+"/control.sock")
 }
 
@@ -283,6 +324,9 @@ func (f *Fleet) egressPrepare(ctx context.Context, a Agent) (egressWiring, bool,
 		ws = "default"
 	}
 	token := h.register(ctx, a.ID, ws, spec)
+	if ports := f.previewPortsFor(ctx, a); len(ports) > 0 {
+		h.setPreviewPorts(a.ID, ports)
+	}
 	w := egressWiring{Env: h.proxyEnv(a.ID, token)}
 	h.mu.Lock()
 	injecting := len(h.agents[a.ID].policy.Inject) > 0

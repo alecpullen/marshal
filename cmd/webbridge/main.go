@@ -190,6 +190,7 @@ func runSubcommand(ctx context.Context, args []string, stdout io.Writer) (bool, 
 	if len(args) >= 1 && args[0] == "egress" {
 		fs := flag.NewFlagSet("webbridge egress", flag.ContinueOnError)
 		listen := fs.String("listen", ":3128", "proxy listen address")
+		previewListen := fs.String("preview-listen", "", "preview listener address (empty disables previews)")
 		control := fs.String("control", "", "bridge control address (unix:///path)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return true, err
@@ -199,7 +200,7 @@ func runSubcommand(ctx context.Context, args []string, stdout io.Writer) (bool, 
 		}
 		sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return true, bridge.ServeEgress(sigCtx, *listen, *control)
+		return true, bridge.ServeEgress(sigCtx, *listen, *previewListen, *control)
 	}
 	if len(args) >= 1 && args[0] == "secrets" {
 		if len(args) != 3 || args[1] != "init-key" {

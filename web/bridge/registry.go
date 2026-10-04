@@ -299,6 +299,11 @@ func (r *Registry) StackNode(ctx context.Context, id, nodeID string, subagentID 
 	return r.call(ctx, id, "session/stack_node", "stack_node", params)
 }
 
+// Run proxies session/run: the SDD or swarm run detail.
+func (r *Registry) Run(ctx context.Context, id string) (json.RawMessage, error) {
+	return r.call(ctx, id, "session/run", "run", nil)
+}
+
 // LastRequest proxies session/last_request.
 func (r *Registry) LastRequest(ctx context.Context, id string) (json.RawMessage, error) {
 	return r.call(ctx, id, "session/last_request", "last_request", nil)

@@ -1168,6 +1168,9 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 			// notifications carry the ACP session id. Each runtime owns
 			// exactly one session, so the agent id is rt.id.
 			d.SessionID = rt.id
+			if d.Kind == "run" {
+				d.AgentID = rt.id
+			}
 			f.live.apply(d)
 			_, _ = f.fleetLog.Append(fleetStreamKey, d)
 		}

@@ -19,6 +19,11 @@ type fleetDelta struct {
 	PendingKind string `json:"pendingKind,omitempty"`
 	// Gate is the new verify result on a "gate" delta.
 	Gate *gateRecord `json:"gate,omitempty"`
+	// AgentID names the agent on run, watch, budget and reroute deltas.
+	// SessionID carries the same agent id for older deltas.
+	AgentID string `json:"agentId,omitempty"`
+	// Run is the latest run detail on a "run" delta, verbatim.
+	Run json.RawMessage `json:"run,omitempty"`
 }
 
 func classifyNotification(method string, params json.RawMessage) (fleetDelta, bool) {
@@ -28,10 +33,11 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 	var p struct {
 		SessionID string `json:"sessionId"`
 		Update    struct {
-			Kind         string   `json:"kind"`
-			ToolName     string   `json:"toolName"`
-			Mode         string   `json:"mode"`
-			ChangedFiles []string `json:"changedFiles"`
+			Kind         string          `json:"kind"`
+			ToolName     string          `json:"toolName"`
+			Mode         string          `json:"mode"`
+			ChangedFiles []string        `json:"changedFiles"`
+			Run          json.RawMessage `json:"run"`
 			Context      struct {
 				UsedPct int `json:"usedPct"`
 			} `json:"context"`
@@ -48,6 +54,11 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 		d.Kind, d.Mode = "mode", p.Update.Mode
 	case "session_telemetry":
 		d.Kind, d.ChangedFiles, d.ContextPct = "telemetry", len(p.Update.ChangedFiles), p.Update.Context.UsedPct
+	case "run_progress":
+		if len(p.Update.Run) == 0 {
+			return fleetDelta{}, false
+		}
+		d.Kind, d.Run = "run", p.Update.Run
 	default:
 		return fleetDelta{}, false
 	}
@@ -81,6 +92,11 @@ type agentLive struct {
 	contextPct, changedFiles int
 	updatedAt                time.Time
 	pending                  *observedPending
+	// run is the latest run_progress payload, kept verbatim. runErr is
+	// the final error of the last run the bridge started, if it failed.
+	run    json.RawMessage
+	runAt  time.Time
+	runErr string
 }
 type liveState struct {
 	mu     sync.Mutex
@@ -106,8 +122,23 @@ func (s *liveState) apply(d fleetDelta) {
 		a.mode = d.Mode
 	case "telemetry":
 		a.contextPct, a.changedFiles = d.ContextPct, d.ChangedFiles
+	case "run":
+		a.run, a.runAt = d.Run, time.Now().UTC()
 	}
 	a.updatedAt = time.Now().UTC()
+}
+
+// setRunErr records how the last run the bridge started ended: empty for
+// a clean finish, the error text otherwise.
+func (s *liveState) setRunErr(id, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := s.agents[id]
+	if a == nil {
+		a = &agentLive{}
+		s.agents[id] = a
+	}
+	a.runErr = msg
 }
 
 // classifyRegistryEvent maps a bridge-originated registry event (from

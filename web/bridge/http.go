@@ -132,6 +132,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/nodes/{nodeId}", s.sessionNode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/last-request", s.sessionLastRequest)
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
+	s.mux.HandleFunc("GET /api/runs", s.listRuns)
+	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
+	s.mux.HandleFunc("POST /api/runs", s.startRun)
+	s.mux.HandleFunc("POST /api/runs/{agentId}/answer", s.answerRun)
 	s.mux.HandleFunc("POST /api/permissions/{toolCallId}", s.resolvePermission)
 	s.mux.HandleFunc("POST /api/questions/{questionId}", s.resolveQuestion)
 	s.mux.HandleFunc("GET /api/clients", s.listClients)
@@ -183,6 +187,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownReviewComment):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errInvalidRun):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errInvalidReview):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrOutsideWorkspace):

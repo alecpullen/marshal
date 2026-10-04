@@ -6,7 +6,7 @@ import (
 )
 
 func TestVolumeMountUsesDockerSyntax(t *testing.T) {
-	got := strings.Join(volumeMount("docker", "marshal-state", "/work", "work/a1"), " ")
+	got := strings.Join(volumeMount("docker", "marshal-state", "/work", "work/a1", false), " ")
 	if !strings.Contains(got, "type=volume") || !strings.Contains(got, "source=marshal-state") {
 		t.Fatalf("got %q", got)
 	}
@@ -17,7 +17,7 @@ func TestVolumeMountUsesDockerSyntax(t *testing.T) {
 
 // Podman documents the same feature as `subpath=` (podman-run(1)).
 func TestVolumeMountUsesPodmanSyntax(t *testing.T) {
-	got := strings.Join(volumeMount("podman", "marshal-state", "/work", "work/a1"), " ")
+	got := strings.Join(volumeMount("podman", "marshal-state", "/work", "work/a1", false), " ")
 	if !strings.Contains(got, "subpath=work/a1") {
 		t.Fatalf("podman spells it subpath=; got %q", got)
 	}
@@ -45,8 +45,8 @@ func TestBuildRunArgsUsesVolumesNotBindMounts(t *testing.T) {
 
 // The isolation property that replaces filesystem separation.
 func TestAgentSubpathsAreDistinct(t *testing.T) {
-	a := strings.Join(volumeMount("docker", "v", "/work", "work/a1"), " ")
-	b := strings.Join(volumeMount("docker", "v", "/work", "work/a2"), " ")
+	a := strings.Join(volumeMount("docker", "v", "/work", "work/a1", false), " ")
+	b := strings.Join(volumeMount("docker", "v", "/work", "work/a2", false), " ")
 	if a == b {
 		t.Fatal("two agents produced identical mount arguments")
 	}

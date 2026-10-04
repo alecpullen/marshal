@@ -13,13 +13,18 @@ import (
 // "volume-subpath", podman spells it "subpath" (podman-run(1)). Both
 // mean the same thing, and getting it wrong fails at spawn rather than
 // at build, so the runtime name is threaded here rather than guessed.
-func volumeMount(runtime, volume, target, subpath string) []string {
+//
+// readonly appends ",readonly", which both runtimes accept.
+func volumeMount(runtime, volume, target, subpath string, readonly bool) []string {
 	key := "volume-subpath"
 	if runtime == "podman" {
 		key = "subpath"
 	}
-	return []string{"--mount", fmt.Sprintf(
-		"type=volume,source=%s,target=%s,%s=%s", volume, target, key, subpath)}
+	spec := fmt.Sprintf("type=volume,source=%s,target=%s,%s=%s", volume, target, key, subpath)
+	if readonly {
+		spec += ",readonly"
+	}
+	return []string{"--mount", spec}
 }
 
 // ProjectMount maps a host path to the bridge's in-container view of it.

@@ -255,7 +255,12 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			CPUs:          a.Profile.CPUs,
 			MemoryMB:      a.Profile.MemoryMB,
 			Env:           f.agentEnv,
+			// Every agent shares one config home (read-only) and one data
+			// home, so memories and usage outlive any single container.
+			HomeConfigSubpath: homeConfigSubpath,
+			HomeDataSubpath:   homeDataSubpath,
 		}
+		f.ensureHomes()
 		// A LocalPath agent works on the host checkout itself, so its
 		// workspace is a bind mount of the daemon's view of that path.
 		// Git-sourced agents use a volume subpath instead.
@@ -269,6 +274,24 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
 	}
 	return f
+}
+
+// Subpaths of the state volume that hold the shared homes.
+const (
+	homeConfigSubpath = "home/config"
+	homeDataSubpath   = "home/data"
+)
+
+// ensureHomes creates the shared home directories under a local state
+// dir, so a bind of them never starts with a missing source. With a named
+// volume the runtime owns the layout and this is a harmless no-op on the
+// bridge's own view of stateDir.
+func (f *Fleet) ensureHomes() {
+	for _, sub := range []string{homeConfigSubpath, homeDataSubpath} {
+		if err := os.MkdirAll(filepath.Join(f.stateDir, sub), 0o700); err != nil {
+			slog.Default().Warn("webbridge: create shared home failed", "dir", sub, "err", err)
+		}
+	}
 }
 
 // localMountFor resolves the bind-mount source for a LocalPath agent.

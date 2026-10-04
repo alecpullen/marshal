@@ -753,7 +753,22 @@ export async function setRouting(r: { profiles?: Record<string, Record<string, B
 export async function probeProvider(name: string): Promise<ProbeResult> {
   return request('POST', '/api/models/probe', { name })
 }
-export async function getBudgets(): Promise<BudgetStatus> { return request('GET', '/api/budgets') }
+/**
+ * The W3.2 plan says only that `GET /api/budgets` returns "the config plus the
+ * current spends", so this accepts the caps nested under `budgets` or flat,
+ * and the day's spend as `spentTodayUsd` or `daySpendUsd`.
+ */
+export async function getBudgets(): Promise<BudgetStatus> {
+  const r = await request<Record<string, unknown>>('GET', '/api/budgets')
+  const b = ((r?.budgets as Budgets | undefined) ?? (r as unknown as Budgets | undefined)) ?? ({} as Budgets)
+  return {
+    budgets: { dailyUsd: b.dailyUsd ?? 0, perAgentUsd: b.perAgentUsd ?? 0, onDailyCap: b.onDailyCap ?? 'warn', onAgentCap: b.onAgentCap ?? 'warn' },
+    spentTodayUsd: Number(r?.spentTodayUsd ?? r?.daySpendUsd ?? 0),
+    agents: (r?.agents ?? r?.agentSpend) as Record<string, number> | undefined,
+    paused: (r?.paused as string[] | undefined) ?? [],
+    blocked: Boolean(r?.blocked ?? r?.blockedDay),
+  }
+}
 export async function setBudgets(budgets: Budgets): Promise<void> {
   await request('PUT', '/api/budgets', { budgets })
 }

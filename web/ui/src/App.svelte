@@ -8,6 +8,7 @@
   import Run from './views/Run.svelte'
   import Live from './views/Live.svelte'
   import Library from './views/Library.svelte'
+  import Settings from './views/Settings.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -20,7 +21,7 @@
   import DiskPanel from './lib/DiskPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -152,6 +153,7 @@
   const runRoute = $derived(parseRunRoute(hash))
   const liveRoute = $derived(parseLiveRoute(hash))
   const libraryRoute = $derived(parseLibraryRoute(hash))
+  const settingsRoute = $derived(parseSettingsRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -227,6 +229,10 @@
     {:else if libraryRoute}
       <div class="h-full overflow-y-auto">
         <Library route={libraryRoute} onNavigate={navigate} />
+      </div>
+    {:else if settingsRoute}
+      <div class="h-full overflow-y-auto">
+        <Settings tab={settingsRoute.tab} onNavigate={navigate} />
       </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

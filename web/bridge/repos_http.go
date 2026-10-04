@@ -39,7 +39,7 @@ func (f *Fleet) credentialSet(ctx context.Context, c Credential) bool {
 		_, err := os.Stat(c.KeyPath)
 		return err == nil
 	case "vault":
-		path, err := ParseSecretRef(c.Ref)
+		path, err := parseCredentialRef(c.Ref)
 		if err != nil {
 			return false
 		}
@@ -82,7 +82,7 @@ func validateCredential(c Credential) error {
 			return errors.New("keyPath must not contain spaces or shell metacharacters")
 		}
 	case "vault":
-		if _, err := ParseSecretRef(c.Ref); err != nil {
+		if _, err := parseCredentialRef(c.Ref); err != nil {
 			return err
 		}
 	default:

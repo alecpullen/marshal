@@ -132,9 +132,15 @@ type Fleet struct {
 	// caMu guards cas, the per-workspace certificate authorities.
 	caMu sync.Mutex
 	cas  map[string]*caCache
+	// retiredCAs holds rotated-out CA generations still used by running
+	// agents, by workspace then serial.
+	retiredCAs map[string]map[string]*caCache
 	// egress is the proxy host; nil until StartEgress succeeds, in which
 	// case agents spawn exactly as before.
-	egress *egressHost
+	egressMu     sync.Mutex
+	egressWanted bool
+	egressErr    error
+	egress       *egressHost
 	// netlog holds connection records and their aggregates.
 	netlog *NetLog
 	// workspaceEgress, when set, supplies a workspace name and its egress

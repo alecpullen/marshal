@@ -24,7 +24,11 @@ type EgressAgentPolicy struct {
 	// IP, when set, must equal the connection's source address.
 	IP        string `json:"ip,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
-	Mode      string `json:"mode"`
+	// CA is the workspace CA generation (serial, hex) the agent was
+	// started with. Injected-host leaves are signed by that generation,
+	// because the agent only trusts the CAs that existed at its start.
+	CA   string `json:"ca,omitempty"`
+	Mode string `json:"mode"`
 	// Allow is the workspace's egress list; Grants are per-agent
 	// additions made at decision time. Both accept "host" and "*.suffix".
 	Allow  []string `json:"allow,omitempty"`

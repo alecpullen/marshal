@@ -73,8 +73,8 @@ func NewEgressSidecar(control string) (*EgressSidecar, error) {
 func (s *EgressSidecar) Proxy() *EgressProxy { return s.proxy }
 
 // leaf fetches (and caches) a leaf from the bridge.
-func (s *EgressSidecar) leaf(workspace, host string) (*tls.Certificate, error) {
-	key := workspace + "|" + host
+func (s *EgressSidecar) leaf(workspace, ca, host string) (*tls.Certificate, error) {
+	key := workspace + "|" + ca + "|" + host
 	s.mu.Lock()
 	if c, ok := s.leafs[key]; ok && c.Leaf != nil && time.Now().Before(c.Leaf.NotAfter.Add(-leafRefreshMargin)) {
 		s.mu.Unlock()
@@ -84,7 +84,7 @@ func (s *EgressSidecar) leaf(workspace, host string) (*tls.Certificate, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
-		s.base+"/leaf?workspace="+url.QueryEscape(workspace)+"&host="+url.QueryEscape(host), nil)
+		s.base+"/leaf?workspace="+url.QueryEscape(workspace)+"&ca="+url.QueryEscape(ca)+"&host="+url.QueryEscape(host), nil)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err

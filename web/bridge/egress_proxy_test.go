@@ -30,7 +30,7 @@ func newEgressRig(t *testing.T) *egressRig {
 	}
 	rig := &egressRig{records: make(chan EgressRecord, 64), ca: newCACache(cert, certPEM, key)}
 	rig.proxy = NewEgressProxy(
-		func(workspace, host string) (*tls.Certificate, error) { return rig.ca.leaf(host) },
+		func(workspace, ca, host string) (*tls.Certificate, error) { return rig.ca.leaf(host) },
 		rig.records,
 		func(agentID, host string) {
 			rig.mu.Lock()

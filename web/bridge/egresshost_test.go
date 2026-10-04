@@ -594,3 +594,68 @@ func TestEgressOffLeavesSpawnUnchanged(t *testing.T) {
 		t.Fatal("no proxy means not isolated")
 	}
 }
+
+func TestEgressDownRefusesRestrictedWorkspaces(t *testing.T) {
+	f, _ := testEgressFleet(t, false)
+	// Force the proxy start to fail: no executable to copy into the image.
+	egressExecutable = func() (string, error) { return "", os.ErrNotExist }
+	if err := f.StartEgress(context.Background()); err == nil {
+		t.Fatal("start should fail")
+	}
+	if f.egressDown() == nil {
+		t.Fatal("egressDown should report the failure")
+	}
+	ctx := context.Background()
+	for _, spec := range []EgressSpec{
+		{Mode: EgressModeAllowlist},
+		{Mode: EgressModeOff},
+		{Mode: EgressModeOpen, Inject: []EgressInjectSpec{{Host: "api.example.com", Header: "Authorization", Ref: "vault:x/y"}}},
+	} {
+		spec := spec
+		f.workspaceEgress = func(context.Context, Agent) (string, EgressSpec, error) { return "dev", spec, nil }
+		if _, _, err := f.egressPrepare(ctx, Agent{ID: "ag1"}); err == nil {
+			t.Fatalf("spec %+v started without a proxy", spec)
+		}
+	}
+	f.workspaceEgress = func(context.Context, Agent) (string, EgressSpec, error) {
+		return "dev", EgressSpec{Mode: EgressModeOpen}, nil
+	}
+	if _, proxied, err := f.egressPrepare(ctx, Agent{ID: "ag2"}); err != nil || proxied {
+		t.Fatalf("open workspace: proxied=%v err=%v", proxied, err)
+	}
+}
+
+func TestEgressRefreshPublishesOnlyOnChange(t *testing.T) {
+	f, _ := testEgressFleet(t, true)
+	ctx := context.Background()
+	if err := f.StartEgress(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.secrets.Put(ctx, DefaultOwnerID, "api/key", []byte("one"))
+	f.workspaceEgress = func(context.Context, Agent) (string, EgressSpec, error) {
+		return "dev", EgressSpec{Inject: []EgressInjectSpec{{Host: "api.example.com", Header: "X-Key", Ref: "vault:api/key"}}}, nil
+	}
+	if _, _, err := f.egressPrepare(ctx, Agent{ID: "ag1"}); err != nil {
+		t.Fatal(err)
+	}
+	h := f.egress
+	h.mu.Lock()
+	ch := h.changed
+	h.mu.Unlock()
+	h.refreshAll(ctx)
+	select {
+	case <-ch:
+		t.Fatal("unchanged secrets published a policy")
+	default:
+	}
+	f.secrets.Put(ctx, DefaultOwnerID, "api/key", []byte("two"))
+	h.refreshAll(ctx)
+	select {
+	case <-ch:
+	default:
+		t.Fatal("rotated secret was not published")
+	}
+	if got := h.snapshot().Agents["ag1"].Inject["api.example.com"].Value; got != "two" {
+		t.Fatalf("injected value = %q", got)
+	}
+}

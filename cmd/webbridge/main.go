@@ -364,10 +364,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	fleet.SetSecrets(secrets)
 	if cfg.egress == "on" {
-		// A failure leaves egress off: agents then spawn as they did
-		// before the proxy existed, rather than not at all.
+		// A failure leaves open-network workspaces unproxied, as before
+		// the proxy existed; workspaces that restrict the network or
+		// inject credentials refuse to start agents until it is back.
 		if err := fleet.StartEgress(ctx); err != nil {
-			slog.Default().Warn("webbridge: egress proxy unavailable; agents will not be proxied", "err", err)
+			slog.Default().Warn("webbridge: egress proxy unavailable; restricted workspaces will refuse to start agents", "err", err)
 		}
 	}
 

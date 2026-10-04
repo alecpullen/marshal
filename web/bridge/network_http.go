@@ -88,7 +88,11 @@ func (s *Server) networkView(w http.ResponseWriter, r *http.Request) {
 			}
 			rows = append(rows, row)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"processMode": f.egressProcessMode(), "rows": rows})
+		resp := map[string]any{"processMode": f.egressProcessMode(), "rows": rows}
+		if err := f.egressDown(); err != nil {
+			resp["egressError"] = err.Error()
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case "requests":
 		writeJSON(w, http.StatusOK, f.netlog.Requests(ws, agent))
 	case "agents":

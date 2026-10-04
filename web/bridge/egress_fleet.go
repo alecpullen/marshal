@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,10 +47,25 @@ func (f *Fleet) egressRuntimeName() (string, bool) {
 // internal network when a container runtime exists, an in-process proxy
 // on loopback otherwise. A failure is logged and leaves egress off, so
 // agents spawn as they did before rather than not at all.
-func (f *Fleet) StartEgress(ctx context.Context) error {
+// egressSecretRefresh is how often injected secret values are re-read.
+var egressSecretRefresh = time.Minute
+
+func (f *Fleet) StartEgress(ctx context.Context) (err error) {
 	if f.egress != nil {
 		return nil
 	}
+	f.egressMu.Lock()
+	f.egressWanted = true
+	f.egressMu.Unlock()
+	defer func() {
+		f.egressMu.Lock()
+		if err != nil {
+			f.egressErr = err
+		} else {
+			f.egressErr = nil
+		}
+		f.egressMu.Unlock()
+	}()
 	h := newEgressHost(f)
 	if err := h.loadTokenKey(); err != nil {
 		return fmt.Errorf("egress: %w", err)
@@ -78,8 +94,25 @@ func (f *Fleet) StartEgress(ctx context.Context) error {
 		}
 	}
 	f.egress = h
+	h.loadCAGens(ctx)
+	h.wg.Add(1)
+	go h.refreshLoop(egressSecretRefresh)
 	slog.Default().Info("webbridge: egress proxy started", "mode", h.mode, "addr", h.proxyAddr)
 	return nil
+}
+
+// egressDown returns why egress was requested but is not running, or nil
+// when it is running or was never requested.
+func (f *Fleet) egressDown() error {
+	f.egressMu.Lock()
+	defer f.egressMu.Unlock()
+	if f.egress != nil || !f.egressWanted {
+		return nil
+	}
+	if f.egressErr != nil {
+		return f.egressErr
+	}
+	return errors.New("egress proxy is not running")
 }
 
 func (f *Fleet) stopEgress() {
@@ -223,6 +256,19 @@ func (f *Fleet) monitorSidecar(h *egressHost, rt string, interval time.Duration)
 func (f *Fleet) egressPrepare(ctx context.Context, a Agent) (egressWiring, bool, error) {
 	h := f.egress
 	if h == nil {
+		// Egress was asked for but the proxy is not running. A workspace
+		// that restricts the network or injects credentials must not get
+		// an unrestricted agent instead, so refuse; open workspaces keep
+		// working as they did before the proxy existed.
+		if err := f.egressDown(); err != nil && f.workspaceEgress != nil {
+			_, spec, werr := f.workspaceEgress(ctx, a)
+			if werr != nil {
+				return egressWiring{}, false, werr
+			}
+			if spec.Mode == EgressModeAllowlist || spec.Mode == EgressModeOff || len(spec.Inject) > 0 {
+				return egressWiring{}, false, fmt.Errorf("agent %s needs the egress proxy (network policy %q) but it is not running: %w", a.ID, spec.Mode, err)
+			}
+		}
 		return egressWiring{}, false, nil
 	}
 	ws, spec := "", EgressSpec{}
@@ -241,10 +287,12 @@ func (f *Fleet) egressPrepare(ctx context.Context, a Agent) (egressWiring, bool,
 	injecting := len(h.agents[a.ID].policy.Inject) > 0
 	h.mu.Unlock()
 	if injecting {
-		if _, err := f.caFor(ctx, ws); err != nil {
+		ca, err := f.caFor(ctx, ws)
+		if err != nil {
 			h.remove(a.ID)
 			return egressWiring{}, false, fmt.Errorf("agent %s needs credential injection: %w", a.ID, err)
 		}
+		h.setCA(a.ID, ca.id())
 		if h.mode == egressModeContainer {
 			const dir = "/marshal/ca"
 			for k, v := range caEnv(dir+"/"+ws+"-bundle.pem", dir+"/"+ws+".pem") {

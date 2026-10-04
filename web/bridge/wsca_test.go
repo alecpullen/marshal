@@ -61,7 +61,7 @@ func TestWorkspaceCAVerifiesMintedLeaf(t *testing.T) {
 	if d := cert.NotAfter.Sub(cert.NotBefore); d < 360*24*time.Hour || d > 370*24*time.Hour {
 		t.Fatalf("validity %v", d)
 	}
-	l, err := f.leafFor(ctx, "dev", "api.example.com")
+	l, err := f.leafFor(ctx, "dev", "", "api.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +73,10 @@ func TestWorkspaceCAVerifiesMintedLeaf(t *testing.T) {
 	if _, err := l.Leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: "evil.example.com"}); err == nil {
 		t.Fatal("leaf verified for another host")
 	}
-	if l2, _ := f.leafFor(ctx, "dev", "api.example.com"); l2 != l {
+	if l2, _ := f.leafFor(ctx, "dev", "", "api.example.com"); l2 != l {
 		t.Error("leaf not cached")
 	}
-	ip, err := f.leafFor(ctx, "dev", "127.0.0.1")
+	ip, err := f.leafFor(ctx, "dev", "", "127.0.0.1")
 	if err != nil || len(ip.Leaf.IPAddresses) != 1 {
 		t.Fatalf("IP leaf: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestWorkspaceCARotationChangesSerial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldLeaf, _ := f.leafFor(ctx, "dev", "a.example.com")
+	oldLeaf, _ := f.leafFor(ctx, "dev", "", "a.example.com")
 	s := NewServer(f, "")
 	rec := doReq(t, s, http.MethodPost, "/api/workspaces/dev/ca/rotate", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -177,7 +177,7 @@ func TestWorkspaceCARotationChangesSerial(t *testing.T) {
 	if blk, _ := pem.Decode(file); blk == nil || !bytes.Equal(blk.Bytes, after.Raw) {
 		t.Fatal("trust file not rewritten")
 	}
-	newLeaf, _ := f.leafFor(ctx, "dev", "a.example.com")
+	newLeaf, _ := f.leafFor(ctx, "dev", "", "a.example.com")
 	if newLeaf == oldLeaf {
 		t.Fatal("leaf cache survived rotation")
 	}
@@ -212,4 +212,53 @@ func TestWorkspaceCALeafRefreshesBeforeExpiry(t *testing.T) {
 	if b, _ := c.leaf("h.example.com"); b == a {
 		t.Fatal("not refreshed within the last hour")
 	}
+}
+
+func TestWorkspaceCARotationKeepsRunningAgentGeneration(t *testing.T) {
+	ctx := context.Background()
+	f, _ := testCAFleet(t)
+	if err := os.MkdirAll(filepath.Join(f.stateDir, egressSubpath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h := newEgressHost(f)
+	f.egress = h
+	old, _, err := f.workspaceCA(ctx, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := old.SerialNumber.Text(16)
+	h.agents["a1"] = &egressAgent{workspace: "dev"}
+	h.setCA("a1", oldID)
+
+	if _, err := f.rotateCA(ctx, "dev"); err != nil {
+		t.Fatal(err)
+	}
+	// The running agent still gets leaves from the generation it trusts.
+	l, err := f.leafFor(ctx, "dev", oldID, "a.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(old)
+	if _, err := l.Leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: "a.example.com"}); err != nil {
+		t.Fatalf("old-generation leaf does not verify under the old CA: %v", err)
+	}
+	// The trust files carry both generations, so the agent trusts either.
+	bundle, _ := os.ReadFile(filepath.Join(f.stateDir, "ca", "dev-bundle.pem"))
+	if !bytes.Contains(bundle, pemOf(old)) {
+		t.Fatal("bundle dropped the generation a running agent uses")
+	}
+	// Once the agent is gone the retired generation is pruned.
+	h.remove("a1")
+	bundle, _ = os.ReadFile(filepath.Join(f.stateDir, "ca", "dev-bundle.pem"))
+	if bytes.Contains(bundle, pemOf(old)) {
+		t.Fatal("retired generation outlived its last agent")
+	}
+	if _, err := f.leafFor(ctx, "dev", oldID, "a.example.com"); err == nil {
+		t.Fatal("pruned generation still signs")
+	}
+}
+
+func pemOf(c *x509.Certificate) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
 }

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,6 +78,9 @@ type egressAgent struct {
 	policy EgressAgentPolicy
 	// workspace names the agent's workspace, for the CA.
 	workspace string
+	// caID is the CA generation the agent was started with. Rotation
+	// retires it but the proxy keeps signing this agent's leaves with it.
+	caID string
 }
 
 // egressHost owns the egress policy and the way agents reach the proxy.
@@ -89,6 +93,9 @@ type egressHost struct {
 	changed chan struct{} // closed and replaced on every policy change
 
 	tokenKey []byte
+	// caGens remembers which CA generation each agent uses (agent ->
+	// workspace/id) across bridge restarts, persisted as ca-gen.json.
+	caGens map[string]caGen
 	// proxyAddr is host:port agents dial (container name or loopback).
 	proxyAddr string
 
@@ -106,9 +113,14 @@ type egressHost struct {
 	executable func() (string, error)
 }
 
+type caGen struct {
+	Workspace string `json:"workspace"`
+	ID        string `json:"id"`
+}
+
 func newEgressHost(f *Fleet) *egressHost {
 	return &egressHost{
-		f: f, agents: map[string]*egressAgent{}, changed: make(chan struct{}),
+		f: f, agents: map[string]*egressAgent{}, caGens: map[string]caGen{}, changed: make(chan struct{}),
 		stop: make(chan struct{}), executable: egressExecutable,
 	}
 }
@@ -174,7 +186,7 @@ func (a *egressAgent) rebuild(allow []string, inject map[string]EgressInjection)
 	}
 	allowAll := append(append([]string(nil), a.spec.Allow...), allow...)
 	a.policy = EgressAgentPolicy{
-		Token: a.token, IP: a.ip, Workspace: a.workspace, Mode: mode,
+		Token: a.token, IP: a.ip, Workspace: a.workspace, CA: a.caID, Mode: mode,
 		Allow: allowAll, Grants: append([]string(nil), a.grants...), Inject: inject,
 	}
 }
@@ -211,11 +223,98 @@ func (h *egressHost) setIP(agentID, ip string) {
 
 func (h *egressHost) remove(agentID string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if _, ok := h.agents[agentID]; ok {
+	a, ok := h.agents[agentID]
+	var ws string
+	if ok {
+		ws = a.workspace
 		delete(h.agents, agentID)
 		h.publishLocked()
 	}
+	if _, had := h.caGens[agentID]; had {
+		delete(h.caGens, agentID)
+		h.saveCAGensLocked()
+	}
+	h.mu.Unlock()
+	if ok && ws != "" {
+		// A retired CA nobody uses any more can go.
+		h.f.pruneRetiredCAs(context.Background(), ws)
+	}
+}
+
+func (h *egressHost) caGenPath() string {
+	return filepath.Join(h.f.stateDir, egressSubpath, "ca-gen.json")
+}
+
+func (h *egressHost) saveCAGensLocked() {
+	b, err := json.Marshal(h.caGens)
+	if err == nil {
+		err = os.WriteFile(h.caGenPath(), b, 0o600)
+	}
+	if err != nil {
+		slog.Default().Warn("webbridge: could not persist CA generations", "err", err)
+	}
+}
+
+// loadCAGens restores agent->CA generation records and reloads the
+// retired generations still in use, so the trust files keep them.
+func (h *egressHost) loadCAGens(ctx context.Context) {
+	b, err := os.ReadFile(h.caGenPath())
+	if err != nil {
+		return
+	}
+	var gens map[string]caGen
+	if json.Unmarshal(b, &gens) != nil {
+		return
+	}
+	h.mu.Lock()
+	h.caGens = gens
+	h.mu.Unlock()
+	for _, g := range gens {
+		if _, err := h.f.caByID(ctx, g.Workspace, g.ID); err != nil {
+			slog.Default().Warn("webbridge: CA generation of a running agent is unavailable", "workspace", g.Workspace, "err", err)
+		}
+	}
+	seen := map[string]bool{}
+	for _, g := range gens {
+		if !seen[g.Workspace] {
+			seen[g.Workspace] = true
+			h.f.refreshCAFiles(g.Workspace)
+		}
+	}
+}
+
+// setCA records the CA generation an agent uses and pushes the policy.
+func (h *egressHost) setCA(agentID, id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	a, ok := h.agents[agentID]
+	if !ok {
+		return
+	}
+	a.caID = id
+	a.policy.CA = id
+	h.caGens[agentID] = caGen{Workspace: a.workspace, ID: id}
+	h.saveCAGensLocked()
+	h.publishLocked()
+}
+
+// caGenerationsInUse lists the CA generations of workspace that a known
+// agent still uses.
+func (h *egressHost) caGenerationsInUse(workspace string) map[string]bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]bool{}
+	for _, g := range h.caGens {
+		if g.Workspace == workspace {
+			out[g.ID] = true
+		}
+	}
+	for _, a := range h.agents {
+		if a.workspace == workspace && a.caID != "" {
+			out[a.caID] = true
+		}
+	}
+	return out
 }
 
 // ---- policy construction --------------------------------------------------
@@ -273,7 +372,7 @@ func (f *Fleet) providerHostMap(ctx context.Context) map[string]string {
 func (f *Fleet) buildPolicy(ctx context.Context, spec EgressSpec) (allow []string, inject map[string]EgressInjection) {
 	inject = map[string]EgressInjection{}
 	for _, in := range spec.Inject {
-		path, err := ParseSecretRef(in.Ref)
+		path, err := parseInjectionRef(in.Ref)
 		host := normalizeHost(in.Host)
 		if err != nil || host == "" || in.Header == "" {
 			slog.Default().Warn("webbridge: skipping invalid egress injection", "host", in.Host, "ref", in.Ref)
@@ -325,7 +424,7 @@ func (h *egressHost) register(ctx context.Context, agentID, workspace string, sp
 	defer h.mu.Unlock()
 	a := &egressAgent{token: h.tokenFor(agentID), spec: spec, workspace: workspace}
 	if old, ok := h.agents[agentID]; ok {
-		a.ip, a.grants = old.ip, old.grants
+		a.ip, a.grants, a.caID = old.ip, old.grants, old.caID
 	}
 	a.rebuild(allow, inject)
 	h.agents[agentID] = a
@@ -346,17 +445,43 @@ func (h *egressHost) refreshAll(ctx context.Context) {
 		jobs = append(jobs, job{id, a.spec})
 	}
 	h.mu.Unlock()
+	changed := false
 	for _, j := range jobs {
 		allow, inject := h.f.buildPolicy(ctx, j.spec)
 		h.mu.Lock()
 		if a, ok := h.agents[j.id]; ok {
+			before := a.policy
 			a.rebuild(allow, inject)
+			if !reflect.DeepEqual(before, a.policy) {
+				changed = true
+			}
 		}
 		h.mu.Unlock()
 	}
-	h.mu.Lock()
-	h.publishLocked()
-	h.mu.Unlock()
+	if changed {
+		h.mu.Lock()
+		h.publishLocked()
+		h.mu.Unlock()
+	}
+}
+
+// refreshLoop re-reads injected secrets on an interval, so a value rotated
+// in the backend (OpenBao, the environment) reaches running agents without
+// a bridge restart. It publishes only when something changed.
+func (h *egressHost) refreshLoop(interval time.Duration) {
+	defer h.wg.Done()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			h.refreshAll(ctx)
+			cancel()
+		case <-h.stop:
+			return
+		}
+	}
 }
 
 // ---- control link ---------------------------------------------------------
@@ -432,7 +557,7 @@ func (h *egressHost) serveLeaf(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid host"})
 		return
 	}
-	cert, err := h.f.leafFor(r.Context(), ws, host)
+	cert, err := h.f.leafFor(r.Context(), ws, r.URL.Query().Get("ca"), host)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -487,7 +612,9 @@ func (h *egressHost) listenControl() error {
 func (h *egressHost) startProcessProxy() error {
 	h.records = make(chan EgressRecord, 1024)
 	h.proxy = NewEgressProxy(
-		func(ws, host string) (*tls.Certificate, error) { return h.f.leafFor(context.Background(), ws, host) },
+		func(ws, ca, host string) (*tls.Certificate, error) {
+			return h.f.leafFor(context.Background(), ws, ca, host)
+		},
 		h.records, h.f.noteBlocked, nil,
 	)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

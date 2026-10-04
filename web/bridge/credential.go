@@ -143,7 +143,7 @@ func (s *CredentialStore) Resolve(ctx context.Context, ownerID, credRef string) 
 	case "vault":
 		// A vault credential resolves to a PAT-shaped value: the secret
 		// is fetched now and flows through the same askpass path.
-		path, err := ParseSecretRef(cred.Ref)
+		path, err := parseCredentialRef(cred.Ref)
 		if err != nil {
 			return Credential{}, fmt.Errorf("credential %q: %w", credRef, err)
 		}

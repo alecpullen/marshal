@@ -58,7 +58,7 @@ func (p *EgressProxy) injectTransport() *http.Transport {
 // it sent is discarded.
 func (p *EgressProxy) connectInjected(w http.ResponseWriter, r *http.Request, agentID string, pol EgressAgentPolicy, host string, port int, _ EgressInjection) {
 	start := time.Now()
-	cert, err := p.leaf(pol.Workspace, host)
+	cert, err := p.leaf(pol.Workspace, pol.CA, host)
 	if err != nil {
 		http.Error(w, "cannot mint a certificate for "+host, http.StatusBadGateway)
 		return

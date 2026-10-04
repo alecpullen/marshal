@@ -36,6 +36,10 @@ func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := strings.TrimPrefix(r.URL.Query().Get("prefix"), secretRefPrefix)
+	if isReservedSecretPath(prefix) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "that prefix is reserved"})
+		return
+	}
 	paths, err := s.fleet.secrets.List(r.Context(), DefaultOwnerID, prefix)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -43,6 +47,9 @@ func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 	}
 	refs := make([]string, 0, len(paths))
 	for _, p := range paths {
+		if isReservedSecretPath(p) {
+			continue
+		}
 		refs = append(refs, secretRefPrefix+p)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"refs": refs})
@@ -53,6 +60,9 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path, err := secretRefFromPath(r.PathValue("ref"))
+	if err == nil && isReservedSecretPath(path) {
+		err = errors.New("that secret path is reserved")
+	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -81,6 +91,9 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path, err := secretRefFromPath(r.PathValue("ref"))
+	if err == nil && isReservedSecretPath(path) {
+		err = errors.New("that secret path is reserved")
+	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

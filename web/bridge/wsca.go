@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -44,6 +45,8 @@ type caCache struct {
 	cert    *x509.Certificate
 	certPEM []byte
 	key     crypto.Signer
+	// bundle is the stored PEM (certificate and key).
+	bundle []byte
 
 	mu     sync.Mutex
 	now    func() time.Time
@@ -53,6 +56,9 @@ type caCache struct {
 func newCACache(cert *x509.Certificate, certPEM []byte, key crypto.Signer) *caCache {
 	return &caCache{cert: cert, certPEM: certPEM, key: key, now: time.Now, leaves: map[string]*tls.Certificate{}}
 }
+
+// id names this CA generation: its serial number in hex.
+func (c *caCache) id() string { return c.cert.SerialNumber.Text(16) }
 
 func randomSerial() (*big.Int, error) {
 	return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
@@ -145,9 +151,9 @@ func validWorkspaceName(name string) error {
 	return nil
 }
 
-// workspaceCA returns the workspace's CA certificate and signer, creating
-// and storing one on first use. With a read-only backend a missing CA
-// cannot be stored, so it is ErrInjectionUnavailable.
+// workspaceCA returns the workspace's current CA certificate and signer,
+// creating and storing one on first use. With a read-only backend a
+// missing CA cannot be stored, so it is ErrInjectionUnavailable.
 func (f *Fleet) workspaceCA(ctx context.Context, name string) (*x509.Certificate, crypto.Signer, error) {
 	c, err := f.caFor(ctx, name)
 	if err != nil {
@@ -156,8 +162,8 @@ func (f *Fleet) workspaceCA(ctx context.Context, name string) (*x509.Certificate
 	return c.cert, c.key, nil
 }
 
-// caFor returns the cached CA for name, loading or creating it, and
-// (re)writes the public trust files.
+// caFor returns the cached current CA for name, loading or creating it,
+// and (re)writes the public trust files.
 func (f *Fleet) caFor(ctx context.Context, name string) (*caCache, error) {
 	if err := validWorkspaceName(name); err != nil {
 		return nil, err
@@ -167,7 +173,7 @@ func (f *Fleet) caFor(ctx context.Context, name string) (*caCache, error) {
 	if c, ok := f.cas[name]; ok {
 		return c, nil
 	}
-	c, err := f.loadOrCreateCA(ctx, name, false)
+	c, err := f.loadOrCreateCA(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -175,27 +181,41 @@ func (f *Fleet) caFor(ctx context.Context, name string) (*caCache, error) {
 		f.cas = map[string]*caCache{}
 	}
 	f.cas[name] = c
+	if err := f.writeCAFiles(name); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func newCAFromBundle(bundle []byte) (*caCache, error) {
+	cert, certPEM, key, err := decodeCABundle(bundle)
+	if err != nil {
+		return nil, err
+	}
+	c := newCACache(cert, certPEM, key)
+	c.bundle = bundle
 	return c, nil
 }
 
 // loadOrCreateCA reads vault:ca/<name>, or generates and stores a new CA
-// when none exists or force is set. Caller holds f.caMu.
-func (f *Fleet) loadOrCreateCA(ctx context.Context, name string, force bool) (*caCache, error) {
+// when none exists. Caller holds f.caMu.
+func (f *Fleet) loadOrCreateCA(ctx context.Context, name string) (*caCache, error) {
 	path := caSecretPath(name)
-	if !force {
-		data, err := f.secrets.Get(ctx, DefaultOwnerID, path)
-		switch {
-		case err == nil:
-			cert, certPEM, key, err := decodeCABundle(data)
-			if err != nil {
-				return nil, fmt.Errorf("workspace CA %s: %w", name, err)
-			}
-			c := newCACache(cert, certPEM, key)
-			return c, f.writeCAFiles(name, c)
-		case !errors.Is(err, ErrSecretNotFound):
-			return nil, err
+	data, err := f.secrets.Get(ctx, DefaultOwnerID, path)
+	switch {
+	case err == nil:
+		c, err := newCAFromBundle(data)
+		if err != nil {
+			return nil, fmt.Errorf("workspace CA %s: %w", name, err)
 		}
+		return c, nil
+	case !errors.Is(err, ErrSecretNotFound):
+		return nil, err
 	}
+	return f.generateAndStoreCA(ctx, name)
+}
+
+func (f *Fleet) generateAndStoreCA(ctx context.Context, name string) (*caCache, error) {
 	cert, certPEM, key, err := generateWorkspaceCA(name, time.Now())
 	if err != nil {
 		return nil, err
@@ -204,24 +224,76 @@ func (f *Fleet) loadOrCreateCA(ctx context.Context, name string, force bool) (*c
 	if err != nil {
 		return nil, err
 	}
-	if err := f.secrets.Put(ctx, DefaultOwnerID, path, bundle); err != nil {
+	if err := f.secrets.Put(ctx, DefaultOwnerID, caSecretPath(name), bundle); err != nil {
 		if errors.Is(err, ErrSecretsReadOnly) {
 			return nil, ErrInjectionUnavailable
 		}
 		return nil, err
 	}
 	c := newCACache(cert, certPEM, key)
-	return c, f.writeCAFiles(name, c)
+	c.bundle = bundle
+	return c, nil
 }
 
-// writeCAFiles writes <state>/ca/<name>.pem and <name>-bundle.pem. The
-// bundle is the host's system roots followed by the workspace CA.
-func (f *Fleet) writeCAFiles(name string, c *caCache) error {
+// retiredSecretPath is where a rotated-out CA is kept while agents that
+// started under it are still running.
+func retiredSecretPath(name, id string) string { return caSecretPath(name) + "." + id }
+
+// caByID returns the CA generation id for name: the current one (also
+// for an empty id), a retired one held in memory, or a retired one
+// reloaded from the vault after a bridge restart.
+func (f *Fleet) caByID(ctx context.Context, name, id string) (*caCache, error) {
+	cur, err := f.caFor(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if id == "" || id == cur.id() {
+		return cur, nil
+	}
+	f.caMu.Lock()
+	defer f.caMu.Unlock()
+	if c, ok := f.retiredCAs[name][id]; ok {
+		return c, nil
+	}
+	data, err := f.secrets.Get(ctx, DefaultOwnerID, retiredSecretPath(name, id))
+	if err != nil {
+		return nil, fmt.Errorf("CA generation %s of workspace %s is gone: %w", id, name, err)
+	}
+	c, err := newCAFromBundle(data)
+	if err != nil {
+		return nil, err
+	}
+	if f.retiredCAs == nil {
+		f.retiredCAs = map[string]map[string]*caCache{}
+	}
+	if f.retiredCAs[name] == nil {
+		f.retiredCAs[name] = map[string]*caCache{}
+	}
+	f.retiredCAs[name][id] = c
+	return c, nil
+}
+
+// writeCAFiles writes <state>/ca/<name>.pem and <name>-bundle.pem. Both
+// hold the current CA followed by any retired generations still in use,
+// so a client that re-reads them after a rotation trusts every leaf the
+// proxy may still serve. The bundle starts with the host's system roots.
+// Caller holds f.caMu.
+func (f *Fleet) writeCAFiles(name string) error {
+	cur := f.cas[name]
+	certs := append([]byte{}, cur.certPEM...)
+	ids := make([]string, 0, len(f.retiredCAs[name]))
+	for id := range f.retiredCAs[name] {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		certs = append(certs, f.retiredCAs[name][id].certPEM...)
+	}
 	dir := filepath.Join(f.stateDir, "ca")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(dir, name+".pem"), c.certPEM, 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, name+".pem"), certs, 0o644); err != nil {
 		return err
 	}
 	var bundle []byte
@@ -232,11 +304,11 @@ func (f *Fleet) writeCAFiles(name string, c *caCache) error {
 		}
 	}
 	if bundle == nil {
-		slog.Default().Warn("webbridge: no system CA bundle found; the workspace bundle holds only its own CA", "workspace", name)
+		slog.Default().Warn("webbridge: no system CA bundle found; the workspace bundle holds only its own CAs", "workspace", name)
 	} else if !bytes.HasSuffix(bundle, []byte("\n")) {
 		bundle = append(bundle, '\n')
 	}
-	bundle = append(bundle, c.certPEM...)
+	bundle = append(bundle, certs...)
 	return writeFileAtomic(filepath.Join(dir, name+"-bundle.pem"), bundle, 0o644)
 }
 
@@ -261,24 +333,94 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// rotateCA replaces the workspace CA. Agents spawned afterwards trust the
-// new one; the old leaves are dropped.
+// rotateCA creates a new current CA. The old one is retired, not
+// destroyed: agents that are already running loaded the old bundle and
+// the proxy keeps signing their leaves with it, so rotation never breaks
+// a running agent. Agents spawned afterwards use the new CA. A retired CA
+// is deleted once no agent uses it.
 func (f *Fleet) rotateCA(ctx context.Context, name string) (*x509.Certificate, error) {
 	if err := validWorkspaceName(name); err != nil {
 		return nil, err
 	}
 	f.caMu.Lock()
 	defer f.caMu.Unlock()
-	c, err := f.loadOrCreateCA(ctx, name, true)
+	old, ok := f.cas[name]
+	if !ok {
+		var err error
+		if old, err = f.loadOrCreateCA(ctx, name); err != nil {
+			return nil, err
+		}
+	}
+	// Keep the old generation first: if storing the new one fails, nothing
+	// was lost.
+	if err := f.secrets.Put(ctx, DefaultOwnerID, retiredSecretPath(name, old.id()), old.bundle); err != nil {
+		if errors.Is(err, ErrSecretsReadOnly) {
+			return nil, ErrInjectionUnavailable
+		}
+		return nil, err
+	}
+	c, err := f.generateAndStoreCA(ctx, name)
 	if err != nil {
 		return nil, err
 	}
+	if f.retiredCAs == nil {
+		f.retiredCAs = map[string]map[string]*caCache{}
+	}
+	if f.retiredCAs[name] == nil {
+		f.retiredCAs[name] = map[string]*caCache{}
+	}
+	f.retiredCAs[name][old.id()] = old
 	if f.cas == nil {
 		f.cas = map[string]*caCache{}
 	}
 	f.cas[name] = c
+	f.pruneRetiredLocked(ctx, name)
+	if err := f.writeCAFiles(name); err != nil {
+		return nil, err
+	}
 	f.auditf(AuditEvent{Event: AuditCARotated, OwnerID: DefaultOwnerID, Detail: name})
 	return c.cert, nil
+}
+
+// pruneRetiredCAs drops retired generations of name that no live agent
+// uses, and rewrites the trust files without them.
+func (f *Fleet) pruneRetiredCAs(ctx context.Context, name string) {
+	f.caMu.Lock()
+	defer f.caMu.Unlock()
+	if f.pruneRetiredLocked(ctx, name) {
+		if _, ok := f.cas[name]; ok {
+			_ = f.writeCAFiles(name)
+		}
+	}
+}
+
+// refreshCAFiles rewrites the trust files of name from the loaded
+// generations.
+func (f *Fleet) refreshCAFiles(name string) {
+	f.caMu.Lock()
+	defer f.caMu.Unlock()
+	if _, ok := f.cas[name]; ok {
+		_ = f.writeCAFiles(name)
+	}
+}
+
+// pruneRetiredLocked reports whether anything was dropped. Caller holds
+// f.caMu.
+func (f *Fleet) pruneRetiredLocked(ctx context.Context, name string) bool {
+	if f.egress == nil {
+		return false
+	}
+	inUse := f.egress.caGenerationsInUse(name)
+	dropped := false
+	for id := range f.retiredCAs[name] {
+		if inUse[id] {
+			continue
+		}
+		delete(f.retiredCAs[name], id)
+		_ = f.secrets.Delete(ctx, DefaultOwnerID, retiredSecretPath(name, id))
+		dropped = true
+	}
+	return dropped
 }
 
 // leaf mints (or returns the cached) P-256 leaf for host, valid 24h and
@@ -324,9 +466,10 @@ func (c *caCache) leaf(host string) (*tls.Certificate, error) {
 	return l, nil
 }
 
-// leafFor mints a leaf for workspace/host from the workspace's CA.
-func (f *Fleet) leafFor(ctx context.Context, workspace, host string) (*tls.Certificate, error) {
-	c, err := f.caFor(ctx, workspace)
+// leafFor mints a leaf for host from CA generation ca of the workspace
+// (empty means the current one).
+func (f *Fleet) leafFor(ctx context.Context, workspace, ca, host string) (*tls.Certificate, error) {
+	c, err := f.caByID(ctx, workspace, ca)
 	if err != nil {
 		return nil, err
 	}

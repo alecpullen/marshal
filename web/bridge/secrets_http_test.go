@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -107,5 +108,27 @@ func TestSecretsHTTPRejectsBadRefsAndBodies(t *testing.T) {
 	}
 	if rec := doReq(t, s, http.MethodPut, "/api/secrets/vault:a", map[string]string{"value": ""}, nil); rec.Code != http.StatusBadRequest {
 		t.Errorf("empty value = %d", rec.Code)
+	}
+}
+
+func TestSecretsHTTPReservesCAAndScopesCredentials(t *testing.T) {
+	s, f := testSecretsServer(t)
+	f.secrets.Put(context.Background(), DefaultOwnerID, "ca/dev", []byte("pem"))
+	f.secrets.Put(context.Background(), DefaultOwnerID, "git/ok", []byte("tok"))
+	if c := doReq(t, s, http.MethodPut, "/api/secrets/vault:ca/dev", map[string]string{"value": "x"}, nil).Code; c != http.StatusBadRequest {
+		t.Fatalf("PUT ca/ = %d", c)
+	}
+	if c := doReq(t, s, http.MethodDelete, "/api/secrets/vault:ca/dev", nil, nil).Code; c != http.StatusBadRequest {
+		t.Fatalf("DELETE ca/ = %d", c)
+	}
+	rec := doReq(t, s, http.MethodGet, "/api/secrets", nil, nil)
+	if strings.Contains(rec.Body.String(), "ca/") || !strings.Contains(rec.Body.String(), "git/ok") {
+		t.Fatalf("list = %s", rec.Body)
+	}
+	if _, err := parseCredentialRef("vault:providers/openai"); err == nil {
+		t.Fatal("credential ref outside git/ accepted")
+	}
+	if _, err := parseInjectionRef("vault:ca/dev"); err == nil {
+		t.Fatal("injection of a CA key accepted")
 	}
 }

@@ -45,6 +45,46 @@ func ParseSecretRef(ref string) (string, error) {
 	return path, nil
 }
 
+// Reserved and scoped path prefixes. The bridge keeps workspace CA keys
+// under "ca/", so the secrets API never reads, writes or lists them;
+// credentials may only reference "git/" (or "env/" on the env backend) so a credential cannot be pointed
+// at a provider key or a CA.
+const (
+	reservedCAPrefix    = "ca/"
+	credentialPrefix    = "git/"
+	envCredentialPrefix = "env/"
+)
+
+func isReservedSecretPath(path string) bool {
+	return strings.HasPrefix(path, reservedCAPrefix)
+}
+
+// parseCredentialRef validates the ref of a vault credential: it must
+// live under git/.
+func parseCredentialRef(ref string) (string, error) {
+	path, err := ParseSecretRef(ref)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(path, credentialPrefix) && !strings.HasPrefix(path, envCredentialPrefix) {
+		return "", fmt.Errorf("secret ref %q: credential secrets must live under %s or %s", ref, credentialPrefix, envCredentialPrefix)
+	}
+	return path, nil
+}
+
+// parseInjectionRef validates an egress injection ref: any secret except
+// the bridge's own.
+func parseInjectionRef(ref string) (string, error) {
+	path, err := ParseSecretRef(ref)
+	if err != nil {
+		return "", err
+	}
+	if isReservedSecretPath(path) {
+		return "", fmt.Errorf("secret ref %q is reserved", ref)
+	}
+	return path, nil
+}
+
 func validateSecretPath(path string) error {
 	if path == "" {
 		return errors.New("empty path")

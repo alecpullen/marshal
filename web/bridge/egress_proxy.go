@@ -23,8 +23,9 @@ const egressDialTimeout = 10 * time.Second
 // and reports every connection. It uses only the standard library.
 type EgressProxy struct {
 	policy atomic.Pointer[EgressPolicy]
-	// leaf returns a certificate for host signed by the workspace CA.
-	leaf func(workspace, host string) (*tls.Certificate, error)
+	// leaf returns a certificate for host signed by the workspace CA
+	// generation ca (empty means the current one).
+	leaf func(workspace, ca, host string) (*tls.Certificate, error)
 	// records receives one record per connection; nil disables logging.
 	// A full channel drops the record rather than stall traffic.
 	records chan<- EgressRecord
@@ -44,7 +45,7 @@ type EgressProxy struct {
 
 // NewEgressProxy builds a proxy with an empty policy (everything is
 // refused until SetPolicy is called).
-func NewEgressProxy(leaf func(workspace, host string) (*tls.Certificate, error), records chan<- EgressRecord, blocked func(agentID, host string), upstream *tls.Config) *EgressProxy {
+func NewEgressProxy(leaf func(workspace, ca, host string) (*tls.Certificate, error), records chan<- EgressRecord, blocked func(agentID, host string), upstream *tls.Config) *EgressProxy {
 	p := &EgressProxy{leaf: leaf, records: records, blocked: blocked, upstream: upstream}
 	d := &net.Dialer{Timeout: egressDialTimeout}
 	p.dial = d.DialContext

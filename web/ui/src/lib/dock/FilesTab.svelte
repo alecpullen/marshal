@@ -30,21 +30,27 @@
   let line = $state<number | undefined>(undefined)
   let viewerEl = $state<HTMLElement | null>(null)
 
+  // Only the newest open may write the viewer: reads can resolve out of order.
+  let openToken = 0
   async function open(path: string, at?: number) {
+    const mine = ++openToken
     current = path
     line = at
     view = null
     error = ''
     void tree.reveal(path)
+    let result: FileView | 'unsupported'
     try {
-      view = await readFile(agentId, path)
+      result = await readFile(agentId, path)
     } catch (e) {
-      error = errMessage(e)
+      if (mine === openToken) error = errMessage(e)
       return
     }
+    if (mine !== openToken) return
+    view = result
     if (at) {
       await tick()
-      viewerEl?.querySelector(`[data-line="${at}"]`)?.scrollIntoView?.({ block: 'center' })
+      if (mine === openToken) viewerEl?.querySelector(`[data-line="${at}"]`)?.scrollIntoView?.({ block: 'center' })
     }
   }
 

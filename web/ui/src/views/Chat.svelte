@@ -213,11 +213,14 @@
 
   // Clicking a row selects it.
   function onTranscriptClick(e: MouseEvent) {
-    const el = (e.target as HTMLElement).closest?.('[data-node-id]') as HTMLElement | null
+    const target = e.target as HTMLElement
+    // Fold and density buttons, links and text selections are not selections.
+    if (target.closest?.('button, a') || window.getSelection()?.toString()) return
+    const el = target.closest?.('[data-node-id]') as HTMLElement | null
     const id = el?.dataset.nodeId
     if (!id || !$shown.nodes.has(id)) return
     cursor = id
-    selectNode(id)
+    selectNode(id, false)
   }
 
   // Browse mode: the TUI's Esc mode, a cursor over transcript rows.
@@ -635,7 +638,7 @@
       {#if dock.tab === 'inspect'}
         <InspectTab {sessionId} {subagentId} stack={$shown} {dock} {cache} onSelect={(id) => selectNode(id)} />
       {:else if dock.tab === 'changes'}
-        <ChangesTab agentId={sessionId} {sessionId} stack={$stack} {dock} gate={agent?.gate} changedFiles={row?.changedFiles ?? 0} />
+        <ChangesTab agentId={sessionId} {sessionId} stack={$stack} {dock} drilled={drill.length > 0} gate={agent?.gate} changedFiles={row?.changedFiles ?? 0} />
       {:else}
         <FilesTab agentId={sessionId} stack={$shown} {dock} request={fileRequest} />
       {/if}

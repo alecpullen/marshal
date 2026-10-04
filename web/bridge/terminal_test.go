@@ -374,3 +374,117 @@ func TestTerminalScriptMissingIsReported(t *testing.T) {
 		}
 	}
 }
+
+func TestTestShellRunsTheBuiltImageWithMountsAndEnv(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	doc := sampleDoc("svc")
+	doc.Mounts = []WSMount{{Volume: "gocache", Target: "/go/pkg"}}
+	e.builtTemplate(t, "svc", doc)
+	fs := &fakeStreamer{}
+	e.f.streamer = fs.start
+	srv := NewServer(e.f, "")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", strings.NewReader(`{"cols":90,"rows":20}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("shell = %d %s", rec.Code, rec.Body)
+	}
+	_, call := fs.last()
+	got := strings.Join(call.args, " ")
+	for _, want := range []string{
+		"run --rm -i --name marshal-shell-",
+		"--mount type=volume,source=gocache,target=/go/pkg",
+		"-e MARSHAL_WORKSPACE=svc",
+		"-e TERM=xterm-256color",
+		"marshal-derived-svc script -qfc stty rows 20 cols 90; exec sh /dev/null",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("run args lack %q:\n%s", want, got)
+		}
+	}
+	if call.name != "docker" || call.dir != "" {
+		t.Errorf("call = %+v", call)
+	}
+	// A test shell must not receive the agent provider keys.
+	if strings.Contains(got, "API_KEY") {
+		t.Errorf("provider key leaked into the shell: %s", got)
+	}
+}
+
+func TestTestShellClosingKillsTheProcessAndRemovesTheContainer(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	e.builtTemplate(t, "svc", sampleDoc("svc"))
+	fs := &fakeStreamer{}
+	e.f.streamer = fs.start
+	srv := NewServer(e.f, "")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("shell = %d %s", rec.Code, rec.Body)
+	}
+	var out struct {
+		TerminalID string `json:"terminalId"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	proc, _ := fs.last()
+
+	// Input reaches the shell and never touches an agent hold.
+	body, _ := json.Marshal(map[string]string{"data": base64.StdEncoding.EncodeToString([]byte("ls\n"))})
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell/"+out.TerminalID+"/input", strings.NewReader(string(body))))
+	if rec.Code != http.StatusNoContent || proc.written() != "ls\n" {
+		t.Fatalf("input = %d, stdin %q", rec.Code, proc.written())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("DELETE", "/api/workspaces/svc/shell/"+out.TerminalID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("close = %d %s", rec.Code, rec.Body)
+	}
+	if !proc.wasKilled() {
+		t.Fatal("process not killed")
+	}
+	var removed bool
+	e.imgs.mu.Lock()
+	for _, c := range e.imgs.cmds {
+		if len(c) >= 4 && c[1] == "rm" && c[2] == "-f" && strings.HasPrefix(c[3], shellContainerPrefix) {
+			removed = true
+		}
+	}
+	e.imgs.mu.Unlock()
+	if !removed {
+		t.Fatal("container was not removed")
+	}
+}
+
+func TestTestShellRefusesAnUnbuiltTemplate(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	publishDoc(t, e.f, "raw", sampleDoc("raw"))
+	e.f.streamer = (&fakeStreamer{}).start
+	srv := NewServer(e.f, "")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/raw/shell", nil))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "workspace_not_built") {
+		t.Fatalf("unbuilt = %d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/missing/shell", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestTestShellIsLimitedToTwoPerWorkspace(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	e.builtTemplate(t, "svc", sampleDoc("svc"))
+	e.f.streamer = (&fakeStreamer{}).start
+	srv := NewServer(e.f, "")
+	for i, want := range []int{200, 200, 429} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", nil))
+		if rec.Code != want {
+			t.Fatalf("shell %d = %d %s, want %d", i, rec.Code, rec.Body, want)
+		}
+	}
+}

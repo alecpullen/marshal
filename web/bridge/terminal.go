@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -146,8 +147,8 @@ func clampTerm(v, def int) int {
 
 // terminalScript is the shell command `script` runs inside the PTY it
 // allocates. cols and rows are integers, so nothing here is injectable.
-func terminalScript(cols, rows int) string {
-	return fmt.Sprintf("stty rows %d cols %d; exec ${SHELL:-sh}", rows, cols)
+func terminalScript(cols, rows int, shell string) string {
+	return fmt.Sprintf("stty rows %d cols %d; exec %s", rows, cols, shell)
 }
 
 // reserve claims a terminal slot for owner and registers t. It fails with
@@ -222,7 +223,7 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 		return "", err
 	}
 	cols, rows = clampTerm(cols, 80), clampTerm(rows, 24)
-	script := terminalScript(cols, rows)
+	script := terminalScript(cols, rows, "${SHELL:-sh}")
 
 	var dir, bin string
 	var args []string
@@ -619,4 +620,135 @@ func (f *Fleet) closeAllTerminals() {
 	for _, t := range all {
 		f.killTerminal(t)
 	}
+}
+
+// ---- Workspace test shell ----
+
+const shellContainerPrefix = "marshal-shell-"
+
+// workspaceOwner is the terminal owner of a workspace's test shell.
+func workspaceOwner(name string) string { return "workspace:" + name }
+
+// OpenWorkspaceShell starts a throwaway container of a built Studio
+// template's image, with its mounts and environment, and attaches a
+// terminal to it. There is no agent, so nothing is held. The container is
+// removed when the shell ends.
+func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows int) (string, error) {
+	ref, err := ParseWSRef(name)
+	if err != nil {
+		return "", err
+	}
+	if ref.Source != "studio" {
+		return "", fmt.Errorf("%w: a test shell needs a Studio template", ErrWorkspaceNotBuilt)
+	}
+	res, err := f.ResolveWorkspace(ctx, ref, "")
+	if err != nil {
+		return "", err
+	}
+	image, err := f.builtImage(res)
+	if err != nil {
+		return "", err
+	}
+	rtPath, rtName, ok := f.runtimeInfo()
+	if !ok {
+		return "", ErrWorkspaceNeedsRuntime
+	}
+	cols, rows = clampTerm(cols, 80), clampTerm(rows, 24)
+
+	rnd := newTerminalID()
+	shellID := "shell-" + rnd
+	container := shellContainerPrefix + rnd
+	pseudo := Agent{
+		ID: shellID, Profile: DefaultRuntimeProfile(),
+		Workspace: &AgentWorkspace{Name: res.Name, Version: res.Version, Source: res.Source},
+	}
+	extras, err := f.buildWorkspaceExtras(ctx, pseudo, res.Doc, res.ImageName, rtName)
+	if err != nil {
+		return "", err
+	}
+	wiring, proxied, err := f.egressPrepare(ctx, pseudo)
+	if err != nil {
+		return "", err
+	}
+	unregister := func() {
+		if proxied && f.egress != nil {
+			f.egress.remove(shellID)
+		}
+	}
+
+	args := []string{"run", "--rm", "-i", "--name", container}
+	if wiring.Network != "" {
+		args = append(args, "--network", wiring.Network)
+	}
+	args = append(args, extras.mounts...)
+	for _, v := range wiring.Volumes {
+		args = append(args, volumeMount(rtName, f.stateVolume, v.Target, v.Subpath, v.ReadOnly)...)
+	}
+	env := map[string]string{"TERM": "xterm-256color"}
+	for k, v := range extras.env {
+		env[k] = v
+	}
+	for k, v := range wiring.Env {
+		env[k] = v
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "-e", k+"="+env[k])
+	}
+	args = append(args, image, "script", "-qfc", terminalScript(cols, rows, "sh"), "/dev/null")
+
+	owner := workspaceOwner(res.Name)
+	t := &terminal{id: newTerminalID(), owner: owner, done: make(chan struct{})}
+	t.key = terminalKeyPrefix + t.id
+	t.cleanup = func() {
+		unregister()
+		// Closing stdin ends the shell and --rm removes the container; this
+		// is the backstop for a client killed before the shell saw EOF.
+		_, _ = f.runRuntime(rtName, "rm", "-f", container)
+	}
+	st := f.terminals()
+	if err := st.reserve(owner, t); err != nil {
+		unregister()
+		return "", err
+	}
+	if err := f.startTerminal(t, "", rtPath, args); err != nil {
+		st.remove(t)
+		unregister()
+		return "", err
+	}
+	f.auditf(AuditEvent{Event: AuditTerminalOpened, Detail: "workspace:" + res.Name + " " + t.id})
+	return t.id, nil
+}
+
+func (s *Server) workspaceShellOpen(w http.ResponseWriter, r *http.Request) {
+	var req terminalSizeReq
+	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+		return
+	}
+	tid, err := s.fleet.OpenWorkspaceShell(r.Context(), r.PathValue("name"), req.Cols, req.Rows)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"terminalId": tid})
+}
+
+func (s *Server) workspaceShellEvents(w http.ResponseWriter, r *http.Request) {
+	s.serveTerminalEvents(w, r, workspaceOwner(r.PathValue("name")))
+}
+
+func (s *Server) workspaceShellInput(w http.ResponseWriter, r *http.Request) {
+	s.terminalInputFor(w, r, workspaceOwner(r.PathValue("name")))
+}
+
+func (s *Server) workspaceShellResize(w http.ResponseWriter, r *http.Request) {
+	s.terminalResizeFor(w, r, workspaceOwner(r.PathValue("name")))
+}
+
+func (s *Server) workspaceShellClose(w http.ResponseWriter, r *http.Request) {
+	s.terminalCloseFor(w, r, workspaceOwner(r.PathValue("name")))
 }

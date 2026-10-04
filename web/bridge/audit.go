@@ -37,6 +37,8 @@ const (
 	AuditWatchStarted    = "watch_started"
 	AuditWatchStopped    = "watch_stopped"
 	AuditRerouteFailed   = "reroute_failed"
+	AuditSecretSet       = "secret_set"
+	AuditSecretDeleted   = "secret_deleted"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

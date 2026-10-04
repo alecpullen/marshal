@@ -327,3 +327,74 @@ func TestWebbridgeReportsItsVersion(t *testing.T) {
 		t.Fatalf("--version output does not contain 'webbridge': %q", out.String())
 	}
 }
+
+func TestParseConfigSecretsBackends(t *testing.T) {
+	for _, k := range []string{"WEBBRIDGE_SECRETS", "WEBBRIDGE_SECRETS_KEY_FILE", "WEBBRIDGE_BAO_ADDR", "WEBBRIDGE_BAO_MOUNT"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := parseConfig(nil, io.Discard)
+	if err != nil || cfg.secrets != "env" {
+		t.Fatalf("default: %v, %q", err, cfg.secrets)
+	}
+	cfg, err = parseConfig([]string{"--secrets", "local", "--secrets-key-file", "/k"}, io.Discard)
+	if err != nil || cfg.secrets != "local" || cfg.secretsKeyFile != "/k" {
+		t.Fatalf("local: %v, %+v", err, cfg)
+	}
+	if _, err := parseConfig([]string{"--secrets", "local"}, io.Discard); err == nil {
+		t.Error("local without a key file accepted")
+	}
+	cfg, err = parseConfig([]string{"--secrets", "openbao", "--bao-addr", "https://b:8200",
+		"--bao-role-id-file", "/r", "--bao-secret-id-file", "/s", "--bao-ca-file", "/c"}, io.Discard)
+	if err != nil || cfg.baoMount != "secret" || cfg.baoAddr != "https://b:8200" || cfg.baoCAFile != "/c" {
+		t.Fatalf("openbao: %v, %+v", err, cfg)
+	}
+	if _, err := parseConfig([]string{"--secrets", "openbao", "--bao-addr", "x"}, io.Discard); err == nil {
+		t.Error("openbao without id files accepted")
+	}
+	if _, err := parseConfig([]string{"--secrets", "vault"}, io.Discard); err == nil {
+		t.Error("unknown backend accepted")
+	}
+	t.Setenv("WEBBRIDGE_SECRETS", "local")
+	t.Setenv("WEBBRIDGE_SECRETS_KEY_FILE", "/envkey")
+	cfg, err = parseConfig(nil, io.Discard)
+	if err != nil || cfg.secrets != "local" || cfg.secretsKeyFile != "/envkey" {
+		t.Fatalf("env fallback: %v, %+v", err, cfg)
+	}
+}
+
+func TestSecretsInitKeySubcommand(t *testing.T) {
+	key := filepath.Join(t.TempDir(), "key")
+	var out strings.Builder
+	if err := run(context.Background(), []string{"secrets", "init-key", key}, &out, io.Discard); err != nil {
+		t.Fatalf("init-key: %v", err)
+	}
+	info, err := os.Stat(key)
+	if err != nil || info.Mode().Perm() != 0o600 || info.Size() != 32 {
+		t.Fatalf("key file: %v %v", info, err)
+	}
+	if err := run(context.Background(), []string{"secrets", "init-key", key}, &out, io.Discard); err == nil {
+		t.Error("overwrote existing key")
+	}
+	if err := run(context.Background(), []string{"secrets", "bogus"}, &out, io.Discard); err == nil {
+		t.Error("bad subcommand accepted")
+	}
+}
+
+func TestBuildSecretProvider(t *testing.T) {
+	root := t.TempDir()
+	key := filepath.Join(root, "key")
+	if err := run(context.Background(), []string{"secrets", "init-key", key}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	p, err := buildSecretProvider(config{secrets: "local", secretsKeyFile: key, stateDir: filepath.Join(root, "state")})
+	if err != nil || p.Name() != "local" {
+		t.Fatalf("local: %v", err)
+	}
+	if _, err := buildSecretProvider(config{secrets: "local", secretsKeyFile: key, stateDir: root}); err == nil {
+		t.Error("key inside state dir accepted")
+	}
+	p, err = buildSecretProvider(config{secrets: "env"})
+	if err != nil || p.Name() != "env" {
+		t.Fatalf("env: %v", err)
+	}
+}

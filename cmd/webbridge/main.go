@@ -75,6 +75,14 @@ type config struct {
 	// projectMounts maps host paths to the bridge's in-container view,
 	// for translating LocalPath agent workspace mounts.
 	projectMounts []bridge.ProjectMount
+	// secrets selects the secret backend: env (default), local or openbao.
+	secrets         string
+	secretsKeyFile  string
+	baoAddr         string
+	baoMount        string
+	baoRoleIDFile   string
+	baoSecretIDFile string
+	baoCAFile       string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -102,13 +110,22 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
 	maxDiskMB := fs.Int64("max-disk-mb", 0, "max state directory size in MB (0 = unlimited)")
 	maxCloneMB := fs.Int64("max-clone-mb", 0, "max clone size in MB (0 = unlimited)")
+	secrets := fs.String("secrets", envOr("WEBBRIDGE_SECRETS", "env"), "secret backend: env, local or openbao")
+	secretsKeyFile := fs.String("secrets-key-file", envOr("WEBBRIDGE_SECRETS_KEY_FILE", ""), "32-byte key file for --secrets local (must be outside --state-dir, mode 0600)")
+	baoAddr := fs.String("bao-addr", envOr("WEBBRIDGE_BAO_ADDR", ""), "OpenBao address for --secrets openbao")
+	baoMount := fs.String("bao-mount", envOr("WEBBRIDGE_BAO_MOUNT", "secret"), "OpenBao KV v2 mount")
+	baoRoleIDFile := fs.String("bao-role-id-file", envOr("WEBBRIDGE_BAO_ROLE_ID_FILE", ""), "file holding the AppRole role id")
+	baoSecretIDFile := fs.String("bao-secret-id-file", envOr("WEBBRIDGE_BAO_SECRET_ID_FILE", ""), "file holding the AppRole secret id")
+	baoCAFile := fs.String("bao-ca-file", envOr("WEBBRIDGE_BAO_CA_FILE", ""), "extra CA certificate to trust for OpenBao")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB}
+	cfg := config{addr: *addr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
+		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -118,6 +135,19 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	// flag name was mistyped is the failure nobody notices.
 	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
 		return config{}, fmt.Errorf("--tls-cert and --tls-key must be given together")
+	}
+	switch cfg.secrets {
+	case "env":
+	case "local":
+		if cfg.secretsKeyFile == "" {
+			return config{}, fmt.Errorf("--secrets local needs --secrets-key-file")
+		}
+	case "openbao":
+		if cfg.baoAddr == "" || cfg.baoRoleIDFile == "" || cfg.baoSecretIDFile == "" {
+			return config{}, fmt.Errorf("--secrets openbao needs --bao-addr, --bao-role-id-file and --bao-secret-id-file")
+		}
+	default:
+		return config{}, fmt.Errorf("--secrets %q: expected env, local or openbao", cfg.secrets)
 	}
 	if cfg.workspace == "" {
 		p, err := bridge.DefaultWorkspacePath()
@@ -134,6 +164,34 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		cfg.cwdRoot = cwd
 	}
 	return cfg, nil
+}
+
+// buildSecretProvider constructs the backend the flags select.
+func buildSecretProvider(cfg config) (bridge.SecretProvider, error) {
+	switch cfg.secrets {
+	case "local":
+		return bridge.NewLocalProvider(cfg.stateDir, cfg.secretsKeyFile)
+	case "openbao":
+		return bridge.NewBaoProvider(cfg.baoAddr, cfg.baoMount, cfg.baoRoleIDFile, cfg.baoSecretIDFile, cfg.baoCAFile)
+	default:
+		return bridge.NewEnvProvider(), nil
+	}
+}
+
+// runSubcommand handles "webbridge secrets init-key FILE". It reports
+// whether args named a subcommand.
+func runSubcommand(args []string, stdout io.Writer) (bool, error) {
+	if len(args) >= 1 && args[0] == "secrets" {
+		if len(args) != 3 || args[1] != "init-key" {
+			return true, fmt.Errorf("usage: webbridge secrets init-key FILE")
+		}
+		if err := bridge.GenerateKeyFile(args[2]); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(stdout, "wrote 32-byte key to %s (mode 0600); keep it outside the state dir\n", args[2])
+		return true, nil
+	}
+	return false, nil
 }
 
 // parseProjectMounts parses repeatable --project-mount HOST:CONTAINER
@@ -221,6 +279,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
+	if handled, err := runSubcommand(args, stdout); handled {
+		return err
+	}
+
 	cfg, err := parseConfig(args, stderr)
 	if err != nil {
 		return err
@@ -275,6 +337,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
 	}, version, cfg.projectMounts, cfg.stateVolume)
+
+	secrets, err := buildSecretProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("secrets backend: %w", err)
+	}
+	fleet.SetSecrets(secrets)
 
 	if errs := fleet.ReattachAll(ctx); len(errs) > 0 {
 		for _, err := range errs {

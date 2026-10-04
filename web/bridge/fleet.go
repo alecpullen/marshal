@@ -126,6 +126,9 @@ type Fleet struct {
 	git *gitRunner
 	// creds resolves credential references for registered repos.
 	creds *CredentialStore
+	// secrets holds secret values. Never nil after NewFleet: the
+	// read-only env backend is the default until SetSecrets is called.
+	secrets SecretProvider
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
 	// stateVolume is the name of the shared state volume mounted at
@@ -262,6 +265,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		f.git = g
 	}
 	f.creds = NewCredentialStore(nil)
+	f.secrets = NewEnvProvider()
 	f.newRuntime = func(a Agent) (*Child, error) {
 		runtime, name, ok := detectedRuntime()
 		if !ok {
@@ -347,6 +351,15 @@ func (f *Fleet) now() time.Time {
 }
 
 // auditf appends a record, and never propagates a failure to the caller.
+// SetSecrets installs the secret backend. It is a setter, not a NewFleet
+// parameter, to keep that signature stable; call it before serving.
+func (f *Fleet) SetSecrets(p SecretProvider) {
+	if p == nil {
+		p = NewEnvProvider()
+	}
+	f.secrets = p
+}
+
 func (f *Fleet) auditf(e AuditEvent) {
 	if f.audit == nil {
 		return

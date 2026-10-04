@@ -35,7 +35,6 @@ import (
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
@@ -51,6 +50,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/viewmodel"
 	"marshal/internal/worktree"
 )
 
@@ -7658,8 +7658,8 @@ func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 
 func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 	m := newTestModel(t)
-	keyA := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
-	keyB := stack.NodeID{Kind: stack.KindTool, Key: "tool:b"}
+	keyA := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:a"}
+	keyB := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:b"}
 	m.toggleExpanded(keyA) // expand tool A
 
 	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0), ToolCallID: "a"})
@@ -7765,7 +7765,7 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 	m.refreshViewport()
 
 	// Locate the active-tool region (resolved from the child's transcript).
-	key := stack.NodeID{Kind: stack.KindTool, Key: "tool:child_call"}
+	key := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:child_call"}
 	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the child's active tool call")

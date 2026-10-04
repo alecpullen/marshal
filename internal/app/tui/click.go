@@ -4,7 +4,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
+	"marshal/internal/viewmodel"
 )
 
 // clickTarget identifies what a click region toggles: a node of the
@@ -12,7 +12,7 @@ import (
 // that drills into the subagent's transcript.
 type clickTarget struct {
 	// node is what the click toggles (or, for a live region, scrolls).
-	node     stack.NodeID
+	node     viewmodel.NodeID
 	subagent *session.SubagentView
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
@@ -134,7 +134,7 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 		return false
 	}
 	if m.regionOffset == nil {
-		m.regionOffset = map[stack.NodeID]int{}
+		m.regionOffset = map[viewmodel.NodeID]int{}
 	}
 	cur := m.regionOffset[target.node]
 	next := min(max(cur+delta, 0), maxRegionOffset)

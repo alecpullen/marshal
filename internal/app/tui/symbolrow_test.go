@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 func ev(tool string, syms ...registry.SymbolRef) registry.AuditEvent {
@@ -138,11 +138,11 @@ func TestFailedShellRowKeepsErrorTreatment(t *testing.T) {
 }
 
 func TestTestRunIsShellFamily(t *testing.T) {
-	if !stack.IsShellFamily("test.run") || !stack.IsShellFamily("shell.run") {
+	if !viewmodel.IsShellFamily("test.run") || !viewmodel.IsShellFamily("shell.run") {
 		t.Fatal("shell.run and test.run are the shell family")
 	}
 	for _, n := range []string{"file.read", "repo.search", "git.status", "agent.run"} {
-		if stack.IsShellFamily(n) {
+		if viewmodel.IsShellFamily(n) {
 			t.Errorf("%s is not shell family", n)
 		}
 	}

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/viewmodel"
 )
 
 // cachedNode is a rendered top-level block. It is reusable while the node's
@@ -26,7 +26,7 @@ type cachedNode struct {
 // nodeRenderHook is a test seam: when set it is told about every node the
 // renderer actually draws (a cache miss), so tests can assert that a spinner
 // tick re-renders only live nodes.
-var nodeRenderHook func(stack.NodeID)
+var nodeRenderHook func(viewmodel.NodeID)
 
 // invalidateTranscript forces the next refreshViewport to rebuild the
 // viewport content. The render cache stays: it validates itself.
@@ -47,7 +47,7 @@ func (m *Model) transcriptSource() (state *session.State, drilling bool) {
 
 // refreshViewport rebuilds the transcript viewport from the session.
 //
-// The transcript becomes a tree (stack.Build), each top-level block is
+// The transcript becomes a tree (viewmodel.Build), each top-level block is
 // rendered at most once per change and cached by node identity, and the
 // viewport content is only replaced when something a block depends on moved.
 // A spinner tick therefore costs rendering the live nodes, not the whole
@@ -59,7 +59,7 @@ func (m *Model) refreshViewport() {
 	items := transcriptState.Transcript()
 	inProgress := transcriptState.InProgress()
 	active := transcriptState.ActiveToolCalls()
-	snap := stack.Snapshot{
+	snap := viewmodel.Snapshot{
 		Items:           items,
 		Steps:           transcriptState.Steps(),
 		Todos:           transcriptState.Todos(),
@@ -70,7 +70,7 @@ func (m *Model) refreshViewport() {
 		RunningSubagent: m.state.HasRunningSubagent(),
 		Now:             m.now(),
 	}
-	turns := stack.Build(snap)
+	turns := viewmodel.Build(snap)
 
 	width := m.viewport.Width()
 	themeSig := themeFingerprint()
@@ -94,11 +94,11 @@ func (m *Model) refreshViewport() {
 		density:       m.densityOf,
 		record:        m.recordDensity,
 		foldTasks:     m.foldTasks,
-		hasOverride:   func(id stack.NodeID) bool { _, ok := m.override(id); return ok },
-		liveExpanded:  func(id stack.NodeID) bool { return m.isToolExpanded(id, true) },
+		hasOverride:   func(id viewmodel.NodeID) bool { _, ok := m.override(id); return ok },
+		liveExpanded:  func(id viewmodel.NodeID) bool { return m.isToolExpanded(id, true) },
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
-		callers:       func(id stack.NodeID) []string { return m.callers[id] },
+		callers:       func(id viewmodel.NodeID) []string { return m.callers[id] },
 		spinner:       m.spinnerFrame,
 		toolSpinner:   toolFrame,
 		thinkSpinner:  m.activeSpinnerFrame(session.ActivityThinking),
@@ -140,8 +140,8 @@ func (m *Model) refreshViewport() {
 	if !hasConversationTurns(items) {
 		addBlock(renderWelcomeBanner(width), nil, nil)
 	}
-	seen := map[stack.NodeID]bool{}
-	tree := map[stack.NodeID]*stack.Node{}
+	seen := map[viewmodel.NodeID]bool{}
+	tree := map[viewmodel.NodeID]*viewmodel.Node{}
 	var bitems []browseItem
 	firstTurn := true
 	for _, turn := range turns {
@@ -194,7 +194,7 @@ func (m *Model) refreshViewport() {
 // renderNode renders one top-level block, from the cache when it is still
 // valid. Nodes that are live, or hold a live descendant, are never cached: their output changes with the clock and
 // the spinner.
-func (m *Model) renderNode(n *stack.Node, c *stepRenderCtx, width int, themeSig uint64) (string, []subRegion) {
+func (m *Model) renderNode(n *viewmodel.Node, c *stepRenderCtx, width int, themeSig uint64) (string, []subRegion) {
 	sig := m.nodeSig(n, c)
 	live := n.AnyLive()
 	if !live {
@@ -208,7 +208,7 @@ func (m *Model) renderNode(n *stack.Node, c *stepRenderCtx, width int, themeSig 
 	out, subs := m.drawNode(n, c, width)
 	if !live {
 		if m.renderCache == nil {
-			m.renderCache = map[stack.NodeID]cachedNode{}
+			m.renderCache = map[viewmodel.NodeID]cachedNode{}
 		}
 		m.renderCache[n.ID] = cachedNode{version: n.Version, width: width, sig: sig, themeSig: themeSig, out: out, subs: subs}
 	}
@@ -216,23 +216,23 @@ func (m *Model) renderNode(n *stack.Node, c *stepRenderCtx, width int, themeSig 
 }
 
 // drawNode is the renderer proper: it dispatches on what the node holds.
-func (m *Model) drawNode(n *stack.Node, c *stepRenderCtx, width int) (string, []subRegion) {
+func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string, []subRegion) {
 	switch {
-	case n.Kind == stack.KindTask && n.Task != nil:
+	case n.Kind == viewmodel.KindTask && n.Task != nil:
 		return renderTask(n, c, width, m.density)
-	case n.Kind == stack.KindReceipt && n.Receipt != nil:
+	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return renderReceipt(n.Receipt, width), nil
-	case n.Kind == stack.KindStep && n.Step != nil:
+	case n.Kind == viewmodel.KindStep && n.Step != nil:
 		return renderStep(n, c, width, m.density)
-	case n.Kind == stack.KindThinking && n.Step != nil:
+	case n.Kind == viewmodel.KindThinking && n.Step != nil:
 		// Reasoning before any step has begun: the bounded live box on its own.
-		rv := m.regionView(stack.LiveThinkingID)
+		rv := m.regionView(viewmodel.LiveThinkingID)
 		box := renderThinkingBox(n.Step.LiveThinking, c.thinkSpinner, c.thinkElapsed, rv, width)
 		if cnt := strings.Count(box, "\n"); cnt > rv.minRows {
-			m.noteRegionRows(stack.LiveThinkingID, cnt)
+			m.noteRegionRows(viewmodel.LiveThinkingID, cnt)
 		}
 		return box, nil
-	case n.Kind == stack.KindTool && n.Active != nil:
+	case n.Kind == viewmodel.KindTool && n.Active != nil:
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
 	case n.Item != nil:
 		rv := m.regionView(n.ID)
@@ -241,7 +241,7 @@ func (m *Model) drawNode(n *stack.Node, c *stepRenderCtx, width int) (string, []
 		out := renderTranscriptItem(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width)
 		// Record the tallest this region has been, so a later shrink in the
 		// child's activity tail cannot shrink the card.
-		if n.Kind == stack.KindSubagent {
+		if n.Kind == viewmodel.KindSubagent {
 			if cnt := strings.Count(out, "\n"); cnt > rv.minRows {
 				m.noteRegionRows(n.ID, cnt)
 			}
@@ -254,32 +254,32 @@ func (m *Model) drawNode(n *stack.Node, c *stepRenderCtx, width int) (string, []
 // blockTarget says what a click on a top-level block does. Steps and
 // expandable items toggle; a subagent card with a child drills in; plain
 // messages are not interactive.
-func (m *Model) blockTarget(n *stack.Node) *clickTarget {
+func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 	switch {
-	case n.Kind == stack.KindStep, n.Kind == stack.KindTask:
+	case n.Kind == viewmodel.KindStep, n.Kind == viewmodel.KindTask:
 		return &clickTarget{node: n.ID}
-	case n.Kind == stack.KindThinking && n.Step != nil:
-		return &clickTarget{node: stack.LiveThinkingID, isLiveRegion: true}
-	case n.Kind == stack.KindTool:
+	case n.Kind == viewmodel.KindThinking && n.Step != nil:
+		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
+	case n.Kind == viewmodel.KindTool:
 		return &clickTarget{node: n.ID}
-	case n.Kind == stack.KindThinking:
+	case n.Kind == viewmodel.KindThinking:
 		return &clickTarget{node: n.ID}
-	case n.Kind == stack.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil:
+	case n.Kind == viewmodel.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil:
 		return &clickTarget{node: n.ID, subagent: n.Item.Subagent, isLiveRegion: n.Item.Subagent.Status == session.SubagentRunning}
-	case n.Kind == stack.KindMessage && n.Item != nil && n.Item.Message != nil &&
+	case n.Kind == viewmodel.KindMessage && n.Item != nil && n.Item.Message != nil &&
 		n.Item.Message.ContentType == session.ContentTypeSkillAuto:
 		return &clickTarget{node: n.ID}
 	}
 	return nil
 }
 
-func (m *Model) regionView(id stack.NodeID) regionView {
+func (m *Model) regionView(id viewmodel.NodeID) regionView {
 	return regionView{offset: m.regionOffset[id], minRows: m.regionRows[id]}
 }
 
-func (m *Model) noteRegionRows(id stack.NodeID, rows int) {
+func (m *Model) noteRegionRows(id viewmodel.NodeID, rows int) {
 	if m.regionRows == nil {
-		m.regionRows = map[stack.NodeID]int{}
+		m.regionRows = map[viewmodel.NodeID]int{}
 	}
 	if rows > m.regionRows[id] {
 		m.regionRows[id] = rows
@@ -295,11 +295,11 @@ type taskStat struct {
 
 // countTaskStats sums the steps and working time under each task header, per
 // todo ID (a task split into segments adds up).
-func countTaskStats(turns []*stack.Node) map[string]taskStat {
+func countTaskStats(turns []*viewmodel.Node) map[string]taskStat {
 	stats := map[string]taskStat{}
 	for _, turn := range turns {
 		for _, n := range turn.Children {
-			if n.Kind == stack.KindTask && n.Task != nil {
+			if n.Kind == viewmodel.KindTask && n.Task != nil {
 				st := stats[n.Task.TodoID]
 				st.steps += n.Task.Steps
 				st.work += n.Task.Work
@@ -312,18 +312,18 @@ func countTaskStats(turns []*stack.Node) map[string]taskStat {
 
 // collectSeen records every node ID a block can address: the block, its rows,
 // and a step's thinking rows.
-func collectSeen(n *stack.Node, seen map[stack.NodeID]bool) {
+func collectSeen(n *viewmodel.Node, seen map[viewmodel.NodeID]bool) {
 	seen[n.ID] = true
 	if n.Step != nil {
 		for _, t := range n.Step.Thinking {
-			seen[stack.ThinkingID(t)] = true
+			seen[viewmodel.ThinkingID(t)] = true
 		}
 		if n.Step.LiveThinking != "" {
-			seen[stack.LiveThinkingID] = true
+			seen[viewmodel.LiveThinkingID] = true
 		}
 	}
 	for _, ev := range n.Tools {
-		seen[stack.ToolID(ev)] = true
+		seen[viewmodel.ToolID(ev)] = true
 	}
 	for _, ch := range n.Children {
 		collectSeen(ch, seen)
@@ -335,7 +335,7 @@ func collectSeen(n *stack.Node, seen map[stack.NodeID]bool) {
 // Pruning callers is what makes rollback correct for free: a rewound audit
 // event leaves the transcript, so its blast-radius cache goes with it rather
 // than re-rendering stale callers at moved lines.
-func (m *Model) pruneRenderState(seen map[stack.NodeID]bool) {
+func (m *Model) pruneRenderState(seen map[viewmodel.NodeID]bool) {
 	for k := range m.regionOffset {
 		if !seen[k] {
 			delete(m.regionOffset, k)
@@ -362,7 +362,7 @@ func (m *Model) pruneRenderState(seen map[stack.NodeID]bool) {
 // nodeSig hashes the model-side inputs a node's rendering depends on beyond
 // its payload: expand overrides, caller lines, scroll offsets and high-water
 // marks, and the active route a step's meta compares against.
-func (m *Model) nodeSig(n *stack.Node, c *stepRenderCtx) uint64 {
+func (m *Model) nodeSig(n *viewmodel.Node, c *stepRenderCtx) uint64 {
 	h := fnv.New64a()
 	m.foldNodeSig(h, n, c)
 	return h.Sum64()
@@ -370,13 +370,13 @@ func (m *Model) nodeSig(n *stack.Node, c *stepRenderCtx) uint64 {
 
 type sigWriter interface{ Write([]byte) (int, error) }
 
-func (m *Model) foldNodeSig(h sigWriter, n *stack.Node, c *stepRenderCtx) {
+func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 	// The node's own override (if any) is what varies per node; inherited
 	// levels come from ancestors, which this fold also covers.
 	ov, hasOv := m.override(n.ID)
 	fmt.Fprintf(h, "%s|%v|%d|%d|%d|", n.ID.Key, hasOv, ov, m.regionOffset[n.ID], m.regionRows[n.ID])
 	fmt.Fprintf(h, "d%d|", m.density)
-	if n.Kind == stack.KindStep || n.Kind == stack.KindTask {
+	if n.Kind == viewmodel.KindStep || n.Kind == viewmodel.KindTask {
 		fmt.Fprintf(h, "%s|%s|%v|", c.routeModel, c.routeProvider, m.foldTasks)
 	}
 	if lines, ok := m.callers[n.ID]; ok {
@@ -384,7 +384,7 @@ func (m *Model) foldNodeSig(h sigWriter, n *stack.Node, c *stepRenderCtx) {
 	}
 	if n.Step != nil {
 		for _, t := range n.Step.Thinking {
-			tov, thas := m.override(stack.ThinkingID(t))
+			tov, thas := m.override(viewmodel.ThinkingID(t))
 			fmt.Fprintf(h, "t%v|%d|", thas, tov)
 		}
 	}
@@ -397,7 +397,7 @@ func (m *Model) foldNodeSig(h sigWriter, n *stack.Node, c *stepRenderCtx) {
 // into one number. Live nodes also fold the spinner frame and the clock, so a
 // running session changes the signature each tick while a settled one does
 // not.
-func (m *Model) contentSignature(turns []*stack.Node, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, reconnect string, hasTurns bool) uint64 {
+func (m *Model) contentSignature(turns []*viewmodel.Node, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, reconnect string, hasTurns bool) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "w%d|t%d|g%d|f%v|", width, themeSig, m.density, m.foldTasks)
 	fmt.Fprintf(h, "turns%v|", hasTurns)
@@ -406,8 +406,8 @@ func (m *Model) contentSignature(turns []*stack.Node, width int, themeSig uint64
 		c.routeModel, c.routeProvider = st.ActiveRoute().Model, st.ActiveRoute().Provider
 	}
 	live := false
-	var fold func(n *stack.Node)
-	fold = func(n *stack.Node) {
+	var fold func(n *viewmodel.Node)
+	fold = func(n *viewmodel.Node) {
 		fmt.Fprintf(h, "%s|%d|", n.ID.Key, n.Version)
 		if n.Live {
 			live = true

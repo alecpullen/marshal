@@ -9,9 +9,9 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
@@ -65,9 +65,9 @@ func TestContentLineForClickRejectsOutsideViewport(t *testing.T) {
 
 func TestRegionAtFindsContainingRegion(t *testing.T) {
 	m := newTestModel(t)
-	step := stack.NodeID{Kind: stack.KindStep, Key: "step:1"}
-	row := stack.NodeID{Kind: stack.KindTool, Key: "tool:a"}
-	other := stack.NodeID{Kind: stack.KindStep, Key: "step:2"}
+	step := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:1"}
+	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:a"}
+	other := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:2"}
 	m.nodeRegions = []nodeRegion{
 		{startLine: 0, endLine: 6, target: clickTarget{node: step}},
 		{startLine: 2, endLine: 4, target: clickTarget{node: row}},
@@ -123,7 +123,7 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := stack.NodeID{Kind: stack.KindTool, Key: "tool:call_a"}
+	key := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:call_a"}
 	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the active tool call")
@@ -146,7 +146,7 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	}
 
 	// A different call collapses back.
-	if mm.isToolExpanded(stack.NodeID{Kind: stack.KindTool, Key: "tool:call_b"}, true) {
+	if mm.isToolExpanded(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:call_b"}, true) {
 		t.Fatal("expected a different tool call to be collapsed")
 	}
 }

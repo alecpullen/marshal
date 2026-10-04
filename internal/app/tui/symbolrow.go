@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // maxSubjectSymbols is how many symbol names a row names before collapsing
@@ -27,7 +27,7 @@ func subjectFirstTool(name string) bool {
 	case "file.write_patch", "file.write", "file.read", "symbols.find":
 		return true
 	}
-	return stack.IsShellFamily(name)
+	return viewmodel.IsShellFamily(name)
 }
 
 // shellSubject renders a command row: the command itself, then its exit

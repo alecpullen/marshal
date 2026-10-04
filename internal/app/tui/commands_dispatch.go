@@ -15,9 +15,9 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
-	"marshal/internal/app/tui/stack"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/pipeline"
+	"marshal/internal/viewmodel"
 	"marshal/internal/worktree"
 )
 
@@ -107,7 +107,7 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	// Drop per-message UI state that belongs to the old session.
-	m.nodeDensity = make(map[stack.NodeID]density)
+	m.nodeDensity = make(map[viewmodel.NodeID]density)
 	m.effDensity = nil
 	m.viewStack = nil
 	m.invalidateTranscript()

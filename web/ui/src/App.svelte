@@ -15,6 +15,8 @@
   import Gallery from './views/workspaces/Gallery.svelte'
   import Designer from './views/workspaces/Designer.svelte'
   import Builds from './views/workspaces/Builds.svelte'
+  import Network from './views/Network.svelte'
+  import Project from './views/Project.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -24,7 +26,7 @@
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -159,6 +161,8 @@
   const settingsRoute = $derived(parseSettingsRoute(hash))
   const usageRoute = $derived(parseUsageRoute(hash))
   const workspacesRoute = $derived(parseWorkspacesRoute(hash))
+  const networkRoute = $derived(parseNetworkRoute(hash))
+  const projectRoute = $derived(parseProjectRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -243,6 +247,18 @@
     {:else if usageRoute}
       <div class="h-full overflow-y-auto">
         <Usage tab={usageRoute.tab} agents={$fleet.agents} budgetTick={$fleet.budgetTick} onNavigate={navigate} />
+      </div>
+    {:else if networkRoute}
+      <div class="h-full overflow-y-auto">
+        {#key `${networkRoute.workspace ?? ''}|${networkRoute.agent ?? ''}`}
+          <Network workspace={networkRoute.workspace} agent={networkRoute.agent} onNavigate={navigate} />
+        {/key}
+      </div>
+    {:else if projectRoute}
+      <div class="h-full overflow-y-auto">
+        {#key projectRoute.root}
+          <Project root={projectRoute.root} agents={$fleet.agents} telemetry={$fleet.telemetry} onNavigate={navigate} />
+        {/key}
       </div>
     {:else if workspacesRoute}
       <div class="h-full overflow-y-auto">

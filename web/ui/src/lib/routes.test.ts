@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, redirectLegacy, parseWorkspacesRoute, formatWorkspacesRoute, type ChatRoute } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, parseNetworkRoute, formatNetworkRoute, parseProjectRoute, formatProjectRoute, redirectLegacy, parseWorkspacesRoute, formatWorkspacesRoute, type ChatRoute } from './routes'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -140,6 +140,22 @@ describe('control page routes', () => {
     expect(pageFromHash('#settings/models')).toBe('settings')
     expect(pageFromHash('#usage?tab=disk')).toBe('usage')
     expect(pageFromHash('#watches')).toBe('watches')
+  })
+
+  it('parses the network inspector, project and settings routes', () => {
+    expect(parseNetworkRoute('#network?agent=a1')).toEqual({ agent: 'a1', workspace: undefined })
+    expect(parseNetworkRoute('#network')).toEqual({ agent: undefined, workspace: undefined })
+    expect(parseNetworkRoute('#workspaces/go%20dev/network')).toEqual({ workspace: 'go dev' })
+    expect(parseNetworkRoute('#workspaces/go/edit')).toBeNull()
+    expect(formatNetworkRoute({ agent: 'a 1' })).toBe('#network?agent=a%201')
+    expect(formatNetworkRoute({ workspace: 'go dev' })).toBe('#workspaces/go%20dev/network')
+    expect(parseProjectRoute('#projects/%2Fhome%2Fu%2Falpha')).toEqual({ root: '/home/u/alpha' })
+    expect(parseProjectRoute('#projects')).toBeNull()
+    expect(parseProjectRoute('#projects/%E0%A4%A')).toEqual({ root: '%E0%A4%A' })
+    expect(formatProjectRoute('/home/u/alpha')).toBe('#projects/%2Fhome%2Fu%2Falpha')
+    expect(pageFromHash('#network?agent=a1')).toBe('network')
+    expect(pageFromHash('#projects/%2Fp')).toBe('project')
+    for (const t of ['secrets', 'credentials', 'repos']) expect(parseSettingsRoute(`#settings/${t}`)).toEqual({ tab: t })
   })
 
   it('redirects the old routes', () => {

@@ -184,8 +184,8 @@ func TestClassifyTelemetryDecodesEngineShape(t *testing.T) {
 	if !ok || d.Kind != "telemetry" {
 		t.Fatalf("telemetry was dropped: %+v ok=%v", d, ok)
 	}
-	if d.ChangedFiles != 2 || d.ContextPct != 25 {
-		t.Fatalf("changedFiles=%d contextPct=%d, want 2 and 25", d.ChangedFiles, d.ContextPct)
+	if d.ChangedFiles == nil || d.ContextPct == nil || *d.ChangedFiles != 2 || *d.ContextPct != 25 {
+		t.Fatalf("changedFiles=%v contextPct=%v, want 2 and 25", d.ChangedFiles, d.ContextPct)
 	}
 	out, err := json.Marshal(d)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestClassifyTelemetryDecodesEngineShape(t *testing.T) {
 func TestClassifyTelemetryWithNoChangesStillCounts(t *testing.T) {
 	d, ok := classifyNotification("session/update", json.RawMessage(
 		`{"sessionId":"s1","update":{"kind":"session_telemetry","changedFiles":[],"toolStats":[],"rules":[]}}`))
-	if !ok || d.ChangedFiles != 0 || string(d.Rules) != "[]" || string(d.ToolStats) != "[]" {
+	if !ok || d.ChangedFiles == nil || *d.ChangedFiles != 0 || string(d.Rules) != "[]" || string(d.ToolStats) != "[]" {
 		t.Fatalf("delta = %+v ok=%v", d, ok)
 	}
 }
@@ -221,5 +221,48 @@ func TestContextPct(t *testing.T) {
 		if got := contextPct(c.used, c.tokens, c.max); got != c.want {
 			t.Errorf("contextPct(%d,%d,%d) = %d, want %d", c.used, c.tokens, c.max, got, c.want)
 		}
+	}
+}
+
+func TestTelemetryZerosReachTheWireAndOtherDeltasOmitThem(t *testing.T) {
+	d, _ := classifyNotification("session/update", json.RawMessage(
+		`{"sessionId":"s1","update":{"kind":"session_telemetry","changedFiles":[],"context":{"packTokens":0,"packMaxTokens":100}}}`))
+	out, _ := json.Marshal(d)
+	var m map[string]any
+	_ = json.Unmarshal(out, &m)
+	if v, ok := m["contextPct"]; !ok || v != float64(0) {
+		t.Fatalf("contextPct = %v, present=%v; a real zero must be sent", v, ok)
+	}
+	if v, ok := m["changedFiles"]; !ok || v != float64(0) {
+		t.Fatalf("changedFiles = %v, present=%v; a real zero must be sent", v, ok)
+	}
+
+	a, _ := classifyNotification("session/update", json.RawMessage(`{"sessionId":"s1","update":{"kind":"tool_call","toolName":"x"}}`))
+	out, _ = json.Marshal(a)
+	m = nil
+	_ = json.Unmarshal(out, &m)
+	if _, ok := m["contextPct"]; ok {
+		t.Fatalf("an activity delta carries contextPct: %s", out)
+	}
+	if _, ok := m["changedFiles"]; ok {
+		t.Fatalf("an activity delta carries changedFiles: %s", out)
+	}
+}
+
+func TestLiveStateTelemetryZeroesAndActivityKeepsValues(t *testing.T) {
+	live := newLiveState()
+	tel := func(files, ctx string) fleetDelta {
+		d, _ := classifyNotification("session/update", json.RawMessage(
+			`{"sessionId":"s1","update":{"kind":"session_telemetry","changedFiles":`+files+`,"context":{"packTokens":`+ctx+`,"packMaxTokens":100}}}`))
+		return d
+	}
+	live.apply(tel(`[{"path":"a"}]`, "50"))
+	live.apply(fleetDelta{SessionID: "s1", Kind: "activity", Activity: "read"})
+	if got := live.get("s1"); got.changedFiles != 1 || got.contextPct != 50 {
+		t.Fatalf("an activity delta disturbed telemetry: %+v", got)
+	}
+	live.apply(tel(`[]`, "0"))
+	if got := live.get("s1"); got.changedFiles != 0 || got.contextPct != 0 {
+		t.Fatalf("telemetry zeros were not applied: %+v", got)
 	}
 }

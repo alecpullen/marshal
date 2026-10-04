@@ -7,12 +7,15 @@ import (
 )
 
 type fleetDelta struct {
-	Kind         string `json:"kind"`
-	SessionID    string `json:"sessionId"`
-	Activity     string `json:"activity,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	ContextPct   int    `json:"contextPct,omitempty"`
-	ChangedFiles int    `json:"changedFiles,omitempty"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId"`
+	Activity  string `json:"activity,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	// ContextPct and ChangedFiles are set only on "telemetry" deltas. They
+	// are pointers so a real zero (an emptied context, a clean tree) is
+	// sent, while every other delta kind omits them and cannot zero a row.
+	ContextPct   *int `json:"contextPct,omitempty"`
+	ChangedFiles *int `json:"changedFiles,omitempty"`
 	// PendingKind is "approval" or "question" on a "pending" delta. The
 	// payload itself is not streamed — the dashboard refetches the
 	// snapshot, which is the authority on what is still outstanding.
@@ -83,8 +86,9 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 	case "mode_changed":
 		d.Kind, d.Mode = "mode", p.Update.Mode
 	case "session_telemetry":
-		d.Kind, d.ChangedFiles, d.ContextPct = "telemetry", len(p.Update.ChangedFiles), contextPct(p.Update.Context.UsedPct,
-			p.Update.Context.PackTokens, p.Update.Context.PackMaxTokens)
+		pct := contextPct(p.Update.Context.UsedPct, p.Update.Context.PackTokens, p.Update.Context.PackMaxTokens)
+		changed := len(p.Update.ChangedFiles)
+		d.Kind, d.ChangedFiles, d.ContextPct = "telemetry", &changed, &pct
 		d.ToolStats, d.Rules = p.Update.ToolStats, p.Update.Rules
 		d.Usage = p.Update.Usage
 	case "watch":
@@ -162,7 +166,12 @@ func (s *liveState) apply(d fleetDelta) {
 	case "mode":
 		a.mode = d.Mode
 	case "telemetry":
-		a.contextPct, a.changedFiles = d.ContextPct, d.ChangedFiles
+		if d.ContextPct != nil {
+			a.contextPct = *d.ContextPct
+		}
+		if d.ChangedFiles != nil {
+			a.changedFiles = *d.ChangedFiles
+		}
 	case "run":
 		a.run, a.runAt = d.Run, time.Now().UTC()
 	}

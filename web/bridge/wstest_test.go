@@ -45,6 +45,9 @@ func wsParseAgent() *fakeAgent {
 			if p.Layer == 3 {
 				_ = json.Unmarshal(p.Value, &doc.Packages)
 			}
+			if p.Layer == 7 {
+				_ = json.Unmarshal(p.Value, &doc.Network)
+			}
 			b, _ := json.Marshal(doc)
 			return map[string]any{"source": string(b), "doc": doc, "sections": []WSSection{}, "diagnostics": []WSDiag{}}, nil, true
 		case "workspace/parse":

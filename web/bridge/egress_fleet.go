@@ -320,24 +320,53 @@ func (f *Fleet) egressPrepare(ctx context.Context, a Agent) (egressWiring, bool,
 			return egressWiring{}, false, err
 		}
 	}
+	// An agent that adopted a warm-pool container keeps the credentials
+	// and CA generation baked into it: serve its policy under the
+	// container's pseudo ID too, and keep the generation it started with.
+	pseudo := poolPseudoID(a.ContainerName)
+	pin := h.pinnedCA(a.ID, pseudo)
+	w, err := f.egressWire(ctx, a, ws, spec, pin, a.ID)
+	if err != nil {
+		return egressWiring{}, false, err
+	}
+	if pseudo != "" {
+		h.alias(pseudo, a.ID)
+	}
+	return w, true, nil
+}
+
+// egressWire registers id with the proxy and returns the env, network
+// and mounts that make a container use it. pin names the CA generation to
+// keep when one is recorded (a reattached agent, an adopted pool
+// container); otherwise the workspace's current CA is used.
+func (f *Fleet) egressWire(ctx context.Context, a Agent, ws string, spec EgressSpec, pin, id string) (egressWiring, error) {
+	h := f.egress
 	if ws == "" {
 		ws = "default"
 	}
-	token := h.register(ctx, a.ID, ws, spec)
+	token := h.register(ctx, id, ws, spec)
 	if ports := f.previewPortsFor(ctx, a); len(ports) > 0 {
-		h.setPreviewPorts(a.ID, ports)
+		h.setPreviewPorts(id, ports)
 	}
-	w := egressWiring{Env: h.proxyEnv(a.ID, token)}
+	w := egressWiring{Env: h.proxyEnv(id, token)}
 	h.mu.Lock()
-	injecting := len(h.agents[a.ID].policy.Inject) > 0
+	injecting := len(h.agents[id].policy.Inject) > 0
 	h.mu.Unlock()
 	if injecting {
 		ca, err := f.caFor(ctx, ws)
 		if err != nil {
-			h.remove(a.ID)
-			return egressWiring{}, false, fmt.Errorf("agent %s needs credential injection: %w", a.ID, err)
+			h.remove(id)
+			return egressWiring{}, fmt.Errorf("agent %s needs credential injection: %w", id, err)
 		}
-		h.setCA(a.ID, ca.id())
+		gen := ca.id()
+		if pin != "" && pin != gen {
+			if _, err := f.caByID(ctx, ws, pin); err == nil {
+				gen = pin
+			} else {
+				slog.Default().Warn("webbridge: pinned CA generation is gone; using the current CA", "agent", id, "err", err)
+			}
+		}
+		h.setCA(id, gen)
 		if h.mode == egressModeContainer {
 			const dir = "/marshal/ca"
 			for k, v := range caEnv(dir+"/"+ws+"-bundle.pem", dir+"/"+ws+".pem") {
@@ -354,12 +383,31 @@ func (f *Fleet) egressPrepare(ctx context.Context, a Agent) (egressWiring, bool,
 	if h.mode == egressModeContainer {
 		w.Network = egressNetwork
 	}
-	return w, true, nil
+	return w, nil
+}
+
+// poolPseudoID is the egress identity of a warm-pool container, or ""
+// when name is not one.
+func poolPseudoID(container string) string {
+	m := poolNameRe.FindStringSubmatch(container)
+	if m == nil {
+		return ""
+	}
+	return fmt.Sprintf("pool-%s-v%s-%s", m[1], m[2], m[3])
 }
 
 // egressAttached pins the agent's policy to its container address once
 // it is running.
 func (f *Fleet) egressAttached(a Agent) {
+	name := containerNameFor(a.ID)
+	if a.ContainerName != "" {
+		name = a.ContainerName
+	}
+	f.egressAttachedAs(a.ID, name)
+}
+
+// egressAttachedAs pins the policy entry id to the address of container.
+func (f *Fleet) egressAttachedAs(id, container string) {
 	h := f.egress
 	if h == nil || h.mode != egressModeContainer {
 		return
@@ -369,13 +417,13 @@ func (f *Fleet) egressAttached(a Agent) {
 		return
 	}
 	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, egressNetwork)
-	out, err := f.runRuntime(rt, "inspect", "--format", format, containerNameFor(a.ID))
+	out, err := f.runRuntime(rt, "inspect", "--format", format, container)
 	ip := strings.TrimSpace(string(out))
 	if err != nil || ip == "" {
-		slog.Default().Warn("webbridge: could not read agent address on the egress network; the proxy will check the token only", "agent", a.ID, "err", err)
+		slog.Default().Warn("webbridge: could not read agent address on the egress network; the proxy will check the token only", "agent", id, "err", err)
 		return
 	}
-	h.setIP(a.ID, ip)
+	h.setIP(id, ip)
 }
 
 // egressProcessMode reports whether enforcement is advisory: there is no

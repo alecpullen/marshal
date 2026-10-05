@@ -237,6 +237,7 @@ func TestNetworkHTTPDecisions(t *testing.T) {
 	if pol := f.egress.snapshot().Agents["a1"]; allowed(pol, "evil.com") {
 		t.Fatal("block changed the policy")
 	}
+	f.addToWorkspace = nil
 	if c, b := post(map[string]string{"agentId": "a1", "host": "x.com", "decision": "add-to-workspace"}); c != http.StatusNotImplemented || !strings.Contains(b, "add_to_workspace_unsupported") {
 		t.Fatalf("add-to-workspace without templates = %d %s", c, b)
 	}

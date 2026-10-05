@@ -101,6 +101,10 @@ type egressHost struct {
 	// caGens remembers which CA generation each agent uses (agent ->
 	// workspace/id) across bridge restarts, persisted as ca-gen.json.
 	caGens map[string]caGen
+	// aliases maps a warm-pool container's pseudo agent ID to the real
+	// agent that adopted it. The container's baked-in credentials are the
+	// pseudo ID's, so the proxy serves the real agent's policy under both.
+	aliases map[string]string
 	// proxyAddr is host:port agents dial (container name or loopback).
 	proxyAddr string
 
@@ -129,7 +133,7 @@ type caGen struct {
 
 func newEgressHost(f *Fleet) *egressHost {
 	return &egressHost{
-		f: f, agents: map[string]*egressAgent{}, caGens: map[string]caGen{}, changed: make(chan struct{}),
+		f: f, agents: map[string]*egressAgent{}, caGens: map[string]caGen{}, aliases: map[string]string{}, changed: make(chan struct{}),
 		stop: make(chan struct{}), executable: egressExecutable,
 	}
 }
@@ -170,7 +174,54 @@ func (h *egressHost) snapshotLocked() EgressPolicy {
 	for id, a := range h.agents {
 		p.Agents[id] = a.policy
 	}
+	for pseudo, real := range h.aliases {
+		if a, ok := h.agents[real]; ok {
+			pol := a.policy
+			pol.Token = h.tokenFor(pseudo)
+			p.Agents[pseudo] = pol
+		}
+	}
 	return p
+}
+
+// realID resolves a warm-pool pseudo ID to the agent that adopted it.
+func (h *egressHost) realID(id string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if real, ok := h.aliases[id]; ok {
+		return real
+	}
+	return id
+}
+
+// alias makes pseudo's credentials serve real's policy, and drops the
+// pseudo agent's own entry. It returns the CA generation the idle
+// container was started with, so the adopting agent keeps it.
+func (h *egressHost) alias(pseudo, real string) (ca string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if g, ok := h.caGens[pseudo]; ok {
+		ca = g.ID
+	}
+	delete(h.agents, pseudo)
+	delete(h.caGens, pseudo)
+	h.aliases[pseudo] = real
+	h.saveCAGensLocked()
+	h.publishLocked()
+	return ca
+}
+
+// pinnedCA is the CA generation an agent (or the pool container it
+// adopted) was started with, if one is recorded.
+func (h *egressHost) pinnedCA(ids ...string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, id := range ids {
+		if g, ok := h.caGens[id]; ok {
+			return g.ID
+		}
+	}
+	return ""
 }
 
 func (h *egressHost) snapshot() EgressPolicy {
@@ -250,6 +301,14 @@ func (h *egressHost) remove(agentID string) {
 	if ok {
 		ws = a.workspace
 		delete(h.agents, agentID)
+	}
+	for pseudo, real := range h.aliases {
+		if real == agentID || pseudo == agentID {
+			delete(h.aliases, pseudo)
+			ok = ok || real == agentID
+		}
+	}
+	if ok {
 		h.publishLocked()
 	}
 	if _, had := h.caGens[agentID]; had {
@@ -516,6 +575,9 @@ func (h *egressHost) controlHandler() http.Handler {
 		if !decodeJSON(w, r, &recs) {
 			return
 		}
+		for i := range recs {
+			recs[i].AgentID = h.realID(recs[i].AgentID)
+		}
 		if h.f.netlog != nil {
 			if err := h.f.netlog.Append(recs); err != nil {
 				slog.Default().Warn("webbridge: network log append failed", "err", err)
@@ -531,7 +593,7 @@ func (h *egressHost) controlHandler() http.Handler {
 		if !decodeJSON(w, r, &b) {
 			return
 		}
-		h.f.noteBlocked(b.AgentID, b.Host)
+		h.f.noteBlocked(h.realID(b.AgentID), b.Host)
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /leaf", h.serveLeaf)

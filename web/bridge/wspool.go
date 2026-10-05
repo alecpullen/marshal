@@ -118,15 +118,15 @@ func (p *poolManager) fill(name string, n int) error {
 	// An older version's idle containers are stale once a newer one is
 	// built and published.
 	p.dropExcept(name, n)
-	// A pooled container starts without egress-proxy wiring (proxy env,
-	// egress network, CA mount), so a workspace that needs the proxy gets
-	// no warm pool: its agents would otherwise run on an open network
-	// without credential injection.
+	// A pooled container is wired to the egress proxy when it starts (see
+	// start). A workspace that can only be enforced through the proxy gets
+	// no warm pool while the proxy is not running: its agents would
+	// otherwise run on an open network without credential injection.
 	doc, _, err := p.f.studioDoc(context.Background(), name, n)
 	if err != nil {
 		return err
 	}
-	if workspaceNeedsProxy(doc) {
+	if p.f.egress == nil && workspaceNeedsProxy(doc) {
 		return nil
 	}
 
@@ -189,12 +189,22 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 	}
 	pseudo.Profile.Image = image
 	applyResources(&pseudo.Profile, doc.Resources)
-	cfg, err := f.containerConfigFor(pseudo, rtPath, rtName)
+	// The container is wired under the slot's pseudo ID. The agent that
+	// takes it over is served the same proxy policy through an alias.
+	var wiring egressWiring
+	if f.egress != nil {
+		if wiring, err = f.egressWire(lctx, pseudo, name, egressSpecFor(doc), "", pseudo.ID); err != nil {
+			return poolEntry{}, err
+		}
+	}
+	cfg, err := f.containerConfigWith(pseudo, rtPath, rtName, wiring)
 	if err != nil {
+		f.dropPoolEgress(pseudo.ID)
 		return poolEntry{}, err
 	}
 	ex, err := f.buildWorkspaceExtras(lctx, pseudo, doc, name, rtName)
 	if err != nil {
+		f.dropPoolEgress(pseudo.ID)
 		return poolEntry{}, err
 	}
 	cfg.ExtraMounts, cfg.ExtraEnv = ex.mounts, ex.env
@@ -209,7 +219,11 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 	}
 	if out, err := tr.exec(tr.buildRunArgs()...); err != nil {
 		os.RemoveAll(filepath.Join(f.stateDir, poolSubpath(name, k)))
+		f.dropPoolEgress(pseudo.ID)
 		return poolEntry{}, fmt.Errorf("bridge: start pool container: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if f.egress != nil {
+		f.egressAttachedAs(pseudo.ID, entry.container)
 	}
 	return entry, nil
 }
@@ -230,6 +244,7 @@ func (p *poolManager) take(name string, n int) (poolEntry, bool) {
 
 // discard kills a pool container and removes its directories.
 func (p *poolManager) discard(e poolEntry) {
+	p.f.dropPoolEgress(poolPseudoID(e.container))
 	if _, name, ok := p.f.runtimeInfo(); ok {
 		if out, err := p.f.runRuntime(name, "kill", e.container); err != nil {
 			slog.Default().Warn("webbridge: kill pool container failed", "container", e.container, "err", err, "out", strings.TrimSpace(string(out)))
@@ -374,6 +389,12 @@ func (p *poolManager) adopt() {
 			workSubpath: poolSubpath(m[1], k) + "/work", socketSubpath: poolSubpath(m[1], k) + "/sock",
 		}
 		meta, ok := byName[m[1]]
+		if ok && !p.wiredForProxy(e, meta) {
+			// Started before proxy wiring existed, or while the proxy was
+			// down: handing it out would run an agent unrestricted.
+			p.discard(e)
+			continue
+		}
 		p.mu.Lock()
 		key := poolKey(m[1], n)
 		keep := ok && meta.Pool > len(p.idle[key]) && meta.Published == n
@@ -396,4 +417,46 @@ func (p *poolManager) adopt() {
 // credential injection can only be enforced through the egress proxy.
 func workspaceNeedsProxy(doc WSDoc) bool {
 	return doc.Network.Mode == EgressModeOff || doc.Network.Mode == EgressModeAllowlist || len(doc.Inject) > 0
+}
+
+// dropPoolEgress forgets a pool container's proxy registration.
+func (f *Fleet) dropPoolEgress(pseudoID string) {
+	if f.egress != nil && pseudoID != "" {
+		f.egress.remove(pseudoID)
+	}
+}
+
+// wiredForProxy decides whether a surviving pool container may be
+// adopted after a restart. With the proxy running it must sit on the
+// egress network, and its proxy registration is restored; with the proxy
+// down, a workspace that needs the proxy cannot adopt it at all.
+func (p *poolManager) wiredForProxy(e poolEntry, meta TemplateMeta) bool {
+	f := p.f
+	doc, _, err := f.studioDoc(context.Background(), e.name, e.version)
+	if err != nil {
+		return false
+	}
+	h := f.egress
+	if h == nil {
+		return !workspaceNeedsProxy(doc)
+	}
+	if h.mode != egressModeContainer {
+		return true
+	}
+	rt, ok := f.egressRuntimeName()
+	if !ok {
+		return false
+	}
+	format := fmt.Sprintf(`{{if index .NetworkSettings.Networks %q}}on{{end}}`, egressNetwork)
+	out, err := f.runRuntime(rt, "inspect", "--format", format, e.container)
+	if err != nil || strings.TrimSpace(string(out)) != "on" {
+		return false
+	}
+	// Restore the registration the restart dropped.
+	id := poolPseudoID(e.container)
+	if _, err := f.egressWire(context.Background(), Agent{ID: id}, e.name, egressSpecFor(doc), h.pinnedCA(id), id); err != nil {
+		return false
+	}
+	f.egressAttachedAs(id, e.container)
+	return true
 }

@@ -31,6 +31,22 @@ type WSDoc struct {
 	Resources  WSResources         `json:"resources"`
 	Policy     WSPolicy            `json:"policy"`
 	Setup      WSSetup             `json:"setup"`
+	// Preview declares the ports the Studio may expose (W5.1). Nil when
+	// the workspace declares none.
+	Preview *WSPreview `json:"preview,omitempty"`
+}
+
+// WSPreview is a workspace's [preview] section.
+type WSPreview struct {
+	Ports []int `json:"ports,omitempty"`
+}
+
+// previewPorts lists the declared preview ports.
+func (d WSDoc) previewPorts() []int {
+	if d.Preview == nil {
+		return nil
+	}
+	return d.Preview.Ports
 }
 
 type WSWorkspace struct {
@@ -434,6 +450,9 @@ func mergeWS(base, overlay WSDoc) (WSDoc, error) {
 		out.Workspace.Name = overlay.Workspace.Name
 	}
 	out.Workspace.Extends = ""
+	if ports := unionPorts(base.previewPorts(), overlay.previewPorts()); len(ports) > 0 {
+		out.Preview = &WSPreview{Ports: ports}
+	}
 	out.Workspace.Toolchains = appendUnique(base.Workspace.Toolchains, overlay.Workspace.Toolchains)
 
 	out.Packages = WSPackages{
@@ -545,4 +564,22 @@ func orOpen(mode string) string {
 		return "open"
 	}
 	return mode
+}
+
+// unionPorts is base followed by the ports of extra that base lacks.
+func unionPorts(base, extra []int) []int {
+	out := append([]int(nil), base...)
+	for _, p := range extra {
+		dup := false
+		for _, q := range out {
+			if p == q {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, p)
+		}
+	}
+	return out
 }

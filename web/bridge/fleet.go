@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -123,6 +124,21 @@ type Fleet struct {
 	// Nil means the real runner (exec.Command); tests inject a fake so the
 	// derive path is exercisable without a daemon.
 	runner commandRunner
+	// streamer starts long-lived runtime processes (terminals). Nil means
+	// the real starter; tests inject a fake.
+	streamer streamStarter
+
+	// term holds open terminals, created on first use.
+	previewOnce sync.Once
+	previews    *previewStore
+	// previewForward replaces the real forwarder; tests set it.
+	previewForward func(w http.ResponseWriter, r *http.Request, agentID string, port int, rest string)
+
+	// holdCall replaces the session/hold request; tests set it.
+	holdCall func(ctx context.Context, agentID string, on bool) error
+
+	termOnce sync.Once
+	term     *terminalState
 
 	// git runs hardened git subprocesses for remote sources (mirroring,
 	// worktree prep). Nil when git was not found at startup; local-path
@@ -1590,6 +1606,10 @@ func (f *Fleet) Snapshot() []AgentStatus {
 // tree — over parking, which detaches and leaves the workspace intact
 // so Resume can restart against it.
 func (f *Fleet) releaseAgent(id string, destroy bool) {
+	f.closeTerminals(id)
+	if destroy {
+		f.dropPreviewTokens(id)
+	}
 	f.mu.Lock()
 	rt := f.runtimes[id]
 	delete(f.runtimes, id)
@@ -1738,6 +1758,7 @@ func (f *Fleet) StopProject(root string) {
 
 func (f *Fleet) Close() {
 	f.closeOnce.Do(func() { close(f.done) })
+	f.closeAllTerminals()
 	f.stopControl()
 	f.stopEgress()
 	f.mu.Lock()

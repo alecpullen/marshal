@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +38,9 @@ type Server struct {
 	// absolute links (e.g. the operator-approval URL an MCP spawn
 	// returns). Empty falls back to the listen address.
 	publicURLBase string
+	// previewPort is the port of the separate preview listener, 0 until
+	// the host has started one (see SetPreviewPort).
+	previewPort atomic.Int32
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -92,6 +96,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// /mcp joins /api/ on the mux side. It is not under /api/ because it
 	// authenticates per client rather than with the shared bearer token,
 	// but it must still reach the mux rather than the SPA fallback.
+	// Previews are served from their own origin (PreviewHandler), never
+	// from this one: an app the agent runs must not share storage with the
+	// UI that holds the bearer token.
+	if strings.HasPrefix(r.URL.Path, previewPrefix) {
+		http.NotFound(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
 		staticHandler().ServeHTTP(w, r)
 		return
@@ -116,6 +127,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments", s.addReviewComment)
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments/{cid}/resolve", s.resolveReviewComment)
 	s.mux.HandleFunc("GET /api/prompts/recent", s.recentPrompts)
+	s.mux.HandleFunc("POST /api/agents/{id}/preview/{port}", s.issuePreview)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal", s.terminalOpen)
+	s.mux.HandleFunc("GET /api/agents/{id}/terminal/{tid}/events", s.terminalEvents)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/input", s.terminalInput)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/resize", s.terminalResize)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/release", s.terminalRelease)
+	s.mux.HandleFunc("DELETE /api/agents/{id}/terminal/{tid}", s.terminalClose)
 	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
 	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
@@ -157,6 +175,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/prune", s.pruneDisk)
 	s.mux.HandleFunc("GET /api/audit", s.listAudit)
 	s.mux.HandleFunc("POST /api/workspaces/{name}/ca/rotate", s.rotateWorkspaceCA)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/shell", s.workspaceShellOpen)
+	s.mux.HandleFunc("GET /api/workspaces/{name}/shell/{tid}/events", s.workspaceShellEvents)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/shell/{tid}/input", s.workspaceShellInput)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/shell/{tid}/resize", s.workspaceShellResize)
+	s.mux.HandleFunc("DELETE /api/workspaces/{name}/shell/{tid}", s.workspaceShellClose)
 	s.mux.HandleFunc("GET /api/credentials", s.listCredentials)
 	s.mux.HandleFunc("POST /api/credentials", s.putCredential)
 	s.mux.HandleFunc("DELETE /api/credentials/{id}", s.deleteCredential)
@@ -218,6 +241,14 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 	case errors.As(err, &setup):
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "code": "setup_failed", "output": setup.Output})
+	case errors.Is(err, ErrPreviewPortNotDeclared):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrTooManyTerminals):
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownTerminal):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errTerminalInput):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownReroute):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, errRerouteConflict):

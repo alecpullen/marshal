@@ -108,8 +108,22 @@ type scriptedTransport struct {
 	results map[string]any
 	errs    map[string]*rpcError
 
-	mu   sync.Mutex
-	seen []string
+	mu     sync.Mutex
+	seen   []string
+	params []string // request params, parallel to seen
+}
+
+// paramsOf returns the params of every request to method, in order.
+func (t *scriptedTransport) paramsOf(method string) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	for i, m := range t.seen {
+		if m == method {
+			out = append(out, t.params[i])
+		}
+	}
+	return out
 }
 
 func (t *scriptedTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
@@ -127,12 +141,14 @@ func (t *scriptedTransport) serve(r io.Reader, w io.WriteCloser) {
 		var req struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
 			continue
 		}
 		t.mu.Lock()
 		t.seen = append(t.seen, req.Method)
+		t.params = append(t.params, string(req.Params))
 		t.mu.Unlock()
 		var result any
 		if e := t.errs[req.Method]; e != nil {

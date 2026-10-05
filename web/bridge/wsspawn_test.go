@@ -472,3 +472,16 @@ func TestWorkspaceEgressMapsNetworkAndInject(t *testing.T) {
 		t.Fatalf("no workspace: %q %+v %v", n, s, err)
 	}
 }
+
+func TestSpawnWorkspaceSetsMarshalWorkspaceEnv(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	e.builtTemplate(t, "svc", sampleDoc("svc"))
+	id, err := e.spawn(t, SpawnOptions{Workspace: "svc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(newContainerTransport(e.cfgs[id]).buildRunArgs(), " ")
+	if !strings.Contains(args, "MARSHAL_WORKSPACE=svc") {
+		t.Fatalf("run args lack MARSHAL_WORKSPACE:\n%s", args)
+	}
+}

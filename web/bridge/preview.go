@@ -3,9 +3,7 @@ package bridge
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -77,7 +75,7 @@ func (f *Fleet) previewTokens() *previewStore {
 func newPreviewToken() string {
 	var b [24]byte
 	_, _ = rand.Read(b[:])
-	return base64.RawURLEncoding.EncodeToString(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // IssuePreview returns a preview URL for a declared port.
@@ -229,7 +227,12 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": s.previewOrigin(r, pp, r.PathValue("id")) + u})
+	origin, tokenInHost := s.previewOrigin(r, pp, tokenOf(u))
+	if tokenInHost {
+		// The origin carries the credential, so the URL needs no ?t=.
+		u = u[:strings.Index(u, "?t=")]
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": origin + u})
 }
 
 // SetPreviewPort records the port of the preview listener, so issued
@@ -255,12 +258,15 @@ func (s *Server) PreviewHandler() http.Handler {
 // to reach the bridge (or the configured public URL's).
 //
 // When that host is localhost (or a *.localhost name, which browsers resolve
-// to loopback), the URL's host is also specific to the agent, so the preview
-// of one agent is a different origin from the preview of another and a page
-// one agent serves cannot read the other's. Any other host cannot be
-// subdivided without wildcard DNS, so previews of all agents share the
-// origin there.
-func (s *Server) previewOrigin(r *http.Request, port int, agentID string) string {
+// to loopback), the URL's host is also specific to the token, so each issued
+// preview is its own origin and a page one agent serves cannot read the
+// preview of another. The token rides in the host name there
+// (p<token>.localhost) and is the credential: such an origin is cross-site to
+// the Studio at localhost, so a cookie could not be set or sent in an
+// embedded frame. tokenInHost reports that. Any other host cannot be
+// subdivided without wildcard DNS, so previews share its origin and use the
+// ?t= token and cookie.
+func (s *Server) previewOrigin(r *http.Request, port int, tok string) (origin string, tokenInHost bool) {
 	scheme, host := "http", r.Host
 	if r.TLS != nil {
 		scheme = "https"
@@ -273,13 +279,19 @@ func (s *Server) previewOrigin(r *http.Request, port int, agentID string) string
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	if isLocalhostName(host) {
+		return fmt.Sprintf("%s://p%s.localhost:%d", scheme, tok, port), true
+	}
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]" // bare IPv6
 	}
-	if isLocalhostName(host) {
-		host = agentOriginLabel(agentID) + ".localhost"
-	}
-	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
+	return fmt.Sprintf("%s://%s:%d", scheme, host, port), false
+}
+
+// tokenOf is the token in an issued preview path's ?t= query.
+func tokenOf(u string) string {
+	_, tok, _ := strings.Cut(u, "?t=")
+	return tok
 }
 
 // isLocalhostName reports whether host (no port) is localhost or a
@@ -289,28 +301,23 @@ func isLocalhostName(host string) bool {
 	return host == "localhost" || strings.HasSuffix(host, ".localhost")
 }
 
-// agentOriginLabel is the DNS label that stands for an agent in its preview
-// origin: a fixed-length hash, since agent ids may hold characters a host
-// name cannot.
-func agentOriginLabel(agentID string) string {
-	sum := sha256.Sum256([]byte(agentID))
-	return "a" + hex.EncodeToString(sum[:10])
-}
-
-// previewHostAllowed is the per-agent origin check. On a localhost name the
-// request must arrive on the agent's own label, so a page served from one
-// agent's origin cannot fetch another agent's preview, whatever cookies it
-// could present. On any other host there is nothing to check.
-func previewHostAllowed(reqHost, agentID string) bool {
+// hostPreviewToken is the token a localhost-name request carries in its
+// first host label (p<token>.localhost). local is true for any localhost
+// name, where only that token is accepted: a cookie or ?t= is not.
+func hostPreviewToken(reqHost string) (tok string, local bool) {
 	host := reqHost
 	if h, _, err := net.SplitHostPort(reqHost); err == nil {
 		host = h
 	}
-	host = strings.Trim(host, "[]")
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
 	if !isLocalhostName(host) {
-		return true
+		return "", false
 	}
-	return strings.ToLower(strings.TrimSuffix(host, ".")) == agentOriginLabel(agentID)+".localhost"
+	label, rest, _ := strings.Cut(host, ".")
+	if rest != "localhost" || len(label) < 2 || label[0] != 'p' {
+		return "", true
+	}
+	return label[1:], true
 }
 
 // preview authenticates a /preview/… request by token or cookie and then
@@ -327,41 +334,45 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		notFound()
 		return
 	}
-	if !previewHostAllowed(r.Host, id) {
-		notFound()
-		return
-	}
 	prefix := fmt.Sprintf("%s%s/%d/", previewPrefix, url.PathEscape(id), port)
 	name := previewCookieName(id, port)
 
-	if tok := r.URL.Query().Get("t"); tok != "" {
-		if !s.fleet.previewTokenValid(tok, id, port) {
+	if hostTok, local := hostPreviewToken(r.Host); local {
+		// The token in the host name is the credential; no cookie.
+		if !s.fleet.previewTokenValid(hostTok, id, port) {
 			notFound()
 			return
 		}
-		http.SetCookie(w, &http.Cookie{
-			Name: name, Value: tok, Path: prefix,
-			HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
-			Expires: s.fleet.now().Add(previewTokenTTL),
-		})
-		q := r.URL.Query()
-		q.Del("t")
-		dest := r.URL.EscapedPath()
-		if !strings.HasSuffix(dest, "/") && rest == "/" {
-			dest += "/"
+	} else {
+		if tok := r.URL.Query().Get("t"); tok != "" {
+			if !s.fleet.previewTokenValid(tok, id, port) {
+				notFound()
+				return
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name: name, Value: tok, Path: prefix,
+				HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
+				Expires: s.fleet.now().Add(previewTokenTTL),
+			})
+			q := r.URL.Query()
+			q.Del("t")
+			dest := r.URL.EscapedPath()
+			if !strings.HasSuffix(dest, "/") && rest == "/" {
+				dest += "/"
+			}
+			if enc := q.Encode(); enc != "" {
+				dest += "?" + enc
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			http.Redirect(w, r, dest, http.StatusFound)
+			return
 		}
-		if enc := q.Encode(); enc != "" {
-			dest += "?" + enc
+		c, err := r.Cookie(name)
+		if err != nil || !s.fleet.previewTokenValid(c.Value, id, port) {
+			notFound()
+			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		http.Redirect(w, r, dest, http.StatusFound)
-		return
-	}
-	c, err := r.Cookie(name)
-	if err != nil || !s.fleet.previewTokenValid(c.Value, id, port) {
-		notFound()
-		return
 	}
 	if rest == "/" && !strings.HasSuffix(r.URL.Path, "/") {
 		// /preview/<id>/<port> without the trailing slash.

@@ -668,10 +668,8 @@ func TestTestShellIsLimitedToTwoPerWorkspace(t *testing.T) {
 }
 
 func TestTerminalFinalReleaseIsRetriedWhenTheAgentIsUnreachable(t *testing.T) {
-	old := releaseRetryDelays
-	releaseRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
-	t.Cleanup(func() { releaseRetryDelays = old })
 	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
 	var mu sync.Mutex
 	offCalls := 0
 	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
@@ -704,10 +702,8 @@ func TestTerminalFinalReleaseIsRetriedWhenTheAgentIsUnreachable(t *testing.T) {
 }
 
 func TestTerminalFinalReleaseRetryYieldsToANewTerminal(t *testing.T) {
-	old := releaseRetryDelays
-	releaseRetryDelays = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
-	t.Cleanup(func() { releaseRetryDelays = old })
 	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
 	var mu sync.Mutex
 	offCalls := 0
 	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
@@ -752,11 +748,48 @@ func TestTerminalCloseRemovesTheTTYFileInTheContainer(t *testing.T) {
 	tid := e.open(t)
 	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
 	waitFor(t, 5*time.Second, "rm exec", func() bool {
+		e.fs.mu.Lock()
+		defer e.fs.mu.Unlock()
 		for _, c := range e.fs.shorts {
 			if strings.Join(c.args, " ") == "exec "+containerNameFor(e.id)+" rm -f "+ttyFile(tid) {
 				return true
 			}
 		}
 		return false
+	})
+}
+
+func TestTerminalRetryHandsTheHoldToANewTerminal(t *testing.T) {
+	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{50 * time.Millisecond}
+	var mu sync.Mutex
+	failOff := true
+	offs := 0
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !on {
+			offs++
+			if failOff {
+				return errors.New("unreachable")
+			}
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	second := e.open(t)
+	time.Sleep(300 * time.Millisecond) // the retry wakes and yields
+	mu.Lock()
+	failOff = false
+	mu.Unlock()
+	// Without any input, releasing the new terminal still hands the agent back.
+	e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+second+"/release", "")
+	waitFor(t, 5*time.Second, "hand-back by the new terminal", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return offs == 2
 	})
 }

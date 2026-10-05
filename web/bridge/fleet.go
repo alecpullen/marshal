@@ -135,7 +135,9 @@ type Fleet struct {
 	previewForward func(w http.ResponseWriter, r *http.Request, agentID string, port int, rest string)
 
 	// holdCall replaces the session/hold request; tests set it.
-	holdCall func(ctx context.Context, agentID string, on bool) error
+	// releaseRetry overrides the waits between hand-back retries (tests).
+	releaseRetry []time.Duration
+	holdCall     func(ctx context.Context, agentID string, on bool) error
 
 	termOnce sync.Once
 	term     *terminalState

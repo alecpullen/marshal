@@ -3,6 +3,7 @@ package bridge
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -275,49 +276,71 @@ func TestPreviewOriginUsesTheCallersHostAndScheme(t *testing.T) {
 	s := &Server{}
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Host = "bridge.lan:7700"
-	if got := s.previewOrigin(req, 9000, "a"); got != "http://bridge.lan:9000" {
+	if got, _ := s.previewOrigin(req, 9000, "a"); got != "http://bridge.lan:9000" {
 		t.Fatalf("origin = %q", got)
 	}
 	req.TLS = &tls.ConnectionState{}
 	req.Host = "[::1]:7700"
-	if got := s.previewOrigin(req, 9000, "a"); got != "https://[::1]:9000" {
+	if got, _ := s.previewOrigin(req, 9000, "a"); got != "https://[::1]:9000" {
 		t.Fatalf("v6 origin = %q", got)
 	}
 	s.publicURLBase = "https://studio.example.com"
-	if got := s.previewOrigin(req, 9000, "a"); got != "https://studio.example.com:9000" {
+	if got, _ := s.previewOrigin(req, 9000, "a"); got != "https://studio.example.com:9000" {
 		t.Fatalf("public origin = %q", got)
 	}
 }
 
-func TestPreviewOriginIsPerAgentOnLocalhost(t *testing.T) {
+func TestPreviewOriginCarriesTheTokenOnLocalhost(t *testing.T) {
 	s := &Server{}
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Host = "localhost:7700"
-	a, b := s.previewOrigin(req, 9000, "agent_a"), s.previewOrigin(req, 9000, "agent_b")
-	if a == b || !strings.HasSuffix(a, ".localhost:9000") || !strings.HasPrefix(a, "http://") {
-		t.Fatalf("origins %q, %q", a, b)
+	a, inHost := s.previewOrigin(req, 9000, "aaaa")
+	b, _ := s.previewOrigin(req, 9000, "bbbb")
+	if !inHost || a != "http://paaaa.localhost:9000" || a == b {
+		t.Fatalf("origins %q, %q (inHost %v)", a, b, inHost)
 	}
 	req.Host = "x.localhost:7700"
-	if got := s.previewOrigin(req, 9000, "agent_a"); got != a {
+	if got, _ := s.previewOrigin(req, 9000, "aaaa"); got != a {
 		t.Fatalf("from a localhost subdomain: %q, want %q", got, a)
 	}
 	req.Host = "127.0.0.1:7700"
-	if got := s.previewOrigin(req, 9000, "agent_a"); got != "http://127.0.0.1:9000" {
+	if got, in := s.previewOrigin(req, 9000, "aaaa"); got != "http://127.0.0.1:9000" || in {
 		t.Fatalf("an IP cannot be subdivided: %q", got)
 	}
 }
 
-func TestPreviewRefusesAnotherAgentsHostOnLocalhost(t *testing.T) {
+func TestPreviewOnLocalhostNeedsNoCookie(t *testing.T) {
 	p := newPreviewEnv(t, 3000)
-	tok, _ := p.issue(t, 3000)
-	own := agentOriginLabel(p.id) + ".localhost:9911"
-	other := agentOriginLabel("someone-else") + ".localhost:9911"
-	path := "/preview/" + p.id + "/3000/?t=" + tok
-	for host, want := range map[string]int{own: http.StatusFound, other: http.StatusNotFound, "localhost:9911": http.StatusNotFound} {
-		rec := p.do("GET", path, func(r *http.Request) { r.Host = host })
-		if rec.Code != want {
-			t.Errorf("host %s = %d, want %d", host, rec.Code, want)
+	var got []string
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, id string, port int, rest string) {
+		got = append(got, id+"|"+rest)
+		w.WriteHeader(http.StatusOK)
+	}
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/3000", func(r *http.Request) { r.Host = "localhost:7700" })
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(out.URL)
+	if !strings.HasSuffix(u.Host, ".localhost:9911") || !strings.HasPrefix(u.Host, "p") || u.RawQuery != "" {
+		t.Fatalf("url %q: want the token in the host and no query", out.URL)
+	}
+	if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = u.Host }); rec.Code != http.StatusOK {
+		t.Fatalf("own origin = %d", rec.Code)
+	}
+	// Another token's origin, a bare localhost, and a cookie-less other
+	// host label are refused.
+	for _, host := range []string{"p" + strings.Repeat("0", 48) + ".localhost:9911", "localhost:9911", "agent.localhost:9911"} {
+		if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = host }); rec.Code != http.StatusNotFound {
+			t.Errorf("host %s = %d, want 404", host, rec.Code)
 		}
+	}
+	// A token for another port is no use on this one.
+	if rec := p.do("GET", "/preview/"+p.id+"/4000/", func(r *http.Request) { r.Host = u.Host }); rec.Code != http.StatusNotFound {
+		t.Errorf("other port = %d", rec.Code)
 	}
 }
 

@@ -40,10 +40,10 @@ const (
 	terminalHoldBackoff = 30 * time.Second
 )
 
-// releaseRetryDelays are the waits before each further attempt to hand an
+// defaultReleaseRetryDelays are the waits before each further attempt to hand an
 // agent back after the final release failed, so an agent that was briefly
 // unreachable is not left held.
-var releaseRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second}
+var defaultReleaseRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second}
 
 // ErrTooManyTerminals is returned when an owner already has the maximum
 // number of open terminals. It maps to 429.
@@ -432,7 +432,7 @@ func (f *Fleet) finishTerminal(t *terminal) {
 		}
 		t.proc.Kill()
 		if t.rmTTY != nil {
-			t.rmTTY()
+			go t.rmTTY() // off the close path: a hung exec must not stall it
 		}
 		t.mu.Lock()
 		if t.log != nil {
@@ -556,10 +556,14 @@ func (f *Fleet) releaseTerminalHold(t *terminal) {
 
 // retryRelease keeps trying to hand the agent back after a failed release,
 // with growing waits. It stops when the agent is handed back, is gone, or
-// has another terminal open (that terminal owns the hold from then on), or
-// when the fleet closes.
+// has another terminal open (that terminal inherits the hold and hands it
+// back), or when the fleet closes.
 func (f *Fleet) retryRelease(t *terminal) {
-	for _, d := range releaseRetryDelays {
+	delays := f.releaseRetry
+	if delays == nil {
+		delays = defaultReleaseRetryDelays
+	}
+	for _, d := range delays {
 		select {
 		case <-time.After(d):
 		case <-f.done:
@@ -570,9 +574,17 @@ func (f *Fleet) retryRelease(t *terminal) {
 		}
 		st := f.terminals()
 		st.mu.Lock()
-		busy := len(st.byID[t.agentID]) > 0
+		others := append([]*terminal(nil), st.byID[t.agentID]...)
 		st.mu.Unlock()
-		if busy {
+		if len(others) > 0 {
+			// The agent is still held. Hand that hold to the open
+			// terminals, so release, close or the idle timer sends the
+			// hand-back even if nobody types again.
+			for _, o := range others {
+				o.mu.Lock()
+				o.want, o.held = true, true
+				o.mu.Unlock()
+			}
 			return
 		}
 		f.syncHold(t)

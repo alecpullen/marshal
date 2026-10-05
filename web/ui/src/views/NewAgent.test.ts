@@ -5,7 +5,7 @@ import * as api from '../lib/api.js'
 
 vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
-  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn(), listWorkspaces: vi.fn(), listRecipes: vi.fn(), runRecipe: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn() }
+  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn(), listWorkspaces: vi.fn(), listRecipes: vi.fn(), runRecipe: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn(), getModels: vi.fn() }
 })
 
 const projects = [
@@ -13,6 +13,13 @@ const projects = [
   { root: '/work/plain', available: true, isolation: 'not a git repository' },
   { root: '/work/gone', available: false },
 ]
+
+const models = {
+  roles: ['implementer', 'reviewer', 'router', 'title', 'summarizer', 'repo_scout'],
+  profiles: { balanced: {}, cheap: {} },
+  presets: { big: {}, small: {} },
+  defaultProfile: 'balanced',
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -24,6 +31,7 @@ beforeEach(() => {
   ;(api.listRecipes as Mock).mockResolvedValue([])
   ;(api.getProjectSettings as Mock).mockResolvedValue({})
   ;(api.getProjectHealth as Mock).mockResolvedValue({ verify: { build: '', test: '' } })
+  ;(api.getModels as Mock).mockResolvedValue(models)
 })
 afterEach(cleanup)
 
@@ -164,5 +172,116 @@ describe('NewAgent', () => {
     await waitFor(() => expect(api.runRecipe).toHaveBeenCalledWith('fix-ci', { project: '/work/alpha', inputs: { check: 'lint' } }))
     expect(api.spawnAgent).not.toHaveBeenCalled()
     await waitFor(() => expect(onDone).toHaveBeenCalledWith('r1'))
+  })
+
+  describe('Model chip', () => {
+    const create = async () => {
+      render(NewAgent, { onDone: vi.fn() })
+      await screen.findByText('alpha')
+      await screen.findByText('Default profile')
+    }
+    const sent = () => (api.spawnAgent as Mock).mock.calls[0][0]
+
+    it('sends no routing by default', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toBeUndefined()
+    })
+
+    it('sends routing.profile for a profile', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(await screen.findByText('cheap'))
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toEqual({ profile: 'cheap' })
+    })
+
+    it('overrides every role except the fast ones for a preset', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(await screen.findByText('small'))
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toEqual({ overrides: { implementer: 'small', reviewer: 'small' } })
+    })
+
+    it('remembers the choice, and drops one that no longer exists', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(await screen.findByText('big'))
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!).model).toEqual({ kind: 'preset', name: 'big' })
+      cleanup()
+      render(NewAgent, { onDone: vi.fn() })
+      expect(await screen.findByText('big preset')).toBeTruthy()
+      cleanup()
+      ;(api.getModels as Mock).mockResolvedValue({ ...models, presets: { small: {} } })
+      render(NewAgent, { onDone: vi.fn() })
+      expect(await screen.findByText('Default profile')).toBeTruthy()
+    })
+
+    it('keeps the stored choice when the model list cannot load', async () => {
+      localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/alpha', model: { kind: 'preset', name: 'big' } }))
+      ;(api.getModels as Mock).mockRejectedValue(new Error('down'))
+      await create()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!).model).toEqual({ kind: 'preset', name: 'big' })
+    })
+
+    it('keeps the remembered model across a recipe run and hides the chip while one is selected', async () => {
+      localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/alpha', model: { kind: 'preset', name: 'big' } }))
+      ;(api.listRecipes as Mock).mockResolvedValue([{ name: 'r', title: 'R', kind: 'prompt', mode: 'plan', prompt: 'go', inputs: [] }])
+      ;(api.runRecipe as Mock).mockResolvedValue({ agentId: 'r1' })
+      render(NewAgent, { onDone: vi.fn() })
+      expect(await screen.findByText('big preset')).toBeTruthy()
+      await fireEvent.click(screen.getByRole('tab', { name: 'Recipes' }))
+      await fireEvent.click(await screen.findByText('R'))
+      expect(screen.queryByText('big preset')).toBeNull()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.runRecipe).toHaveBeenCalled())
+      expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!).model).toEqual({ kind: 'preset', name: 'big' })
+    })
+
+    it('does not offer presets when no role can take an override', async () => {
+      ;(api.getModels as Mock).mockResolvedValue({ ...models, roles: ['router', 'title'] })
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      expect(await screen.findByText(/Unavailable/)).toBeTruthy()
+      expect(screen.queryByText('big')).toBeNull()
+    })
+
+    it('does not overwrite a pick made before the model list arrives', async () => {
+      localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/alpha', model: { kind: 'preset', name: 'big' } }))
+      let release!: (v: unknown) => void
+      ;(api.getModels as Mock).mockReturnValue(new Promise((r) => (release = r)))
+      render(NewAgent, { onDone: vi.fn() })
+      await screen.findByText('alpha')
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(screen.getAllByText('Default profile')[1])
+      release(models)
+      await waitFor(() => expect(api.getModels).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 0))
+      expect(screen.getByText('Default profile', { selector: 'button.rounded-full' })).toBeTruthy()
+    })
+
+    it('groups profiles and presets and hides the selection marker from screen readers', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      expect(await screen.findByRole('group', { name: 'Profiles' })).toBeTruthy()
+      expect(screen.getByRole('group', { name: /Presets/ })).toBeTruthy()
+      expect(document.querySelector('[aria-hidden="true"]')?.textContent).toContain('●')
+    })
+
+    it('stays on the default when the model list cannot load', async () => {
+      ;(api.getModels as Mock).mockRejectedValue(new Error('down'))
+      await create()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(sent().routing).toBeUndefined()
+    })
   })
 })

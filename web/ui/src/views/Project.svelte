@@ -17,7 +17,7 @@
     type ProjectHealth,
     type ProjectSettings,
     type RepoRow,
-    type WorkspaceEntry,
+    type WorkspaceListItem,
   } from '../lib/api'
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
   import { MODES, SHIP_TARGETS, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type Dot, type IsolationChoice } from '../lib/project/model'
@@ -32,7 +32,7 @@
   // The last saved settings; each card saves its own fields over this.
   let saved = $state<ProjectSettings>({ intake: {} })
   let loaded = $state(false)
-  let workspaces = $state<WorkspaceEntry[]>([])
+  let workspaces = $state<WorkspaceListItem[]>([])
   let profiles = $state<string[]>([])
   let repos = $state<RepoRow[]>([])
   let clients = $state<MCPClient[]>([])

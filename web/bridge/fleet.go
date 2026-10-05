@@ -221,6 +221,8 @@ type Fleet struct {
 	statusRate statusLimiter
 	// sched tracks scheduler ticks and runs in flight.
 	sched schedulerState
+	// auto holds the forge automations' in-flight set and test seams.
+	auto autoState
 	// reroutes holds automatic rebindings so they can be undone.
 	reroutes rerouteLog
 	// routingMu serialises read-modify-write of the routing section: a

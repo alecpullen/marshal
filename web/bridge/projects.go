@@ -151,6 +151,10 @@ func (f *Fleet) PutProjectSettings(root string, ps ProjectSettings) error {
 		return fmt.Errorf("%w: intake.labels need an intake.repoId", errInvalidProjectSettings)
 	}
 
+	if err := f.validateAutomations(ps.Automations); err != nil {
+		return err
+	}
+
 	prev := f.ws.ProjectSettingsFor(root)
 	if err := f.ws.PutProjectSettings(root, ps); err != nil {
 		return err

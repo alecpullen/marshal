@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 )
@@ -41,7 +42,7 @@ func (f *Fleet) StartPoller(interval time.Duration) {
 // the others.
 func (f *Fleet) pollOnce(ctx context.Context) {
 	for _, r := range f.ws.Repos() {
-		if !r.Watch {
+		if !r.Watch && !f.pollsAutomations(r) {
 			continue
 		}
 		if f.rateLimited(r.ID) {
@@ -67,7 +68,21 @@ func (f *Fleet) pollOnce(ctx context.Context) {
 	}
 }
 
-// pollRepo submits every newly-labelled issue in one repo.
+// pollsAutomations reports whether the poller covers a repo's forge
+// automations: one is enabled, and there is no webhook secret, so no
+// webhook can be delivering events.
+func (f *Fleet) pollsAutomations(r Repo) bool {
+	_, rb, hasRB := f.reviewBotSettings(r.ID)
+	_, ci, hasCI := f.ciFixerSettings(r.ID)
+	if !(hasRB && rb.Enabled) && !(hasCI && ci.Enabled) {
+		return false
+	}
+	_, err := f.secrets.Get(context.Background(), DefaultOwnerID, hookSecretPath(r.ID))
+	return errors.Is(err, ErrSecretNotFound)
+}
+
+// pollRepo submits every newly-labelled issue in one repo, then runs the
+// automations' polling fallback.
 //
 // Deduplication is by recorded issue number, not by the `since` cursor
 // alone: editing an issue bumps its updated time, so a cursor-only
@@ -77,24 +92,40 @@ func (f *Fleet) pollRepo(ctx context.Context, r Repo) error {
 	if err != nil {
 		return err
 	}
-	issues, err := forge.ListIssues(ctx, r, IssueQuery{Label: r.WatchLabel, Since: r.LastPolled}, cred)
-	if err != nil {
-		f.noteRateLimit(r.ID, err)
-		return err
-	}
-
-	seen := make(map[int]bool)
-	for _, n := range f.ws.SubmittedIssues(r.ID) {
-		seen[n] = true
-	}
-	for _, issue := range issues {
-		if seen[issue.Number] {
-			continue
-		}
-		if _, err := f.SubmitIssue(ctx, r.ID, issue.Number); err != nil {
+	if r.Watch {
+		issues, err := forge.ListIssues(ctx, r, IssueQuery{Label: r.WatchLabel, Since: r.LastPolled}, cred)
+		if err != nil {
+			f.noteRateLimit(r.ID, err)
 			return err
 		}
-		if err := f.ws.MarkIssueSubmitted(r.ID, issue.Number); err != nil {
+
+		seen := make(map[int]bool)
+		for _, n := range f.ws.SubmittedIssues(r.ID) {
+			seen[n] = true
+		}
+		for _, issue := range issues {
+			if seen[issue.Number] {
+				continue
+			}
+			if _, err := f.SubmitIssue(ctx, r.ID, issue.Number); err != nil {
+				return err
+			}
+			if err := f.ws.MarkIssueSubmitted(r.ID, issue.Number); err != nil {
+				return err
+			}
+		}
+	}
+
+	if !f.pollsAutomations(r) {
+		return nil
+	}
+	if _, rb, ok := f.reviewBotSettings(r.ID); ok && rb.Enabled {
+		if err := f.pollReviews(ctx, r, forge, cred); err != nil {
+			return err
+		}
+	}
+	if _, ci, ok := f.ciFixerSettings(r.ID); ok && ci.Enabled {
+		if err := f.pollCI(ctx, r, ci, forge, cred); err != nil {
 			return err
 		}
 	}

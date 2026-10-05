@@ -40,6 +40,55 @@ type IssueQuery struct {
 	Since time.Time
 }
 
+// PRQuery filters a list-PRs call.
+type PRQuery struct {
+	State string
+	Since time.Time
+	Label string
+}
+
+// PRInfo is a pull request, normalised across providers.
+type PRInfo struct {
+	Number    int
+	Title     string
+	URL       string
+	HeadRef   string
+	HeadSHA   string
+	BaseRef   string
+	Author    string
+	Draft     bool
+	Labels    []string
+	UpdatedAt time.Time
+}
+
+// Review is a COMMENT review: a body and inline comments.
+type Review struct {
+	Body     string
+	Comments []ReviewLine
+}
+
+// ReviewLine is one inline review comment on the new side of the diff.
+type ReviewLine struct {
+	Path string
+	Line int
+	Body string
+}
+
+// CheckInfo is one failed CI check. JobID is set when the check is a
+// GitHub Actions job whose log can be fetched.
+type CheckInfo struct {
+	ID         int64
+	Name       string
+	Conclusion string
+	URL        string
+	Ref        string
+	JobID      int64
+}
+
+// checkLogLimit is how much of a check's log CheckLog returns: the tail,
+// where the failure is.
+const checkLogLimit = 256 << 10
+
 // Every method takes the credential explicitly rather than binding one
 // at construction: a single client serves many repos, each with its own
 // token, and a client that remembered one would silently use the wrong
@@ -53,6 +102,24 @@ type Forge interface {
 	// the forge. It is a fast-path pre-check: a repo already over the
 	// clone cap is refused before any bandwidth is spent cloning it.
 	RepoSize(ctx context.Context, repo Repo, cred Credential) (int64, error)
+	// ListPRs returns the repo's open pull requests, newest update first,
+	// filtered client-side by label and by q.Since.
+	ListPRs(ctx context.Context, repo Repo, q PRQuery, cred Credential) ([]PRInfo, error)
+	GetPR(ctx context.Context, repo Repo, number int, cred Credential) (PRInfo, error)
+	// PostReview posts a COMMENT review and returns its URL.
+	PostReview(ctx context.Context, repo Repo, number int, review Review, cred Credential) (string, error)
+	// ListFailedChecks returns the checks on ref that failed.
+	ListFailedChecks(ctx context.Context, repo Repo, ref string, cred Credential) ([]CheckInfo, error)
+	// CheckLog returns the tail (at most 256 KiB) of a failed check's log.
+	CheckLog(ctx context.Context, repo Repo, check CheckInfo, cred Credential) (string, error)
+}
+
+// tailString keeps the last n bytes of s.
+func tailString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 // errNoForge signals the documented degradation path: the repo has no

@@ -195,20 +195,16 @@ func (h *egressHost) realID(id string) string {
 }
 
 // alias makes pseudo's credentials serve real's policy, and drops the
-// pseudo agent's own entry. It returns the CA generation the idle
-// container was started with, so the adopting agent keeps it.
-func (h *egressHost) alias(pseudo, real string) (ca string) {
+// pseudo agent's own entry. The CA generation the idle container was
+// started with is read beforehand with pinnedCA.
+func (h *egressHost) alias(pseudo, real string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if g, ok := h.caGens[pseudo]; ok {
-		ca = g.ID
-	}
 	delete(h.agents, pseudo)
 	delete(h.caGens, pseudo)
 	h.aliases[pseudo] = real
 	h.saveCAGensLocked()
 	h.publishLocked()
-	return ca
 }
 
 // pinnedCA is the CA generation an agent (or the pool container it

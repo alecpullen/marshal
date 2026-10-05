@@ -505,7 +505,7 @@ decisions:
 |---|---|
 | `block` | Dismiss |
 | `allow-agent` | Add a per-agent grant, held in memory for the agent's lifetime, and push a new policy |
-| `add-to-workspace` | Use `workspace/patch` on the template's draft to append the host to `[network].egress`, then report the draft as changed. A Studio template gets a draft change. A repo template gets a downloadable patch instead, since the bridge doesn't write to repos. |
+| `add-to-workspace` | Use `workspace/patch` on the template's draft to append the host to `[network].egress`, then report the draft as changed. A Studio template gets a draft change. A repo template gets a downloadable patch instead, since the bridge doesn't write to repos; it is read only from a trusted project, as a regular file (no symlinks) of at most 256 KiB. A Studio draft is replaced only if it is unchanged since it was read, otherwise the decision answers 409. |
 
 `GET /api/network/pending[?agent=<id>]` returns
 `{pending: [{kind:"network_block", sessionId, agentId, host, workspace?, at}]}`:

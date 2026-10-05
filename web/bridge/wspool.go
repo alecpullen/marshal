@@ -210,6 +210,7 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 	cfg.ExtraMounts, cfg.ExtraEnv = ex.mounts, ex.env
 	for _, sub := range []string{entry.workSubpath, entry.socketSubpath} {
 		if err := os.MkdirAll(filepath.Join(f.stateDir, sub), 0o700); err != nil {
+			f.dropPoolEgress(pseudo.ID)
 			return poolEntry{}, fmt.Errorf("bridge: create pool dir: %w", err)
 		}
 	}
@@ -440,17 +441,16 @@ func (p *poolManager) wiredForProxy(e poolEntry, meta TemplateMeta) bool {
 	if h == nil {
 		return !workspaceNeedsProxy(doc)
 	}
-	if h.mode != egressModeContainer {
-		return true
-	}
-	rt, ok := f.egressRuntimeName()
-	if !ok {
-		return false
-	}
-	format := fmt.Sprintf(`{{if index .NetworkSettings.Networks %q}}on{{end}}`, egressNetwork)
-	out, err := f.runRuntime(rt, "inspect", "--format", format, e.container)
-	if err != nil || strings.TrimSpace(string(out)) != "on" {
-		return false
+	if h.mode == egressModeContainer {
+		rt, ok := f.egressRuntimeName()
+		if !ok {
+			return false
+		}
+		format := fmt.Sprintf(`{{if index .NetworkSettings.Networks %q}}on{{end}}`, egressNetwork)
+		out, err := f.runRuntime(rt, "inspect", "--format", format, e.container)
+		if err != nil || strings.TrimSpace(string(out)) != "on" {
+			return false
+		}
 	}
 	// Restore the registration the restart dropped.
 	id := poolPseudoID(e.container)

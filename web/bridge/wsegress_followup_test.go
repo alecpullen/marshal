@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -235,15 +236,23 @@ func TestAddToWorkspaceStudioChangesTheDraft(t *testing.T) {
 	}
 }
 
+// repoTemplateAgent is a local agent whose project holds a repo template.
+func repoTemplateAgent(t *testing.T, trusted bool) (Agent, string, []byte) {
+	t.Helper()
+	home := fakeHome(t)
+	root := projectWithConfig(t)
+	src := wsSrc(t, sampleDoc("r"))
+	writeRepoTemplate(t, root, "r", src)
+	if trusted {
+		writeTrustStore(t, home, `{"`+root+`":{"trusted":true}}`)
+	}
+	file := filepath.Join(root, ".marshal", "workspaces", "r.toml")
+	return Agent{ID: "a1", SourceKind: "local", Project: root, Workspace: &AgentWorkspace{Name: "r", Source: "repo"}}, file, src
+}
+
 func TestAddToWorkspaceRepoReturnsAPatchAndWritesNothing(t *testing.T) {
 	e := newWSSpawnEnv(t)
-	root := t.TempDir()
-	dir := filepath.Join(root, ".marshal", "workspaces")
-	os.MkdirAll(dir, 0o755)
-	src := wsSrc(t, sampleDoc("r"))
-	file := filepath.Join(dir, "r.toml")
-	os.WriteFile(file, src, 0o644)
-	a := Agent{ID: "a1", SourceKind: "local", Project: root, Workspace: &AgentWorkspace{Name: "r", Source: "repo"}}
+	a, file, src := repoTemplateAgent(t, true)
 	res, err := e.f.addAgentHostToWorkspace(httptest.NewRequest(http.MethodPost, "/", nil), a, "registry.npmjs.org")
 	if err != nil {
 		t.Fatal(err)
@@ -258,5 +267,140 @@ func TestAddToWorkspaceRepoReturnsAPatchAndWritesNothing(t *testing.T) {
 	}
 	if _, has := m["source"]; has {
 		t.Fatal("a repo result carries a source")
+	}
+}
+
+func TestAddToWorkspaceRepoRefusesUntrustedSymlinkedAndHugeTemplates(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	req := func() *http.Request { return httptest.NewRequest(http.MethodPost, "/", nil) }
+
+	// Untrusted project: refused before anything is parsed.
+	a, _, _ := repoTemplateAgent(t, false)
+	if _, err := e.f.addAgentHostToWorkspace(req(), a, "x.com"); !errors.Is(err, ErrUntrustedRepoTemplate) {
+		t.Fatalf("untrusted = %v", err)
+	}
+	if _, err := readRepoTemplate(a.Project, a.Project, filepath.Join(".marshal", "workspaces", "r.toml")); !errors.Is(err, ErrUntrustedRepoTemplate) {
+		t.Fatalf("untrusted read = %v", err)
+	}
+
+	// A symlinked template is not followed.
+	a, file, _ := repoTemplateAgent(t, true)
+	secret := filepath.Join(t.TempDir(), "secret.toml")
+	os.WriteFile(secret, wsSrc(t, sampleDoc("leak")), 0o600)
+	os.Remove(file)
+	if err := os.Symlink(secret, file); err != nil {
+		t.Skip("no symlinks")
+	}
+	if _, err := e.f.addAgentHostToWorkspace(req(), a, "x.com"); !errors.Is(err, ErrWorkspaceInvalid) {
+		t.Fatalf("symlinked template = %v", err)
+	}
+
+	// So is a symlinked directory on the way.
+	a, file, _ = repoTemplateAgent(t, true)
+	realDir := filepath.Join(t.TempDir(), "workspaces")
+	os.MkdirAll(realDir, 0o755)
+	os.WriteFile(filepath.Join(realDir, "r.toml"), wsSrc(t, sampleDoc("leak")), 0o600)
+	dir := filepath.Dir(file)
+	os.RemoveAll(dir)
+	os.Symlink(realDir, dir)
+	if _, err := e.f.addAgentHostToWorkspace(req(), a, "x.com"); !errors.Is(err, ErrWorkspaceInvalid) {
+		t.Fatalf("symlinked directory = %v", err)
+	}
+
+	// An oversized template is refused unread.
+	a, file, _ = repoTemplateAgent(t, true)
+	os.WriteFile(file, make([]byte, maxRepoTemplateBytes+1), 0o644)
+	if _, err := e.f.addAgentHostToWorkspace(req(), a, "x.com"); !errors.Is(err, ErrWorkspaceInvalid) {
+		t.Fatalf("huge template = %v", err)
+	}
+}
+
+func TestAddToWorkspaceStudioDoesNotOverwriteAConcurrentDraftEdit(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	publishDoc(t, e.f, "svc", sampleDoc("svc"))
+	src, _ := e.f.templates.Read("svc", 0)
+	// Another editor saves between the read and the write.
+	edited := sampleDoc("svc")
+	edited.Packages.Apt = []string{"git", "jq"}
+	if err := e.f.templates.SaveDraft("svc", wsSrc(t, edited)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.f.templates.SaveDraftIf("svc", src, []byte("patched")); !errors.Is(err, ErrDraftChanged) {
+		t.Fatalf("SaveDraftIf = %v, want ErrDraftChanged", err)
+	}
+	got, _ := e.f.templates.Read("svc", 0)
+	if string(got) != string(wsSrc(t, edited)) {
+		t.Fatal("the concurrent edit was overwritten")
+	}
+	// With the draft unchanged the swap goes through.
+	if err := e.f.templates.SaveDraftIf("svc", got, []byte("patched")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdoptedPoolContainerKeepsItsCAGenerationAndIPPin(t *testing.T) {
+	ctx := ctlContext(t)
+	e := newWSSpawnEnv(t)
+	startWSEgress(t, e)
+	h := e.f.egress
+	pseudo := "pool-svc-v1-0"
+	spec := EgressSpec{Mode: EgressModeAllowlist, Inject: []EgressInjectSpec{{Host: "api.example.com", Header: "X-Key", Ref: "vault:api/key"}}}
+	e.f.SetSecrets(testSecretProvider(t))
+	e.f.secrets.Put(ctx, DefaultOwnerID, "api/key", []byte("k"))
+	if _, err := e.f.egressWire(ctx, Agent{ID: pseudo}, "svc", spec, "", pseudo); err != nil {
+		t.Fatal(err)
+	}
+	first := h.snapshot().Agents[pseudo].CA
+	if first == "" {
+		t.Fatal("pool container has no CA generation")
+	}
+	if _, err := e.f.rotateCA(ctx, "svc"); err != nil {
+		t.Fatal(err)
+	}
+	e.f.workspaceEgress = func(context.Context, Agent) (string, EgressSpec, error) { return "svc", spec, nil }
+	a := Agent{ID: "ag1", ContainerName: "marshal-pool-svc-v1-0"}
+	if _, _, err := e.f.egressPrepare(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.snapshot().Agents["ag1"].CA; got != first {
+		t.Fatalf("adopting agent got CA %q, the container was started under %q", got, first)
+	}
+	if got := h.snapshot().Agents[pseudo].CA; got != first {
+		t.Fatalf("alias CA = %q", got)
+	}
+	// The IP pin follows once the agent's container is inspected.
+	e.f.egressAttached(a)
+	if ip := h.snapshot().Agents[pseudo].IP; ip == "" || ip != h.snapshot().Agents["ag1"].IP {
+		t.Fatalf("alias IP %q, agent IP %q", ip, h.snapshot().Agents["ag1"].IP)
+	}
+}
+
+func testSecretProvider(t *testing.T) SecretProvider {
+	t.Helper()
+	root := t.TempDir()
+	key := filepath.Join(root, "key")
+	if err := GenerateKeyFile(key); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewLocalProvider(filepath.Join(root, "state"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestPoolAdoptionRestoresTheRegistrationInProcessMode(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	publishDoc(t, e.f, "svc", sampleDoc("svc"))
+	e.f.templates.SetBuild("svc", 1, "ok", "marshal-derived-svc", 1, 1)
+	startWSEgress(t, e)
+	e.f.egress.mode = egressModeProcess
+	meta, _ := e.f.templates.Meta("svc")
+	entry := poolEntry{name: "svc", version: 1, k: 0, container: "marshal-pool-svc-v1-0"}
+	if !e.f.pools.wiredForProxy(entry, meta) {
+		t.Fatal("a surviving pool container was refused in process mode")
+	}
+	if _, ok := e.f.egress.snapshot().Agents["pool-svc-v1-0"]; !ok {
+		t.Fatal("the registration was not restored, so the container's token would be denied")
 	}
 }

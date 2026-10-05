@@ -253,7 +253,7 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrTemplateName), errors.Is(err, ErrTemplatePool), errors.Is(err, ErrWorkspaceMountTarget):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrTemplateExists), errors.Is(err, ErrTemplateInUse), errors.Is(err, ErrBuildBusy), errors.Is(err, ErrTemplateNoDraft), errors.Is(err, ErrAgentNoWorkspace):
+	case errors.Is(err, ErrTemplateExists), errors.Is(err, ErrTemplateInUse), errors.Is(err, ErrBuildBusy), errors.Is(err, ErrTemplateNoDraft), errors.Is(err, ErrAgentNoWorkspace), errors.Is(err, ErrDraftChanged):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkspaceNotBuilt):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": "workspace_not_built"})
